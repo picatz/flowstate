@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<!--
+  The sandbox proxy, on an origin of its own.
+
+  The specification's host arrangement is two frames, not one: the host wraps the
+  view in a proxy the host does not share an origin with, and the proxy carries
+  the view. This page is that proxy. It relays messages in both directions and
+  does nothing else.
+
+  It also carries the neighbour: a second frame, sandboxed on its own opaque
+  origin, whose only job is to send the view a message the view's parent did not
+  send. Every real host page has neighbours; the card's rule is that a message
+  from one is not a message from its host, and the neighbour is how that rule is
+  put in front of a browser rather than in front of a regular expression.
+
+  The view is addressed with "*" because a document sandboxed without
+  allow-same-origin has an opaque origin, and an opaque origin cannot be named in
+  a targetOrigin. That is a property of the arrangement the specification asks
+  for, not a shortcut taken here.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>sandbox proxy</title>
+  </head>
+
+  <body>
+    <script>
+      (function () {
+        "use strict";
+
+        var params = new URLSearchParams(window.location.search);
+        var hostOrigin = params.get("host");
+
+        // The view. allow-scripts alone: no allow-same-origin, because a frame
+        // holding both can reach its parent's DOM and take its own sandbox
+        // attribute off, which is the escape the arrangement exists to prevent.
+        var view = document.createElement("iframe");
+        view.setAttribute("sandbox", "allow-scripts");
+        view.setAttribute("title", "view");
+        view.src = "/view";
+        document.body.appendChild(view);
+
+        // The neighbour, added second so the view is frames[0].
+        var neighbour = document.createElement("iframe");
+        neighbour.setAttribute("sandbox", "allow-scripts");
+        neighbour.setAttribute("title", "neighbour");
+        neighbour.src = "/neighbour";
+        document.body.appendChild(neighbour);
+
+        window.addEventListener("message", function (event) {
+          if (event.source === window.parent) {
+            var envelope = event.data || {};
+
+            if (envelope.relay === "to-view") {
+              view.contentWindow.postMessage(envelope.message, "*");
+              return;
+            }
+
+            if (envelope.relay === "spoof") {
+              neighbour.contentWindow.postMessage(envelope.message, "*");
+              return;
+            }
+
+            return;
+          }
+
+          if (event.source === view.contentWindow) {
+            window.parent.postMessage(
+              { relay: "from-view", message: event.data },
+              hostOrigin
+            );
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

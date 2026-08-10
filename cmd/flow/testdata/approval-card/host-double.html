@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<!--
+  The host double: the outer page, standing where an MCP Apps host stands.
+
+  It is a double, not a host. It speaks the postMessage dialect the card speaks
+  and it keeps a transcript of every message that crossed the boundary, so a Go
+  test can assert on what the card actually said and said it to. It decides
+  nothing: it never asks a human, it enforces no policy, and it forwards no tool
+  call anywhere, because the point of the exercise is the card's behaviour and
+  the card is the only thing under test.
+
+  The arrangement is the specification's: this page renders a sandbox proxy on a
+  different origin, and the view lives inside that. So this page has no way to
+  reach into the card's document, which is the property a real host has and the
+  reason the test's DOM queries arrive over the devtools protocol instead.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MCP Apps host double</title>
+  </head>
+
+  <body>
+    <h1>host double</h1>
+
+    <script>
+      (function () {
+        "use strict";
+
+        var params = new URLSearchParams(window.location.search);
+        var sandboxOrigin = params.get("sandbox");
+
+        // Everything the test reads. `transcript` is the record of the
+        // boundary; the rest are the levers the test pulls.
+        window.__transcript = [];
+        window.__ready = false;
+
+        var proxy = document.createElement("iframe");
+        proxy.id = "sandbox";
+        // The permissions the specification requires of a sandbox proxy, and no
+        // others. allow-same-origin is here because the proxy is on an origin of
+        // its own that differs from this page's, which is what makes it a
+        // boundary rather than a formality; the view inside it gets neither.
+        proxy.setAttribute("sandbox", "allow-scripts allow-same-origin");
+        proxy.setAttribute("title", "sandbox proxy");
+        proxy.src =
+          sandboxOrigin +
+          "/sandbox?host=" +
+          encodeURIComponent(window.location.origin);
+        document.body.appendChild(proxy);
+
+        function toView(message) {
+          window.__transcript.push({ dir: "to-view", message: message });
+          proxy.contentWindow.postMessage(
+            { relay: "to-view", message: message },
+            sandboxOrigin
+          );
+        }
+
+        window.addEventListener("message", function (event) {
+          if (event.source !== proxy.contentWindow) {
+            return;
+          }
+
+          var envelope = event.data || {};
+          if (envelope.relay !== "from-view") {
+            return;
+          }
+
+          var message = envelope.message || {};
+          window.__transcript.push({ dir: "from-view", message: message });
+
+          if (message.method === "ui/initialize" && message.id != null) {
+            toView({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                protocolVersion: "2026-01-26",
+                capabilities: {},
+                hostInfo: { name: "flowstate-host-double", version: "1" },
+              },
+            });
+            return;
+          }
+
+          if (message.method === "ui/notifications/initialized") {
+            window.__ready = true;
+            return;
+          }
+
+          // A tools/call is recorded and left unanswered. The test decides what
+          // the server said, and when, through __respond below: that is how the
+          // "in flight" state of the buttons is observable at all.
+        });
+
+        // __deliver hands the card a tool result exactly as a host would: the
+        // CallToolResult of a flowstate_get, whose first text part is the
+        // protojson the tool actually returns. The bytes come from Go.
+        window.__deliver = function (text) {
+          toView({
+            jsonrpc: "2.0",
+            method: "ui/notifications/tool-result",
+            params: {
+              content: [{ type: "text", text: text }],
+              isError: false,
+            },
+          });
+        };
+
+        // __respond answers a tools/call the card made, with whatever the test
+        // wants the server to have said.
+        window.__respond = function (id, result) {
+          toView({ jsonrpc: "2.0", id: id, result: result });
+        };
+
+        // __spoof asks the proxy to have a *different* frame send the card a
+        // message. Not this page, and not the card's parent: a third document,
+        // which is what a hostile neighbour in a host's page would be.
+        window.__spoof = function (text) {
+          proxy.contentWindow.postMessage(
+            {
+              relay: "spoof",
+              message: {
+                jsonrpc: "2.0",
+                method: "ui/notifications/tool-result",
+                params: {
+                  content: [{ type: "text", text: text }],
+                  isError: false,
+                },
+              },
+            },
+            sandboxOrigin
+          );
+        };
+
+        // __calls is the tool calls the card has made, in order.
+        window.__calls = function () {
+          return window.__transcript
+            .filter(function (entry) {
+              return (
+                entry.dir === "from-view" && entry.message.method === "tools/call"
+              );
+            })
+            .map(function (entry) {
+              return entry.message;
+            });
+        };
+      })();
+    </script>
+  </body>
+</html>

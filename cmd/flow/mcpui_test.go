@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/html"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -520,28 +519,19 @@ func TestTheCardsCallsAreValidSignalRequests(t *testing.T) {
 			require.NoError(t, err)
 
 			var message struct {
-				JSONRPC string `json:"jsonrpc"`
-				Method  string `json:"method"`
-				Params  struct {
-					Name      string          `json:"name"`
-					Arguments json.RawMessage `json:"arguments"`
-				} `json:"params"`
+				JSONRPC string          `json:"jsonrpc"`
+				Method  string          `json:"method"`
+				Params  json.RawMessage `json:"params"`
 			}
 			require.NoError(t, json.Unmarshal(raw, &message))
 
 			assert.Equal(t, "2.0", message.JSONRPC)
 			assert.Equal(t, "tools/call", message.Method)
-			assert.Equal(t, mcpToolName("Signal"), message.Params.Name,
-				"the card calls a tool other than the one that delivers a signal")
 
-			// DiscardUnknown stays false, exactly as [mcpHandler] leaves it: the
-			// tool refuses a field the schema does not have, so a golden carrying
-			// one would be a message the server rejects.
-			var request v1.SignalRequest
-			require.NoError(t, protojson.Unmarshal(message.Params.Arguments, &request),
-				"the card's arguments are not a SignalRequest this surface would accept")
-			require.NoError(t, v1.Validate(&request),
-				"the card's arguments do not satisfy the schema's own rules")
+			// The same check the browser harness makes on the message the card
+			// builds at run time, from one place, so a golden that stops being
+			// what the card sends cannot pass one and fail the other.
+			request := strictSignalRequest(t, message.Params)
 
 			assert.NotEmpty(t, request.GetWorkflowId())
 			assert.NotEmpty(t, request.GetName())
