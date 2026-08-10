@@ -332,7 +332,7 @@ steps:
 		assert.Contains(t, got, "Input of workflow `provision-tenant`, declared in `"+callee+"`.",
 			"the answer names the file it came from, which is the file the reader cannot see")
 		assert.Contains(t, got, "Name of the tenant to provision.")
-		assert.Contains(t, got, "Held to at least 3 characters, at most 63 characters.",
+		assert.Contains(t, got, "Held to 3 to 63 characters.",
 			"a declared bound is checked at validation exactly as must: is, so a hover showing one and not the other tells half the contract")
 		assert.Contains(t, got, "Must satisfy `this.size() > 2`.")
 	})

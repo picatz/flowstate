@@ -10652,9 +10652,23 @@ func (*Task_Log_Outputs) Descriptor() ([]byte, []int) {
 }
 
 type Task_HTTP_Inputs struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Url    string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
-	Method *string                `protobuf:"bytes,2,opt,name=method,proto3,oneof" json:"method,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Url is where the request goes, written as an absolute URI.
+	//
+	// Absolute because there is nothing for a relative one to be relative to:
+	// a workflow runs on a worker, not in a browser holding the page it came
+	// from. The scheme and host are also what a deployment's egress policy is
+	// written against, so a request that does not name them is a request
+	// nobody can decide about.
+	Url string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	// Method is the HTTP method, and is GET where a step does not write one.
+	//
+	// GET, POST, PUT, PATCH or DELETE, in any case. The set is closed rather
+	// than free text because retry behaviour hangs off it: a request whose
+	// outcome is unknown is retried by what its method promises (see
+	// `retry_on_unknown_outcome`), so a method nothing knows the idempotency
+	// of is a request nothing can safely repeat.
+	Method *string `protobuf:"bytes,2,opt,name=method,proto3,oneof" json:"method,omitempty"`
 	// Request headers.
 	//
 	// Strings, because a header is text on the wire, and a secret reference is
@@ -10908,9 +10922,23 @@ func (x *Task_HTTP_Inputs) GetRetryOnUnknownOutcome() bool {
 }
 
 type Task_HTTP_Outputs struct {
-	state      protoimpl.MessageState `protogen:"open.v1"`
-	StatusCode int32                  `protobuf:"varint,1,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
-	Headers    map[string]string      `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// StatusCode is the status the response carried.
+	//
+	// Reported rather than judged here, but not unjudged: a status outside
+	// 2xx fails the step by default, and `expect:` is where a workflow widens
+	// what it accepts. So a file that means to branch on a 404 says so in
+	// `expect:` and reads the number here; without that the step never
+	// produces outputs to read.
+	StatusCode int32 `protobuf:"varint,1,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
+	// Headers are the response's headers, one value per name, read as
+	// `${steps.<id>.headers['Content-Type']}`.
+	//
+	// A header sent more than once keeps its first value, because this is a
+	// mapping of strings and there is no second value to put anywhere. Every
+	// value of a repeated header is reachable through the `outputs` input,
+	// where the response's headers are exposed as lists.
+	Headers map[string]string `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Response body, returned by default so a step can be referenced as
 	// ${steps.<id>.body}. Large responses are better trimmed with the `outputs`
 	// input above, which keeps workflow payloads small.

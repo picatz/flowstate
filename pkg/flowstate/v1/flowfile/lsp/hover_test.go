@@ -70,12 +70,15 @@ func TestHover(t *testing.T) {
 		{
 			name: "required input shows its type and constraints",
 			at:   "url:",
-			want: []string{"`url`", "`string`", "required", "must be an absolute URI"},
+			// The description is the schema's own, through protodoc: the sentence
+			// asserted here is written in flowstate.proto beside the field, not in
+			// this package. See schemaprose_test.go for the provenance pin.
+			want: []string{"`url`", "`string`", "required", "a URI", "Url is where the request goes"},
 		},
 		{
 			name: "optional input says so",
 			at:   "method:",
-			want: []string{"`method`", "`string`", "optional", "matches"},
+			want: []string{"`method`", "`string`", "optional", "matching", "Method is the HTTP method"},
 		},
 		{
 			// The whole rooted reference is what hover names, because it is what

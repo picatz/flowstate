@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"strings"
 
-	"buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"google.golang.org/protobuf/proto"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// Everything an editor shows about a task — its inputs, their types, which are
-// required, what values they accept — is read from the Protobuf descriptors on
-// the task's registry entry. There is no table here to fall out of date, and
+// Everything an editor shows about a task (its inputs, their types, which are
+// required, what values they accept, and what each one is *for*) is read from the
+// Protobuf descriptors on the task's registry entry, or from the schema's own
+// comments through [protodoc]. There is no table here to fall out of date, and
 // nothing this file can say that the engine would not also enforce, because both
 // read the same schema.
 
@@ -45,15 +45,6 @@ func typeName(fd protoreflect.FieldDescriptor) string {
 	return v1.InputTypeName(fd)
 }
 
-// fieldRules returns the protovalidate rules attached to a field, or nil.
-func fieldRules(fd protoreflect.FieldDescriptor) *validate.FieldRules {
-	if fd == nil {
-		return nil
-	}
-	rules, _ := proto.GetExtension(fd.Options(), validate.E_Field).(*validate.FieldRules)
-	return rules
-}
-
 // required reports whether the schema marks a field as one the task cannot run
 // without.
 //
@@ -67,71 +58,64 @@ func required(fd protoreflect.FieldDescriptor) bool {
 // can tell an author that a method must match a pattern before the engine
 // rejects one that does not.
 //
-// Only the rules the Flowfile schema actually uses are rendered. A rule with no
-// case here is silently omitted rather than printed in Protobuf spelling, since
-// a half-translated constraint reads as a bug.
+// One derivation, not a second one: [v1.FieldConstraints] is what `flow tasks`
+// prints and what the generated reference tabulates, and this package reads it
+// so an editor cannot describe a bound in different words from the terminal.
+// The copy that used to live here did exactly that, spelling one field's bound
+// "at least 3 characters, at most 6 characters" where every other surface said
+// "3 to 6 characters".
 func constraints(fd protoreflect.FieldDescriptor) []string {
-	rules := fieldRules(fd)
-	if rules == nil {
-		return nil
-	}
-
-	var out []string
-	if s := rules.GetString(); s != nil {
-		if s.HasLen() {
-			out = append(out, fmt.Sprintf("exactly %d characters", s.GetLen()))
-		}
-		if s.HasMinLen() && s.GetMinLen() > 0 {
-			out = append(out, fmt.Sprintf("at least %d characters", s.GetMinLen()))
-		}
-		if s.HasMaxLen() {
-			out = append(out, fmt.Sprintf("at most %d characters", s.GetMaxLen()))
-		}
-		if s.HasPattern() {
-			out = append(out, fmt.Sprintf("matches %s", s.GetPattern()))
-		}
-		if s.HasUri() && s.GetUri() {
-			out = append(out, "must be an absolute URI")
-		}
-		if in := s.GetIn(); len(in) > 0 {
-			out = append(out, "one of "+strings.Join(in, ", "))
-		}
-	}
-	if i := rules.GetInt32(); i != nil {
-		if i.HasGte() {
-			out = append(out, fmt.Sprintf("at least %d", i.GetGte()))
-		}
-		if i.HasGt() {
-			out = append(out, fmt.Sprintf("greater than %d", i.GetGt()))
-		}
-		if i.HasLte() {
-			out = append(out, fmt.Sprintf("at most %d", i.GetLte()))
-		}
-		if i.HasLt() {
-			out = append(out, fmt.Sprintf("less than %d", i.GetLt()))
-		}
-	}
-	if r := rules.GetRepeated(); r != nil {
-		if r.HasMinItems() && r.GetMinItems() > 0 {
-			out = append(out, fmt.Sprintf("at least %d item(s)", r.GetMinItems()))
-		}
-		if r.HasMaxItems() {
-			out = append(out, fmt.Sprintf("at most %d item(s)", r.GetMaxItems()))
-		}
-		if r.GetUnique() {
-			out = append(out, "items must be unique")
-		}
-	}
-	return out
+	return v1.FieldConstraints(fd)
 }
 
-// The schema's own comments would be the natural source of per-field prose, but
-// protoc-gen-go strips SourceCodeInfo from the descriptors it embeds, so
-// fd.ParentFile().SourceLocations() is empty at run time and there is nothing to
-// read. Hover therefore reports the type, whether the field is required, and the
-// protovalidate rules — all of which are present in the descriptor — rather than
-// prose that would silently always be blank. See the note in the accompanying
-// report about emitting source info so the comments become available.
+// fieldDoc returns the schema's own prose for a field, or empty when nothing
+// this build carries describes it.
+//
+// Read through [protodoc] rather than off the descriptor the registry holds,
+// because protoc strips SourceCodeInfo from what a .pb.go embeds: the linked-in
+// descriptor carries the shape and none of the prose, which is why this package
+// used to say the comments were unreachable and write its own. A descriptor that
+// does carry its own source info is asked first, so a plugin shipping one
+// documents its inputs the same way a built-in task does.
+//
+// Empty is a real answer and the caller must render nothing rather than a gap: a
+// task whose message this build's schema does not describe (a plugin's, an
+// embedder's) has no sentence to inherit, and inventing one would describe a
+// field nobody wrote a description for.
+func fieldDoc(fd protoreflect.FieldDescriptor) string {
+	if fd == nil {
+		return ""
+	}
+	if doc, ok := protodoc.CommentOf(fd); ok {
+		return doc
+	}
+	doc, _ := protodoc.Comment(fd.FullName())
+
+	return doc
+}
+
+// schemaSentence returns the opening sentence of a named schema symbol's
+// comment, or empty when this build's schema does not declare it.
+//
+// One sentence rather than the whole comment, for the positions where a surface
+// writes the rest itself. The wait's result names are the example: the schema
+// describes `payload` and `sender` as the pair a signal delivery carries, and
+// everything else an author needs there is true only inside a shaping (the name
+// is bound bare; a later step reads it only if the shaping re-exposed it), which
+// is this package's to say and not the schema's.
+//
+// A name that resolves to nothing answers empty rather than guessing, and the
+// symbols the hovers here name are pinned by the presence walk in protodoc, so
+// an empty answer means the schema moved rather than that the prose was
+// optional.
+func schemaSentence(name protoreflect.FullName) string {
+	comment, ok := protodoc.Comment(name)
+	if !ok {
+		return ""
+	}
+
+	return protodoc.FirstSentence(comment)
+}
 
 // signature renders a task's full input and output shape as a fenced block, the
 // form editors display best in hover.

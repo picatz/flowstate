@@ -94,6 +94,33 @@ func FieldConstraints(fd protoreflect.FieldDescriptor) []string {
 	return constraintPhrases(FieldRules(fd))
 }
 
+// DeclaredBounds says what a workflow's own `inputs:` declaration holds a value
+// to, in the phrases [FieldConstraints] renders a schema field's rules in.
+//
+// One vocabulary for one fact. A declaration's `min_len`/`max_len` bounds a
+// string exactly as a protovalidate `string.min_len` bounds a task input's, and
+// an author reading a `with:` argument and an author reading a task input are
+// reading the same language: two spellings of one bound is how an editor comes to
+// disagree with a terminal about what a value must be. The editor's own copy said
+// "at least 3 characters, at most 63 characters" for what every other surface
+// calls "3 to 63 characters".
+//
+// Requiredness, a default and `must:` are deliberately absent, for
+// [FieldConstraints]'s reason: each has its own field on the declaration and its
+// own place in every surface that shows one, and stating it twice puts one fact
+// in two places that can disagree about it.
+func DeclaredBounds(declaration *InputDeclaration) []string {
+	if declaration == nil {
+		return nil
+	}
+
+	var out []string
+	out = append(out, countPhrase("characters", declaration.MinLen, declaration.MaxLen)...)
+	out = append(out, countPhrase("items", declaration.MinItems, declaration.MaxItems)...)
+
+	return out
+}
+
 // constraintPhrases renders one rule set, and is recursive because a map's rules
 // carry a whole rule set for its keys and another for its values.
 func constraintPhrases(rules *validate.FieldRules) []string {
