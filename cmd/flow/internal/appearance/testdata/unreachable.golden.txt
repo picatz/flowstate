@@ -1,0 +1,9 @@
+$ FLOWSTATE_ADDRESS=http://127.0.0.1:9 flow list
+ ERROR
+no Flowstate server answered at http://127.0.0.1:9 (set --address or
+FLOWSTATE_ADDRESS to point at a deployment that is already running):
+unavailable: dial tcp 127.0.0.1:9: connect: connection refused
+
+NEXT
+  flow server dev
+$

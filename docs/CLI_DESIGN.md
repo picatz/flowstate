@@ -271,6 +271,37 @@ Two rules keep this from growing:
   column count, because a run that took `2h14m` in a listing of ones that took
   `3s` would otherwise blow the alignment of every row after it.
 
+### Recorded appearances: what holds all of the above
+
+Everything in this section is whitespace, and whitespace is what a test that
+reads output for substrings cannot see. A wrap point moves, a hanging indent
+loses its column, the blank line before a `NEXT` block disappears, and every
+assertion in the tree stays green. So the rules above are held by recordings
+rather than by review: `cmd/flow/internal/appearance/` holds one
+[charmbracelet/vhs](https://github.com/charmbracelet/vhs) tape per styled
+surface, and beside each tape a golden of the terminal screen it produces. CI's
+`appearance` job replays them, and a diff is a surface that changed shape.
+
+Four surfaces are recorded today, chosen because appearance carries meaning in
+each: the task index (`flow tasks`), one task in full (`flow tasks http`, the
+densest aligned surface the CLI has), `flow init`, and the unreachable-server
+error, which is the reference recording for the `NEXT` element the sad paths
+share. Recording a surface is now part of styling one.
+
+Two boundaries are worth stating, because a pin that is trusted for more than it
+covers is worse than none. The golden is the terminal grid read back as plain
+text, so it holds layout, wrapping, alignment and symbol choice, and it does not
+hold colour; colour is pinned in the ui package, where the role palette lives
+and where `TestEveryRoleSurvivesLosingItsColour` already asserts the property
+that matters. And the width a golden records comes from `stty cols 80` inside
+the tape rather than from any window vhs sizes, because the CLI wraps to the pty
+and a golden that depended on the recorder's font metrics would be a golden that
+failed on the next machine.
+
+To re-record after an intended change: `make appearance-update`, then read the
+diff as the review of that change. A golden is never edited by hand, because a
+hand-edited one records an appearance the CLI has never produced.
+
 ## 3. The views
 
 Four views cover every render path in the CLI today. Each is sketched exactly —

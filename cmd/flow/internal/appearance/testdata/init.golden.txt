@@ -1,0 +1,12 @@
+$ flow init
+✓ created workflow.yaml
+✓ created workflow.test.yaml
+
+NEXT
+  flow run local workflow.yaml
+  flow test .
+
+  then, durably, in two commands:
+  flow server dev
+  flow run workflow.yaml
+$

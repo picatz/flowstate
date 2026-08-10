@@ -1,4 +1,4 @@
-.PHONY: check test test-plugins test-ordering test-fast fuzz-smoke fmt docs
+.PHONY: check test test-plugins test-ordering test-fast fuzz-smoke fmt docs appearance appearance-update
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:
@@ -90,3 +90,19 @@ fmt:
 # with `git diff --exit-code`, so this is what to run when that pin fails.
 docs:
 	go run ./cmd/flow docs generate
+
+# Record the CLI's styled surfaces with charmbracelet/vhs and compare them
+# against the goldens under cmd/flow/internal/appearance/testdata. Needs vhs,
+# ttyd and ffmpeg on PATH; without them the test skips and says which is
+# missing, which is also why this is not part of `check`: a gate that reports
+# green by not running is worse than one that is honestly somewhere else. CI's
+# `appearance` job installs all three and runs this command.
+appearance:
+	GOMEMLIMIT=2GiB go test -timeout 900s -count=1 -run TestAppearance ./cmd/flow/internal/appearance/
+
+# Re-record every golden. Run this when a styled surface changed on purpose,
+# read the diff as the review of that change, and commit the goldens alongside
+# the change that moved them. Never hand-edit a golden: it would record an
+# appearance the CLI has never produced.
+appearance-update:
+	GOMEMLIMIT=2GiB go test -timeout 900s -count=1 -run TestAppearance ./cmd/flow/internal/appearance/ -update

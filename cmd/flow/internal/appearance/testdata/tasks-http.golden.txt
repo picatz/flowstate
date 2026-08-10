@@ -1,0 +1,44 @@
+$ flow tasks http
+http
+  Perform an HTTP request and return the response.
+
+  inputs   url*                      string, a URI
+           method                    string, 3 to 6 characters, matching
+                                     ^(?i)(GET|POST|PUT|PATCH|DELETE)$
+           headers                   map[string, string], may hold a secret
+                                     reference
+           body                      string
+           bearer                    any, may hold a secret reference
+           credential                string, 1 to 128 characters, matching
+                                     ^[a-z][a-z0-9-]*$, names a deployment
+                                     credential target
+           outputs                   map[string, any], evaluated by the task
+           query                     map[string, any]
+           json                      any, may hold a secret reference
+           form                      map[string, any], may hold a secret
+                                     reference
+           expect                    any, must be written as an expression,
+                                     evaluated by the task
+           parse_json                bool
+           retry_on_unknown_outcome  bool
+  outputs  status_code               int, 100 to 599
+           headers                   map[string, string]
+           body                      string
+           json                      any
+
+* marks an input the task cannot run without.
+
+Evaluated by the task, not by the engine: expect, outputs
+The engine resolves an expression before it schedules the step, which is why an
+ordinary input cannot name something that does not exist yet. These the task
+evaluates itself, in its own scope, after it has run far enough to have one: it
+is how `http`'s `outputs` may name `status_code`.
+
+A step that uses it:
+  edition: v2026.2
+  name: example
+  steps:
+    - id: http
+      http:
+        url: https://example.com/
+$
