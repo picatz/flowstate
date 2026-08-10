@@ -395,6 +395,12 @@ message Workflow {
   repeated ResolvedPlugin resolved_plugins = 13 [(buf.validate.field).repeated = {max_items: 64}];
 }
 
+// PluginRequirement is what a Flowfile's plugins: block declares: a plugin
+// this workflow needs, by name, at or above a minimum version with the same
+// major. It is the author's half of the pinning contract; submission resolves
+// each requirement against the deployment's catalog into a [ResolvedPlugin],
+// and a requirement no installed plugin satisfies refuses the run before
+// anything durable is created.
 message PluginRequirement {
   string name = 1 [(buf.validate.field).string = {pattern: "^[a-z][a-z0-9_-]*$"}];
   string minimum_version = 2 [(buf.validate.field).string = {pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"}];

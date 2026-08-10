@@ -809,6 +809,12 @@ func (x *Workflow) GetResolvedPlugins() []*ResolvedPlugin {
 	return nil
 }
 
+// PluginRequirement is what a Flowfile's plugins: block declares: a plugin
+// this workflow needs, by name, at or above a minimum version with the same
+// major. It is the author's half of the pinning contract; submission resolves
+// each requirement against the deployment's catalog into a [ResolvedPlugin],
+// and a requirement no installed plugin satisfies refuses the run before
+// anything durable is created.
 type PluginRequirement struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
