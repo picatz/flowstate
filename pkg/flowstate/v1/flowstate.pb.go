@@ -9516,9 +9516,9 @@ func (x *Workflow_StepOutputs) GetRunOutputs() *RunOutputs {
 
 // Calendar is an explicit calendar cadence, matched field by field the way a
 // cron expression is: a time matches when at least one range of every field
-// matches it. A field nobody writes takes Temporal's default for that field —
+// matches it. A field nobody writes takes Temporal's default for that field:
 // second, minute and hour default to zero, and the three date fields match
-// everything — which is why a calendar with no fields at all is refused rather
+// everything. That is why a calendar with no fields at all is refused rather
 // than compiled: it means 00:00:00 every day, and nobody writes that by
 // meaning it.
 type ScheduleTrigger_Calendar struct {
@@ -9628,7 +9628,7 @@ type ScheduleTrigger_Calendar_Range struct {
 	// Start is the first value the range matches, and the only required one.
 	Start int32 `protobuf:"varint,1,opt,name=start,proto3" json:"start,omitempty"`
 	// End is the last value, inclusive. Zero means no end was written, which
-	// matches the start alone — the schema cannot distinguish an unwritten end
+	// matches the start alone. The schema cannot distinguish an unwritten end
 	// from one written as zero, and Temporal reads both the same way. An end
 	// below the start is refused rather than passed on, since Temporal would
 	// silently narrow it to the start.
