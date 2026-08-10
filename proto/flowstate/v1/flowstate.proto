@@ -2613,6 +2613,24 @@ message TaskField {
   // evaluates it after the response arrives, and an ordinary input may not,
   // because the engine resolves it before the step is even scheduled.
   bool deferred = 4;
+
+  // Constraints are the rest of what the schema and the task already know about
+  // what may be written here, each one a phrase in the author's vocabulary:
+  // `3 to 6 characters`, `matching ^(?i)(GET|POST)$`, `at most 32 entries`,
+  // `must be written as an expression`, `may hold a secret reference`.
+  //
+  // Derived, never maintained. The length, count and range phrases are read off
+  // the field's own protovalidate rules, which are the rules the engine rejects a
+  // run against, and the last two off the task definition's own
+  // `ExpressionInputs` and secret-accepting input lists. So a bound tightened in
+  // the schema is a bound `flow tasks http` states, with nothing else touched.
+  //
+  // Rendered rather than structured for the same reason [TaskField.type] is a
+  // string saying `map[string, any]` rather than a Protobuf type name: what a
+  // reader needs is the sentence they would have had to assemble out of the rule
+  // message anyway, and a consumer wanting the rules themselves has the
+  // descriptor this was read from.
+  repeated string constraints = 5;
 }
 
 message Task {

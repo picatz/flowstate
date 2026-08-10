@@ -235,7 +235,7 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		for _, task := range p.GetTasks() {
 			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(task.GetName()), task.GetSummary())
 
-			if err := writeFields(out, theme, []fieldGroup{
+			if err := writeFields(out, theme, surface.Caps.Width, []fieldGroup{
 				{label: "inputs", fields: inputFields(task.GetInputs())},
 				{label: "outputs", fields: inputFields(task.GetOutputs())},
 			}); err != nil {
@@ -272,10 +272,11 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 	out := make([]v1.InputField, 0, len(fields))
 	for _, field := range fields {
 		out = append(out, v1.InputField{
-			Name:     field.GetName(),
-			Type:     field.GetType(),
-			Required: field.GetRequired(),
-			Deferred: field.GetDeferred(),
+			Name:        field.GetName(),
+			Type:        field.GetType(),
+			Required:    field.GetRequired(),
+			Deferred:    field.GetDeferred(),
+			Constraints: field.GetConstraints(),
 		})
 	}
 

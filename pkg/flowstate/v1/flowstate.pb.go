@@ -4703,7 +4703,24 @@ type TaskField struct {
 	// rather than prose: `http`'s `outputs` may name `status_code` because the task
 	// evaluates it after the response arrives, and an ordinary input may not,
 	// because the engine resolves it before the step is even scheduled.
-	Deferred      bool `protobuf:"varint,4,opt,name=deferred,proto3" json:"deferred,omitempty"`
+	Deferred bool `protobuf:"varint,4,opt,name=deferred,proto3" json:"deferred,omitempty"`
+	// Constraints are the rest of what the schema and the task already know about
+	// what may be written here, each one a phrase in the author's vocabulary:
+	// `3 to 6 characters`, `matching ^(?i)(GET|POST)$`, `at most 32 entries`,
+	// `must be written as an expression`, `may hold a secret reference`.
+	//
+	// Derived, never maintained. The length, count and range phrases are read off
+	// the field's own protovalidate rules, which are the rules the engine rejects a
+	// run against, and the last two off the task definition's own
+	// `ExpressionInputs` and secret-accepting input lists. So a bound tightened in
+	// the schema is a bound `flow tasks http` states, with nothing else touched.
+	//
+	// Rendered rather than structured for the same reason [TaskField.type] is a
+	// string saying `map[string, any]` rather than a Protobuf type name: what a
+	// reader needs is the sentence they would have had to assemble out of the rule
+	// message anyway, and a consumer wanting the rules themselves has the
+	// descriptor this was read from.
+	Constraints   []string `protobuf:"bytes,5,rep,name=constraints,proto3" json:"constraints,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4764,6 +4781,13 @@ func (x *TaskField) GetDeferred() bool {
 		return x.Deferred
 	}
 	return false
+}
+
+func (x *TaskField) GetConstraints() []string {
+	if x != nil {
+		return x.Constraints
+	}
+	return nil
 }
 
 type Task struct {
@@ -11366,12 +11390,13 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x05tasks\x18\x06 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12)\n" +
 	"\x10protocol_version\x18\a \x01(\rR\x0fprotocolVersion\x12,\n" +
 	"\x12task_schema_digest\x18\b \x01(\tR\x10taskSchemaDigest\x12/\n" +
-	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\"k\n" +
+	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\"\x8d\x01\n" +
 	"\tTaskField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x1a\n" +
-	"\bdeferred\x18\x04 \x01(\bR\bdeferred\"\xbc\x0f\n" +
+	"\bdeferred\x18\x04 \x01(\bR\bdeferred\x12 \n" +
+	"\vconstraints\x18\x05 \x03(\tR\vconstraints\"\xbc\x0f\n" +
 	"\x04Task\x12J\n" +
 	"\x04name\x18\x01 \x01(\tB6\xe2A\x01\x02\xbaH/\xc8\x01\x01r*\x10\x01\x18\x80\x012#^[A-Za-z0-9-_]+(\\.[A-Za-z0-9-_]+)?$R\x04name\x12K\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x1e.flowstate.v1.Task.InputsEntryB\x13\xe2A\x01\x01\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\x06inputs\x1a\xe7\x02\n" +

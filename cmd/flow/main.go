@@ -7,7 +7,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -17,11 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
-	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -1128,282 +1125,6 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	return workflow, nil
 }
 
-// runTasks implements the tasks sub-command, listing the tasks a workflow may
-// use along with the expression libraries available to them.
-//
-// The listing is derived from the task registry rather than maintained by hand,
-// so it cannot drift from what the engine will actually execute.
-// writeFields prints one task's inputs or outputs, aligned under a label.
-//
-// A block per task rather than a row per task, which is what this was. `http` has
-// eleven inputs; on one line they run past any terminal and take the table's
-// alignment with them, so the shape that fits four tasks today would be unusable
-// the moment somebody registers a fifth with a real schema. A block is the same
-// width whatever the task holds.
-//
-// The writer is passed in so that a task's inputs and outputs share one, and
-// therefore share a column layout. Two tabwriters would align each block against
-// itself and against nothing else, which reads as a mistake even when every
-// number in it is right.
-//
-// Required inputs are marked with `*` rather than only sorted first, because a
-// mark survives being piped, logged, and read by somebody who cannot see colour.
-// Errors are returned rather than discarded, which the tabwriter this replaced did
-// by way of Flush. A full disk or a pipe that has gone away makes every write fail,
-// and a listing that stopped halfway while reporting success is worse than one that
-// says it could not finish.
-func writeFields(w io.Writer, theme ui.Theme, groups []fieldGroup) error {
-	// Laid out here rather than by tabwriter, which measures the bytes it is given.
-	// A styled cell is mostly escape sequences, so tabwriter counted them as width
-	// and every column after the first shifted — the terminal rendering came out
-	// visibly ragged while the piped one, being unstyled, looked fine. Widths are
-	// measured with lipgloss, which counts displayed columns, the same way the help
-	// page's own two-column lists are laid out.
-	const gutter = 2
-
-	var labels, names int
-	for _, group := range groups {
-		if len(group.fields) > 0 {
-			labels = max(labels, lipgloss.Width(group.label))
-		}
-		for _, field := range group.fields {
-			names = max(names, lipgloss.Width(fieldName(field)))
-		}
-	}
-
-	for _, group := range groups {
-		for i, field := range group.fields {
-			// The label sits beside the first row and the rest align under it, so
-			// the eye reads down a column rather than hunting for where one list
-			// ends.
-			// Only the first row of a group carries the label, and an empty one is
-			// left unstyled: rendering "" through a style emits escape sequences
-			// around nothing, which a terminal ignores and a reader of the raw
-			// bytes has to skip past.
-			label, styledLabel := "", ""
-			if i == 0 {
-				label = group.label
-				styledLabel = theme.Header.Render(label)
-			}
-
-			name := fieldName(field)
-
-			if _, err := fmt.Fprintf(w, "  %s%s%s%s%s",
-				styledLabel, pad(labels-lipgloss.Width(label)+gutter),
-				theme.Strong.Render(name), pad(names-lipgloss.Width(name)+gutter),
-				theme.Muted.Render(field.Type)); err != nil {
-				return err
-			}
-
-			if field.Deferred {
-				// Worth saying, because it changes what an author may write here.
-				// The engine resolves an expression before scheduling the step;
-				// these the task evaluates itself, against a scope the workflow
-				// does not have — which is why `http`'s `outputs` can name
-				// `status_code` and an ordinary input cannot.
-				if _, err := fmt.Fprintf(w, "  %s",
-					theme.Muted.Render("the task evaluates this itself, in its own scope")); err != nil {
-					return err
-				}
-			}
-
-			if _, err := fmt.Fprintln(w); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// fieldGroup is one labelled list of a task's fields.
-type fieldGroup struct {
-	label  string
-	fields []v1.InputField
-}
-
-// fieldName is how a field is written, with the marker a required one carries.
-func fieldName(field v1.InputField) string {
-	if field.Required {
-		return field.Name + "*"
-	}
-
-	return field.Name
-}
-
-// pad returns n spaces, never fewer than none.
-func pad(n int) string {
-	if n < 0 {
-		return ""
-	}
-
-	return strings.Repeat(" ", n)
-}
-
-func runTasks(cmd *cobra.Command, args []string) error {
-	surface := newSurface(cmd)
-
-	// Through the surface rather than cmd.OutOrStdout(), which matters now that
-	// this is styled. A theme resolves to the palette's own colours, and it is
-	// [ui.New]'s colorprofile writer that degrades those to what the stream can
-	// carry — 24-bit down to 256, to 16, to none. Writing styled text past it sent
-	// truecolor sequences to a terminal that had told us it has 256 colours.
-	out := surface.Out
-
-	format, err := resolveOutputFormat(cmd)
-	if err != nil {
-		return err
-	}
-
-	// The registry, as a document, for everything that is not a person: an agent
-	// driving this CLI as a tool, a generator producing documentation, an editor
-	// that is not this project's language server. All of them previously had to
-	// parse the columns below, and column positions are not a contract.
-	//
-	// One document rather than one per line even for jsonl, because a catalog is
-	// one answer — a consumer wants `.tasks[] | select(.name=="http")`, not a
-	// stream it has to reassemble before it can index into it.
-	if format.Machine() {
-		return writeJSON(surface, FormatJSON, v1.Catalog())
-	}
-
-	// What a task takes, not just that it exists.
-	//
-	// This listed a name and a one-line summary, which tells a reader that `http`
-	// exists and nothing about how to write one — so the next stop was the
-	// README's hand-maintained table, which is exactly the drift the registry
-	// exists to prevent. The schema knows; printing it here means the answer
-	// cannot go stale.
-	theme := surface.Theme
-
-	for i, def := range v1.DefaultRegistry().All() {
-		if i > 0 {
-			fmt.Fprintln(out)
-		}
-		fmt.Fprintf(out, "%s\n  %s\n", theme.Accent.Render(def.Name), def.Summary)
-
-		if err := writeFields(out, theme, []fieldGroup{
-			{label: "inputs", fields: v1.Inputs(def)},
-			{label: "outputs", fields: v1.Outputs(def)},
-		}); err != nil {
-			return fmt.Errorf("writing the task catalog: %w", err)
-		}
-	}
-
-	fmt.Fprintf(out, "\n%s\n", theme.Muted.Render("* marks an input the task cannot run without."))
-
-	// "every expression", not "the cel task", and that is the change worth
-	// spelling out here. These used to be opt-in per `cel` step, which meant this
-	// listing was accurate for one step kind and misleading for the rest of the
-	// file — an author reading it to find out what an `if:` could say got the
-	// wrong answer.
-	// Named, rather than only counted. This printed the library names and stopped,
-	// which says what is switched on and nothing about what any of it offers — so
-	// somebody who wanted to sort a list had no way to find out that `sortBy`
-	// exists. A profile is a *membership*, and one nobody can enumerate is one
-	// nobody can write against.
-	//
-	// A macro is marked because the difference reaches an author: it is expanded
-	// when the file compiles, so it is frozen into the compiled workflow, where a
-	// function is looked up by whichever worker evaluates the run.
-	if functions := v1.ProfileFunctions(v1.CurrentProfile); len(functions) > 0 {
-		fmt.Fprintf(out, "\n%s\n",
-			theme.Accent.Render("CEL functions available to every expression:"))
-
-		width := 0
-		for _, fn := range functions {
-			width = max(width, len(fn.Library))
-		}
-
-		for _, lib := range v1.ExtensionLibraries() {
-			names := make([]string, 0, len(functions))
-			for _, fn := range functions {
-				if fn.Library != lib {
-					continue
-				}
-				if fn.Macro {
-					names = append(names, fn.Name+" (macro)")
-
-					continue
-				}
-				names = append(names, fn.Name)
-			}
-			if len(names) == 0 {
-				continue
-			}
-
-			fmt.Fprintf(out, "  %s  %s\n",
-				theme.Muted.Render(fmt.Sprintf("%-*s", width, lib)),
-				strings.Join(names, ", "))
-		}
-
-		// Said once rather than inlined per entry. A macro's name is not its call
-		// form — cel-go reports `greatest` for `math.greatest(1, 2)` — so a reader
-		// needs an example, and a list of ninety names with two long expressions
-		// spliced into it is harder to scan than a list of names plus one line.
-		//
-		// The examples come from the catalog rather than being written here, so this
-		// line cannot describe a spelling the schema does not carry. Two of them,
-		// because the two shapes are the whole point: one goes on a namespace and
-		// one on a value, and showing only either would imply macros are all alike.
-		if written := macroExamplesFor(functions, "greatest", "sortBy"); written != "" {
-			fmt.Fprintf(out, "  %s\n",
-				theme.Muted.Render("a macro goes on something — "+written+
-					" — and is expanded when the file compiles"))
-		}
-	}
-
-	fmt.Fprintf(out, "\n%s\n  %s\n",
-		theme.Accent.Render("Duration constructors available to every expression:"),
-		strings.Join(v1.DurationUnits(), ", "))
-	fmt.Fprintf(out, "\nInside a wait (sleep, wait_until, a signal's timeout), %s is the moment\n"+
-		"the wait is evaluated, so a deadline is ${%s + days(3)} and a remaining\n"+
-		"bound is ${deadline - %s}.\n", v1.NowIdentifier, v1.NowIdentifier, v1.NowIdentifier)
-
-	// Where a value comes from, which this listing otherwise leaves somebody to
-	// guess at.
-	//
-	// A task is an *effect*. Two are listed above and one of them produces nothing,
-	// so a reader who arrives here asking "how do I compute something" would
-	// reasonably conclude the answer is almost nothing. It is an expression, named
-	// under `vars:`, and saying so is the difference between a task list and an
-	// answer to the question people run this command to ask.
-	fmt.Fprintf(out, "\n%s\n"+
-		"  at the top of a file, read everywhere as ${%s.<name>}\n"+
-		"  on a step, read inside it as a bare ${<name>}\n"+
-		"A step's outputs are what it learned from outside, read as ${%s.<id>.<output>}.\n",
-		theme.Accent.Render(fmt.Sprintf(
-			"Values come from expressions rather than from tasks. Name one with %s:", v1.VarsRoot)),
-		v1.VarsRoot, v1.StepsRoot)
-
-	return nil
-}
-
-// macroExamplesFor renders the catalog's example calls for the named macros.
-//
-// Read out of the catalog rather than written into the sentence, so the one line
-// explaining how a macro is written cannot name a spelling the schema does not
-// carry — the two would drift the first time an example changed, and this line is
-// the only place a reader of the terminal listing learns the call form at all.
-//
-// Silently skips a name with no example, and returns empty if none of them have
-// one, which the caller treats as "say nothing". A sentence promising examples and
-// then listing none is worse than its absence.
-func macroExamplesFor(functions []v1.LibraryFunction, names ...string) string {
-	var out []string
-	for _, name := range names {
-		for _, fn := range functions {
-			if fn.Name == name && fn.Example != "" {
-				out = append(out, fn.Example)
-
-				break
-			}
-		}
-	}
-
-	return strings.Join(out, ", ")
-}
-
 // newRootCommand builds the whole CLI: every command, its flags, and the groups the
 // help sorts them into.
 //
@@ -1869,23 +1590,45 @@ flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 		"pin the signal to one run of the workload; unset addresses whichever run is current, "+
 			"which is what approving a workload means")
 
-	// Tasks command, which lists the available tasks.
+	// Tasks command: the index of what a step can name, and the description of any
+	// one of them.
+	//
+	// An index and a detail view rather than one page, per #379. Every task's full
+	// input and output tables plus the whole expression reference printed in one
+	// breath is a page nobody can hold, and it grew in the one dimension a
+	// [cobra.NoArgs] command cannot subset: the catalog, which plugins extend.
 	tasksCmd := &cobra.Command{
-		Use:   "tasks",
-		Short: "List the tasks workflows can use",
-		Long:  "List the tasks available to workflow steps, along with the CEL libraries every expression reaches.",
-		Args:  cobra.NoArgs,
-		RunE:  runTasks,
-		Example: `# List available tasks, their inputs, and their outputs:
+		Use:   "tasks [name]",
+		Short: "List the tasks workflows can use, or describe one",
+		Long: "List the tasks available to workflow steps, one line each. Name one to see " +
+			"it in full: every input with what may be written in it, what the task evaluates " +
+			"itself, what it hands back, and a step to copy.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: runTasks,
+		// Completed from the registry, which is the same place the listing comes
+		// from, so a name this offers is a name this build can run.
+		ValidArgsFunction: func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return v1.TaskNames(), cobra.ShellCompDirectiveNoFileComp
+		},
+		Example: `# Every task a step can name, one line each:
 flow tasks
 
-# The same thing as a document, for a script or an agent:
+# One task in full: its inputs, their bounds, and a step to copy:
+flow tasks http
+
+# What every expression in a Flowfile can say:
+flow tasks --expressions
+
+# The whole catalog as a document, for a script or an agent:
 flow tasks --output json
 
-# What inputs does the http task take, and which are required?
-flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'`,
+# One task as a document:
+flow tasks http --output json | jq '.inputs'`,
 	}
 	addOutputFlag(tasksCmd)
+	tasksCmd.Flags().Bool(expressionsFlag, false,
+		"describe what every expression can say: the CEL functions, the duration "+
+			"constructors, `now` inside a wait, and where a value comes from")
 
 	// Task command, which runs one task without a workflow around it. Built in
 	// taskrun.go, beside the code it drives. See [newTaskCommand] for why the
