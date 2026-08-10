@@ -33,7 +33,7 @@ const (
 // for. A TaskField is documentation: it is rendered for a person or an agent
 // reading the catalog, and `list[string]` is the right answer there because it
 // is what an author would say. This one is *enforced*, at submit, against a
-// value some caller chose — so it has to be a closed set the schema can
+// value some caller chose, so it has to be a closed set the schema can
 // constrain and every consumer can switch on. Spelling it as a string would put
 // a parser for the same small type language into the CLI, the server, the
 // language server and the compiler, which is the "one value written down four
@@ -43,10 +43,10 @@ const (
 // and the same numbers. The two left out are TYPE_EXPR and TYPE_ERROR, and they
 // are precisely the two that are not data: an expression is something a run
 // evaluates, and a caller does not get to send one. Sharing numbers does not
-// make the enums interchangeable — the sets differ, so a conversion between
+// make the enums interchangeable: the sets differ, so a conversion between
 // them is a switch somebody wrote and somebody reviewed, never a cast.
 //
-// A parameterized type — a list *of* what — is not expressible here yet, on
+// A parameterized type (a list *of* what) is not expressible here yet, on
 // purpose. An element type that nothing checks is decoration, which is the rule
 // that put this whole surface in Phase 2 with its checker; and an added enum
 // value or an added field is free later, where a wrong one is not.
@@ -117,7 +117,7 @@ func (InputDeclaration_Type) EnumDescriptor() ([]byte, []int) {
 // Mirrors Temporal's `ScheduleOverlapPolicy` value for value. Named as a
 // Flowstate enum rather than importing Temporal's because this is the schema a
 // Flowfile compiles to and a plugin compiles against, and neither should
-// acquire a dependency on the execution substrate's API to read a workflow —
+// acquire a dependency on the execution substrate's API to read a workflow,
 // the same reasoning that keeps [RetryPolicy] a Flowstate message.
 type ScheduleTrigger_Overlap int32
 
@@ -330,8 +330,8 @@ func (Value_Error_Code) EnumDescriptor() ([]byte, []int) {
 // Level is how much a message matters.
 //
 // Three, and no more without a reason: `debug` is a *deployment* concern rather
-// than an authoring one — a workflow author cannot know what a given operator
-// wants filtered — and `fatal` is a claim about control flow that a task has no
+// than an authoring one (a workflow author cannot know what a given operator
+// wants filtered), and `fatal` is a claim about control flow that a task has no
 // way to honour, since emitting a line does not stop the run.
 type Task_Log_Level int32
 
@@ -469,7 +469,7 @@ type Workflow struct {
 	// Labels are key-value pairs that can be used to organize and categorize workflows.
 	Labels map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Profile names the vocabulary every expression in this workflow was compiled
-	// against — which CEL extension libraries are in scope.
+	// against: which CEL extension libraries are in scope.
 	//
 	// Set by the compiler, not written by an author. There is deliberately no
 	// `profile:` key: an author choosing a vocabulary per file is how a file came to
@@ -477,7 +477,7 @@ type Workflow struct {
 	//
 	// Recorded rather than resolved at execution because a run has to keep meaning
 	// what it meant. A future build that adds a library must not change how an
-	// expression already stored in `RunState` evaluates — invariant 10 — and
+	// expression already stored in `RunState` evaluates (invariant 10), and
 	// "whatever this worker has" is a set that changes underfoot. A profile name has
 	// frozen membership, so a worker resolves the name rather than asking what it
 	// ships with, and refuses a name it does not know.
@@ -488,7 +488,7 @@ type Workflow struct {
 	// *run*, and travels.
 	//
 	// Empty means a spec compiled before this field existed, which resolves to the
-	// first profile — a compatibility arm rather than a guess, since nothing has been
+	// first profile: a compatibility arm rather than a guess, since nothing has been
 	// released and such a spec can only have come from a build whose one vocabulary
 	// was that profile's.
 	Profile string `protobuf:"bytes,6,opt,name=profile,proto3" json:"profile,omitempty"`
@@ -497,7 +497,7 @@ type Workflow struct {
 	//
 	// They exist because the alternative is repetition: a value derived once and used
 	// in six places is written six times today, and the six copies drift. A `cel` step
-	// can compute one, but then it is a step — it occupies the step budget, appears in
+	// can compute one, but then it is a step: it occupies the step budget, appears in
 	// the run's outputs, and has to be ordered before everything that reads it.
 	//
 	// # Rooted, not bare
@@ -505,7 +505,7 @@ type Workflow struct {
 	// `vars.<name>` rather than `<name>`, which is the same decision `steps.<id>` made
 	// and for the same reason: rooting makes a collision between a var and a step id
 	// *unrepresentable* rather than something a validation rule has to forbid. What
-	// stays bare is only what is bound where the expression is written — a `for_each`
+	// stays bare is only what is bound where the expression is written: a `for_each`
 	// iterator, `now` inside `wait_until:`, the names a task resolves against its own
 	// scope. Those are bare bindings; see [Scope.vars].
 	//
@@ -513,7 +513,7 @@ type Workflow struct {
 	//
 	// `vars:` is also accepted on a step, where it means something deliberately
 	// different: a step's vars are *bare* within that step (`${modified}`), because
-	// they are author-chosen and lexically local — the same standing as a loop
+	// they are author-chosen and lexically local, the same standing as a loop
 	// binding. Only the workflow-level ones are ambient, so only these are rooted.
 	// See [Scope.vars] for where a step's land.
 	//
@@ -543,11 +543,11 @@ type Workflow struct {
 	// Field 4 was `map<string, Value> inputs` and is reserved above, which is most
 	// of the argument already: a bare map is a shape held open, and every consumer
 	// of it has to invent the same missing half for itself. The consumers that want
-	// this want *different* halves — the language server type-checks an expression
+	// this want *different* halves: the language server type-checks an expression
 	// against the environment a run will actually have, `flow run --input k=v` has
 	// to turn a command line's strings into typed values, a schedule binds its
-	// arguments once and statically, and a Nexus operation has a signature — and
-	// not one of them can be built over a map whose values are whatever arrived.
+	// arguments once and statically, and a Nexus operation has a signature. Not
+	// one of them can be built over a map whose values are whatever arrived.
 	// Declaring the shape once, here, is what lets all four read the same answer
 	// instead of drifting apart holding four guesses.
 	//
@@ -561,7 +561,7 @@ type Workflow struct {
 	// The name is honest anyway, because these are not the values. What a caller
 	// passes is [RunRequest.inputs]; what the specification carries is the
 	// declaration of what may be passed. A run carries both, they are different
-	// things, and they are wanted at different moments — the declaration when the
+	// things, and they are wanted at different moments: the declaration when the
 	// file is written and type-checked, the values when a run is submitted.
 	//
 	// # Size (invariant 9)
@@ -577,7 +577,7 @@ type Workflow struct {
 	//
 	// Nothing carries a value out of a run today. `vars:` names a value inside the
 	// file, and the retirement edition took away `cel:`, which was the one step
-	// whose purpose was to shape a final answer — so a run's result is now the
+	// whose purpose was to shape a final answer, so a run's result is now the
 	// union of whatever its steps happened to produce. That is a transcript, not a
 	// result: whoever reads the run has to already know which step's which output
 	// was the point, which is exactly the knowledge a caller on the other side of
@@ -588,13 +588,13 @@ type Workflow struct {
 	// These are declarations and travel with the specification; what a particular
 	// run computed is [RunOutputs] and belongs to that run. Widening one message to
 	// carry both would make every reader check which half it was holding, and would
-	// put an expression and its result in the same field — the shape that makes it
+	// put an expression and its result in the same field, the shape that makes it
 	// possible to confuse "what this workflow promises" with "what this run
 	// returned". Two messages also keep the addition additive on both sides: a
 	// field added to either is free, where widening either would be breaking.
 	//
-	// The expression is evaluated by the run, at the end, in the run's own scope —
-	// it is not a value a caller supplies, which is the mirror image of the rule on
+	// The expression is evaluated by the run, at the end, in the run's own scope.
+	// It is not a value a caller supplies, which is the mirror image of the rule on
 	// [RunRequest.inputs] and worth reading beside it. Which names that scope holds
 	// (`steps`, `vars`, `inputs`) is the compiler's business, not the schema's.
 	DeclaredOutputs []*OutputDeclaration `protobuf:"bytes,9,rep,name=declared_outputs,json=declaredOutputs,proto3" json:"declared_outputs,omitempty"`
@@ -615,7 +615,7 @@ type Workflow struct {
 	// So the file declares and the operator creates, and the two are different
 	// acts. Nothing here starts anything: `Run` ignores this field entirely, and
 	// `flow run` does not create a schedule, because a file that begins running on
-	// its own the moment it merges is a surprise — and a surprise with a cost, since
+	// its own the moment it merges is a surprise, and a surprise with a cost, since
 	// the first firing is indistinguishable from somebody having deliberately
 	// started it. Creating one is `CreateSchedule`, where a human is present to be
 	// refused.
@@ -626,7 +626,7 @@ type Workflow struct {
 	// the specification free of anything that does not execute. It was rejected for
 	// costing more than it saves: the Flowfile compiles to this message and nothing
 	// else, so a `triggers:` block with no field would either be dropped on the
-	// floor — the shape `flow fix`'s history says never to build — or would need a
+	// floor (the shape `flow fix`'s history says never to build) or would need a
 	// second compilation output that only one command reads, and `flow compile`
 	// would then answer with less than the file says.
 	//
@@ -634,7 +634,7 @@ type Workflow struct {
 	// bytes per run and is weighed by the same `CheckSpecSize` as everything else
 	// (invariant 9). That is the price of one compiled artifact, and it is small.
 	Triggers *Triggers `protobuf:"bytes,10,opt,name=triggers,proto3" json:"triggers,omitempty"`
-	// Signals declares, per signal name, who may deliver it — see
+	// Signals declares, per signal name, who may deliver it. See
 	// [SignalPolicy]. Absent for a name means today's behavior: any
 	// authenticated caller who can address the run in its tenant may deliver
 	// that signal, exactly as before this field existed. Authorization is
@@ -645,10 +645,10 @@ type Workflow struct {
 	// # Enforced where the signal is accepted, not where it is read
 	//
 	// A workflow can already gate its own logic on `steps.<wait>.sender`, and
-	// that is real — but it is a check the workflow performs, so it is a check
+	// that is real, but it is a check the workflow performs, so it is a check
 	// the workflow's own author can skip: delete the `if:`, and the gate is
 	// gone. This field is read by `FlowstateServer.Signal`, before Temporal
-	// ever sees the signal, against the caller's authenticated identity — a
+	// ever sees the signal, against the caller's authenticated identity. A
 	// rejected sender never reaches the workflow at all, and gets
 	// `PermissionDenied` synchronously rather than a signal that was silently
 	// dropped or a wait that quietly never resolves. See lifecycle.go's
@@ -660,7 +660,7 @@ type Workflow struct {
 	// that a run means the same thing on its last segment as its first; this
 	// field is no exception; it is extracted into the run's tenancy memo
 	// alongside the namespace at submit and never re-read from the
-	// specification afterward, which is also what makes it cheap to enforce —
+	// specification afterward, which is also what makes it cheap to enforce:
 	// the same `DescribeWorkflowExecution` that already establishes tenancy
 	// for every verb in lifecycle.go answers this too, at no extra Temporal
 	// round trip.
@@ -668,14 +668,14 @@ type Workflow struct {
 	// # Per name, not per wait
 	//
 	// A signal may legitimately arrive before the wait that will consume it is
-	// reached — that is what `PendingSignal` carry exists for — so the server
+	// reached (that is what `PendingSignal` carry exists for), so the server
 	// knows the signal's *name* when it must decide, never which wait (if any)
 	// is currently parked on it. The policy is keyed by name for exactly that
 	// reason: it is the only unit the accepting boundary can actually ask
 	// about. A `wait_for_signal:`-local spelling would only be a projection of
 	// this map back onto one call site, and two waits on the same name with
 	// different local policies would be an ambiguity the compiler would have
-	// to refuse — better not to have the ambiguity at all.
+	// to refuse. Better not to have the ambiguity at all.
 	//
 	// # Bounded (invariant: bound anything that consumes untrusted input)
 	//
@@ -683,7 +683,7 @@ type Workflow struct {
 	// untrusted input like the rest of the spec: at most 64 signal names, each
 	// with at most 32 alternative rules ([SignalPolicy.allow]), each rule with
 	// at most 16 claim entries. `CheckSpecSize`/`CheckRunStateSize` also weigh
-	// the whole message via `proto.Size`, so this is bounded twice over — by
+	// the whole message via `proto.Size`, so this is bounded twice over: by
 	// shape here, and by total bytes there.
 	Signals map[string]*SignalPolicy `protobuf:"bytes,11,rep,name=signals,proto3" json:"signals,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// PluginRequirements are the minimum compatible plugin versions written in
@@ -948,7 +948,7 @@ func (x *ResolvedPlugin) GetDistributionDigest() string {
 
 // SignalPolicy constrains who may deliver one named signal to a run.
 //
-// A sender is authorized if it satisfies *any* rule in [allow] — the rules
+// A sender is authorized if it satisfies *any* rule in [allow]: the rules
 // are alternatives, not requirements every one of them must meet. See
 // [SignalPolicyRule] for what one rule may require.
 type SignalPolicy struct {
@@ -960,7 +960,7 @@ type SignalPolicy struct {
 	Allow []*SignalPolicyRule `protobuf:"bytes,1,rep,name=allow,proto3" json:"allow,omitempty"`
 	// DistinctFromStarter requires, in addition to whichever rule in [allow]
 	// an otherwise-authorized sender satisfies, that the sender not be this
-	// run's own starter — the same issuer and the same subject as the
+	// run's own starter: the same issuer and the same subject as the
 	// identity that submitted the run, compared the way [SignalPolicyRule.subject]
 	// already is (see `QualifiedSubject`). Set at the policy level, not on a
 	// rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:
@@ -969,8 +969,8 @@ type SignalPolicy struct {
 	// satisfy around it.
 	//
 	// Enforced against the `flowstate.starter` value recorded on the run's
-	// memo at submit. A run whose memo predates that key — started before
-	// this field existed — has nothing to compare against, and is refused
+	// memo at submit. A run whose memo predates that key (started before
+	// this field existed) has nothing to compare against, and is refused
 	// whenever this flag demands the comparison: a run that cannot prove
 	// separation does not get it, the same fail-closed rule
 	// [SignalPolicyAllows]'s own doc comment states for every other case once
@@ -1025,13 +1025,13 @@ func (x *SignalPolicy) GetDistinctFromStarter() bool {
 }
 
 // SignalPolicyRule is one admissible sender, checked against the
-// [SignalSender] the server itself attested — never against anything the
+// [SignalSender] the server itself attested, never against anything the
 // signal's payload claims.
 //
 // Every field set on a rule must match (an AND); a rule with nothing set
 // matches every sender, which defeats the point of writing one, so the
 // compiler refuses it. Combine subject *and* claims in one rule to express
-// "this identity, and it must also carry this claim" — that is one list
+// "this identity, and it must also carry this claim". That is one list
 // entry, not two policies an author has to keep in sync by hand.
 type SignalPolicyRule struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1045,7 +1045,7 @@ type SignalPolicyRule struct {
 	// identical reason), so two identity providers can each mint a "runner"
 	// subject that must not be treated as the same caller. A rule keyed on
 	// subject alone would authorize the wrong runner's signal under the right
-	// name — the exact multi-IdP ambiguity #215 found in `run.identity`
+	// name, the exact multi-IdP ambiguity #215 found in `run.identity`
 	// comparisons, reproduced here if this field accepted a bare subject. Only
 	// the qualified spelling is accepted; there is no subject-only form to be
 	// ambiguous about.
@@ -1053,8 +1053,8 @@ type SignalPolicyRule struct {
 	// Namespace restricts to one tenant, matched exactly against the attested
 	// sender's `namespace`.
 	//
-	// Rarely useful alone — every signal is already confined to its run's own
-	// tenant by `authorizeRun`, before this policy is even consulted — but
+	// Rarely useful alone (every signal is already confined to its run's own
+	// tenant by `authorizeRun`, before this policy is even consulted), but
 	// combines with `claims` to express "anyone in this tenant carrying this
 	// claim" without naming individual subjects.
 	Namespace string `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`
@@ -1063,8 +1063,8 @@ type SignalPolicyRule struct {
 	// Empty places no claim requirement, so a rule naming only `subject` is
 	// ordinary and common.
 	Claims map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// SubjectFrom carries `subject:` written as an expression — `subject:
-	// ${...}` in a Flowfile — rather than a literal. It resolves exactly
+	// SubjectFrom carries `subject:` written as an expression (`subject:
+	// ${...}` in a Flowfile) rather than a literal. It resolves exactly
 	// once, at submit, against the run's bound inputs (after
 	// `BindRunInputs`, before anything else runs), and the result is written
 	// into [subject] and this field is cleared before the policy is frozen
@@ -1075,14 +1075,14 @@ type SignalPolicyRule struct {
 	// literal or is empty, and [subject_from] is always unset on whatever
 	// `SignalPolicyAllows` is asked to check. A decoded policy that still
 	// carries a populated `subject_from` is refused by
-	// `CheckSignalPolicyShape` — an unresolved expression must never survive
+	// `CheckSignalPolicyShape`: an unresolved expression must never survive
 	// to the path that authorizes a signal, because that path runs on every
 	// delivery and evaluating a caller-influenced expression there is
 	// exactly what `BindRunInputs`'s own input-value rule already refuses
 	// for an ordinary input.
 	//
 	// The narrowing rule: a rule that sets this field must also set
-	// [namespace] or [claims] — see the Flowfile compiler's narrowing check.
+	// [namespace] or [claims]. See the Flowfile compiler's narrowing check.
 	// An interpolated subject alone would let a caller pick their own
 	// authorization by choosing what input value to submit; requiring a
 	// co-resident literal constraint means an input can only narrow a static
@@ -1160,7 +1160,7 @@ func (x *SignalPolicyRule) GetSubjectFrom() *Value {
 // name is a CEL identifier of bounded length, the type is a defined value other
 // than unspecified, the description fits. Everything that is a fact about a *set*
 // of declarations, or about a name CEL's lexer will not accept, is the
-// compiler's — protovalidate rules are per-field and RE2 has no negative
+// compiler's: protovalidate rules are per-field and RE2 has no negative
 // lookahead, so a rule spelled here that cannot hold is worse than no rule, per
 // this file's own history with nineteen of them.
 //
@@ -1170,7 +1170,7 @@ func (x *SignalPolicyRule) GetSubjectFrom() *Value {
 //   - Two declarations may not share a name. A repeated field cannot say so.
 //   - The names `true`, `false`, `null` and `in` are refused. They are CEL lexer
 //     tokens, so `inputs.in` is a syntax error in the grammar itself rather than
-//     an unknown field — the same four that are refused as step ids, and for the
+//     an unknown field, the same four that are refused as step ids, and for the
 //     same reason. The other seventeen CEL reserved words are fine here (see
 //     `name` below).
 //   - A `default` must be a literal, not an expression and not a secret
@@ -1179,7 +1179,7 @@ func (x *SignalPolicyRule) GetSubjectFrom() *Value {
 //   - A required input with a default is a contradiction, and one of the two is
 //     a mistake worth naming rather than resolving by precedence.
 //   - Whether a submitted value matches the declared type, which is the check
-//     at submit — see [RunRequest.inputs].
+//     at submit. See [RunRequest.inputs].
 type InputDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what the input is called, and how an expression reaches it:
@@ -1193,7 +1193,7 @@ type InputDeclaration struct {
 	// Rooting under `inputs` is what keeps the rest of the question small, the same
 	// way `steps.<id>` did (invariant 2). A name here is a field selection rather
 	// than an identifier, so seventeen of CEL's twenty-one reserved words are legal
-	// — `namespace`, `loop`, `if` and the rest — and only the four lexer tokens are
+	// (`namespace`, `loop`, `if` and the rest) and only the four lexer tokens are
 	// not. Nothing needs refusing against `steps`, `vars` or `now` either: an input
 	// called `steps` is `inputs.steps`, which cannot collide with anything, which is
 	// the entire reason ambient namespaces get a root.
@@ -1208,8 +1208,8 @@ type InputDeclaration struct {
 	// The default is false, which means optional, which is the safe direction for a
 	// field being added to a schema: a declaration written before anyone thought
 	// about optionality does not silently start refusing runs. Fail-closed lives at
-	// the other end of this surface — an *undeclared* input is refused, and a value
-	// of the wrong type is refused — where the thing being denied is something a
+	// the other end of this surface: an *undeclared* input is refused, and a value
+	// of the wrong type is refused, where the thing being denied is something a
 	// caller sent rather than something an author forgot.
 	Required bool `protobuf:"varint,3,opt,name=required,proto3" json:"required,omitempty"`
 	// Default is the value used when the caller passes nothing.
@@ -1221,7 +1221,7 @@ type InputDeclaration struct {
 	// which would make a default a different kind of thing from the value it stands
 	// in for. The compiler enforces that, per the list on the message above.
 	Default *Value `protobuf:"bytes,4,opt,name=default,proto3" json:"default,omitempty"`
-	// Description is prose for whoever is supplying the value — a person reading
+	// Description is prose for whoever is supplying the value: a person reading
 	// `flow run --help`, an agent choosing arguments, an editor's hover. It is the
 	// only part of a declaration written *for the caller* rather than for the
 	// machine, which is why it is worth carrying rather than leaving in a comment
@@ -1230,7 +1230,7 @@ type InputDeclaration struct {
 	// Example is an illustrative value for this input, never applied at runtime.
 	//
 	// `default` and `example` used to be one field, because `default` was the only
-	// way to make a workflow runnable unattended — so a required-feeling input like
+	// way to make a workflow runnable unattended, so a required-feeling input like
 	// "who is asking" ended up with a specific person as its default, which is
 	// incoherent: there is no sensible absent value for who is asking, only a
 	// plausible one to paste. The two are different things. A default is applied
@@ -1238,14 +1238,14 @@ type InputDeclaration struct {
 	// has a meaning (`region: us-east-1`). An example is what a caller unsure what
 	// to send would copy, is legal on a required input precisely because a required
 	// input cannot have a default, and is checked against this declaration's own
-	// type and constraints when the specification compiles — a stale example that
+	// type and constraints when the specification compiles: a stale example that
 	// no longer satisfies its own `must:` is a diagnostic, not a value nobody
 	// notices went wrong. It is never bound to a run; it exists for an editor's
 	// hover, a generated doc, and a machine caller's schema.
 	Example *Value `protobuf:"bytes,6,opt,name=example,proto3" json:"example,omitempty"`
 	// Sensitive marks a value as private but not secret: a salary in an approval, a
-	// customer's email — something a run legitimately computes on and that
-	// legitimately rides in history, but that should not be casually pasted into a
+	// customer's email. These are values a run legitimately computes on and that
+	// legitimately ride in history, but that should not be casually pasted into a
 	// terminal, a log, or an agent's answer.
 	//
 	// This is display etiquette and nothing more. It is not containment: the value
@@ -1253,15 +1253,15 @@ type InputDeclaration struct {
 	// anyone with access to that history reads it in the clear, the same way they
 	// read any other input. A secret reference is different: it keeps the value
 	// *out* of history entirely, resolving it only inside the activity that needs
-	// it — that is containment, and this is not it. Marking sensitive a value that
+	// it. That is containment, and this is not it. Marking sensitive a value that
 	// must never reach an operator's screen at all is a mistake; that value is a
 	// secret reference, not this.
 	//
 	// # What this does on an *input*, precisely
 	//
 	// Declared *outputs* are redacted everywhere Flowstate renders them; an input
-	// is rendered on exactly one surface — a schedule's bound arguments, through
-	// `flow schedule describe` and `flow schedule list` — and there a
+	// is rendered on exactly one surface (a schedule's bound arguments, through
+	// `flow schedule describe` and `flow schedule list`), and there a
 	// sensitive-declared value is redacted the same way, server-side, before it
 	// crosses the wire. The redaction lives on the server rather than the client
 	// because the server is the only party that holds both the schedule and the
@@ -1271,7 +1271,7 @@ type InputDeclaration struct {
 	// What is not yet built is a reveal path: `flow get` has `--reveal-sensitive`,
 	// and the schedule RPCs have no field to carry that request. An operator who
 	// needs the value must read it from wherever it was configured, not from a
-	// describe. That is a display-surface gap, not a containment one — this flag
+	// describe. That is a display-surface gap, not a containment one: this flag
 	// was never containment (see above).
 	Sensitive bool `protobuf:"varint,7,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
 	// MinLen and MaxLen bound a `type: string` value's length, counted in runes.
@@ -1285,14 +1285,14 @@ type InputDeclaration struct {
 	MinItems *uint64 `protobuf:"varint,13,opt,name=min_items,json=minItems,proto3,oneof" json:"min_items,omitempty"`
 	MaxItems *uint64 `protobuf:"varint,14,opt,name=max_items,json=maxItems,proto3,oneof" json:"max_items,omitempty"`
 	// Must is a CEL predicate over `this`, the value being checked, for a rule the
-	// declarative keys above cannot state — the escape hatch `buf.validate` itself
+	// declarative keys above cannot state: the escape hatch `buf.validate` itself
 	// keeps behind its own standard-rule vocabulary, and for the identical reason:
 	// making an author spell `size(this) > 0 && size(this) <= 100` for every
 	// bounded list is the ergonomic failure the keys above exist to prevent, so
 	// this exists only for what they genuinely cannot say.
 	//
-	// Compiled and type-checked when the specification loads — not when a run
-	// submits one — so a bad expression is a defect in the specification itself,
+	// Compiled and type-checked when the specification loads (not when a run
+	// submits one), so a bad expression is a defect in the specification itself,
 	// caught the same way a mistyped default is. Evaluated under this schema's
 	// standard CEL cost bound at every point a value is checked against it, because
 	// a specification (and the `must:` inside it) can arrive over the RPC and is
@@ -1423,7 +1423,7 @@ func (x *InputDeclaration) GetMust() string {
 // expression that produces it.
 //
 // The expression is evaluated by the run, in the run's own scope, after its steps
-// have finished — so this is the one place in the schema where an author's
+// have finished, so this is the one place in the schema where an author's
 // expression is deliberately what is stored, as against [RunRequest.inputs] where
 // an expression is deliberately what is refused. The two rules point the same
 // way: an expression may come from the file, which is reviewed and compiled, and
@@ -1436,7 +1436,7 @@ type OutputDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what the value is called in the run's result.
 	//
-	// Same pattern as an input's, and for a weaker reason — nothing selects an
+	// Same pattern as an input's, and for a weaker reason: nothing selects an
 	// output through CEL today. It is held to the same shape anyway so that the two
 	// halves of one contract cannot disagree about what a name is, and so that a
 	// later `${outputs.<name>}` or a cross-file signature check is not a break.
@@ -1446,7 +1446,7 @@ type OutputDeclaration struct {
 	// Description is prose for whoever reads the result.
 	Description *string `protobuf:"bytes,3,opt,name=description,proto3,oneof" json:"description,omitempty"`
 	// Must is a CEL predicate over `this`, the value this output's own expression
-	// produced, checked once that expression has been evaluated — so a workflow
+	// produced, checked once that expression has been evaluated, so a workflow
 	// cannot report a value that violates its own contract, which is what makes
 	// consuming a library workflow's result safe. Same rules as
 	// [InputDeclaration.must]: compiled and type-checked when the specification
@@ -1454,7 +1454,7 @@ type OutputDeclaration struct {
 	// references `now` or calls anything else nondeterministic.
 	Must *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
 	// Sensitive marks this output's value the way [InputDeclaration.sensitive]
-	// marks an input's — display etiquette, never containment. See that field's
+	// marks an input's: display etiquette, never containment. See that field's
 	// doc comment for the honesty this comes with; nothing about the two differs
 	// beyond which side of a run they describe.
 	Sensitive     bool `protobuf:"varint,5,opt,name=sensitive,proto3" json:"sensitive,omitempty"`
@@ -1593,7 +1593,7 @@ func (x *RunOutputs) GetValues() map[string]*Value {
 // are not alternatives: a workload that runs nightly *and* on a webhook is an
 // ordinary thing to want, and a oneof would make expressing it a schema change
 // rather than a second key. Adding a kind is then a new field here, which is
-// additive on the wire and additive in the grammar — `triggers:` gains a key and
+// additive on the wire and additive in the grammar: `triggers:` gains a key and
 // every existing file still means what it meant.
 //
 // Its own message rather than fields on [Workflow] for the same reason the DSL
@@ -1657,7 +1657,7 @@ func (x *Triggers) GetSchedule() *ScheduleTrigger {
 // policy about what to do when a firing overlaps the last one. Every field here
 // is passed to that spec unchanged; nothing in Flowstate computes a next firing
 // time, and nothing here is a second implementation of a cron parser at run time.
-// What this message is for is giving those parameters a *declarable* spelling —
+// What this message is for is giving those parameters a *declarable* spelling:
 // the surface, not the mechanism.
 //
 // # What is here, and what is deliberately not yet
@@ -1670,8 +1670,8 @@ func (x *Triggers) GetSchedule() *ScheduleTrigger {
 // # Where the arguments are not
 //
 // There is deliberately no `inputs:` under a schedule. What a scheduled run is
-// started with is bound at creation, from the command that creates it — see
-// [CreateScheduleRequest.inputs] — because arguments are a deployment's answer
+// started with is bound at creation, from the command that creates it (see
+// [CreateScheduleRequest.inputs]), because arguments are a deployment's answer
 // (which cluster, which account, which region) while the cadence is the
 // workload's. Putting them here would also make the same values expressible in
 // two places, since an input declaration already carries a default, and a
@@ -1682,7 +1682,7 @@ type ScheduleTrigger struct {
 	// Cron holds cron expressions, each naming a set of firing times.
 	//
 	// Repeated because a cadence like "every weekday at 09:00, and at noon on
-	// Sunday" is two expressions and cannot be one — the union is what Temporal
+	// Sunday" is two expressions and cannot be one: the union is what Temporal
 	// takes. The DSL accepts a single string as well as a list, so the common case
 	// reads as one line.
 	//
@@ -1693,7 +1693,7 @@ type ScheduleTrigger struct {
 	// decides.
 	Cron []string `protobuf:"bytes,1,rep,name=cron,proto3" json:"cron,omitempty"`
 	// Every fires on a fixed interval, measured from the epoch rather than from the
-	// last firing — so `every: 1h` is every hour on the hour, not an hour after
+	// last firing, so `every: 1h` is every hour on the hour, not an hour after
 	// whenever the previous run happened to end.
 	//
 	// Beside `cron:` rather than instead of it because the two answer different
@@ -1942,7 +1942,7 @@ type Node struct {
 	//
 	// It is evaluated before the step is scheduled and must produce a boolean. A
 	// step whose condition is false is skipped and produces no outputs, so a later
-	// step referencing it will not resolve — which is the honest outcome, since
+	// step referencing it will not resolve, which is the honest outcome, since
 	// the value genuinely does not exist.
 	//
 	// Unset means the step always runs.
@@ -1965,7 +1965,7 @@ type Node struct {
 	// Bare rather than rooted, which is the opposite of [Workflow.vars] and deliberate.
 	// The rule is not about which block a name came from but about where it is bound:
 	// an author-chosen name bound lexically, close enough to read the binding and the
-	// use together, stays bare — the same standing a `for_each` binding has. A name
+	// use together, stays bare, the same standing a `for_each` binding has. A name
 	// that is simply in the air everywhere gets a root, because that is the only thing
 	// that keeps it from colliding with what an author chose.
 	//
@@ -1975,7 +1975,7 @@ type Node struct {
 	//
 	// # Collisions are refused, not resolved
 	//
-	// Every name here is bare and so can collide with another bare name — an enclosing
+	// Every name here is bare and so can collide with another bare name: an enclosing
 	// loop's binding, a step var further out, `now`. That is refused at validation, at
 	// the inner declaration, rather than resolved by a precedence rule. Silent
 	// shadowing is how `${body}` comes to mean two things eleven lines apart, and a
@@ -1986,7 +1986,7 @@ type Node struct {
 	// is why [Scope.vars] holds these and a loop's binding in one map.
 	Vars map[string]*Value `protobuf:"bytes,9,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Undo is how this step is taken back when a *later* step fails and the run
-	// cannot continue — the saga compensation for whatever this step did.
+	// cannot continue: the saga compensation for whatever this step did.
 	//
 	// It hangs off the step rather than being a handler list at the workflow level
 	// because the undo and the do are one decision. The thing to be deleted is named
@@ -2186,7 +2186,7 @@ func (*Node_Loop) isNode_Kind() {}
 //
 //   - A compensation cannot itself be compensated. There is nowhere to write a
 //     nested `undo`, so an infinite compensation loop is not something a
-//     specification can express — better than a bound on one.
+//     specification can express. Better than a bound on one.
 //   - A compensation cannot loop, branch, or wait. Those are the node kinds, and
 //     each of them is a position a run could suspend at; compensation runs in the
 //     segment that failed and does not suspend (see [RunState.pending_undo]), so a
@@ -2197,7 +2197,7 @@ func (*Node_Loop) isNode_Kind() {}
 // # No policy field, deliberately
 //
 // A compensation is retried and bounded exactly as a step with no `retry:` and no
-// `timeout:` is — the engine's defaults, from the same constants both drivers read
+// `timeout:` is: the engine's defaults, from the same constants both drivers read
 // (`retrydefaults.go`). A `policy` field here would be a bound nothing reaches
 // until an author writes one, and CLAUDE.md's rule about those is that they are
 // bounds nothing tests. Adding the field later is additive; guessing its semantics
@@ -2207,7 +2207,7 @@ type Compensation struct {
 	// Task is the work that undoes the step.
 	//
 	// Its inputs are resolved at the moment the step *succeeds*, not at the moment
-	// compensation runs — see [PendingUndo.task] for why that is the whole design.
+	// compensation runs. See [PendingUndo.task] for why that is the whole design.
 	Task          *Task `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2274,14 +2274,14 @@ func (x *Compensation) GetTask() *Task {
 //     whatever the scope held after some other step overwrote things.
 //
 // The cost is stated rather than hidden: what a compensation would have computed
-// from the *failure* — which step failed, what it said — is not available to it,
+// from the *failure* (which step failed, what it said) is not available to it,
 // because at registration time the failure has not happened. That is a deliberate
 // narrowing and DSL.md argues it as one.
 //
 // # Size (ARCHITECTURE.md invariant 9)
 //
 // These ride in [RunState], so `CheckRunStateSize` weighs them at every
-// Continue-As-New along with everything else — it calls `proto.Size` on the whole
+// Continue-As-New along with everything else: it calls `proto.Size` on the whole
 // message rather than summing the fields it knows about, so this field was bounded
 // on the day it was added and nobody has to remember to count it. A run with an
 // undo on every step carries one resolved task per succeeded step, and
@@ -2289,7 +2289,7 @@ func (x *Compensation) GetTask() *Task {
 type PendingUndo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// StepId is the step this undoes, for the sentence a failed run reports and for
-	// nothing else — nothing dispatches on it.
+	// nothing else: nothing dispatches on it.
 	StepId string `protobuf:"bytes,1,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
 	// Task is the compensation with its inputs already resolved.
 	Task          *Task `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
@@ -2368,7 +2368,7 @@ type SecretRef struct {
 	// suffix, a path under a mounted directory, a vault path. Its meaning belongs
 	// to the provider, including how it expresses versions.
 	//
-	// The pattern here cannot express everything that matters — control characters
+	// The pattern here cannot express everything that matters: control characters
 	// are also rejected, in code, because a reference reaching a log or history
 	// must not be able to forge lines in it.
 	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
@@ -2425,7 +2425,7 @@ func (x *SecretRef) GetName() string {
 //
 // This is the primitive a CI system fundamentally cannot copy. A run that waits
 // a week for a human approval and survives every worker restart in between is
-// not a long-running process — the process may not exist for most of that week.
+// not a long-running process: the process may not exist for most of that week.
 // The wait is durable state on the execution substrate, so a worker that is
 // redeployed, crashes, or moves machines resumes exactly where it was.
 //
@@ -2462,7 +2462,7 @@ type Wait struct {
 	//
 	// Beside `timeout` for the reason `duration_expr` is beside `duration`, and
 	// read through one function for the same reason: [EvalWaitTimeout]. Setting
-	// both is refused by [ValidateWait] — two answers to one question is not
+	// both is refused by [ValidateWait]: two answers to one question is not
 	// something a spec gets to say.
 	//
 	// A wait whose computed timeout is negative fails the run rather than falling
@@ -2580,8 +2580,8 @@ type Wait_Until struct {
 	//
 	// The expression is evaluated once, against the outputs of steps that have
 	// already run, and must produce a time; a boolean is refused rather than
-	// polled. Inside it `now` names the moment the wait is evaluated — taken from
-	// the driver's clock, so it replays to the same instant — and the duration
+	// polled. Inside it `now` names the moment the wait is evaluated (taken from
+	// the driver's clock, so it replays to the same instant), and the duration
 	// units make a relative deadline readable: `${now + days(3)}`.
 	//
 	// It is a moment and not a condition because a condition here could only ever
@@ -2607,7 +2607,7 @@ type Wait_DurationExpr struct {
 	//
 	// A separate field from `duration` rather than a widening of it, because
 	// `duration` is a published field carried in every running spec and in every
-	// `RunState` crossing a Continue-As-New — changing its type would break the
+	// `RunState` crossing a Continue-As-New: changing its type would break the
 	// wire contract invariant 10 exists to protect. So a literal `sleep: 30s`
 	// still compiles to `duration` and is byte-identical through a round trip,
 	// and only a `${...}` reaches here.
@@ -2616,8 +2616,8 @@ type Wait_DurationExpr struct {
 	// reads them apart: [EvalWaitDuration] is the single reader, both drivers
 	// call it, and neither knows which field answered.
 	//
-	// The expression must produce a CEL duration — `duration('720h')`,
-	// `days(30)`, `hours(2) + minutes(30)` — or a string spelled the way the
+	// The expression must produce a CEL duration (`duration('720h')`,
+	// `days(30)`, `hours(2) + minutes(30)`) or a string spelled the way the
 	// literal does (`30s`, `5m`, `7d`), which is what lets a plain string input
 	// carry one. An int is refused rather than guessed at, because nothing says
 	// whether it counts seconds or nanoseconds.
@@ -2653,7 +2653,7 @@ type Signal struct {
 	//
 	// Each value is evaluated once, at the moment the wait resolves, against the
 	// wait's own result: `payload`, `sender` and `timed_out` are bound bare, and
-	// so is `now` — every expression a wait holds sees the driver's clock (see
+	// so is `now`: every expression a wait holds sees the driver's clock (see
 	// [NowIdentifier]). The enclosing scope is underneath, so `steps.*`,
 	// `inputs.*` and `vars.*` read here exactly as they do in an `if:`.
 	//
@@ -2666,7 +2666,7 @@ type Signal struct {
 	//
 	// # Replace, not extend
 	//
-	// The shaped names become the step's outputs, and the defaults are gone —
+	// The shaped names become the step's outputs, and the defaults are gone:
 	// one key with one meaning, matching `Task.HTTP.Inputs.outputs` exactly. An
 	// author who still needs `payload` or `timed_out` re-exposes it in a line,
 	// and reading one that was dropped is an ordinary "step has no output"
@@ -2683,20 +2683,20 @@ type Signal struct {
 	//
 	// # Why it is on Signal rather than on Wait
 	//
-	// Two of the three names these expressions see — `payload` and `sender` — do
+	// Two of the three names these expressions see (`payload` and `sender`) do
 	// not exist on the other arms, and the third, `timed_out`, is a constant
 	// `false` for a `sleep:` and a `wait_until:`. Shaping a constant is what
 	// `vars:` is for. Putting the field here rather than on [Wait] makes the
 	// refusal structural instead of reported: `timeout` sits on [Wait] and is
 	// meaningless on two of its arms, which is exactly why [ValidateWait] has to
-	// exist. The placement also matches the precedent it copies — http's
+	// exist. The placement also matches the precedent it copies: http's
 	// `outputs:` sits on that task's own inputs, not on a generic step wrapper.
 	//
 	// Carriage across Continue-As-New is unaffected either way, which is what
 	// frees the decision to be made on meaning: the whole node travels inside the
 	// spec, and a shaped value is recorded in `Workflow_StepOutputs` like any
 	// other step output. What compaction *does* need is that the references these
-	// expressions make are collected — see `CollectNodeRefs`.
+	// expressions make are collected. See `CollectNodeRefs`.
 	Outputs map[string]*Value `protobuf:"bytes,2,rep,name=outputs,proto3" json:"outputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Prompt is what this gate is asking for, in the author's own words, carried
 	// to whoever is being asked.
@@ -2807,24 +2807,24 @@ func (x *Signal) GetPrompt() *Value {
 	return nil
 }
 
-// SignalSender is who the server attests sent a signal — never what the
+// SignalSender is who the server attests sent a signal, never what the
 // sender's own payload claims.
 //
 // Two separate things travel with every signal, and they must never merge into
 // one map: `payload` is what the sender chose to send, unchanged and untrusted;
 // `sender` is what the server itself established about the caller before it
 // ever looked at the payload. A workflow author writes conditions against
-// `sender` — `sender.identity.subject != inputs.requested_by` for separation of
-// duties — and treats `payload` as evidence rather than identity.
+// `sender` (`sender.identity.subject != inputs.requested_by` for separation of
+// duties) and treats `payload` as evidence rather than identity.
 //
 // Identity reuses [WorkloadIdentity] rather than a parallel type: a signal's
-// sender and a run's own caller are the same kind of fact — someone acting,
-// established by authentication rather than self-report — and a run's identity
+// sender and a run's own caller are the same kind of fact (someone acting,
+// established by authentication rather than self-report), and a run's identity
 // is already this message. Two messages for one shape is exactly the drift
 // invariant 1 (proto-first) exists to prevent.
 //
 // Absent entirely on a signal that predates this field (identity unset,
-// accepted_at unset, local false), which reads as unattested — correct,
+// accepted_at unset, local false), which reads as unattested. That is correct,
 // because no signal recorded before this field existed could have carried one.
 // There is no compatibility arm: an old signal simply has nothing here.
 type SignalSender struct {
@@ -2832,25 +2832,25 @@ type SignalSender struct {
 	// Identity is the authenticated caller the server established for this
 	// signal, by the same path a run's own identity is established
 	// (`FlowstateServer.identityFor`, via `authorizeRun`). Never taken from the
-	// request — a caller who could name their own identity could name anyone
+	// request: a caller who could name their own identity could name anyone
 	// else's, which is the exact defect this message exists to close.
 	Identity *WorkloadIdentity `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
 	// AcceptedAt is when the server accepted the signal, from the server's own
-	// clock — never the sender's. A self-reported time is exactly the kind of
+	// clock, never the sender's. A self-reported time is exactly the kind of
 	// claim this field replaces with something attested.
 	AcceptedAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=accepted_at,json=acceptedAt,proto3" json:"accepted_at,omitempty"`
 	// Local marks a signal delivered to a local run (`flow run local --signal`
 	// or `flow test`'s scripted signals), which has no authenticated caller at
-	// all — there is no server in front of it to attest anything. Set only by
+	// all: there is no server in front of it to attest anything. Set only by
 	// [LocalSignalSender]; the durable driver never sets it true.
 	//
 	// A wait's rendered `sender.local` output (see wait.go's signalSenderValue)
 	// is `true` for this case *and* for every other case where nothing was
-	// attested at all — this message absent entirely, which covers a signal
+	// attested at all: this message absent entirely, which covers a signal
 	// that predates this field, a timed-out wait with nothing pending, and the
 	// engine's own compatibility fallback for a signal that arrived in the
 	// pre-#194 wire shape (engine/signal_compat.go). All of those are the same
-	// fact from a workflow author's point of view — nobody attested this — and
+	// fact from a workflow author's point of view (nobody attested this), and
 	// must read the same way, distinct from an attested-but-anonymous caller
 	// (this message present, Local false, Identity.Subject merely empty because
 	// no identity provider is configured). This field's own wire value only
@@ -2919,7 +2919,7 @@ func (x *SignalSender) GetLocal() bool {
 // It exists because Temporal delivers a signal to the run that is current when it
 // arrives, and a run that suspends drops anything still buffered on a channel it
 // has not read. Without carrying them, approving a gate before the run reaches it
-// — which is ordinary behavior, not misuse — would silently lose the approval and
+// (which is ordinary behavior, not misuse) would silently lose the approval and
 // leave the run waiting forever.
 type PendingSignal struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2990,13 +2990,13 @@ func (x *PendingSignal) GetSender() *SignalSender {
 
 // SignalDelivery is what the server hands a waiting workflow over the signal
 // channel: the sender's own payload, paired with the sender the server
-// attested for it. It is not persisted directly — [PendingSignal] is the form
-// that survives Continue-As-New — but the two carry the same pair for the same
+// attested for it. It is not persisted directly ([PendingSignal] is the form
+// that survives Continue-As-New), but the two carry the same pair for the same
 // reason: a signal must not lose its sender any more than it may lose its
 // payload.
 type SignalDelivery struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Payload is what the sender sent, unchanged and untrusted — see
+	// Payload is what the sender sent, unchanged and untrusted. See
 	// [SignalSender] for why it never carries identity.
 	Payload *Node_Outputs `protobuf:"bytes,1,opt,name=payload,proto3" json:"payload,omitempty"`
 	// Sender is what the server established about the caller before forwarding
@@ -3057,8 +3057,8 @@ func (x *SignalDelivery) GetSender() *SignalSender {
 // by enclosing control flow, such as a loop's current item.
 //
 // This is part of the schema rather than an internal Go type because it crosses
-// the wire: a task that evaluates its own expressions — the cel task's `expr`, the
-// http task's `outputs` — does so on a worker, so the scope has to travel with it.
+// the wire: a task that evaluates its own expressions (the cel task's `expr`, the
+// http task's `outputs`) does so on a worker, so the scope has to travel with it.
 // Without that, a loop body could not use its own iterator in those inputs.
 //
 // Variables are Values, the same representation step outputs use, so anything a
@@ -3071,7 +3071,7 @@ type Scope struct {
 	// reaches the worker that evaluates a task's own expressions.
 	//
 	// Without it that worker would evaluate against whatever profile its own build
-	// calls current, which is the same run computing against two vocabularies — the
+	// calls current, which is the same run computing against two vocabularies, the
 	// failure one profile exists to remove, reintroduced at the point where the work
 	// actually happens.
 	Profile string `protobuf:"bytes,3,opt,name=profile,proto3" json:"profile,omitempty"`
@@ -3080,7 +3080,7 @@ type Scope struct {
 	//
 	// The name is a historical one and is kept deliberately. This field has carried
 	// bare bindings since before there was a rooted namespace, and an activity
-	// scheduled before an upgrade holds that shape in history — a retry after the
+	// scheduled before an upgrade holds that shape in history: a retry after the
 	// upgrade replays the same payload. Redefining the field would make a new worker
 	// read an old loop's `item` as an ambient var and leave the bare name unbound, so
 	// the rooted namespace went to [Scope.ambient_vars] instead and this one did not
@@ -3096,7 +3096,7 @@ type Scope struct {
 	//
 	// Only the workflow level declares into here. A step's `vars:` are bare and land in
 	// [Scope.vars] instead, because they are author-chosen and lexically local rather
-	// than ambient — so there is exactly one source for this map and no shadowing to
+	// than ambient, so there is exactly one source for this map and no shadowing to
 	// resolve within it.
 	//
 	// A new field rather than a new meaning for an old one: see [Scope.vars].
@@ -3110,7 +3110,7 @@ type Scope struct {
 	// is: a task declaring `needs_prev_outputs` evaluates its own expressions inside
 	// an activity, on a worker holding this message and nothing else. Without the
 	// field, `${inputs.region}` would resolve in a step's `if:` and be unbound in the
-	// http task's `outputs:` two lines below it — one spelling with two behaviours,
+	// http task's `outputs:` two lines below it: one spelling with two behaviours,
 	// decided by a property of the task an author has no reason to know. That is the
 	// failure `now` is placed to avoid; see [Scope.ambient_vars], which was added and
 	// then omitted from the compacted copy the executor ships, with exactly that
@@ -3125,8 +3125,8 @@ type Scope struct {
 	// `${vars.region}` resolve an argument nobody declared as a var.
 	Inputs map[string]*Value `protobuf:"bytes,5,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Identity is the attested identity of whoever started this run, exposed to
-	// expressions under the `run` root — `run.identity.subject`,
-	// `run.identity.issuer`, `run.identity.namespace`, `run.identity.claims` —
+	// expressions under the `run` root (`run.identity.subject`,
+	// `run.identity.issuer`, `run.identity.namespace`, `run.identity.claims`),
 	// so a rule can compare the caller who requested the run against the
 	// caller who satisfies a gate later. See [RunState.identity], which this is
 	// copied from and never anything else: a workflow author cannot set this,
@@ -3136,19 +3136,19 @@ type Scope struct {
 	// Deliberately narrower than [WorkloadIdentity] itself: `deployment` is
 	// left off, because it answers "which installation ran this" rather than
 	// "who is this caller", and that is exactly the question CLAUDE.md's
-	// diagnostics rule already answers for a different surface — a fact a
+	// diagnostics rule already answers for a different surface: a fact a
 	// deployment decides, not a fact about the file, does not belong in a
 	// workflow's own logic. An outbound authorization policy already sees it as
 	// `workload.deployment` (see [WorkloadIdentity.deployment]); a workflow
 	// gating on it would be asking a question that belongs one layer down.
 	//
-	// Absent for a run that predates this field, and for every local run — both
+	// Absent for a run that predates this field, and for every local run: both
 	// read as an identity with every field empty, and [Scope.local] is what
 	// tells those two cases apart from a run the server genuinely attested with
 	// an anonymous identity.
 	Identity *WorkloadIdentity `protobuf:"bytes,6,opt,name=identity,proto3" json:"identity,omitempty"`
 	// Local marks a scope built by the local driver (`flow run local`, `flow
-	// test`), which has no authenticated caller at all — read under
+	// test`), which has no authenticated caller at all, read under
 	// `run.local`. Mirrors [SignalSender.local] for the identical reason: an
 	// empty `run.identity.subject` must never be silently confused with a real
 	// caller who merely authenticated anonymously (no identity provider
@@ -3157,10 +3157,10 @@ type Scope struct {
 	//
 	// Never true on any scope the durable driver builds, even when
 	// [Scope.identity] is empty because the run was started without
-	// authentication — that is only possible in development, and it is still a
+	// authentication: that is only possible in development, and it is still a
 	// server attesting an anonymous caller rather than no caller at all.
 	Local bool `protobuf:"varint,7,opt,name=local,proto3" json:"local,omitempty"`
-	// Address is the run's own address — what an expression reads as
+	// Address is the run's own address: what an expression reads as
 	// `run.workflow_id` and `run.run_id`.
 	//
 	// Carried on the scope for the reason [Scope.inputs] is: a task declaring
@@ -3266,8 +3266,8 @@ func (x *Scope) GetAddress() *RunAddress {
 // RunAddress is a run's own address: the pair that identifies it to anything
 // outside it, including this engine's own control plane.
 //
-// This exists because a workload that has to be *called back* — hand an external
-// system a token, wait for that system to answer — cannot say where the answer
+// This exists because a workload that has to be *called back* (hand an external
+// system a token, wait for that system to answer) cannot say where the answer
 // should be sent without it. That is Temporal's `expense` sample, and it is also
 // every shape where one run tells a peer how to reach it.
 //
@@ -3275,13 +3275,13 @@ func (x *Scope) GetAddress() *RunAddress {
 //
 // [workflow_id] is the address: it is what `flow signal <workflow-id> <name>`
 // takes, what `flow get` takes, and what the Signal RPC resolves. [run_id]
-// disambiguates which execution of that id — the same workflow id may be
+// disambiguates which execution of that id: the same workflow id may be
 // reused once an earlier run has finished.
 //
 // What is deliberately absent is a start time and an attempt count, and the
 // absence is load-bearing rather than an oversight. A start time is a clock read
 // by another name: `now` is bound *only* inside a wait, and docs/ARCHITECTURE.md
-// argues that placement at length — a name resolvable only where a replay-safe
+// argues that placement at length: a name resolvable only where a replay-safe
 // clock exists in every case. Putting a timestamp on the run root would make a
 // clock readable from every expression in the language, through a field nobody
 // would think of as a clock. An attempt count is the same mistake one layer
@@ -3291,7 +3291,7 @@ func (x *Scope) GetAddress() *RunAddress {
 // to "complete" the message would quietly undo the reasoning behind `now`.
 type RunAddress struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WorkflowID is the id the run is addressed by — the same id `flow signal`
+	// WorkflowID is the id the run is addressed by, the same id `flow signal`
 	// and `flow get` take.
 	//
 	// Stable for the whole run, including across Continue-As-New: Temporal keeps
@@ -3303,7 +3303,7 @@ type RunAddress struct {
 	// current execution's run id, and the difference is the whole point: the
 	// current run id changes at every Continue-As-New, so a workload that
 	// suspended once would report a different address than it did before it
-	// suspended — a value that changes halfway through a run, which is exactly
+	// suspended: a value that changes halfway through a run, which is exactly
 	// what [RunState.vars] exists to prevent for `vars:`. `FirstRunID` is
 	// preserved along the whole chain of continued executions, so it names the
 	// run an author thinks they wrote.
@@ -3447,8 +3447,8 @@ func (x *ForEach) GetMaxParallel() int32 {
 
 // Parallel runs several branches of steps concurrently and waits for all of them.
 //
-// Branches are for work that is independent by construction — checking three
-// services, publishing to two destinations — where doing it sequentially wastes
+// Branches are for work that is independent by construction: checking three
+// services, publishing to two destinations, where doing it sequentially wastes
 // time for no benefit. Steps within a branch still run in order.
 //
 // Branches must not depend on each other's outputs. There is no ordering between
@@ -3504,13 +3504,13 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 // It is the primitive `for_each` is not. `for_each` maps a body over a list it
 // already holds; nothing in it threads a value from iteration N into N+1, and its
 // length is fixed before the first iteration runs. A loop is what expresses "keep
-// going until you are done, and each step decides where the next one starts" — the
-// shape a cursor-paged API has, where you cannot know how many pages there are
+// going until you are done, and each step decides where the next one starts". That
+// is the shape a cursor-paged API has, where you cannot know how many pages there are
 // until a page tells you it was the last one.
 //
 // # Do-while, deliberately
 //
-// The body runs, and *then* [until] is evaluated — so a loop always runs its body
+// The body runs, and *then* [until] is evaluated, so a loop always runs its body
 // at least once, and [until] may read that body's own outputs. That is not an
 // arbitrary choice between while and do-while: the whole point is that the stop
 // condition is something a body step *produces* (a page reporting it was not
@@ -3519,7 +3519,7 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 //
 // # The carried value, and why it is one
 //
-// [state] names a single value the body reads under that bare name — the same
+// [state] names a single value the body reads under that bare name, the same
 // standing a `for_each` binding has, an author-chosen name bound where the body's
 // expressions are written (docs/DSL.md principle 5). [initial] is what it holds on
 // the first iteration; [update] computes what it holds on the next, from the
@@ -3528,7 +3528,7 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 //
 // One carried value rather than a block of several, and that is the smaller
 // language on purpose. A named block of state entries would immediately need an
-// answer to whether one entry may read another — the exact `vars:`-sibling
+// answer to whether one entry may read another: the exact `vars:`-sibling
 // ordering question a protobuf map cannot answer and this repo already refused
 // once ([Workflow.vars]). A single value sidesteps it: when several fields are
 // wanted, [initial] and [update] are CEL maps, and the ordering question never
@@ -3536,12 +3536,12 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 //
 // # Bounded, because the author does not control the trip count
 //
-// [until] is a promise the loop cannot keep on its own — a cursor that never
+// [until] is a promise the loop cannot keep on its own: a cursor that never
 // reports exhaustion, an update that never satisfies the condition, is an infinite
 // loop, and the resource an author does not fully control is the iteration count.
 // So a loop is bounded by [max_iterations], read through the one function both
 // drivers call ([LoopMaxIterations]) so the ceiling cannot disagree with itself,
-// and hitting it is a *distinct* failure — the loop reports that it exhausted its
+// and hitting it is a *distinct* failure: the loop reports that it exhausted its
 // budget without [until] ever holding, rather than stopping silently as though it
 // had finished. See [LoopIterationLimitError], the one sentence both drivers
 // report it with.
@@ -3549,8 +3549,8 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 // # Results
 //
 // A loop reports its body's per-iteration outputs through `results`, exactly as a
-// `for_each` does — `results[0]` is the first iteration's body outputs, and so on
-// — which is what lets a pagination loop gather every page. When the loop carries
+// `for_each` does (`results[0]` is the first iteration's body outputs, and so
+// on), which is what lets a pagination loop gather every page. When the loop carries
 // state, its final value is also reported as `state`, because an accumulate-until
 // loop's answer *is* that value and it is reachable nowhere else once the loop
 // ends.
@@ -3558,8 +3558,8 @@ func (x *Parallel) GetBranches() []*Parallel_Branch {
 // # What is deferred
 //
 // This is slice 1: a *finite* loop, provable by the bound. An unbounded loop that
-// runs forever compacting its carried state across Continue-As-New — the entity
-// pattern — is a separate, larger slice, because it needs a byte bound on [state]
+// runs forever compacting its carried state across Continue-As-New (the entity
+// pattern) is a separate, larger slice, because it needs a byte bound on [state]
 // and a suspend cadence driven from history size, neither of which a finite loop
 // needs. Nested loops and a concurrent loop are deferred too; see docs/DSL.md.
 type Loop struct {
@@ -3569,16 +3569,16 @@ type Loop struct {
 	// Spelled `steps:` in the DSL, the same key a `for_each` body and a `parallel`
 	// branch use, because it is the same thing: a list of steps that runs as a unit.
 	// Body step outputs do not escape one iteration into the next any more than a
-	// `for_each`'s do — each iteration starts from the outputs visible before the
-	// loop, plus the carried [state] — so the only value threaded between iterations
+	// `for_each`'s do: each iteration starts from the outputs visible before the
+	// loop, plus the carried [state], so the only value threaded between iterations
 	// is the one [update] computes.
 	Body []*Node `protobuf:"bytes,1,rep,name=body,proto3" json:"body,omitempty"`
 	// Until is the stop condition, evaluated after the body each iteration and
 	// required to produce a boolean. When it is true the loop stops, reporting normal
 	// completion.
 	//
-	// Evaluated in the scope the body finished in — the body's own step outputs are
-	// visible, and so is [state] under its bare name — which is what makes
+	// Evaluated in the scope the body finished in (the body's own step outputs are
+	// visible, and so is [state] under its bare name), which is what makes
 	// `${!steps.page.truncated}` mean "stop once the last page said it was not
 	// truncated". A non-boolean is an error rather than being coerced, the same rule
 	// a step's `if:` follows.
@@ -3604,30 +3604,30 @@ type Loop struct {
 	// lexically where the expressions that read it are written. `flow validate`
 	// refuses a name that collides with an enclosing bare binding, with `now`, or
 	// with a declaration root, exactly as it refuses a colliding loop iterator or
-	// step var — a bare name may mean one thing at a time.
+	// step var: a bare name may mean one thing at a time.
 	//
-	// Optional. A loop that carries nothing — a bounded retry-until — leaves this,
+	// Optional. A loop that carries nothing (a bounded retry-until) leaves this,
 	// [initial] and [update] all unset. Setting one without the others is refused by
 	// the compiler: a name with no initial value, or a value that never changes, is a
 	// mistake worth naming rather than a shape to run.
 	//
 	// The pattern is ignored when unset, because unset is the whole stateless mode: an
 	// empty string is the *absence* of a name, not a malformed one, and applying an
-	// identifier pattern to it would refuse the loop that carries nothing — the mode
+	// identifier pattern to it would refuse the loop that carries nothing, the mode
 	// examples/loop-poll-until ships.
 	State string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
 	// Initial is the value [state] holds on the first iteration.
 	//
-	// Evaluated once, before the loop begins, against the scope the loop node sits in
-	// — so it may read `vars.*`, `inputs.*`, and the outputs of steps that ran before
+	// Evaluated once, before the loop begins, against the scope the loop node sits in,
+	// so it may read `vars.*`, `inputs.*`, and the outputs of steps that ran before
 	// the loop, but not [state] itself, which does not exist yet. A literal is the
 	// common case (`init: ${”}`); an expression is evaluated like any other.
 	Initial *Value `protobuf:"bytes,5,opt,name=initial,proto3" json:"initial,omitempty"`
 	// Update computes the value [state] holds on the *next* iteration, from the value
 	// it holds now and the body's outputs.
 	//
-	// Evaluated after the body each iteration, in the same scope [until] sees — the
-	// body's step outputs and the current [state] — which is what lets it say
+	// Evaluated after the body each iteration, in the same scope [until] sees (the
+	// body's step outputs and the current [state]), which is what lets it say
 	// `${steps.page.next_cursor}` (take the next value the body produced) or
 	// `${state + steps.tick.amount}` (fold the body's output into an accumulator).
 	// Required when [state] is set and refused when it is not.
@@ -3717,7 +3717,7 @@ func (x *Loop) GetUpdate() *Value {
 // # Resolved when the file is compiled, carried whole
 //
 // A `Call` holds the callee's *specification*, not a reference to it. The
-// resolution — reading `./provision.yaml`, compiling it, checking its arguments —
+// resolution (reading `./provision.yaml`, compiling it, checking its arguments)
 // happens once, in the client, when a Flowfile becomes a Workflow.
 //
 // That is not an optimisation, it is invariant 10. A run's specification is frozen
@@ -3733,7 +3733,7 @@ func (x *Loop) GetUpdate() *Value {
 // bigger than one naming them, and it counts against [CheckSpecSize] like
 // everything else. A workflow too large to submit is refused with the same
 // message it would have been refused with if somebody had pasted the same steps
-// in by hand — which is the right answer, because that is what this is.
+// in by hand, which is the right answer, because that is what this is.
 //
 // # A nested run, not an inlining
 //
@@ -3741,7 +3741,7 @@ func (x *Loop) GetUpdate() *Value {
 // list, and each of the three reasons is something inlining loses.
 //
 // A position stays a path. `deploy > provision > network` is where a run is, and
-// a flattened list would report `provision-network` — a name nobody wrote, in a
+// a flattened list would report `provision-network`: a name nobody wrote, in a
 // file nobody can open. Diagnostics and failures name the callee the same way.
 //
 // The isolation below is real rather than achieved by renaming. And a call remains
@@ -3755,13 +3755,13 @@ func (x *Loop) GetUpdate() *Value {
 // `vars:`, not a loop binding it happens to sit inside.
 //
 // That is the whole point rather than a restriction. A workflow that can read its
-// caller's scope is not a unit — it cannot be understood, tested, or reused apart
+// caller's scope is not a unit: it cannot be understood, tested, or reused apart
 // from the file that calls it, which is what a call was meant to make possible. It
 // is also a security property once workflows are shared: a library workflow cannot
 // read the values its caller resolved, including any it resolved from a secret.
 //
 // What comes back is what the callee `outputs:` declares, under the step's id. A
-// callee that declares no outputs is a step that produces none — legal, and the
+// callee that declares no outputs is a step that produces none: legal, and the
 // right shape for a workflow called for its effects.
 type Call struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3769,12 +3769,12 @@ type Call struct {
 	//
 	// Whole rather than referenced, for the reasons on the message above. It carries
 	// its own `inputs:` declarations, which is what `arguments` below are checked
-	// against — so a call type-checks in an editor, before anything runs.
+	// against, so a call type-checks in an editor, before anything runs.
 	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Arguments bind the callee's declared inputs, by name.
 	//
 	// Values, never expressions evaluated by the callee. They are resolved in the
-	// *caller's* scope — where `${steps.build.digest}` means something — and what
+	// *caller's* scope (where `${steps.build.digest}` means something), and what
 	// crosses the boundary is the result. A callee evaluating an expression handed
 	// to it would be reading a scope it is not allowed to see, through a string.
 	//
@@ -3786,7 +3786,7 @@ type Call struct {
 	//
 	// Carried for diagnostics and for `flow compile` output, so a reader of a
 	// compiled specification can see which file a nested workflow came from. It is
-	// never resolved again — nothing reads a path from here — which is why it is a
+	// never resolved again (nothing reads a path from here), which is why it is a
 	// plain string with no validation beyond a length: it is a record of what
 	// happened, not an instruction.
 	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
@@ -3795,7 +3795,7 @@ type Call struct {
 	//
 	// Recorded rather than verified, exactly as `source` is: neither is
 	// resolved again by anything that reads a compiled specification. What it
-	// buys is provenance an operator can audit after the fact — "this run
+	// buys is provenance an operator can audit after the fact: "this run
 	// called provision-tenant.yaml at sha256:…" is answerable from a run record
 	// alone, without the file that produced it necessarily being reachable, or
 	// unchanged, by the time anyone asks. A platform sharing modules across
@@ -4139,7 +4139,7 @@ type Value_SecretRef struct {
 	//
 	// This kind is inert everywhere except the activity that uses it. The
 	// compiler produces it, the control plane transports it, and workflow-side
-	// evaluation passes it through untouched — it is never resolved into a value
+	// evaluation passes it through untouched: it is never resolved into a value
 	// and never copied into step outputs, because workflow history is durable and
 	// broadly readable. Only the worker executing the task resolves it, and the
 	// value exists solely for that call.
@@ -4166,9 +4166,9 @@ func (*Value_Structure_) isValue_Kind() {}
 // TaskCatalog is what this build can execute, described so that something other
 // than a person can read it.
 //
-// The task registry is the single source of truth for capability — the engine
+// The task registry is the single source of truth for capability (the engine
 // dispatches from it, the validator checks against it, the editor completes from
-// it — and until this existed the only way out of the process was a table meant
+// it), and until this existed the only way out of the process was a table meant
 // for a terminal. An agent driving the CLI as a tool, a generator producing
 // documentation, or an editor that is not this project's language server all had
 // to parse columns, which is not a contract.
@@ -4176,7 +4176,7 @@ func (*Value_Structure_) isValue_Kind() {}
 // It is a schema type rather than a shape invented in the CLI because it
 // describes the system, which is what this file is for: a field added to it
 // appears in every consumer without any of them changing, and it is already
-// versioned and wire-stable — which is what let GetCatalog return it unchanged
+// versioned and wire-stable, which is what let GetCatalog return it unchanged
 // the day that RPC arrived.
 type TaskCatalog struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -4187,7 +4187,7 @@ type TaskCatalog struct {
 	// of `if:`, `items:`, `wait_until:`, a task input and a `cel` step alike.
 	CelLibraries []string `protobuf:"bytes,2,rep,name=cel_libraries,json=celLibraries,proto3" json:"cel_libraries,omitempty"`
 	// DurationUnits are the duration constructors available to *every* expression
-	// — `days(3)`, `minutes(30)` — rather than only where a library is enabled.
+	// (`days(3)`, `minutes(30)`) rather than only where a library is enabled.
 	// Listed separately for that reason: somebody reading cel_libraries to find out
 	// what an expression can say would otherwise conclude these are unavailable.
 	DurationUnits []string `protobuf:"bytes,3,rep,name=duration_units,json=durationUnits,proto3" json:"duration_units,omitempty"`
@@ -4198,8 +4198,8 @@ type TaskCatalog struct {
 	// ValueRoots are the names an expression reaches a value through: `vars` for a
 	// value the file names, `steps` for what a step produced.
 	//
-	// Here for the same reason NowIdentifier is — a reader cannot infer it from the
-	// task list — and the retirement edition made that sharper rather than softer. A
+	// Here for the same reason NowIdentifier is (a reader cannot infer it from the
+	// task list), and the retirement edition made that sharper rather than softer. A
 	// consumer reading this catalog now sees two tasks, one of which produces nothing
 	// at all, and could reasonably conclude the language has almost no way to compute
 	// anything. It has one: an expression, bound under `vars:` at the workflow or on a
@@ -4308,7 +4308,7 @@ type CELFunction struct {
 	//
 	// With one qualification, for a macro. cel-go identifies a macro by the name after
 	// the dot, so `math.greatest(1, 2)` is reported as `greatest` and
-	// `[3,1,2].sortBy(v, v)` as `sortBy` — a receiver style whose receiver is a
+	// `[3,1,2].sortBy(v, v)` as `sortBy`: a receiver style whose receiver is a
 	// namespace in the first case and a value in the second, which its API does not
 	// distinguish. So for a macro this is the name and not the whole call form, and a
 	// consumer must not render it as one.
@@ -4329,14 +4329,14 @@ type CELFunction struct {
 	// worker evaluates the run.
 	Macro bool `protobuf:"varint,3,opt,name=macro,proto3" json:"macro,omitempty"`
 	// Example is a complete expression calling this, set only where `name` is not
-	// enough to construct one — which is exactly the macros.
+	// enough to construct one, which is exactly the macros.
 	//
 	// A function's name *is* its call form: `upperAscii` is written `x.upperAscii()`
 	// or `regex.replace(a, b, c)` as the name says. A macro's is not, and cel-go's
 	// parser API is why: `Macro` exposes `Function`, `ArgCount`, `IsReceiverStyle`
 	// and `MacroKey`, and none of them names the *receiver*. So `greatest` is
 	// reported for something written `math.greatest(1, 2)` and `sortBy` for
-	// something written `[3,1,2].sortBy(v, v)` — a namespace in one case and a value
+	// something written `[3,1,2].sortBy(v, v)`: a namespace in one case and a value
 	// in the other, indistinguishable from the outside.
 	//
 	// Which means this cannot be derived, and a consumer told "do not render `name`
@@ -4347,8 +4347,8 @@ type CELFunction struct {
 	// inspected, so an entry that stops working stops passing.
 	//
 	// Deriving it was tried and rejected rather than skipped. A library's macros can
-	// be paired with the internal `@` names it declares — `math.@max` alongside
-	// `greatest` gives `math` — and that is right for `math` and `bindings` and
+	// be paired with the internal `@` names it declares (`math.@max` alongside
+	// `greatest` gives `math`), and that is right for `math` and `bindings` and
 	// silently wrong for `comprehensions`, which declares `cel.@mapInsert` while
 	// `transformList` is written on a value. A derivation that is wrong for one
 	// library in five is worse than a table somebody has to keep, because nothing
@@ -4491,7 +4491,7 @@ func (x *TaskDescription) GetOutputs() []*TaskField {
 //
 // The same argument as [TaskCatalog], applied one process boundary out. A plugin
 // is code the engine does not ship, so "which tasks can this worker run" stops
-// being a property of the binary and becomes a property of a deployment — and a
+// being a property of the binary and becomes a property of a deployment. A
 // question nobody can ask from outside is one every operator answers by reading
 // logs.
 //
@@ -4500,7 +4500,7 @@ func (x *TaskDescription) GetOutputs() []*TaskField {
 // inputs and outputs, so there is genuinely nothing left over to say about it,
 // and giving it a parallel message would have been a second definition of the
 // same thing. Where the two differ is *provenance*, which is the field this
-// message adds and the reason it exists — a reviewer needs to know that a step
+// message adds and the reason it exists: a reviewer needs to know that a step
 // leaves the engine's code.
 //
 // Wire-stable, on the same terms as [TaskCatalog], and for the same reason: a
@@ -4514,7 +4514,7 @@ type PluginCatalog struct {
 	// in, in precedence order.
 	//
 	// Carried because an empty plugin list has two meanings that matter to tell
-	// apart — nothing installed, or nowhere to look — and only one of them is a
+	// apart (nothing installed, or nowhere to look), and only one of them is a
 	// configuration mistake.
 	SearchPath    []string `protobuf:"bytes,2,rep,name=search_path,json=searchPath,proto3" json:"search_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -4688,7 +4688,7 @@ func (x *PluginDescription) GetDistributionDigest() string {
 type TaskField struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// Type is what an author would call it — `string`, `list[string]`,
+	// Type is what an author would call it: `string`, `list[string]`,
 	// `map[string, string]`, or `any` where the shape is whatever an expression
 	// produced. Deliberately not the Protobuf type name, which is accurate about
 	// the schema and useless about the file being written.
@@ -4809,9 +4809,9 @@ type Task struct {
 	//
 	// # A dot means a plugin, and its absence means the engine
 	//
-	// A built-in task is one bare word. A plugin's task is two, joined by a dot —
-	// `slack.post` is the `post` task of the plugin discovered as
-	// `flowstate-plugin-slack` — and the dot is provenance rather than decoration:
+	// A built-in task is one bare word. A plugin's task is two, joined by a dot
+	// (`slack.post` is the `post` task of the plugin discovered as
+	// `flowstate-plugin-slack`), and the dot is provenance rather than decoration:
 	// it tells a reviewer that this line leaves the engine's code and enters code
 	// somebody installed, at the step, where that fact is needed. It also makes
 	// collision unrepresentable in both directions. A plugin task cannot shadow a
@@ -4885,7 +4885,7 @@ type RunRequest struct {
 	//
 	// # Values, never expressions
 	//
-	// Every [Value] here must be a literal. Not a convention — the security posture
+	// Every [Value] here must be a literal. Not a convention: the security posture
 	// of the whole surface. These arrive from whoever can call Run, which is the
 	// definition of an untrusted party, and an expression accepted from there is
 	// code the server would evaluate on its own behalf, in a scope holding the
@@ -4895,8 +4895,8 @@ type RunRequest struct {
 	// credential the run resolves, which is a decision that belongs to the
 	// specification and its policy.
 	//
-	// The oneof cannot say which arm is allowed — protovalidate rules attach to
-	// fields — so the server enforces it at submit, together with the rest of the
+	// The oneof cannot say which arm is allowed (protovalidate rules attach to
+	// fields), so the server enforces it at submit, together with the rest of the
 	// check against the declarations: every required input present, no undeclared
 	// name, every value of the declared type, defaults filled in for what was left
 	// out. Fail closed on each: a run that would be wrong is refused while the
@@ -4906,14 +4906,14 @@ type RunRequest struct {
 	//
 	// These become part of the run's state, so they are weighed by
 	// `CheckRunStateSize` at every Continue-As-New along with everything else the
-	// run carries — `proto.Size` on the whole message, so nothing has to be added
+	// run carries: `proto.Size` on the whole message, so nothing has to be added
 	// to a tally by hand. The submit-time check is `CheckSpecSize` on the workflow;
 	// a caller who could push a run past the blob limit with arguments alone would
 	// have found the hang that invariant exists to convert into an answer.
 	Inputs map[string]*Value `protobuf:"bytes,2,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// EntityKey turns a stable business key into the run's workflow id, in place of
-	// today's random one, so a long-lived workload — a subscription, an order, an
-	// incident — can be addressed by what it *is* rather than by an id nobody wrote
+	// today's random one, so a long-lived workload (a subscription, an order, an
+	// incident) can be addressed by what it *is* rather than by an id nobody wrote
 	// down. Unset is byte-identical to today: a `flowstate-workflow-<uuid>` id, same
 	// as every run before this field existed (invariant 10, no compatibility arm
 	// needed because the zero value already means "generate one").
@@ -4921,7 +4921,7 @@ type RunRequest struct {
 	// # The id is namespace-scoped, and the request never says which namespace
 	//
 	// The other half of the id is the caller's own tenant, taken only from
-	// [FlowstateServer.identityFor] — the same rule [fairnessFor] already applies to
+	// [FlowstateServer.identityFor], the same rule [fairnessFor] already applies to
 	// scheduling priority and invariant "a workload's namespace comes from the
 	// authenticated caller, never from the workload itself" states generally. A
 	// request cannot name the namespace half of its own address, or a caller could
@@ -4930,12 +4930,12 @@ type RunRequest struct {
 	//
 	// # Grammar, and why it is the same grammar a namespace already has
 	//
-	// Lowercase ASCII letters, digits, and a dash that is never first — identical to
+	// Lowercase ASCII letters, digits, and a dash that is never first, identical to
 	// [auth.ValidateNamespace]'s grammar, and deliberately so: the two halves are
 	// joined by a single separator character neither grammar permits (see
 	// `EntityWorkflowID` in `pkg/flowstate/v1/entity.go`), which is what makes the
 	// join unambiguous. CLAUDE.md's env-provider incident is the exact trap this
-	// avoids — `prefix + NAMESPACE + "_" + name` let `TEAM_A` + `KEY` collide with
+	// avoids: `prefix + NAMESPACE + "_" + name` let `TEAM_A` + `KEY` collide with
 	// `TEAM` + `A_KEY` because every character legal in the prefix was also legal in
 	// the name. Here, neither half can contain the separator, so there is only ever
 	// one place the string could have been split, and it is the right one.
@@ -5012,7 +5012,7 @@ type RunResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WorkflowId is `flowstate-workflow-<uuid>` for an ordinary run and
 	// `flowstate-entity-<namespace>_<entity_key>` for one started with
-	// [RunRequest.entity_key] — no longer a bare UUID, so the format constraint
+	// [RunRequest.entity_key], no longer a bare UUID, so the format constraint
 	// is a length bound rather than [buf.validate.field.string.uuid], which the
 	// generated id never actually satisfied on its own (it is a prefixed string,
 	// not a bare UUID) and which an entity-addressed id cannot satisfy at all.
@@ -5184,7 +5184,7 @@ type GetResponse struct {
 	//	*GetResponse_Error
 	//	*GetResponse_Outputs
 	Kind isGetResponse_Kind `protobuf_oneof:"kind"`
-	// StartTime is when the workload began, and CloseTime when it finished — unset
+	// StartTime is when the workload began, and CloseTime when it finished, unset
 	// while it is still running, so "has not finished" and "finished at the epoch"
 	// stay distinct.
 	//
@@ -5192,7 +5192,7 @@ type GetResponse struct {
 	// because a listing already answered them and a Get did not: `flow list` could
 	// tell you a run had been going for an hour and `flow get <id>` on the same run
 	// could only tell you it was running. One verb knowing less about a run than the
-	// verb that enumerates it is the wrong way round — Get is the one a person
+	// verb that enumerates it is the wrong way round: Get is the one a person
 	// reaches for when they care about a *particular* run.
 	//
 	// Both come off the same DescribeWorkflowExecution response the status does, so
@@ -5203,7 +5203,7 @@ type GetResponse struct {
 	// finished run's position is its outputs.
 	//
 	// Unset does not mean "at the beginning". It also means no worker answered, or
-	// that the run is on an interpreter built before this existed — facts about the
+	// that the run is on an interpreter built before this existed: facts about the
 	// deployment rather than about the workload. A reader that rendered an unanswered
 	// query as "step 1 of 5" would be inventing one.
 	Progress *RunProgress `protobuf:"bytes,8,opt,name=progress,proto3" json:"progress,omitempty"`
@@ -5216,22 +5216,22 @@ type GetResponse struct {
 	// it, and an operator had to leave the tenancy boundary this service enforces
 	// and ask the temporal CLI directly. Set only for a RUNNING run, on the same
 	// reasoning progress is; empty for a running run means nothing is mid-retry,
-	// which is itself the answer — the run is waiting or between steps, not stuck.
+	// which is itself the answer: the run is waiting or between steps, not stuck.
 	PendingActivities []*PendingActivity `protobuf:"bytes,9,rep,name=pending_activities,json=pendingActivities,proto3" json:"pending_activities,omitempty"`
 	// Outputs are the values the workflow declared it would report, computed by
-	// this run — the answer, as against the transcript `outputs` above holds.
+	// this run: the answer, as against the transcript `outputs` above holds.
 	//
 	// A new field beside the existing oneof rather than a third arm in it: the
 	// oneof answers "did it fail", which is a different question from "what did it
 	// produce", and a run can perfectly well have both a status and a result. Unset
 	// means the workflow declared no outputs, or the run has not finished, or the
-	// run was started before this existed — all three of which are honestly
+	// run was started before this existed, all three of which are honestly
 	// "nothing to report" rather than "an empty result", which is why there is no
 	// empty message to distinguish them.
 	RunOutputs *RunOutputs `protobuf:"bytes,10,opt,name=run_outputs,json=runOutputs,proto3" json:"run_outputs,omitempty"`
-	// EntityState is a bounded snapshot of a RUNNING run's carried state — its
+	// EntityState is a bounded snapshot of a RUNNING run's carried state (its
 	// top-level `vars:` and the value each active `loop:` is carrying between
-	// iterations — answered by a second Temporal query beside
+	// iterations), answered by a second Temporal query beside
 	// [RunProgress]'s, for the reason [RunProgress] itself exists: nothing
 	// outside a running workflow knows its own state, because the state lives
 	// in the interpreter's own memory rather than in anything the service
@@ -5240,11 +5240,11 @@ type GetResponse struct {
 	// # Why this exists at all
 	//
 	// Outputs (both arms of the oneof above) populate only on
-	// STATUS_COMPLETED. An entity — a run shaped as `loop:` +
-	// `wait_for_signal:` that is never meant to finish — is by design always
+	// STATUS_COMPLETED. An entity (a run shaped as `loop:` +
+	// `wait_for_signal:` that is never meant to finish) is by design always
 	// RUNNING, so before this field existed its state was categorically
 	// unreadable: not even by its own owner, and not without either signaling
-	// it (mutating it to provoke a readable output — the wrong tool for a
+	// it (mutating it to provoke a readable output, the wrong tool for a
 	// read) or waiting for it to end, which it structurally never does.
 	//
 	// Set only for a RUNNING run, on [RunProgress]'s exact reasoning: a
@@ -5440,10 +5440,10 @@ func (*GetResponse_Outputs) isGetResponse_Kind() {}
 //
 // # Bounded twice, on two different resources
 //
-// Vars and LoopState are themselves already bounded transitively — every
+// Vars and LoopState are themselves already bounded transitively (every
 // value in them travelled here inside a `RunState` that `CheckRunStateSize`
 // already refused to let grow past Temporal's blob limit at the last
-// Continue-As-New — but a query answer is its own resource, read by a
+// Continue-As-New), but a query answer is its own resource, read by a
 // caller who did not ask "how big is this," so this message additionally
 // caps how many loop entries it reports (an author writing several
 // concurrent loops inside a `parallel:` block is not a hazard the blob-size
@@ -5455,20 +5455,20 @@ func (*GetResponse_Outputs) isGetResponse_Kind() {}
 type EntityState struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Vars are the workflow's own top-level `vars:`, evaluated once at the
-	// start of the run — the same values every step's `${vars.*}` reads,
+	// start of the run: the same values every step's `${vars.*}` reads,
 	// snapshotted at query time.
 	Vars map[string]*Value `protobuf:"bytes,1,rep,name=vars,proto3" json:"vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// LoopState is, for every `loop:` currently active in this segment, the
-	// value its `state:` binding is carrying into the next iteration — keyed
+	// value its `state:` binding is carrying into the next iteration, keyed
 	// by the loop step's own id. A loop with no `state:` (a bounded
 	// retry-until carrying nothing) has no entry here, and a loop not
-	// currently active — finished, or not yet reached — has none either.
+	// currently active (finished, or not yet reached) has none either.
 	LoopState map[string]*Value `protobuf:"bytes,2,rep,name=loop_state,json=loopState,proto3" json:"loop_state,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Truncated is true when this snapshot was cut down to stay inside this
 	// message's own bound (see the message-level comment) rather than reflect
 	// the full state a caller free of that bound would see. A truncated
 	// answer omits vars and loop_state entirely rather than reporting a
-	// partial, silently-incomplete map — a reader must not mistake "some of
+	// partial, silently-incomplete map: a reader must not mistake "some of
 	// the keys" for "all of the keys, this run just does not have more."
 	Truncated     bool `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -5534,7 +5534,7 @@ func (x *EntityState) GetTruncated() bool {
 // name an author chose; the engine cannot stamp the step's id onto the activity
 // either, because a loop running iterations in parallel schedules one step id
 // several times at once and activity ids must be unique. Which step a running
-// run is on is the progress query's answer, one field over — the two are read
+// run is on is the progress query's answer, one field over: the two are read
 // together, and a field here that claimed the step would be guessing.
 type PendingActivity struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -5548,7 +5548,7 @@ type PendingActivity struct {
 	// NextAttemptScheduledTime is when the next attempt is due. Unset when an
 	// attempt is running right now.
 	NextAttemptScheduledTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=next_attempt_scheduled_time,json=nextAttemptScheduledTime,proto3" json:"next_attempt_scheduled_time,omitempty"`
-	// Phase is what the running attempt last said it was doing — `requesting`
+	// Phase is what the running attempt last said it was doing: `requesting`
 	// while a request is out, `reading the response` once a peer has answered,
 	// `calling the plugin` around a plugin's RPC.
 	//
@@ -5567,7 +5567,7 @@ type PendingActivity struct {
 	//
 	// The vocabulary is closed on purpose, and that is a security property rather
 	// than a style. This is projected from an activity heartbeat, heartbeats are
-	// written into workflow history, and history is durable and broadly readable —
+	// written into workflow history, and history is durable and broadly readable,
 	// so a phase built from a task's inputs would be invariant 7's exact failure.
 	// The worker enforces it with a type that has no constructor; see
 	// `v1.Phase` and the AST check beside it.
@@ -5648,7 +5648,7 @@ type RunProgress struct {
 	//
 	// Top-level always, which is a floor rather than a limitation. A run inside a
 	// parallel block or a concurrent loop is on several steps at once and has no single
-	// position — the same reason the engine refuses to suspend there — so the answer
+	// position (the same reason the engine refuses to suspend there), so the answer
 	// that is always true is the outermost one.
 	StepId string `protobuf:"bytes,1,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
 	// Path is the position from that step inward, where there is one: the loop and the
@@ -5945,7 +5945,7 @@ func (x *PendingWait) GetPromptTruncated() bool {
 // # Positions are 1-based, and zero means unknown
 //
 // Zero rather than an omitted field, because a diagnostic with no position is a real
-// answer — some problems are about a file rather than about a line in one — and a
+// answer (some problems are about a file rather than about a line in one), and a
 // consumer that saw `line: 1` for those would send a reader to the wrong place with
 // confidence.
 type Diagnostic struct {
@@ -5961,7 +5961,7 @@ type Diagnostic struct {
 	Step string `protobuf:"bytes,4,opt,name=step,proto3" json:"step,omitempty"`
 	// Field names the input or property at fault, when there is one.
 	Field string `protobuf:"bytes,5,opt,name=field,proto3" json:"field,omitempty"`
-	// Kind names the step's kind key — the task's name, or `for_each`, `sleep` — when
+	// Kind names the step's kind key (the task's name, or `for_each`, `sleep`) when
 	// the problem is with that key rather than with anything under it.
 	//
 	// Separate from Field because the two read differently and are fixed differently:
@@ -5972,7 +5972,7 @@ type Diagnostic struct {
 	// element of it is the problem.
 	Value string `protobuf:"bytes,7,opt,name=value,proto3" json:"value,omitempty"`
 	// Code names the diagnostic's class in a form that survives Message being
-	// reworded — the same argument this message already makes for Line/Column
+	// reworded: the same argument this message already makes for Line/Column
 	// over parsing a squiggle out of prose, applied to *what* is wrong rather
 	// than to *where*.
 	//
@@ -5980,7 +5980,7 @@ type Diagnostic struct {
 	// expected to actually branch on (an unknown task, an unresolved reference,
 	// a type mismatch, a schema constraint violation, a placement the grammar
 	// refuses, a retired spelling) get their own code today. Everything else is
-	// "general" — an honest fallback rather than a code invented to look
+	// "general": an honest fallback rather than a code invented to look
 	// complete. The full set, generated from the registry that assigns them so
 	// it cannot drift, is docs/reference/diagnostics.md.
 	Code string `protobuf:"bytes,8,opt,name=code,proto3" json:"code,omitempty"`
@@ -6399,8 +6399,8 @@ func (x *DiagnosticReport) GetDiagnostics() []*Diagnostic {
 // It exists because `json` and `jsonl` are different shapes rather than different
 // spellings, and this CLI is consistent about which: `json` is one document per
 // invocation, `jsonl` is one per line. Checking three files produces three
-// [DiagnosticReport]s, which is three lines of `jsonl` and — without something to hold
-// them — three documents where `json` promises one. A bare JSON array would do it and
+// [DiagnosticReport]s, which is three lines of `jsonl` and, without something to hold
+// them, three documents where `json` promises one. A bare JSON array would do it and
 // is not a proto message, so the thing that holds them is a message.
 type ValidationReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -6528,7 +6528,7 @@ type FixReport struct {
 	// says, because the parts that were not refused may still have been rewritten.
 	Refusals []*Diagnostic `protobuf:"bytes,4,rep,name=refusals,proto3" json:"refusals,omitempty"`
 	// Notes are places worth a human's eye that are not problems and do not affect
-	// whether the file is finished — a comment mentioning a step that has moved, for
+	// whether the file is finished: a comment mentioning a step that has moved, for
 	// instance. Distinct from Refusals for the reason `flow fix` draws that line
 	// itself: a caller must not fail a build on one of these.
 	Notes         []*Diagnostic `protobuf:"bytes,5,rep,name=notes,proto3" json:"notes,omitempty"`
@@ -6603,8 +6603,8 @@ func (x *FixReport) GetNotes() []*Diagnostic {
 
 // FmtReport is what `flow fmt` (or `flow fmt --check`) did to one file.
 //
-// `flow fmt` is not comment- or position-preserving the way `flow fix` is — it
-// reads a file into a workflow and renders that back out from nothing — so a
+// `flow fmt` is not comment- or position-preserving the way `flow fix` is (it
+// reads a file into a workflow and renders that back out from nothing), so a
 // refusal here is "this file did not parse (or could not be rendered back out)"
 // rather than one shape among several, and rarely carries a position of its own
 // beyond what the parser's own error already gives.
@@ -6677,7 +6677,7 @@ func (x *FmtReport) GetRefusals() []*Diagnostic {
 //
 // The same reason [ValidationReport] exists beside [DiagnosticReport]: `json` is
 // one document per invocation and `jsonl` is one per line, and fixing three files
-// produces three [FixReport]s — which is three lines of `jsonl` and, without
+// produces three [FixReport]s, which is three lines of `jsonl` and, without
 // something to hold them, three documents where `json` promises one.
 type FixReports struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -6784,14 +6784,14 @@ type TestCase struct {
 	// Passed is true when every expectation in the case held.
 	Passed bool `protobuf:"varint,2,opt,name=passed,proto3" json:"passed,omitempty"`
 	// Failures are the expectations that did not hold, positioned to the test
-	// file where an expectation's own position is known — a diagnostic in the
+	// file where an expectation's own position is known: a diagnostic in the
 	// same shape `flow validate` and `flow fix` already report, so a consumer of
 	// `-o json` learns one schema for "something is wrong" across every verb.
 	Failures []*Diagnostic `protobuf:"bytes,3,rep,name=failures,proto3" json:"failures,omitempty"`
 	// Error is set instead of Failures when the case could not run to a verdict
-	// at all — the workflow it names failed to compile, a stub described a task
+	// at all: the workflow it names failed to compile, a stub described a task
 	// the registry does not have, or the run failed in a way the case did not
-	// declare with `expect.failed` — as distinct from an expectation that ran
+	// declare with `expect.failed`. That is distinct from an expectation that ran
 	// and did not hold.
 	Error string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
 	// Duration is how long the case took to run, in wall-clock time. Never a
@@ -6879,10 +6879,10 @@ type TestReport struct {
 	// find it again without resolving anything.
 	File string `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
 	// Cases is one result per `tests:` entry in the file, in the order they
-	// were written. Empty when Refused is set — no case was ever reached.
+	// were written. Empty when Refused is set: no case was ever reached.
 	Cases []*TestCase `protobuf:"bytes,2,rep,name=cases,proto3" json:"cases,omitempty"`
-	// Refused reports that the file itself could not be run as a test file — it
-	// did not parse, or named a workflow that could not be loaded — which is
+	// Refused reports that the file itself could not be run as a test file (it
+	// did not parse, or named a workflow that could not be loaded), which is
 	// reported once for the file rather than once per case.
 	Refused       string `protobuf:"bytes,3,opt,name=refused,proto3" json:"refused,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -6994,7 +6994,7 @@ func (x *TestReports) GetFiles() []*TestReport {
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
-// specific workload — this workflow, this run, this step — and it is acting on
+// specific workload (this workflow, this run, this step) and it is acting on
 // behalf of whoever asked for the work. Downstream systems need both to make an
 // authorization decision: "the nightly-reconcile workflow" and "started by the
 // deploy pipeline" answer different questions, and a system granting access
@@ -7032,7 +7032,7 @@ type WorkloadIdentity struct {
 	// so an assertion from a staging deployment is distinguishable from a
 	// production one.
 	//
-	// Not the tenant, and not what run access turns on — that is `namespace`
+	// Not the tenant, and not what run access turns on: that is `namespace`
 	// above. But not decorative either: an outbound authorization policy sees it as
 	// `workload.deployment` and may key on it, which is how a rule like
 	// `target == "internal" && workload.deployment == "prod"` keeps a staging
@@ -7130,14 +7130,14 @@ type Frame struct {
 	// results and not only those from the run that finished the loop.
 	//
 	// For a `loop:`, this is carried forward across a Continue-As-New only when
-	// something in the specification could still read it — see the doc on
+	// something in the specification could still read it. See the doc on
 	// `LoopResultsReferenced` and `LoopResumeResults` in pkg/flowstate/v1/loop.go.
 	// A loop nothing reads starts each new segment's Results fresh rather than
 	// inheriting every prior segment's, which is what keeps an indefinitely
 	// running `loop:` + `wait_for_signal:` entity from carrying its whole
 	// history forward forever. When that has happened at least once, the
 	// finished loop's own reported `results` output is *omitted* rather than
-	// showing only the last segment's iterations — an absent key rather than a
+	// showing only the last segment's iterations: an absent key rather than a
 	// list that looks complete and is not. See docs/DSL.md's loop section for
 	// the contract this states to an author, and #229.
 	Results []*Workflow_StepOutputs `protobuf:"bytes,3,rep,name=results,proto3" json:"results,omitempty"`
@@ -7147,15 +7147,15 @@ type Frame struct {
 	//
 	// A call is transparent to suspension (see the executor's suspend rule), so a
 	// callee's steps may span a Continue-As-New exactly as a top-level sequential
-	// loop's do. The callee runs in its own isolated scope, though — that is the
-	// entire point of [CallScope] — so unlike a top-level segment, whose step
+	// loop's do. The callee runs in its own isolated scope, though (that is the
+	// entire point of [CallScope]), so unlike a top-level segment, whose step
 	// outputs live in RunState.outputs, a callee's step outputs exist nowhere
 	// else. Without this they would vanish at the handover and the resumed
 	// segment would fail on the callee's own later steps referencing its
 	// earlier ones, on a specification that never changed.
 	//
 	// Absent for every frame that predates this field, which reads as an empty
-	// callee scope — correct, because no run written before this field existed
+	// callee scope. That is correct, because no run written before this field existed
 	// could have been suspended inside a call; the capability did not exist yet.
 	CallOutputs *Workflow_StepOutputs `protobuf:"bytes,4,opt,name=call_outputs,json=callOutputs,proto3" json:"call_outputs,omitempty"`
 	// CallVars holds the callee's own `vars:` block, evaluated once when the
@@ -7168,12 +7168,12 @@ type Frame struct {
 	// section), and a profile pins which functions exist rather than how
 	// cel-go implements them. Re-evaluating inline would let the *same*
 	// expression compute two different answers across one call, on a
-	// specification that never changed — precisely the hazard
+	// specification that never changed: precisely the hazard
 	// `engine.WorkflowVars` exists to remove at the top level. A callee's vars
 	// get no weaker a guarantee merely for being nested.
 	//
 	// Absent for every frame that predates this field, or whose callee
-	// declares no `vars:` at all — both read as "nothing bound", which is
+	// declares no `vars:` at all, both read as "nothing bound", which is
 	// correct in the first case for the reason call_outputs's is, and correct
 	// in the second because there is nothing to evaluate.
 	CallVars map[string]*Value `protobuf:"bytes,5,rep,name=call_vars,json=callVars,proto3" json:"call_vars,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -7181,27 +7181,27 @@ type Frame struct {
 	// iterations, for a frame standing inside a loop.
 	//
 	// A `for_each` needs no equivalent, because its per-iteration binding is the item
-	// at [NextIteration] of a list [ForEach.items] recomputes on resume — the list is
+	// at [NextIteration] of a list [ForEach.items] recomputes on resume: the list is
 	// in the specification. A loop's carried value is not: it is computed by
 	// [Loop.update] from the *previous* iteration's body outputs, which do not escape
 	// the iteration and are gone once it ends. So the value itself has to travel, the
 	// same way [call_outputs] carries a callee's own step outputs across the seam for
-	// the same reason — the state exists nowhere in [RunState.outputs].
+	// the same reason: the state exists nowhere in [RunState.outputs].
 	//
 	// A resolved value, never an expression: [Loop.update] is evaluated in workflow
 	// code at the end of each iteration (invariant 4 permits it, as it does a loop's
 	// `items:` and a step's `vars:`) and what is stored here is the result. So a
 	// resumed segment binds the carried value directly and evaluates nothing to get
-	// it — the same discipline [PendingUndo] follows, and for the same determinism
+	// it, the same discipline [PendingUndo] follows, and for the same determinism
 	// reason.
 	//
 	// Absent for every frame that predates this field, and for a loop that carries no
-	// state at all — both read as "nothing carried", which is correct: a
+	// state at all, both read as "nothing carried", which is correct: a
 	// retry-until loop binds no name, so there is nothing for a resumed segment to
 	// rebind.
 	//
 	// Weighed by `CheckRunStateSize` along with the rest of [RunState] (invariant 9),
-	// which is the bound a *finite* loop's state needs — it is one value, carried
+	// which is the bound a *finite* loop's state needs: it is one value, carried
 	// across at most the loop's bounded iteration count. The unbounded entity loop
 	// that would need a byte bound of its own is deferred; see [Loop].
 	LoopState     *Value `protobuf:"bytes,6,opt,name=loop_state,json=loopState,proto3" json:"loop_state,omitempty"`
@@ -7307,7 +7307,7 @@ type RunState struct {
 	// They must be carried, because a suspended run drops whatever is still
 	// buffered on a channel it never read. A workload whose approval arrived while
 	// it was on an earlier step would otherwise reach the gate with the approval
-	// already lost, and wait forever — the worst failure available to a feature
+	// already lost, and wait forever: the worst failure available to a feature
 	// whose whole promise is that waiting is reliable.
 	PendingSignals []*PendingSignal `protobuf:"bytes,7,rep,name=pending_signals,json=pendingSignals,proto3" json:"pending_signals,omitempty"`
 	// Vars are the workflow's `vars:` block, already evaluated.
@@ -7316,7 +7316,7 @@ type RunState struct {
 	// means once for the whole run and not once per Continue-As-New segment. The
 	// difference is not academic: invariant 10 has a continued run pick up whichever
 	// interpreter version is current, so a segment that re-evaluated its vars could
-	// compute a different answer from the one earlier steps saw — a value changing
+	// compute a different answer from the one earlier steps saw: a value changing
 	// under a workload halfway through, for no cause visible in the file.
 	//
 	// Storing it also makes the evaluation happen exactly once per run rather than once
@@ -7332,15 +7332,15 @@ type RunState struct {
 	// a run in flight, which is the class of thing invariant 10 exists to stop.
 	//
 	// Add-only and absent-tolerant, like everything else here. A run started before
-	// this field existed reads back with it empty, which is exactly right — that run
-	// has no arguments — so nothing has to distinguish "old writer" from "no
+	// this field existed reads back with it empty, which is exactly right (that run
+	// has no arguments), so nothing has to distinguish "old writer" from "no
 	// inputs", and no number is ever reused. Values only; see [RunRequest.inputs].
 	Inputs map[string]*Value `protobuf:"bytes,9,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Outputs are the run's declared outputs once computed.
 	//
 	// Empty until the run reaches the end of its steps, and empty forever for a
 	// workflow that declares none. Absent on a run started before this field
-	// existed, which reads as "no declared outputs" — the same answer that run
+	// existed, which reads as "no declared outputs": the same answer that run
 	// would give if asked, so an old state and a new reader agree without a
 	// compatibility arm.
 	RunOutputs *RunOutputs `protobuf:"bytes,10,opt,name=run_outputs,json=runOutputs,proto3" json:"run_outputs,omitempty"`
@@ -7350,17 +7350,17 @@ type RunState struct {
 	// Carried because a saga is exactly the workload that outlives one segment: a
 	// provisioning run that suspends after step two and fails at step three has to
 	// undo work done by a segment that is no longer executing. Nothing else can know
-	// about it — history is not replayed after a Continue-As-New, which is the whole
+	// about it: history is not replayed after a Continue-As-New, which is the whole
 	// point of the seam.
 	//
 	// Append-only within a run, and consumed exactly once: a segment either finishes
-	// the run, suspends (appending what it registered), or fails — and only the
+	// the run, suspends (appending what it registered), or fails, and only the
 	// failing segment runs these, after which the run ends. There is no path where a
 	// segment compensates and then continues, which is what makes "a compensation
 	// runs at most once" a property of the shape rather than a flag somebody checks.
 	//
 	// Absent on a run started before this field existed, which reads as "nothing to
-	// undo" — the truth for such a run, since no specification it could be executing
+	// undo": the truth for such a run, since no specification it could be executing
 	// had an `undo:` to register (invariant 10, with no compatibility arm needed).
 	PendingUndo   []*PendingUndo `protobuf:"bytes,11,rep,name=pending_undo,json=pendingUndo,proto3" json:"pending_undo,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -7600,7 +7600,7 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 }
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
-// does not yet exist — atomically, through the SDK's SignalWithStartWorkflow,
+// does not yet exist, atomically, through the SDK's SignalWithStartWorkflow,
 // which closes the race an ordinary create-then-signal has: a caller who checks
 // "does it exist" and then either Runs or Signals can always be beaten between the
 // two calls, either by another creator or by the signal arriving before the run
@@ -7611,39 +7611,39 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 // "May this sender signal entity key K" and "may this sender CREATE an entity
 // under key K" are not the same question, and this handler never answers the
 // second by reusing the first's rule. Delivering a signal is authorized by the
-// signal policy the *target* already declared — [Workflow.signals], enforced the
+// signal policy the *target* already declared: [Workflow.signals], enforced the
 // same way [FlowstateServer.Signal] enforces it, against the memo recorded when
 // the entity was created. Creating one has nothing yet to declare a policy: there
 // is no target, no memo, no `signals:` block recorded anywhere to check. So it is
-// authorized the same way [FlowstateServer.Run] authorizes an ordinary run —
+// authorized the same way [FlowstateServer.Run] authorizes an ordinary run:
 // every check `Run` performs on [workflow] and [inputs] runs here too, on the
-// same fields, before either branch is taken — which is a strictly *stronger* bar
+// same fields, before either branch is taken, which is a strictly *stronger* bar
 // than delivering a signal (a bare workflow id, a signal name, and a payload)
 // asks for. An authenticated caller in their own namespace may always create,
 // exactly as they may always Run; what [entity_key] changes is only the address
 // the result is reachable at.
 //
-// [workflow] and [inputs] are read only on the branch that creates — see
+// [workflow] and [inputs] are read only on the branch that creates. See
 // [SignalWithStartResponse.created]. When the entity already exists, Temporal
 // never looks at them and this handler never lets a caller believe they changed
 // anything about the run they signalled.
 type SignalWithStartRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// EntityKey addresses the entity, composed with the caller's own namespace
-	// exactly as [RunRequest.entity_key] is — see that field's doc comment for
+	// exactly as [RunRequest.entity_key] is. See that field's doc comment for
 	// the grammar and the unforgeability argument, which apply unchanged here.
 	EntityKey string `protobuf:"bytes,1,opt,name=entity_key,json=entityKey,proto3" json:"entity_key,omitempty"`
 	// Workflow is the specification to start the entity from if it does not
-	// already exist. Checked exactly as [RunRequest.workflow] is — the same
-	// validation, the same signal-policy shape check, the same size bound —
+	// already exist. Checked exactly as [RunRequest.workflow] is (the same
+	// validation, the same signal-policy shape check, the same size bound)
 	// and ignored entirely if the entity is already running.
 	Workflow *Workflow `protobuf:"bytes,2,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Inputs seed the entity's arguments if it does not already exist. Checked
 	// exactly as [RunRequest.inputs] is, and ignored if the entity is already
-	// running — an existing entity's inputs were bound once, at its own
+	// running: an existing entity's inputs were bound once, at its own
 	// creation, and this call cannot rebind them.
 	Inputs map[string]*Value `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Name is the signal to deliver, matching what a waiting step declared —
+	// Name is the signal to deliver, matching what a waiting step declared:
 	// the same field, the same grammar, as [SignalRequest.name].
 	Name string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	// Payload becomes the waiting step's outputs, exactly as [SignalRequest.payload].
@@ -7723,10 +7723,10 @@ type SignalWithStartResponse struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	WorkflowId string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
 	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// Created is true when this call is what brought the entity into existence —
-	// false means a signal was delivered to an entity that was already running.
+	// Created is true when this call is what brought the entity into existence.
+	// False means a signal was delivered to an entity that was already running.
 	// A caller that needs to tell "I just created this" from "this already
-	// existed" — to decide whether to wait for a different handler, say — has
+	// existed" (to decide whether to wait for a different handler, say) has
 	// no other way to learn it, since Temporal's own SignalWithStartWorkflow
 	// answers the same shape (a run and a workflow execution) either way.
 	Created       bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
@@ -7906,8 +7906,8 @@ type TerminateRequest struct {
 	// Reason is recorded on the terminated execution, so whoever finds the run
 	// later learns why it was stopped rather than only that it was.
 	//
-	// A terminated run leaves no trace of its own explaining itself — that is what
-	// terminate means — so this is the only account of the decision there will be.
+	// A terminated run leaves no trace of its own explaining itself (that is what
+	// terminate means), so this is the only account of the decision there will be.
 	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -8028,15 +8028,15 @@ type ListRequest struct {
 	// something slightly different.
 	//
 	// The names it binds are a run's own: `workflow_id`, `run_id`, `status`,
-	// `start_time`, `close_time`, `finished`. `status` is the short name —
-	// `FAILED`, not `STATUS_FAILED` — and comparing it to a name no status has is
+	// `start_time`, `close_time`, `finished`. `status` is the short name
+	// (`FAILED`, not `STATUS_FAILED`) and comparing it to a name no status has is
 	// refused rather than silently matching nothing.
 	//
 	//	status == "FAILED"
 	//	status == "RUNNING" && start_time < timestamp("2026-08-01T00:00:00Z")
 	//	finished && close_time - start_time > duration("1h")
 	//
-	// `close_time` is null while a run is going — null rather than the epoch,
+	// `close_time` is null while a run is going: null rather than the epoch,
 	// because a run that has not finished has no close time and a filter that
 	// compared one against a date would otherwise report every running run as
 	// having finished in 1970. Comparing null errors, which is why `finished`
@@ -8047,7 +8047,7 @@ type ListRequest struct {
 	//
 	// A filter narrows the *answer*, never the work. The tenant a run belongs to
 	// is a memo, which Temporal cannot query, so a listing is already a bounded
-	// scan with a predicate applied to each result — and a filter that matches
+	// scan with a predicate applied to each result, and a filter that matches
 	// little makes a page more likely to come back short with a token, not more
 	// likely to scan further. The scan bounds are unchanged and unaffected by what
 	// is written here.
@@ -8135,17 +8135,17 @@ type RunSummary struct {
 	// CloseTime is when it finished, unset while it is still running.
 	CloseTime *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=close_time,json=closeTime,proto3" json:"close_time,omitempty"`
 	// Name is the workflow's own declared name (Workflow.name), not Temporal's
-	// WorkflowType — every run's WorkflowType is "Run", the one interpreter
+	// WorkflowType: every run's WorkflowType is "Run", the one interpreter
 	// workflow, so it cannot distinguish "nightly-etl" from "onboard-tenant".
 	//
-	// Populated from the run's memo, recorded unconditionally at submit —
+	// Populated from the run's memo, recorded unconditionally at submit,
 	// never from a search attribute, and deliberately so: a deployment may
 	// additionally project this into Temporal's visibility store for external
 	// tooling, but `flow list --filter` never depends on that having
 	// succeeded, or a filter with nothing wrong with it would silently return
 	// nothing on a deployment where search-attribute registration failed.
 	// Empty only for a run that predates this field entirely. Absence is not
-	// an error — see server/list.go and runfilter.go, where a filter comparing
+	// an error. See server/list.go and runfilter.go, where a filter comparing
 	// against `name` simply does not match a run that carries none.
 	Name          string `protobuf:"bytes,6,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -8229,7 +8229,7 @@ type ListResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Runs  []*RunSummary          `protobuf:"bytes,1,rep,name=runs,proto3" json:"runs,omitempty"`
 	// NextPageToken continues the listing, and is set whenever the scan stopped
-	// with more to look at — including when this page came back short or empty.
+	// with more to look at, including when this page came back short or empty.
 	//
 	// That case is real rather than theoretical. The tenant a run belongs to is
 	// recorded as a memo, which Temporal cannot filter on, so the server reads a
@@ -8290,7 +8290,7 @@ func (x *ListResponse) GetNextPageToken() string {
 type SourceFile struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what a diagnostic should call this file. It is a label, not a path
-	// the server resolves — nothing here opens anything — so a caller with no
+	// the server resolves (nothing here opens anything), so a caller with no
 	// filesystem may say `<stdin>` or a request id and still get a readable report.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Source is the file's bytes.
@@ -8403,8 +8403,8 @@ type ValidateResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Report is one entry per file, including the files that were clean.
 	//
-	// Wrapped rather than returned bare so the RPC can grow a second thing to say —
-	// which version of the grammar answered, how long it took — without changing
+	// Wrapped rather than returned bare so the RPC can grow a second thing to say
+	// (which version of the grammar answered, how long it took) without changing
 	// the shape a caller already parses.
 	Report        *ValidationReport `protobuf:"bytes,1,opt,name=report,proto3" json:"report,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -8725,7 +8725,7 @@ func (x *ScheduleActionResult) GetRunId() string {
 //
 // Deliberately not the whole description: a listing answers which schedules exist
 // and whether they are live, and reading what one is configured to pass a run is
-// DescribeSchedule — one schedule and one authorization decision, the same split
+// DescribeSchedule: one schedule and one authorization decision, the same split
 // [RunSummary] makes for runs.
 type ScheduleSummary struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -8734,7 +8734,7 @@ type ScheduleSummary struct {
 	// Paused is whether firings are currently suppressed.
 	Paused bool `protobuf:"varint,2,opt,name=paused,proto3" json:"paused,omitempty"`
 	// Note is the human-readable message carried on the schedule, which is where
-	// the reason for a pause is written — by whoever paused it, or by Temporal when
+	// the reason for a pause is written: by whoever paused it, or by Temporal when
 	// a failure paused it.
 	Note string `protobuf:"bytes,3,opt,name=note,proto3" json:"note,omitempty"`
 	// NextRunTime is when this would next fire, unset when it is paused or when
@@ -8810,14 +8810,14 @@ type ScheduleDescription struct {
 	// WorkflowName is the workflow a firing runs, read back out of the
 	// specification the schedule carries.
 	WorkflowName string `protobuf:"bytes,2,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
-	// Trigger is the cadence, as it was created — the same message a Flowfile's
+	// Trigger is the cadence, as it was created: the same message a Flowfile's
 	// `triggers.schedule` compiles to, so what comes back out reads like what went
 	// in.
 	//
 	// Read back out of the specification the schedule stores, which is where the
 	// author's own words survive. Temporal translates a cron expression into a
 	// calendar spec when it stores one, so asking the cluster what the cadence is
-	// answers `0 9 * * MON-FRI` as a set of calendar ranges — true, and not what
+	// answers `0 9 * * MON-FRI` as a set of calendar ranges: true, and not what
 	// anybody wrote or would recognise.
 	//
 	// The two cannot disagree, because CreateSchedule is the only thing that writes
@@ -8844,7 +8844,7 @@ type ScheduleDescription struct {
 	// Reported because a schedule that has been running for a month is a thing
 	// somebody eventually has to explain, and "what is it passing" is the first
 	// question. Absent rather than empty when the stored specification cannot be
-	// read back — a schedule created by a build whose message shape has since moved
+	// read back: a schedule created by a build whose message shape has since moved
 	// is describable in every other respect, and failing the whole description over
 	// one field would take away the answer along with the doubt.
 	Inputs        map[string]*Value `protobuf:"bytes,9,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -8949,7 +8949,7 @@ func (x *ScheduleDescription) GetInputs() map[string]*Value {
 type CreateScheduleRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Workflow is the specification every firing runs, exactly as [RunRequest]
-	// takes it — the same compiled artifact, validated and size-checked the same
+	// takes it: the same compiled artifact, validated and size-checked the same
 	// way.
 	//
 	// The whole specification rather than a reference to one stored elsewhere,
@@ -8961,8 +8961,8 @@ type CreateScheduleRequest struct {
 	// Inputs are the arguments every firing starts its run with.
 	//
 	// Bound and type-checked *here*, once, while whoever is creating the schedule
-	// is still present to be told (invariant 6). The alternative — checking at each
-	// firing — puts the refusal at three in the morning in a worker's log, for a
+	// is still present to be told (invariant 6). The alternative, checking at each
+	// firing, puts the refusal at three in the morning in a worker's log, for a
 	// mistake made at a keyboard weeks earlier, which is the failure this whole
 	// repository's fail-closed rule is about.
 	//
@@ -8975,8 +8975,8 @@ type CreateScheduleRequest struct {
 	// Name is what this tenant will call the schedule. Empty takes the workflow's
 	// own name, which is the right default and usually the only name anybody wants.
 	//
-	// Given explicitly when one workflow wants two cadences — a report that runs
-	// hourly for one region and nightly for another is one file and two schedules —
+	// Given explicitly when one workflow wants two cadences (a report that runs
+	// hourly for one region and nightly for another is one file and two schedules),
 	// which is exactly when a generated id would be useless.
 	Name string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
 	// Paused creates the schedule without letting it fire.
@@ -8984,7 +8984,7 @@ type CreateScheduleRequest struct {
 	// A property of the act and not of the file, which is why it is here rather
 	// than on [ScheduleTrigger]: the file says what the cadence is, and whether this
 	// deployment is currently honouring it is the deployment's answer. It is also
-	// what makes creating one safe to rehearse — create paused, describe it, and
+	// what makes creating one safe to rehearse: create paused, describe it, and
 	// resume when the next firing time is one somebody meant.
 	Paused bool `protobuf:"varint,4,opt,name=paused,proto3" json:"paused,omitempty"`
 	// Backfill is deliberately creation-only: it is an operator request, not a
@@ -9066,7 +9066,7 @@ func (x *CreateScheduleRequest) GetBackfill() []*ScheduleBackfill {
 type CreateScheduleResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Schedule is the created schedule as the cluster now holds it, so a caller
-	// sees the next firing times without a second request — which is the one fact
+	// sees the next firing times without a second request, which is the one fact
 	// that most often reveals a cadence meaning something other than what was
 	// intended.
 	Schedule      *ScheduleDescription `protobuf:"bytes,1,opt,name=schedule,proto3" json:"schedule,omitempty"`
@@ -9121,7 +9121,7 @@ func (x *CreateScheduleResponse) GetSchedule() *ScheduleDescription {
 // created one at a time by people, and a deployment with a thousand of them has a
 // different problem.
 //
-// The scan is still bounded — see `maxScheduleScan` — and when the bound stops it
+// The scan is still bounded (see `maxScheduleScan`) and when the bound stops it
 // the response says so rather than presenting a partial listing as the whole of
 // it. That is a smaller promise than `List` makes, and it is stated instead of
 // implied. A `page_token` is a field 1 and 2 away on either message the day a
@@ -9402,7 +9402,7 @@ type PauseScheduleRequest struct {
 	// Note is recorded on the schedule and shown by list and describe.
 	//
 	// Worth writing, because a paused schedule found by somebody else is a thing
-	// with no explanation attached — the same reason [TerminateRequest] carries a
+	// with no explanation attached: the same reason [TerminateRequest] carries a
 	// reason.
 	Note          string `protobuf:"bytes,2,opt,name=note,proto3" json:"note,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -9630,8 +9630,8 @@ func (x *TriggerScheduleRequest) GetName() string {
 // TriggerScheduleResponse is empty.
 //
 // Not the run it started, and that is Temporal's shape rather than a choice: a
-// trigger is asynchronous — the cluster takes the action and the schedule's own
-// history records it — so there is no execution to name by the time this returns.
+// trigger is asynchronous (the cluster takes the action and the schedule's own
+// history records it), so there is no execution to name by the time this returns.
 // `DescribeSchedule` reports it as a recent run once it has been taken, which is
 // what the CLI points at.
 type TriggerScheduleResponse struct {
@@ -9850,8 +9850,8 @@ type Workflow_StepOutputs struct {
 	//
 	// # Why the answer travels beside the transcript
 	//
-	// This message *is* what a finished run hands back — the local driver returns
-	// it and the durable workflow completes with it — so it is the one value both
+	// This message *is* what a finished run hands back (the local driver returns
+	// it and the durable workflow completes with it), so it is the one value both
 	// drivers already carry out of a run. A field here is therefore how the answer
 	// reaches a caller without either driver changing shape, which is what keeps
 	// `flow run local` and a durable run reporting one thing (invariant 3).
@@ -9859,7 +9859,7 @@ type Workflow_StepOutputs struct {
 	// The alternative was a new result message wrapping both. That is a *different
 	// type* on the workflow's completion payload, and a run that completed before
 	// the change is read back by decoding its stored payload into whatever type the
-	// reader names — so an old result would be decoded as a new message and mean
+	// reader names, so an old result would be decoded as a new message and mean
 	// something else, or fail. Adding a field is free and reads back as absent
 	// (invariant 10); replacing the type is not, and this is a payload nobody can
 	// rewrite after the fact.
@@ -9870,9 +9870,9 @@ type Workflow_StepOutputs struct {
 	// A reader never has to ask which of the two it is holding, because they are
 	// different fields of different types.
 	//
-	// Meaningless on the copies of this message that are not a run's result — a
+	// Meaningless on the copies of this message that are not a run's result (a
 	// scope's visible outputs, one loop iteration's results, the outputs carried
-	// across a Continue-As-New — where it is simply never set. The run's own end is
+	// across a Continue-As-New), where it is simply never set. The run's own end is
 	// the only place anything writes it.
 	RunOutputs    *RunOutputs `protobuf:"bytes,2,opt,name=run_outputs,json=runOutputs,proto3" json:"run_outputs,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -10248,7 +10248,7 @@ func (x *Value_Error) GetCode() Value_Error_Code {
 //
 // It exists for exactly one reason: so a secret reference can sit inside a
 // header map, a form or a JSON body. A structure containing an expression
-// compiles into a single CEL expression, and the *workflow* evaluates that —
+// compiles into a single CEL expression, and the *workflow* evaluates that,
 // which is what evaluating a reference must never mean, because everything
 // workflow code produces is written to durable, broadly readable history.
 // Keeping every entry a Value keeps the reference a reference for the whole
@@ -10440,8 +10440,8 @@ func (x *Value_Structure_Map) GetEntries() map[string]*Value {
 // Log is a task that emits a message for a person to read.
 //
 // It exists because `echo` was doing this job under a name that describes the
-// wrong thing: echo *returns* a value, and the two uses that survived `vars:` —
-// hello-world scaffolding and "this branch ran" markers — were never about the
+// wrong thing: echo *returns* a value, and the two uses that survived `vars:`
+// (hello-world scaffolding and "this branch ran" markers) were never about the
 // return. They were about someone seeing it. Naming the capability after what it
 // is for is what lets the surfaces that show it (a `flow run` transcript, the
 // watch view, the run record) treat it as a message rather than as a value that
@@ -10451,7 +10451,7 @@ func (x *Value_Structure_Map) GetEntries() map[string]*Value {
 //
 // A log line is an effect on a reader, not a value for a later step. Offering
 // `result` would make `${steps.announce.result}` legal, which is the `vars:` use
-// case sneaking back in through the one task that has no business carrying data —
+// case sneaking back in through the one task that has no business carrying data,
 // and it would give a step two reasons to exist, so the file could no longer say
 // which one was meant. A capability that emits nothing is how this language says
 // "this produces nothing you can read".
@@ -10539,15 +10539,15 @@ type Task_Log_Inputs struct {
 	// Level says how much it matters, and defaults to LEVEL_INFO.
 	//
 	// An enum rather than a free string, because a sink has to map it onto
-	// something — a terminal colour, a severity field, a filter — and a set that
+	// something (a terminal colour, a severity field, a filter), and a set that
 	// an author can extend by typo is a set nothing downstream can switch on.
 	Level Task_Log_Level `protobuf:"varint,2,opt,name=level,proto3,enum=flowstate.v1.Task_Log_Level" json:"level,omitempty"`
 	// Fields carry structure for a sink that has somewhere to put it, and are
 	// ignored by one that does not.
 	//
 	// String-valued rather than Value-valued, and that is a real limit rather
-	// than an oversight: every sink this can reach — a terminal line, a logging
-	// backend's attributes, a run record — renders to text in the end, and a
+	// than an oversight: every sink this can reach (a terminal line, a logging
+	// backend's attributes, a run record) renders to text in the end, and a
 	// nested value would render differently at each of them. Compose the string
 	// in the expression, where the author can see what it will say.
 	//
@@ -10612,7 +10612,7 @@ func (x *Task_Log_Inputs) GetFields() map[string]string {
 // Outputs is empty and stays empty.
 //
 // Present rather than absent because every task's shape is described from a
-// descriptor — `flow tasks` and the language server both read one — and a task
+// descriptor (`flow tasks` and the language server both read one), and a task
 // with no message at all would have to be a special case in each of them. An
 // empty message says "nothing" in the same vocabulary everything else uses.
 type Task_Log_Outputs struct {
@@ -10657,7 +10657,7 @@ type Task_HTTP_Inputs struct {
 	Method *string                `protobuf:"bytes,2,opt,name=method,proto3,oneof" json:"method,omitempty"`
 	// Request headers.
 	//
-	// Strings, because a header is text on the wire — and a secret reference is
+	// Strings, because a header is text on the wire, and a secret reference is
 	// not a string, so a `headers:` mapping carrying one never reaches this
 	// field at all. It arrives as a [Value.Structure] among the task's inputs
 	// and is applied entry by entry, each reference resolved as its header is
@@ -10680,7 +10680,7 @@ type Task_HTTP_Inputs struct {
 	// first task input built to take a secret reference.
 	//
 	// A `Value` rather than a string, deliberately: a field declared as Value
-	// receives the author's value whole — reference included — where a string
+	// receives the author's value whole (reference included) where a string
 	// field can only hold what the workflow already evaluated, and evaluating
 	// a secret is what would put it in history.
 	//
@@ -10688,7 +10688,7 @@ type Task_HTTP_Inputs struct {
 	// [Value.Structure], which is what makes `Authorization` writable by hand.
 	// This field stays, and stays the recommended spelling: it says what the
 	// credential *is*, so the worker renders the header and an author cannot
-	// get the scheme wrong — and it leaves the rest of `headers` free to hold
+	// get the scheme wrong, and it leaves the rest of `headers` free to hold
 	// expressions, which a structure carrying a reference deliberately cannot.
 	//
 	// The worker resolves it inside the activity and sends
@@ -10726,7 +10726,7 @@ type Task_HTTP_Inputs struct {
 	// than about the mechanism: query strings are written to access logs, kept in
 	// browser history, and forwarded in Referer headers by anything that follows
 	// a redirect. `form` is the same kind of map, encoded by the same function a
-	// few lines away, and accepts one — so the refusal is stated twice on
+	// few lines away, and accepts one, so the refusal is stated twice on
 	// purpose, once in the compiler where an author can see it and once in
 	// `valueToQueryString` for a specification that never met the compiler.
 	Query map[string]*Value `protobuf:"bytes,6,rep,name=query,proto3" json:"query,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -10734,7 +10734,7 @@ type Task_HTTP_Inputs struct {
 	//
 	// The common case, and until now the most laborious: sending an object meant
 	// building the JSON by hand in a CEL expression and remembering the header.
-	// Mutually exclusive with `body` and `form` — three ways to say what to send
+	// Mutually exclusive with `body` and `form`: three ways to say what to send
 	// is a request whose meaning depends on field order.
 	//
 	// A field of the body may be a secret reference, at any depth: the task
@@ -10744,8 +10744,8 @@ type Task_HTTP_Inputs struct {
 	// A form body, url-encoded with a matching Content-Type. Mutually exclusive
 	// with `body` and `json`.
 	//
-	// An entry may be a secret reference — an OAuth `client_secret` is the case
-	// — and it is resolved as the body is encoded, inside the activity. The
+	// An entry may be a secret reference (an OAuth `client_secret` is the case),
+	// and it is resolved as the body is encoded, inside the activity. The
 	// difference from `query`, which is the same kind of map encoded by the same
 	// function, is entirely the destination: a form body is sent in the request,
 	// where a query string is written down by everything it passes.
@@ -10755,7 +10755,7 @@ type Task_HTTP_Inputs struct {
 	//
 	// The default is unchanged and needs no expression: 2xx succeeds, 4xx fails
 	// permanently, 5xx is retried. This is for the cases that default cannot
-	// express — a 404 that means "not there yet, and that is fine", or an API
+	// express: a 404 that means "not there yet, and that is fine", or an API
 	// that answers 200 with an error in the body:
 	//
 	//	expect: ${status_code == 200 || status_code == 404}
@@ -10919,7 +10919,7 @@ type Task_HTTP_Outputs struct {
 	// so ${steps.<id>.json.items[0].id} works without a second step to parse it.
 	//
 	// Deliberately a single value rather than a repeated one, and it should stay
-	// that way. A streaming response is not a unary response with more elements —
+	// that way. A streaming response is not a unary response with more elements:
 	// it is a different interaction shape with a different execution model, since
 	// a long-lived stream cannot live inside one activity at all. When streaming
 	// arrives it gets its own field, which costs nothing because adding a field is
@@ -11004,7 +11004,7 @@ func (x *Task_HTTP_Outputs) GetJson() *v1alpha1.Value {
 type RunResponse_Error struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Message string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	// Kind classifies why the run failed, mirroring flowstatev1.ErrorKind — the
+	// Kind classifies why the run failed, mirroring flowstatev1.ErrorKind, the
 	// same classification retry policy is built from, so an agent (or any
 	// programmatic consumer) can decide "repair the file / retry / escalate to
 	// the operator" without parsing Message.
@@ -11012,8 +11012,8 @@ type RunResponse_Error struct {
 	// A plain string rather than an enum: the set this names already lives as a
 	// Go type in the execution-independent layer (errors.go) because it drives
 	// retry semantics on both drivers before it ever needed to travel, and it
-	// already crosses the durable driver's own wire — Temporal's
-	// ApplicationError carries it as its Type — as this same string. Restating
+	// already crosses the durable driver's own wire (Temporal's
+	// ApplicationError carries it as its Type) as this same string. Restating
 	// it as a second, proto-owned enum would be two closed sets that could
 	// disagree about what "PolicyDenied" means; this field is that value
 	// reaching the client rather than a parallel definition of it.
