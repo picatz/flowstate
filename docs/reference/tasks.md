@@ -18,30 +18,30 @@ Perform an HTTP request and return the response.
 
 **Inputs**
 
-| Name | Type | Required | Deferred |
-|---|---|---|---|
-| `url` | `string` | yes | no |
-| `method` | `string` | no | no |
-| `headers` | `map[string, string]` | no | no |
-| `body` | `string` | no | no |
-| `bearer` | `any` | no | no |
-| `credential` | `string` | no | no |
-| `outputs` | `map[string, any]` | no | yes |
-| `query` | `map[string, any]` | no | no |
-| `json` | `any` | no | no |
-| `form` | `map[string, any]` | no | no |
-| `expect` | `any` | no | yes |
-| `parse_json` | `bool` | no | no |
-| `retry_on_unknown_outcome` | `bool` | no | no |
+| Name | Type | Required | Deferred | Bounds |
+|---|---|---|---|---|
+| `url` | `string` | yes | no | a URI |
+| `method` | `string` | no | no | 3 to 6 characters; matching ^(?i)(GET\|POST\|PUT\|PATCH\|DELETE)$ |
+| `headers` | `map[string, string]` | no | no | may hold a secret reference |
+| `body` | `string` | no | no | none |
+| `bearer` | `any` | no | no | may hold a secret reference |
+| `credential` | `string` | no | no | 1 to 128 characters; matching ^[a-z][a-z0-9-]*$; may hold a secret reference |
+| `outputs` | `map[string, any]` | no | yes | none |
+| `query` | `map[string, any]` | no | no | none |
+| `json` | `any` | no | no | may hold a secret reference |
+| `form` | `map[string, any]` | no | no | may hold a secret reference |
+| `expect` | `any` | no | yes | must be written as an expression |
+| `parse_json` | `bool` | no | no | none |
+| `retry_on_unknown_outcome` | `bool` | no | no | none |
 
 **Outputs**
 
-| Name | Type |
-|---|---|
-| `status_code` | `int` |
-| `headers` | `map[string, string]` |
-| `body` | `string` |
-| `json` | `any` |
+| Name | Type | Bounds |
+|---|---|---|
+| `status_code` | `int` | 100 to 599 |
+| `headers` | `map[string, string]` | none |
+| `body` | `string` | none |
+| `json` | `any` | none |
 
 ### `log`
 
@@ -49,11 +49,11 @@ Emit a message for a person to read.
 
 **Inputs**
 
-| Name | Type | Required | Deferred |
-|---|---|---|---|
-| `message` | `string` | yes | no |
-| `level` | `info \| warn \| error` | no | no |
-| `fields` | `map[string, string]` | no | no |
+| Name | Type | Required | Deferred | Bounds |
+|---|---|---|---|---|
+| `message` | `string` | yes | no | none |
+| `level` | `info \| warn \| error` | no | no | none |
+| `fields` | `map[string, string]` | no | no | at most 32 entries; keys 1 to 64 characters; values at most 1024 characters |
 
 **Outputs**
 

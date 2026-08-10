@@ -294,17 +294,19 @@ not a value for a later step; to carry a value, name it with `vars:` instead.
 | `http`    | `url`, `method`, `headers`, `body`, `query`, `form`, `json`, `parse_json`, `outputs`, `expect`, `retry_on_unknown_outcome`, `bearer`, `credential` | `status_code`, `headers`, `body`, `json` |
 
 Names only: types, defaults and which are required belong to the schema, and
-repeating them here is how the two disagree. `flow tasks` prints the full catalog;
-`flow tasks --output json` carries the same catalog as one document, for a script or
-an agent. [docs/reference/tasks.md](docs/reference/tasks.md) is the generated,
-complete version of both tables.
+repeating them here is how the two disagree. `flow tasks` lists every task on one
+line each; `flow tasks <name>` describes one in full, with every input, what bounds
+it, and a step to copy; `flow tasks --output json` carries the whole catalog as one
+document, for a script or an agent. [docs/reference/tasks.md](docs/reference/tasks.md)
+is the generated, complete version of both tables.
 
 > [!TIP]
 > Every expression in a workflow (a task input, a `vars:` value, `if:`, `items:`,
 > `wait_until:`) is evaluated against one vocabulary, reaching the same
 > CEL extension libraries: `bindings`, `comprehensions`, `encoders`, `json`, `lists`,
 > `math`, `optional`, `protos`, `regex`, `sets`, `strings`. There is nothing to
-> enable, and `flow tasks` prints the same set.
+> enable, and `flow tasks --expressions` prints the same set, with the functions
+> each library adds.
 
 A plugin's tasks are not in this table, or in `flow validate`'s registry. See
 [Plugins](docs/ARCHITECTURE.md#plugins) for why, and `flow plugins --plugin-dir <dir>`
@@ -342,7 +344,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow schedule pause <name>` | Stop a schedule firing without deleting it, recording a `--note` saying why. |
 | `flow schedule resume <name>` | Let a paused schedule fire again. Missed firings are not made up. |
 | `flow schedule trigger <name>` | Fire a schedule now, which is how a schedule is tested. Fires even a paused one. |
-| `flow tasks` | List the tasks a workflow may use, and the CEL libraries every expression reaches. |
+| `flow tasks` | List the tasks a workflow may use. `flow tasks <name>` describes one; `flow tasks --expressions` is what every expression can say. |
 | `flow plugins` | List the plugins on a search path and the tasks each adds, by launching them and asking. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |

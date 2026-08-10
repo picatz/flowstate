@@ -965,29 +965,36 @@ flow run local examples/expense-approval/workflow.yaml --input-file examples/exp
 
 ## `flow tasks`
 
-List the tasks workflows can use
+List the tasks workflows can use, or describe one
 
 ```
-flow tasks [flags]
+flow tasks [name] [flags]
 ```
 
-List the tasks available to workflow steps, along with the CEL libraries every expression reaches.
+List the tasks available to workflow steps, one line each. Name one to see it in full: every input with what may be written in it, what the task evaluates itself, what it hands back, and a step to copy.
 
 Examples:
 
 ```sh
-# List available tasks, their inputs, and their outputs:
+# Every task a step can name, one line each:
 flow tasks
 
-# The same thing as a document, for a script or an agent:
+# One task in full: its inputs, their bounds, and a step to copy:
+flow tasks http
+
+# What every expression in a Flowfile can say:
+flow tasks --expressions
+
+# The whole catalog as a document, for a script or an agent:
 flow tasks --output json
 
-# What inputs does the http task take, and which are required?
-flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'
+# One task as a document:
+flow tasks http --output json | jq '.inputs'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--expressions` | `bool` | `false` | — | describe what every expression can say: the CEL functions, the duration constructors, `now` inside a wait, and where a value comes from |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 
 ## `flow terminate`
