@@ -45,6 +45,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Before the policies load and before any plugin process starts, because
+	// those are work, and the venue is announced before a run does any. The
+	// counterpart line in `flow run` names an address; this one names no server
+	// because there is none to name, which is the whole difference between the
+	// two venues said in one word. See venue.go.
+	announceVenue(cmd, localVenue())
+
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses
 	// the run, exactly as it refuses the worker.

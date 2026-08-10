@@ -373,6 +373,13 @@ binary's own command tree, with which environment variable feeds each flag's def
 `run`, `get`, `watch`, `list`, `signal`, `cancel` and `terminate` talk to a server
 and take `--address` (or `FLOWSTATE_ADDRESS`); `run local` contacts nothing.
 
+Which of those two a run is on is configured, never guessed: `flow run` means the
+server and never falls back to executing here when none answers, because a network
+failure must not turn a deploy into a laptop run. Every run says so before it starts,
+on stderr, as `running locally` or `running on <address> as <the identity this
+command will present>`, so the address a shell happens to be carrying is never
+something to discover afterwards.
+
 ### Configuration
 
 [docs/reference/envvars.md](docs/reference/envvars.md) is the generated, complete
