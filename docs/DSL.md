@@ -2224,9 +2224,11 @@ with a command whose only payload is that.
 
 A callee's own steps may carry `undo:`, and a compensation they register lands on the
 same run-level [`UndoLog`](../pkg/flowstate/v1/undo.go) a top-level step's would —
-`v1.UndoScopeCall` is one of the three placements `CheckUndoPlacement` allows,
-alongside the run's own top level and a `loop:` body; only `UndoScopeConcurrent` is
-refused. Nothing about *how* a compensation reaches the log changed to
+`v1.UndoScopeCall` is one of the placements `CheckUndoPlacement` allows, alongside
+the run's own top level, a `loop:` body, and, since concurrent scopes gained their
+structural ordering key, a `for_each` body or `parallel` branch; what stays refused
+is a compensation on a step with no effect of its own, such as the `call:` step
+itself. Nothing about *how* a compensation reaches the log changed to
 make this true: the durable executor already shared `e.undo` by pointer with the
 executor a call descends into, for the same reason it shares `signals` and `progress`
 across every level — a compensation belongs to the run, not to the level that happens
@@ -2274,20 +2276,12 @@ A third — a `loop:` body — was a narrowing when this was written and is not 
 more; it is left below with the reason it was retired, because the argument that
 retired it is the same one that keeps the first narrowing in force.
 
-**`undo:` is refused inside a `for_each` body and a `parallel:` branch.** This is
-invariant 3, not effort. Compensations run in reverse registration order, and
-registration order inside concurrent work is not the same on the two drivers: the local
-driver runs branches and iterations sequentially in declaration order, deliberately, so
-that a local run is comparable, while the durable driver runs them at once. A saga
-spanning a fan-out would therefore rehearse in one order and run in another — a local
-run lying about precisely the property sagas exist to get right. Fixing it means
-ordering by something both drivers can agree on, which is a declaration path rather than
-a sequence, and deciding what "reverse" means across branches that are unordered by
-construction. Neither answer is obvious and neither is guessed at here. The refusal is a
-positioned diagnostic that says which, and the two execution drivers refuse it too, so a
-specification that never came from a Flowfile cannot slip past. A `call:` does not share
-this narrowing — see "Compensation composes through a call" above — because it is not
-concurrent: the reason this refusal exists is exactly the reason it does not apply there.
+**`undo:` inside `for_each` and `parallel:` uses a structural ordering key.** Each
+concurrent child accumulates successful work privately. At the join, its registrations
+are merged by input iteration index or branch declaration index, followed by registration
+order inside that child. Compensation reverses that total order. Completion time is never
+part of the key, so local sequential rehearsal and durable concurrent execution agree;
+partial completion, retries, cancellation, and a nested `call:` cannot perturb it.
 
 **`undo:` is *not* refused inside a `loop:` body.** It was, and the reason it gave did
 not survive being checked (#253). The refusal said that a sequential loop's registration

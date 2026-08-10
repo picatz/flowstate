@@ -1020,8 +1020,7 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		waits:    e.waits,
 		undo:     e.undo,
 
-		// Registration order inside a `for_each` is not the same on both drivers —
-		// see [v1.UndoScopeConcurrent].
+		// The concurrent scope is merged by structural position at the parent.
 		undoScope: v1.UndoScopeConcurrent,
 
 		callDepth: e.callDepth,
@@ -1052,6 +1051,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 
 	results := make([]*v1.Workflow_StepOutputs, len(items))
 	errs := make([]error, len(items))
+	undos := make([]*v1.UndoLog, len(items))
 
 	// A bounded number of workers pull from a shared index, which keeps at most
 	// MaxParallel iterations in flight without needing a semaphore.
@@ -1067,6 +1067,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				}
 				next++
 
+				iterationUndo := v1.NewUndoLog(nil)
 				worker := &executor{
 					ctx:       gctx,
 					spec:      e.spec,
@@ -1076,7 +1077,7 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					scope:     e.scope.WithLocal(iterator, items[i]).WithOutputs(cloneOutputs(e.scope.GetOutputs())),
 					budget:    e.budget,
 					signals:   e.signals,
-					undo:      e.undo,
+					undo:      iterationUndo,
 					undoScope: v1.UndoScopeConcurrent,
 					callDepth: e.callDepth,
 
@@ -1094,9 +1095,11 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					waits: e.waits,
 				}
 				if err := worker.runNodes(loop.GetBody(), depth, susp); err != nil {
+					undos[i] = iterationUndo
 					errs[i] = err
 					continue
 				}
+				undos[i] = iterationUndo
 				results[i] = bodyOutputs(loop.GetBody(), worker.scope.GetOutputs())
 			}
 			done.Send(gctx, nil)
@@ -1105,6 +1108,11 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 
 	for w := 0; w < limit; w++ {
 		done.Receive(e.ctx, nil)
+	}
+	// Iteration index, followed by registration position within the iteration,
+	// is the deterministic ordering key. Never merge on coroutine completion.
+	for _, child := range undos {
+		e.undo.Append(child)
 	}
 
 	for i, err := range errs {
@@ -1120,12 +1128,14 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 	branches := parallel.GetBranches()
 	scopes := make([]*v1.Workflow_StepOutputs, len(branches))
 	errs := make([]error, len(branches))
+	undos := make([]*v1.UndoLog, len(branches))
 
 	done := workflow.NewChannel(e.ctx)
 
 	for i, branch := range branches {
 		i, branch := i, branch
 		workflow.Go(e.ctx, func(gctx workflow.Context) {
+			branchUndo := v1.NewUndoLog(nil)
 			// Every branch sees the outputs that existed before the block, never
 			// a sibling's. Branches are unordered, so observing a sibling would
 			// make the result depend on scheduling.
@@ -1139,7 +1149,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 				scope:     e.scope.WithOutputs(branchOutputs),
 				budget:    e.budget,
 				signals:   e.signals,
-				undo:      e.undo,
+				undo:      branchUndo,
 				undoScope: v1.UndoScopeConcurrent,
 				callDepth: e.callDepth,
 
@@ -1156,6 +1166,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 			if err := worker.runNodes(branch.GetSteps(), depth+1, susp+1); err != nil {
 				errs[i] = err
 			}
+			undos[i] = branchUndo
 			scopes[i] = branchOutputs
 			done.Send(gctx, nil)
 		})
@@ -1163,6 +1174,10 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 
 	for range branches {
 		done.Receive(e.ctx, nil)
+	}
+	// Branch declaration index is the parallel form of the same structural key.
+	for _, child := range undos {
+		e.undo.Append(child)
 	}
 
 	for i, err := range errs {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -61,6 +63,31 @@ type UndoCase struct {
 	// Recorded is every token the recording server must have received, in order:
 	// the steps that ran, then the compensations that ran.
 	Recorded []string
+
+	// UnorderedPrefix is how many leading entries of Recorded are compared as a
+	// set rather than a sequence. Zero for every sequential case. A concurrent
+	// case sets it to the number of work requests its children make, because
+	// which child's request reaches the server first is the scheduler's choice
+	// on the durable driver and no claim of this corpus; the compensations that
+	// follow the prefix are the claim, and stay order-exact. Use
+	// [AssertRecorded] rather than comparing Recorded directly.
+	UnorderedPrefix int
+}
+
+// AssertRecorded compares what the recording server received against a case's
+// expectation, honouring [UndoCase.UnorderedPrefix]. One comparison, shared by
+// both drivers, so the two cannot come to disagree about what "in order" means.
+func AssertRecorded(t testing.TB, c UndoCase, got []string) {
+	t.Helper()
+
+	require.Len(t, got, len(c.Recorded),
+		"the number of effects is not what compensating should have produced")
+
+	n := c.UnorderedPrefix
+	require.ElementsMatch(t, c.Recorded[:n], got[:n],
+		"the concurrent work that ran is not the set that should have run")
+	require.Equal(t, c.Recorded[n:], got[n:],
+		"the effects that happened, and their order, are not what compensating should have produced")
 }
 
 // NewUndoServer starts a server that records what reached it, and returns its base
@@ -162,6 +189,15 @@ func fails(id, base, token string) *v1.Node {
 			Inputs: map[string]*v1.Value{"url": v1.NewLiteral(base + "/fail/" + token)},
 		}},
 	}
+}
+
+func recordsItem(id, base, iterator string) *v1.Node {
+	return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{
+		Name: "http", Inputs: map[string]*v1.Value{
+			"url":     v1.NewExpr(`"` + base + `/do/" + ` + iterator),
+			"outputs": v1.NewExpr(`{"said": response.body}`),
+		},
+	}}}
 }
 
 // UndoCases are the shared saga cases. Both drivers run every one of them.
@@ -287,6 +323,78 @@ func UndoCases(base string) []UndoCase {
 			},
 			Fails:    false,
 			Recorded: []string{"a", "b"},
+		},
+		{
+			Name: "for_each compensations use reverse input order rather than completion order",
+			Workflow: &v1.Workflow{Name: "undo-for-each-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "fan", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items: v1.NewExpr(`["a", "b"]`), Iterator: "item", MaxParallel: 2,
+					Body: []*v1.Node{undoing(recordsItem("inner", base, "item"), base, "/do/undo")},
+				}}},
+				fails("boom", base, "boom"),
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "inner", undid "inner"`,
+			Recorded:        []string{"a", "b", "boom", "undo-b", "undo-a"},
+			UnorderedPrefix: 3,
+		},
+		{
+			// The failure path of the merge: an iteration that dies after
+			// registering still hands its private log to the parent, so what the
+			// iteration did before failing comes back off. A merge that only
+			// happened at a successful join would leak exactly the work a failed
+			// fan-out leaves behind, which is the case sagas exist for.
+			Name: "a failing iteration still gives back what it did",
+			Workflow: &v1.Workflow{Name: "undo-for-each-partial", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "fan", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items: v1.NewExpr(`["a"]`), Iterator: "item",
+					Body: []*v1.Node{
+						undoing(recordsItem("inner", base, "item"), base, "/do/undo"),
+						fails("boom", base, "boom"),
+					},
+				}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "inner"`,
+			Recorded: []string{"a", "boom", "undo-a"},
+		},
+		{
+			// A concurrent fan-out has launched every iteration before it can
+			// learn that one failed, so the iteration past the failing index
+			// still runs, registers, and is taken back on both drivers. The
+			// failing iteration's step registers nothing, exactly as a failed
+			// top-level step registers nothing; the sibling's compensation is
+			// the point. One activity per iteration, because the recorded
+			// sequence is asserted exactly and one-per-child is the shape whose
+			// scheduling order the corpus has already proven deterministic.
+			Name: "a concurrent fan-out compensates iterations past the failure",
+			Workflow: &v1.Workflow{Name: "undo-for-each-past-failure", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "fan", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items: v1.NewExpr(`["boom", "b"]`), Iterator: "item", MaxParallel: 2,
+					Body: []*v1.Node{undoing(&v1.Node{Id: "inner", Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http", Inputs: map[string]*v1.Value{
+							"url":     v1.NewExpr(`item == "boom" ? "` + base + `/fail/boom" : "` + base + `/do/" + item`),
+							"outputs": v1.NewExpr(`{"said": response.body}`),
+						},
+					}}}, base, "/do/undo")},
+				}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "inner"`,
+			Recorded:        []string{"boom", "b", "undo-b"},
+			UnorderedPrefix: 2,
+		},
+		{
+			// Branches are concurrent by declaration, so a failing first branch
+			// hides neither the work nor the compensation of its sibling: the
+			// second branch runs and its registration comes back off.
+			Name: "a failing branch does not hide its sibling",
+			Workflow: &v1.Workflow{Name: "undo-parallel-sibling", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{fails("kaboom", base, "kaboom")}},
+					{Steps: []*v1.Node{undoing(records("right", base, "right"), base, "/do/undo")}},
+				}}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "right"`,
+			Recorded:        []string{"kaboom", "right", "undo-right"},
+			UnorderedPrefix: 2,
 		},
 	}
 }
@@ -437,111 +545,17 @@ func UndoCancellationCases(base string) []UndoCancellationCase {
 
 // UndoPlacementCases are the shapes the engine refuses outright.
 //
-// They are run by both drivers because a refusal is behaviour: an engine that
-// accepted one of these would run a saga whose compensations undo in one order
-// locally and another in production, which is a local run lying about the one
-// thing sagas exist to get right. `flow validate` refuses the same shapes earlier
-// and with a position — see `flowfile`'s tests — and this is the backstop for a
-// specification that never went through a Flowfile at all.
+// Both remaining refusals are about what a compensation may attach to, never
+// about where it sits: a step with no effect of its own (control flow, or the
+// `call:` step itself) has nothing a compensation could take back. Position
+// stopped being a reason to refuse when concurrent scopes gained a structural
+// ordering key; a compensation inside a `for_each` body or a `parallel` branch
+// is ordinary now, and [UndoCases] asserts the order it undoes in. They are run
+// by both drivers because a refusal is behaviour. `flow validate` refuses the
+// same shapes earlier and with a position, see `flowfile`'s tests, and this is
+// the backstop for a specification that never went through a Flowfile at all.
 func UndoPlacementCases(base string) []UndoCase {
 	return []UndoCase{
-		{
-			Name: "a compensation inside a for_each body is refused",
-			Workflow: &v1.Workflow{
-				Name:    "undo-in-loop",
-				Profile: v1.CurrentProfile,
-				Steps: []*v1.Node{
-					{
-						Id: "loop",
-						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-							Items: v1.NewExpr("['x']"),
-							Body:  []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
-						}},
-					},
-				},
-			},
-			Fails: true,
-		},
-		{
-			// The refusal #253 made necessary rather than one it removed. A
-			// `loop:` body accepts a compensation now, and a `loop:` may be
-			// written inside a `for_each` body — only a loop directly inside
-			// another loop is refused — so a loop is exactly the wrapper that
-			// could route one around the concurrency refusal. That is #219's
-			// escape hatch with `loop:` standing where `call:` stood, and
-			// [v1.UndoScope.IntoLoop] is what closes it on both drivers.
-			//
-			// Written as the negative direction of [UndoLoopCases]' first case:
-			// the identical body, one construct further out, must be refused.
-			Name: "a loop inside a for_each body, whose body compensates, is refused",
-			Workflow: &v1.Workflow{
-				Name:    "undo-loop-inside-for-each",
-				Profile: v1.CurrentProfile,
-				Steps: []*v1.Node{
-					{
-						Id: "fan",
-						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-							Items: v1.NewExpr("['x']"),
-							Body: []*v1.Node{
-								{
-									Id: "page",
-									Kind: &v1.Node_Loop{Loop: &v1.Loop{
-										State:         "n",
-										Initial:       v1.NewLiteral(int64(0)),
-										Update:        v1.NewExpr("n + 1"),
-										Until:         v1.NewExpr("n >= 1"),
-										MaxIterations: 5,
-										Body:          []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
-									}},
-								},
-							},
-						}},
-					},
-				},
-			},
-			Fails: true,
-		},
-		{
-			// The same closure with a `call:` inside the loop inside the
-			// fan-out, which is the composition an author reaching for #253's
-			// motivating shape would actually write — and the one that has to
-			// stay refused, because [v1.UndoScope.IntoCall] and
-			// [v1.UndoScope.IntoLoop] compose in sequence: Concurrent survives
-			// both.
-			Name: "a call inside a loop inside a for_each body, whose callee compensates, is refused",
-			Workflow: &v1.Workflow{
-				Name:    "undo-call-in-loop-inside-for-each",
-				Profile: v1.CurrentProfile,
-				Steps: []*v1.Node{
-					{
-						Id: "fan",
-						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-							Items: v1.NewExpr("['x']"),
-							Body: []*v1.Node{
-								{
-									Id: "page",
-									Kind: &v1.Node_Loop{Loop: &v1.Loop{
-										State:         "n",
-										Initial:       v1.NewLiteral(int64(0)),
-										Update:        v1.NewExpr("n + 1"),
-										Until:         v1.NewExpr("n >= 1"),
-										MaxIterations: 5,
-										Body: []*v1.Node{
-											callNode("provision", &v1.Workflow{
-												Name:    "undo-call-in-loop-inside-for-each-callee",
-												Profile: v1.CurrentProfile,
-												Steps:   []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
-											}, nil),
-										},
-									}},
-								},
-							},
-						}},
-					},
-				},
-			},
-			Fails: true,
-		},
 		{
 			Name: "a compensation on a step that is not a task is refused",
 			Workflow: &v1.Workflow{
@@ -586,66 +600,6 @@ func UndoPlacementCases(base string) []UndoCase {
 						}}
 						return node
 					}(),
-				},
-			},
-			Fails: true,
-		},
-		{
-			// Test that A cannot reach B, not that A can reach A: every other case
-			// in this set proves a shape is refused when it is written directly;
-			// this one proves the refusal survives a `call:` standing in between.
-			// A callee's compensation composes onto the caller's stack when the
-			// call is reached from the top level or from another call — but a call
-			// reached from *inside* a `for_each` body must not become a way to
-			// route a compensation around the concurrency refusal that already
-			// applies there. See [v1.UndoScope.IntoCall], which composes the
-			// callee's placement with the scope the call itself sits in rather
-			// than always granting [v1.UndoScopeCall].
-			Name: "a call inside a for_each body, whose callee compensates, is refused",
-			Workflow: &v1.Workflow{
-				Name:    "undo-call-inside-for-each",
-				Profile: v1.CurrentProfile,
-				Steps: []*v1.Node{
-					{
-						Id: "loop",
-						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
-							Items: v1.NewExpr("['x']"),
-							Body: []*v1.Node{
-								callNode("provision", &v1.Workflow{
-									Name:    "undo-call-inside-for-each-callee",
-									Profile: v1.CurrentProfile,
-									Steps:   []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
-								}, nil),
-							},
-						}},
-					},
-				},
-			},
-			Fails: true,
-		},
-		{
-			// The same escape hatch, closed for a `parallel:` branch too.
-			Name: "a call inside a parallel branch, whose callee compensates, is refused",
-			Workflow: &v1.Workflow{
-				Name:    "undo-call-inside-parallel",
-				Profile: v1.CurrentProfile,
-				Steps: []*v1.Node{
-					{
-						Id: "fan",
-						Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
-							Branches: []*v1.Parallel_Branch{
-								{
-									Steps: []*v1.Node{
-										callNode("provision", &v1.Workflow{
-											Name:    "undo-call-inside-parallel-callee",
-											Profile: v1.CurrentProfile,
-											Steps:   []*v1.Node{undoing(records("inner", base, "i"), base, "/do/undo")},
-										}, nil),
-									},
-								},
-							},
-						}},
-					},
 				},
 			},
 			Fails: true,
