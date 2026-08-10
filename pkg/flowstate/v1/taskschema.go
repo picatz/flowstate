@@ -203,22 +203,34 @@ func numericRangePhrases(rules *validate.FieldRules) []string {
 		return nested.Get(fd).String(), true
 	}
 
+	// Which rule matched decides the words, because gt and gte differ by
+	// exactly the endpoint: a field constrained `gt: 0` refuses zero, and a
+	// surface that says "at least 0" teaches an author the one value the
+	// validator will reject.
 	lower, hasLower := read("gte")
+	lowerPhrase := "at least "
 	if !hasLower {
 		lower, hasLower = read("gt")
+		lowerPhrase = "more than "
 	}
 	upper, hasUpper := read("lte")
+	upperPhrase := "at most "
 	if !hasUpper {
 		upper, hasUpper = read("lt")
+		upperPhrase = "less than "
 	}
 
 	switch {
 	case hasLower && hasUpper:
-		return []string{lower + " to " + upper}
+		if lowerPhrase == "at least " && upperPhrase == "at most " {
+			// Both endpoints included is the common case and reads as a range.
+			return []string{lower + " to " + upper}
+		}
+		return []string{lowerPhrase + lower, upperPhrase + upper}
 	case hasLower:
-		return []string{"at least " + lower}
+		return []string{lowerPhrase + lower}
 	case hasUpper:
-		return []string{"at most " + upper}
+		return []string{upperPhrase + upper}
 	default:
 		return nil
 	}
@@ -327,13 +339,21 @@ func taskInputNotes(def TaskDef) map[string][]string {
 		notes[name] = append(notes[name], "must be written as an expression")
 	}
 
-	// Both lists, because both are places a reference legitimately goes and an
-	// author cannot tell them apart from outside: `bearer:` takes one whole, and
-	// `headers:` takes one nested in an entry. What matters here is the same for
-	// both, which is that the value stays a reference until the activity.
+	// AuthorityInputs is the wrong list to read "takes a secret" from on its
+	// own, because it answers a routing question: which inputs need the
+	// identity-aware activity. A credential input needs that authority for JIT
+	// exchange while its value is a literal target name, and the task refuses a
+	// secret reference there. Saying "may hold a secret reference" about it
+	// would teach an author the one spelling that fails at execution, so the
+	// credential subset gets its own honest note and the secret note goes to
+	// what remains plus the nested list.
+	for _, name := range def.CredentialInputs {
+		notes[name] = append(notes[name], "names a deployment credential target")
+	}
 	for _, name := range slices.Sorted(slices.Values(append(
 		slices.Clone(def.AuthorityInputs), def.NestedSecretInputs...))) {
-		if slices.Contains(notes[name], "may hold a secret reference") {
+		if slices.Contains(def.CredentialInputs, name) ||
+			slices.Contains(notes[name], "may hold a secret reference") {
 			continue
 		}
 		notes[name] = append(notes[name], "may hold a secret reference")

@@ -25,7 +25,7 @@ Perform an HTTP request and return the response.
 | `headers` | `map[string, string]` | no | no | may hold a secret reference |
 | `body` | `string` | no | no | none |
 | `bearer` | `any` | no | no | may hold a secret reference |
-| `credential` | `string` | no | no | 1 to 128 characters; matching ^[a-z][a-z0-9-]*$; may hold a secret reference |
+| `credential` | `string` | no | no | 1 to 128 characters; matching ^[a-z][a-z0-9-]*$; names a deployment credential target |
 | `outputs` | `map[string, any]` | no | yes | none |
 | `query` | `map[string, any]` | no | no | none |
 | `json` | `any` | no | no | may hold a secret reference |
