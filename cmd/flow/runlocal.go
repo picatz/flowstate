@@ -45,26 +45,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	workflow, err := loadWorkflow(args[0])
-	if err != nil {
-		return err
-	}
-
-	// What the run is started with, read before anything happens: a command line that
-	// does not satisfy the workflow's `inputs:` is a refusal about the command line,
-	// and reporting it after a `log:` step has already narrated two lines would make
-	// it look like the run got somewhere first.
-	inputs, err := runInputs(cmd, workflow)
-	if err != nil {
-		return err
-	}
-	if err := checkRunInputs(workflow, inputs); err != nil {
-		return err
-	}
-
 	// The same flag the worker takes, because a rehearsal under a different egress
 	// policy rehearses a different production. A file that does not load refuses
 	// the run, exactly as it refuses the worker.
+	//
+	// Before the plugins launch, rather than after: these three read files this
+	// process was pointed at, and a policy that cannot load must refuse the
+	// command without first starting somebody else's programs.
 	if err := applyEgressPolicy(cmd); err != nil {
 		return err
 	}
@@ -85,6 +72,66 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The secret providers, built here rather than inside [withLocalTaskRuntime]
+	// further down, because the plugin host launching below registers a plugin's
+	// own secrets backends into this registry. That is the worker's order
+	// (secretRegistry, startPlugins, then the runtime), and holding it here is
+	// what keeps a scheme a plugin serves resolvable in the rehearsal as well as
+	// in production.
+	providers, err := localSecretProviders(cmd)
+	if err != nil {
+		return err
+	}
+	defer providers.close()
+
+	// Before the file is read, because a plugin's tasks are not in the registry
+	// until its process is running, and [loadWorkflow] validates: a step naming
+	// `example.greet` is a diagnostic about an unknown task right up until the
+	// plugin providing it is loaded. This is the same [startPlugins] the worker,
+	// the server, `flow task run`, `flow plugins`, `flow mcp` and `flow lsp` all
+	// call, with the same discovery hardening, the same handshake and the same
+	// refusal of a world-writable directory. A local run that discovered plugins
+	// its own way would be rehearsing a different deployment.
+	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
+	if err != nil {
+		return err
+	}
+	defer closePlugins()
+
+	workflow, err := loadWorkflow(args[0])
+	if err != nil {
+		return err
+	}
+
+	// What this process can run, against what the file says it needs. The server
+	// does exactly this to a submission before it becomes durable
+	// (server.go's pinPlugins), and the refusals are that function's, word for
+	// word, because they are the same function: a plugin that is not installed, a
+	// major version that is a different contract, a deployment below the floor
+	// the file sets.
+	//
+	// It also pins, onto the specification this process is about to execute. The
+	// worker-side admission check that pin exists for cannot say anything here,
+	// because the process that resolved the pin is the process that will run the
+	// steps, so there is no rolling deployment for it to catch. What the author
+	// gets is the half that can be wrong on a laptop: whether the plugins their
+	// file requires are the ones they have.
+	if err := v1.ResolvePlugins(workflow, catalog); err != nil {
+		return fmt.Errorf("resolving plugins before this run: %w", err)
+	}
+
+	// What the run is started with, read before anything happens: a command line that
+	// does not satisfy the workflow's `inputs:` is a refusal about the command line,
+	// and reporting it after a `log:` step has already narrated two lines would make
+	// it look like the run got somewhere first.
+	inputs, err := runInputs(cmd, workflow)
+	if err != nil {
+		return err
+	}
+	if err := checkRunInputs(workflow, inputs); err != nil {
+		return err
+	}
+
 	// A workload that waits for a signal needs something able to deliver one, or it
 	// blocks with nothing that could ever release it.
 	localSignals, _ := cmd.Flags().GetStringArray("signal")
@@ -94,11 +141,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	reportUnansweredGates(cmd.ErrOrStderr(), workflow, localSignals)
-	ctx, closeSecretProviders, err := withLocalTaskRuntime(cmd, ctx, workflow)
+	ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
 	if err != nil {
 		return err
 	}
-	defer closeSecretProviders()
 
 	// `log:` steps go to stderr, where the run's own commentary already goes, so the
 	// result on stdout stays a single JSON document a pipe can read. A workflow that

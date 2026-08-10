@@ -459,11 +459,78 @@ func workerRuntime(cmd *cobra.Command, registry *secrets.Registry, configured bo
 	return engine.NewTaskRuntimeConfig(store, secretAccess, broker)
 }
 
+// localSecrets is what [secretRegistry] built, held by whoever built it rather
+// than consumed inside the function that assembles the runtime.
+//
+// It exists because a plugin advertising a secrets backend registers that
+// backend into this registry when the host launches it, and the host launches
+// before the workflow file is even read. So on a command that loads plugins the
+// registry has to outlive one call: built first, handed to [startPlugins], and
+// only afterwards turned into a [v1.TaskRuntime]. The worker has held it in
+// exactly this order since plugins landed (main.go's runWorker: secretRegistry,
+// startPlugins, workerRuntime), and this is that order on the drivers' other
+// side.
+//
+// `flow task run` deliberately does not hold it this way: it launches plugins
+// with no registry at all, so a plugin's secrets backend is not registered for
+// a single task invocation and one may be run without an access policy. That
+// is a real gap rather than a design, and it is left alone here because
+// closing it changes what an existing verb refuses; #436 is about the run.
+type localSecrets struct {
+	registry   *secrets.Registry
+	configured bool
+
+	// close releases the providers. It must run, and it is the caller's to
+	// run, because the caller is the one that decided when the registry was
+	// built.
+	close func()
+}
+
+// localSecretProviders builds the secret providers a local command was
+// configured with, ready to be handed to [startPlugins] and then to
+// [withLocalTaskRuntimeUsing].
+//
+// The returned close must run on every path. On a refusal it has already run,
+// which is the one difference from [secretRegistry]: that function hands a
+// close back beside an error, and every caller of it returned the error without
+// running it.
+func localSecretProviders(cmd *cobra.Command) (*localSecrets, error) {
+	registry, configured, closeProviders, err := secretRegistry(cmd)
+	if err != nil {
+		closeProviders()
+
+		return nil, err
+	}
+
+	return &localSecrets{registry: registry, configured: configured, close: closeProviders}, nil
+}
+
+// withLocalTaskRuntime builds the providers and the runtime together, for a
+// command that has no plugins to hand the registry to in between.
 func withLocalTaskRuntime(cmd *cobra.Command, ctx context.Context, workflow *v1.Workflow) (context.Context, func(), error) {
 	noop := func() {}
-	identity, err := localWorkloadIdentity(cmd)
+
+	providers, err := localSecretProviders(cmd)
 	if err != nil {
 		return nil, noop, err
+	}
+
+	ctx, err = withLocalTaskRuntimeUsing(cmd, ctx, workflow, providers)
+	if err != nil {
+		providers.close()
+
+		return nil, noop, err
+	}
+
+	return ctx, providers.close, nil
+}
+
+// withLocalTaskRuntimeUsing installs the local driver's task runtime on ctx,
+// over providers the caller already built.
+func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow *v1.Workflow, providers *localSecrets) (context.Context, error) {
+	identity, err := localWorkloadIdentity(cmd)
+	if err != nil {
+		return nil, err
 	}
 
 	// Installed before any of the branches below, and on every one of their
@@ -480,48 +547,48 @@ func withLocalTaskRuntime(cmd *cobra.Command, ctx context.Context, workflow *v1.
 	// follows for the durable driver.
 	ctx = plugin.NewContextWithIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
 
-	registry, configured, closeProviders, err := secretRegistry(cmd)
-	if err != nil {
-		return nil, closeProviders, err
-	}
+	// The worker's own spelling, from [workerRuntime] directly above: a plugin
+	// that advertises a secrets backend registered it into this registry when
+	// the host launched, which is after the flags were read, so "is any secret
+	// backend configured" has to ask the registry and not only the command
+	// line. Reading the flags alone here is what would make a
+	// `${secret('example:...')}` reference resolvable in production and refused
+	// in the rehearsal of it.
+	configured := providers.configured || len(providers.registry.Schemes()) > 0
+
 	policy, secretAccess, err := runtimePolicy(cmd, configured)
 	if err != nil {
-		closeProviders()
-		return nil, noop, err
+		return nil, err
 	}
 	broker, err := identityBroker(authFlagsOf(cmd), policy)
 	if err != nil {
-		closeProviders()
-		return nil, noop, err
+		return nil, err
 	}
 	if !configured && broker == nil {
 		if policy != nil {
 			if err := v1.ValidateCredentialTargets(workflow, nil); err != nil {
-				closeProviders()
-				return nil, noop, err
+				return nil, err
 			}
 		}
-		return ctx, closeProviders, nil
+		return ctx, nil
 	}
 	var targets []string
 	if broker != nil {
 		targets = broker.Targets()
 	}
 	if err := v1.ValidateCredentialTargets(workflow, targets); err != nil {
-		closeProviders()
-		return nil, noop, err
+		return nil, err
 	}
 	var store *secrets.Store
 	if configured {
-		store, err = newSecretStore(cmd, registry)
+		store, err = newSecretStore(cmd, providers.registry)
 		if err != nil {
-			closeProviders()
-			return nil, noop, err
+			return nil, err
 		}
 	}
 	return v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store: store, Policy: secretAccess, Broker: broker,
 		Identity: identity,
 		Step:     auth.StepRef{Workflow: workflow.GetName(), Run: uuid.NewString()},
-	}), closeProviders, nil
+	}), nil
 }

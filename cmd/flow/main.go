@@ -1248,6 +1248,12 @@ flow validate examples/hello-world/workflow.yaml`,
 			"--input-file inputs.json) and are bound against the workflow's `inputs:` by the " +
 			"same function the server binds them with, so a rehearsal refuses what production " +
 			"refuses.\n\n" +
+			"Plugin tasks run here too, given --plugin-dir: the plugins are launched in this " +
+			"process, through the discovery, handshake and catalog a worker uses, and the " +
+			"file's `plugins:` requirements are resolved against what was launched, refused " +
+			"in the words a server refuses a submission in. Without --plugin-dir there are no " +
+			"plugins, and a step naming one is an unknown task, which is what a worker without " +
+			"them would also say.\n\n" +
 			"One limit worth knowing before writing a rule about who is running. --as-subject " +
 			"and its siblings name the identity this rehearsal's secret rules and plugin tasks " +
 			"see. They do not make the run attested: a local run has no server in front of it " +
@@ -1283,7 +1289,10 @@ flow run local examples/expense-approval/workflow.yaml --input-file examples/exp
 flow run local examples/approval-gate/workflow.yaml --input-file examples/approval-gate/inputs.json --signal deploy-approved='{"approved": true}' --signal-as-subject sre-lead@example.com --signal-as-issuer https://issuer.example.com --signal-as-claim team=release-managers
 
 # Run a workflow that takes arguments, and read what it answered with:
-flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs`,
+flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs
+
+# Rehearse a workflow whose steps use a plugin's tasks, launching the plugins here:
+flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml`,
 	}
 
 	addOutputFlag(runLocalCmd)
@@ -1408,6 +1417,14 @@ flow server --verbose`,
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
+
+	// And the local rehearsal, which for a long time was the one execution verb
+	// without them: a Flowfile using a plugin task could be validated, run
+	// durably, and invoked one task at a time through `flow task run`, and the
+	// only answer `flow run local` had for it was that the task did not exist
+	// (#436). That is a refusal production does not give, from the driver whose
+	// entire purpose is to say what production will do.
+	addPluginFlags(runLocalCmd)
 
 	// The worker and the local rehearsal, and deliberately not the server — see
 	// egress.go for why a policy registered on the server would change nothing

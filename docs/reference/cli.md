@@ -635,6 +635,8 @@ What it cannot give you is durability. A local run is a process: it has no run i
 
 Arguments are given the same way `flow run` takes them (--input name=value or --input-file inputs.json) and are bound against the workflow's `inputs:` by the same function the server binds them with, so a rehearsal refuses what production refuses.
 
+Plugin tasks run here too, given --plugin-dir: the plugins are launched in this process, through the discovery, handshake and catalog a worker uses, and the file's `plugins:` requirements are resolved against what was launched, refused in the words a server refuses a submission in. Without --plugin-dir there are no plugins, and a step naming one is an unknown task, which is what a worker without them would also say.
+
 One limit worth knowing before writing a rule about who is running. --as-subject and its siblings name the identity this rehearsal's secret rules and plugin tasks see. They do not make the run attested: a local run has no server in front of it to attest anything, so `run.identity` and the task-shape and egress rules keep reading it as having no caller. A rule keyed on identity.namespace therefore matches nothing here, and can refuse locally what production allows.
 
 A gate is the one place that limit is lifted, because a gate is the thing worth rehearsing. --signal-as-subject and its siblings name the approver a --signal delivery stands in for, and the workflow's own `signals:` policy is then checked here by the same function the server checks it with - so an approver a rule admits in production opens the gate here, one it refuses is refused here, and an approver who is this run's own starter is refused by `distinct_from_starter:` on both. It remains a rehearsal, and says so: nothing attested it, and the gate's own `sender.local` output reads true.
@@ -662,10 +664,14 @@ flow run local examples/approval-gate/workflow.yaml --input-file examples/approv
 
 # Run a workflow that takes arguments, and read what it answered with:
 flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 -o json | jq .runOutputs
+
+# Rehearse a workflow whose steps use a plugin's tasks, launching the plugins here:
+flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--as-claim <string,...>` | `stringArray` | — | — | authenticated string claim NAME=VALUE to rehearse policy as (repeatable) |
 | `--as-deployment <string>` | `string` | `local` | — | Flowstate deployment name to rehearse policy as (local runs only) |
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
@@ -677,6 +683,9 @@ flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0 
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |

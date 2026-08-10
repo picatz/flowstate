@@ -1,0 +1,21 @@
+# The access policy the README's rehearsal command points at.
+#
+# Only the `secrets:` section is read by a rehearsal: it is what authorizes a
+# process holding a secret provider to resolve references, and `allow: 'true'`
+# says every reference this process can reach is fine, which is the right
+# answer for an example whose one secret is a variable you just exported.
+#
+# The `issuers:` section is present because a policy without one does not
+# parse: issuers are the half a server uses to decide who is calling, and the
+# policy grammar refuses a file that silently decides nothing about that. A
+# local rehearsal authenticates nobody, so these values are never consulted;
+# they are a syntactically valid placeholder, not a deployment to copy.
+issuers:
+  - name: local
+    issuer: https://issuer.example
+    audiences: [flowstate]
+    algorithms: [RS256]
+
+secrets:
+  allow:
+    - 'true'
