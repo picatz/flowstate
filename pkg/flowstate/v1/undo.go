@@ -357,8 +357,8 @@ func withSelfOutputs(scope *Scope, id string, outputs *Node_Outputs) *Workflow_S
 //     for the call half (compose-through, zero new API surface) and #253's for
 //     the loop half.
 //   - [UndoScopeConcurrent] (`for_each`, `parallel`) accumulates one private log
-//     per child. The parent merges by iteration or branch index, making the
-//     structural position—not completion time—the shared ordering key.
+//     per child. The parent merges by iteration or branch index, so the shared
+//     ordering key is the structural position, never completion time.
 //
 // # Why a `loop:` body accepts one, when it used to be refused
 //

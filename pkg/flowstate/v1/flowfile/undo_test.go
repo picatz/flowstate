@@ -541,3 +541,97 @@ func TestUndoIsReservedAgainstTaskNames(t *testing.T) {
 	assert.False(t, v1.IsFutureStepKey("undo"),
 		"`undo:` is built, so reporting it as held for a later version would refuse a file that works")
 }
+
+// TestUndoInsideConcurrentControlFlowIsAccepted pins the placement that opened
+// when concurrent scopes gained a structural ordering key: a compensation in a
+// `for_each` body and one in a `parallel` branch both validate. The engine-side
+// ordering claim lives in the shared corpus ([tests.UndoCases]); what belongs to
+// the validator is only that the author is no longer refused.
+func TestUndoInsideConcurrentControlFlowIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"for_each body": `edition: v2026.2
+name: t
+steps:
+  - id: fan
+    for_each:
+      items: "${['a', 'b']}"
+      as: item
+      steps:
+        - id: inner
+          log:
+            message: ${item}
+          undo:
+            log:
+              message: bye
+`,
+		"parallel branch": `edition: v2026.2
+name: t
+steps:
+  - id: both
+    parallel:
+      - steps:
+          - id: left
+            log:
+              message: hi
+            undo:
+              log:
+                message: bye
+      - steps:
+          - id: right
+            log:
+              message: ho
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(src))
+			require.NoError(t, err)
+
+			for _, d := range ds {
+				assert.NotContains(t, d.Error(), "undo",
+					"a compensation inside concurrent control flow was refused:\n%s", d.Error())
+			}
+		})
+	}
+}
+
+// TestUndoOnControlFlowIsRefusedWithAPosition keeps the surviving refusal
+// author-facing: a compensation on a step that has no effect of its own is
+// reported at the step, with the position an editor can jump to. The engine's
+// backstop for a spec that never saw a Flowfile is [tests.UndoPlacementCases];
+// this is the half with line and column.
+func TestUndoOnControlFlowIsRefusedWithAPosition(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: t
+steps:
+  - id: fan
+    for_each:
+      items: "${['a']}"
+      as: item
+      steps:
+        - id: inner
+          log:
+            message: ${item}
+    undo:
+      log:
+        message: bye
+`
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	found := false
+	for _, d := range ds {
+		if !strings.Contains(d.Error(), "undo") {
+			continue
+		}
+		found = true
+		assert.Positive(t, d.Line, "the refusal carries no line:\n%s", d.Error())
+	}
+	require.True(t, found, "a compensation on a for_each step itself was accepted; control flow has no effect of its own to take back")
+}
