@@ -1810,7 +1810,14 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 				"travels with the run from then on. And a signal that arrives before its gate is "+
 				"reached is held for it, at most %d across all names with the earliest kept: "+
 				"sending does not fail when the run is elsewhere, it waits.",
-				v1.MaxSignalPayloadBytes/1024, v1.MaxPendingSignals),
+				v1.MaxSignalPayloadBytes/1024, v1.MaxPendingSignals) + mutationFlagHelp +
+			"\n\n`result` is \"delivered\" once the server has taken the signal, and `signalName` is " +
+			"which one: two signals to one run are two acts, so the name is part of the result " +
+			"rather than only of the request. \"delivered\" rather than \"applied\" because it is a " +
+			"claim about the server and not about the workflow: being held for a gate not reached " +
+			"yet counts as delivered, and a signal still held when the run continues as new is " +
+			"dropped once the pending limit above is full, so a workflow that never sees it is a " +
+			"possible ending of a delivery that succeeded.",
 		Args: cobra.ExactArgs(2),
 		RunE: runSignal,
 		Example: `# Approve a deploy waiting on a gate:
@@ -1824,8 +1831,13 @@ flow signal deploy-abc123 deploy-approved
 
 # A local run is given its answers up front instead, the same idea for a
 # workflow with no signals: policy to attest a sender against:
-flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'`,
+flow run local examples/expense-approval/workflow.yaml --input-file examples/expense-approval/inputs.json --signal manager-approved='{"approved": true}'
+
+# Confirm the delivery from a script, which gets a document rather than a sentence:
+flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'`,
 	}
+
+	addOutputFlag(signalCmd)
 
 	signalCmd.Flags().String("data", "",
 		`signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}'`)
