@@ -815,7 +815,16 @@ func LiteralToGo(v *expr.Value) (any, error) {
 	case *expr.Value_MapValue:
 		object := make(map[string]any, len(kind.MapValue.GetEntries()))
 		for _, entry := range kind.MapValue.GetEntries() {
-			name := entry.GetKey().GetStringValue()
+			// A Go map[string]any cannot hold an integer, unsigned, or
+			// boolean CEL key, and GetStringValue would silently return ""
+			// for every one of them, collapsing distinct entries into a
+			// single object[""] and reporting success. Fail closed on a key
+			// this target cannot represent rather than corrupt the result.
+			key, ok := entry.GetKey().GetKind().(*expr.Value_StringValue)
+			if !ok {
+				return nil, fmt.Errorf("map key of type %T cannot be converted to a Go map key: only string keys are supported", entry.GetKey().GetKind())
+			}
+			name := key.StringValue
 			native, err := LiteralToGo(entry.GetValue())
 			if err != nil {
 				return nil, fmt.Errorf("key %q: %w", name, err)
