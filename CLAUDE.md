@@ -88,6 +88,7 @@ behind it too.
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
     go run ./cmd/flow fix --check examples/*/workflow.yaml
     go run ./cmd/flow test examples/
+    make fuzz-smoke
     docker compose -f examples/observability/docker-compose.yaml config -q
     go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
     go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
@@ -175,10 +176,11 @@ passing a nil context, spelling `%s` rather than calling `String()` so that the
 verb an operator's log line uses is the one under test. Never quiet one of those
 by changing what it asserts.
 
-The bounded fuzz smoke job (`GOMEMLIMIT=512MiB go test -parallel 1 -fuzztime 30s
-./pkg/flowstate/v1/flowfile/`, per the fuzzing recipe above) is still advisory on
-that schedule, to absorb infrastructure flake — not to excuse ignoring an actual
-crasher the fuzzer finds, which is a real defect to triage.
+The bounded fuzz smoke job graduated to required on 2026-08-09, its advisory
+window long closed, and `make fuzz-smoke` (run by `make check`) is the same four
+commands CI runs, so the local gate cannot pass a commit the required job
+rejects. A crasher it finds is a real defect with a corpus entry to triage,
+never flake to re-run away.
 
 ## Both execution drivers must agree
 
