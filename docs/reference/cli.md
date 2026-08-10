@@ -1262,7 +1262,9 @@ Discover and run *.test.yaml files, each declaring a workflow, arguments to run 
 
 A named file is taken as given. A directory is walked for *.test.yaml files.
 
-`--output json` or `--output jsonl` reports what ran as a schema message instead of text, for CI that wants structured data rather than stderr text.
+Per file, `flow test` reports branch coverage: the set of the workflow's steps at least one case ran, and the complement no case ever reached. Coverage is reported, not failed, unless `--coverage-required` is set, which makes an unreached step a failure for any file whose `coverage.allow_unreached` does not record a reason for it.
+
+`--output json` or `--output jsonl` reports what ran as a schema message instead of text, and carries the coverage sets under a `coverage` key so CI annotates rather than parses prose.
 
 Examples:
 
@@ -1279,6 +1281,7 @@ flow test -o jsonl examples/
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step no test case reached and no coverage.allow_unreached entry records why |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
 ## `flow validate`

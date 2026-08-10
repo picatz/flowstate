@@ -87,7 +87,7 @@ behind it too.
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
     go run ./cmd/flow fix --check examples/*/workflow.yaml
-    go run ./cmd/flow test examples/
+    go run ./cmd/flow test --coverage-required examples/
     make fuzz-smoke
     make appearance
     docker compose -f examples/observability/docker-compose.yaml config -q

@@ -32,13 +32,32 @@ var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 // registry swap, so one case's stub or scripted signal cannot leak into the
 // next — the isolation a test suite needs to be trustworthy at all.
 func RunFile(path string) *v1.TestReport {
+	report, _ := RunFileWithCoverage(path)
+	return report
+}
+
+// RunFileWithCoverage is [RunFile] and, alongside the report, the branch
+// coverage the file's cases achieved over the workflow they target (issue
+// #420): which of that workflow's steps at least one case ran, and which no
+// case ever reached.
+//
+// Coverage is nil for a file that produced no case with a compiled workflow to
+// account for (a refused file, or one whose every case failed to compile),
+// where a "0/0 steps reached" line would say less than nothing. See [Coverage].
+func RunFileWithCoverage(path string) (*v1.TestReport, *Coverage) {
 	report := &v1.TestReport{File: path}
 
 	file, err := Load(path)
 	if err != nil {
 		report.Refused = err.Error()
-		return report
+		return report, nil
 	}
+
+	var allowUnreached map[string]string
+	if file.Coverage != nil {
+		allowUnreached = file.Coverage.AllowUnreached
+	}
+	coverage := newCoverageAccumulator(allowUnreached)
 
 	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
 	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
@@ -46,16 +65,18 @@ func RunFile(path string) *v1.TestReport {
 	// [RunSource]: the loader is the only part of one case's run that differs
 	// between a file on disk and a workflow submitted as bytes.
 	for _, test := range file.Tests {
-		report.Cases = append(report.Cases, runCase(&test, func() (*v1.Workflow, error) {
+		result, spec, transcript := runCase(&test, func() (*v1.Workflow, error) {
 			workflow, _, err := flowfile.ParseFile(WorkflowPath(path, &test))
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
 			}
 			return workflow, nil
-		}))
+		})
+		report.Cases = append(report.Cases, result)
+		coverage.observe(spec, transcript)
 	}
 
-	return report
+	return report, coverage.result()
 }
 
 // RunSource is [RunFile] for a workflow and a `*.test.yaml` given directly as
@@ -94,7 +115,8 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 	}
 
 	for _, test := range file.Tests {
-		report.Cases = append(report.Cases, runCase(&test, load))
+		result, _, _ := runCase(&test, load)
+		report.Cases = append(report.Cases, result)
 	}
 
 	return report
@@ -105,9 +127,15 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // submitted directly for [RunSource] — which is the entire seam between the
 // two: everything below this call is oblivious to where the workflow came
 // from.
-func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
+// The spec and transcript it returns beside the case are what branch coverage
+// is computed from ([Coverage]): spec is the workflow this case compiled and
+// ran (nil when it never compiled one), and transcript is the step outputs the
+// run produced (nil when the run failed, which returns none). Both are the same
+// values the verdict itself was reached against, so coverage counts a step
+// reached on exactly the evidence `expect.ran` counts on.
+func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
 	started := time.Now()
-	result := &v1.TestCase{Name: test.Name}
+	result = &v1.TestCase{Name: test.Name}
 	defer func() {
 		result.Duration = durationpb.New(time.Since(started))
 	}()
@@ -115,7 +143,7 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 	stubs, err := compileStubs(test.Stubs)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return
 	}
 
 	// Serializes every case that swaps the process-wide default task registry
@@ -139,13 +167,16 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 	workflow, err := load()
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return
 	}
+	// Reported to the caller for coverage: the workflow this case compiled is
+	// what its steps are counted against, even when the run below then fails.
+	spec = workflow
 
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return
 	}
 
 	clock := v1.NewVirtualClock(epoch)
@@ -176,7 +207,7 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 		resolved, err := v1.ResolveSignalPolicySubjects(ctx, workflow, bound)
 		if err != nil {
 			result.Error = fmt.Sprintf("resolving workflow %q's signal policy: %v", test.Workflow, err)
-			return result
+			return
 		}
 		policies = resolved
 	}
@@ -226,16 +257,22 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) *v1.TestCase {
 	defer stopScripts()
 	if scriptErr != nil {
 		result.Error = scriptErr.Error()
-		return result
+		return
 	}
 
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
 
+	// The transcript coverage reads is the same one the verdict does. A failed
+	// run returns none, so a case that failed contributes its workflow's steps
+	// to the universe and reaches nothing, the honest account, since there is
+	// no record of what ran before the failure.
+	transcript = outputs
+
 	result.Failures = assertExpectation(&test.Expect, outputs, runErr)
 	result.Passed = len(result.Failures) == 0
 
-	return result
+	return
 }
 
 // swapRegistry replaces every task in [v1.DefaultRegistry] for the duration

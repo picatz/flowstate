@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,8 +46,13 @@ func newTestCommand() *cobra.Command {
 			"no Temporal server, and a virtual clock so a workflow that sleeps for a day resolves in " +
 			"under a second.\n\n" +
 			"A named file is taken as given. A directory is walked for *.test.yaml files.\n\n" +
+			"Per file, `flow test` reports branch coverage: the set of the workflow's steps at least " +
+			"one case ran, and the complement no case ever reached. Coverage is reported, not failed, " +
+			"unless `--coverage-required` is set, which makes an unreached step a failure for any file " +
+			"whose `coverage.allow_unreached` does not record a reason for it.\n\n" +
 			"`--output json` or `--output jsonl` reports what ran as a schema message instead of " +
-			"text, for CI that wants structured data rather than stderr text.",
+			"text, and carries the coverage sets under a `coverage` key so CI annotates rather than " +
+			"parses prose.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -64,6 +71,15 @@ flow test -o jsonl examples/`,
 
 	addOutputFlag(cmd)
 
+	// Opt-in, fail-closed once opted in: coverage is a result every run
+	// reports, and this is the flag that promotes an unreached branch from a
+	// line worth reading to a reason the command exits non-zero. A file exempts
+	// a branch it cannot reach by recording it under `coverage.allow_unreached`
+	// with a reason (see flowtest.CoverageStanza).
+	cmd.Flags().Bool("coverage-required", false,
+		"fail when a workflow has a step no test case reached and no coverage.allow_unreached "+
+			"entry records why")
+
 	return cmd
 }
 
@@ -78,6 +94,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	coverageRequired, _ := cmd.Flags().GetBool("coverage-required")
 
 	files, err := collectTestFiles(paths)
 	if err != nil {
@@ -89,14 +106,15 @@ func runTest(cmd *cobra.Command, paths []string) error {
 
 	var (
 		anyFailed bool
-		reports   []*v1.TestReport
+		results   []testFileResult
 	)
 	for _, path := range files {
-		report := flowtest.RunFile(path)
-		reports = append(reports, report)
+		report, coverage := flowtest.RunFileWithCoverage(path)
+		results = append(results, testFileResult{report: report, coverage: coverage})
 
 		if !machine {
 			printTestReport(surface.Out, surface.Theme, report)
+			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 		}
 
 		if report.GetRefused() != "" {
@@ -108,16 +126,17 @@ func runTest(cmd *cobra.Command, paths []string) error {
 				anyFailed = true
 			}
 		}
+		// A failure only when the run opted in: coverage is otherwise a result,
+		// not a verdict. Both an unrecorded gap and a stale record fail, because
+		// a record that no longer describes a real residual is a false statement
+		// about the suite, not a smaller one than a gap.
+		if coverageRequired && coverage != nil && (len(coverage.Gaps()) > 0 || len(coverage.Stale) > 0) {
+			anyFailed = true
+		}
 	}
 
 	if machine {
-		if format == FormatJSONL {
-			for _, report := range reports {
-				if err := writeJSON(surface, format, report); err != nil {
-					return err
-				}
-			}
-		} else if err := writeJSON(surface, format, &v1.TestReports{Files: reports}); err != nil {
+		if err := writeTestResults(surface, format, results, coverageRequired); err != nil {
 			return err
 		}
 	}
@@ -126,6 +145,15 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		return errTestsFailed
 	}
 	return nil
+}
+
+// testFileResult pairs one file's report with the branch coverage its cases
+// achieved, so the two travel together into rendering. coverage is nil for a
+// file with no workflow to account for (a refused file); see
+// [flowtest.RunFileWithCoverage].
+type testFileResult struct {
+	report   *v1.TestReport
+	coverage *flowtest.Coverage
 }
 
 // printTestReport renders one file's report in the CLI's ordinary text style:
@@ -156,6 +184,168 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 			fmt.Fprintf(out, "       %s: %s\n", f.GetField(), f.GetMessage())
 		}
 	}
+}
+
+// printCoverage renders one file's branch coverage: how many of the workflow's
+// steps at least one case reached, and the complement it never did.
+//
+// A result, not a diagnostic (#420): `flow validate` has no warning tier, but
+// `flow test` owns its own output and a coverage line is an account of what the
+// suite exercised. An unreached step with no recorded reason is a gap, coloured
+// to be found; one the file recorded under `coverage.allow_unreached` is an
+// accepted residual, named plainly with the reason. A stale record, a reason
+// kept past the branch it explained, is called out on its own line so it is not
+// mistaken for either.
+func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverage *flowtest.Coverage, required bool) {
+	if coverage == nil {
+		return
+	}
+
+	file := theme.Muted.Render(report.GetFile())
+	summary := fmt.Sprintf("%d/%d steps reached", len(coverage.Reached), coverage.Total())
+
+	gaps := coverage.Gaps()
+	tail := ""
+	if len(gaps) > 0 {
+		phrase := "never ran: " + strings.Join(gaps, ", ")
+		// Coloured as a fault only where the run opted in to treat it as one;
+		// otherwise it is a fact worth reading, not a failure.
+		if required {
+			phrase = theme.Danger.Render(phrase)
+		} else {
+			phrase = theme.Warning.Render(phrase)
+		}
+		tail += "; " + phrase
+	}
+	if len(coverage.Accepted) > 0 {
+		accepted := make([]string, 0, len(coverage.Accepted))
+		for step := range coverage.Accepted {
+			accepted = append(accepted, step)
+		}
+		sort.Strings(accepted)
+		tail += "; " + theme.Muted.Render("accepted-unreached: "+strings.Join(accepted, ", "))
+	}
+
+	fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
+
+	for _, stale := range coverage.Stale {
+		fmt.Fprintf(out, "       %s\n", theme.Danger.Render(stale))
+	}
+}
+
+// coverageDoc is coverage as it rides the machine output: a `coverage` key
+// merged into each file's report object, so a consumer already reading
+// `.files[].cases` finds `.files[].coverage` beside it.
+//
+// Field names follow protojson's camelCase so the whole document reads with one
+// convention, even though this part is hand-shaped rather than schema-derived
+// (issue #420 keeps coverage out of the schema).
+type coverageDoc struct {
+	StepsTotal   int               `json:"stepsTotal"`
+	StepsReached int               `json:"stepsReached"`
+	Reached      []string          `json:"reached"`
+	Unreached    []string          `json:"unreached"`
+	Gaps         []string          `json:"gaps"`
+	Accepted     map[string]string `json:"accepted"`
+	Stale        []string          `json:"stale"`
+	Required     bool              `json:"required"`
+}
+
+func newCoverageDoc(coverage *flowtest.Coverage, required bool) *coverageDoc {
+	doc := &coverageDoc{
+		StepsTotal:   coverage.Total(),
+		StepsReached: len(coverage.Reached),
+		Reached:      coverage.Reached,
+		Unreached:    coverage.Unreached,
+		Gaps:         coverage.Gaps(),
+		Accepted:     coverage.Accepted,
+		Stale:        coverage.Stale,
+		Required:     required,
+	}
+	// Empty slices rather than null, matching protojson's EmitUnpopulated
+	// posture on the schema fields beside them: a consumer indexing the array
+	// finds a list to range over rather than a null to guard.
+	if doc.Reached == nil {
+		doc.Reached = []string{}
+	}
+	if doc.Unreached == nil {
+		doc.Unreached = []string{}
+	}
+	if doc.Gaps == nil {
+		doc.Gaps = []string{}
+	}
+	if doc.Accepted == nil {
+		doc.Accepted = map[string]string{}
+	}
+	if doc.Stale == nil {
+		doc.Stale = []string{}
+	}
+	return doc
+}
+
+// writeTestResults emits the machine report, merging each file's coverage into
+// its report object.
+//
+// The report fields are rendered by protojson (through [marshalJSON]) and pass
+// through untouched as raw JSON; only the `coverage` object and the wrapper are
+// hand-shaped. So the schema half keeps protojson's field names and enum
+// spellings, and there is no second rendering of the report to disagree with
+// the first, which is the mixing the house rule against "one thing spelled
+// twice" warns about.
+func writeTestResults(surface *ui.UI, format OutputFormat, results []testFileResult, required bool) error {
+	objects := make([]json.RawMessage, 0, len(results))
+	for _, r := range results {
+		merged, err := mergeCoverageIntoReport(r.report, r.coverage, required)
+		if err != nil {
+			return err
+		}
+		objects = append(objects, merged)
+	}
+
+	if format == FormatJSONL {
+		for _, obj := range objects {
+			if _, err := fmt.Fprintf(surface.Out, "%s\n", obj); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	document, err := json.MarshalIndent(map[string]any{"files": objects}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("rendering the test report as %s: %w", format, err)
+	}
+	_, err = fmt.Fprintf(surface.Out, "%s\n", document)
+	return err
+}
+
+// mergeCoverageIntoReport renders one TestReport through protojson and adds a
+// `coverage` key beside its fields. A file with no coverage to account for gets
+// no key rather than a null one, the same way it gets no coverage line.
+func mergeCoverageIntoReport(report *v1.TestReport, coverage *flowtest.Coverage, required bool) (json.RawMessage, error) {
+	encoded, err := marshalJSON(report, false)
+	if err != nil {
+		return nil, fmt.Errorf("rendering a test report: %w", err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, fmt.Errorf("reading back a rendered test report: %w", err)
+	}
+
+	if coverage != nil {
+		covBytes, err := json.Marshal(newCoverageDoc(coverage, required))
+		if err != nil {
+			return nil, fmt.Errorf("rendering coverage: %w", err)
+		}
+		fields["coverage"] = covBytes
+	}
+
+	merged, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("assembling a test report: %w", err)
+	}
+	return merged, nil
 }
 
 // collectTestFiles expands the paths given into the *.test.yaml files to run,
