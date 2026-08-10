@@ -38,18 +38,35 @@ Check what a worker would find, without starting one:
 $ flow plugins --plugin-dir ./plugins
 ```
 
-Then start a worker over the same directory, and run the file against it:
+Rehearse it, which is the shortest path and needs no server at all:
 
 ```console
-$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
+$ FLOWSTATE_SECRET_GREET_TOKEN=anything flow run local examples/plugins/greet/workflow.yaml \
+    --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml
+```
+
+`flow run local` launches the plugins itself, through the same discovery, the same
+handshake and the same catalog a worker uses, and resolves the file's `plugins:`
+requirements against what it launched. Until #436 it did not: the local driver was
+the one execution verb with no `--plugin-dir`, so this file could be validated, run
+durably and invoked a task at a time through `flow task run`, and the rehearsal
+alone answered that `example.greet` did not exist.
+
+Two things it asks for that a plugin-free rehearsal does not. `--secret-env
+GREET_TOKEN` is what lets `${secret('env:GREET_TOKEN')}` resolve, and
+`--auth-policy` is what authorizes reading it: a process holding a secret
+provider with no access policy is refused, here and on a worker, by the same
+function. This plugin advertises a secrets backend as well as a task, so bringing
+it up registers a scheme whether or not the file asks for one, which means
+`flow worker --plugin-dir ./plugins` wants the same policy for the same reason.
+
+Then the durable path, which is what production uses:
+
+```console
+$ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins --auth-policy auth.yaml &
 $ flow server &
 $ flow run examples/plugins/greet/workflow.yaml
 ```
-
-`flow run local` has no `--plugin-dir`: the local driver runs in whatever process
-invoked it, and that process launches nothing. So this is the one example in this
-directory tree that a rehearsal cannot run — the worker is the path, which is also
-the path production uses.
 
 ## Why this is not `examples/<name>/workflow.yaml`
 
@@ -63,7 +80,7 @@ answer for this file is a diagnostic:
 $ flow validate examples/plugins/greet/workflow.yaml
 examples/plugins/greet/workflow.yaml:25:5: step "hello": no plugin task "example.greet" is
 registered here; if the "example" plugin is installed on the worker this will run on, the
-file is fine and this process simply has not loaded it — `flow plugins` shows what a
+file is fine and this process simply has not loaded it; `flow plugins` shows what a
 plugin directory provides
 ```
 
@@ -80,3 +97,11 @@ bytes, from disk. `TestThePluginExampleIsAShippedFile` beside it runs with no
 toolchain and no plugin at all, so a rename or a deletion here is a red test either
 way, and the package refuses to finish green if the running half was silently
 skipped.
+
+`TestRunLocalExecutesAPluginTaskFromAnExample` in `cmd/flow` is the third, and it
+is the one that runs the *command*: it builds this plugin, then executes
+`flow run local` over this file with the flags above and checks what came back,
+including that the plugin received the secret and that the material reached
+neither the outputs nor the account stream. A Go test constructing the node
+directly proves the engine works; only this proves the path from a file somebody
+writes.
