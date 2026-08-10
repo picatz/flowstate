@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -333,59 +334,12 @@ func unknownTaskRunError(name string) error {
 	}
 
 	known := v1.TaskNames()
-	if suggestion, ok := nearestName(name, known); ok {
+	if suggestion, ok := nearest.Name(name, known); ok {
 		return fmt.Errorf("unknown task %q; did you mean %q?", name, suggestion)
 	}
 
 	return fmt.Errorf("unknown task %q; available tasks are %s (`flow tasks` describes each one)",
 		name, strings.Join(known, ", "))
-}
-
-// nearestName returns the known name closest to got, when one is close enough to
-// be worth suggesting.
-//
-// The rule and the limit are `flowfile`'s, from its own unexported `nearest`: at
-// most a third of the name wrong, never more than two edits. Written here because
-// that one is unexported and this package cannot reach it. It is a genuine
-// duplicate of a decision, which is the thing CLAUDE.md warns drifts. The merge
-// worth doing is exporting one of them once there is a second CLI caller (`flow
-// tasks <name>` will want exactly this for its own unknown-name path).
-func nearestName(got string, known []string) (string, bool) {
-	best, bestDistance := "", 0
-	for _, name := range known {
-		distance := nameEditDistance(got, name)
-		limit := min(len(name)/3+1, 2)
-		if distance > limit {
-			continue
-		}
-		if best == "" || distance < bestDistance {
-			best, bestDistance = name, distance
-		}
-	}
-
-	return best, best != ""
-}
-
-// nameEditDistance returns the Levenshtein distance between two names.
-func nameEditDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	curr := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		curr[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-
-	return prev[len(b)]
 }
 
 // taskInputDeclarations reads the task's input schema as the declarations the

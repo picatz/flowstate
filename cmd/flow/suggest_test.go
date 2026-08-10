@@ -7,27 +7,36 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
-// TestLevenshteinKnownDistances pins the edit-distance function against a few
-// hand-checked pairs, including the zero and empty-string edges the DP table
-// has to get right at its boundary.
-func TestLevenshteinKnownDistances(t *testing.T) {
-	for _, test := range []struct {
-		a, b string
-		want int
-	}{
-		{"", "", 0},
-		{"", "abc", 3},
-		{"abc", "", 3},
-		{"list", "list", 0},
-		{"lst", "list", 1},
-		{"validte", "validate", 1},
-		{"kitten", "sitting", 3},
-		{"adress", "address", 1},
-	} {
-		assert.Equal(t, test.want, levenshtein(test.a, test.b), "levenshtein(%q, %q)", test.a, test.b)
-	}
+// TestSuggestionsReadTheSharedThreshold pins that this CLI's did-you-mean
+// lines accept exactly what [nearest.Within] accepts, rather than a threshold
+// of their own.
+//
+// The hand-checked distance pairs this file used to hold moved to that
+// package's own test with the function; what is worth asserting here is the
+// join: `--adres` is two edits from `--address`, which is exactly that name's
+// limit, so it is suggested, and `--adrs` is three, which is past it, so
+// `--address` is not offered for it. Change the shared constant and both
+// halves of this move together with the Flowfile diagnostics that read the
+// same rule, which is the whole point of there being one of it.
+func TestSuggestionsReadTheSharedThreshold(t *testing.T) {
+	root := newRootCommand()
+	listCmd, _, err := root.Find([]string{"list"})
+	require.NoError(t, err)
+
+	// Distances, not the threshold: these two say what the pair below is
+	// standing at, so a failure reads as the rule moving rather than as the
+	// example having drifted.
+	require.Equal(t, 2, nearest.Distance("adres", "address"), "the accepted case is no longer two edits away")
+	require.Equal(t, 3, nearest.Distance("adrs", "address"), "the refused case is no longer three edits away")
+
+	assert.Contains(t, flagSuggestions(listCmd, "adres"), "address",
+		"a typo exactly at the shared limit was refused, so the bound is never reached")
+	assert.NotContains(t, flagSuggestions(listCmd, "adrs"), "address",
+		"a typo one edit past the shared limit was offered anyway")
 }
 
 // TestCommandSuggestionsRanksTheCloseNameAboveTheFarOne is the positive

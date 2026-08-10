@@ -13,6 +13,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // `flow tasks` is an index and a detail view, not one page.
@@ -116,7 +117,7 @@ func lookupTaskArg(name string) (v1.TaskDef, error) {
 	}
 
 	message := fmt.Sprintf("no task named %q in this build.", name)
-	if suggestion, ok := nearestName(name, v1.TaskNames()); ok {
+	if suggestion, ok := nearest.Name(name, v1.TaskNames()); ok {
 		message = fmt.Sprintf("no task named %q in this build; did you mean %q?", name, suggestion)
 	}
 
@@ -124,11 +125,6 @@ func lookupTaskArg(name string) (v1.TaskDef, error) {
 		"%s `flow tasks` lists every task this build can run, and `flow plugins` "+
 			"lists what a plugin directory would add", message))
 }
-
-// The unknown-name suggestion above uses [nearestName], which lives in
-// taskrun.go: `flow task run` reached the same need first, with the same rule
-// `flowfile` applies to a misspelled key (at most a third of the name wrong,
-// never more than two edits). One copy in this package, two callers.
 
 // writeTaskIndex lists every task a step may name, one line each.
 //
