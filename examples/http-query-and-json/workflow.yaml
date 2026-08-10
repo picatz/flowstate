@@ -35,8 +35,8 @@ steps:
     http:
       method: POST
       url: https://httpbin.org/post
+      # Values can reference earlier steps, like any other input.
       json:
-        # Values can reference earlier steps, like any other input.
         echoed_query: ${steps.search.json.args}
         nested:
           works: true
@@ -56,11 +56,10 @@ steps:
   - id: report
     log:
       message: the server echoed the request back
+      # `q` went out containing a space and an ampersand and came back exactly as
+      # written, which is what escaping it once, here, is worth; and `tags` arrived
+      # as two values under one name rather than one value with a comma in it.
       fields:
-        # It went out containing a space and an ampersand and came back exactly as
-        # written, which is what escaping it once, here, is worth.
         q: ${steps.search.json.args['q']}
-        # And the list arrived as two values under one name rather than one value
-        # with a comma in it.
         tags: ${steps.search.json.args['tag'].join(", ")}
         sent: ${string(steps.submit.json.json['nested']['count'])}

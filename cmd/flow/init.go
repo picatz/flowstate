@@ -337,13 +337,20 @@ func plainYAMLString(name string) bool {
 //
 // The comments are the point of the file as much as the steps are. A scaffold
 // whose every line is obvious teaches nothing; these name the three things an
-// author has to know before they can write the second step — that a step has an
+// author has to know before they can write the second step: that a step has an
 // id, that `${...}` is CEL, and where a run's arguments come from.
+//
+// It is written in the formatter's own canonical shape, so `flow fmt` on a fresh
+// scaffold is a byte-for-byte no-op (#451): the description is one unfolded line,
+// list entries sit at the mapping's own indent, the CEL string is double-quoted,
+// and the blank lines are the ones Marshal keeps. A scaffold the CLI's own
+// formatter would rewrite is the CLI disagreeing with itself about canonical form,
+// and it teaches the shape `flow fmt` was about to undo. TestFmtOnTheScaffoldIsANoOp
+// holds this to the byte.
 func starterWorkflow(name string) string {
 	return `edition: ` + flowfile.CurrentEdition + `
 name: ` + yamlName(name) + `
-description: >-
-  A starter workflow. Replace these steps with the work you actually want done.
+description: A starter workflow. Replace these steps with the work you actually want done.
 
 # What a run is given. ` + "`flow run local workflow.yaml --input name=you`" + ` overrides
 # the default; a run that names nothing gets it.
@@ -352,17 +359,16 @@ inputs:
     type: string
     default: world
     description: who to greet
-
 steps:
-  # Every step declares an id. It is how a later step, a test case, and
-  # ` + "`flow get`" + ` all refer to this one.
-  - id: greet
-    log:
-      # ${...} is CEL, and an expression is the whole value rather than a
-      # fragment spliced into text, so a greeting is built in CEL. A run's
-      # inputs, earlier steps' outputs, and anything enclosing control flow
-      # bound are all in scope.
-      message: ${'hello, ' + inputs.name}
+# Every step declares an id. It is how a later step, a test case, and
+# ` + "`flow get`" + ` all refer to this one.
+- id: greet
+  log:
+    # ${...} is CEL, and an expression is the whole value rather than a
+    # fragment spliced into text, so a greeting is built in CEL. A run's
+    # inputs, earlier steps' outputs, and anything enclosing control flow
+    # bound are all in scope.
+    message: ${"hello, " + inputs.name}
 `
 }
 
