@@ -3,8 +3,8 @@
 # Task reference
 
 Every task this build can execute, with the inputs it takes and the outputs it
-produces. Derived from the task registry — the same `TaskCatalog` the `GetCatalog`
-RPC and `flow tasks` answer with — so a task cannot behave one way and document
+produces. Derived from the task registry (the same `TaskCatalog` the `GetCatalog`
+RPC and `flow tasks` answer with), so a task cannot behave one way and document
 another.
 
 A plugin's tasks are not here: what a plugin adds is a property of a deployment
@@ -65,15 +65,15 @@ Values are reached through these roots: `inputs`, `run`, `steps`, `vars`.
 
 Duration constructors, available to every expression: `days`, `hours`, `minutes`, `seconds`, `weeks`.
 
-Inside a wait's own expressions — `sleep:`, `wait_until:`, and a signal's
-`timeout:` — and nowhere else, `now` is bound to the evaluation moment.
+Inside a wait's own expressions (`sleep:`, `wait_until:`, and a signal's
+`timeout:`) and nowhere else, `now` is bound to the evaluation moment.
 
 CEL libraries every expression reaches: `bindings`, `comprehensions`, `encoders`, `json`, `lists`, `math`, `optional`, `protos`, `regex`, `sets`, `strings`.
 
 ### Functions
 
 What those libraries add. A macro is expanded by the parser rather than called by
-the evaluator, so its name is not its whole call form — the example is.
+the evaluator, so its name is not its whole call form; the example is.
 
 | Function | Library | Kind | Example |
 |---|---|---|---|

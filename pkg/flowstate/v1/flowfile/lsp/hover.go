@@ -409,7 +409,7 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 						"A `%s:` block at the top of a file is evaluated *before the first step "+
 						"runs*, so no step has produced anything for it to read. Write the "+
 						"expression where the value is wanted, or under `%s:` on the step that "+
-						"uses it — a step's own block is evaluated just before that step, and "+
+						"uses it. A step's own block is evaluated just before that step, and "+
 						"can read whatever has happened by then.",
 					v1.StepsRoot, varsKeyword, varsKeyword), rng)
 
@@ -533,7 +533,7 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopSc
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — every step's outputs, keyed by step id.\n\n"+
 				"One step's output is `${%s.<id>.<output>}`. The root is what keeps a step id "+
-				"and a name bound here — a loop's item, `%s` inside a wait — in "+
+				"and a name bound here (a loop's item, `%s` inside a wait) in "+
 				"separate namespaces, so neither can hide the other.",
 			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
 	}
@@ -553,7 +553,7 @@ func waitResultDoc(name string) string {
 			"Bound bare here because this expression is the wait's own, evaluated the moment the wait resolves. " +
 			"It is empty on a gate that lapsed, so `has(" + v1.PayloadOutput + ".approved)` is answerable either way.\n\n" +
 			"From a later step the same data is `${" + v1.StepsRoot + ".<id>." + v1.PayloadOutput +
-			"}` — but only if this `outputs:` block re-exposes it, since shaping *replaces* the wait's outputs."
+			"}`, but only if this `outputs:` block re-exposes it, since shaping *replaces* the wait's outputs."
 	case v1.SenderOutput:
 		return "**`" + v1.SenderOutput + "`** — who the server attests sent the signal.\n\n" +
 			"`" + v1.SenderOutput + ".identity.subject`, `." + v1.SenderOutput + ".identity.issuer`, `." +
@@ -666,7 +666,7 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 				target.id, target.rng.Start.Line+1, taskShapingKey, def.Name)
 			return markdownHover(b.String(), rng)
 		}
-		fmt.Fprintf(&b, "\n\nOutput of step `%s` on line %d, whose `%s:` replaces what the `%s` task declares — what the step produces is decided by that expression.",
+		fmt.Fprintf(&b, "\n\nOutput of step `%s` on line %d, whose `%s:` replaces what the `%s` task declares: what the step produces is decided by that expression.",
 			target.id, target.rng.Start.Line+1, taskShapingKey, def.Name)
 		if ok && len(names) > 0 {
 			fmt.Fprintf(&b, " It names `%s`.", strings.Join(names, "`, `"))

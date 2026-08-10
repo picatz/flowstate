@@ -2261,7 +2261,7 @@ func (f *fixer) noteDeferred(n ast.Node, input string, steps map[string]bool) {
 
 	span := spanOfNode(n)
 	f.note(span.Start.Line, span.Start.Column,
-		"`%s` is evaluated by the task against its own scope, so this was left alone — "+
+		"`%s` is evaluated by the task against its own scope, so this was left alone, "+
 			"but it names something spelled like a step. If it means the step, write it `%s`",
 		input, suggestion)
 }

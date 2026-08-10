@@ -444,7 +444,7 @@ func TestVarsRefuseSecretReference(t *testing.T) {
 	// the message starts with the right words.
 	const help = "a secret reference cannot be stored in `vars:`; a var is evaluated by the " +
 		"workflow and its value is written to durable history, and there is no activity here " +
-		"to resolve it in — write ${secret('...')} directly on the task input that consumes " +
+		"to resolve it in. Write ${secret('...')} directly on the task input that consumes " +
 		"the secret instead"
 
 	for _, test := range []struct {
@@ -652,5 +652,5 @@ steps:
 
 	require.Contains(t, got, "durable history")
 	require.Contains(t, got, "there is no activity here to resolve it in")
-	require.Contains(t, got, "write ${secret('...')} directly on the task input that consumes the secret instead")
+	require.Contains(t, got, "Write ${secret('...')} directly on the task input that consumes the secret instead")
 }

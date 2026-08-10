@@ -166,7 +166,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 	id, hasID := stepID(step)
 	if !hasID {
 		f.refuse(entry.Key,
-			"`%s:` is retired, and this step has no `id:` written as a plain value — so there is no name to move its value to; rewrite this step by hand",
+			"`%s:` is retired, and this step has no `id:` written as a plain value, so there is no name to move its value to; rewrite this step by hand",
 			key)
 
 		return true
@@ -194,7 +194,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 	// has no `if:`, and inventing one would be a grammar this build does not have.
 	if condition, guarded := stepCondition(step); guarded {
 		f.refuse(entry.Key,
-			"`%s:` is retired and this step's value could move to `%s:` — but the step is guarded by "+
+			"`%s:` is retired and this step's value could move to `%s:`, but the step is guarded by "+
 				"`if: %s`, and a `%s:` block has no condition: it is evaluated before the first step "+
 				"runs, every time. Moving the value would run an expression that used to be skipped. "+
 				"Write it under `%s:` on the step that uses it, which keeps the guard",
@@ -205,7 +205,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 
 	if scope.alone {
 		f.refuse(entry.Key,
-			"`%s:` is retired and this step's value could move to `%s:` — but it is the only step in its "+
+			"`%s:` is retired and this step's value could move to `%s:`, but it is the only step in its "+
 				"list, and removing it would leave a loop body or a branch with nothing in it. Move the "+
 				"value by hand, or give the block another step first",
 			key, varsKey)
@@ -220,7 +220,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 
 	if f.declaredVars[id] {
 		f.refuse(entry.Key,
-			"`%s:` is retired and this step's value belongs under `%s:` as %q — but a var of that name is "+
+			"`%s:` is retired and this step's value belongs under `%s:` as %q, but a var of that name is "+
 				"already declared, and overwriting it would change what every reference to it means; rename one and run this again",
 			key, varsKey, id)
 
@@ -250,7 +250,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 	if name, mentioned := mentionsAny(folded, scope.bound); mentioned {
 		f.refuse(entry.Key,
 			"`%s:` is retired and this step's value reads `%s`, which is bound where the step is "+
-				"written — by an enclosing loop or block — and means nothing at the top of the file. "+
+				"written, by an enclosing loop or block, and means nothing at the top of the file. "+
 				"Write the expression where it is used, or under `%s:` on the step that uses it",
 			key, name, varsKey)
 
@@ -259,7 +259,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 
 	if reads := stepReference.FindStringSubmatch(folded); reads != nil {
 		f.refuse(entry.Key,
-			"`%s:` is retired and this step's value reads `%s.%s`, which a workflow var cannot — "+
+			"`%s:` is retired and this step's value reads `%s.%s`, which a workflow var cannot: "+
 				"`%s:` at the top of a file is evaluated before the first step runs. Write the expression "+
 				"where it is used, or under `%s:` on the step that uses it",
 			key, v1.StepsRoot, reads[1], varsKey, varsKey)
@@ -273,7 +273,7 @@ func (f *fixer) retiredStep(step *ast.MappingNode, entry *ast.MappingValueNode, 
 	// fold is for — but one reading a var the author declared has nowhere to go.
 	if reads := varReference.FindStringSubmatch(folded); reads != nil {
 		f.refuse(entry.Key,
-			"`%s:` is retired and this step's value reads `%s.%s`, which another var cannot — "+
+			"`%s:` is retired and this step's value reads `%s.%s`, which another var cannot: "+
 				"`%s:` is a mapping, so there is no order that would make one available to the other. "+
 				"Write the expression where it is used, or under `%s:` on the step that uses it",
 			key, v1.VarsRoot, reads[1], varsKey, varsKey)
@@ -334,7 +334,7 @@ func (f *fixer) retiredCEL(entry *ast.MappingValueNode) (string, bool) {
 	if _, fenced := SplitFence(text); fenced {
 		f.refuse(entry.Key,
 			"`cel:` is retired and this step's `expr:` is itself an expression, so it was evaluated "+
-				"twice — once to produce the source, once to run it. A `%s:` binding evaluates once, so "+
+				"twice: once to produce the source, once to run it. A `%s:` binding evaluates once, so "+
 				"there is no rewrite that keeps the meaning. Write out the expression it was computing",
 			varsKey)
 

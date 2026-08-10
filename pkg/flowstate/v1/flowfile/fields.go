@@ -689,5 +689,5 @@ type retiredKey struct {
 
 // message renders the advice for one retired key.
 func (k retiredKey) message(was string) string {
-	return fmt.Sprintf("`%s:` is now `%s:` — %s; run `flow fix` to rewrite this file", was, k.now, k.note)
+	return fmt.Sprintf("`%s:` is now `%s:`, %s; run `flow fix` to rewrite this file", was, k.now, k.note)
 }

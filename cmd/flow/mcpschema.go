@@ -46,7 +46,7 @@ func runLocalInputSchema() map[string]any {
 		"properties": map[string]any{
 			"source": map[string]any{
 				"type": "string",
-				"description": "The Flowfile YAML to execute, exactly as it would be written to disk — " +
+				"description": "The Flowfile YAML to execute, exactly as it would be written to disk, " +
 					"including the `edition:` line. It is parsed and validated first; a file with any " +
 					"diagnostic is reported and not executed.",
 			},
@@ -56,7 +56,7 @@ func runLocalInputSchema() map[string]any {
 					"description": "The value for one declared input, as JSON of the declared type.",
 				},
 				"description": "Arguments the run is started with, keyed by the name the source declares " +
-					"under `inputs:` — the same thing `flow run local --input-file` supplies. Values are " +
+					"under `inputs:`: the same thing `flow run local --input-file` supplies. Values are " +
 					"JSON of the declared type. A name the source does not declare, a value of the wrong " +
 					"type, or a required input left out is refused before any step runs, with the declared " +
 					"names listed.",
@@ -68,7 +68,7 @@ func runLocalInputSchema() map[string]any {
 					"description": "The payload a wait_for_signal step reads as ${steps.<id>.payload.<key>}.",
 				},
 				"description": "Answers for wait_for_signal steps, by signal name, delivered before the run " +
-					"starts — the same thing `flow run local --signal name=json` does. A gate reached " +
+					"starts: the same thing `flow run local --signal name=json` does. A gate reached " +
 					"later still finds its answer waiting. A gate with no answer here blocks until its " +
 					"own timeout, or until the call's.",
 			},
@@ -97,7 +97,7 @@ func testInputSchema() map[string]any {
 		"properties": map[string]any{
 			"workflow": map[string]any{
 				"type": "string",
-				"description": "The Flowfile YAML under test, exactly as it would be written to disk — " +
+				"description": "The Flowfile YAML under test, exactly as it would be written to disk, " +
 					"including the `edition:` line.",
 			},
 			"tests": map[string]any{
@@ -109,7 +109,7 @@ func testInputSchema() map[string]any {
 					"`signals:` policy's `distinct_from_starter:` compares a sender against - and an " +
 					"`expect:` the run must satisfy. A " +
 					"case's own `workflow:` field is accepted, for compatibility with a file written to " +
-					"disk, but is never consulted here — every case runs against the `workflow` argument " +
+					"disk, but is never consulted here: every case runs against the `workflow` argument " +
 					"above, not a sibling file.",
 			},
 		},

@@ -583,7 +583,7 @@ func newScheduleCommand() *cobra.Command {
 		Short: "Create and manage schedules that run workflows on a cadence",
 		Long: "Create and manage schedules. A Flowfile declares the cadence it is meant to run " +
 			"at in a `triggers:` block, and that declaration does nothing until `flow schedule create` " +
-			"is run against it — a file that starts running on its own when it merges is a surprise, " +
+			"is run against it: a file that starts running on its own when it merges is a surprise, " +
 			"and `flow run` therefore never creates one.\n\n" +
 			"A schedule belongs to your tenant and is named within it, so two teams may both have a " +
 			"`nightly-report` without either learning of the other. Firings act as the identity that " +
@@ -595,7 +595,7 @@ func newScheduleCommand() *cobra.Command {
 		Short: "Create a schedule from a Flowfile's triggers block",
 		Long: "Create a schedule that runs a Flowfile's workflow on the cadence its `triggers:` " +
 			"block declares. The specification, its arguments and the cadence are all checked here, " +
-			"while you are present to be told — nothing is left to fail at three in the morning.",
+			"while you are present to be told, so nothing is left to fail at three in the morning.",
 		Args: cobra.ExactArgs(1),
 		RunE: runScheduleCreate,
 		Example: `# Create the schedule a file declares:
@@ -643,7 +643,7 @@ flow schedule list -o json | jq -r '.schedules[] | select(.paused) | .name'`,
 	describeCmd := &cobra.Command{
 		Use:   "describe [name]",
 		Short: "Show one schedule: its cadence, arguments, next firings and recent runs",
-		Long: "Show one schedule in full — the cadence as the file declared it, the arguments every " +
+		Long: "Show one schedule in full: the cadence as the file declared it, the arguments every " +
 			"firing starts its run with, when it next fires, and what it has run lately.",
 		Args: cobra.ExactArgs(1),
 		RunE: runScheduleDescribe,

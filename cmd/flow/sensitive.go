@@ -356,7 +356,7 @@ const revealSensitiveFlagName = "reveal-sensitive"
 func addRevealSensitiveFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool(revealSensitiveFlagName, false,
 		"show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. "+
-			"Display etiquette only — the value already sits in the run's history exactly like "+
+			"Display etiquette only: the value already sits in the run's history exactly like "+
 			"any other input or output, and this flag does not add or remove that; see "+
 			"${secret(...)} for keeping a value out of history in the first place. "+
 			"Typed on purpose, every invocation: there is no configuration default.")

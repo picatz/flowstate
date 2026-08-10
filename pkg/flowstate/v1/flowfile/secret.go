@@ -87,14 +87,14 @@ const (
 	// whose resolved value rides the activity payload into history.
 	inStructureHelp = "a secret reference cannot be nested inside this input's list or mapping: " +
 		"only an input the task applies entry by entry, inside the activity that makes the request, " +
-		"can carry one — anything else is resolved by the workflow, and a secret the workflow " +
+		"can carry one: anything else is resolved by the workflow, and a secret the workflow " +
 		"resolved is a secret in durable history"
 
 	// The other half of the same rule, for the mixture the schema deliberately
 	// cannot represent. See [flowstatev1.Value_Structure].
 	mixedStructureHelp = "a secret reference and an expression cannot share a list or a mapping: " +
 		"the entries of a structure holding a reference are carried to the worker one at a time, " +
-		"and an expression among them would have to be evaluated by the workflow — which is what " +
+		"and an expression among them would have to be evaluated by the workflow, which is what " +
 		"nesting the reference exists to avoid. Keep the computed entries in a structure of their " +
 		"own; for an Authorization header, `bearer:` takes the credential and leaves the rest of " +
 		"`headers:` free to hold expressions"
@@ -142,7 +142,7 @@ const (
 	// what a var here was being asked to arrange.
 	notInVarHelp = "a secret reference cannot be stored in `vars:`; a var is evaluated by the " +
 		"workflow and its value is written to durable history, and there is no activity here to " +
-		"resolve it in — write ${secret('...')} directly on the task input that consumes the " +
+		"resolve it in. Write ${secret('...')} directly on the task input that consumes the " +
 		"secret instead"
 )
 

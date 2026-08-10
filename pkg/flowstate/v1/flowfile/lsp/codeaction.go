@@ -310,7 +310,7 @@ func quickFixes(doc *document, params codeActionParams, result flowfile.FixResul
 		seen[change.Message] = true
 
 		actions = append(actions, codeAction{
-			Title:       fmt.Sprintf("%s — applies the whole migration", change.Message),
+			Title:       fmt.Sprintf("%s (applies the whole migration)", change.Message),
 			Kind:        lsp.CAKQuickFix,
 			Diagnostics: diagnosticsOnLine(params.Context.Diagnostics, line),
 			Edit:        edit,

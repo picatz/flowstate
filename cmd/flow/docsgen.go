@@ -171,8 +171,8 @@ func renderTaskReference() string {
 	b.WriteString(generatedNotice + "\n\n")
 	b.WriteString("# Task reference\n\n")
 	b.WriteString("Every task this build can execute, with the inputs it takes and the outputs it\n")
-	b.WriteString("produces. Derived from the task registry — the same `TaskCatalog` the `GetCatalog`\n")
-	b.WriteString("RPC and `flow tasks` answer with — so a task cannot behave one way and document\n")
+	b.WriteString("produces. Derived from the task registry (the same `TaskCatalog` the `GetCatalog`\n")
+	b.WriteString("RPC and `flow tasks` answer with), so a task cannot behave one way and document\n")
 	b.WriteString("another.\n\n")
 	b.WriteString("A plugin's tasks are not here: what a plugin adds is a property of a deployment\n")
 	b.WriteString("rather than of this binary, and `flow plugins` is what asks a deployment.\n\n")
@@ -191,14 +191,14 @@ func renderTaskReference() string {
 	b.WriteString("## Expressions\n\n")
 	fmt.Fprintf(&b, "Values are reached through these roots: %s.\n\n", codeList(catalog.GetValueRoots()))
 	fmt.Fprintf(&b, "Duration constructors, available to every expression: %s.\n\n", codeList(catalog.GetDurationUnits()))
-	fmt.Fprintf(&b, "Inside a wait's own expressions — `sleep:`, `wait_until:`, and a signal's\n"+
-		"`timeout:` — and nowhere else, `%s` is bound to the evaluation moment.\n\n",
+	fmt.Fprintf(&b, "Inside a wait's own expressions (`sleep:`, `wait_until:`, and a signal's\n"+
+		"`timeout:`) and nowhere else, `%s` is bound to the evaluation moment.\n\n",
 		catalog.GetNowIdentifier())
 	fmt.Fprintf(&b, "CEL libraries every expression reaches: %s.\n\n", codeList(catalog.GetCelLibraries()))
 
 	b.WriteString("### Functions\n\n")
 	b.WriteString("What those libraries add. A macro is expanded by the parser rather than called by\n")
-	b.WriteString("the evaluator, so its name is not its whole call form — the example is.\n\n")
+	b.WriteString("the evaluator, so its name is not its whole call form; the example is.\n\n")
 	b.WriteString("| Function | Library | Kind | Example |\n|---|---|---|---|\n")
 	for _, fn := range catalog.GetCelFunctions() {
 		kind := "function"
@@ -470,8 +470,8 @@ func renderMCPReference() string {
 	b.WriteString("RPC becomes one tool, discovered by walking the service descriptor rather than\n")
 	b.WriteString("kept in a list, so an RPC added to the schema is a tool the day the code is\n")
 	b.WriteString("regenerated.\n\n")
-	b.WriteString("**Answers locally** means the tool needs no server and no Temporal: authoring —\n")
-	b.WriteString("validate, compile, read the catalog, rehearse a run — works with nothing else\n")
+	b.WriteString("**Answers locally** means the tool needs no server and no Temporal: authoring\n")
+	b.WriteString("(validate, compile, read the catalog, rehearse a run) works with nothing else\n")
 	b.WriteString("stood up. The rest address durable runs, which only a server has, and say so\n")
 	b.WriteString("rather than failing opaquely when `--address` was not given.\n\n")
 
@@ -605,7 +605,7 @@ func documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_BACKGROUND",
 			value:   "unset",
-			purpose: "Declare the terminal background (`dark`/`light`) instead of querying for it — also the way out of the four-second wait on a terminal that never answers the query.",
+			purpose: "Declare the terminal background (`dark`/`light`) instead of querying for it. Also the way out of the four-second wait on a terminal that never answers the query.",
 			read:    "cmd/flow/internal/ui/ui.go",
 		},
 		{
@@ -653,7 +653,7 @@ func documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_PLUGIN_DIR",
 			value:   "unset",
-			purpose: "Default for `--plugin-dir`: directories to discover plugins in, separated the way `$PATH` is — the form an image bakes in rather than repeating on every command line.",
+			purpose: "Default for `--plugin-dir`: directories to discover plugins in, separated the way `$PATH` is, the form an image bakes in rather than repeating on every command line.",
 			read:    "cmd/flow/plugins.go",
 		},
 		{
@@ -785,7 +785,7 @@ func documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_SECRET_<NAME>",
 			value:   "unset",
-			purpose: "The value of an `env:` secret. Read only for a name the allowlist carries, and only inside the activity that applies it — the reference is what travels, never the value.",
+			purpose: "The value of an `env:` secret. Read only for a name the allowlist carries, and only inside the activity that applies it: the reference is what travels, never the value.",
 			read:    "pkg/flowstate/v1/secrets/env.go",
 			family:  true,
 		},
@@ -822,7 +822,7 @@ func documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 			value:   "unset",
-			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it — so a collector is a destination gained, not exchanged.",
+			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
 			read:    "cmd/flow/telemetry.go",
 		},
 		{
@@ -845,7 +845,7 @@ func documentedEnvironmentVariables() []environmentVariable {
 				"tenant's runs to a task queue named `<prefix>_<namespace>` instead of the single shared " +
 				"queue. Unset routes nothing, which is the zero-configuration behaviour. It has to be the " +
 				"same value on the server and on every worker, because a worker that spelled it differently " +
-				"would poll a queue nothing submits to — which is why one variable is the convenient way to " +
+				"would poll a queue nothing submits to, which is why one variable is the convenient way to " +
 				"set it. A worker also needs `--tenant` to say which of those queues is its own.",
 			read: "cmd/flow/main.go",
 		},
@@ -896,7 +896,7 @@ func renderEnvVarReference() string {
 	b.WriteString(generatedNotice + "\n\n")
 	b.WriteString("# Environment variable reference\n\n")
 	b.WriteString("Every variable this build reads. There is no single registration point to derive\n")
-	b.WriteString("this from — a variable is read where it is needed — so the prose is written by\n")
+	b.WriteString("this from (a variable is read where it is needed), so the prose is written by\n")
 	b.WriteString("hand in `cmd/flow/docsgen.go` and the *set* is enforced: a test parses every\n")
 	b.WriteString("non-test file under `cmd/` and `pkg/`, collects the variable names and the\n")
 	b.WriteString("`os.Getenv`/`os.LookupEnv` call sites, and fails on a read this table does not\n")
@@ -931,7 +931,7 @@ func renderDiagnosticCodeReference() string {
 	b.WriteString("# Diagnostic code reference\n\n")
 	b.WriteString("Every stable `code` a [`Diagnostic`](../../proto/flowstate/v1/flowstate.proto)\n")
 	b.WriteString("carries, so a program can decide what a validation failure *is* without parsing\n")
-	b.WriteString("`message` — which this project reserves the right to reword. Deliberately small:\n")
+	b.WriteString("`message`, which this project reserves the right to reword. Deliberately small:\n")
 	b.WriteString("only the classes an agent is actually expected to branch on have their own code,\n")
 	b.WriteString("everything else is `general`, and that is documented rather than pretended away.\n\n")
 

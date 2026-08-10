@@ -188,7 +188,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	case CallRefusedNoCallerLocation:
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, but this file was compiled with no location of its own to resolve a "+
-				"relative path against; compile it as a file rather than from bytes alone — "+
+				"relative path against; compile it as a file rather than from bytes alone, as "+
 				"`flow validate`, `flow run` and the language server all do", target)
 		return nil
 	case CallRefusedAbsolute:
@@ -203,7 +203,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	case CallRefusedEscapesThroughSymlink:
 		c.report(spanOfNode(pathNode), callRef,
-			"calls %q, which resolves — through a symlink — to %q, outside %q; a call may "+
+			"calls %q, which resolves (through a symlink) to %q, outside %q; a call may "+
 				"reach anything at or below its own file's directory and nothing above it, "+
 				"and a symlink does not change what \"at or below\" means", target, located.Path, located.CallerDir)
 		return nil

@@ -70,7 +70,7 @@ func hoverFunction(doc *document, v *value, cursor int) *lsp.Hover {
 
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — a macro from the `%s` library.\n\n%s"+
-				" — a value or a namespace — and is expanded when the file *compiles*, so what a "+
+				" (a value or a namespace) and is expanded when the file *compiles*, so what a "+
 				"run carries is the expansion rather than this spelling. That is why a macro's "+
 				"meaning is frozen by the spec where a function's is resolved by whichever worker "+
 				"evaluates the run.",

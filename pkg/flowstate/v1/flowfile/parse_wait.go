@@ -300,7 +300,7 @@ func (c *compiler) waitOutputs(n ast.Node, path string, r ref) map[string]*v1.Va
 
 	if len(entries) == 0 {
 		c.report(spanOfNode(n), ref{step: r.step, path: path, label: "outputs"},
-			"is empty, and `outputs:` replaces what the wait produces — so this step would have no outputs at all; write the names this wait should produce, or remove the key")
+			"is empty, and `outputs:` replaces what the wait produces, so this step would have no outputs at all; write the names this wait should produce, or remove the key")
 		return nil
 	}
 

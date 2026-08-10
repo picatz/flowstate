@@ -401,8 +401,8 @@ func negationDriftDiagnostics(idA, idB string, onlyA, onlyB *expr.Expr) Diagnost
 			Message: fmt.Sprintf(
 				"this condition and step %q's look like they were meant to be exact negations of "+
 					"each other, but one clause has drifted: here it is `%s`, while the matching "+
-					"clause in %q is `%s`; make the two conditions exact negations again — or, if they "+
-					"are meant to differ, change one so the shapes no longer match — so the branches "+
+					"clause in %q is `%s`; make the two conditions exact negations again (or, if they "+
+					"are meant to differ, change one so the shapes no longer match) so the branches "+
 					"cannot both run, or both be skipped, on the same outcome",
 				idB, textA, idB, textB),
 		},
@@ -412,8 +412,8 @@ func negationDriftDiagnostics(idA, idB string, onlyA, onlyB *expr.Expr) Diagnost
 			Message: fmt.Sprintf(
 				"this condition and step %q's look like they were meant to be exact negations of "+
 					"each other, but one clause has drifted: here it is `%s`, while the matching "+
-					"clause in %q is `%s`; make the two conditions exact negations again — or, if they "+
-					"are meant to differ, change one so the shapes no longer match — so the branches "+
+					"clause in %q is `%s`; make the two conditions exact negations again (or, if they "+
+					"are meant to differ, change one so the shapes no longer match) so the branches "+
 					"cannot both run, or both be skipped, on the same outcome",
 				idA, textB, idA, textA),
 		},
@@ -428,7 +428,7 @@ func negationDriftDiagnostics(idA, idB string, onlyA, onlyB *expr.Expr) Diagnost
 // to naming the problem rather than showing nothing.
 func unparseOrRaw(e *expr.Expr) string {
 	if e == nil {
-		return "(nothing — the other side has a clause this side lacks)"
+		return "(nothing: the other side has a clause this side lacks)"
 	}
 
 	text, err := cel.AstToString(cel.ParsedExprToAst(&expr.ParsedExpr{Expr: e}))

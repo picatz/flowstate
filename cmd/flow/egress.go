@@ -45,7 +45,7 @@ func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing the http task (default $"+egressPolicyEnv+"); "+
 			"when set it replaces the default policy entirely, and "+v1.AllowLoopbackEgressEnv+
-			" is ignored — a file that wants loopback says allow_loopback: true")
+			" is ignored; a file that wants loopback says allow_loopback: true")
 }
 
 // applyEgressPolicy loads the configured policy file and registers the http task
