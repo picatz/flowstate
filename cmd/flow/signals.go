@@ -331,6 +331,11 @@ func parseSignalPayload(source, raw string) (*v1.Node_Outputs, error) {
 func runSignal(cmd *cobra.Command, args []string) error {
 	workflowID, name := args[0], args[1]
 
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	server := serverFlagsOf(cmd)
 	data, _ := cmd.Flags().GetString("data")
 	runID, _ := cmd.Flags().GetString("run-id")
@@ -373,6 +378,26 @@ func runSignal(cmd *cobra.Command, args []string) error {
 		return refusedRun("signalling", workflowID, server, err)
 	}
 
+	// Applied: the server has taken the signal, either into the gate that was
+	// waiting or into the bounded pending set for a gate not reached yet. Both are
+	// deliveries as far as a sender is concerned, and the schema says nothing that
+	// would let this document tell them apart. That distinction is one of the facts
+	// picatz/flowstate#374 wants a non-empty SignalResponse to carry.
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, mutationResult{
+			Verb:       "signal",
+			WorkflowID: workflowID,
+			RunID:      runID,
+			SignalName: name,
+			Result:     resultApplied,
+		})
+	}
+
+	// On stdout, which is where this line has always gone. It is out of step with
+	// the account-on-stderr discipline the rest of the lifecycle verbs keep, and
+	// moving it is a separate change: it would alter what an existing
+	// `flow signal > file` collects, and the reason to touch these verbs at all was
+	// to stop breaking what scripts already depend on.
 	fmt.Fprintf(cmd.OutOrStdout(), "delivered %s to %s\n", name, workflowID)
 	return nil
 }

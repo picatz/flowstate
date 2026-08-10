@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -108,18 +110,32 @@ func (f OutputFormat) Machine() bool { return f == FormatJSON || f == FormatJSON
 
 // addOutputFlag declares --output on a command that has an answer to render.
 //
-// Only on the verbs that produce one. `flow cancel` reports that it asked a run to
-// stop, which is an account and not an answer, so offering it a format would be
-// offering something it cannot honour.
+// Only on the verbs that produce one, which now includes the verbs that change
+// something: `flow cancel` was once the example of a command with only an account
+// to give, but which run it acted on and whether the act is done are answers, and a
+// script that cannot read them has to ask the server a second time. See
+// [mutationResult] for what those verbs render.
+//
+// Still excluded are the verbs whose whole output is the account: `flow server` and
+// `flow worker` narrate a process that is running, and there is no moment at which
+// they have a document to write.
 func addOutputFlag(cmd *cobra.Command) {
 	names := make([]string, 0, len(outputFormats))
 	for _, accepted := range outputFormats {
 		names = append(names, string(accepted))
 	}
 
+	// The description says "named fields" rather than "the server's own schema",
+	// which is what it used to say, because that promise stopped being true for
+	// every verb the moment the mutations gained the flag: they answer with the
+	// envelope in [mutationResult], since the RPCs behind them answer with nothing.
+	// A flag help that overstates its contract is worse than one that is vague
+	// about it, and each verb's own help names the document it writes.
 	cmd.Flags().StringP("output", "o", string(FormatText),
 		"how to render the answer: "+strings.Join(names, ", ")+". "+
-			"json and jsonl carry the server's own schema, so a field is addressable by name")
+			"json and jsonl are named fields rather than columns, so a value is addressable "+
+			"by name: the server's own schema where a verb reads something, and the result "+
+			"document this verb's help describes where it changes something")
 
 	// Shell completion for the values, because a flag with a closed set of
 	// answers should not need the help text opened to remember them.
@@ -159,6 +175,120 @@ func writeJSON(surface *ui.UI, format OutputFormat, message proto.Message) error
 
 	return err
 }
+
+// A mutation's result is an answer, so the verbs that perform one carry `--output`
+// too.
+//
+// `flow cancel` used to be the example of a verb with nothing to render, on the
+// grounds that it reports an account rather than an answer. That reading was wrong
+// for the audience the flag exists for. A script that cancels a run wants to know
+// which workflow it acted on, which attempt, and whether the act is done or merely
+// requested, and today it has to re-`get` to learn what it just did: a round trip
+// for a fact the CLI already held.
+//
+// The shape is one envelope shared by every mutation verb rather than seven, so a
+// caller writes one `jq` expression and a verb added later is already covered. It
+// is a hand-written struct and not a schema message because every one of these RPCs
+// answers with an empty message today (`CancelResponse{}`, `SignalResponse{}`,
+// `TriggerScheduleResponse{}`, and so on), so there is no schema field to render.
+// That emptiness is the real defect, filed as picatz/flowstate#374: a server that
+// says nothing about a mutation cannot tell any surface whether the act changed
+// anything. When those messages gain fields, this envelope is what gets replaced by
+// protojson of the response, exactly as `get` and `list` already do.
+//
+// So the rule for what may appear here: only what this process knows for certain,
+// which is what it asked and that the server accepted the asking. Nothing is
+// inferred about the resulting state, because inventing "the run is now cancelled"
+// out of an empty response is precisely the claim the prose on stderr has always
+// refused to make.
+type mutationResult struct {
+	// Verb is the command path without the binary name: "cancel", "terminate",
+	// "signal", "schedule pause". Carried so that a log of these documents, or a
+	// pipeline handling several, says what each one was.
+	Verb string `json:"verb"`
+
+	// WorkflowID and RunID name the run acted on, empty on the schedule verbs.
+	//
+	// RunID is empty when the caller did not pin one, which is the usual case and
+	// means the request addressed whichever run is current.
+	WorkflowID string `json:"workflowId"`
+	RunID      string `json:"runId"`
+
+	// ScheduleName names the schedule acted on, empty on the run verbs.
+	//
+	// A name rather than an id, because that is what the schema calls it
+	// (`ScheduleDescription.name`, which `flow schedule list -o jsonl | jq -r
+	// .name` already reads) and a schedule has no other identity. Spelling it
+	// "scheduleId" here would invent a second word for one concept.
+	ScheduleName string `json:"scheduleName"`
+
+	// SignalName is the signal delivered, empty on every other verb. Part of what
+	// was done rather than of what was addressed: two signals to one run are two
+	// different acts.
+	SignalName string `json:"signalName"`
+
+	// Result is whether the act is done or is under way, which is the distinction
+	// these verbs turn on and the one their prose has always drawn.
+	Result string `json:"result"`
+}
+
+const (
+	// resultApplied is an act that is true once the server has answered:
+	// terminating a run, delivering a signal, deleting or pausing a schedule.
+	resultApplied = "applied"
+
+	// resultRequested is an act the server has accepted and not yet performed.
+	//
+	// Cancellation is cooperative, so the run is still finishing its response; a
+	// triggered schedule fires after the answer, which is why there is no run id
+	// to report. Saying "applied" for either would hand a script the claim the
+	// prose deliberately does not make.
+	resultRequested = "requested"
+)
+
+// writeMutationResult writes the document a mutation verb answers with.
+//
+// Every field is written even when empty, which is [marshalJSON]'s EmitUnpopulated
+// rule applied to a shape protojson does not render: a consumer indexing `.runId`
+// on a schedule verb should find `""` rather than a missing key, because the two
+// are the same question and only one of them is answerable without knowing the
+// shape in advance.
+//
+// json and jsonl differ only in indentation here. A mutation is a single act, so
+// the line-per-record form has exactly one record, and refusing `-o jsonl` would
+// make a script that formats every flow invocation the same way special-case these.
+func writeMutationResult(surface *ui.UI, format OutputFormat, result mutationResult) error {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("rendering the result as %s: %w", format, err)
+	}
+
+	if format == FormatJSON {
+		var indented bytes.Buffer
+		if err := json.Indent(&indented, encoded, "", "  "); err != nil {
+			return fmt.Errorf("rendering the result as %s: %w", format, err)
+		}
+
+		encoded = indented.Bytes()
+	}
+
+	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+
+	return err
+}
+
+// mutationFlagHelp is the paragraph every mutation verb's Long text ends with.
+//
+// One string rather than seven copies, because the document's shape is one
+// decision and a help text restating it per verb is a thing that drifts. The fields
+// are named here because a caller reading `--help` is deciding what to index, and
+// sending them to the source to find out would defeat the flag.
+const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdout carries a single result " +
+	"document and nothing else, while the prose above is not written: " +
+	"`{\"verb\", \"workflowId\", \"runId\", \"scheduleName\", \"signalName\", \"result\"}`, where " +
+	"`result` is \"applied\" for an act that is done when the server answers and \"requested\" for " +
+	"one it has accepted and not yet performed. Fields that do not apply to a verb are present and " +
+	"empty, so one expression reads every one of them."
 
 // writeRun writes a finished run, in the shape the format asks for.
 //

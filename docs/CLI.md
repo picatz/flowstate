@@ -305,6 +305,19 @@ is one rule with consequences — the fuller reasoning lives in
 - **`--output json` is the protojson of the RPC response.** There is no second
   encoder, so the JSON surface cannot drift from the API and needs no separate
   schema documentation.
+- **The one exception is a mutation whose response is empty, and it is meant to
+  stop being one.** `cancel`, `terminate`, `signal` and the four schedule
+  mutations answer with empty messages (`CancelResponse{}` and its siblings), so
+  there is no protojson to render and a script had to re-`get` the run to learn
+  what it had just done. They therefore write one shared envelope,
+  `mutationResult` in `cmd/flow/output.go`: `verb`, `workflowId`, `runId`,
+  `scheduleName`, `signalName`, `result`, where `result` is `applied` for an act
+  that is true once the server answers and `requested` for one it has accepted
+  and not yet performed. It carries only what this process knows for certain,
+  because inventing a resulting state out of an empty response is exactly the
+  claim the prose has always refused to make. The emptiness is the real defect
+  (picatz/flowstate#374): when those responses gain fields, the envelope is
+  replaced by protojson of the response and this exception goes away.
 - **Exit status is a contract with three values.** `0`: the command succeeded
   and the answer is not a refusal. `1`: the command worked and the answer is a
   refusal or a finding — diagnostics found, a check failed, a run that finished
