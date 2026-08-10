@@ -368,11 +368,19 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// a plugin task it has not registered yet would answer `unknown task` for a
 	// workflow that is correct — and Open is strict, so a plugin that cannot come
 	// up fails the command here rather than one step at a time later.
-	closePlugins, err := startPlugins(cmd, secretProviders)
+	pluginCatalog, closePlugins, err := startPlugins(cmd, secretProviders)
 	if err != nil {
 		return err
 	}
 	defer closePlugins()
+
+	// The worker's own catalog, kept rather than dropped once the tasks were
+	// registered. Registration says which tasks this worker can dispatch; this
+	// says which *build* of each it dispatches them to, which is what a run pinned
+	// at submit is admitted against before any step of it executes here. Installed
+	// before Register, and before the worker polls, so no run can arrive ahead of
+	// the answer. See engine/plugins.go.
+	engine.UsePluginCatalog(pluginCatalog)
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
 		return err
@@ -679,11 +687,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// a caller authoring against GetCatalog would be told a task its workers run
 	// does not exist. The plugins launched here serve descriptors and health
 	// checks; execution still happens on the workers.
-	closePlugins, err := startPlugins(cmd, nil)
+	pluginCatalog, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}
 	defer closePlugins()
+
+	// And handed to the server, which is what makes a `plugins:` requirement
+	// resolvable: the server pins every submission against this snapshot, and
+	// without it a deployment that launched the plugin would refuse every workflow
+	// asking for it as "not installed".
+	serverOpts = append(serverOpts, server.WithPluginCatalog(pluginCatalog))
 
 	// No error to handle since connectrpc.com/validate v0.6.0: the interceptor
 	// builds its validator lazily on first use, so construction cannot fail.
@@ -917,7 +931,7 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// Strict, as a worker is: a plugin that will not come up fails the command
 	// here rather than leaving an editor quietly reporting `unknown task` for
 	// tasks the author asked for and had every reason to expect.
-	closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}

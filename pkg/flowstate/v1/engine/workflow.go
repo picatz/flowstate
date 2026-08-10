@@ -319,6 +319,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, fmt.Errorf("register state query: %w", err)
 	}
 
+	// Before anything this segment does, including the vars activity below: a
+	// worker that may not run this workload must not evaluate its `vars:` either.
+	// See engine/plugins.go for why the check is split the way it is, and why this
+	// is per segment rather than per run: Continue-As-New is where a run can land
+	// on a worker that was not in the fleet when it started.
+	if err := admitPlugins(ctx, st.GetWorkflow()); err != nil {
+		return nil, err
+	}
+
 	// Initialize step outputs with carried-over minimal subset if present.
 	stepOutputs := st.Outputs
 	if stepOutputs == nil {

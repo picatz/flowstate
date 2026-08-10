@@ -222,11 +222,20 @@ jobs:
       # the stale generated code — and shows up as a mystery when someone else
       # regenerates. Several people editing one schema at once makes this likely
       # rather than theoretical.
+      #
+      # Two artifacts, one pin. The second is the descriptor set the schema's
+      # comments travel in: protoc strips SourceCodeInfo from what a .pb.go
+      # embeds, so a runtime descriptor has shape and no prose, and `buf build`
+      # is the command that keeps the comments. It is written here, beside the
+      # generated code, so the same `git diff --exit-code` catches a set that
+      # describes a schema which has since moved. --exclude-imports keeps it to
+      # this repository's own schema rather than googleapis and protovalidate.
       - name: Verify generated code is current
         run: |
           go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} generate
+          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
           git diff --exit-code -- . || {
-            echo "::error::generated code does not match the schema; run 'buf generate' and commit the result"
+            echo "::error::generated code does not match the schema; run 'make check' (or 'buf generate' plus the 'buf build' line beside it) and commit the result"
             exit 1
           }
 
