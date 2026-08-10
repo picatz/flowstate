@@ -14,28 +14,32 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-// `flow fmt` is [flowfile.Marshal] exposed as a formatter, the way `gofmt` is a
+// `flow fmt` is [flowfile.Format] exposed as a formatter, the way `gofmt` is a
 // command wrapped around go/printer.
 //
-// It is not a text rewriter. `flow fix` edits a file's source lines in place, so a
-// comment above a step and the blank line after it survive being run through —
-// this instead reads a file into a [v1.Workflow] and renders that back out from
-// nothing. Marshal's own doc comment says why one line supplies both directions'
-// contract: `flow fmt` and the language server both rely on Marshal(Unmarshal(x))
-// meaning the same thing as x, and neither relies on it meaning the same *bytes*.
+// It is not a text rewriter. `flow fix` edits a file's source lines in place;
+// this instead reads a file into a [v1.Workflow] and renders that back out, and
+// then carries the source's comments across onto what it rendered. Marshal's own
+// doc comment says why one function supplies both directions' contract: `flow
+// fmt` and the language server both rely on Marshal(Unmarshal(x)) meaning the
+// same thing as x, and neither relies on it meaning the same *bytes*.
 //
-// What is lost running a real file through it: every comment, every blank line,
-// the order YAML mapping keys were written in (task inputs and `vars:` entries
-// come back sorted), which quote style a string literal used (a CEL string
-// literal is written back with double quotes regardless of how it was typed), and
-// whether the file ended in a trailing newline (it always will afterward). What
-// survives: the shape of every step, every value, and — because Marshal is the
-// same function `flow fix` writes its output through — a file this produces
-// compiles under the same edition it started in. Running this over a commented,
-// hand-formatted file is a one-time, reviewable loss of that formatting, not
-// something to run routinely the way `gofmt` is; `--check` is for confirming a
-// file was already put through this and left alone since, not for demanding every
-// contributor's YAML match a house style this command cannot preserve.
+// What is lost running a real file through it: every blank line that is not part
+// of a comment's own grouping, the order YAML mapping keys were written in (task
+// inputs and `vars:` entries come back sorted), which quote style a string
+// literal used (a CEL string literal is written back with double quotes
+// regardless of how it was typed), and whether the file ended in a trailing
+// newline (it always will afterward). What survives: the shape of every step,
+// every value, every comment, and, because Marshal is the same function `flow
+// fix` writes its output through, a file this produces compiles under the same
+// edition it started in.
+//
+// Comments are not a formatting opinion, which is why they are the one thing here
+// that is kept rather than normalized: they are the author's own content, and a
+// production file's "loop bounded at 50 because the API pages at 50" is the
+// expensive one to lose (#381). Where a comment cannot be carried across at all,
+// because what it was written against is not written back in the same shape, the
+// whole file is refused and left alone rather than rewritten without it.
 //
 // It refuses to touch a file that will not parse. Reporting a syntax error and
 // leaving the file exactly as it was is the same rule `flow fix` follows: a file
@@ -58,16 +62,16 @@ func newFmtCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "fmt [path...]",
-		Short: "Rewrite Flowfiles into the form flowfile.Marshal writes",
+		Short: "Rewrite Flowfiles into the form flowfile.Format writes, keeping comments",
 		Long: "Rewrite a Flowfile from its parsed form rather than editing its source text, the way " +
 			"`flow fix` does. A directory is walked for .yaml and .yml files.\n\n" +
-			"This is not comment-preserving or whitespace-preserving: every comment, every blank " +
-			"line, the order a mapping's keys were written in, and a string literal's quote style " +
-			"are all normalized away, because they are not part of the parsed workflow this reads a " +
-			"file into. Running it over a hand-formatted, commented file is a one-time, reviewable " +
-			"loss of that formatting. Check the diff before committing it, the same as any other " +
-			"rewrite.\n\n" +
-			"A file that does not parse is reported with its position and left untouched.\n\n" +
+			"Comments are kept, carried onto the document this writes at the key, value or list " +
+			"entry they were written against. Whitespace is not: blank lines, the order a mapping's " +
+			"keys were written in, and a string literal's quote style are all normalized away, " +
+			"because they are not part of the parsed workflow this reads a file into.\n\n" +
+			"A file that does not parse is reported with its position and left untouched, and so is " +
+			"a file carrying a comment this cannot keep, which happens when what the comment was " +
+			"written against is not written back in the same shape.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
 			"instead of scrapes: which files would change, and which were refused, per file. CI " +
 			"that wants structured data rather than stderr text asks for one of those.",
@@ -235,11 +239,13 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		return fmtOutcome{refused: true, report: report}, nil
 	}
 
-	formatted, err := flowfile.Marshal(workflow)
+	formatted, err := flowfile.Format(data, workflow)
 	if err != nil {
 		// A workflow this build compiled but cannot write back out — a literal
 		// string containing ${, or an expression written with a macro cel-go
-		// cannot render as source — is not safe to guess at either.
+		// cannot render as source, is not safe to guess at either. Nor is a file
+		// carrying a comment the rewrite cannot keep: dropping an author's prose
+		// to win a reformat is the trade this command does not make.
 		if !machine {
 			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
 		}

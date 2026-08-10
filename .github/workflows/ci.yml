@@ -33,6 +33,9 @@ env:
   BUF_VERSION: v1.72.0
   GOVULNCHECK_VERSION: v1.6.0
   STATICCHECK_VERSION: 2026.1
+  VHS_VERSION: v0.11.0
+  TTYD_VERSION: 1.7.7
+  TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
 
 # Only the newest commit on a branch is worth testing. Pushing three times in a
 # minute otherwise runs three full matrices and the first two answer questions
@@ -365,3 +368,63 @@ jobs:
 
       - name: Fuzz smoke (FuzzMessageDescriptor)
         run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
+
+  # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
+  # real terminal and the goldens under cmd/flow/internal/appearance/testdata say
+  # what those surfaces look like. Nothing else in this workflow can see the
+  # difference, because every other test reads output for substrings and the
+  # thing at risk here is whitespace: a wrap point, a hanging indent, the blank
+  # line before a NEXT block, the padding that makes a pill a pill.
+  #
+  # This is the job that makes #376's charter mechanical. Until now "beautiful in
+  # form" was held by whoever reviewed the diff; from here a styled surface has a
+  # recording, and drift fails a pin the way `flow docs generate` fails one.
+  #
+  # It needs three binaries and a browser, which is why it is a job of its own
+  # rather than a step in `test`: the test skips where any of them is absent, so
+  # a laptop running `go test ./...` is not asked for a video encoder. That skip
+  # is also why `make check` does not run it — a check that reports green by not
+  # running is worse than one that is honestly elsewhere.
+  #
+  # Advisory for the 48h window CLAUDE.md gives every newly added check, the same
+  # window staticcheck, the fuzz smoke job and federation each had: a check
+  # nobody has run against this tree can go red on code nobody touched, and a red
+  # build people learn to ignore is worse than no build. Drop `continue-on-error`
+  # on 2026-08-12 and let it be required. A failure after that is a styled
+  # surface that changed shape: read the diff, and if the new shape is the
+  # intended one, re-record with `make appearance-update` and commit the goldens
+  # in the same change that moved the surface.
+  appearance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # vhs refuses to start without ffmpeg, even for a text recording, so this
+      # is a hard dependency rather than one only the GIF path needs.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # ttyd is the terminal vhs drives. Upstream ships a static binary per
+      # release; pinned by version for the same reason everything else here is,
+      # and a checksum because this one is fetched from a release asset rather
+      # than resolved by a package manager that verifies its own index.
+      - name: Install ttyd
+        run: |
+          curl -fsSL -o /tmp/ttyd "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64"
+          echo "${TTYD_SHA256}  /tmp/ttyd" | sha256sum -c -
+          sudo install -m 0755 /tmp/ttyd /usr/local/bin/ttyd
+
+      - name: Install vhs
+        run: go install github.com/charmbracelet/vhs@${{ env.VHS_VERSION }}
+
+      # vhs downloads a Chromium on first use, which is the slow part of this
+      # job and happens exactly once: the test points every recording at one
+      # cache directory, because each tape otherwise gets a fresh HOME and would
+      # pay for its own download.
+      - name: Record and compare
+        run: GOMEMLIMIT=2GiB go test -timeout 900s -count=1 -run TestAppearance ./cmd/flow/internal/appearance/

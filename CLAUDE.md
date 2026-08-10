@@ -89,6 +89,7 @@ behind it too.
     go run ./cmd/flow fix --check examples/*/workflow.yaml
     go run ./cmd/flow test examples/
     make fuzz-smoke
+    make appearance
     docker compose -f examples/observability/docker-compose.yaml config -q
     go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
     go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/

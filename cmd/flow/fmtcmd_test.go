@@ -12,9 +12,10 @@ import (
 )
 
 // These tests are about what `flow fmt` promises rather than what a text-editing
-// rewriter like `flow fix` promises: it does not preserve comments or whitespace,
-// but it is idempotent, `--check` only looks, and a file that will not parse is
-// never touched.
+// rewriter like `flow fix` promises: it normalizes key order, quoting and layout
+// rather than preserving them, but it is idempotent, `--check` only looks, a file
+// that will not parse is never touched, and every comment in a file it rewrites
+// comes out the other side (#381).
 
 // runFmtCommand runs `flow fmt` through the command, the way a shell does, and
 // returns its two streams separately along with the error that becomes the exit
@@ -76,35 +77,69 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 		}
 	}
 
-	out, _, err := runFmtCommand(t, dir)
-	if err != nil {
-		t.Fatalf("first fmt run failed: %v\n%s", err, out)
+	before := make(map[string][]byte, len(copies))
+	for _, path := range copies {
+		before[path] = readFixture(t, path)
 	}
 
+	// The exit status is not the assertion, because a real example may carry a
+	// comment the rewrite cannot keep and is then refused by design (#381). What
+	// has to hold is that a refused file is left exactly as it was, and that
+	// everything else settles after one pass.
+	out, _, _ := runFmtCommand(t, dir)
+
 	firstPass := make(map[string][]byte, len(copies))
-	changedOnFirstRun := false
 	for _, path := range copies {
 		firstPass[path] = readFixture(t, path)
 	}
-	if strings.Contains(out, "reformatted") {
-		changedOnFirstRun = true
-	}
-	if !changedOnFirstRun {
+	if !strings.Contains(out, "reformatted") {
 		t.Fatal("nothing was reformatted on the first run, so this says nothing about idempotence")
 	}
 
-	out2, _, err := runFmtCommand(t, "--check", dir)
-	if err != nil {
-		t.Fatalf("--check found work to do on the second run, so fmt(fmt(x)) != fmt(x): %v\n%s", err, out2)
+	refused := 0
+	for _, path := range copies {
+		if !fmtAccepts(t, path) {
+			refused++
+			if !bytes.Equal(before[path], firstPass[path]) {
+				t.Errorf("%s was refused and rewritten anyway:\n--- before\n%s\n--- after\n%s",
+					path, before[path], firstPass[path])
+			}
+		}
+	}
+
+	out2, _, _ := runFmtCommand(t, "--check", dir)
+	if strings.Contains(out2, "reformatted") {
+		t.Errorf("--check found work to do on the second run, so fmt(fmt(x)) != fmt(x):\n%s", out2)
 	}
 
 	for _, path := range copies {
 		second := readFixture(t, path)
 		if !bytes.Equal(firstPass[path], second) {
-			t.Errorf("%s changed on a second --check run even though it exited zero:\n--- first\n%s\n--- second\n%s",
+			t.Errorf("%s changed on a second --check run:\n--- first\n%s\n--- second\n%s",
 				path, firstPass[path], second)
 		}
 	}
+
+	// Refusals are the exception rather than the rule, and a change that made
+	// every file refuse would satisfy everything above.
+	if refused > len(copies)/4 {
+		t.Errorf("%d of %d examples were refused, which is too many for refusal to still be the exception",
+			refused, len(copies))
+	}
+}
+
+// fmtAccepts reports whether `flow fmt` has an answer for the file at path, as
+// opposed to refusing it: a file whose comments the rewrite cannot keep, or a
+// workflow it cannot write back out.
+func fmtAccepts(t *testing.T, path string) bool {
+	t.Helper()
+
+	workflow, _, err := flowfile.ParseFile(path)
+	if err != nil {
+		return false
+	}
+	_, err = flowfile.Format(readFixture(t, path), workflow)
+	return err == nil
 }
 
 // readFixtureString reads path as a string, failing the test on error.
@@ -164,14 +199,14 @@ func walkCallNodes(nodes []*v1.Node, dir string, into map[string]bool) {
 	}
 }
 
-// TestFmtProducesMarshalsOutput checks the transformation itself against the
+// TestFmtProducesFormatsOutput checks the transformation itself against the
 // function it wraps, so a bug in the command's plumbing cannot hide behind a
-// bug in Marshal, or the reverse.
-func TestFmtProducesMarshalsOutput(t *testing.T) {
+// bug in Format, or the reverse.
+func TestFmtProducesFormatsOutput(t *testing.T) {
 	const src = `edition: v2026.2
 name: greeter
 steps:
-  # a comment flow fmt does not carry through
+  # a comment flow fmt carries through
   - id: greet
     log:
       message: hello world
@@ -181,9 +216,12 @@ steps:
 	if err != nil {
 		t.Fatalf("the fixture does not compile: %v", err)
 	}
-	want, err := flowfile.Marshal(workflow)
+	want, err := flowfile.Format([]byte(src), workflow)
 	if err != nil {
-		t.Fatalf("Marshal failed on the fixture directly: %v", err)
+		t.Fatalf("Format failed on the fixture directly: %v", err)
+	}
+	if !strings.Contains(string(want), "# a comment flow fmt carries through") {
+		t.Fatalf("the fixture proves nothing about comments, because Format dropped it:\n%s", want)
 	}
 
 	dir := t.TempDir()
@@ -195,7 +233,7 @@ steps:
 	}
 
 	if got := string(readFixture(t, path)); got != string(want) {
-		t.Errorf("the command's output does not match Marshal's own output:\n--- want\n%s\n--- got\n%s", want, got)
+		t.Errorf("the command's output does not match Format's own output:\n--- want\n%s\n--- got\n%s", want, got)
 	}
 }
 
@@ -387,12 +425,13 @@ steps:
 	}
 }
 
-// currentStyleSingle is a small current-edition Flowfile with a comment, so a
-// directory walk over it has something to reformat.
+// currentStyleSingle is a small current-edition Flowfile with a comment and an
+// indented list, so a directory walk over it has something to reformat and
+// something to carry through.
 const currentStyleSingle = `edition: v2026.2
 name: single
 steps:
-  # a comment flow fmt does not carry through
+  # a comment flow fmt carries through
   - id: greet
     log:
       message: hello
@@ -416,8 +455,13 @@ func TestFmtWalksADirectoryForFlowfiles(t *testing.T) {
 
 	for _, path := range []string{yamlPath, ymlPath, deepPath} {
 		got := string(readFixture(t, path))
-		if strings.Contains(got, "flow fmt does not carry through") {
-			t.Errorf("%s still carries the comment, so it was not picked up by the walk:\n%s", path, got)
+		// The list comes back unindented, which is the reformatting; the comment
+		// comes back with it, which is what the reformatting may not cost.
+		if !strings.Contains(got, "\n- id: greet") {
+			t.Errorf("%s was not reformatted, so it was not picked up by the walk:\n%s", path, got)
+		}
+		if !strings.Contains(got, "# a comment flow fmt carries through") {
+			t.Errorf("%s lost its comment to the walk:\n%s", path, got)
 		}
 		if !strings.Contains(got, "log:") {
 			t.Errorf("%s is no longer a Flowfile after formatting:\n%s", path, got)
@@ -425,5 +469,94 @@ func TestFmtWalksADirectoryForFlowfiles(t *testing.T) {
 	}
 	if got := string(readFixture(t, notAFlowfile)); got != currentStyleSingle {
 		t.Errorf("a file that is not a Flowfile was rewritten by a directory walk:\n%s", got)
+	}
+}
+
+// TestFmtKeepsEveryCommentInTheScaffoldItWasGiven is #381 as it was found: the
+// formatter's first act on the file the CLI itself had just written was to
+// report `reformatted` and delete every teaching comment in it.
+//
+// The scaffold is the fixture because it is the one Flowfile in this repository
+// whose comments are the point of the file, and because it is what a first-time
+// author runs `flow fmt` on.
+func TestFmtKeepsEveryCommentInTheScaffoldItWasGiven(t *testing.T) {
+	dir := t.TempDir()
+
+	init := newInitCommand()
+	init.SetOut(new(bytes.Buffer))
+	init.SetErr(new(bytes.Buffer))
+	init.SetArgs([]string{dir})
+	if err := init.Execute(); err != nil {
+		t.Fatalf("scaffolding: %v", err)
+	}
+
+	path := filepath.Join(dir, "workflow.yaml")
+	scaffold := string(readFixture(t, path))
+
+	var comments []string
+	for _, line := range strings.Split(scaffold, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "#") {
+			comments = append(comments, trimmed)
+		}
+	}
+	if len(comments) == 0 {
+		t.Fatal("the scaffold has no comments, so this test proves nothing")
+	}
+
+	out, _, err := runFmtCommand(t, path)
+	if err != nil {
+		t.Fatalf("fmt refused the scaffold: %v\n%s", err, out)
+	}
+
+	formatted := string(readFixture(t, path))
+	for _, comment := range comments {
+		if !strings.Contains(formatted, comment) {
+			t.Errorf("formatting the scaffold deleted a comment:\n%s\n--- the file it wrote\n%s", comment, formatted)
+		}
+	}
+
+	// And the run really did rewrite the file, so the comments above did not
+	// survive by nothing having happened.
+	if formatted == scaffold {
+		t.Fatal("the scaffold was already formatted, so nothing here was at risk")
+	}
+}
+
+// TestFmtRefusesAFileWhoseCommentItCannotKeep is the fail-closed half at the
+// command's own boundary.
+//
+// A mapping of expressions is written back as a single expression, so a comment
+// inside one has no key left to sit above. The file is reported and left exactly
+// as it was rather than rewritten without the comment: a formatter choosing
+// between wrong output and no output chooses no output.
+func TestFmtRefusesAFileWhoseCommentItCannotKeep(t *testing.T) {
+	const src = `edition: v2026.2
+name: report
+steps:
+  - id: report
+    log:
+      message: done
+      fields:
+        # which value survived escaping
+        q: ${"x"}
+`
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", src)
+
+	out, _, err := runFmtCommand(t, path)
+	if err == nil {
+		t.Error("a file whose comment cannot be kept was reported as formatted")
+	}
+	if got := string(readFixture(t, path)); got != src {
+		t.Errorf("a refused file was rewritten anyway:\n--- before\n%s\n--- after\n%s", src, got)
+	}
+	if !strings.Contains(out, path) {
+		t.Errorf("the refusal does not name the file:\n%s", out)
+	}
+	if !strings.Contains(out, "8:9") {
+		t.Errorf("the refusal does not position the comment that caused it:\n%s", out)
+	}
+	if !strings.Contains(out, "comment cannot be kept") {
+		t.Errorf("the refusal does not say what stopped it:\n%s", out)
 	}
 }
