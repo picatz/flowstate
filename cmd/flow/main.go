@@ -1683,24 +1683,11 @@ flow server --verbose`,
 	addTaskPolicyFlag(runLocalCmd)
 	addSecretFlags(workerCmd)
 	addSecretFlags(runLocalCmd)
-	runLocalCmd.Flags().String("as-subject", "local-user",
-		"authenticated subject to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-issuer", "flowstate:local",
-		"authenticated issuer to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-namespace", "",
-		"tenant namespace to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-deployment", "local",
-		"Flowstate deployment name to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().StringArray("as-claim", nil,
-		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
+	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize worker-side resolution")
-	runLocalCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an access policy whose secrets rules authorize this local rehearsal")
-	for _, c := range []*cobra.Command{workerCmd, runLocalCmd} {
-		c.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-			"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
-	}
+	workerCmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
@@ -1874,6 +1861,11 @@ flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'`,
 	}
 	addOutputFlag(tasksCmd)
 
+	// Task command, which runs one task without a workflow around it. Built in
+	// taskrun.go, beside the code it drives. See [newTaskCommand] for why the
+	// singular verb is not folded into the plural listing above.
+	taskCmd := newTaskCommand()
+
 	// Plugins command, which reports what a plugin directory adds to this build.
 	//
 	// Beside `tasks` rather than under `worker`, because the question it answers is
@@ -2015,6 +2007,7 @@ flow lsp --plugin-dir ./plugins`,
 	runCmd.GroupID = "workflow"
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
+	taskCmd.GroupID = "workflow"
 	getCmd.GroupID = "workflow"
 	watchCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
@@ -2065,6 +2058,7 @@ flow lsp --plugin-dir ./plugins`,
 	compileCmd.GroupID = "workflow"
 	rootCmd.AddCommand(compileCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(getCmd)

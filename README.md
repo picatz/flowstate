@@ -343,6 +343,8 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow schedule resume <name>` | Let a paused schedule fire again. Missed firings are not made up. |
 | `flow schedule trigger <name>` | Fire a schedule now, which is how a schedule is tested. Fires even a paused one. |
 | `flow tasks` | List the tasks a workflow may use, and the CEL libraries every expression reaches. |
+| `flow task` | Work with one task on its own, rather than through a workflow that contains it. |
+| `flow task run <name>` | Run one task with no workflow around it, through the same engine `flow run local` uses, so the egress policy, secrets and retries all apply. Same `--input`/`--input-file` as `flow run`, with the task's own input schema playing the role of a workflow's `inputs:`. |
 | `flow plugins` | List the plugins on a search path and the tasks each adds, by launching them and asking. |
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
