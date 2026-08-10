@@ -1072,6 +1072,35 @@ flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | leng
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
 
+## `flow version`
+
+Print the build version, commit, and date
+
+```
+flow version [flags]
+```
+
+Print what the toolchain stamped into this binary: version, commit, build date, the Go version it was compiled with, and the platform it was built for.
+
+Answered entirely from what this binary already carries, no network call, so it works the same offline as everything else here. When nothing was stamped (a plain `go build` with no -ldflags and no module information) it says so honestly: "devel" for the version, "unknown" for the commit and date, rather than a number invented for the occasion.
+
+Examples:
+
+```sh
+# What build is this:
+flow version
+
+# The same answer, addressable by field:
+flow version -o json | jq -r .commit
+
+# Gate a script on this being a real build rather than one compiled by hand:
+flow version -o json | jq -e '.version != "devel"'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl carry the server's own schema, so a field is addressable by name |
+
 ## `flow watch`
 
 Follow a run until it finishes

@@ -1907,6 +1907,11 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	keysCmd := newKeysCommand()
 	jwtCmd := newJWTCommand()
 
+	// Version command, answering "which build" the way a bug report or an
+	// agent transcript needs to: see version.go for why this is a verb rather
+	// than only the `--version` line cobra already prints.
+	versionCmd := newVersionCommand()
+
 	// MCP command, which serves the control plane to an AI agent as tools.
 	mcpCmd := &cobra.Command{
 		Use:   "mcp",
@@ -2027,6 +2032,7 @@ flow lsp --plugin-dir ./plugins`,
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
+	versionCmd.GroupID = "development"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
@@ -2080,6 +2086,7 @@ flow lsp --plugin-dir ./plugins`,
 	rootCmd.AddCommand(lspCmd)
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	return rootCmd
 }

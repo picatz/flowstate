@@ -354,6 +354,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow jwt` | Sign and inspect JSON Web Tokens for admin debugging. |
 | `flow jwt sign` | Sign a debugging JWT with a key from `flow keys generate`. Lifetime is capped at one hour. |
 | `flow jwt inspect <token>` | Print a JWT's header and claims. Verifies the signature only when `--key` is given. |
+| `flow version` | Print the build version, commit, build date, Go version, and platform. Works offline. |
 
 `run`, `get`, `watch`, `list`, `signal`, `cancel` and `terminate` talk to a server
 and take `--address` (or `FLOWSTATE_ADDRESS`); `run local` contacts nothing.
