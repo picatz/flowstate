@@ -116,6 +116,12 @@ var futureStepKeys = []string{
 	// the comment above sets.
 	"value",
 	"assert",
+
+	// A value-dispatch node kind under design (issue #357): one discriminant,
+	// literal cases, a checked `default:`. A step key in a design that named it
+	// as one, reserved while the design settles so no plugin takes the word in
+	// the meantime — the same promise `value:` and `assert:` keep.
+	"switch",
 }
 
 // reservedStepKeys is every word a task name may not take.
