@@ -42,7 +42,8 @@ Rehearse it, which is the shortest path and needs no server at all:
 
 ```console
 $ FLOWSTATE_SECRET_GREET_TOKEN=anything flow run local examples/plugins/greet/workflow.yaml \
-    --plugin-dir ./plugins --secret-env GREET_TOKEN --auth-policy auth.yaml
+    --plugin-dir ./plugins --secret-env GREET_TOKEN \
+    --auth-policy examples/plugins/greet/auth.yaml
 ```
 
 `flow run local` launches the plugins itself, through the same discovery, the same
@@ -56,7 +57,10 @@ Two things it asks for that a plugin-free rehearsal does not. `--secret-env
 GREET_TOKEN` is what lets `${secret('env:GREET_TOKEN')}` resolve, and
 `--auth-policy` is what authorizes reading it: a process holding a secret
 provider with no access policy is refused, here and on a worker, by the same
-function. This plugin advertises a secrets backend as well as a task, so bringing
+function. The policy this directory ships (`auth.yaml`) allows every reference
+and carries a placeholder issuer block, because the policy grammar refuses a
+file with no issuers; a rehearsal authenticates nobody, so that block is never
+consulted. This plugin advertises a secrets backend as well as a task, so bringing
 it up registers a scheme whether or not the file asks for one, which means
 `flow worker --plugin-dir ./plugins` wants the same policy for the same reason.
 

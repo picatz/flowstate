@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,16 +38,12 @@ const exampleGreetWorkflow = "../../examples/plugins/greet/workflow.yaml"
 func localSecretPolicy(t *testing.T) string {
 	t.Helper()
 
-	path := filepath.Join(t.TempDir(), "auth.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`issuers:
-  - name: local
-    issuer: https://issuer.example
-    audiences: [flowstate]
-    algorithms: [RS256]
-secrets:
-  allow:
-    - 'true'
-`), 0o600))
+	// The policy the example ships, not a copy of it: the README tells a
+	// person to point at this exact file, so the test that proves the
+	// walkthrough works has to consume the same bytes they will.
+	path, err := filepath.Abs(filepath.Join("..", "..", "examples", "plugins", "greet", "auth.yaml"))
+	require.NoError(t, err)
+	require.FileExists(t, path, "the README points at this policy; it has to ship")
 
 	return path
 }
