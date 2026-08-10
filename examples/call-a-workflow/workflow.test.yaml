@@ -10,6 +10,10 @@
 # that task exactly the same way: one `stubs:` entry, matched by task name,
 # answered wherever the call reaches it.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: provisioning a tenant announces where it landed
     workflow: ./workflow.yaml
@@ -17,8 +21,6 @@ tests:
       # Answers every `log:` step this run reaches — three inside the callee
       # (one per region, plus its own "provisioning ..." line) and one in this
       # file — because `log` produces no outputs for any of them to differ on.
-      - task: log
-        returns: {}
     expect:
       ran: [provision, announce]
       outputs:

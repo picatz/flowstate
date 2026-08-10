@@ -10,8 +10,7 @@ tests:
   - name: the status code arrives in the message as text the author converted
     workflow: ./workflow.yaml
     stubs:
-      - task: http
-        where: inputs.url == 'https://microsoft.com' && inputs.method == 'GET'
+      - step: web
         returns:
           status_code: 204
       - task: log

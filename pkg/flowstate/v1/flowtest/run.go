@@ -149,7 +149,7 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 		result.Duration = durationpb.New(time.Since(started))
 	}()
 
-	stubs, err := compileStubs(test.Stubs)
+	compiled, err := compileStubs(test.Stubs)
 	if err != nil {
 		result.Error = err.Error()
 		return
@@ -169,8 +169,9 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 	// cannot find *at parse time*, before this function would otherwise get a
 	// chance to make one up. Registering the synthetic shape first is what
 	// makes stubbing a plugin task's name actually usable rather than merely
-	// advertised.
-	restore := swapRegistry(stubs)
+	// advertised. Only task-form stubs can name a missing task; a step-form
+	// stub names a step whose task the compiler already knows.
+	restore := swapRegistry(stubTaskNames(compiled))
 	defer restore()
 
 	workflow, err := load()
@@ -181,6 +182,17 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 	// Reported to the caller for coverage: the workflow this case compiled is
 	// what its steps are counted against, even when the run below then fails.
 	spec = workflow
+
+	// Resolved against the compiled workflow, not the file alone: a step-form
+	// stub names a step id, and this is where that id becomes the task it
+	// invokes, or an `unknown step` diagnostic with a did-you-mean, refused
+	// before the run rather than surfacing as an unmatched-stub failure a whole
+	// virtual day later.
+	stubs, err := bindStubs(compiled, workflow)
+	if err != nil {
+		result.Error = err.Error()
+		return
+	}
 
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
@@ -278,7 +290,7 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 	// no record of what ran before the failure.
 	transcript = outputs
 
-	result.Failures = assertExpectation(&test.Expect, outputs, runErr)
+	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
 	result.Passed = len(result.Failures) == 0
 
 	return
@@ -306,14 +318,14 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 // test` invocation therefore cannot run concurrently with each other — they
 // do not; [RunFile] runs them in sequence — and not concurrently with
 // anything else touching the same registry in the same process.
-func swapRegistry(stubs map[string]*stubbedTask) func() {
+func swapRegistry(taskNames []string) func() {
 	registry := v1.DefaultRegistry()
 
 	type saved struct {
 		def     v1.TaskDef
 		existed bool
 	}
-	originals := make(map[string]saved, len(stubs))
+	originals := make(map[string]saved, len(taskNames))
 
 	// A stub naming a task this build does not register at all — a plugin
 	// task, say — still needs a shape the *compiler* can compile a step
@@ -322,13 +334,15 @@ func swapRegistry(stubs map[string]*stubbedTask) func() {
 	// build). Only these synthetic names are registered globally, and only so
 	// that parsing succeeds; what actually executes comes from the per-case
 	// registry [caseRegistry] builds, which every real task's entry in this
-	// global registry is left completely untouched by.
-	for name, stub := range stubs {
+	// global registry is left completely untouched by. The Fn is a fail-closed
+	// placeholder because it is never called: a compile does not run a task,
+	// and the run below is handed [caseRegistry] instead of this one.
+	for _, name := range taskNames {
 		if _, already := registry.Lookup(name); already {
 			continue
 		}
 		originals[name] = saved{existed: false}
-		_ = registry.Register(v1.TaskDef{Name: name, Fn: stub.fn(name)})
+		_ = registry.Register(v1.TaskDef{Name: name, Fn: unstubbedTaskFn(name)})
 	}
 
 	return func() {
@@ -558,7 +572,7 @@ func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
 // failure mode a test framework may not have — a green test that should be
 // red is worse than a framework that cannot run at all, because the second
 // one is at least visibly broken.
-func assertExpectation(want *Expectation, outputs *v1.Workflow_StepOutputs, runErr error) []*v1.Diagnostic {
+func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, runErr error) []*v1.Diagnostic {
 	var failures []*v1.Diagnostic
 
 	failed := runErr != nil
@@ -629,11 +643,73 @@ func assertExpectation(want *Expectation, outputs *v1.Workflow_StepOutputs, runE
 		}
 	}
 
+	// `others: skipped` closes the `ran:` claim: every step the workflow has
+	// that `ran:` does not name must be absent from the transcript. Computed
+	// over the top-level step universe, the same set `ran:`/`skipped:` compare
+	// against, so a loop body step is not miscounted (its outputs live inside
+	// the loop's results, never at the top level). Deny-by-default applied to
+	// expectations (CLAUDE.md, "fail closed"): a step that ran and is not named
+	// is a failure, which is what makes adding a workflow step fail a closed
+	// claim loudly.
+	if want.Others == OthersSkipped {
+		named := make(map[string]bool, len(want.Ran))
+		for _, step := range want.Ran {
+			named[step] = true
+		}
+		universe := map[string]bool{}
+		topLevelStepUniverse(spec.GetSteps(), universe)
+		ids := make([]string, 0, len(universe))
+		for id := range universe {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if named[id] {
+				continue
+			}
+			if _, ran := outputs.GetStepValues()[id]; ran {
+				failures = append(failures, &v1.Diagnostic{
+					Step:  id,
+					Field: "expect.others",
+					Message: fmt.Sprintf(
+						"step %q ran, but expect.ran does not name it and expect.others is %q, "+
+							"which requires every step not named in ran: to have been skipped", id, OthersSkipped),
+				})
+			}
+		}
+	}
+
 	if want.Outputs != nil {
 		failures = append(failures, compareOutputs(want.Outputs, outputs.GetRunOutputs().GetValues())...)
 	}
 
 	return failures
+}
+
+// topLevelStepUniverse collects every step id that can appear in a run's
+// top-level transcript ([v1.Workflow_StepOutputs.StepValues]), which is the set
+// `expect.ran`, `expect.skipped`, and `expect.others` are all judged against.
+//
+// A parallel block records nothing under its own id but its branch steps are
+// merged into the enclosing scope, so this descends into branches and counts
+// their steps. A loop or for_each records outputs under its own id, so the
+// container is counted, but its body steps travel inside the loop's `results`
+// output rather than at the top level, so this does not descend into a body: a
+// body step is not a step `others: skipped` can claim was skipped. This is
+// coverage's [collectStepUniverse] with the one deliberate difference that it
+// stops at a loop container.
+func topLevelStepUniverse(nodes []*v1.Node, universe map[string]bool) {
+	for _, node := range nodes {
+		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
+			for _, branch := range parallel.Parallel.GetBranches() {
+				topLevelStepUniverse(branch.GetSteps(), universe)
+			}
+			continue
+		}
+		// Task, Wait, Call, ForEach, Loop: each records outputs under its own
+		// id at the top level.
+		universe[node.GetId()] = true
+	}
 }
 
 // compareOutputs checks a workflow's declared `outputs:` against what a case

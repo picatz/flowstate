@@ -48,8 +48,7 @@ tests:
           id: gamma
       # The vendor lookup, which carries no query at all — transient, retried,
       # and still down when the attempts run out.
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/503'
+      - step: vendor_status
         fails:
           kind: Upstream
           message: vendor unavailable
@@ -80,8 +79,7 @@ tests:
         where: "'query' in inputs && inputs.query.record == 'beta'"
         returns:
           id: beta
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/503'
+      - step: vendor_status
         returns:
           status_code: 200
       # The other arm of the report's own conditional: the vendor's status code

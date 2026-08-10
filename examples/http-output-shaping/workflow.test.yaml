@@ -19,8 +19,7 @@ tests:
   - name: a later step reads only the shaped names the step reported
     workflow: ./workflow.yaml
     stubs:
-      - task: http
-        where: inputs.url == 'https://httpbin.org/json' && inputs.method == 'GET'
+      - step: web
         returns:
           status: 204
           title: Sample Slide Show

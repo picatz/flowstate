@@ -5,6 +5,10 @@
 # from inside its callee - see docs/DSL.md's "Compensation composes through a
 # call") runs unmodified.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: a tenant clears quota, is provisioned across three sub-workflows, and activates after its grace period
     workflow: ./workflow.yaml
@@ -129,8 +133,6 @@ tests:
       plan: growth
       activation_grace_hours: 1
     stubs:
-      - task: log
-        returns: {}
       - task: http
         where: inputs.url == 'https://provisioning.internal.example.com/quota'
         returns:

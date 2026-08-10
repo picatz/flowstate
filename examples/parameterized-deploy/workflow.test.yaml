@@ -12,6 +12,10 @@
 # happens at all, which is the case the file says used to need two nearly
 # identical workflows.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: only the required argument is supplied, and every default fills itself in
     workflow: ./workflow.yaml
@@ -62,8 +66,6 @@ tests:
   - name: the required argument missing is refused while the caller is still there to be told
     workflow: ./workflow.yaml
     stubs:
-      - task: log
-        returns: {}
       - task: http
         returns: {}
     expect:
@@ -78,8 +80,6 @@ tests:
       service: checkout
       replicas: 99
     stubs:
-      - task: log
-        returns: {}
       - task: http
         returns: {}
     expect:
@@ -92,8 +92,6 @@ tests:
       service: checkout
       replicas: 0
     stubs:
-      - task: log
-        returns: {}
       - task: http
         returns: {}
     expect:

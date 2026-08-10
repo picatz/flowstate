@@ -27,8 +27,7 @@ tests:
         where: "'query' in inputs && 'charge' in inputs.query && inputs.query.reservation == 'res-ORD-48213'"
         returns:
           id: chg-res-ORD-48213
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/200'
+      - step: arrange_shipment
         returns:
           status_code: 200
       - task: log
@@ -59,8 +58,7 @@ tests:
         where: "'query' in inputs && 'charge' in inputs.query && inputs.query.reservation == 'res-ORD-48213'"
         returns:
           id: chg-res-ORD-48213
-      - task: http
-        where: inputs.url == 'https://httpbin.org/status/200'
+      - step: arrange_shipment
         fails:
           kind: InvalidInput
           message: no carrier can take this order

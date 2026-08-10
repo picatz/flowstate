@@ -6,6 +6,10 @@
 # the call boundary each one crosses, and the compensations registered on the far
 # side of it.
 edition: v2026.2
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: the rollout reaches 50% and nothing is taken back
     workflow: ./workflow.yaml
@@ -36,8 +40,6 @@ tests:
       # `promote`, the one step outside the rollout. `flow test` never lets an
       # unstubbed task run for real, so a task the file reaches has to be named
       # here even when it produces nothing.
-      - task: log
-        returns: {}
     expect:
       ran: [rollout, promote]
       # Three stages: 5, 25, 50 — the loop stops when `until:` holds, after the

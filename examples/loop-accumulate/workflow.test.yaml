@@ -4,12 +4,13 @@ edition: v2026.2
 # running its whole `max_iterations:` budget without reaching it — which is a
 # distinct failure, not a silent stop. Both run through the local driver with the
 # only task (`log`) stubbed, since `log` returns nothing the loop depends on.
+defaults:
+  stubs:
+    - task: log
+      returns: {}
 tests:
   - name: accumulates a running sum and stops at the target
     workflow: ./workflow.yaml
-    stubs:
-      - task: log
-        returns: {}
     expect:
       ran: [countup]
       outputs:
@@ -29,9 +30,6 @@ tests:
     # without finishing, rather than quietly returning 100 partial results.
     inputs:
       target: 200
-    stubs:
-      - task: log
-        returns: {}
     expect:
       failed: true
       error_contains: "ran its full budget of 100 iterations"

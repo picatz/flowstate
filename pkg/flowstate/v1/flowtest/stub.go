@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -13,6 +14,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // compiledStub is a [Stub] with its `where:` and its `returns:` parsed once, at
@@ -20,6 +22,14 @@ import (
 // belongs to [compileStubs]'s error, not to whichever invocation happens to
 // reach it first.
 type compiledStub struct {
+	// task and step are the two ways a stub names what it replaces, exactly one
+	// set. task is filled straight from the file; step is resolved to its task
+	// against the compiled workflow by [bindStubs], and stepScope carries the
+	// step id forward so the matcher answers only that step's invocations.
+	task      string
+	step      string
+	stepScope string
+
 	where *expr.ParsedExpr // nil matches unconditionally
 
 	// returns is the declared map with every ${...} value replaced by a
@@ -50,32 +60,31 @@ type stubbedTask struct {
 	matchers []compiledStub
 }
 
-// compileStubs parses every stub's `where:` and `returns:` and groups them by
-// task name.
-func compileStubs(stubs []Stub) (map[string]*stubbedTask, error) {
-	byTask := make(map[string]*stubbedTask)
+// compileStubs parses every stub's `where:` and `returns:` once, keeping them in
+// the order they were written. It does not yet group them by task, because a
+// step-form stub's task is not known until the workflow it names a step of has
+// been compiled; that resolution is [bindStubs], run after the parse.
+func compileStubs(stubs []Stub) ([]compiledStub, error) {
+	compiled := make([]compiledStub, 0, len(stubs))
 
 	for i, s := range stubs {
 		var parsed *expr.ParsedExpr
 		if s.Where != "" {
 			value := v1.NewExpr(s.Where)
 			if errKind := value.GetError(); errKind != nil {
-				return nil, fmt.Errorf("stub %d for task %q: where: %s", i+1, s.Task, errKind.GetMessage())
+				return nil, fmt.Errorf("stub %d for %s: where: %s", i+1, stubTarget(&s), errKind.GetMessage())
 			}
 			parsed = value.GetExpr()
 		}
 
 		returns, err := compileReturns(s.Returns)
 		if err != nil {
-			return nil, fmt.Errorf("stub %d for task %q: returns: %w", i+1, s.Task, err)
+			return nil, fmt.Errorf("stub %d for %s: returns: %w", i+1, stubTarget(&s), err)
 		}
 
-		task, ok := byTask[s.Task]
-		if !ok {
-			task = &stubbedTask{}
-			byTask[s.Task] = task
-		}
-		task.matchers = append(task.matchers, compiledStub{
+		compiled = append(compiled, compiledStub{
+			task:       s.Task,
+			step:       s.Step,
 			where:      parsed,
 			returns:    returns,
 			hasReturns: s.Returns != nil,
@@ -83,7 +92,127 @@ func compileStubs(stubs []Stub) (map[string]*stubbedTask, error) {
 		})
 	}
 
+	return compiled, nil
+}
+
+// stubTaskNames is the set of task names task-form stubs replace, which is the
+// only set [swapRegistry] has to pre-register a synthetic shape for: a step-form
+// stub names a step of the workflow, whose task the compiler already knows, so
+// it can never be the name the build is missing.
+func stubTaskNames(compiled []compiledStub) []string {
+	seen := map[string]bool{}
+	var names []string
+	for i := range compiled {
+		name := compiled[i].task
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// bindStubs resolves every stub to the task it answers and groups them by task
+// name, preserving the order the stubs were written so a task's matchers are
+// still tried as the switch-like sequence [Stub.Where] documents.
+//
+// A step-form stub is resolved against the compiled workflow: its step id names
+// the task that step invokes, checked here rather than trusted, so an unknown id
+// is refused with a did-you-mean suggestion (the same [nearest] machinery every
+// other surface reads the compiled workflow through). That is what lets a stub
+// reference the workflow's own name for a thing instead of retyping a value the
+// step happens to carry (issue #416, principle 12).
+func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedTask, error) {
+	taskOfStep, kindOfStep := stepTasks(spec)
+
+	byTask := make(map[string]*stubbedTask)
+	for i := range compiled {
+		m := compiled[i]
+
+		task := m.task
+		if m.step != "" {
+			resolved, ok := taskOfStep[m.step]
+			if !ok {
+				return nil, unknownStepError(m.step, kindOfStep, taskOfStep)
+			}
+			task = resolved
+			m.stepScope = m.step
+		}
+
+		t, ok := byTask[task]
+		if !ok {
+			t = &stubbedTask{}
+			byTask[task] = t
+		}
+		t.matchers = append(t.matchers, m)
+	}
+
 	return byTask, nil
+}
+
+// unknownStepError refuses a step-form stub naming a step the workflow does not
+// have as a stubbable one, positioned by the step id and carrying a did-you-mean
+// suggestion drawn from the workflow's own task steps.
+//
+// A step that exists but runs no task (a wait, a loop container, a bare
+// parallel) is told apart from one that does not exist at all, because the fix
+// differs: the first is a real id aimed at the wrong kind of step, the second is
+// a typo.
+func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[string]string) error {
+	if kind, exists := kindOfStep[step]; exists {
+		return fmt.Errorf("stub names step %q, which runs no task (it is a %s step) and so cannot be stubbed; "+
+			"stub a task step, or the task itself with `task:` and `where:`", step, kind)
+	}
+
+	names := make([]string, 0, len(taskOfStep))
+	for id := range taskOfStep {
+		names = append(names, id)
+	}
+	sort.Strings(names)
+	if suggestion, ok := nearest.Name(step, names); ok {
+		return fmt.Errorf("stub names unknown step %q; did you mean %q?", step, suggestion)
+	}
+	return fmt.Errorf("stub names unknown step %q, which this workflow has no task step for", step)
+}
+
+// stepTasks walks a compiled workflow and returns two maps: every task step's id
+// to the task it invokes, and every non-task step's id to a word naming its kind
+// (`wait`, `loop`, `for_each`, `call`). Together they cover every step a
+// step-form stub could name, so a stub aimed at a wait is told apart from one
+// aimed at nothing.
+//
+// It descends into loop and for_each bodies and parallel branches for the same
+// reason coverage does: those hold steps an author wrote and could name. It does
+// not descend into a `call:`, whose steps belong to the callee's own file.
+func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[string]string) {
+	taskOfStep = map[string]string{}
+	kindOfStep = map[string]string{}
+	var walk func(nodes []*v1.Node)
+	walk = func(nodes []*v1.Node) {
+		for _, node := range nodes {
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_Task:
+				taskOfStep[node.GetId()] = kind.Task.GetName()
+			case *v1.Node_Wait:
+				kindOfStep[node.GetId()] = "wait"
+			case *v1.Node_Call:
+				kindOfStep[node.GetId()] = "call"
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					walk(branch.GetSteps())
+				}
+			case *v1.Node_ForEach:
+				kindOfStep[node.GetId()] = "for_each"
+				walk(kind.ForEach.GetBody())
+			case *v1.Node_Loop:
+				kindOfStep[node.GetId()] = "loop"
+				walk(kind.Loop.GetBody())
+			}
+		}
+	}
+	walk(spec.GetSteps())
+	return taskOfStep, kindOfStep
 }
 
 // compileReturns parses every ${...} a stub's `returns:` holds.
@@ -193,6 +322,18 @@ func (s *stubbedTask) fn(name string) v1.TaskFunc {
 		}
 
 		for _, m := range s.matchers {
+			// A step-form stub answers only its own step's invocations, told
+			// apart by the step id the engine records on each node's context.
+			// An undo call carries none (it runs off the run level context), so
+			// a step stub never answers a compensation, which is what keeps the
+			// forward call and its reversal stubbable separately.
+			if m.stepScope != "" {
+				current, ok := v1.TaskStepFromContext(ctx)
+				if !ok || current != m.stepScope {
+					continue
+				}
+			}
+
 			ok, err := m.matches(ctx, scope.GetProfile(), activation)
 			if err != nil {
 				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
