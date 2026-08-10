@@ -86,6 +86,13 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	w.RegisterActivityWithOptions(authorized.TaskInScopeAuthorized, activity.RegisterOptions{Name: "TaskInScopeAuthorized"})
 	w.RegisterActivity(WorkflowVars)
 
+	// The worker's admission check. Registered here and not conditionally on a
+	// worker having plugins, because the run that needs refusing is precisely the
+	// one arriving at a worker that has none: an unregistered activity fails with
+	// "unknown activity type", which is a true refusal for the wrong reason and
+	// reads as a broken worker rather than as a rollout that is half done.
+	w.RegisterActivity(CheckPlugins)
+
 	// Registered so a run started before scopes existed can still complete. It has
 	// no callers in current code and is not dead: history written by an older
 	// interpreter names it, and a name history contains is a name a worker must

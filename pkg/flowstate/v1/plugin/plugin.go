@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -152,6 +153,18 @@ type Plugin struct {
 	mu       sync.RWMutex
 	inst     *instance
 	manifest *pluginv1.PluginManifest
+
+	// distribution is the digest of the executable this plugin was launched
+	// from, taken at the launch rather than read back later from the path.
+	//
+	// The two are not the same fact. A path is a name, and an atomic replacement
+	// rebinds it: a digest read after the fact identifies whatever is at the name
+	// now, which is exactly the binary that did not run. What a run is pinned to
+	// has to be the bytes that served it, so it is captured beside the launch and
+	// retained, and a relaunch that produces a different one is refused (see
+	// [ErrDistribution]).
+	distribution string
+
 	state    State
 	lastErr  error
 	restarts int
@@ -179,7 +192,7 @@ func newPlugin(hostCtx context.Context, cfg Config, found Found) (*Plugin, error
 		supervisorDone: make(chan struct{}),
 	}
 
-	inst, manifest, err := p.start()
+	inst, manifest, distribution, err := p.start()
 	if err != nil {
 		cancel()
 		close(p.supervisorDone)
@@ -188,6 +201,7 @@ func newPlugin(hostCtx context.Context, cfg Config, found Found) (*Plugin, error
 
 	p.inst = inst
 	p.manifest = manifest
+	p.distribution = distribution
 	p.state = StateReady
 
 	go p.supervise()
@@ -367,28 +381,60 @@ func (p *Plugin) recordHealth(h Health) {
 // start launches the process, handshakes, and asks the plugin to describe
 // itself. It is the whole of what has to succeed for a plugin to be usable, and
 // it is the same on the first launch and on every relaunch.
-func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, error) {
+// The digest is taken beside the launch and returned with the instance, so that
+// the caller records the bytes that this process is running rather than the bytes
+// that answer to its path afterwards.
+func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
+	distribution, err := distributionDigest(p.path)
+	if err != nil {
+		return nil, nil, "", pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
+	}
+
 	inst, err := launch(p.procCtx, p.cfg, Found{Name: p.name, Path: p.path})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	manifest, err := p.describe(inst)
 	if err != nil {
 		inst.stop(context.Background(), p.cfg.ShutdownGrace)
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	p.log.Info("plugin ready",
 		"pid", inst.pid,
 		"version", manifest.GetVersion(),
 		"protocol", inst.protocolVersion,
+		"distribution", distribution,
 		"capabilities", capabilityNames(manifest.GetCapabilities()),
 		"schemes", manifest.GetSchemes(),
 		"tasks", taskNames(manifest.GetTasks()),
 	)
 
-	return inst, manifest, nil
+	return inst, manifest, distribution, nil
+}
+
+// distributionDigest hashes an executable without holding it.
+//
+// Streamed rather than read: the file is chosen by whatever is in the discovery
+// directory, and a worker that allocates a plugin binary in full to hash it can
+// be stopped from starting by one very large file. See [flowstatev1.ContentDigestOf].
+func distributionDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	return flowstatev1.ContentDigestOf(f)
+}
+
+// DistributionDigest is the digest of the executable currently serving.
+func (p *Plugin) DistributionDigest() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	return p.distribution
 }
 
 // describe calls Describe and refuses anything the host cannot accept.
@@ -638,7 +684,7 @@ func (p *Plugin) restart() bool {
 		return false
 	}
 
-	inst, manifest, err := p.start()
+	inst, manifest, distribution, err := p.start()
 	if err != nil {
 		p.log.Warn("plugin relaunch failed", "attempt", attempt, "error", err)
 
@@ -658,6 +704,22 @@ func (p *Plugin) restart() bool {
 	if err := manifestUnchanged(p.Manifest(), manifest); err != nil {
 		inst.stop(p.procCtx, p.cfg.ShutdownGrace)
 		p.fail(fmt.Errorf("%w: %w", ErrManifest, err))
+		return false
+	}
+
+	// And the bytes, which the manifest does not cover. A binary swapped under a
+	// running worker can describe itself identically and behave differently, which
+	// is what a build with a change in it looks like from here, so an unchanged
+	// manifest is not evidence that this is the same plugin. Runs in flight are
+	// pinned to the digest captured at the first launch (see
+	// [flowstatev1.ResolvedPlugin]), and serving them from other bytes under that
+	// pin would make the contract a decoration. Refused rather than repinned: the
+	// operator replaced a plugin under a live worker, and the honest response is
+	// to stop serving it until the worker is restarted deliberately.
+	if was := p.DistributionDigest(); was != distribution {
+		inst.stop(p.procCtx, p.cfg.ShutdownGrace)
+		p.fail(fmt.Errorf("%w: launched from %s and is now %s, though its manifest is unchanged",
+			ErrDistribution, was, distribution))
 		return false
 	}
 

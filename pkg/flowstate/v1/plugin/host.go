@@ -2,13 +2,10 @@ package plugin
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"sync"
 
@@ -391,13 +388,12 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 	for _, p := range plugins {
 		manifest := p.Manifest()
 		tasks := byPlugin[p.Name()]
+
+		// The task schema digest is over the descriptors as this host reconstructed
+		// them, deterministically marshaled, because that is what a worker will
+		// actually type-check a step against: a plugin whose descriptors changed
+		// shape while its version stood still is the case the digest exists to catch.
 		schemaBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{Tasks: tasks})
-		schemaSum := sha256.Sum256(schemaBytes)
-		distributionDigest := ""
-		if binary, err := os.ReadFile(p.Path()); err == nil {
-			sum := sha256.Sum256(binary)
-			distributionDigest = "sha256:" + hex.EncodeToString(sum[:])
-		}
 
 		catalog.Plugins = append(catalog.Plugins, &flowstatev1.PluginDescription{
 			Name:        p.Name(),
@@ -409,11 +405,16 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 			// is refused at bind time, and reporting what the plugin asked for
 			// would tell an operator it resolves something it will not be asked
 			// to resolve.
-			SecretSchemes:      p.Schemes(),
-			Tasks:              tasks,
-			ProtocolVersion:    uint32(p.ProtocolVersion()),
-			TaskSchemaDigest:   "sha256:" + hex.EncodeToString(schemaSum[:]),
-			DistributionDigest: distributionDigest,
+			SecretSchemes:    p.Schemes(),
+			Tasks:            tasks,
+			ProtocolVersion:  uint32(p.ProtocolVersion()),
+			TaskSchemaDigest: flowstatev1.ContentDigest(schemaBytes),
+
+			// Retained from the launch rather than re-read from the path here: see
+			// [Plugin.distribution]. Reading it now would hash whatever answers to
+			// the name at the moment somebody asked for a catalog, which is neither
+			// the bytes that are serving nor a fact this host can vouch for.
+			DistributionDigest: p.DistributionDigest(),
 		})
 	}
 

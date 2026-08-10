@@ -35,6 +35,18 @@ description: Pages a repository's entire commit history to exhaustion with a bou
 # or the plugin, by stubbing git.log to hand back a fixed three-page history keyed
 # on the cursor it was called with.
 
+# The plugin this file needs, and the oldest build of it that will do. A control
+# plane resolves this against what the deployment actually has before the run is
+# accepted, and records the exact build it picked, so the run either starts
+# against a git plugin new enough to have `next_cursor`, or is refused at submit
+# with a sentence naming what is installed. Without it the same mismatch shows up
+# as a loop that pages once and stops, halfway through somebody's history.
+#
+# The version is a floor, not a pin: any v0.x at or above this resolves, and a
+# v1 does not, because a major version is a different contract.
+plugins:
+  git: v0.1.0
+
 vars:
   repo: https://github.com/octocat/Hello-World.git
 

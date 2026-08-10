@@ -109,6 +109,13 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 
 	workflow := req.Msg.GetWorkflow()
 
+	// The same pinning `Run` does, on the same reasoning as everything else in
+	// this handler: a schedule is a run somebody arranged in advance, and the
+	// deployment that will execute it is the one being asked now.
+	if err := s.pinPlugins(workflow); err != nil {
+		return nil, err
+	}
+
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(workflow, s.credentialTargets); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
