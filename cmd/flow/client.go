@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -217,6 +218,16 @@ func serverBaseURL(address string) string {
 // being asked is whether to warn, and warning about something local is a smaller
 // mistake than staying quiet about something remote.
 func isLoopbackAddress(address string) bool {
+	// `--address http://localhost:9233` is a supported spelling, and handing
+	// the whole URL to SplitHostPort fails both parses below, which would read
+	// an explicitly schemed local address as remote and silently withhold the
+	// local remedies. The scheme is not part of the question being asked.
+	if strings.Contains(address, "://") {
+		if u, err := url.Parse(address); err == nil && u.Hostname() != "" {
+			address = u.Hostname()
+		}
+	}
+
 	host := address
 	if h, _, err := net.SplitHostPort(address); err == nil {
 		host = h
@@ -273,10 +284,10 @@ func refusedRun(verb, workflowID string, server serverFlags, err error) error {
 // can spell out rather than allude to. `flow run` is also the likeliest first
 // command anybody types, so it is the one that can least afford to report a bare
 // dial error.
-func refusedStart(file, name string, server serverFlags, err error) error {
+func refusedStart(file, name string, arguments []string, server serverFlags, err error) error {
 	switch connect.CodeOf(err) {
 	case connect.CodeUnavailable:
-		return unreachableServer(server, file, err)
+		return unreachableServerWithArguments(server, file, arguments, err)
 	default:
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
@@ -303,6 +314,11 @@ type noServerError struct {
 	// for every verb that addresses a run, a schedule, or nothing at all.
 	workflowFile string
 
+	// runArguments are the pre-quoted input flags the failed invocation
+	// carried, appended to the suggested commands so following one starts the
+	// workload that was asked for.
+	runArguments []string
+
 	// err is the dial failure underneath, kept so the reason survives: a
 	// connection refused and a TLS handshake that failed are the same code and
 	// very different afternoons.
@@ -314,7 +330,14 @@ type noServerError struct {
 //
 // file names the Flowfile the caller passed, or is empty when the verb has none.
 func unreachableServer(server serverFlags, file string, err error) error {
-	return &noServerError{address: server.address, workflowFile: file, err: err}
+	return unreachableServerWithArguments(server, file, nil, err)
+}
+
+// unreachableServerWithArguments is the run-shaped form: the arguments ride
+// along so the suggested command is the invocation that failed, not a flagless
+// cousin of it.
+func unreachableServerWithArguments(server serverFlags, file string, arguments []string, err error) error {
+	return &noServerError{address: server.address, workflowFile: file, runArguments: arguments, err: err}
 }
 
 // Error is the sentence every verb that dials the server now prints, written down
@@ -357,19 +380,56 @@ func (e *noServerError) nextCommands() []commandBlock {
 
 	durable := []string{"flow server dev"}
 	if e.workflowFile != "" {
-		durable = append(durable, "flow run "+e.workflowFile)
-	}
+		invocation := shellArgument(e.workflowFile) + e.runArgumentSuffix()
+		durable = append(durable, "flow run "+invocation)
 
-	blocks := []commandBlock{{commands: durable}}
-
-	if e.workflowFile != "" {
-		blocks = append(blocks, commandBlock{
+		return append([]commandBlock{{commands: durable}}, commandBlock{
 			lead:     "or rehearse it here, with no server at all:",
-			commands: []string{"flow run local " + e.workflowFile},
+			commands: []string{"flow run local " + invocation},
 		})
 	}
 
-	return blocks
+	return []commandBlock{{commands: durable}}
+}
+
+// runArgumentSuffix renders the input flags the failed invocation carried, so
+// the suggested command starts the workload that was asked for rather than a
+// flagless cousin a workflow with required inputs refuses outright.
+func (e *noServerError) runArgumentSuffix() string {
+	var suffix strings.Builder
+	for _, argument := range e.runArguments {
+		suffix.WriteString(" ")
+		suffix.WriteString(argument)
+	}
+
+	return suffix.String()
+}
+
+// shellArgument renders a value safe to copy into a shell.
+//
+// The path arrived through this process's argv, where the shell's quoting has
+// already been consumed, so pasting it back bare re-splits on whitespace and
+// re-expands metacharacters. A leading dash additionally reads as a flag, which
+// `./` settles without asking the copier to know about `--`.
+func shellArgument(value string) string {
+	if strings.HasPrefix(value, "-") {
+		value = "./" + value
+	}
+
+	safe := true
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '/', r == '_', r == '-', r == '=', r == ':', r == ',', r == '@', r == '%', r == '+':
+		default:
+			safe = false
+		}
+	}
+	if safe {
+		return value
+	}
+
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // boundedTransport caps every response body, including the ones Connect's own limit

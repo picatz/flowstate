@@ -65,7 +65,7 @@ func TestOneSentenceForAServerThatDidNotAnswer(t *testing.T) {
 		"refusedList":         refusedList(server, unavailable()).Error(),
 		"refusedSchedule":     refusedSchedule("describing", "nightly", server, unavailable()).Error(),
 		"refusedScheduleList": refusedScheduleList(server, unavailable()).Error(),
-		"refusedStart":        refusedStart("../../examples/hello-world/workflow.yaml", "hello-world", server, unavailable()).Error(),
+		"refusedStart":        refusedStart("../../examples/hello-world/workflow.yaml", "hello-world", nil, server, unavailable()).Error(),
 	}
 
 	want := answers["refusedList"]
@@ -171,7 +171,7 @@ func TestOnlyRunShapedVerbsOfferLocalRehearsal(t *testing.T) {
 func TestTheWayOutLeadsWithTheDevStack(t *testing.T) {
 	t.Parallel()
 
-	report := reportOf(t, refusedStart("pipeline/workflow.yaml", "pipeline",
+	report := reportOf(t, refusedStart("pipeline/workflow.yaml", "pipeline", nil,
 		serverFlags{address: "localhost:9233"}, unavailable()))
 
 	assert.Contains(t, report, "NEXT",
@@ -256,4 +256,47 @@ func runVerbAgainst(t *testing.T, address string, args []string) error {
 	require.Error(t, err, "%v somehow succeeded against an address with nothing on it", args)
 
 	return err
+}
+
+// TestASchemedLoopbackAddressStillGetsTheWayOut is the review finding: the
+// supported spelling `--address http://localhost:9233` must not read as remote
+// just because the scheme defeats a bare host-port parse.
+func TestASchemedLoopbackAddressStillGetsTheWayOut(t *testing.T) {
+	for _, address := range []string{
+		"http://localhost:9233",
+		"https://127.0.0.1:9233",
+		"http://[::1]:9233",
+	} {
+		assert.True(t, isLoopbackAddress(address), "%s is this machine, spelled with a scheme", address)
+	}
+	for _, address := range []string{
+		"http://flowstate.internal:9233",
+		"https://10.0.0.4:9233",
+	} {
+		assert.False(t, isLoopbackAddress(address), "%s is not this machine, scheme or no scheme", address)
+	}
+}
+
+// TestSuggestedCommandsSurviveAShell pins the quoting: a path with whitespace
+// pastes back as one argument, and a leading dash cannot read as a flag.
+func TestSuggestedCommandsSurviveAShell(t *testing.T) {
+	assert.Equal(t, "examples/hello/workflow.yaml", shellArgument("examples/hello/workflow.yaml"),
+		"an ordinary path is not decorated")
+	assert.Equal(t, "'my flows/deploy it.yaml'", shellArgument("my flows/deploy it.yaml"))
+	assert.Equal(t, "./-tricky.yaml", shellArgument("-tricky.yaml"))
+	assert.Equal(t, `'it'\''s.yaml'`, shellArgument("it's.yaml"))
+}
+
+// TestTheSuggestedRunCarriesItsInputs is the third finding: a workflow with
+// required inputs refuses the flagless spelling, so the recovery command must
+// be the invocation that failed, inputs and all.
+func TestTheSuggestedRunCarriesItsInputs(t *testing.T) {
+	rendered := reportOf(t, unreachableServerWithArguments(
+		serverFlags{address: "localhost:9233"},
+		"deploy.yaml",
+		[]string{"--input-file=inputs.json", "--input=region=eu-west-1"},
+		unavailable(),
+	))
+	assert.Contains(t, rendered, "flow run deploy.yaml --input-file=inputs.json --input=region=eu-west-1")
+	assert.Contains(t, rendered, "flow run local deploy.yaml --input-file=inputs.json --input=region=eu-west-1")
 }

@@ -410,3 +410,23 @@ func jsonKindName(decoded any) string {
 		return "something else"
 	}
 }
+
+// runArgumentFlags re-renders the input flags this invocation carried, quoted
+// for a shell, so a suggested recovery command starts the workload that was
+// asked for. A workflow with required inputs refuses the flagless spelling
+// outright, and optional inputs silently start a different workload, which is
+// worse. The `--flag=value` form is used because a value with a leading dash
+// would otherwise read as the next flag.
+func runArgumentFlags(cmd *cobra.Command) []string {
+	var arguments []string
+
+	if file, _ := cmd.Flags().GetString("input-file"); file != "" {
+		arguments = append(arguments, "--input-file="+shellArgument(file))
+	}
+	flags, _ := cmd.Flags().GetStringArray("input")
+	for _, flag := range flags {
+		arguments = append(arguments, "--input="+shellArgument(flag))
+	}
+
+	return arguments
+}
