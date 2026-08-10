@@ -305,6 +305,27 @@ is one rule with consequences — the fuller reasoning lives in
 - **`--output json` is the protojson of the RPC response.** There is no second
   encoder, so the JSON surface cannot drift from the API and needs no separate
   schema documentation.
+- **The one exception is a mutation whose response is empty, and it is meant to
+  stop being one.** `cancel`, `terminate`, `signal` and the four schedule
+  mutations answer with empty messages (`CancelResponse{}` and its siblings), so
+  there is no response protojson to render and a script had to re-`get` the run
+  to learn what it had just done. They therefore write one shared envelope,
+  `flowstate.v1.MutationResult`: `verb`, `workflowId`, `runId`, `scheduleName`,
+  `signalName`, `result`. The envelope is a schema message like everything else
+  here, rendered by the same protojson encoder, because a document scripts index
+  by name is a contract and this project describes its contracts in the schema.
+  Only its *values* come from the calling process rather than from the server.
+  `result` is `applied` for an act that is true once the server answers,
+  `requested` for one it has accepted and not yet performed, and `delivered` for
+  a signal the server has taken, which is a claim about the server and not about
+  the workflow: a signal held for a gate the run has not reached is dropped if
+  the run continues as new with the pending set full, so a workflow that never
+  observes it is a possible ending of a delivery that succeeded. The envelope
+  carries only what this process knows for certain, because inventing a
+  resulting state out of an empty response is exactly the claim the prose has
+  always refused to make. That emptiness is the real defect
+  (picatz/flowstate#374): when those responses gain fields, the envelope stops
+  being the whole answer and the response's own protojson carries the rest.
 - **Exit status is a contract with three values.** `0`: the command succeeded
   and the answer is not a refusal. `1`: the command worked and the answer is a
   refusal or a finding — diagnostics found, a check failed, a run that finished

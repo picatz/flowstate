@@ -16,6 +16,15 @@ import (
 func runCancel(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
 
+	// Resolved before the request rather than after it, so `--output yaml` is
+	// refused while nothing has happened yet. A format checked only at rendering
+	// time would cancel the run and then report a usage error, which reads to a
+	// caller like the cancellation did not happen.
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	server := serverFlagsOf(cmd)
 	runID, _ := cmd.Flags().GetString("run-id")
 
@@ -28,10 +37,28 @@ func runCancel(cmd *cobra.Command, args []string) error {
 		return refusedRun("cancelling", workflowID, server, err)
 	}
 
+	// Requested rather than applied, for the same reason the prose below says
+	// "asked": cancellation is cooperative, so the run has been told and is now
+	// finishing its response. A document claiming "applied" is a claim somebody
+	// would build on.
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:       "cancel",
+			WorkflowId: workflowID,
+			RunId:      runID,
+			Result:     resultRequested,
+		})
+	}
+
 	// Reported as a request rather than as a result, because that is what it is.
 	// Cancellation is cooperative: the run has been asked and is now finishing its
 	// response, so saying "cancelled" here would claim something not yet true, and
 	// somebody would build on the claim.
+	//
+	// Written only for a person, which is what [runList] already does with its own
+	// stderr lines: a caller who asked for a document has been handed the same
+	// facts in fields, and saying them again in a sentence it would have to parse
+	// is worse than saying nothing.
 	fmt.Fprintf(cmd.ErrOrStderr(),
 		"asked %s to stop; it runs its cleanup before finishing, so ask `flow get %s` whether it has\n",
 		workflowID, workflowID)
@@ -42,6 +69,11 @@ func runCancel(cmd *cobra.Command, args []string) error {
 // runTerminate stops a run immediately, running none of its cleanup.
 func runTerminate(cmd *cobra.Command, args []string) error {
 	workflowID := args[0]
+
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
 
 	server := serverFlagsOf(cmd)
 	runID, _ := cmd.Flags().GetString("run-id")
@@ -58,6 +90,18 @@ func runTerminate(cmd *cobra.Command, args []string) error {
 
 	if _, err := newWorkflowServiceClient(server).Terminate(cmd.Context(), connect.NewRequest(request)); err != nil {
 		return refusedRun("terminating", workflowID, server, err)
+	}
+
+	// Applied rather than requested: termination is not cooperative, so the run is
+	// gone by the time the server answers. This is the one run verb whose past
+	// tense is honest, which is why the two carry different words.
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:       "terminate",
+			WorkflowId: workflowID,
+			RunId:      runID,
+			Result:     resultApplied,
+		})
 	}
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "terminated %s; no cleanup ran\n", workflowID)
@@ -363,15 +407,23 @@ flow list --all --filter 'name == "nightly-etl"'`,
 			"partial change still does. A step that declares an `undo:` is taken back, in " +
 			"reverse order, within a bounded budget — the run reports what came off and what " +
 			"did not. A run wedged on something that never returns may not stop at all — " +
-			"`flow terminate` is the answer then, and not before.",
+			"`flow terminate` is the answer then, and not before." + mutationFlagHelp +
+			"\n\n`result` is \"requested\" here and never \"applied\", because cancellation is " +
+			"cooperative: the run has been told and is still finishing. `flow get` is what " +
+			"answers whether it has stopped.",
 		Args: cobra.ExactArgs(1),
 		RunE: runCancel,
 		Example: `# Ask a run to stop:
 flow cancel flowstate-workflow-3f7c
 
 # Check whether it has:
-flow get flowstate-workflow-3f7c`,
+flow get flowstate-workflow-3f7c
+
+# Confirm in a script which run was asked, without asking the server again:
+flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'`,
 	}
+
+	addOutputFlag(cancelCmd)
 
 	cancelCmd.Flags().String("run-id", "",
 		"pin the request to one run of the workload; unset addresses whichever run is current")
@@ -382,12 +434,19 @@ flow get flowstate-workflow-3f7c`,
 		Long: "Stop a run immediately. No further step runs and nothing the workload would " +
 			"have done on the way out is done, so anything it was responsible for releasing " +
 			"stays held. Prefer `flow cancel`; reach for this when a run must stop now, or " +
-			"when cancelling did not stop it.",
+			"when cancelling did not stop it." + mutationFlagHelp +
+			"\n\n`result` is \"applied\" here, unlike `flow cancel`: termination is not " +
+			"cooperative, so the run is already gone when the server answers.",
 		Args: cobra.ExactArgs(1),
 		RunE: runTerminate,
 		Example: `# Stop a wedged run, saying why:
-flow terminate flowstate-workflow-3f7c --reason "stuck on a dependency that is never coming back"`,
+flow terminate flowstate-workflow-3f7c --reason "stuck on a dependency that is never coming back"
+
+# The same, with a result document a script can act on:
+flow terminate flowstate-workflow-3f7c --reason "wedged" -o json | jq -r .result`,
 	}
+
+	addOutputFlag(terminateCmd)
 
 	terminateCmd.Flags().String("run-id", "",
 		"pin the request to one run of the workload; unset addresses whichever run is current")

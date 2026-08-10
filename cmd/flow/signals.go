@@ -331,6 +331,11 @@ func parseSignalPayload(source, raw string) (*v1.Node_Outputs, error) {
 func runSignal(cmd *cobra.Command, args []string) error {
 	workflowID, name := args[0], args[1]
 
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+
 	server := serverFlagsOf(cmd)
 	data, _ := cmd.Flags().GetString("data")
 	runID, _ := cmd.Flags().GetString("run-id")
@@ -373,6 +378,32 @@ func runSignal(cmd *cobra.Command, args []string) error {
 		return refusedRun("signalling", workflowID, server, err)
 	}
 
+	// Delivered rather than applied, and the difference is not pedantry. The server
+	// has taken the signal, either into the gate that was waiting or into the
+	// bounded pending set for a gate not reached yet, and that is the whole of what
+	// this process is in a position to claim. A signal still pending when the run
+	// continues as new is dropped once the carry limit is full (`drainSignals` in
+	// pkg/flowstate/v1/engine/wait.go), so a workflow that never observes it is a
+	// possible ending of a delivery that succeeded. "applied" would tell a script
+	// the workflow acted on it, which nothing here knows and which the schema says
+	// nothing that would let this document find out. Which of the two happened is
+	// one of the facts picatz/flowstate#374 wants a non-empty SignalResponse to
+	// carry.
+	if format.Machine() {
+		return writeMutationResult(newSurface(cmd), format, &v1.MutationResult{
+			Verb:       "signal",
+			WorkflowId: workflowID,
+			RunId:      runID,
+			SignalName: name,
+			Result:     resultDelivered,
+		})
+	}
+
+	// On stdout, which is where this line has always gone. It is out of step with
+	// the account-on-stderr discipline the rest of the lifecycle verbs keep, and
+	// moving it is a separate change: it would alter what an existing
+	// `flow signal > file` collects, and the reason to touch these verbs at all was
+	// to stop breaking what scripts already depend on.
 	fmt.Fprintf(cmd.OutOrStdout(), "delivered %s to %s\n", name, workflowID)
 	return nil
 }
