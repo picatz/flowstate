@@ -2224,9 +2224,11 @@ with a command whose only payload is that.
 
 A callee's own steps may carry `undo:`, and a compensation they register lands on the
 same run-level [`UndoLog`](../pkg/flowstate/v1/undo.go) a top-level step's would —
-`v1.UndoScopeCall` is one of the three placements `CheckUndoPlacement` allows,
-alongside the run's own top level and a `loop:` body; only `UndoScopeConcurrent` is
-refused. Nothing about *how* a compensation reaches the log changed to
+`v1.UndoScopeCall` is one of the placements `CheckUndoPlacement` allows, alongside
+the run's own top level, a `loop:` body, and, since concurrent scopes gained their
+structural ordering key, a `for_each` body or `parallel` branch; what stays refused
+is a compensation on a step with no effect of its own, such as the `call:` step
+itself. Nothing about *how* a compensation reaches the log changed to
 make this true: the durable executor already shared `e.undo` by pointer with the
 executor a call descends into, for the same reason it shares `signals` and `progress`
 across every level — a compensation belongs to the run, not to the level that happens

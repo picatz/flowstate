@@ -476,11 +476,12 @@ func (s UndoScope) IntoLoop() UndoScope {
 //
 // # Where a compensation may be written
 //
-// A compensation is honoured at the top level, inside a `call:`'s body, and
-// inside a `loop:` body — see [UndoScope] for why those three share an answer —
-// and refused inside a `for_each` body or a `parallel` branch, for the one
-// reason that survives scrutiny: the two drivers disagree about the order work
-// registers in there. Also in [UndoScope]'s doc.
+// A compensation is honoured at the top level, inside a `call:`'s body, inside
+// a `loop:` body, and inside a `for_each` body or `parallel` branch, whose
+// private logs the parent merges by structural position; see [UndoScope]. What
+// this refuses is the shape, not the place: a compensation on a step with no
+// effect of its own (control flow, or the `call:` step itself) has nothing to
+// take back, wherever it sits.
 //
 // # Refused loudly in the engine as well as in the validator
 //

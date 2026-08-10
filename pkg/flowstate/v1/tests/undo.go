@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -61,6 +63,31 @@ type UndoCase struct {
 	// Recorded is every token the recording server must have received, in order:
 	// the steps that ran, then the compensations that ran.
 	Recorded []string
+
+	// UnorderedPrefix is how many leading entries of Recorded are compared as a
+	// set rather than a sequence. Zero for every sequential case. A concurrent
+	// case sets it to the number of work requests its children make, because
+	// which child's request reaches the server first is the scheduler's choice
+	// on the durable driver and no claim of this corpus; the compensations that
+	// follow the prefix are the claim, and stay order-exact. Use
+	// [AssertRecorded] rather than comparing Recorded directly.
+	UnorderedPrefix int
+}
+
+// AssertRecorded compares what the recording server received against a case's
+// expectation, honouring [UndoCase.UnorderedPrefix]. One comparison, shared by
+// both drivers, so the two cannot come to disagree about what "in order" means.
+func AssertRecorded(t testing.TB, c UndoCase, got []string) {
+	t.Helper()
+
+	require.Len(t, got, len(c.Recorded),
+		"the number of effects is not what compensating should have produced")
+
+	n := c.UnorderedPrefix
+	require.ElementsMatch(t, c.Recorded[:n], got[:n],
+		"the concurrent work that ran is not the set that should have run")
+	require.Equal(t, c.Recorded[n:], got[n:],
+		"the effects that happened, and their order, are not what compensating should have produced")
 }
 
 // NewUndoServer starts a server that records what reached it, and returns its base
@@ -307,7 +334,8 @@ func UndoCases(base string) []UndoCase {
 				fails("boom", base, "boom"),
 			}},
 			Fails: true, Summary: `; compensation ran in reverse order: undid "inner", undid "inner"`,
-			Recorded: []string{"a", "b", "boom", "undo-b", "undo-a"},
+			Recorded:        []string{"a", "b", "boom", "undo-b", "undo-a"},
+			UnorderedPrefix: 3,
 		},
 		{
 			// The failure path of the merge: an iteration that dies after
@@ -327,6 +355,46 @@ func UndoCases(base string) []UndoCase {
 			}},
 			Fails: true, Summary: `; compensation ran in reverse order: undid "inner"`,
 			Recorded: []string{"a", "boom", "undo-a"},
+		},
+		{
+			// A concurrent fan-out has launched every iteration before it can
+			// learn that one failed, so the iteration past the failing index
+			// still runs, registers, and is taken back on both drivers. The
+			// failing iteration's step registers nothing, exactly as a failed
+			// top-level step registers nothing; the sibling's compensation is
+			// the point. One activity per iteration, because the recorded
+			// sequence is asserted exactly and one-per-child is the shape whose
+			// scheduling order the corpus has already proven deterministic.
+			Name: "a concurrent fan-out compensates iterations past the failure",
+			Workflow: &v1.Workflow{Name: "undo-for-each-past-failure", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "fan", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items: v1.NewExpr(`["boom", "b"]`), Iterator: "item", MaxParallel: 2,
+					Body: []*v1.Node{undoing(&v1.Node{Id: "inner", Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http", Inputs: map[string]*v1.Value{
+							"url":     v1.NewExpr(`item == "boom" ? "` + base + `/fail/boom" : "` + base + `/do/" + item`),
+							"outputs": v1.NewExpr(`{"said": response.body}`),
+						},
+					}}}, base, "/do/undo")},
+				}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "inner"`,
+			Recorded:        []string{"boom", "b", "undo-b"},
+			UnorderedPrefix: 2,
+		},
+		{
+			// Branches are concurrent by declaration, so a failing first branch
+			// hides neither the work nor the compensation of its sibling: the
+			// second branch runs and its registration comes back off.
+			Name: "a failing branch does not hide its sibling",
+			Workflow: &v1.Workflow{Name: "undo-parallel-sibling", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{fails("kaboom", base, "kaboom")}},
+					{Steps: []*v1.Node{undoing(records("right", base, "right"), base, "/do/undo")}},
+				}}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "right"`,
+			Recorded:        []string{"kaboom", "right", "undo-right"},
+			UnorderedPrefix: 2,
 		},
 	}
 }

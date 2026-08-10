@@ -1297,6 +1297,12 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 	iterations := make([]*Workflow_StepOutputs, 0, len(items))
 	resultsBytes := 0
 
+	// The first failing iteration by index, reported only after a concurrent
+	// loop has run everything it launched. Sequential loops never set it: a
+	// MaxParallel of one means later iterations were genuinely never started,
+	// on either driver, so stopping at the failure is the honest account.
+	var firstErr error
+
 	for i, item := range items {
 		// Each iteration gets its own output scope, seeded with what was visible
 		// before the loop. Body steps therefore cannot see a previous iteration's
@@ -1317,6 +1323,19 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		iterationUndo := NewUndoLog(nil)
 		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth); err != nil {
 			undo.Append(iterationUndo)
+			if loop.GetMaxParallel() > 1 {
+				// A concurrent fan-out launches every iteration before it can
+				// know one failed, so the durable driver runs, joins, and
+				// compensates all of them. This rehearsal owes an author the
+				// same account: the remaining iterations run, their logs merge
+				// in index order, and the first failure by index is still the
+				// answer. Returning here instead would compensate less work
+				// locally than production would do and take back.
+				if firstErr == nil {
+					firstErr = fmt.Errorf("iteration %d: %w", i, err)
+				}
+				continue
+			}
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 		undo.Append(iterationUndo)
@@ -1334,6 +1353,10 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}
+	}
+
+	if firstErr != nil {
+		return nil, firstErr
 	}
 
 	return LoopOutputs(iterations), nil
@@ -1467,6 +1490,16 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		before.StepValues[k] = v
 	}
 
+	// The first failing branch by declaration index, reported only after every
+	// branch has run, because that is what the durable driver's join reports.
+	var firstErr error
+
+	// Each branch's outputs, merged only at the join and only when every branch
+	// succeeded: the durable driver merges nothing into the enclosing scope on
+	// a failed parallel, so a tolerated failure must not leave a sibling's
+	// partial outputs visible here either.
+	branchResults := make([]*Workflow_StepOutputs, len(parallel.GetBranches()))
+
 	for i, branch := range parallel.GetBranches() {
 		// Every branch starts from the outputs that existed before the block, so
 		// a branch cannot observe a sibling's work even though they run in order
@@ -1484,12 +1517,31 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		branchUndo := NewUndoLog(nil)
 		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth); err != nil {
 			undo.Append(branchUndo)
-			return fmt.Errorf("branch %d: %w", i, err)
+			// Branches are concurrent by declaration: the durable driver has
+			// launched every one of them before it can learn that any failed,
+			// then joins, merges every private log, and reports the first
+			// failure by branch index. This rehearsal does the same, or a
+			// failing first branch would hide both the work and the
+			// compensations of a second branch production runs regardless.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("branch %d: %w", i, err)
+			}
+			continue
 		}
 		undo.Append(branchUndo)
+		branchResults[i] = branchOutputs
+	}
 
+	if firstErr != nil {
+		return firstErr
+	}
+
+	// Merge at the join, in declaration order, exactly as the durable driver
+	// does after its channel drain: the merged result is the same regardless of
+	// the order branches completed in, and nothing merges on failure.
+	for i, branch := range parallel.GetBranches() {
 		for _, node := range branch.GetSteps() {
-			if outputs, ok := branchOutputs.GetStepValues()[node.GetId()]; ok {
+			if outputs, ok := branchResults[i].GetStepValues()[node.GetId()]; ok {
 				scope.Outputs.StepValues[node.GetId()] = outputs
 			}
 		}
