@@ -191,6 +191,41 @@ func TestBreakingOutputRemoved(t *testing.T) {
 		"adding an output must not be a break")
 }
 
+// TestBreakingOutputGuaranteeWeakened is the output-postcondition class: a
+// declared output's `must:` is a guarantee a consumer may rely on, so dropping
+// or changing it breaks callers, the mirror of an input precondition tightening.
+// The negative direction is a `must:` *added* where there was none, which only
+// strengthens the guarantee and passes.
+func TestBreakingOutputGuaranteeWeakened(t *testing.T) {
+	guaranteed := fixtureHeader() +
+		"outputs:\n  code:\n    value: ${200}\n    must: this >= 200\n" +
+		fixtureStep
+	dropped := fixtureHeader() +
+		"outputs:\n  code:\n    value: ${200}\n" +
+		fixtureStep
+
+	ds := diffFixtures(t, guaranteed, dropped)
+	require.Len(t, ds, 1, "dropping an output must: should report exactly one break")
+	require.Contains(t, ds[0].Message, `output "code" weakened its guarantee`)
+
+	// A changed predicate is undecidable, so it is reported (fail-closed).
+	changed := fixtureHeader() +
+		"outputs:\n  code:\n    value: ${200}\n    must: this >= 100\n" +
+		fixtureStep
+	dsChanged := diffFixtures(t, guaranteed, changed)
+	require.Len(t, dsChanged, 1)
+	require.Contains(t, dsChanged[0].Message, `output "code" weakened its guarantee`)
+
+	// Loosening: adding a must where there was none only strengthens the
+	// guarantee, so it is silent.
+	require.Empty(t, diffFixtures(t, dropped, guaranteed),
+		"adding an output guarantee must not be a break")
+
+	// An unchanged guarantee is silent.
+	require.Empty(t, diffFixtures(t, guaranteed, guaranteed),
+		"an unchanged output guarantee must not be a break")
+}
+
 // --- end-to-end: the git plumbing and the command wiring ---
 
 // gitInitRepo builds a throwaway repository with one committed Flowfile, then
@@ -258,6 +293,68 @@ func TestBreakingCommandCleanAndBreaking(t *testing.T) {
 	out2, err2 := runBreakingCLI(t, dir2, "--against", "HEAD", "workflow.yaml")
 	require.Error(t, err2, "a removed output should exit non-zero")
 	require.Contains(t, out2, `output "where" was removed or renamed`)
+}
+
+// gitInitRepoFiles builds a throwaway repository with several committed
+// Flowfiles at given repo-relative paths, and returns the directory. Nothing is
+// changed in the working tree, so a run compares each file against itself.
+func gitInitRepoFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	dir := t.TempDir()
+	runGitTest(t, dir, "init", "-q")
+	runGitTest(t, dir, "config", "user.email", "t@example.com")
+	runGitTest(t, dir, "config", "user.name", "test")
+	for rel, src := range files {
+		abs := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(abs), 0o755))
+		require.NoError(t, os.WriteFile(abs, []byte(src), 0o644))
+	}
+	runGitTest(t, dir, "add", "-A")
+	runGitTest(t, dir, "commit", "-q", "-m", "initial")
+	return dir
+}
+
+// TestBreakingFromSubdirectory checks the pathspec is resolved against the
+// repository root, not the caller's directory. Run from a subdirectory with `.`,
+// the ref side must scope its listing to that subdirectory: an unrelated,
+// unchanged workflow elsewhere in the tree must not read as removed. The names
+// differ per directory, so this exercises only the path scoping, not the
+// same-name refusal.
+func TestBreakingFromSubdirectory(t *testing.T) {
+	here := "edition: v2026.2\nname: here\n" + fixtureStep
+	elsewhere := "edition: v2026.2\nname: elsewhere\n" + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{
+		"svc/a/workflow.yaml": here,
+		"svc/b/workflow.yaml": elsewhere,
+	})
+
+	// From svc/a, checking `.`, nothing changed anywhere, so the only workflow
+	// in scope is unchanged and svc/b must not be seen at all.
+	out, err := runBreakingCLI(t, filepath.Join(dir, "svc", "a"), "--against", "HEAD", ".")
+	require.NoError(t, err, "an unchanged subdirectory must report no break, got:\n%s", out)
+	require.NotContains(t, out, "elsewhere",
+		"a workflow outside the checked subdirectory must not be listed")
+}
+
+// TestBreakingRefusesDuplicateNames checks that two files declaring one workflow
+// name are refused rather than silently collapsed. Matching is by name, so a
+// collision would compare one file and miss the other; the command names both
+// files and fails instead.
+func TestBreakingRefusesDuplicateNames(t *testing.T) {
+	same := "edition: v2026.2\nname: shared\n" + fixtureStep
+	dir := gitInitRepoFiles(t, map[string]string{
+		"svc/a/workflow.yaml": same,
+		"svc/b/workflow.yaml": same,
+	})
+
+	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
+	require.Error(t, err, "duplicate names must fail the command, got:\n%s", out)
+	require.Contains(t, out, `workflow name "shared" is declared by both`)
+	require.Contains(t, out, "svc/a/workflow.yaml")
+	require.Contains(t, out, "svc/b/workflow.yaml")
 }
 
 // TestBreakingCommandMissingRef reports the ref that is not in local history with

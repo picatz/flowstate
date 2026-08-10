@@ -111,8 +111,8 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 		return err
 	}
 
-	newByName := compileHead(files)
-	oldByName := compileRef(root, ref, paths, files)
+	newByName, newDuplicates := compileHead(files)
+	oldByName, oldDuplicates := compileRef(root, ref, paths, files)
 
 	surface := newSurface(cmd)
 	out, theme := surface.Out, surface.Theme
@@ -121,6 +121,14 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 		names  = sortedNames(newByName, oldByName)
 		failed bool
 	)
+
+	// A name two files share is refused before any comparison: matching is by
+	// name, so the collision would otherwise silently compare one file and miss
+	// the other. Reported once per collision, deduped across the two sides.
+	for _, msg := range dedupeStrings(newDuplicates, oldDuplicates) {
+		failed = true
+		fmt.Fprintln(out, theme.Danger.Render(msg))
+	}
 	for _, name := range names {
 		old, oldOK := oldByName[name]
 		neu, newOK := newByName[name]
@@ -163,20 +171,45 @@ type compiled struct {
 	path string
 }
 
-// compileHead compiles every working-tree file, keyed by workflow name.
+// compileHead compiles every working-tree file, keyed by workflow name, and
+// reports any name two files share.
 //
 // A file that does not compile is skipped rather than reported: `validate` owns
 // that diagnostic, and a file that will not compile has no contract to compare.
-func compileHead(files []string) map[string]compiled {
+//
+// Two files declaring one name cannot both be keyed by it, and this command
+// matches a workflow to its old self by name, so a silent overwrite would
+// compare one file and miss the other. The collision is refused instead, per
+// the second return value, rather than guessed. Cross-repo identity (a registry,
+// #172) is the deferred answer to telling same-named workflows apart; within one
+// tree, distinct names are the requirement.
+func compileHead(files []string) (map[string]compiled, []string) {
 	byName := make(map[string]compiled, len(files))
+	var duplicates []string
 	for _, path := range files {
 		wf, pos, err := flowfile.ParseFile(path)
 		if err != nil || wf.GetName() == "" {
 			continue
 		}
-		byName[wf.GetName()] = compiled{wf: wf, pos: pos, path: path}
+		name := wf.GetName()
+		if prev, ok := byName[name]; ok {
+			duplicates = append(duplicates, duplicateNameMessage(name, prev.path, path))
+			continue
+		}
+		byName[name] = compiled{wf: wf, pos: pos, path: path}
 	}
-	return byName
+	return byName, duplicates
+}
+
+// duplicateNameMessage reports two files that declare one workflow name, in a
+// stable order so the finding does not depend on which was discovered first.
+func duplicateNameMessage(name, a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	return fmt.Sprintf(
+		"workflow name %q is declared by both %s and %s; `flow breaking` matches by name and cannot tell them apart, so it compares neither. Give them distinct names",
+		name, a, b)
 }
 
 // compileRef compiles the ref-side version of every Flowfile under the paths,
@@ -191,19 +224,28 @@ func compileHead(files []string) map[string]compiled {
 // The file set is the union of the working-tree files and every Flowfile tracked
 // at the ref under the same paths, so a workflow deleted between the ref and the
 // working tree is still seen on the ref side.
-func compileRef(root, ref string, paths, headFiles []string) map[string]compiled {
+func compileRef(root, ref string, paths, headFiles []string) (map[string]compiled, []string) {
 	relSet := make(map[string]struct{})
 	for _, path := range headFiles {
 		if rel, ok := repoRel(root, path); ok {
 			relSet[rel] = struct{}{}
 		}
 	}
-	for _, rel := range gitListYAML(root, ref, paths) {
+	for _, rel := range gitListYAML(root, ref, repoRelPaths(root, paths)) {
 		relSet[rel] = struct{}{}
 	}
 
-	byName := make(map[string]compiled, len(relSet))
+	rels := make([]string, 0, len(relSet))
 	for rel := range relSet {
+		rels = append(rels, rel)
+	}
+	// Sorted so which of two same-named files is kept, and which is reported as
+	// the duplicate, does not depend on map iteration order.
+	sort.Strings(rels)
+
+	byName := make(map[string]compiled, len(rels))
+	var duplicates []string
+	for _, rel := range rels {
 		data, err := gitShow(root, ref, rel)
 		if err != nil {
 			continue // Absent at the ref: a new file, nothing to compare.
@@ -213,15 +255,39 @@ func compileRef(root, ref string, paths, headFiles []string) map[string]compiled
 		if err != nil || wf.GetName() == "" {
 			continue
 		}
-		byName[wf.GetName()] = compiled{wf: wf, pos: pos, path: rel}
+		name := wf.GetName()
+		if prev, ok := byName[name]; ok {
+			duplicates = append(duplicates, duplicateNameMessage(name, prev.path, rel))
+			continue
+		}
+		byName[name] = compiled{wf: wf, pos: pos, path: rel}
 	}
-	return byName
+	return byName, duplicates
 }
 
 // printBreak renders one finding in the same shape `validate` renders a
 // diagnostic: the file, then the positioned message.
 func printBreak(out io.Writer, theme ui.Theme, path string, d flowfile.Diagnostic) {
 	fmt.Fprintf(out, "%s:%s\n", theme.Muted.Render(path), d.Error())
+}
+
+// dedupeStrings is the sorted union of two string slices, so a message that
+// both the working-tree and the ref side report (a name duplicated on both) is
+// printed once, in a stable order.
+func dedupeStrings(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = struct{}{}
+	}
+	for _, s := range b {
+		seen[s] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sortedNames is the union of the two maps' keys, in a stable order so a run's
@@ -318,16 +384,35 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 
 	// An output removed or renamed: a caller reading it breaks. A rename is a
 	// removal of the old name (plus a silent addition of the new one), so it is
-	// caught here by the old name's absence.
-	newOutputs := outputSet(neu)
-	for _, o := range old.GetDeclaredOutputs() {
-		name := o.GetName()
-		if _, ok := newOutputs[name]; !ok {
+	// caught here by the old name's absence. An output kept but weakened breaks
+	// callers who relied on the guarantee it dropped.
+	newOutputs := outputsByName(neu)
+	for _, oo := range old.GetDeclaredOutputs() {
+		name := oo.GetName()
+		no, ok := newOutputs[name]
+		if !ok {
 			ds = append(ds, flowfile.Diagnostic{
 				Field: "outputs",
 				Message: fmt.Sprintf(
 					"output %q was removed or renamed, so callers reading it break; keep the name, or add the new one alongside it", name),
 			})
+			continue
+		}
+
+		// A declared output's `must:` is a postcondition the callee guarantees,
+		// so a consumer may rely on it. Dropping or changing it weakens that
+		// guarantee and can invalidate a caller's assumptions, the mirror of an
+		// input precondition tightening. Adding a `must:` where there was none
+		// only strengthens the guarantee, which is safe, so it stays silent. A
+		// changed predicate is undecidable in general, so it is treated as a
+		// weakening, fail-closed, the same direction an input `must:` change
+		// leans.
+		if oldMust := oo.GetMust(); oldMust != "" && oldMust != no.GetMust() {
+			ds = append(ds, diagAt(pos, "outputs."+name, flowfile.Diagnostic{
+				Field: "outputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"output %q weakened its guarantee (its `must:` was removed or changed), so callers relying on it break; keep the guarantee, or add a new output", name),
+			}))
 		}
 	}
 
@@ -363,11 +448,11 @@ func inputsByName(wf *v1.Workflow) map[string]*v1.InputDeclaration {
 	return m
 }
 
-// outputSet is the set of a workflow's declared output names.
-func outputSet(wf *v1.Workflow) map[string]struct{} {
-	m := make(map[string]struct{}, len(wf.GetDeclaredOutputs()))
+// outputsByName keys a workflow's declared outputs by name.
+func outputsByName(wf *v1.Workflow) map[string]*v1.OutputDeclaration {
+	m := make(map[string]*v1.OutputDeclaration, len(wf.GetDeclaredOutputs()))
 	for _, o := range wf.GetDeclaredOutputs() {
-		m[o.GetName()] = struct{}{}
+		m[o.GetName()] = o
 	}
 	return m
 }
@@ -486,10 +571,32 @@ func gitShow(root, ref, rel string) ([]byte, error) {
 	return runGit(root, "show", ref+":"+rel)
 }
 
+// repoRelPaths converts each path argument to a repository-relative pathspec.
+// `git ls-tree` runs from the repository root, while the paths were given
+// relative to the caller's working directory, so passing them through unchanged
+// would resolve them against the wrong base: run from a subdirectory, `.` would
+// name the whole tree at the ref and every unrelated workflow would look
+// removed. A path that escapes the repository is dropped.
+func repoRelPaths(root string, paths []string) []string {
+	var rels []string
+	for _, path := range paths {
+		if rel, ok := repoRel(root, path); ok {
+			rels = append(rels, rel)
+		}
+	}
+	return rels
+}
+
 // gitListYAML lists the repo-relative .yaml and .yml paths tracked at the ref
 // under the given path arguments, so a workflow deleted since the ref is still
 // seen on the ref side.
 func gitListYAML(root, ref string, paths []string) []string {
+	if len(paths) == 0 {
+		// A bare `ls-tree` with no pathspec lists the whole tree, which is not
+		// what a caller who named specific paths asked for; answer with nothing
+		// rather than the entire repository.
+		return nil
+	}
 	args := []string{"ls-tree", "-r", "--name-only", ref, "--"}
 	args = append(args, paths...)
 	out, err := runGit(root, args...)
