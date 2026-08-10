@@ -371,11 +371,19 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// a plugin task it has not registered yet would answer `unknown task` for a
 	// workflow that is correct — and Open is strict, so a plugin that cannot come
 	// up fails the command here rather than one step at a time later.
-	closePlugins, err := startPlugins(cmd, secretProviders)
+	pluginCatalog, closePlugins, err := startPlugins(cmd, secretProviders)
 	if err != nil {
 		return err
 	}
 	defer closePlugins()
+
+	// The worker's own catalog, kept rather than dropped once the tasks were
+	// registered. Registration says which tasks this worker can dispatch; this
+	// says which *build* of each it dispatches them to, which is what a run pinned
+	// at submit is admitted against before any step of it executes here. Installed
+	// before Register, and before the worker polls, so no run can arrive ahead of
+	// the answer. See engine/plugins.go.
+	engine.UsePluginCatalog(pluginCatalog)
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
 		return err
@@ -682,11 +690,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// a caller authoring against GetCatalog would be told a task its workers run
 	// does not exist. The plugins launched here serve descriptors and health
 	// checks; execution still happens on the workers.
-	closePlugins, err := startPlugins(cmd, nil)
+	pluginCatalog, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}
 	defer closePlugins()
+
+	// And handed to the server, which is what makes a `plugins:` requirement
+	// resolvable: the server pins every submission against this snapshot, and
+	// without it a deployment that launched the plugin would refuse every workflow
+	// asking for it as "not installed".
+	serverOpts = append(serverOpts, server.WithPluginCatalog(pluginCatalog))
 
 	// No error to handle since connectrpc.com/validate v0.6.0: the interceptor
 	// builds its validator lazily on first use, so construction cannot fail.
@@ -920,7 +934,7 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// Strict, as a worker is: a plugin that will not come up fails the command
 	// here rather than leaving an editor quietly reporting `unknown task` for
 	// tasks the author asked for and had every reason to expect.
-	closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}
@@ -1683,24 +1697,11 @@ flow server --verbose`,
 	addTaskPolicyFlag(runLocalCmd)
 	addSecretFlags(workerCmd)
 	addSecretFlags(runLocalCmd)
-	runLocalCmd.Flags().String("as-subject", "local-user",
-		"authenticated subject to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-issuer", "flowstate:local",
-		"authenticated issuer to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-namespace", "",
-		"tenant namespace to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().String("as-deployment", "local",
-		"Flowstate deployment name to rehearse policy as (local runs only)")
-	runLocalCmd.Flags().StringArray("as-claim", nil,
-		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
+	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize worker-side resolution")
-	runLocalCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
-		"path to an access policy whose secrets rules authorize this local rehearsal")
-	for _, c := range []*cobra.Command{workerCmd, runLocalCmd} {
-		c.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-			"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
-	}
+	workerCmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
@@ -1886,6 +1887,11 @@ flow tasks --output json | jq '.tasks[] | select(.name == "http") | .inputs'`,
 	}
 	addOutputFlag(tasksCmd)
 
+	// Task command, which runs one task without a workflow around it. Built in
+	// taskrun.go, beside the code it drives. See [newTaskCommand] for why the
+	// singular verb is not folded into the plural listing above.
+	taskCmd := newTaskCommand()
+
 	// Plugins command, which reports what a plugin directory adds to this build.
 	//
 	// Beside `tasks` rather than under `worker`, because the question it answers is
@@ -1918,6 +1924,11 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 	// against, without needing a throwaway Go program to find out.
 	keysCmd := newKeysCommand()
 	jwtCmd := newJWTCommand()
+
+	// Version command, answering "which build" the way a bug report or an
+	// agent transcript needs to: see version.go for why this is a verb rather
+	// than only the `--version` line cobra already prints.
+	versionCmd := newVersionCommand()
 
 	// MCP command, which serves the control plane to an AI agent as tools.
 	mcpCmd := &cobra.Command{
@@ -2027,6 +2038,7 @@ flow lsp --plugin-dir ./plugins`,
 	runCmd.GroupID = "workflow"
 	validateCmd.GroupID = "workflow"
 	tasksCmd.GroupID = "workflow"
+	taskCmd.GroupID = "workflow"
 	getCmd.GroupID = "workflow"
 	watchCmd.GroupID = "workflow"
 	signalCmd.GroupID = "workflow"
@@ -2039,6 +2051,7 @@ flow lsp --plugin-dir ./plugins`,
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
+	versionCmd.GroupID = "development"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
@@ -2077,6 +2090,7 @@ flow lsp --plugin-dir ./plugins`,
 	compileCmd.GroupID = "workflow"
 	rootCmd.AddCommand(compileCmd)
 	rootCmd.AddCommand(tasksCmd)
+	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(pluginsCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(getCmd)
@@ -2092,6 +2106,7 @@ flow lsp --plugin-dir ./plugins`,
 	rootCmd.AddCommand(lspCmd)
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	return rootCmd
 }

@@ -161,6 +161,16 @@ func WithCredentialTargets(targets ...string) Option {
 	}
 }
 
+// WithPluginCatalog supplies the server/worker capability snapshot used to pin
+// plugin requirements before a durable run is accepted.
+func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
+	return func(s *FlowstateServer) {
+		if catalog != nil {
+			s.pluginCatalog = proto.Clone(catalog).(*v1.PluginCatalog)
+		}
+	}
+}
+
 // FlowstateServer implements the flowstatev1connect.WorkflowServiceHandler interface
 // and provides methods to run and get the status of workflows using Temporal.
 type FlowstateServer struct {
@@ -190,6 +200,7 @@ type FlowstateServer struct {
 	identityClaims              []string
 	credentialTargets           []string
 	credentialTargetsConfigured bool
+	pluginCatalog               *v1.PluginCatalog
 
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
@@ -677,6 +688,9 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 // "May create" is therefore the floor for every call through that RPC, not
 // only the ones that end up creating.
 func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[string]*v1.Value) (map[string]*v1.Value, error) {
+	if err := s.pinPlugins(wf); err != nil {
+		return nil, err
+	}
 	if s.credentialTargetsConfigured {
 		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -734,6 +748,44 @@ func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[stri
 	}
 
 	return inputs, nil
+}
+
+// pinPlugins records the deployment's plugin selection on a specification about
+// to become durable, and refuses a specification the deployment cannot satisfy.
+//
+// Called by [FlowstateServer.validateSubmission], so by [FlowstateServer.Run]
+// and [FlowstateServer.SignalWithStart], and by
+// [FlowstateServer.CreateSchedule], which has its own submission pipeline. All
+// three because all three bring durable work into existence, and a schedule that
+// skipped this would persist a specification with requirements and no selection:
+// unpinned at three in the morning, when the deployment resolving it is not the
+// one the author submitted against and nobody is there to read a refusal.
+//
+// Unconditional, including for a specification that requires nothing. The
+// resolved list is the control plane's own answer, so a caller-supplied one is
+// overwritten rather than trusted (see [v1.ResolvePlugins]), and "requires
+// nothing" is an answer this has to write down rather than a reason to leave
+// whatever arrived in place.
+func (s *FlowstateServer) pinPlugins(wf *v1.Workflow) error {
+	if err := v1.ResolvePlugins(wf, s.pluginCatalog); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
+			"resolving plugins before durable execution: %w", err))
+	}
+
+	return nil
+}
+
+// pluginCatalogSnapshot is the catalog this server pins against, as a copy.
+//
+// nil when no catalog was installed, which is a deployment without plugins
+// rather than a deployment whose plugins are unknown: a caller asking what it
+// may require is told nothing may be required, which is the true answer.
+func (s *FlowstateServer) pluginCatalogSnapshot() *v1.PluginCatalog {
+	if s.pluginCatalog == nil {
+		return nil
+	}
+
+	return proto.Clone(s.pluginCatalog).(*v1.PluginCatalog)
 }
 
 // prepareCreate builds the memo, the start options, and the namespace-scoped

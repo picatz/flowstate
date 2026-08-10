@@ -156,7 +156,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// scheme a plugin claims, and this process has the same secret backend
 	// flowstate_run_local already takes through --secret-env/--secret-dir,
 	// wired separately in withLocalTaskRuntime per call.
-	closePlugins, err := startPlugins(cmd, nil)
+	_, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return err
 	}

@@ -171,7 +171,7 @@ steps:
 	with.SetContext(t.Context())
 	require.NoError(t, with.Flags().Set("plugin-dir", dir))
 
-	closePlugins, err := startPlugins(with, nil)
+	_, closePlugins, err := startPlugins(with, nil)
 	require.NoError(t, err, "starting the example plugin")
 	t.Cleanup(closePlugins)
 

@@ -157,5 +157,13 @@ func (s *FlowstateServer) GetCatalog(
 	// invisible here, which is the same split `flow validate` has with plugin
 	// tasks, and closing it is the worker-introspection problem rather than a
 	// bigger version of this handler.
-	return connect.NewResponse(&v1.GetCatalogResponse{Catalog: v1.Catalog()}), nil
+	// The plugin half comes from the same snapshot submissions are pinned against
+	// (see [FlowstateServer.pinPlugins]) rather than from a second read of the
+	// host, so what a client is told it may require is exactly what a submission
+	// requiring it will resolve to. Cloned, because it is answered concurrently
+	// and a handler must not hand callers a message the server holds.
+	return connect.NewResponse(&v1.GetCatalogResponse{
+		Catalog: v1.Catalog(),
+		Plugins: s.pluginCatalogSnapshot(),
+	}), nil
 }

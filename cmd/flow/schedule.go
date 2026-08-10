@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // `flow schedule` — the act a `triggers:` block does not perform.
@@ -71,12 +73,17 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 
 	name, _ := cmd.Flags().GetString("name")
 	paused, _ := cmd.Flags().GetBool("paused")
+	backfills, err := scheduleBackfillFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	request := &v1.CreateScheduleRequest{
 		Workflow: workflow,
 		Inputs:   inputs,
 		Name:     name,
 		Paused:   paused,
+		Backfill: backfills,
 	}
 	if err := v1.Validate(request); err != nil {
 		return err
@@ -101,6 +108,45 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	// visible in the first two of these and almost never visible in the expression
 	// that produced them, so this is the moment to show them.
 	return writeScheduleText(surface, schedule)
+}
+
+// scheduleBackfillFlags reads `--backfill START..END`, repeatable.
+//
+// Bounded here through [v1.CheckScheduleBackfill], which is the same function the
+// server applies to the request that arrives. Here for the message, there for the
+// control: a bound that only the CLI applies is not a bound, since the RPC is
+// public and the caller a bound exists for is the one that is not this program.
+// Sharing the function is what keeps the sentence an operator reads and the
+// refusal a caller receives from drifting into two different rules.
+func scheduleBackfillFlags(cmd *cobra.Command) ([]*v1.ScheduleBackfill, error) {
+	values, _ := cmd.Flags().GetStringSlice("backfill")
+
+	out := make([]*v1.ScheduleBackfill, 0, len(values))
+	for _, value := range values {
+		startText, endText, ok := strings.Cut(value, "..")
+		if !ok {
+			return nil, fmt.Errorf("backfill %q must be START..END using RFC3339 timestamps, "+
+				"as in 2026-08-01T00:00:00Z..2026-08-02T00:00:00Z", value)
+		}
+
+		start, err := time.Parse(time.RFC3339, startText)
+		if err != nil {
+			return nil, fmt.Errorf("backfill start %q: %w", startText, err)
+		}
+
+		end, err := time.Parse(time.RFC3339, endText)
+		if err != nil {
+			return nil, fmt.Errorf("backfill end %q: %w", endText, err)
+		}
+
+		out = append(out, &v1.ScheduleBackfill{StartAt: timestamppb.New(start), EndAt: timestamppb.New(end)})
+	}
+
+	if err := v1.CheckScheduleBackfill(out); err != nil {
+		return nil, err
+	}
+
+	return out, nil
 }
 
 // runScheduleList reports the schedules belonging to the caller.
@@ -425,8 +471,69 @@ func describeCadence(trigger *v1.ScheduleTrigger) string {
 	if overlap := trigger.GetOverlap(); overlap != v1.ScheduleTrigger_OVERLAP_UNSPECIFIED {
 		parts = append(parts, "on overlap "+v1.OverlapName(overlap))
 	}
+	for _, calendar := range trigger.GetCalendars() {
+		parts = append(parts, describeCalendar(calendar))
+	}
+	if start := trigger.GetStartAt(); start != nil {
+		parts = append(parts, "from "+start.AsTime().UTC().Format(time.RFC3339))
+	}
+	if end := trigger.GetEndAt(); end != nil {
+		parts = append(parts, "through "+end.AsTime().UTC().Format(time.RFC3339))
+	}
+	if window := trigger.GetCatchupWindow(); window != nil {
+		parts = append(parts, "catch up within "+window.AsDuration().String())
+	}
+	if trigger.GetPauseOnFailure() {
+		parts = append(parts, "pause on failure")
+	}
 
 	return strings.Join(parts, ", ")
+}
+
+// describeCalendar renders one calendar in the notation it was written in.
+//
+// The values rather than a count of them, because the question an operator asks a
+// describe is "is this the schedule I meant", and "1 calendar specification(s)"
+// answers a different question. Absent fields stay absent rather than being
+// rendered as the default they take, so what is printed is what the file said.
+func describeCalendar(calendar *v1.ScheduleTrigger_Calendar) string {
+	fields := [][]*v1.ScheduleTrigger_Calendar_Range{
+		calendar.GetSecond(), calendar.GetMinute(), calendar.GetHour(), calendar.GetDayOfMonth(),
+		calendar.GetMonth(), calendar.GetYear(), calendar.GetDayOfWeek(),
+	}
+
+	written := make([]string, 0, len(fields))
+	for i, name := range v1.ScheduleCalendarFieldNames() {
+		if len(fields[i]) == 0 {
+			continue
+		}
+
+		values := make([]string, 0, len(fields[i]))
+		for _, r := range fields[i] {
+			values = append(values, describeCalendarRange(r))
+		}
+
+		written = append(written, name+" "+strings.Join(values, ","))
+	}
+
+	if comment := calendar.GetComment(); comment != "" {
+		written = append(written, "("+comment+")")
+	}
+
+	return "calendar " + strings.Join(written, " ")
+}
+
+// describeCalendarRange renders one range the way a Flowfile writes it.
+func describeCalendarRange(r *v1.ScheduleTrigger_Calendar_Range) string {
+	text := strconv.Itoa(int(r.GetStart()))
+	if r.GetEnd() != 0 {
+		text += "-" + strconv.Itoa(int(r.GetEnd()))
+	}
+	if r.GetStep() != 0 {
+		text += "/" + strconv.Itoa(int(r.GetStep()))
+	}
+
+	return text
 }
 
 // refusedSchedule explains a refused request about one schedule.
@@ -512,6 +619,10 @@ flow schedule create report.yaml --name report-us --input region=us-east-1`,
 		"what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants")
 	createCmd.Flags().Bool("paused", false,
 		"create the schedule without letting it fire, so its next firing times can be read before it takes one")
+	createCmd.Flags().StringSlice("backfill", nil,
+		"a missed window to recover at creation, START..END in RFC3339, repeatable up to 10 times and 31 days "+
+			"in total. Temporal evaluates the cadence after START and up to END, so write START a moment before "+
+			"the first firing you want back")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
