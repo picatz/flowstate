@@ -3,6 +3,7 @@ package flowfile
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
@@ -76,12 +77,37 @@ func checkEdition(declared string) error {
 	if slices.Contains(knownEditions, declared) {
 		return fmt.Errorf(
 			"edition %q is older than this build compiles (%s); run `flow fix` to rewrite the file",
-			declared, CurrentEdition)
+			declared, editionName(CurrentEdition))
 	}
 	return fmt.Errorf(
-		"edition %q is not one this build knows (%s); a newer flow may have written this file, "+
-			"so upgrade rather than editing the edition",
-		declared, strings.Join(knownEditions, ", "))
+		"edition %q is not one this build knows; this build knows %s and compiles %s; "+
+			"a newer flow may have written this file, so upgrade rather than editing the edition",
+		declared, editionList(knownEditions), editionName(CurrentEdition))
+}
+
+// editionName renders one edition as an author has to type it.
+//
+// Quoted, because an edition is a literal string rather than a number, and
+// because the set genuinely holds two shapes: `2026.1` is unprefixed and
+// everything from `v2026.2` on carries a `v` (see [CurrentEdition] for why the
+// prefix arrived). Rendered bare, a list of both reads as one name spelled two
+// ways by an inconsistent formatter, when it is in fact two names each spelled
+// the only way it can be. Quoting says "type this" about each of them.
+//
+// One formatter, so a member of the list and the edition a message names on its
+// own cannot come out differently: that is the one-value-written-twice rule from
+// CLAUDE.md, wearing prose (#385).
+func editionName(edition string) string {
+	return strconv.Quote(edition)
+}
+
+// editionList renders a set of editions, every member through [editionName].
+func editionList(editions []string) string {
+	names := make([]string, 0, len(editions))
+	for _, edition := range editions {
+		names = append(names, editionName(edition))
+	}
+	return strings.Join(names, ", ")
 }
 
 // editionText reads a declared edition from the node it was written as.

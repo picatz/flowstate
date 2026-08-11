@@ -1,8 +1,10 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -1844,19 +1846,158 @@ func sortedInputNames(inputs map[string]*v1.Value) []string {
 // is no workflow to validate, and the error already describes every problem the
 // compiler found, with positions.
 func ValidateSource(data []byte) (Diagnostics, error) {
-	return validateParsed(Parse(data))
+	return validateThroughEdition(data, "")
 }
 
 // ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
 // resolving any `call:` step relative to path's own directory — see [ParseFile].
 func ValidateSourceFile(path string) (Diagnostics, error) {
-	return validateParsed(ParseFile(path))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return validateThroughEdition(data, path)
 }
 
 // ValidateSourceAt is [ValidateSource] for data that is not necessarily what
 // path holds on disk yet — an editor's unsaved buffer — resolving a `call:`
 // step relative to path's directory all the same. See [ParseAt].
 func ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
+	return validateThroughEdition(data, path)
+}
+
+// validateThroughEdition validates data, and when the only thing in the way is
+// an edition `flow fix` can rewrite, goes on to validate the rewritten form.
+//
+// # Why the gate does not stay absolute here
+//
+// A declared edition this build does not compile stops the parse, and the reason
+// is sound for a *newer* one: every other diagnostic would describe the wrong
+// language, since `nonsense:` is an unknown key here and might be a perfectly
+// good key there. False diagnostics are worse than missing ones.
+//
+// That reason does not hold for an edition this build knows and can rewrite
+// from. There the grammar is not unknown; it is one `flow fix` mechanically
+// converts. Stopping at the gate cost an author a round trip they did not need:
+// run `flow fix`, and only then learn about the misspelled key and the broken
+// expression that were knowable on the first pass. So the rewrite is done in
+// memory and the rewritten document is validated, which is what makes the rest
+// of the report describe this grammar rather than guessing at another (#385).
+//
+// # What decides whether there is a rewrite
+//
+// [Fix] does, rather than a test here of which editions are old. It is the thing
+// that owns the rewriting, so asking it is the one answer that cannot disagree
+// with what `flow fix` will actually do, and it refuses an edition it has no
+// rewrite for. Any refusal at all leaves the gate exactly where it was: a
+// document that will not convert entirely is one this build still cannot read,
+// and reporting against a half-converted version of it is the false-diagnostic
+// trap by another route.
+//
+// # Why only a rewrite that moves nothing
+//
+// Because a diagnostic's position has to be a position in the file the author is
+// holding. The rewritten document is not written anywhere, so a line number
+// taken from it is a line number in a file that does not exist yet, and a
+// rewrite that collapses `task:`/`name:` into one key moves everything below it:
+// a fixture with the mistake on line 11 reported it on line 8, naming a line
+// whose content is something else entirely. That is the false diagnostic this
+// package refuses to emit, arriving by a new route.
+//
+// So the extra diagnostics are carried only when the rewrite touched nothing but
+// the `edition:` declaration itself, which is the case the round trip was costing
+// an author anyway: an old file, a new binary, and a stamp to update. Any
+// rewrite that moves a line leaves the gate exactly where it was, because the
+// alternative is being helpful about the wrong line.
+func validateThroughEdition(data []byte, path string) (Diagnostics, error) {
+	ds, err := parseAndValidate(data, path)
+	if err == nil {
+		return ds, nil
+	}
+
+	var gate Diagnostics
+	if !errors.As(err, &gate) || !isEditionGate(gate) {
+		return nil, err
+	}
+
+	fixed, fixErr := Fix(data)
+	if fixErr != nil || !fixed.Complete() || !fixed.Changed() {
+		return nil, err
+	}
+	if !editionOnlyRewrite(data, fixed.Source) {
+		return nil, err
+	}
+
+	rest, restErr := parseAndValidate(fixed.Source, path)
+	if restErr != nil {
+		var restDiagnostics Diagnostics
+		if !errors.As(restErr, &restDiagnostics) {
+			// The rewritten document does not compile for a reason that is not a
+			// diagnostic at all. Nothing further can honestly be said about it, so
+			// the edition line stands alone exactly as it did before.
+			return nil, err
+		}
+		rest = restDiagnostics
+	}
+
+	// Returned as an error rather than as diagnostics, because that is what a
+	// document which does not compile has always come back as, and the edition is
+	// still the reason it does not. What changes is only how much of the rest of
+	// the file the author is told about in the same breath.
+	return nil, append(slices.Clone(gate), rest...)
+}
+
+// isEditionGate reports whether a compile failed at the edition gate and nowhere
+// else.
+//
+// The gate returns the moment it reports, so it is always the whole of the
+// failure: exactly one diagnostic, about the `edition` key. Any longer list came
+// from somewhere the gate had already let through, and rewriting is not the
+// answer to it.
+func isEditionGate(ds Diagnostics) bool {
+	return len(ds) == 1 && ds[0].Field == "edition" && ds[0].Step == ""
+}
+
+// editionOnlyRewrite reports whether the rewrite changed nothing but the
+// `edition:` declaration, so that every other line still sits where the author
+// left it and a position taken from the rewritten document is a position in the
+// document on disk.
+//
+// Line for line rather than by asking [FixResult.Changes] what it did, because
+// what matters here is not which rules fired but whether anything moved, and the
+// bytes are the only answer to that which cannot be out of date.
+func editionOnlyRewrite(before, after []byte) bool {
+	oldLines := strings.Split(string(before), "\n")
+	newLines := strings.Split(string(after), "\n")
+	if len(oldLines) != len(newLines) {
+		return false
+	}
+	for i := range oldLines {
+		if oldLines[i] == newLines[i] {
+			continue
+		}
+		// A differing line is allowed only when it is the declaration on both
+		// sides: the stamp being updated in place. A line that became an edition
+		// declaration, or stopped being one, is the key moving, which moves
+		// everything a position could be measured from.
+		if !isEditionDeclaration(oldLines[i]) || !isEditionDeclaration(newLines[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isEditionDeclaration reports whether a source line declares the edition.
+func isEditionDeclaration(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "edition:")
+}
+
+// parseAndValidate compiles data and validates what it compiled to, resolving a
+// `call:` relative to path when there is one.
+func parseAndValidate(data []byte, path string) (Diagnostics, error) {
+	if path == "" {
+		return validateParsed(Parse(data))
+	}
 	return validateParsed(ParseAt(data, path))
 }
 
