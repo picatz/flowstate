@@ -268,7 +268,7 @@ func compileRef(root, ref string, paths, headFiles []string) (map[string]compile
 // printBreak renders one finding in the same shape `validate` renders a
 // diagnostic: the file, then the positioned message.
 func printBreak(out io.Writer, theme ui.Theme, path string, d flowfile.Diagnostic) {
-	fmt.Fprintf(out, "%s:%s\n", theme.Muted.Render(path), d.Error())
+	fmt.Fprintln(out, diagnosticLine(theme.Muted.Render(path), d))
 }
 
 // dedupeStrings is the sorted union of two string slices, so a message that

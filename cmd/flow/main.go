@@ -1002,9 +1002,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 				// about the workflow.
 				return fmt.Errorf("error reading %s: %w", path, err)
 			}
-			// A parse failure already carries its own line and column.
+			// A parse failure already carries its own line and column, and each of
+			// them is written on a line naming this file, exactly as a validation
+			// diagnostic below is. Handing the whole error to `%v` instead is what
+			// gave one report two position spellings: a space after the filename,
+			// and no filename at all from the second diagnostic on (#384).
 			failed = true
-			fmt.Fprintf(out, "%s: %v\n", theme.Muted.Render(path), err)
+			writeDiagnostics(out, theme.Muted.Render(path), parsed)
 			continue
 		}
 		if len(diagnostics) == 0 {
@@ -1016,9 +1020,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 
 		failed = true
-		for _, d := range diagnostics {
-			fmt.Fprintf(out, "%s:%s\n", theme.Muted.Render(path), d.Error())
-		}
+		writeDiagnostics(out, theme.Muted.Render(path), diagnostics)
 	}
 
 	if failed {
@@ -1115,6 +1117,15 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	// the path-aware entry points know it.
 	workflow, _, err := flowfile.ParseFile(path)
 	if err != nil {
+		// Positioned diagnostics get a line each naming this file, like every
+		// other diagnostic surface. Wrapping the error instead put the filename on
+		// a line of its own and left every position after the first unattributed
+		// (#384). A failure that is not diagnostics is about the invocation rather
+		// than the file, and keeps its own wrapping.
+		var parsed flowfile.Diagnostics
+		if errors.As(err, &parsed) {
+			return nil, diagnosticsError(path, parsed)
+		}
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
@@ -1123,11 +1134,7 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(diagnostics) > 0 {
-		lines := make([]string, 0, len(diagnostics))
-		for _, d := range diagnostics {
-			lines = append(lines, fmt.Sprintf("%s:%s", path, d.Error()))
-		}
-		return nil, errors.New(strings.Join(lines, "\n"))
+		return nil, diagnosticsError(path, diagnostics)
 	}
 
 	return workflow, nil
