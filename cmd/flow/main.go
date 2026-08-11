@@ -991,16 +991,40 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	surface := newSurface(cmd)
 	out, theme := surface.Out, surface.Theme
 
+	// Directory or file, on the same rule every other file-taking verb applies
+	// (#394): a named path is taken as given, a directory is walked, and a
+	// walk sorts what it finds into workflows and tests rather than refusing
+	// the directory outright.
+	targets, err := collectValidateTargets(args)
+	if err != nil {
+		return err
+	}
+
 	var failed bool
 
-	for _, path := range args {
+	for _, target := range targets {
+		path := target.path
+
+		if target.isTest {
+			diagnostics := validateTestFile(path)
+			if len(diagnostics) == 0 {
+				fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(path), theme.Success.Render("ok"))
+				continue
+			}
+			failed = true
+			for _, d := range diagnostics {
+				fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(path), d.Message)
+			}
+			continue
+		}
+
 		diagnostics, err := flowfile.ValidateSourceFile(path)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
 				// A file that cannot be read is a fact about the invocation, not
 				// about the workflow.
-				return fmt.Errorf("error reading %s: %w", path, err)
+				return fmt.Errorf("%s: %w", path, err)
 			}
 			// A parse failure already carries its own line and column.
 			failed = true
@@ -1052,14 +1076,26 @@ func runValidate(cmd *cobra.Command, args []string) error {
 func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) error {
 	surface := newSurface(cmd)
 
-	reports := make([]*v1.DiagnosticReport, 0, len(args))
-	for _, path := range args {
+	targets, err := collectValidateTargets(args)
+	if err != nil {
+		return err
+	}
+
+	reports := make([]*v1.DiagnosticReport, 0, len(targets))
+	for _, target := range targets {
+		path := target.path
+
+		if target.isTest {
+			reports = append(reports, validateTestFile(path).Report(path))
+			continue
+		}
+
 		diagnostics, err := flowfile.ValidateSourceFile(path)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
 				if _, statErr := os.Stat(path); statErr != nil {
-					return fmt.Errorf("error reading %s: %w", path, statErr)
+					return fmt.Errorf("%s: %w", path, statErr)
 				}
 				// Not a shape this can position — a document that is not YAML at
 				// all. It is still the file's problem rather than the caller's, so
