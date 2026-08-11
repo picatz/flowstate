@@ -174,37 +174,75 @@ func (p *Positions) Locate(step, field string) (Span, bool) {
 		return p.At(base)
 	}
 
-	// A field is either the name of a task input or the name of a property of the
-	// step, and a Diagnostic does not distinguish them. Both are tried, most
-	// specific first.
-	//
-	// A task input now sits under the task's *name* rather than under a fixed
-	// `task.inputs`, and a Diagnostic does not carry which task the step runs — so
-	// every registered name is tried. Only one of them can be a key of this step,
-	// because a step does exactly one kind of work, so there is no ambiguity to
-	// resolve: at most one candidate exists in the map.
-	candidates := make([]string, 0, len(v1.TaskNames())+3)
-	for _, task := range v1.TaskNames() {
-		candidates = append(candidates, base+"."+task+"."+field)
-	}
-	candidates = append(candidates, base+"."+field, base+".for_each."+field)
-
-	// A `wait_for_signal:` mapping's own fields — its `timeout:` expression and
-	// each `outputs.<name>` shaping entry — are recorded under the key the author
-	// wrote them in, one level below the step, exactly as a loop's are under
-	// `for_each`. Without this candidate a diagnostic about one of them fell back
-	// to the whole step, so the squiggle sat on `- id:` while the expression at
-	// fault was lines away (#318). A step does one kind of work, so at most one of
-	// these candidates can exist in the map and adding this one cannot make the
-	// search ambiguous.
-	candidates = append(candidates, base+".wait_for_signal."+field)
-
-	for _, candidate := range candidates {
+	for _, candidate := range fieldCandidates(base, field) {
 		if span, ok := p.At(candidate); ok {
 			return span, true
 		}
 	}
 	return p.At(base)
+}
+
+// fieldCandidates returns every path a step's named field could have been
+// recorded under, most specific first.
+//
+// A field is either the name of a task input or the name of a property of the
+// step, and a Diagnostic does not distinguish them. Both are tried.
+//
+// A task input sits under the task's *name* rather than under a fixed
+// `task.inputs`, and a Diagnostic does not carry which task the step runs, so
+// every registered name is tried. Only one of them can be a key of this step,
+// because a step does exactly one kind of work, so there is no ambiguity to
+// resolve: at most one candidate exists in the map.
+//
+// A `wait_for_signal:` mapping's own fields (its `timeout:` expression and each
+// `outputs.<name>` shaping entry) are recorded under the key the author wrote
+// them in, one level below the step, exactly as a loop's are under `for_each`.
+// Without that candidate a diagnostic about one of them fell back to the whole
+// step, so the squiggle sat on `- id:` while the expression at fault was lines
+// away (#318). A step does one kind of work, so at most one of these candidates
+// can exist in the map and adding it cannot make the search ambiguous.
+func fieldCandidates(base, field string) []string {
+	candidates := make([]string, 0, len(v1.TaskNames())+3)
+	for _, task := range v1.TaskNames() {
+		candidates = append(candidates, base+"."+task+"."+field)
+	}
+
+	return append(candidates,
+		base+"."+field,
+		base+".for_each."+field,
+		base+".wait_for_signal."+field,
+	)
+}
+
+// locateExpr returns the span of the expression text written at a step's named
+// field, or at a workflow-level path when step is empty.
+//
+// The same candidate search [Positions.Locate] does, against the expression
+// spans rather than the whole-scalar ones, and with no fallback to the step:
+// a step's span is not an expression, and a caller asking where an expression
+// was written is better served by "not known" than by a position pointing at
+// something else. See [Audit], its only caller.
+func (p *Positions) locateExpr(step, field string) (Span, bool) {
+	if p == nil {
+		return Span{}, false
+	}
+
+	if step == "" {
+		return p.ExprAt(field)
+	}
+
+	base, ok := p.StepPath(step)
+	if !ok {
+		return Span{}, false
+	}
+
+	for _, candidate := range fieldCandidates(base, field) {
+		if span, ok := p.ExprAt(candidate); ok {
+			return span, true
+		}
+	}
+
+	return Span{}, false
 }
 
 // LocateKind returns the span of a step's kind key — the token naming the work
