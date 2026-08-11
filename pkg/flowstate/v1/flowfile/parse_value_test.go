@@ -161,7 +161,7 @@ steps:
 // what the workflow evaluates is written to durable history.
 //
 // The same refusal `vars:` gets, for the same reason, and this is the position
-// that would quietly reopen it — a value is the newest expression position in the
+// that would quietly reopen it: a value is the newest expression position in the
 // language and the one most obviously shaped like a place to put a token.
 func TestValueRefusesASecretReference(t *testing.T) {
 	t.Parallel()

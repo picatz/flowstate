@@ -5,7 +5,7 @@ import (
 )
 
 // ValueCases are the shared cases that hold both drivers to one behaviour for
-// `value:` — a step that names what an expression computes.
+// `value:`, a step that names what an expression computes.
 //
 // Run by both the local driver ([flowstatev1] eval_test.go) and the durable
 // driver (engine workflow_test.go), which is what makes "the value is the same,
@@ -23,7 +23,7 @@ import (
 //     break if a driver stored the scalar as the step itself.
 //   - A value is skipped and then referenced. `if:` composes on this kind as it
 //     does on every other, so a skipped value produces no outputs and a later
-//     reference to it does not resolve — the honest outcome, and a run failure
+//     reference to it does not resolve, which is the honest outcome, and a run failure
 //     rather than a value quietly read as empty on one driver and not the other.
 //   - A value is read into the run's declared `outputs:`. That is the position
 //     evaluated after the last step, once there is nothing left to retry, and it
@@ -32,9 +32,16 @@ func ValueCases() []Case {
 	return []Case{
 		{
 			// The plain read. `over` computes a boolean from the run's inputs
-			// alone — no step involved, which is one of the two shapes no wait's
-			// `outputs:` shaping could name — and two later steps observe it
-			// through the pair `pins` builds.
+			// alone, with no step involved, which is one of the two shapes no
+			// wait's `outputs:` shaping could name, and two later steps observe
+			// it through the pair `pins` builds.
+			//
+			// The claim spells `steps.over.value` out rather than building it
+			// from [v1.ValueOutput], and that is the point of writing it twice:
+			// the constant is what keeps the two drivers agreeing, and only a
+			// literal can pin what the constant has to *be*. Renaming it would
+			// leave every reference built from it agreeing with itself and this
+			// case failing, which is the right way round.
 			Name: "a value is recorded under its own name and read back",
 			Workflow: declares("value-read",
 				[]*v1.InputDeclaration{
@@ -47,7 +54,7 @@ func ValueCases() []Case {
 						Id:   "over",
 						Kind: &v1.Node_Value{Value: v1.NewExpr("inputs.amount >= inputs.threshold")},
 					},
-				}, pins("show", "steps.over."+v1.ValueOutput)...)...,
+				}, pins("show", "steps.over.value")...)...,
 			),
 			Inputs: map[string]*v1.Value{
 				"amount":    v1.NewLiteral(int64(500)),
@@ -148,7 +155,7 @@ func ValueCases() []Case {
 //
 // [held] says "this step ran and produced nothing", which is every `log:` step a
 // shared case observes through. A value step produces something, so it needs the
-// entry written out — and writing it out is the assertion that matters here,
+// entry written out, and writing it out is the assertion that matters here,
 // since the name the result is stored under is the half of this feature every
 // tool downstream depends on.
 func withStep(outputs *v1.Workflow_StepOutputs, id string, values map[string]*v1.Value) *v1.Workflow_StepOutputs {
