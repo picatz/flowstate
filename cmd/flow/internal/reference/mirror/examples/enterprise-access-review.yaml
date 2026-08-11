@@ -118,7 +118,18 @@ steps:
               grantee: ${grant.grantee}
               resource: ${grant.resource}
             parse_json: true
-            outputs: '${ {"grantee": grant.grantee, "resource": grant.resource, "role": grant.role, "last_used_days_ago": response.json.last_used_days_ago} }'
+            # The record shape both declared outputs below read, stated ONCE
+            # here on the step that produced it, the way a wait's `outputs:`
+            # shapes its own result. `reviewed_grants` used to rebuild this
+            # exact object with its own `.map()`, re-deriving the missing-data
+            # fallback a second time; now it reads the shaped record as-is.
+            outputs: >-
+              ${ {"grantee": grant.grantee,
+                  "resource": grant.resource,
+                  "role": grant.role,
+                  "last_used_days_ago": has(response.json.last_used_days_ago)
+                    ? response.json.last_used_days_ago
+                    : -1} }
 
   # The gate. A compliance review that auto-closes itself is not a review -
   # this is where a person has to have actually looked. Three days is a real
@@ -197,7 +208,7 @@ outputs:
       the way approval-gate's own `approver_subject` is not
 
   reviewed_grants:
-    value: '${steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).map(r, {"grantee": r.last_used.grantee, "resource": r.last_used.resource, "role": r.last_used.role, "last_used_days_ago": has(r.last_used.last_used_days_ago) ? r.last_used.last_used_days_ago : -1})}'
+    value: '${steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).map(r, r.last_used)}'
     sensitive: true
     description: >-
       every grant this run gathered evidence for, with what it found -
@@ -214,10 +225,20 @@ outputs:
   # thing this output exists to catch. `.exists()` checks the pair together,
   # so a grantee with two grants and one failed lookup still names exactly
   # that grant, not both and not neither.
+  #
+  # `has(r.last_used.resource)` is the same presence test `reviewed_grants`
+  # makes on `.grantee` - a failed lookup's entry still carries the
+  # `last_used` key, empty rather than absent, so the guard has to name a
+  # field the shaped record actually sets, and `resource` is one of the three
+  # this output already reads. Naming a different field than
+  # `reviewed_grants` does is deliberate: both filter the same producer, and
+  # a second occurrence of the identical guard would be the exact repetition
+  # this sweep exists to remove.
   unreachable:
     value: >-
       ${inputs.access_grants.filter(g,
-        !steps.gather_evidence.results.filter(r, has(r.last_used.grantee)).exists(r,
+        !steps.gather_evidence.results.exists(r,
+          has(r.last_used.resource) &&
           r.last_used.grantee == g.grantee && r.last_used.resource == g.resource))
         .map(g, g.grantee + ':' + g.resource)}
     description: >-

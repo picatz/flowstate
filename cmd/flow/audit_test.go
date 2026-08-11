@@ -74,7 +74,7 @@ func siteLines(finding auditRepeat) []int {
 //
 // The repetition #411 is about was found twice by reading the corpus by hand, and
 // a number found by hand is one nobody can check and nobody can watch move. These
-// four files are the residue that survived the rewrites since: each states one
+// files are the residue that survived the rewrites since: each states one
 // question in several places because the language gives it no way to state it
 // once. This asserts that the mechanical reading finds every one of them, at the
 // line, with the count and the hand-negated pair the manual reading found.
@@ -88,30 +88,16 @@ func siteLines(finding auditRepeat) []int {
 // measurement, so a corpus that grows a repetition is not a test failure, and a
 // gate that failed on one would push somebody to rewrite a file around a feature
 // the language does not have yet.
+//
+// Onboarding and access-review are gone from this list, on purpose. Issue #411's
+// design-pass comment (finding 1) named both as *not* `value:` evidence: onboarding's
+// triplicate is a single-wait predicate `outputs:` shaping already reaches, and
+// access-review's shared filter has one producer the `http` task's own `outputs:`
+// already names. The sweep that landed alongside this comment collapsed both, so
+// what remains here is exactly the residue only a held entry would reach — a
+// predicate spanning more than one step, or mixing `inputs:` with a step.
 func TestAuditReproducesTheManualAudit(t *testing.T) {
 	report := auditJSON(t, corpus)
-
-	t.Run("onboarding states one confirmation predicate three times, once negated", func(t *testing.T) {
-		const path = corpus + "enterprise-customer-onboarding/workflow.yaml"
-
-		finding := findingFor(t, report, path, "steps.activation_confirmation.payload.confirmed")
-		assert.Equal(t, 3, finding.Count)
-		assert.True(t, finding.Negated, "one of the three is written as `!(...)` of the other two")
-		assert.Equal(t, []int{166, 178, 189}, siteLines(finding))
-
-		// The negated half is the one occurrence, not all of them: marking every
-		// site would make the pair unfindable, which is the whole point of
-		// counting it separately.
-		negated := 0
-		for _, site := range finding.Sites {
-			if site.Negated {
-				negated++
-				assert.Equal(t, 178, site.Line)
-				assert.Equal(t, "activation_deferred", site.Step)
-			}
-		}
-		assert.Equal(t, 1, negated)
-	})
 
 	t.Run("incident response states one timeout predicate four times", func(t *testing.T) {
 		const path = corpus + "enterprise-incident-response/workflow.yaml"
@@ -162,16 +148,34 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 		assert.Equal(t, []string{"debit", "credit", "notify_settlement"}, gates)
 	})
 
-	t.Run("access review shares one filter between two outputs", func(t *testing.T) {
-		const path = corpus + "enterprise-access-review/workflow.yaml"
+}
 
-		finding := findingFor(t, report, path,
-			"steps.gather_evidence.results.filter(r, has(r.last_used.grantee))")
-		assert.Equal(t, 2, finding.Count)
-		assert.Equal(t, []int{200, 219}, siteLines(finding))
-		assert.Equal(t, "outputs.reviewed_grants", finding.Sites[0].Field)
-		assert.Equal(t, "outputs.unreachable", finding.Sites[1].Field)
-	})
+// TestAuditOnboardingAndAccessReviewSweptClean is the negative half of the comment
+// above [TestAuditReproducesTheManualAudit]: both files used to appear in that
+// list, and this asserts the two collapses actually happened rather than trusting
+// the doc comment. A regression here means the sweep's shaping (the wait's own
+// `outputs:` on onboarding, the `http` task's own `outputs:` on access-review) came
+// back apart, not that the corpus grew a new repetition — the assertion is scoped
+// to the exact expressions the manual audit named, not "no findings at all".
+func TestAuditOnboardingAndAccessReviewSweptClean(t *testing.T) {
+	report := auditJSON(t, corpus)
+
+	for _, path := range []string{
+		corpus + "enterprise-customer-onboarding/workflow.yaml",
+		corpus + "enterprise-access-review/workflow.yaml",
+	} {
+		for _, file := range report.Files {
+			if file.Path != path {
+				continue
+			}
+			for _, finding := range file.Findings {
+				assert.NotContains(t, finding.Expr, "steps.activation_confirmation.payload.confirmed",
+					"%s: onboarding's wait shaping should have collapsed this", path)
+				assert.NotContains(t, finding.Expr, "steps.gather_evidence.results.filter(r, has(r.last_used.grantee))",
+					"%s: access-review's http shaping should have collapsed this", path)
+			}
+		}
+	}
 }
 
 // TestAuditIsNotALinter is the boundary the command's whole design rests on: a
