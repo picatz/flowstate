@@ -396,6 +396,84 @@ func UndoCases(base string) []UndoCase {
 			Recorded:        []string{"kaboom", "right", "undo-right"},
 			UnorderedPrefix: 2,
 		},
+		{
+			// #418's slice 0.5, pinned: `undo:` unwinds in reverse *written*
+			// order, never reverse completion order. The first branch holds two
+			// chained steps and the second holds one, so on the durable driver
+			// the second branch completes — and registers into its private log —
+			// while the first is still mid-flight: the branches finish in
+			// reverse of the order they are written. If completion order could
+			// reach the unwind, "quick" would come off last; the written-order
+			// rule says it comes off first, because its branch is written last.
+			// The compensations after the prefix are order-exact, which is the
+			// whole claim.
+			Name: "parallel siblings unwind in reverse written order not completion order",
+			Workflow: &v1.Workflow{Name: "undo-parallel-written-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{
+						undoing(records("slow_a", base, "a1"), base, "/do/undo"),
+						undoing(records("slow_b", base, "a2"), base, "/do/undo"),
+					}},
+					{Steps: []*v1.Node{undoing(records("quick", base, "c"), base, "/do/undo")}},
+				}}}},
+				fails("boom", base, "boom"),
+			}},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "quick", undid "slow_b", ` +
+				`undid "slow_a"`,
+			Recorded:        []string{"a1", "a2", "c", "boom", "undo-c", "undo-a2", "undo-a1"},
+			UnorderedPrefix: 3,
+		},
+		{
+			// The membership half of the same rule. Written order decides where
+			// a registration sits in the unwind; it never invents one for a
+			// sibling that failed — registration still happens only at a step's
+			// completion, so the failing branch's `undo:` stays absent while
+			// the completed sibling's runs. Without this, reverse-written order
+			// could be misread as a walk over the file.
+			Name: "a failed parallel sibling registers no compensation",
+			Workflow: &v1.Workflow{Name: "undo-parallel-failed-sibling", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{func() *v1.Node {
+						node := fails("kaboom", base, "kaboom")
+						node.Undo = &v1.Compensation{Task: &v1.Task{
+							Name:   "http",
+							Inputs: map[string]*v1.Value{"url": v1.NewLiteral(base + "/do/undo-kaboom")},
+						}}
+
+						return node
+					}()}},
+					{Steps: []*v1.Node{undoing(records("right", base, "right"), base, "/do/undo")}},
+				}}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "right"`,
+			Recorded:        []string{"kaboom", "right", "undo-right"},
+			UnorderedPrefix: 2,
+		},
+		{
+			// Sequential steps and a parallel block unwind as one written
+			// order: the step after the block comes off first, then the
+			// block's branches in reverse written order, then the step before
+			// it. The prefix covers only the block's two concurrent requests
+			// plus the sequential step before them for the leading-window
+			// mechanics; everything after — including every compensation — is
+			// order-exact.
+			Name: "sequential and parallel steps unwind as one reverse written order",
+			Workflow: &v1.Workflow{Name: "undo-mixed-written-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				undoing(records("before", base, "s"), base, "/do/undo"),
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{undoing(records("left", base, "l"), base, "/do/undo")}},
+					{Steps: []*v1.Node{undoing(records("right", base, "r"), base, "/do/undo")}},
+				}}}},
+				undoing(records("after", base, "t"), base, "/do/undo"),
+				fails("boom", base, "boom"),
+			}},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "after", undid "right", ` +
+				`undid "left", undid "before"`,
+			Recorded:        []string{"s", "l", "r", "t", "boom", "undo-t", "undo-r", "undo-l", "undo-s"},
+			UnorderedPrefix: 3,
+		},
 	}
 }
 
