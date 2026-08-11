@@ -439,10 +439,12 @@ func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string
 	for _, e := range issues.Errors() {
 		rng := whole
 		// cel-go's column is zero-based here and one-based where the same error is
-		// rendered as text, which is the form the translation reads.
-		column := 0
+		// rendered as text, which is the form the translation reads. The line is
+		// one-based on both sides, and is needed too: a block scalar's expression
+		// spans several lines and the column is relative to its own.
+		line, column := 0, 0
 		if e.Location != nil {
-			column = e.Location.Column() + 1
+			line, column = e.Location.Line(), e.Location.Column()+1
 		}
 		if e.Location != nil {
 			// CEL's line and column address the expression source, so they are
@@ -469,7 +471,7 @@ func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string
 			// for a stronger reason: this one lands in an editor's problems pane
 			// while the author is still typing, which is the last place a lexer
 			// rule name belongs (#383).
-			Message: flowfile.TranslateCELMessage(e.Message, src, column),
+			Message: flowfile.TranslateCELMessage(e.Message, src, line, column),
 		})
 	}
 	return true

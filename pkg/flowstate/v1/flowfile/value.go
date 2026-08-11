@@ -543,8 +543,10 @@ func celFailure(err error, span Span, src string) (Span, string) {
 	column, _ := strconv.Atoi(match[2])
 
 	// Translated before the position is applied, because the translation reads
-	// the column as an offset into src, which is what cel-go reported it as.
-	msg = TranslateCELMessage(msg, src, column)
+	// the line and column as cel-go reported them: a position within src, whose
+	// column is relative to its own line. The narrowing below is a separate
+	// question and only answers it for a single-line expression.
+	msg = TranslateCELMessage(msg, src, line, column)
 
 	if !span.IsValid() || line != 1 || column < 1 {
 		return span, msg

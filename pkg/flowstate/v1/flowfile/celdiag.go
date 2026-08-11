@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // A CEL expression is parsed by cel-go, which is parsed by ANTLR, and ANTLR
@@ -68,15 +69,19 @@ const celEOF = "<EOF>"
 // src is the expression's own source text, used only to name the token an
 // author's eye is already on when the parser ran out of input: "the expression
 // ends" is true but does not say where to type, and "ends after +" does.
-// column is cel-go's 1-based column within src, or zero when it is not known.
-func TranslateCELMessage(msg, src string, column int) string {
+//
+// line and column are cel-go's 1-based position within src, or zero when it is
+// not known. Both are needed, not just the column: an expression may be several
+// lines (a block scalar is the common case), and cel-go's column is relative to
+// its line rather than to the start of the source.
+func TranslateCELMessage(msg, src string, line, column int) string {
 	rest, ok := strings.CutPrefix(msg, celSyntaxPrefix)
 	if !ok {
 		return msg
 	}
 
 	if m := celMismatched.FindStringSubmatch(rest); m != nil {
-		return celMismatchedMessage(m[1], m[2], src, column)
+		return celMismatchedMessage(m[1], m[2], src, line, column)
 	}
 	if m := celNoAlternative.FindStringSubmatch(rest); m != nil {
 		return fmt.Sprintf("%q is not valid here", m[1])
@@ -96,7 +101,7 @@ func TranslateCELMessage(msg, src string, column int) string {
 
 // celMismatchedMessage explains a token the parser did not want, or the input
 // ending where it wanted one.
-func celMismatchedMessage(got, expecting, src string, column int) string {
+func celMismatchedMessage(got, expecting, src string, line, column int) string {
 	want := celExpectation(expecting)
 
 	// "expecting <EOF>" is the parser saying the expression was already complete,
@@ -116,7 +121,7 @@ func celMismatchedMessage(got, expecting, src string, column int) string {
 
 	// The input ran out. What an author needs is not "it ended" but where it
 	// ended, and the last thing they typed is the anchor for that.
-	after := celLastToken(src, column)
+	after := celLastToken(src, line, column)
 	switch {
 	case after == "" && want == "":
 		return "the expression ends before it is complete"
@@ -149,11 +154,27 @@ func celUnrecognizedMessage(text string) string {
 //
 // The set is either a single token or a braced list, and its members are either
 // quoted literals ('[', ':') or the names of lexer rules (NUM_FLOAT, STRING,
-// IDENTIFIER). A rule name is exactly the parser's way of saying "a value of
-// this kind", and every rule name the CEL grammar can expect here names a way of
-// starting a value, so a set containing any of them is the set that means "a
-// value". That collapses the twelve-member set an author sees today into the one
-// word it was saying.
+// IDENTIFIER). A rule name is the parser's way of naming a kind of token rather
+// than one spelling of it, which is what makes the set collapsible at all.
+//
+// # Two different sets, and only one of them means "a value"
+//
+// The twelve-member set is the value-start set: it lists the literal rules
+// (NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES) *and* IDENTIFIER, because a name
+// is one of the things a value may start with. Collapsing that to "a value" is
+// right.
+//
+// `expecting IDENTIFIER` on its own is a different position entirely: the name
+// of a field after a dot. Saying "a value was expected" there is not merely
+// vague but wrong, and provably so on the input that found it (#383 follow-up).
+// `steps.foo.true` is refused *because* `true` is a value; answering "a value
+// was expected" tells an author to write the thing they just wrote. What is
+// wanted is a name, so that is what it says.
+//
+// The distinction is therefore which rule names are present, and the whole set
+// has to be read before deciding: IDENTIFIER appears in both, so an early return
+// on the first rule name seen would call the field-name position a value
+// position whenever IDENTIFIER happened to come first.
 //
 // Returns empty when the set says nothing an author can act on, which is what
 // `expecting <EOF>` amounts to: "stop typing" is already carried by naming the
@@ -165,7 +186,11 @@ func celExpectation(set string) string {
 	}
 	set = strings.TrimSuffix(strings.TrimPrefix(set, "{"), "}")
 
-	var literals []string
+	var (
+		literals   []string
+		wantsValue bool
+		wantsName  bool
+	)
 	for _, member := range celSetMembers(set) {
 		if member == "" || member == celEOF {
 			continue
@@ -174,8 +199,20 @@ func celExpectation(set string) string {
 			literals = append(literals, `"`+strings.TrimSuffix(quoted, "'")+`"`)
 			continue
 		}
-		// A lexer rule name, so the whole set is the value-start set.
+		if celIdentifierRules[member] {
+			wantsName = true
+			continue
+		}
+		// Every other lexer rule the CEL grammar can expect here names a way of
+		// starting a literal value.
+		wantsValue = true
+	}
+
+	switch {
+	case wantsValue:
 		return "a value"
+	case wantsName:
+		return "a name"
 	}
 
 	switch len(literals) {
@@ -186,6 +223,19 @@ func celExpectation(set string) string {
 	default:
 		return strings.Join(literals[:len(literals)-1], ", ") + " or " + literals[len(literals)-1]
 	}
+}
+
+// celIdentifierRules are the lexer rules that name an identifier rather than a
+// literal value.
+//
+// Taken from cel-go's generated lexer (`parser/gen/cel_lexer.go`), which is the
+// only place the set is written down. Both spellings are listed because the
+// grammar has carried an escaped form since quoted field names arrived, and a
+// set holding only the escaped one is the same field-name position as a set
+// holding only the plain one.
+var celIdentifierRules = map[string]bool{
+	"IDENTIFIER":     true,
+	"ESC_IDENTIFIER": true,
 }
 
 // celSetMembers splits an expecting-set into its members.
@@ -224,16 +274,16 @@ func celSetMembers(set string) []string {
 	return members
 }
 
-// celLastToken names the last thing written before column, so a diagnostic about
-// input that ran out can point at where to keep typing.
+// celLastToken names the last thing written before a position, so a diagnostic
+// about input that ran out can point at where to keep typing.
 //
 // Deliberately crude: it takes the trailing run of non-space characters rather
 // than lexing, because the answer is being quoted into a sentence for a human to
 // recognise and not fed to anything. Lexing here would be a second CEL lexer to
 // keep in step with the first, for no gain over the text the author can see.
-func celLastToken(src string, column int) string {
-	if column > 0 && column-1 <= len(src) {
-		src = src[:column-1]
+func celLastToken(src string, line, column int) string {
+	if off := celOffset(src, line, column); off >= 0 {
+		src = src[:off]
 	}
 	src = strings.TrimRight(src, " \t\n\r")
 	if src == "" {
@@ -243,4 +293,48 @@ func celLastToken(src string, column int) string {
 		return src[i+1:]
 	}
 	return src
+}
+
+// celOffset converts cel-go's line and column into a byte offset in src, or -1
+// when they do not address a position in it.
+//
+// cel-go reports a column *within its line*, and an expression is not always one
+// line: a block scalar carries several, so `if: |-` with a trailing operator on
+// line two reports column 14 of that line. Applying that as an offset from the
+// start of the whole source lands in the middle of line one, and the diagnostic
+// then names a token the author is not looking at, from a line where nothing is
+// wrong. The line has to be walked to first (#383 follow-up).
+//
+// Columns count characters rather than bytes, so the walk within the line
+// advances by runes: a byte count would slice a multi-byte character in half and
+// quote a fragment of one into the message.
+func celOffset(src string, line, column int) int {
+	if line < 1 || column < 1 {
+		return -1
+	}
+
+	off := 0
+	for l := 1; l < line; l++ {
+		next := strings.IndexByte(src[off:], '\n')
+		if next < 0 {
+			// Fewer lines than the position names, so there is nothing to point at.
+			return -1
+		}
+		off += next + 1
+	}
+
+	rest := src[off:]
+	if end := strings.IndexByte(rest, '\n'); end >= 0 {
+		rest = rest[:end]
+	}
+	for i := 1; i < column && rest != ""; i++ {
+		_, size := utf8.DecodeRuneInString(rest)
+		rest = rest[size:]
+		off += size
+	}
+
+	// A column past the end of its line stops at the end of that line, which is
+	// exactly where an unfinished expression reports: one past the last character
+	// written.
+	return off
 }
