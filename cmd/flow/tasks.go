@@ -76,7 +76,7 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	// every consumer do the selecting the argument already did.
 	if format.Machine() {
 		if len(args) == 0 {
-			return writeJSON(surface, FormatJSON, v1.Catalog())
+			return writeJSON(surface, format, v1.Catalog())
 		}
 
 		def, err := lookupTaskArg(args[0])
@@ -84,7 +84,7 @@ func runTasks(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		return writeJSON(surface, FormatJSON, v1.DescribeTask(def))
+		return writeJSON(surface, format, v1.DescribeTask(def))
 	}
 
 	switch {
