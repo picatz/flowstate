@@ -340,6 +340,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow run local <file>` | Run a workflow in this process, no server and no Temporal. Same `--input`/`--input-file`, and answers signal gates from `--signal name=json`. |
 | `flow test [path...]` | Run a workflow's own `*.test.yaml` files: stubbed task responses, scripted signals, and a virtual clock, entirely through the local driver, so a `sleep: 24h` resolves in well under a second. `--output json` or `jsonl` reports what ran as data. |
 | `flow breaking <path...>` | Report workflows whose declared inputs or outputs broke their contract against a git ref. `--against origin/main` compiles both sides and compares the compiled protos, so a shrunk interface fails while formatting churn does not. |
+| `flow audit <path...>` | Count the expressions a Flowfile states more than once, hand-negated pairs marked, every occurrence placed at a line. Written for whoever decides what the language grows rather than for the file's author: it is the evidence the held-entry proposal (`value:`, #411) waits on, not a linter, and it exits 0 on every finding. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. |
 | `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. |
 | `flow list` | List your runs. `--filter` narrows with CEL, e.g. `--filter 'status == "FAILED"'`; `--all` keeps paging past a short page. |

@@ -1870,6 +1870,16 @@ flow lsp --plugin-dir ./plugins`,
 	breakingCmd.GroupID = "workflow"
 	rootCmd.AddCommand(breakingCmd)
 
+	// Beside the other three that read a Flowfile without running one, because
+	// that is the walk it shares with them, and nowhere near them in what it
+	// says: `validate`, `test` and `breaking` each tell an author something is
+	// wrong with a file, and this one tells a language designer what the language
+	// costs the author (#411). See [newAuditCommand] for why that distinction is
+	// worth being careful about.
+	auditCmd := newAuditCommand()
+	auditCmd.GroupID = "workflow"
+	rootCmd.AddCommand(auditCmd)
+
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(pluginsCmd)

@@ -44,6 +44,41 @@ flow lsp
 | `--no-color` | `bool` | `false` | — | disable colour on every stream, the same way NO_COLOR does; it is the most explicit ask, so it wins over CLICOLOR_FORCE and the terminal's own capabilities |
 | `-v, --verbose` | `bool` | `false` | — | enable verbose logging |
 
+## `flow audit`
+
+Measure how often Flowfiles repeat an expression they cannot name
+
+```
+flow audit [path...] [flags]
+```
+
+Walk Flowfiles and count the expressions each one states more than once, with every occurrence placed at a line. A repetition where one occurrence is the hand-written negation of the others is marked separately, because that pair is the one a De Morgan slip corrupts silently.
+
+The audience is whoever decides what the language grows, not the author of the file. This is the evidence the held-entry proposal waits on (`value:`, issue #411): what a corpus would collapse if a workflow could name a value and read it back. It is not a linter, it has no warning tier, and it exits 0 on every finding it reports. A nonzero exit means something went wrong reading a file, never that a file repeats itself.
+
+What it reports is a property of the file and nothing else. No deployment is consulted, no policy is read, and nothing resolves over a network.
+
+Repetition is counted within one file, over expressions compared structurally: same shape, same names, same literals, whatever the spacing. Two expressions that mean the same thing while spelling a bound name differently are counted apart. Bare literals and bare names are never reported, because a corpus repeating `true` or `item` is a language working rather than a language charging for something; only computations are counted, and a sub-expression that occurs exactly as often as an expression containing it is dropped in favour of the larger one.
+
+A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `test` use. A file that does not compile is counted out rather than measured, and named in the machine format, since `validate` is the verb that has something to say about it.
+
+Examples:
+
+```sh
+# Read the whole corpus:
+flow audit examples/
+
+# One workflow:
+flow audit examples/enterprise-fund-transfer/workflow.yaml
+
+# The counts a CI job would track over time, without gating on them:
+flow audit -o json examples/ | jq '.totals'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+
 ## `flow breaking`
 
 Report workflows whose declared inputs or outputs broke a contract
