@@ -293,3 +293,30 @@ func TestLooksLikeFlowfileTest(t *testing.T) {
 		})
 	}
 }
+
+// TestMergeRefusalsKeepsLaterRoundDiscoveries pins the union finish applies:
+// a refusal only a later round made must survive into the report rather than
+// be replaced by the first pass's shorter list, and a refusal both passes made
+// must appear once, at the first pass's position. No rewrite today produces a
+// refusable shape from a clean one, so this exercises the merge directly; the
+// guard exists so a rewrite added tomorrow cannot silently shorten the report.
+func TestMergeRefusalsKeepsLaterRoundDiscoveries(t *testing.T) {
+	t.Parallel()
+
+	first := []flowfile.Diagnostic{{Line: 4, Message: "`echo:` is retired and this step has no id"}}
+	later := []flowfile.Diagnostic{
+		{Line: 9, Message: "`echo:` is retired and this step has no id"},
+		{Line: 12, Message: "`cel:` is retired and its value is not a plain mapping"},
+	}
+
+	merged := flowfile.MergeRefusalsForTest(first, later)
+	if len(merged) != 2 {
+		t.Fatalf("expected the shared refusal once and the later discovery kept, got %d: %+v", len(merged), merged)
+	}
+	if merged[0].Line != 4 {
+		t.Errorf("the shared refusal lost the first pass's position: %+v", merged[0])
+	}
+	if merged[1].Line != 12 {
+		t.Errorf("the later-round discovery was dropped: %+v", merged)
+	}
+}
