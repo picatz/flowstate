@@ -1,0 +1,42 @@
+# What is worth pinning about a matrix is the *set* it expands to, not that it
+# ran. `ran: [build, report]` is satisfied by a cross-product with the wrong
+# arity, by a filter that removed nothing, and by one that removed too much, so
+# every combination is stubbed by name and the excluded one is asserted absent.
+#
+# The `where:` on each stub is the assertion. A message no stub matches fails the
+# run, so five stubs matching five messages is "exactly these five targets, and
+# nothing else": an exclusion that stopped working produces a sixth message
+# (windows/arm64) that no stub here answers, and the case fails on it rather than
+# passing with an extra build nobody noticed.
+edition: v2026.2
+tests:
+  - name: the two axes expand to every combination except the excluded one
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'building linux/amd64'
+        returns: {}
+      - task: log
+        where: inputs.message == 'building linux/arm64'
+        returns: {}
+      - task: log
+        where: inputs.message == 'building darwin/amd64'
+        returns: {}
+      - task: log
+        where: inputs.message == 'building darwin/arm64'
+        returns: {}
+      - task: log
+        where: inputs.message == 'building windows/amd64'
+        returns: {}
+      # Read outside the block: five iterations, one per surviving combination.
+      - task: log
+        where: inputs.message == 'built 5 target(s)'
+        returns: {}
+    expect:
+      ran: [build, report]
+      outputs:
+        # Five of six: the count follows the loop's own `results`, so a filter
+        # that stopped filtering shows up here as 6 rather than as a message
+        # nobody asserted.
+        targets_built: 5
+        summary: built 5 of 6 combinations

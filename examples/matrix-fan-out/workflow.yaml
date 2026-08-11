@@ -1,0 +1,78 @@
+# The matrix: a `for_each` over a cross-product, computed in `items:` rather than
+# written out.
+#
+# Two axes are declared as lists, combined into every pair, and one pair that does
+# not exist is removed. The loop then iterates the combinations, not the axes,
+# which is what makes the file say "build every supported target" once instead of
+# naming the targets one at a time and going stale when an axis grows.
+#
+#   os   x arch  = 6 pairs
+#   minus windows/arm64, which nothing here ships
+#   = 5 targets
+#
+# The shape is worth being careful with, because it is the one shape whose size is
+# a *product*. Adding a third axis of four values turns 5 targets into 20 without
+# anything in the file getting longer, which is why a `for_each` carries a ceiling
+# on how many items it may iterate at all (`v1.MaxForEachItems`). A matrix that
+# multiplied past it is refused before a single iteration runs, naming the step,
+# the count it computed and the ceiling, rather than fanning out and discovering
+# the problem somewhere in the middle.
+#
+#   flow run local examples/matrix-fan-out/workflow.yaml
+#   flow run local examples/matrix-fan-out/workflow.yaml -o json | jq .runOutputs
+edition: v2026.2
+name: matrix-fan-out
+
+vars:
+  # The axes. Each is an ordinary list, so an axis grows by editing one line.
+  os: ${['linux', 'darwin', 'windows']}
+  arch: ${['amd64', 'arm64']}
+
+  # The combinations that are not built. Kept beside the axes rather than buried
+  # in the filter below, so the exclusions read as a list of decisions with a
+  # place to put a comment.
+  #
+  # windows/arm64: no runner for it yet.
+  excluded: ${['windows/arm64']}
+
+outputs:
+  # Counting the loop's own `results` rather than re-deriving the product here:
+  # this is how many targets were actually built, which is the number worth
+  # promising a caller.
+  targets_built:
+    value: ${size(steps.build.results)}
+    description: how many matrix targets this run built
+
+  summary:
+    value: ${"built %d of %d combinations".format([size(steps.build.results), size(vars.os) * size(vars.arch)])}
+    description: what the run did, in one sentence
+
+steps:
+  # `items:` is the whole matrix idiom, in one expression:
+  #
+  #   map over the first axis, and for each value map over the second, which gives
+  #   a list of lists of pairs; flatten it into one list of pairs; then drop the
+  #   pairs that are excluded.
+  #
+  # The `where:`-style filter is the last step rather than a separate one, because
+  # an excluded combination is not a target that gets skipped, it is a target that
+  # does not exist: an `if:` inside the body would still count it as an iteration
+  # and still record an entry in `results`.
+  - id: build
+    for_each:
+      items: "${vars.os.map(o, vars.arch.map(a, {'os': o, 'arch': a})).flatten().filter(t, !(t.os + '/' + t.arch in vars.excluded))}"
+      as: target
+      # Concurrency is bounded separately from the trip count, and the two answer
+      # different questions: this one is how many run at once, the ceiling is how
+      # many run at all.
+      max_parallel: 2
+      steps:
+        - id: compile
+          log:
+            message: ${"building %s/%s".format([target.os, target.arch])}
+
+  # `results` outlives the block, so the count is readable from here. Five, not
+  # six: the excluded combination never became an item.
+  - id: report
+    log:
+      message: ${"built %d target(s)".format([size(steps.build.results)])}

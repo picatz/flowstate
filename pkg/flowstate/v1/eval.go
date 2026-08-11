@@ -1351,6 +1351,15 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		return nil, err
 	}
 
+	// The trip-count ceiling, applied at the one moment the length of the
+	// resolved list is known and before any iteration has run. The durable
+	// driver checks at exactly this point through the same
+	// [CheckForEachItems], so a fan-out this rehearsal refuses is one
+	// production refuses too, which is the whole reason a local run exists.
+	if err := CheckForEachItems(items); err != nil {
+		return nil, err
+	}
+
 	name := IteratorName(loop)
 	iterations := make([]*Workflow_StepOutputs, 0, len(items))
 	resultsBytes := 0

@@ -790,6 +790,22 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	if loop.GetItems() == nil {
 		ds = append(ds, Diagnostic{Step: stepID, Field: "for_each", Message: "items is required"})
 	}
+	// A literal list longer than the trip-count ceiling, refused here where the
+	// author can see it rather than at the first run. This is the static half of
+	// [v1.MaxForEachItems] and deliberately the smaller half: `items:` is
+	// usually an expression, whose length is a property of the run and not of
+	// the file, so the load-bearing check is the runtime one both drivers apply.
+	// What is checked here is only what the file itself decides, which is the
+	// rule that separates a diagnostic this validator may report from one a
+	// deployment answers.
+	if list := loop.GetItems().GetLiteral().GetListValue(); list != nil && len(list.GetValues()) > v1.MaxForEachItems {
+		ds = append(ds, Diagnostic{
+			Step: stepID, Field: "items",
+			Message: fmt.Sprintf(
+				"items is a list of %d entries, over the ceiling of %d items a single for_each may iterate; iterate over fewer items, or page the work across several runs",
+				len(list.GetValues()), v1.MaxForEachItems),
+		})
+	}
 
 	iterator := v1.IteratorName(loop)
 	if !isCELIdentifier(iterator) {
