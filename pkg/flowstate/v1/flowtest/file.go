@@ -572,12 +572,20 @@ type Expectation struct {
 	Compensated []string `yaml:"compensated"`
 
 	// Ran names steps that must have executed — present in the run's step
-	// outputs, whether they succeeded or were tolerated.
+	// outputs, whether they succeeded, were tolerated, or were the step whose
+	// failure ended the run.
+	//
+	// Checked on a failed run too, unlike Outputs above: a run that fails hands
+	// back the partial transcript ([v1.PartialTranscript]), which is a record of
+	// what it did rather than an answer it produced. Before that existed this was
+	// silently skipped whenever the run failed, so a case asserting `failed: true`
+	// could claim anything at all here and be believed (issue #453).
 	Ran []string `yaml:"ran"`
 
 	// Skipped names steps that must not have executed — absent from the run's
 	// step outputs, because their `if:` did not hold or the run never reached
-	// them.
+	// them. Checked on a failed run for the reason Ran is, and a step *after* the
+	// step that failed is one this can now legitimately name.
 	Skipped []string `yaml:"skipped"`
 
 	// Others, when set to "skipped", closes the `ran:` claim: every step the

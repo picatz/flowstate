@@ -44,6 +44,12 @@ tests:
         returns: {}
     expect:
       failed: true
+      # A run that fails still says what it did, so a case like this one can name
+      # the steps it got through — including `attach`, the step the run stopped
+      # on. This used to be unassertable: a failed run handed back no transcript,
+      # so `ran:` was skipped outright here and coverage counted all three of
+      # these steps as never reached (#453).
+      ran: [network, volume, attach]
       # The cause, and then the engine's ordered account of the unwinding in the
       # same string — which is what pins volume-before-network. The volume was
       # created inside the network, so the network cannot go first.

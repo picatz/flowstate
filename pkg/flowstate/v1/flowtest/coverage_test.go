@@ -396,3 +396,85 @@ coverage:
 	require.NotEmpty(t, report.GetRefused(), "an allow_unreached entry with no reason must be refused")
 	assert.Contains(t, report.GetRefused(), "no reason")
 }
+
+// TestCoverageCreditsWhatRanBeforeAnExpectedFailure is issue #453.
+//
+// A case whose whole point is `expect.failed: true` used to contribute its
+// workflow's steps to the coverage universe and reach none of them, because a
+// failed run handed back no transcript at all. An author exercising an error
+// branch therefore had to record every step that branch really ran under
+// `coverage.allow_unreached` — a written reason for something that was not true,
+// which is the state the staleness check exists to prevent elsewhere in this file.
+//
+// Three claims, and the file is built so that no two of them can be satisfied by
+// the same mistake:
+//
+//   - the steps before the failure are credited (`first`, `second`);
+//   - the step the run *stopped on* is credited (`boom`) — the entry a fix that
+//     returns only the accumulated outputs would still be missing, leaving the
+//     suite one step short and the gate still red;
+//   - the step after the failure is not (`after`), and neither is the branch no
+//     case takes (`never`), so the transcript is not being credited wholesale for
+//     the workflow it belongs to. Without this pair the test would pass against a
+//     "failed run reaches everything" implementation, which is a worse answer than
+//     the bug.
+func TestCoverageCreditsWhatRanBeforeAnExpectedFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: fails-partway
+steps:
+  - id: first
+    log:
+      message: ran
+  - id: second
+    log:
+      message: ran
+  - id: never
+    if: ${false}
+    log:
+      message: never taken
+  - id: boom
+    http:
+      url: https://example.com/boom
+  - id: after
+    log:
+      message: unreachable
+`)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: the run fails at boom, after the first two steps ran
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        fails:
+          kind: Upstream
+          message: upstream said no
+    expect:
+      failed: true
+      error_contains: upstream said no
+      # The same transcript coverage reads, asserted through the other surface
+      # that reads it: before #453 both were blind to a failed run, and the fix
+      # is only correct if it keeps them saying the same thing about one run.
+      ran: [first, second, boom]
+      skipped: [never, after]
+`)
+
+	report, coverages := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
+	require.Empty(t, report.GetRefused())
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
+	}
+	require.Len(t, coverages, 1)
+	coverage := coverages[0]
+
+	assert.Equal(t, []string{"boom", "first", "second"}, coverage.Reached,
+		"a failed run must credit what it ran, including the step it failed on")
+	assert.Equal(t, []string{"after", "never"}, coverage.Unreached,
+		"a failed run must not credit steps it never reached")
+	assert.Equal(t, 5, coverage.Total())
+}

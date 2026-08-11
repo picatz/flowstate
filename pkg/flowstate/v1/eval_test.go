@@ -505,6 +505,35 @@ func TestRunWorkflowToleratedStepFailure(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowPartialTranscript is the local half of what a failed run hands
+// back about what it did (issue #453).
+//
+// The local driver is the one `flow test` runs on, so this is the half that
+// decides whether coverage and `expect.ran` can see into a case that failed on
+// purpose. The engine package runs the identical cases against the durable
+// driver, which is the only thing that can say the two agree.
+func TestRunWorkflowPartialTranscript(t *testing.T) {
+	for _, test := range tests.PartialTranscriptCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.Error(t, err, "these cases fail on purpose")
+
+			// Compared whole, not as a subset: a transcript carrying a step the
+			// run never reached is as wrong as one missing a step it did, and it
+			// is the direction that would silently credit coverage for a branch
+			// nothing exercised.
+			require.Empty(t, cmp.Diff(test.Expected, out, protocmp.Transform()))
+
+			// A failed run has no answer, so it carries none. Asserted apart from
+			// the diff above because it is a different claim about the same value:
+			// the diff would also pass if `run_outputs` were compared into an
+			// expectation that happened to be empty for another reason.
+			require.Nil(t, out.GetRunOutputs(),
+				"a run that failed produced no declared outputs")
+		})
+	}
+}
+
 func TestRunWorkflowNestedErrorText(t *testing.T) {
 	for _, test := range tests.NestedErrorTextCases() {
 		t.Run(test.Name, func(t *testing.T) {

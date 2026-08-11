@@ -254,6 +254,9 @@ const defaultMaxStepsPerRun = 200
 func Run(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
 	outputs, err := runWorkflow(ctx, st)
 
+	// Both halves pass through unchanged, including the partial transcript a failed
+	// run carries: Temporal drops the result when the error is non-nil, so this is
+	// the honest shape rather than a value worth suppressing here.
 	return outputs, classifyRunError(err)
 }
 
@@ -433,7 +436,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// succeeded.
 		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
 		if outputsErr != nil {
-			return nil, &ErrRunFailed{Message: outputsErr.Error()}
+			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: outputsErr.Error()}
 		}
 		stepOutputs.RunOutputs = runOutputs
 
@@ -506,7 +509,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// are the part that grew.
 		if err := v1.CheckRunStateSize(next); err != nil {
 			logger.Error("cannot continue as new", "error", err.Error())
-			return nil, &ErrRunFailed{Message: err.Error()}
+			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: err.Error()}
 		}
 
 		logger.Info("continuing as new",
@@ -536,7 +539,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		}, Run, next)
 
 	default:
-		return nil, compensate(ctx, exec, err)
+		// The transcript accompanies the failure, exactly as it does in the local
+		// driver's eval — see [v1.PartialTranscript] for what it is entitled to
+		// contain. Temporal drops a workflow's result when the workflow returns an
+		// error, so this reaches an in-process caller of this function and no client;
+		// what it buys today is that the two drivers hand the same record to the same
+		// question, which is what invariant 3 asks of them. Putting it in front of a
+		// remote client would need a carrier bounded in bytes, since an unbounded
+		// payload on a failure path fails the workflow *task* rather than the run.
+		return v1.PartialTranscript(stepOutputs), compensate(ctx, exec, err)
 	}
 }
 

@@ -190,6 +190,72 @@ func TestLoadEnforcesBounds(t *testing.T) {
 	require.Contains(t, err.Error(), "stubs")
 }
 
+// TestExpectRanIsJudgedAgainstAFailedRunsPartialTranscript is the negative
+// direction of issue #453, and the half a coverage assertion cannot reach.
+//
+// `expect.ran` and `expect.skipped` were skipped outright on a failed run, so a
+// case could claim anything at all about which steps ran and be believed — which
+// is the same blindness coverage had, on the surface an author is likelier to
+// look at. A test that only asserts a *true* claim now passes cannot see that,
+// because a harness which still ignores these on failure also reports no failure.
+// So the claims here are false on purpose, and each must be reported.
+//
+// Both directions are wrong in the same file: `after` never ran and is claimed to
+// have, `first` ran and is claimed to have been skipped. Asserting only the first
+// would pass against a fix that checks `ran:` and forgets `skipped:`.
+func TestExpectRanIsJudgedAgainstAFailedRunsPartialTranscript(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: fails-partway
+steps:
+  - id: first
+    log:
+      message: ran
+  - id: boom
+    http:
+      url: https://example.com/boom
+  - id: after
+    log:
+      message: unreachable
+`)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: the case lies about what ran, and the run failed
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        fails:
+          kind: Upstream
+          message: upstream said no
+    expect:
+      failed: true
+      ran: [after]
+      skipped: [first]
+`)
+
+	report := flowtest.RunFile(dir + "/x.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	result := report.GetCases()[0]
+	require.False(t, result.GetPassed(),
+		"a false ran:/skipped: claim about a failed run must be reported, not skipped")
+
+	fields := map[string]string{}
+	for _, failure := range result.GetFailures() {
+		fields[failure.GetField()] = failure.GetStep()
+	}
+	require.Equal(t, "after", fields["expect.ran"],
+		"the step claimed to have run, and did not, must be named")
+	require.Equal(t, "first", fields["expect.skipped"],
+		"the step claimed to have been skipped, and did not, must be named")
+}
+
 func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o644))

@@ -930,6 +930,15 @@ func Run(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 // [CheckSubmissionSize]. One function, two callers — a local run that accepted an
 // undeclared input would be a rehearsal that says yes to a submission production
 // refuses, which is the direction invariant 3 exists to prevent.
+//
+// # A failed run still hands back what it did
+//
+// When the run fails, the error is accompanied by the *partial transcript* — see
+// [PartialTranscript] for exactly what that contains and what it deliberately does
+// not. A caller that treats a non-nil error as "no outputs" keeps working
+// unchanged, because it never looks; a caller that wants to know what ran before
+// the failure now can. The refusals *above* the run — an undeclared input, a
+// submission past its size — still hand back nothing, because no step ran.
 func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
 	if w == nil || len(w.Steps) == 0 {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
@@ -1030,11 +1039,16 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// The cancellation itself is returned, wrapped: `errors.Is(err,
 		// context.Canceled)` still answers yes, so a caller that distinguishes a
 		// stopped run from a failed one keeps doing so.
+		//
+		// The transcript accompanies the failure — see [PartialTranscript], and
+		// [RunWithInputs] for what a caller may read from it. Built from the same
+		// `scope.Outputs` the successful path returns, so there is one accumulated
+		// record per run rather than a second one assembled for failures.
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			return nil, UndoRunError(err, runUndoOnCancel(ctx, w, undo))
+			return PartialTranscript(stepOutputs), UndoRunError(err, runUndoOnCancel(ctx, w, undo))
 		}
 
-		return nil, UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
+		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
 			return runUndoTask(ctx, w.GetProfile(), entry)
 		}))
 	}
@@ -1045,7 +1059,10 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// workflow code is written down.
 	outputs, err := EvalRunOutputs(ctx, w, scope)
 	if err != nil {
-		return nil, err
+		// A run that cannot produce its declared outputs has not succeeded, and it
+		// gets the same accompanying transcript every other failure gets: every step
+		// did run, which is precisely why the outputs were reachable to evaluate.
+		return PartialTranscript(stepOutputs), err
 	}
 	stepOutputs.RunOutputs = outputs
 
@@ -1103,6 +1120,15 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
 			if !node.GetPolicy().GetContinueOnError() {
+				// Recorded on the way out, under the same key and in the same shape a
+				// tolerated failure is recorded in, so that the [PartialTranscript] the
+				// run hands back names the step it stopped on rather than ending one
+				// step short of the truth. Nothing else can observe it: the run is over,
+				// no later step evaluates against this scope, and the successful path
+				// never reaches this line. The durable driver records at the identical
+				// point, for the identical reason.
+				scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
+
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
 			// Recorded without the `step %q` position the propagating path adds:

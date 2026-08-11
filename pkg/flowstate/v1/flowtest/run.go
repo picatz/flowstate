@@ -139,9 +139,10 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // The spec and transcript it returns beside the case are what branch coverage
 // is computed from ([Coverage]): spec is the workflow this case compiled and
 // ran (nil when it never compiled one), and transcript is the step outputs the
-// run produced (nil when the run failed, which returns none). Both are the same
-// values the verdict itself was reached against, so coverage counts a step
-// reached on exactly the evidence `expect.ran` counts on.
+// run produced — the partial one when the run failed ([v1.PartialTranscript]),
+// nil only when the case never reached a run at all. Both are the same values the
+// verdict itself was reached against, so coverage counts a step reached on
+// exactly the evidence `expect.ran` counts on.
 func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
@@ -285,9 +286,12 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 	close(runFinished)
 
 	// The transcript coverage reads is the same one the verdict does. A failed
-	// run returns none, so a case that failed contributes its workflow's steps
-	// to the universe and reaches nothing, the honest account, since there is
-	// no record of what ran before the failure.
+	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
+	// before it stopped, and the step it stopped on. So a case whose whole point
+	// is `expect.failed: true` credits the branch it actually exercised instead
+	// of contributing its workflow's steps to the universe and reaching none of
+	// them (issue #453) — and `expect.ran`/`expect.skipped` read the same record,
+	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
@@ -616,14 +620,6 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		}
 	}
 
-	// A failed run has no step outputs to compare Ran/Skipped/Outputs against
-	// in the ordinary sense — [v1.RunWithInputs] returns nil on failure — so
-	// those assertions are skipped rather than reported as additional
-	// failures once Failed has already said what needed saying.
-	if failed {
-		return failures
-	}
-
 	for _, step := range want.Ran {
 		if _, ok := outputs.GetStepValues()[step]; !ok {
 			failures = append(failures, &v1.Diagnostic{
@@ -677,6 +673,17 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 				})
 			}
 		}
+	}
+
+	// `outputs:` is the one expectation a failed run still cannot answer. A run's
+	// declared outputs are the answer it was asked for, and [v1.PartialTranscript]
+	// deliberately carries none: a failed run has no answer, so comparing against
+	// an absent one would report every declared output missing on top of the
+	// failure the case already said it wanted. Ran/Skipped/Others above are a
+	// different question — what the run *did* — and the partial transcript is
+	// exactly the record of that.
+	if failed {
+		return failures
 	}
 
 	if want.Outputs != nil {
