@@ -266,3 +266,35 @@ steps:
 	require.NoError(t, err, "a marshalled file did not parse:\n%s", out)
 	require.Equal(t, wf.GetPluginRequirements(), again.GetPluginRequirements())
 }
+
+// TestMarshalRefusesAnUnparseableVersion is the negative direction of the
+// round trip above: Marshal serves hand-built specifications too, and a
+// minimum version the parser rejects (a leading zero, here) must be refused
+// with an error naming the plugin, never written into a document that
+// Parse will then refuse to read back.
+func TestMarshalRefusesAnUnparseableVersion(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: needs-a-plugin
+plugins:
+  git: v0.1.0
+steps:
+- id: a
+  log:
+    message: hi
+`
+
+	wf, _, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err)
+
+	// Corrupt the requirement the way only a hand-built spec can be: the
+	// parser would have refused this spelling at the file boundary.
+	wf.GetPluginRequirements()[0].MinimumVersion = "v01.2.3"
+
+	out, err := flowfile.Marshal(wf)
+	require.Error(t, err, "Marshal wrote a version the parser rejects:\n%s", out)
+	require.ErrorContains(t, err, `plugin "git"`)
+	require.ErrorContains(t, err, "v01.2.3")
+	require.Nil(t, out)
+}

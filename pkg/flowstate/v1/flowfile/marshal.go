@@ -49,7 +49,11 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	// run itself takes: the same position both examples in examples/plugins/ write
 	// it in, directly under the description and before anything the run computes.
 	if requirements := wf.GetPluginRequirements(); len(requirements) > 0 {
-		doc = append(doc, yaml.MapItem{Key: "plugins", Value: pluginRequirementsToYAML(requirements)})
+		plugins, err := pluginRequirementsToYAML(requirements)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "plugins", Value: plugins})
 	}
 
 	// What the run takes, above everything that reads it — the order the parser
@@ -124,12 +128,21 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 // gives: [v1.Workflow.PluginRequirements] is a repeated field, so the order is a
 // fact the document carries rather than an artifact of a protobuf map, and
 // sorting it would make `flow fix` reorder a file an author arranged on purpose.
-func pluginRequirementsToYAML(requirements []*v1.PluginRequirement) yaml.MapSlice {
+//
+// A version [v1.ValidPluginVersion] refuses is refused here too, rather than
+// written: a parsed file cannot carry one (parse.go rejects it with a positioned
+// diagnostic), but Marshal also serves hand-built specifications, and emitting
+// a version the parser will reject produces a document that cannot round-trip.
+// The same rule Marshal already applies to a call with no source path.
+func pluginRequirementsToYAML(requirements []*v1.PluginRequirement) (yaml.MapSlice, error) {
 	out := make(yaml.MapSlice, 0, len(requirements))
 	for _, requirement := range requirements {
+		if !v1.ValidPluginVersion(requirement.GetMinimumVersion()) {
+			return nil, fmt.Errorf("plugin %q: minimum version %q is not a semantic version written as vMAJOR.MINOR.PATCH, so the parser would reject the marshalled file", requirement.GetName(), requirement.GetMinimumVersion())
+		}
 		out = append(out, yaml.MapItem{Key: requirement.GetName(), Value: requirement.GetMinimumVersion()})
 	}
-	return out
+	return out, nil
 }
 
 // stepsToYAML writes a list of steps, recursing through nested control flow so
