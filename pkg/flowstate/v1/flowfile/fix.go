@@ -171,6 +171,30 @@ const maxFixRounds = 8
 // `message: hello`. So an incomplete run reports the first pass instead, over the
 // document the author is still holding, and both its refusals and the edits it
 // found are positions in that file.
+
+// mergeRefusals combines the first pass's refusals with any a later round
+// added. A refusal the first pass already made is the same refusal, said about
+// the file that is staying, so its position wins. One only a later round made
+// names a shape that came out of an edit now not being made; its position is
+// the best there is, and dropping it would hide hand work the author has to
+// discover by fixing the first item and rerunning. No rewrite today produces a
+// refusable shape from a clean one, so the later list adds nothing yet; this
+// exists so a rewrite added tomorrow cannot silently shorten the report.
+// Matched by message, because positions move between rounds.
+func mergeRefusals(first, later []Diagnostic) []Diagnostic {
+	merged := slices.Clone(first)
+	seen := make(map[string]bool, len(first))
+	for _, r := range first {
+		seen[r.Message] = true
+	}
+	for _, r := range later {
+		if !seen[r.Message] {
+			merged = append(merged, r)
+		}
+	}
+	return merged
+}
+
 func Fix(data []byte) (FixResult, error) {
 	out := FixResult{Source: data}
 
@@ -191,19 +215,10 @@ func Fix(data []byte) (FixResult, error) {
 			return out
 		}
 
-		refusals := out.Refusals
-		if len(first.Refusals) > 0 {
-			// A refusal the first pass already made is the same refusal, said about
-			// the file that is staying. Where the first pass made none and a later one
-			// did, its position is the best there is: the shape it names came out of an
-			// edit that is now not being made, and there is nothing in the author's
-			// file to point at more precisely.
-			refusals = first.Refusals
-		}
 		return FixResult{
 			Source:   data,
 			Changes:  first.Changes,
-			Refusals: append(slices.Clone(refusals), stuck...),
+			Refusals: append(mergeRefusals(first.Refusals, out.Refusals), stuck...),
 			Notes:    first.Notes,
 		}
 	}
