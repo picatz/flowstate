@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -31,6 +34,12 @@ type compiledStub struct {
 	stepScope string
 
 	where *expr.ParsedExpr // nil matches unconditionally
+
+	// whereSource is the `where:` clause exactly as the author wrote it, kept
+	// alongside the parsed form so an unmatched-stub failure can show the
+	// clause that did not match rather than making the reader reconstruct it
+	// from the compiled expression. Empty when where is nil.
+	whereSource string
 
 	// returns is the declared map with every ${...} value replaced by a
 	// [stubExpr] node, at any depth — see [compileReturnValue]. A stub with no
@@ -83,12 +92,13 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 		}
 
 		compiled = append(compiled, compiledStub{
-			task:       s.Task,
-			step:       s.Step,
-			where:      parsed,
-			returns:    returns,
-			hasReturns: s.Returns != nil,
-			fails:      s.Fails,
+			task:        s.Task,
+			step:        s.Step,
+			where:       parsed,
+			whereSource: s.Where,
+			returns:     returns,
+			hasReturns:  s.Returns != nil,
+			fails:       s.Fails,
 		})
 	}
 
@@ -317,7 +327,13 @@ func compileReturnValue(v any) (any, error) {
 
 // fn builds the [v1.TaskFunc] this task's stubs answer through, in place of
 // whatever the task would otherwise have done.
-func (s *stubbedTask) fn(name string) v1.TaskFunc {
+//
+// sensitiveInputNames is the workflow's own declared-sensitive input names
+// (see [v1.SensitiveInputNames]), threaded through once at registry build time
+// so an unmatched-stub failure (see [unmatchedStubError]) can redact a value
+// that traces back to one, the same "display etiquette" every other surface
+// applies, not skipped just because this surface is new.
+func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.TaskFunc {
 	return func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope) (*v1.Node_Outputs, error) {
 		// Resolved once per invocation, before any matcher runs, so a
 		// reference with no `secrets:` entry is refused regardless of
@@ -329,10 +345,20 @@ func (s *stubbedTask) fn(name string) v1.TaskFunc {
 			return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, err)
 		}
 
-		activation, err := stubActivation(ctx, scope, inputs, resolvedSecrets)
+		native, secretNames, err := invocationNativeInputs(inputs, resolvedSecrets)
 		if err != nil {
 			return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
 		}
+
+		activation := stubActivation(ctx, scope, native)
+
+		var verdicts []stubVerdict
+		// sawEvalErr tracks whether any tried matcher's where: failed to
+		// evaluate, so the final failure keeps ErrorKindExpression rather than
+		// misreporting a broken CEL expression as ErrorKindInvalidInput; see
+		// below, where the loop no longer returns the moment one matcher
+		// errors.
+		var sawEvalErr bool
 
 		for _, m := range s.matchers {
 			// A step-form stub answers only its own step's invocations, told
@@ -347,9 +373,16 @@ func (s *stubbedTask) fn(name string) v1.TaskFunc {
 				}
 			}
 
-			ok, err := m.matches(ctx, scope.GetProfile(), activation)
-			if err != nil {
-				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
+			ok, matchErr := m.matches(ctx, scope.GetProfile(), activation)
+			verdicts = append(verdicts, stubVerdict{whereSource: m.whereSource, matched: ok, err: matchErr})
+			if matchErr != nil {
+				// Not returned immediately: a broken where: on one stub must
+				// not hide a later stub that matches cleanly, and must not
+				// make [stubVerdict.err] unreachable from the diagnostic this
+				// invocation ultimately reports if nothing does match (#386
+				// follow-up), recorded above and surfaced below either way.
+				sawEvalErr = true
+				continue
 			}
 			if !ok {
 				continue
@@ -371,37 +404,42 @@ func (s *stubbedTask) fn(name string) v1.TaskFunc {
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
 		}
 
-		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput, fmt.Errorf(
-			"flow test: task %q was invoked with no matching stub (%d stub(s) declared for it); "+
-				"add a stub with no `where:` to answer every invocation, or one whose `where:` matches these inputs",
-			name, len(s.matchers)))
+		// A where: that failed to evaluate is a broken expression, the same
+		// kind [m.matches] itself would have reported had this returned
+		// immediately; a where: that merely evaluated false is an ordinary
+		// unmatched invocation. The diagnostic text is identical either way,
+		// which is the point: the kind is what a caller's retry: policy
+		// reads, and it must still name the real cause.
+		kind := v1.ErrorKindInvalidInput
+		if sawEvalErr {
+			kind = v1.ErrorKindExpression
+		}
+		return nil, v1.NewTaskError(name, kind,
+			unmatchedStubError(name, len(s.matchers), native, secretNames,
+				sensitiveNativeValues(scope, sensitiveInputNames), verdicts))
 	}
 }
 
-// stubActivation builds what one invocation's `where:` and `returns:` are
-// evaluated against: the scope the step itself was evaluated in, plus `inputs`
-// — the task's own resolved inputs.
+// invocationNativeInputs builds what one invocation's `where:` and `returns:`
+// are evaluated against, and what an unmatched-stub failure reports back: the
+// task's own resolved inputs, as native CEL values, plus the subset of names
+// whose value came from a `secrets:` reference rather than the input itself.
 //
-// The scope is what carries the iteration. A loop binds its `as:` name in the
-// scope the body's steps run in (see [v1.Scope.WithLocal]), and that scope
-// travels all the way to the task's own [v1.TaskFunc]; before this it simply
-// went unread here, which is why a stub could not tell one iteration from
-// another and a case over a loop had to assert what the stub distorted rather
-// than what the workflow computes (#269).
-//
-// `inputs` is bound as a *local*, so it wins over the run's own `inputs.<name>`
-// namespace for the length of a `where:` clause. That shadowing is deliberate
-// and is the older meaning kept: a stub's `where:` has named the task's inputs
-// since stubs existed, and the alternative — silently changing what
-// `inputs.url` means in every test file in the corpus — is worse than one
-// documented collision. See [Stub.Where].
-func stubActivation(ctx context.Context, scope *v1.Scope, inputs map[string]*v1.Value, resolvedSecrets map[string]any) (cel.Activation, error) {
-	native := make(map[string]any, len(inputs))
+// secretNames exists because the returned native map holds a resolved
+// secret's plaintext in the clear: `where:` has to be able to compare
+// against it, the same way it compares against any other input, and that is
+// fine for evaluation, which never leaves this process. It stops being fine
+// the moment a caller turns this map into text for a failure message: per
+// CLAUDE.md's "secrets never enter workflow history", a resolved secret must
+// never be printed, so [unmatchedStubError] redacts every name secretNames
+// marks regardless of what its `where:` clauses do or do not reveal.
+func invocationNativeInputs(inputs map[string]*v1.Value, resolvedSecrets map[string]any) (native map[string]any, secretNames map[string]bool, err error) {
+	native = make(map[string]any, len(inputs))
 	for name, v := range inputs {
 		if lit := v.GetLiteral(); lit != nil {
 			value, err := literalToGo(lit)
 			if err != nil {
-				return nil, fmt.Errorf("input %q: %w", name, err)
+				return nil, nil, fmt.Errorf("input %q: %w", name, err)
 			}
 			native[name] = value
 			continue
@@ -413,6 +451,10 @@ func stubActivation(ctx context.Context, scope *v1.Scope, inputs map[string]*v1.
 		// `inputs.bearer`. See [resolveSecretInputs].
 		if value, ok := resolvedSecrets[name]; ok {
 			native[name] = value
+			if secretNames == nil {
+				secretNames = make(map[string]bool)
+			}
+			secretNames[name] = true
 			continue
 		}
 		// An input the task evaluates itself ([v1.TaskDef.DeferredInputs]) is
@@ -420,13 +462,35 @@ func stubActivation(ctx context.Context, scope *v1.Scope, inputs map[string]*v1.
 		// can compare against; it is simply absent from `inputs` rather than
 		// resolved to something misleading. What the expression is *written in
 		// terms of* — the loop's binding, the step's vars — is reachable
-		// through the scope below, which is what makes an iteration
-		// distinguishable even where its inputs are not.
+		// through the scope, which is what makes an iteration distinguishable
+		// even where its inputs are not.
 	}
 
+	return native, secretNames, nil
+}
+
+// stubActivation builds what one invocation's `where:` and `returns:` are
+// evaluated against: the scope the step itself was evaluated in, plus the
+// invocation's own resolved inputs already converted to native CEL values by
+// [invocationNativeInputs].
+//
+// The scope is what carries the iteration. A loop binds its `as:` name in the
+// scope the body's steps run in (see [v1.Scope.WithLocal]), and that scope
+// travels all the way to the task's own [v1.TaskFunc]; before this it simply
+// went unread here, which is why a stub could not tell one iteration from
+// another and a case over a loop had to assert what the stub distorted rather
+// than what the workflow computes (#269).
+//
+// `inputs` is bound as a *local*, so it wins over the run's own `inputs.<name>`
+// namespace for the length of a `where:` clause. That shadowing is deliberate
+// and is the older meaning kept: a stub's `where:` has named the task's inputs
+// since stubs existed, and the alternative, silently changing what
+// `inputs.url` means in every test file in the corpus, is worse than one
+// documented collision. See [Stub.Where].
+func stubActivation(ctx context.Context, scope *v1.Scope, native map[string]any) cel.Activation {
 	return scope.ActivationWith(ctx, map[string]ref.Val{
 		v1.InputsRoot: types.NewStringInterfaceMap(v1.TypeAdapter, native),
-	}), nil
+	})
 }
 
 // matches reports whether a stub's `where:` holds for one invocation. An empty
@@ -446,6 +510,218 @@ func (c compiledStub) matches(ctx context.Context, profile string, activation ce
 		return false, fmt.Errorf("where must evaluate to a boolean, got %s", out.Type().TypeName())
 	}
 	return matched, nil
+}
+
+// stubVerdict is one matcher's outcome against one invocation, kept so
+// [unmatchedStubError] can show every stub's `where:` beside what it decided
+// instead of making the reader re-derive it (#386). Only matchers actually
+// tried for this invocation are recorded: a step-form stub skipped because
+// it names a different step never reaches [compiledStub.matches] and has
+// nothing useful to report here.
+type stubVerdict struct {
+	whereSource string // empty for a stub with no `where:`
+	matched     bool
+	err         error
+}
+
+// maxUnmatchedStubValueLen bounds how much of one input's rendered value an
+// unmatched-stub failure prints. Inputs are attacker-adjacent-sized (an http
+// task's body can be megabytes), and the author needs the discriminating
+// field, not the payload, so this elides past a point well short of that
+// (CLAUDE.md, "bound anything that consumes untrusted input").
+const maxUnmatchedStubValueLen = 200
+
+// sensitiveNativeValues returns, as native Go values comparable with
+// [reflect.DeepEqual], the run's own values for every workflow input
+// sensitiveNames marks: the values [unmatchedStubError] must not print even
+// when they reach a task's inputs under a different name, since `sensitive:`
+// is a property of the value's origin, not of whatever a step chose to call
+// it. Returns nil when there is nothing to redact, which is the common case
+// and costs one nil map read per invocation.
+func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) []any {
+	if len(sensitiveNames) == 0 {
+		return nil
+	}
+
+	var values []any
+	for name, v := range scope.GetInputs() {
+		if !sensitiveNames[name] {
+			continue
+		}
+		lit := v.GetLiteral()
+		if lit == nil {
+			continue
+		}
+		native, err := literalToGo(lit)
+		if err != nil {
+			continue
+		}
+		values = append(values, native)
+	}
+	return values
+}
+
+// isSensitiveValue reports whether v is one of the run's own sensitive-input
+// values, by content rather than by the name the task happened to give it:
+// `message: ${inputs.token}` is caught the same as `inputs.token` itself.
+func isSensitiveValue(v any, sensitiveValues []any) bool {
+	for _, sv := range sensitiveValues {
+		if reflect.DeepEqual(v, sv) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactSensitiveTree walks v and replaces every value that [isSensitiveValue]
+// recognizes, at any depth, with a marker string.
+//
+// A `map[string]any` or `[]any` compares as a whole against reflect.DeepEqual,
+// so a top-level check alone misses the far more common shape: a sensitive
+// scalar carried *inside* a structured input, such as `headers: {Authorization:
+// ${inputs.token}}`. The whole headers map is never equal to the token; only
+// one leaf of it is, so the leaf has to be checked on its own (#386
+// follow-up). The recursion mirrors the two structured shapes an input can
+// hold ([invocationNativeInputs] never produces anything else): a map keyed
+// by string, and a list.
+func redactSensitiveTree(v any, sensitiveValues []any) any {
+	if isSensitiveValue(v, sensitiveValues) {
+		return sensitiveMarker
+	}
+
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = redactSensitiveTree(e, sensitiveValues)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redactSensitiveTree(e, sensitiveValues)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// sensitiveMarker is what a redacted leaf renders as inside a structure:
+// deliberately not shaped like a value the workload could have produced
+// itself, the same discipline [formatUnmatchedStubValue]'s own top-level
+// marker follows.
+const sensitiveMarker = "[redacted]"
+
+// redactSensitiveSubstrings is the backstop for a sensitive value that
+// reaches the invocation as part of a larger string rather than as the whole
+// value or a map/list leaf: `"Bearer " + inputs.token` renders as one
+// string, which [redactSensitiveTree] cannot see into because nothing about
+// the concatenated result equals the token on its own. Every sensitive
+// string value's exact text is replaced wherever it occurs in rendered, so
+// the credential cannot survive by being wrapped in unrelated characters.
+func redactSensitiveSubstrings(rendered string, sensitiveValues []any) string {
+	for _, sv := range sensitiveValues {
+		s, ok := sv.(string)
+		if !ok || s == "" {
+			continue
+		}
+		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
+	}
+	return rendered
+}
+
+// truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
+// at a rune boundary rather than a byte offset. A byte cut through the
+// middle of a multi-byte UTF-8 sequence produces invalid UTF-8, which
+// encoding/json (and so `-o json`, via protojson) refuses to encode as a
+// string at all, turning one test's overlong value into every case's JSON
+// report failing to marshal, not just this one line's own display (#386
+// follow-up).
+func truncateRuneSafe(rendered string, max int) string {
+	if len(rendered) <= max {
+		return rendered
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(rendered[cut]) {
+		cut--
+	}
+	return rendered[:cut] + "...(truncated)"
+}
+
+// formatUnmatchedStubValue renders one invocation input for the failure
+// message: redacted when it is a secret reference or traces back to a
+// sensitive workflow input at any depth, quoted and bounded otherwise. It
+// never returns a resolved secret's plaintext or a sensitive input's value in
+// the clear, at the top level, nested inside a structure, or concatenated
+// into a larger string; see [invocationNativeInputs]'s doc for why that
+// distinction has to survive past evaluation and into anything printed.
+func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues []any) string {
+	if isSecret || isSensitiveValue(v, sensitiveValues) {
+		return fmt.Sprintf("[redacted: %s]", name)
+	}
+
+	redacted := redactSensitiveTree(v, sensitiveValues)
+
+	var rendered string
+	if s, ok := redacted.(string); ok {
+		rendered = strconv.Quote(s)
+	} else {
+		rendered = fmt.Sprintf("%v", redacted)
+	}
+
+	rendered = redactSensitiveSubstrings(rendered, sensitiveValues)
+
+	return truncateRuneSafe(rendered, maxUnmatchedStubValueLen)
+}
+
+// unmatchedStubError builds the diagnostic for a task invocation no declared
+// stub answered: what the invocation actually carried, redacted where
+// CLAUDE.md requires it, and every tried stub's `where:` beside whether it
+// matched, so an author can see why in the failure output instead of having
+// to reason it out from the workflow (#386, "diagnostics are a feature").
+func unmatchedStubError(name string, declared int, native map[string]any, secretNames map[string]bool, sensitiveValues []any, verdicts []stubVerdict) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "flow test: task %q was invoked with no matching stub (%d stub(s) declared for it); "+
+		"add a stub with no `where:` to answer every invocation, or one whose `where:` matches these inputs\n",
+		name, declared)
+
+	names := make([]string, 0, len(native))
+	for n := range native {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	if len(names) == 0 {
+		b.WriteString("  invocation carried no inputs\n")
+	} else {
+		b.WriteString("  invocation carried:\n")
+		for _, n := range names {
+			fmt.Fprintf(&b, "    %s: %s\n", n, formatUnmatchedStubValue(n, native[n], secretNames[n], sensitiveValues))
+		}
+	}
+
+	if len(verdicts) == 0 {
+		b.WriteString("  no stub was tried against this invocation")
+	} else {
+		b.WriteString("  stub verdicts:")
+		for i, v := range verdicts {
+			where := v.whereSource
+			if where == "" {
+				where = "(no where:)"
+			}
+			switch {
+			case v.matched:
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> true", i+1, where)
+			case v.err != nil:
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> error: %s", i+1, where, v.err)
+			default:
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> false", i+1, where)
+			}
+		}
+	}
+
+	return errors.New(b.String())
 }
 
 // answer resolves the stub's `returns:` for one invocation, evaluating every

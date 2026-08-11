@@ -199,7 +199,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		return fmt.Errorf("error running workflow locally: %w", runErr)
+		return wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr))
 	}
 
 	// The same word `flow get` uses for the same outcome, through the same pill, on

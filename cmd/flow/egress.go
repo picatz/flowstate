@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -86,4 +87,71 @@ func applyEgressPolicy(cmd *cobra.Command) error {
 	}
 
 	return nil
+}
+
+// hasEgressPolicyFile reports whether cmd was given an explicit --egress-policy
+// (or its FLOWSTATE_EGRESS_POLICY default), which is exactly the condition
+// [wrapLoopbackDenial] needs to stay silent under: an operator's own policy
+// file, not the built-in default, decided the denial, so the remedy is that
+// file, not an environment variable that would read as an invitation to
+// bypass it. See #387.
+func hasEgressPolicyFile(cmd *cobra.Command) bool {
+	path, _ := cmd.Flags().GetString("egress-policy")
+	return path != ""
+}
+
+// wrapLoopbackDenial adds the loopback opt-in to a run's own denial, and only
+// there: the built-in default policy refuses loopback fail-closed, and the
+// two ways to say "this is my own machine" (the env var, and
+// `allow_loopback: true` in a policy file) already ship in `flow run local
+// --help`, so a denial withholding them makes the CLI hide an answer it
+// already has (#387). The default policy is the only case where teaching the
+// bypass is right: it exists precisely because the caller is presumed to be
+// the machine's own owner, which is not true of an operator's explicit
+// --egress-policy; see [hasEgressPolicyFile].
+//
+// err is returned unchanged whenever the denial is not a loopback address
+// denial from the default policy, so a caller can wrap every run error
+// through this unconditionally rather than duplicating the check at each
+// call site.
+func wrapLoopbackDenial(cmd *cobra.Command, err error) error {
+	if err == nil || hasEgressPolicyFile(cmd) {
+		return err
+	}
+
+	var denied *netpolicy.DenyError
+	if !errors.As(err, &denied) {
+		return err
+	}
+	if denied.Reason != netpolicy.ReasonAddress || denied.Detail != "loopback addresses are not allowed" {
+		return err
+	}
+
+	return &loopbackDenialError{target: denied.Target, err: err}
+}
+
+// loopbackDenialError adds the default policy's own opt-ins to a loopback
+// denial, as the one suggested-next-step element every other CLI remedy uses
+// (see [commandSuggester]), rather than a second way of saying "try this".
+type loopbackDenialError struct {
+	target string
+	err    error
+}
+
+func (e *loopbackDenialError) Error() string { return e.err.Error() }
+
+func (e *loopbackDenialError) Unwrap() error { return e.err }
+
+// nextCommands offers both opt-ins the default policy itself understands.
+// Neither is phrased as advice inside the error text, which stays exactly
+// what netpolicy produced (per [renderError]'s own rule): both are commands
+// an author could type verbatim, which is what this element exists for.
+func (e *loopbackDenialError) nextCommands() []commandBlock {
+	return []commandBlock{
+		{commands: []string{"FLOWSTATE_ALLOW_LOOPBACK_EGRESS=1 flow run local <file>"}},
+		{
+			lead:     "or, in an egress policy passed with --egress-policy:",
+			commands: []string{"allow_loopback: true"},
+		},
+	}
 }
