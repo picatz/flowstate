@@ -72,6 +72,10 @@ func newFmtCommand() *cobra.Command {
 			"A file that does not parse is reported with its position and left untouched, and so is " +
 			"a file carrying a comment this cannot keep, which happens when what the comment was " +
 			"written against is not written back in the same shape.\n\n" +
+			"A Flowfile test (`*.test.yaml`, declaring `tests:` rather than `steps:`) is a different " +
+			"document kind this command does not yet format; it is passed over with a note rather " +
+			"than parsed as a workflow and refused, so a directory `flow init` writes, tests " +
+			"included, is something this command can walk.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
 			"instead of scrapes: which files would change, and which were refused, per file. CI " +
 			"that wants structured data rather than stderr text asks for one of those.",
@@ -222,6 +226,37 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmtOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
+	}
+
+	// A Flowfile test (`*.test.yaml`, or any document whose top level is
+	// `tests:` rather than `steps:`) has no [v1.Workflow] shape for
+	// flowfile.ParseFile to parse it into: it is a different document kind,
+	// not a workflow with a bad key, so handing it to that parser produces a
+	// diagnostic that misdiagnoses a valid file ("unknown key \"tests\"",
+	// issue #392). `flow fix` already tells the two shapes apart before it
+	// rewrites, at the token level (see flowfile.Fix); this is the same
+	// routing decision, made before the workflow parser is ever reached, so a
+	// directory `flow init` just wrote is something both commands can walk.
+	// This command has no marshaller for a test file's own shape yet, so
+	// rather than guess at one, it passes over the file exactly the way it
+	// would report an unchanged file: left alone, not refused, not an error.
+	if flowfile.LooksLikeFlowfileTest(data) {
+		// In --stdout mode the document stream is the product, and a pipeline
+		// like `flow fmt --stdout f > g` replaces g with whatever is written
+		// here. Passing over the file must therefore still write its bytes,
+		// unchanged: an empty stream with exit 0 would be the pipeline
+		// silently truncating a valid file, the exact class of loss this
+		// command exists to never cause.
+		if opts.stdout {
+			if _, err := out.Write(data); err != nil {
+				return fmtOutcome{}, fmt.Errorf("error writing %s to stdout: %w", path, err)
+			}
+		}
+		if !machine {
+			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path),
+				theme.Muted.Render("test file; flow fmt does not format test files"))
+		}
+		return fmtOutcome{report: report}, nil
 	}
 
 	// File-aware, so a `call:` step resolves relative to this file's own

@@ -230,6 +230,8 @@ Comments are kept, carried onto the document this writes at the key, value or li
 
 A file that does not parse is reported with its position and left untouched, and so is a file carrying a comment this cannot keep, which happens when what the comment was written against is not written back in the same shape.
 
+A Flowfile test (`*.test.yaml`, declaring `tests:` rather than `steps:`) is a different document kind this command does not yet format; it is passed over with a note rather than parsed as a workflow and refused, so a directory `flow init` writes, tests included, is something this command can walk.
+
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: which files would change, and which were refused, per file. CI that wants structured data rather than stderr text asks for one of those.
 
 Examples:
