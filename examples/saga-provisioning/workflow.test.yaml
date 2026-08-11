@@ -45,7 +45,7 @@ tests:
     expect:
       failed: true
       # A run that fails still says what it did, so a case like this one can name
-      # the steps it got through — including `attach`, the step the run stopped
+      # the steps it got through, including `attach`, the step the run stopped
       # on. This used to be unassertable: a failed run handed back no transcript,
       # so `ran:` was skipped outright here and coverage counted all three of
       # these steps as never reached (#453).

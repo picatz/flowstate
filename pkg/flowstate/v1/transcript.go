@@ -4,19 +4,19 @@ package flowstatev1
 // record of what it did before it stopped.
 //
 // A run that fails used to hand back nothing at all, and the cost of that landed
-// on the two places that read a transcript to find out what ran — `flow test`'s
+// on the two places that read a transcript to find out what ran, `flow test`'s
 // `expect.ran`/`expect.skipped`, and its step coverage (issues #420, #453). A case
 // whose whole point is that the run fails would contribute its workflow's steps to
 // the coverage universe and reach none of them, so an author testing an error
 // branch had to record every step the branch actually exercised under
-// `coverage.allow_unreached` — a reason written down for something that was not
+// `coverage.allow_unreached`, a reason written down for something that was not
 // true.
 //
 // # What it contains
 //
 // Every step the run recorded outputs for, plus the step whose failure ended the
 // run, recorded through [FailedStepOutputs] exactly as a step tolerated by
-// `continue_on_error:` is. Both drivers accumulate that same record as they walk —
+// `continue_on_error:` is. Both drivers accumulate that same record as they walk
 // this only names it and decides what a failure is entitled to hand back of it.
 //
 // # What it deliberately does not contain
@@ -34,7 +34,7 @@ package flowstatev1
 //
 // # Why a copy
 //
-// The run's own scope keeps pointing at the map this is built from — compensations
+// The run's own scope keeps pointing at the map this is built from, compensations
 // run after the failure, and the caller may hold this long after. A copy is one map
 // header per failed run and removes the question entirely.
 //

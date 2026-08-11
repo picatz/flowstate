@@ -403,14 +403,14 @@ coverage:
 // workflow's steps to the coverage universe and reach none of them, because a
 // failed run handed back no transcript at all. An author exercising an error
 // branch therefore had to record every step that branch really ran under
-// `coverage.allow_unreached` — a written reason for something that was not true,
+// `coverage.allow_unreached`, a written reason for something that was not true,
 // which is the state the staleness check exists to prevent elsewhere in this file.
 //
 // Three claims, and the file is built so that no two of them can be satisfied by
 // the same mistake:
 //
 //   - the steps before the failure are credited (`first`, `second`);
-//   - the step the run *stopped on* is credited (`boom`) — the entry a fix that
+//   - the step the run *stopped on* is credited (`boom`), the entry a fix that
 //     returns only the accumulated outputs would still be missing, leaving the
 //     suite one step short and the gate still red;
 //   - the step after the failure is not (`after`), and neither is the branch no

@@ -20,7 +20,7 @@ import (
 //
 // The inversion is what makes the assertion possible at all. Temporal drops a
 // workflow's result whenever the workflow function returns an error, so a test
-// executing [Run] on a failing workflow can read the failure and nothing else —
+// executing [Run] on a failing workflow can read the failure and nothing else
 // and the value under test here is precisely the thing beside the failure. Turning
 // the failure into a result is therefore not a shortcut around the boundary; it is
 // the only way to observe the durable driver's own answer to "what did this run
@@ -44,7 +44,7 @@ func partialTranscriptProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflow
 // The local driver runs the identical [tests.PartialTranscriptCases]. Pairing them
 // is the whole point: the record both drivers accumulate as they walk was always
 // there and never returned, so the risk in returning it was never "does it exist"
-// but "do the two contain the same thing" — and in particular whether the step that
+// but "do the two contain the same thing", and in particular whether the step that
 // *ended* the run is in one and not the other, which is the one entry neither
 // driver wrote before this.
 func TestRunWorkflowPartialTranscript(t *testing.T) {

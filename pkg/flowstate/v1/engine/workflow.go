@@ -540,7 +540,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 
 	default:
 		// The transcript accompanies the failure, exactly as it does in the local
-		// driver's eval — see [v1.PartialTranscript] for what it is entitled to
+		// driver's eval, see [v1.PartialTranscript] for what it is entitled to
 		// contain. Temporal drops a workflow's result when the workflow returns an
 		// error, so this reaches an in-process caller of this function and no client;
 		// what it buys today is that the two drivers hand the same record to the same

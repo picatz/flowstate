@@ -194,7 +194,7 @@ func TestLoadEnforcesBounds(t *testing.T) {
 // direction of issue #453, and the half a coverage assertion cannot reach.
 //
 // `expect.ran` and `expect.skipped` were skipped outright on a failed run, so a
-// case could claim anything at all about which steps ran and be believed — which
+// case could claim anything at all about which steps ran and be believed, which
 // is the same blindness coverage had, on the surface an author is likelier to
 // look at. A test that only asserts a *true* claim now passes cannot see that,
 // because a harness which still ignores these on failure also reports no failure.

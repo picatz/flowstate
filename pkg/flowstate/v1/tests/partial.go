@@ -9,7 +9,7 @@ import (
 //
 // A separate type from [Case] because what it asserts is the *failed* run's
 // outputs, and [Case.ExpectedOutputs] is explicitly ignored when
-// [Case.ExpectFailure] is set — a case whose point is the failure had nothing to
+// [Case.ExpectFailure] is set, a case whose point is the failure had nothing to
 // compare, which is exactly the gap issue #453 is about.
 type PartialTranscriptCase struct {
 	// Name of the case, used for test identification.
@@ -21,7 +21,7 @@ type PartialTranscriptCase struct {
 	// Expected is the whole transcript the failed run must hand back: every step
 	// it recorded outputs for, and the step it stopped on. Compared exactly rather
 	// than as a subset, so a driver that carries *more* than the other one fails
-	// here too — the direction a "reached at least these" assertion cannot see, and
+	// here too, the direction a "reached at least these" assertion cannot see, and
 	// the one that would let a rehearsal credit a branch production never records.
 	Expected *v1.Workflow_StepOutputs
 }
@@ -33,8 +33,8 @@ type PartialTranscriptCase struct {
 // `flow test`'s coverage counted a case whose whole point was `expect.failed:
 // true` as reaching none of the steps it had just exercised, and an author had to
 // record a `coverage.allow_unreached` reason for a branch that really ran (issue
-// #453). The record itself was never missing — both drivers accumulate it as they
-// walk — only unreturned.
+// #453). The record itself was never missing, both drivers accumulate it as they
+// walk, only unreturned.
 //
 // The three shapes here are the three questions a transcript can get wrong:
 //
@@ -44,7 +44,7 @@ type PartialTranscriptCase struct {
 //     same fact: this step ran and failed. Recording it one step short of the
 //     truth is the version of this bug that survives a naive fix.
 //   - what never ran. A step skipped by its `if:` before the failure, and every
-//     step after the failure, are absent — the transcript is a record of what
+//     step after the failure, are absent, the transcript is a record of what
 //     happened, and absence is how it says a step did not.
 //   - what a nesting that did not finish contributes, which is nothing. A loop's
 //     per-iteration outputs only reach the transcript when the loop node completes
@@ -55,7 +55,7 @@ type PartialTranscriptCase struct {
 //
 // The failure in each is a step's own `vars:` indexing past the end of a list:
 // it compiles, it fails when evaluated, it carries no TaskError, and it needs no
-// server — so the recorded sentence is the same one [ToleratedStepFailureCases]
+// server, so the recorded sentence is the same one [ToleratedStepFailureCases]
 // already pins for the tolerated version of the identical failure.
 func PartialTranscriptCases() []PartialTranscriptCase {
 	const oops = "['a'][5]"
@@ -116,7 +116,7 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 							Items: v1.NewLiteralList("one"),
 							Body: []*v1.Node{
 								// This one genuinely runs, inside an iteration that
-								// never finishes — so it is not in the record, and
+								// never finishes, so it is not in the record, and
 								// that is the claim.
 								says("inside", "ran"),
 								boom("inside_boom"),

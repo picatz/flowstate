@@ -20,7 +20,7 @@ import (
 //
 // A run that fails is measured from the partial transcript it hands back
 // ([v1.PartialTranscript]): the steps it ran before it stopped, and the step it
-// stopped on. That is issue #453 — a case whose only exercise of an error branch
+// stopped on. That is issue #453, a case whose only exercise of an error branch
 // is `expect.failed: true` used to contribute its workflow's steps to the universe
 // and reach none of them, so an author had to record a reason under
 // `coverage.allow_unreached` for a branch a case really did run. It stays
@@ -144,8 +144,8 @@ func newCoverageAccumulator(allowUnreached map[string]string) *coverageAccumulat
 // observe folds one case's compiled workflow and its transcript into the
 // coverage for the workflow it targeted, named by identity ([WorkflowPath]).
 // spec may be nil for a case that never compiled a workflow; outputs may be nil
-// for a case that never reached a run at all — one refused before submission, or
-// one whose stubs did not resolve — in which case the case widens that workflow's
+// for a case that never reached a run at all, one refused before submission, or
+// one whose stubs did not resolve, in which case the case widens that workflow's
 // universe but reaches nothing. A case whose *run* failed is no longer one of
 // those: it arrives with the partial transcript ([v1.PartialTranscript]).
 func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs) {

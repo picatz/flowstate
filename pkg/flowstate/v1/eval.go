@@ -933,12 +933,12 @@ func Run(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 //
 // # A failed run still hands back what it did
 //
-// When the run fails, the error is accompanied by the *partial transcript* — see
+// When the run fails, the error is accompanied by the *partial transcript*, see
 // [PartialTranscript] for exactly what that contains and what it deliberately does
 // not. A caller that treats a non-nil error as "no outputs" keeps working
 // unchanged, because it never looks; a caller that wants to know what ran before
-// the failure now can. The refusals *above* the run — an undeclared input, a
-// submission past its size — still hand back nothing, because no step ran.
+// the failure now can. The refusals *above* the run, an undeclared input, a
+// submission past its size, still hand back nothing, because no step ran.
 func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
 	if w == nil || len(w.Steps) == 0 {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
@@ -1040,7 +1040,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// context.Canceled)` still answers yes, so a caller that distinguishes a
 		// stopped run from a failed one keeps doing so.
 		//
-		// The transcript accompanies the failure — see [PartialTranscript], and
+		// The transcript accompanies the failure, see [PartialTranscript], and
 		// [RunWithInputs] for what a caller may read from it. Built from the same
 		// `scope.Outputs` the successful path returns, so there is one accumulated
 		// record per run rather than a second one assembled for failures.
