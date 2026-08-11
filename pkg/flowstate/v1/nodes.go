@@ -236,6 +236,105 @@ func IteratorName(loop *ForEach) string {
 	return DefaultIterator
 }
 
+// MaxForEachItems bounds how many items a single `for_each` may iterate: the
+// trip-count ceiling for the one construct in this language whose trip count is
+// computed rather than written down.
+//
+// A `loop:` declares its own ceiling with `max_iterations:` and runs under
+// [DefaultMaxIterations] when it declares none. A `for_each` has no such key at
+// all, so it is permanently the "declared none" case, and this is deliberately
+// that same number, read from it rather than spelled again: one value answers
+// "how many times may a body run when nobody wrote a bound down", for both
+// constructs, and one constant cannot disagree with itself.
+//
+// Until this existed a `for_each` was bounded only by things that are not its
+// trip count, and none of them bounds it:
+//
+//   - `max_parallel:` bounds how many iterations run at once, not how many run.
+//   - [MaxLoopResultsBytes] bounds what the iterations accumulate, which a body
+//     reporting little or nothing never reaches however many times it runs.
+//   - The run's step budget suspends into a fresh segment rather than refusing,
+//     so it paces a runaway rather than stopping one.
+//
+// The resource here is the length of a list an expression computed, so that is
+// what this bounds, per CLAUDE.md's rule about bounding the resource whose size
+// the far side chooses rather than one it merely correlates with.
+//
+// # Why this number, and not the 100,000 the schema caps `max_iterations:` at
+//
+// Cost. docs/DSL.md measures a loop body at `3n+1` expression evaluations, and
+// every task in a body is an activity, so 1,000 items over a one-step body is
+// already 1,000 activities, about 3,000 workflow-side evaluations, and five
+// Continue-As-New segments at the default 200-step budget. Ten times that is a
+// fifth of the 51,200 events one Temporal execution may hold spent on scheduling
+// alone, and the workflow-side part of the work does not yield while it runs:
+// measured in the Temporal test environment, a 10,000-item `for_each` whose body
+// schedules no activity runs for over a second in a single stretch, which is the
+// threshold Temporal's own deadlock detector fails a workflow task at.
+//
+// A six-figure trip count is also not a fan-out anybody wrote out; it is a
+// cross-product that multiplied. It cannot have arrived from outside the run
+// either: a list submitted as a run input, or returned as a task's result, is
+// already refused past 10,000 elements (see maxListElements), so the only route
+// to a list longer than that is an expression that expanded one.
+//
+// # Why it is hard rather than raisable
+//
+// That is the difference from [DefaultMaxIterations], which is a default an
+// author may raise. A `loop:` gates every trip on an `until:` its author wrote,
+// so an author asking for more trips has also said what stops them. A `for_each`
+// author has said only how long a list is, and the list is what got away. A
+// workload that genuinely has more items than this pages them across runs, which
+// is what [ForEachItemCountError] tells the author to do.
+const MaxForEachItems = DefaultMaxIterations
+
+// ForEachItemCountError is the failure a `for_each` reports when the list its
+// `items:` resolved to is longer than [MaxForEachItems].
+//
+// One constructor called by both drivers at the point each learns how long the
+// resolved list is, so the sentence a person reads is identical whether the
+// workload ran locally or durably, the same discipline [LoopIterationLimitError]
+// and [ForEachResultsSizeError] hold their cross-driver sentences to.
+//
+// It does not name the step, for the same reason its two neighbours do not: each
+// driver's runNodes adds `step %q` on the way out (eval.go's runNodes, the
+// engine's), so naming it here would say it twice on both drivers rather than
+// once. What the composed sentence must carry, and what both drivers' shared
+// cases assert it carries, is the step, the count observed, and the ceiling.
+//
+// Not retryable, and it does not need to be: the same items expression over the
+// same scope resolves to the same length on every replay, so there is no attempt
+// that would succeed where the last one failed.
+func ForEachItemCountError(count, max int) error {
+	return fmt.Errorf(
+		"for_each resolved %d items, over the ceiling of %d items a single for_each may iterate; "+
+			"a list this long is usually one an expression multiplied out (a cross-product of axes, say) "+
+			"rather than a fan-out that was written down, so narrow what `items:` produces (filter it, or "+
+			"drop an axis), or page the work across several runs",
+		count, max)
+}
+
+// CheckForEachItems refuses a resolved items list longer than [MaxForEachItems].
+//
+// The one function both drivers call, immediately after [ResolveItems] and
+// before a single iteration runs: the local driver's runForEach in eval.go and
+// the durable driver's executor.runForEach in engine/execute.go. Checked at that
+// point rather than inside [ResolveItems] because the length is a property of the
+// resolved list and the refusal belongs where the step it names is being run;
+// checked before the first iteration rather than while counting them because a
+// bound that stops a runaway after doing most of the work has only bounded the
+// last part of it.
+//
+// Fails closed in the sense the rest of this repository means it: a list at the
+// ceiling is allowed and a list past it is refused, with no path that runs the
+// body while unsure.
+func CheckForEachItems(items []*Value) error {
+	if len(items) > MaxForEachItems {
+		return ForEachItemCountError(len(items), MaxForEachItems)
+	}
+	return nil
+}
+
 // ResolveItems evaluates a loop's list expression and returns its elements as CEL
 // values.
 //

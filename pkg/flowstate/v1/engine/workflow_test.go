@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -1103,6 +1104,46 @@ func TestRunWorkflowForEachResultsBound(t *testing.T) {
 				require.Error(t, err, "a for_each past the results byte bound must be refused")
 				require.Contains(t, err.Error(), "byte limit",
 					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
+// TestRunWorkflowForEachTripCount is the durable half of the `for_each`
+// trip-count ceiling, see the local driver's identically-named test.
+//
+// The durable driver reaches [v1.CheckForEachItems] at the same point the local
+// one does, immediately after [v1.ResolveItems] and before an iteration is
+// scheduled, so a list past the ceiling costs no activity here either: the run
+// fails outright rather than fanning out and stopping part way. The at-ceiling
+// case asserts the full trip count was run, which is what makes this a claim the
+// bound is reached rather than only that it is not exceeded.
+func TestRunWorkflowForEachTripCount(t *testing.T) {
+	for _, test := range tests.ForEachTripCountCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			env := budgetEnv(t)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the trip-count ceiling must be refused")
+				// The same three things the local driver's half asserts, in the
+				// same sentence: a message an author's tooling matches on must
+				// not depend on where the workload ran.
+				require.Contains(t, err.Error(), `step "fan"`,
+					"the refusal must name the step")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxForEachItems+1),
+					"the refusal must name the count observed")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxForEachItems),
+					"the refusal must name the ceiling it reached")
 				return
 			}
 			require.NoError(t, err)

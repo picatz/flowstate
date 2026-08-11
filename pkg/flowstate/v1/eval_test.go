@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -337,6 +338,37 @@ func TestRunWorkflowForEachResultsBound(t *testing.T) {
 				require.Error(t, err, "a for_each past the results byte bound must be refused")
 				require.Contains(t, err.Error(), "byte limit",
 					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
+// TestRunWorkflowForEachTripCount covers the local driver's half of the
+// `for_each` trip-count ceiling, [v1.MaxForEachItems]: the bound on how many
+// items a single `for_each` may iterate, which is the one quantity a `for_each`
+// carried no bound on at all.
+//
+// The same cases run against the durable driver in the engine package, see the
+// identically-named test there. Both reach the ceiling through the one function
+// each driver calls right after resolving `items:`, [v1.CheckForEachItems],
+// which is what invariant 3 asks a shared case to hold the two drivers to.
+func TestRunWorkflowForEachTripCount(t *testing.T) {
+	for _, test := range tests.ForEachTripCountCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the trip-count ceiling must be refused")
+				// The whole sentence, not just that it failed: the step it
+				// happened in, the count observed, and the ceiling reached.
+				require.Contains(t, err.Error(), `step "fan"`,
+					"the refusal must name the step")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxForEachItems+1),
+					"the refusal must name the count observed")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxForEachItems),
+					"the refusal must name the ceiling it reached")
 				return
 			}
 			require.NoError(t, err)

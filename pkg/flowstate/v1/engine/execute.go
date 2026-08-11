@@ -683,6 +683,16 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 		return nodeFailed(err)
 	}
 
+	// The trip-count ceiling, applied at the one moment the length of the
+	// resolved list is known and before any iteration is scheduled, through the
+	// same [v1.CheckForEachItems] the local driver applies at the same point. It
+	// is checked on a resumed segment too rather than only on a fresh one: the
+	// items expression is re-resolved every segment, so a list that grew past the
+	// ceiling between them is refused the same way one that started past it is.
+	if err := v1.CheckForEachItems(items); err != nil {
+		return nodeFailed(err)
+	}
+
 	name := v1.IteratorName(loop)
 	inner := depth + 1
 	innerSusp := susp + 1

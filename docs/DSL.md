@@ -2639,6 +2639,52 @@ not merely not-exceeded (the List lesson): `tests.LoopCases`'s runaway case can 
 end by exhausting its three iterations, and both drivers are held to that failure;
 `examples/loop-accumulate`'s second test case proves it from a Flowfile.
 
+### A `for_each` is bounded on its trip count too
+
+A `for_each` looks like the construct that does not need this, because its trip
+count is "however many items there are" and the items are right there in the file.
+They usually are not: `items:` is an expression, and an expression can multiply.
+The matrix idiom (`examples/matrix-fan-out`) crosses two axes into every
+combination, and a third axis of four values turns 5 targets into 20 with nothing
+in the file getting longer. That is the shape whose size is a product, and the
+file reads the same at either size.
+
+Everything a `for_each` already carried bounds something other than the trip
+count. `max_parallel:` bounds how many iterations run *at once*, not how many run.
+`v1.MaxLoopResultsBytes` bounds what the iterations *accumulate*, which a body
+reporting little or nothing never reaches however many times it runs. The run's
+step budget *suspends* into a fresh segment rather than refusing, so it paces a
+runaway instead of stopping one. So the length of the resolved list gets its own
+bound, `v1.MaxForEachItems`, per the rule about bounding the resource whose size
+the far side chooses rather than one that merely correlates with it.
+
+The number is `v1.DefaultMaxIterations`, read from it rather than spelled again: a
+`loop:` runs under that ceiling when it declares no `max_iterations:` of its own,
+and a `for_each` has no such key at all, so it is permanently that case. It is a
+hard ceiling rather than a raisable default, which is the one place the two
+constructs differ: a `loop:` author who asks for more trips has also written the
+`until:` that stops them, where a `for_each` author has said only how long a list
+is. Not the 100,000 the schema caps `max_iterations:` at, because of the cost math
+above: at `3n+1` evaluations and one activity per body step per item, 1,000 items
+over a one-step body is already 1,000 activities and five Continue-As-New segments
+at the default 200-step budget, and ten times that spends a fifth of the 51,200
+events one Temporal execution may hold on scheduling alone. A six-figure trip
+count is not a fan-out somebody wrote out; it is a product that multiplied, and it
+cannot have arrived from outside the run either, since a list submitted as an
+input or returned by a task is already refused past 10,000 elements.
+
+Enforced at the one moment the resolved list's length is known and before a single
+iteration runs, through `v1.CheckForEachItems`, called at the same point by both
+drivers (`eval.go`'s `runForEach`, `engine/execute.go`'s). The refusal names the
+step, the count observed and the ceiling (`v1.ForEachItemCountError`), and tells
+the author to narrow what `items:` produces or to page the work across runs. A
+list written out literally in the file is refused earlier still, by `flow
+validate`, with a position; that half is deliberately the smaller one, since how
+long a computed list will be is a property of the run rather than of the file. The
+shared cases (`tests.ForEachTripCountCases`, two verified callers) assert the bound
+is *reached* rather than only not exceeded: a list of exactly the ceiling runs, and
+the case checks that every one of those iterations was recorded.
+
 ### Both drivers, and determinism
 
 Local (`eval.go` `runLoop`) runs the loop in-process; durable (`engine/execute.go`
