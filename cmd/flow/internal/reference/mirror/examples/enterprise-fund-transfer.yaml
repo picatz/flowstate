@@ -275,17 +275,20 @@ outputs:
   # is ever delivered. `decision` only has to distinguish what the desk
   # actually said - `has(payload.approved)`, its value, and `timed_out` -
   # never who said it.
+  #
+  # "transferred" is exactly `cleared_to_move`, so it reads that name rather
+  # than restating the two facts under it. The three remaining arms are the
+  # ways a gate above the threshold said no, which is the one thing this
+  # output has left to distinguish.
   decision:
     value: >-
-      ${!steps.over_threshold.value
+      ${steps.cleared_to_move.value
         ? "transferred"
         : (steps.approval.outcome == "expired"
             ? "expired"
-            : (steps.approval.outcome == "approved"
-                ? "transferred"
-                : (steps.approval.outcome == "rejected"
-                    ? "rejected"
-                    : "refused_malformed_payload")))}
+            : (steps.approval.outcome == "rejected"
+                ? "rejected"
+                : "refused_malformed_payload"))}
     description: >-
       what this run decided, and why - only `timed_out` ever produces
       "expired"; a malformed answered payload is its own
