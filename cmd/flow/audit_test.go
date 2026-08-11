@@ -94,7 +94,7 @@ func siteLines(finding auditRepeat) []int {
 // triplicate is a single-wait predicate `outputs:` shaping already reaches, and
 // access-review's shared filter has one producer the `http` task's own `outputs:`
 // already names. The sweep that landed alongside this comment collapsed both, so
-// what remains here is exactly the residue only a held entry would reach — a
+// what remains here is exactly the residue only a held entry would reach, a
 // predicate spanning more than one step, or mixing `inputs:` with a step.
 func TestAuditReproducesTheManualAudit(t *testing.T) {
 	report := auditJSON(t, corpus)
@@ -155,7 +155,7 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 // list, and this asserts the two collapses actually happened rather than trusting
 // the doc comment. A regression here means the sweep's shaping (the wait's own
 // `outputs:` on onboarding, the `http` task's own `outputs:` on access-review) came
-// back apart, not that the corpus grew a new repetition — the assertion is scoped
+// back apart, not that the corpus grew a new repetition, the assertion is scoped
 // to the exact expressions the manual audit named, not "no findings at all".
 func TestAuditOnboardingAndAccessReviewSweptClean(t *testing.T) {
 	report := auditJSON(t, corpus)
