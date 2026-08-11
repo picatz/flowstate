@@ -576,7 +576,8 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	}
 
 	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{
-		Interceptors: temporalWorkerInterceptors(),
+		Interceptors:             temporalWorkerInterceptors(),
+		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
 	})
 	engine.Register(w, runtime)
 
