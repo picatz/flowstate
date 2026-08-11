@@ -171,7 +171,7 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		// look — and only one of them is a mistake. So the machine shape carries
 		// the search path and this says which it is.
 		if format.Machine() {
-			return writeJSON(surface, FormatJSON, &v1.PluginCatalog{})
+			return writeJSON(surface, format, &v1.PluginCatalog{})
 		}
 
 		fmt.Fprintf(surface.Out, "%s\n",
@@ -194,7 +194,7 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 	catalog := host.Catalog()
 
 	if format.Machine() {
-		return writeJSON(surface, FormatJSON, catalog)
+		return writeJSON(surface, format, catalog)
 	}
 
 	return writePluginCatalog(surface, catalog)

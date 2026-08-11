@@ -248,3 +248,48 @@ func TestFixStillFixesAZeroStepFlowfile(t *testing.T) {
 	assert.Empty(t, current.Refusals, "edition: is distinctive, so a zero-step Flowfile is still recognized")
 	assert.False(t, current.Changed())
 }
+
+// TestLooksLikeFlowfileTest pins [flowfile.LooksLikeFlowfileTest], the
+// routing `flow fmt` uses to tell a Flowfile test apart from a Flowfile before
+// it ever reaches the workflow parser (issue #392), against the shapes it has
+// to tell apart.
+func TestLooksLikeFlowfileTest(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{
+			name: "a Flowfile test",
+			data: []byte("edition: v2026.2\ntests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {}\n"),
+			want: true,
+		},
+		{
+			name: "a Flowfile",
+			data: []byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
+			want: false,
+		},
+		{
+			name: "a document declaring both tests and steps",
+			data: []byte("edition: v2026.2\nsteps:\n  - id: a\n    log:\n      message: hi\ntests:\n  - name: a\n    workflow: ./w.yaml\n    expect: {}\n"),
+			want: false,
+		},
+		{
+			name: "malformed YAML",
+			data: []byte("tests: [\n"),
+			want: false,
+		},
+		{
+			name: "an egress policy",
+			data: []byte("egress:\n  default: deny\n"),
+			want: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, flowfile.LooksLikeFlowfileTest(tt.data))
+		})
+	}
+}
