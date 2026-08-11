@@ -168,9 +168,45 @@ func TestValidateDashCannotBeCombinedWithAnotherPath(t *testing.T) {
 func TestValidateDashRefusesStdinPastTheByteLimit(t *testing.T) {
 	t.Parallel()
 
-	oversized := strings.Repeat("a", maxStdinBytes+1)
+	oversized := strings.Repeat("a", maxValidateDocumentBytes+1)
 
 	out, err := validateStdin(t, oversized)
 	require.Error(t, err, "output: %s", out)
 	require.Contains(t, err.Error(), "exceeds")
+}
+
+// TestValidateOnAnEmptyDirectoryIsRefused is the sibling refusal
+// [collectFlowfiles] and [collectTestFiles] already give: a directory with no
+// Flowfile and no Flowfile test in it must not exit 0 having silently
+// checked nothing, which reads as CI having validated a path it never
+// actually found anything in.
+func TestValidateOnAnEmptyDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
+
+	out, err := validateOutput(t, t.TempDir())
+	require.Error(t, err, "output: %s", out)
+	require.Contains(t, err.Error(), "no Flowfiles")
+}
+
+// TestValidateDirectoryWalkDoesNotReadAnOversizedFileWhole is #394's bound
+// finding: a directory can hold a file of any size a caller (or an attacker)
+// chose, and classifying it must not read the whole thing into memory first
+// only to have flowfile's own size check answer false; the read itself has
+// to be bounded, the same way stdin already is. The oversized file is
+// skipped outright (never reported, ok or not) while a genuine, ordinary
+// Flowfile beside it in the same directory is still found and validated,
+// which is what proves the walk kept going rather than aborting.
+func TestValidateDirectoryWalkDoesNotReadAnOversizedFileWhole(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(cleanWorkflow), 0o600))
+
+	oversized := strings.Repeat("x", maxValidateDocumentBytes+1)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "huge.yaml"), []byte("name: huge\n"+oversized), 0o600))
+
+	out, err := validateOutput(t, dir)
+	require.NoError(t, err, "output: %s", out)
+	require.Contains(t, out, "workflow.yaml")
+	require.NotContains(t, out, "huge.yaml")
 }

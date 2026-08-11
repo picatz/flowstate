@@ -17,13 +17,17 @@ import (
 // instead of a path"; see #397.
 const stdinArg = "-"
 
-// maxStdinBytes bounds how much of stdin `flow validate -` reads before
-// refusing, matching flowfile's own document bound (see flowfile's unexported
-// maxBytes and [flowtest.MaxTestFileBytes], both 1 MiB): stdin is untrusted
-// input exactly like a file on disk, and CLAUDE.md's "bound anything that
-// consumes untrusted input" applies to a pipe precisely as it does to an HTTP
-// response body, one byte cap short of "read until the sender stops talking."
-const maxStdinBytes = 1 << 20
+// maxValidateDocumentBytes bounds how much of one document `flow validate`
+// reads before refusing or skipping it, matching flowfile's own document
+// bound (see flowfile's unexported maxBytes and [flowtest.MaxTestFileBytes],
+// both 1 MiB). Two call sites share it rather than each picking a number: the
+// stdin read in [readStdinBounded], and the classifying read a directory walk
+// does in [collectValidateTargets], because both are the same question:
+// "how much of untrusted input does this command hold in memory to decide
+// what it is." CLAUDE.md's "bound anything that consumes untrusted
+// input" applies to a file on disk exactly as it does to a pipe or an HTTP
+// response body: one byte cap short of "read until the sender stops talking."
+const maxValidateDocumentBytes = 1 << 20
 
 // validateTarget is one file `flow validate` checks, told apart by kind
 // because a Flowfile and a Flowfile test validate under different schemas
@@ -130,9 +134,24 @@ func collectValidateTargets(paths []string, stdin io.Reader) ([]validateTarget, 
 			}
 			switch filepath.Ext(p) {
 			case ".yaml", ".yml":
-				data, err := os.ReadFile(p)
+				// Bounded the same way [readStdinBounded] bounds stdin,
+				// rather than os.ReadFile-ing the whole file first and
+				// discarding it once flowfile's own maxBytes check answers
+				// false: a directory can hold a file of any size an attacker
+				// chose, and reading it whole to classify it defeats the
+				// bound before flowfile ever gets to apply it (CLAUDE.md,
+				// "bound anything that consumes untrusted input"). A read
+				// that hits the +1 sentinel is classified as neither a
+				// workflow nor a test without ever holding the rest of the
+				// file, which is also flowfile.LooksLikeFlowfile's own
+				// verdict for anything over its bound, the same answer,
+				// reached without the memory cost.
+				data, truncated, err := readFileBounded(p)
 				if err != nil {
 					return fmt.Errorf("%s: %w", p, err)
+				}
+				if truncated {
+					return nil
 				}
 				switch {
 				case flowfile.LooksLikeFlowfileTest(data):
@@ -148,7 +167,42 @@ func collectValidateTargets(paths []string, stdin io.Reader) ([]validateTarget, 
 		}
 	}
 
+	// Empty, rather than a clean pass: a directory holding no Flowfile and no
+	// Flowfile test is far more likely a typo'd path or a scaffold nobody
+	// filled in yet than a deliberate "there is genuinely nothing here to
+	// check," and the version of this that says nothing exits 0 and reads as
+	// CI having validated a directory it never actually looked inside, the
+	// same refusal [collectFlowfiles] and [collectTestFiles] already give
+	// their own siblings for the identical shape.
+	if len(out) == 0 {
+		return nil, errors.New("no Flowfiles or Flowfile tests found in the paths given")
+	}
+
 	return out, nil
+}
+
+// readFileBounded reads p up to [maxValidateDocumentBytes], reporting
+// truncated=true rather than the file's full contents once that bound is
+// reached, the same shape [readStdinBounded] uses for a pipe. The two
+// differ only in what a caller does with "too big": stdin refuses the whole
+// command, because it named exactly one document to check, while a
+// directory-walk read simply drops the one file that would not classify as a
+// Flowfile at that size anyway, and continues sweeping the rest.
+func readFileBounded(p string) (data []byte, truncated bool, err error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+
+	data, err = io.ReadAll(io.LimitReader(f, maxValidateDocumentBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) > maxValidateDocumentBytes {
+		return nil, true, nil
+	}
+	return data, false, nil
 }
 
 // checkStdinArg refuses a mix of "-" and a real path in one invocation, with
@@ -168,18 +222,18 @@ func checkStdinArg(paths []string) error {
 	return errors.New(`"-" (read stdin) cannot be combined with another path in one invocation; validate one document at a time`)
 }
 
-// readStdinBounded reads stdin up to [maxStdinBytes], refusing rather than
+// readStdinBounded reads stdin up to [maxValidateDocumentBytes], refusing rather than
 // truncating when the sender has more to say: a truncated document would be
 // validated as something the caller never wrote, which is a worse answer
 // than refusing outright. The +1 is what tells "exactly at the bound" apart
 // from "more than the bound"; nothing else needs to be read to know which.
 func readStdinBounded(stdin io.Reader) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(stdin, maxStdinBytes+1))
+	data, err := io.ReadAll(io.LimitReader(stdin, maxValidateDocumentBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading stdin: %w", err)
 	}
-	if len(data) > maxStdinBytes {
-		return nil, fmt.Errorf("stdin exceeds the %d byte limit for a Flowfile", maxStdinBytes)
+	if len(data) > maxValidateDocumentBytes {
+		return nil, fmt.Errorf("stdin exceeds the %d byte limit for a Flowfile", maxValidateDocumentBytes)
 	}
 	return data, nil
 }

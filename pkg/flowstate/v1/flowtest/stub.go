@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -352,6 +353,12 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 		activation := stubActivation(ctx, scope, native)
 
 		var verdicts []stubVerdict
+		// sawEvalErr tracks whether any tried matcher's where: failed to
+		// evaluate, so the final failure keeps ErrorKindExpression rather than
+		// misreporting a broken CEL expression as ErrorKindInvalidInput; see
+		// below, where the loop no longer returns the moment one matcher
+		// errors.
+		var sawEvalErr bool
 
 		for _, m := range s.matchers {
 			// A step-form stub answers only its own step's invocations, told
@@ -369,7 +376,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			ok, matchErr := m.matches(ctx, scope.GetProfile(), activation)
 			verdicts = append(verdicts, stubVerdict{whereSource: m.whereSource, matched: ok, err: matchErr})
 			if matchErr != nil {
-				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, matchErr)
+				// Not returned immediately: a broken where: on one stub must
+				// not hide a later stub that matches cleanly, and must not
+				// make [stubVerdict.err] unreachable from the diagnostic this
+				// invocation ultimately reports if nothing does match (#386
+				// follow-up), recorded above and surfaced below either way.
+				sawEvalErr = true
+				continue
 			}
 			if !ok {
 				continue
@@ -391,7 +404,17 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
 		}
 
-		return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput,
+		// A where: that failed to evaluate is a broken expression, the same
+		// kind [m.matches] itself would have reported had this returned
+		// immediately; a where: that merely evaluated false is an ordinary
+		// unmatched invocation. The diagnostic text is identical either way,
+		// which is the point: the kind is what a caller's retry: policy
+		// reads, and it must still name the real cause.
+		kind := v1.ErrorKindInvalidInput
+		if sawEvalErr {
+			kind = v1.ErrorKindExpression
+		}
+		return nil, v1.NewTaskError(name, kind,
 			unmatchedStubError(name, len(s.matchers), native, secretNames,
 				sensitiveNativeValues(scope, sensitiveInputNames), verdicts))
 	}
@@ -550,28 +573,106 @@ func isSensitiveValue(v any, sensitiveValues []any) bool {
 	return false
 }
 
+// redactSensitiveTree walks v and replaces every value that [isSensitiveValue]
+// recognizes, at any depth, with a marker string.
+//
+// A `map[string]any` or `[]any` compares as a whole against reflect.DeepEqual,
+// so a top-level check alone misses the far more common shape: a sensitive
+// scalar carried *inside* a structured input, such as `headers: {Authorization:
+// ${inputs.token}}`. The whole headers map is never equal to the token; only
+// one leaf of it is, so the leaf has to be checked on its own (#386
+// follow-up). The recursion mirrors the two structured shapes an input can
+// hold ([invocationNativeInputs] never produces anything else): a map keyed
+// by string, and a list.
+func redactSensitiveTree(v any, sensitiveValues []any) any {
+	if isSensitiveValue(v, sensitiveValues) {
+		return sensitiveMarker
+	}
+
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = redactSensitiveTree(e, sensitiveValues)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redactSensitiveTree(e, sensitiveValues)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// sensitiveMarker is what a redacted leaf renders as inside a structure:
+// deliberately not shaped like a value the workload could have produced
+// itself, the same discipline [formatUnmatchedStubValue]'s own top-level
+// marker follows.
+const sensitiveMarker = "[redacted]"
+
+// redactSensitiveSubstrings is the backstop for a sensitive value that
+// reaches the invocation as part of a larger string rather than as the whole
+// value or a map/list leaf: `"Bearer " + inputs.token` renders as one
+// string, which [redactSensitiveTree] cannot see into because nothing about
+// the concatenated result equals the token on its own. Every sensitive
+// string value's exact text is replaced wherever it occurs in rendered, so
+// the credential cannot survive by being wrapped in unrelated characters.
+func redactSensitiveSubstrings(rendered string, sensitiveValues []any) string {
+	for _, sv := range sensitiveValues {
+		s, ok := sv.(string)
+		if !ok || s == "" {
+			continue
+		}
+		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
+	}
+	return rendered
+}
+
+// truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
+// at a rune boundary rather than a byte offset. A byte cut through the
+// middle of a multi-byte UTF-8 sequence produces invalid UTF-8, which
+// encoding/json (and so `-o json`, via protojson) refuses to encode as a
+// string at all, turning one test's overlong value into every case's JSON
+// report failing to marshal, not just this one line's own display (#386
+// follow-up).
+func truncateRuneSafe(rendered string, max int) string {
+	if len(rendered) <= max {
+		return rendered
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(rendered[cut]) {
+		cut--
+	}
+	return rendered[:cut] + "...(truncated)"
+}
+
 // formatUnmatchedStubValue renders one invocation input for the failure
 // message: redacted when it is a secret reference or traces back to a
-// sensitive workflow input, quoted and bounded otherwise. It never returns a
-// resolved secret's plaintext or a sensitive input's value in the clear;
-// see [invocationNativeInputs]'s doc for why that distinction has to survive
-// past evaluation and into anything printed.
+// sensitive workflow input at any depth, quoted and bounded otherwise. It
+// never returns a resolved secret's plaintext or a sensitive input's value in
+// the clear, at the top level, nested inside a structure, or concatenated
+// into a larger string; see [invocationNativeInputs]'s doc for why that
+// distinction has to survive past evaluation and into anything printed.
 func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues []any) string {
 	if isSecret || isSensitiveValue(v, sensitiveValues) {
 		return fmt.Sprintf("[redacted: %s]", name)
 	}
 
+	redacted := redactSensitiveTree(v, sensitiveValues)
+
 	var rendered string
-	if s, ok := v.(string); ok {
+	if s, ok := redacted.(string); ok {
 		rendered = strconv.Quote(s)
 	} else {
-		rendered = fmt.Sprintf("%v", v)
+		rendered = fmt.Sprintf("%v", redacted)
 	}
 
-	if len(rendered) > maxUnmatchedStubValueLen {
-		rendered = rendered[:maxUnmatchedStubValueLen] + "...(truncated)"
-	}
-	return rendered
+	rendered = redactSensitiveSubstrings(rendered, sensitiveValues)
+
+	return truncateRuneSafe(rendered, maxUnmatchedStubValueLen)
 }
 
 // unmatchedStubError builds the diagnostic for a task invocation no declared
