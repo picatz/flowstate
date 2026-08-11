@@ -516,6 +516,15 @@ func CheckUndoPlacement(node *Node, placement UndoScope) error {
 				node.GetId())
 		}
 
+		if _, isValue := node.GetKind().(*Node_Value); isValue {
+			return fmt.Errorf(
+				"`undo:` is only supported on a step that runs a task, and step %q is a `value:`; "+
+					"a value computes an expression and changes nothing outside the run, so there is "+
+					"nothing to take back; write the compensation on the steps whose effects the "+
+					"value decides",
+				node.GetId())
+		}
+
 		return fmt.Errorf(
 			"`undo:` is only supported on a step that runs a task, and step %q is control "+
 				"flow; a wait and a parallel block have no effect of their own to take back, "+

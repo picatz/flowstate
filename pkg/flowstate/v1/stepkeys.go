@@ -56,6 +56,13 @@ var grammarStepKeys = []string{
 	"wait_for_signal",
 	"call",
 
+	// A value the step names, computed from an expression the engine evaluates.
+	// Reserved before it was built, like `undo:` above, and moved here from
+	// [futureStepKeys] when it became grammar, which is the whole point of
+	// holding a word: the design that named it as a step key got it, and no
+	// plugin had been able to claim it in the meantime.
+	"value",
+
 	// The arguments a `call:` binds the callee's declared inputs with. Only
 	// meaningful beside `call:`, exactly as `steps:` is only meaningful beside
 	// `for_each:` — but a step property nonetheless, in the same sense `undo:`
@@ -106,15 +113,16 @@ var grammarStepKeys = []string{
 var futureStepKeys = []string{
 	"needs",
 
-	// Refused-for-now node kinds docs/DSL.md names as held ("`value:` is
-	// refused, for now"): a pure computed-value step and a pure assertion step,
-	// each deferred until a corpus file hurts without it. The doc promised in as
-	// many words that both "join the reserved list so no plugin takes it in the
-	// meantime" — a promise this list did not keep until an audit read it as an
-	// assertion and found a plugin could register either name. These are step
-	// keys in a design that named them as step keys, which is exactly the bar
-	// the comment above sets.
-	"value",
+	// A pure assertion step, held on the terms docs/DSL.md sets out: it is pure,
+	// so it would be a node kind, and `if:` plus a failing step nearly covers
+	// it. Reserved because it is a step key in a design that named it as one,
+	// which is exactly the bar the comment above sets. It is the promise the doc made
+	// in as many words, that a held kind "joins the reserved list so no plugin
+	// takes it in the meantime", and which this list did not keep until an audit
+	// read it as an assertion.
+	//
+	// `value:` sat here beside it and is now grammar; the move is what the
+	// reservation was for.
 	"assert",
 }
 

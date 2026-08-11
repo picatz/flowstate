@@ -137,6 +137,13 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				}},
 			},
 			{
+				// A `value:`, so this fixture reaches the key. Its expression
+				// reads nothing outside itself, so it round-trips and validates
+				// wherever it sits in the list.
+				Id:   "named",
+				Kind: &v1.Node_Value{Value: v1.NewExpr("1 + 1")},
+			},
+			{
 				Id: "branches",
 				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
 					Branches: []*v1.Parallel_Branch{
@@ -1315,6 +1322,8 @@ steps:
         - id: page
           log:
             message: hi
+  - id: named
+    value: ${1 + 1}
   - id: branches
     parallel:
       - steps:

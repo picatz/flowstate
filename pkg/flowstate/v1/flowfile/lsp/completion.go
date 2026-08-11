@@ -132,6 +132,16 @@ var dslKeys = map[string][]dslKey{
 		{name: "call", detail: "string", docs: "Run another Flowfile as a step, resolved relative to *this file's* own directory at compile time. " + oneStepKind + "\n\n" +
 			"The callee runs isolated: its steps see only its bound arguments (`with:`) and the profile, not this file's steps or `vars:`. " +
 			"What it declares in its own `outputs:` comes back under this step's id, the way a task's would."},
+		{name: "value", detail: "expression", docs: "Names a computed value, so a fact the file states once can be read everywhere it matters. " + oneStepKind + "\n\n" +
+			"```yaml\n- id: cleared_to_move\n  value: ${" + v1.InputsRoot + ".amount_cents < " + v1.InputsRoot + ".approval_threshold_cents || " +
+			v1.StepsRoot + ".approval.outcome == \"approved\"}\n```\n\n" +
+			"Read as `${" + v1.StepsRoot + ".<id>." + v1.ValueOutput + "}`: an ordinary named output called `" + v1.ValueOutput + "`, not a special whole-step form, so every tool that reads outputs reads this one the same way. " +
+			"Negation is `${!" + v1.StepsRoot + ".cleared_to_move." + v1.ValueOutput + "}`: one spelling of the fact and one `!`, instead of a hand-expanded complement that can drift from the thing it negates.\n\n" +
+			"Evaluated in the workflow, in written order, against exactly what a task's inputs written in the same place would see: `" + v1.VarsRoot + ".<name>`, `" + v1.InputsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding. " +
+			"The result may be anything an output can hold, a list or a mapping as readily as a boolean.\n\n" +
+			"It is not a task and schedules nothing, so `retry:`, `timeout:` and `undo:` are refused on it: a pure expression has nothing to attempt again, nothing to bound beyond the cost limit every expression shares, and no effect to take back. " +
+			"An `if:` composes as it does anywhere; a value that is skipped produces no outputs, and a later reference to it does not resolve.\n\n" +
+			"A `${secret(...)}` reference may not be written here, for the reason it may not go in `vars:`: the workflow evaluates this, and what the workflow evaluates is written to durable history."},
 		{name: "if", detail: "expression", docs: "A condition deciding whether the step runs, written as `${...}`. A step that is skipped produces no outputs."},
 		{name: "vars", detail: "map", docs: "Names values for this step, read *bare*: `${modified}`.\n\n" +
 			"Bare rather than rooted because these are author-chosen and lexically local (the same standing as the name a loop binds), where the workflow's `vars:` are ambient and so are rooted. " +
@@ -783,6 +793,23 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 	case s.parallelEntry != nil:
 		c.detail = "parallel"
 		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
+
+	case s.valueEntry != nil:
+		// The only candidate here whose output set is fixed by the *grammar*
+		// rather than read from a descriptor, a shaping expression, or a sender.
+		// So it is the one menu that can be complete with nothing consulted, and
+		// the one that has exactly one honest answer after the dot, which is the
+		// ergonomic half of the argument the `.value` spelling was chosen on.
+		c.detail = "value"
+		c.docs = fmt.Sprintf(
+			"A computed value, evaluated in the workflow where it is written. Read the whole of it as %s.",
+			rootedRef(s.id, v1.ValueOutput))
+		c.outputs = []refOutput{{
+			name:   v1.ValueOutput,
+			detail: "the computed value",
+			docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
+				"so this is the whole of what it contributes.",
+		}}
 
 	default:
 		if def, ok := tasks.Lookup(s.taskName); ok {

@@ -187,7 +187,7 @@ func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[
 
 // stepTasks walks a compiled workflow and returns two maps: every task step's id
 // to the task it invokes, and every non-task step's id to a word naming its kind
-// (`wait`, `loop`, `for_each`, `call`). Together they cover every step a
+// (`wait`, `loop`, `for_each`, `call`, `value`). Together they cover every step a
 // step-form stub could name, so a stub aimed at a wait is told apart from one
 // aimed at nothing.
 //
@@ -207,6 +207,19 @@ func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[
 				kindOfStep[node.GetId()] = "wait"
 			case *v1.Node_Call:
 				kindOfStep[node.GetId()] = "call"
+			case *v1.Node_Value:
+				// A step that exists and runs no task, so it belongs in the map
+				// that tells those apart from a typo. Without this arm a stub
+				// aimed at a value step was answered with "unknown step, which
+				// this workflow has no task step for", a sentence that is false
+				// twice over about a step written three lines above it, and one
+				// that sends an author looking for a misspelling.
+				//
+				// It is also the kind most likely to be aimed at by mistake: a
+				// value is exactly the sort of thing a test wants to force, and
+				// the honest answer is that there is nothing to stub, because
+				// nothing is invoked. The expression is the value.
+				kindOfStep[node.GetId()] = "value"
 			case *v1.Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
 					walk(branch.GetSteps())

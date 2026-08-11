@@ -494,9 +494,33 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 	case *v1.Node_Call:
 		return e.runCall(node, kind.Call, depth, susp, descend)
 
+	case *v1.Node_Value:
+		return e.runValue(node, kind.Value)
+
 	default:
 		return &ErrRunFailed{Message: fmt.Sprintf("unsupported node kind: %T", node.Kind)}
 	}
+}
+
+// runValue evaluates a `value:` step and records what it computed.
+//
+// In workflow code and not in an activity, which is the same position the local
+// driver evaluates it at and the same position `if:` and `items:` are already
+// evaluated at. That is what makes it replay-safe rather than merely cheap: a
+// pure expression over the run's own state produces the same answer on every
+// replay, so there is nothing here for history to remember beyond the outputs.
+//
+// [v1.EvalValueNode] is the local driver's function unchanged. A value's whole
+// observable behaviour is the answer it computed, so the two drivers share the
+// one that computes it.
+func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
+	outputs, err := v1.EvalValueNode(context.Background(), value, e.scope)
+	if err != nil {
+		return nodeFailed(err)
+	}
+	e.scope.Outputs.StepValues[node.GetId()] = outputs
+
+	return nil
 }
 
 // runTask schedules one task activity and records its outputs.

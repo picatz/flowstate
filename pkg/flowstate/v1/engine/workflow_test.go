@@ -854,6 +854,45 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowValue is the durable half of `value:`. See the local driver's
+// TestRunWorkflowValue, which runs the identical [tests.ValueCases].
+//
+// The answer, the name it is recorded under, and what a skipped one leaves behind
+// all have to hold here exactly as they do locally, because each is decided by the
+// one function both drivers call ([v1.EvalValueNode]) at the one position both
+// drivers evaluate it in: workflow code, in written order. Nothing is scheduled,
+// so no activity mock stands between this and the answer, which is the whole
+// reason a value replays rather than being remembered.
+func TestRunWorkflowValue(t *testing.T) {
+	for _, test := range tests.ValueCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				require.Error(t, env.GetWorkflowError(),
+					"reading a value that never ran was expected to fail the run")
+				return
+			}
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsRefused is the negative direction, against the durable
 // driver's own submit boundary.
 //
