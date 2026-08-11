@@ -217,3 +217,52 @@ steps:
 	// arrived carrying one would be describing a deployment it has never seen.
 	require.Empty(t, wf.GetResolvedPlugins())
 }
+
+// TestPluginsSurviveARoundTrip is the `flow fix` guard, and the same shape as
+// TestStepVarsSurviveARoundTrip in vars_test.go: a key the parser reads but
+// Marshal does not write is not a formatting bug, it is `flow fmt` deleting a
+// section from a valid file. #455 was exactly this hole for `plugins:`.
+//
+// Checked as bytes rather than by parsing the result and asking whether it
+// still validates, because a validating file is not the claim being tested -
+// the claim is that Marshal writes the block back verbatim, in the position
+// the parser reads it in and both examples in examples/plugins/ write it in:
+// directly under the description, above everything the run computes.
+func TestPluginsSurviveARoundTrip(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.2
+name: needs-a-plugin
+description: uses a plugin task
+plugins:
+  git: v0.1.0
+  sql: v2.3.4
+vars:
+  region: eu-west-1
+steps:
+- id: a
+  log:
+    message: hi
+`
+
+	wf, _, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err)
+
+	out, err := flowfile.Marshal(wf)
+	require.NoError(t, err)
+
+	// The whole file, not a substring: this source is already in Marshal's own
+	// canonical layout, so a correct Marshal reproduces it exactly. Before the
+	// fix, Marshal dropped the `plugins:` block entirely and this comparison
+	// failed with the block missing from the output.
+	require.Equal(t, src, string(out), "Marshal did not reproduce the plugins: block byte for byte")
+
+	// And the order is preserved, not merely the presence: several requirements
+	// went in, and a compiler that kept only one or reordered them would still
+	// pass a substring check.
+	require.Len(t, wf.GetPluginRequirements(), 2)
+
+	again, err := flowfile.Unmarshal(out)
+	require.NoError(t, err, "a marshalled file did not parse:\n%s", out)
+	require.Equal(t, wf.GetPluginRequirements(), again.GetPluginRequirements())
+}

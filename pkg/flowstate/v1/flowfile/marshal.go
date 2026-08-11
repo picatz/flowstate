@@ -45,6 +45,13 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "description", Value: wf.GetDescription()})
 	}
 
+	// What the workflow needs from the deployment that runs it, above the inputs the
+	// run itself takes: the same position both examples in examples/plugins/ write
+	// it in, directly under the description and before anything the run computes.
+	if requirements := wf.GetPluginRequirements(); len(requirements) > 0 {
+		doc = append(doc, yaml.MapItem{Key: "plugins", Value: pluginRequirementsToYAML(requirements)})
+	}
+
 	// What the run takes, above everything that reads it — the order the parser
 	// reads these in, and the order a reader meets them in.
 	if len(wf.GetDeclaredInputs()) > 0 {
@@ -109,6 +116,20 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	}
 
 	return yaml.Marshal(doc)
+}
+
+// pluginRequirementsToYAML writes the `plugins:` block.
+//
+// In declaration order rather than sorted, for the reason `declaredInputsToYAML`
+// gives: [v1.Workflow.PluginRequirements] is a repeated field, so the order is a
+// fact the document carries rather than an artifact of a protobuf map, and
+// sorting it would make `flow fix` reorder a file an author arranged on purpose.
+func pluginRequirementsToYAML(requirements []*v1.PluginRequirement) yaml.MapSlice {
+	out := make(yaml.MapSlice, 0, len(requirements))
+	for _, requirement := range requirements {
+		out = append(out, yaml.MapItem{Key: requirement.GetName(), Value: requirement.GetMinimumVersion()})
+	}
+	return out
 }
 
 // stepsToYAML writes a list of steps, recursing through nested control flow so
