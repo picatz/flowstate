@@ -192,11 +192,28 @@ func namespaceNameFor(t *testing.T) string {
 }
 
 // startWorker runs the engine's workflow and activities against one namespace,
-// stopping when the test does.
+// stopping when the test does, with the SDK's own worker defaults.
+//
+// Those defaults are what almost every test here wants, because a worker
+// configured for a test is a worker no deployment runs.
 func startWorker(t *testing.T, temporal client.Client) {
 	t.Helper()
 
-	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
+	startWorkerWithOptions(t, temporal, worker.Options{})
+}
+
+// startWorkerWithOptions is startWorker for the tests that have something to say
+// about the worker itself.
+//
+// One such test exists: the run that grows until it cannot be carried forward
+// raises the deadlock budget, for the reason
+// [tests.BoundaryDeadlockDetectionTimeout] gives. Keeping the option at the call
+// site rather than in the shared helper is the point, so that a worker with a
+// budget nobody deploys is visibly the exception it is.
+func startWorkerWithOptions(t *testing.T, temporal client.Client, options worker.Options) {
+	t.Helper()
+
+	w := worker.New(temporal, engine.RunTaskQueueName, options)
 	engine.Register(w)
 
 	require.NoError(t, w.Start())
