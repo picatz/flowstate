@@ -162,3 +162,127 @@ tests:
 	require.Contains(t, c.GetError(), "mixes literal text with an expression")
 	require.Contains(t, c.GetError(), "returns")
 }
+
+// unmatchedStubWorkflow is a single log step whose message is built from a
+// non-sensitive input and a sensitive one, used by the tests below to check
+// what an unmatched-stub failure prints about the invocation it could not
+// answer (#386).
+const unmatchedStubWorkflow = `
+edition: v2026.2
+name: greet
+inputs:
+  name:
+    type: string
+    required: true
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: greet
+    log:
+      message: ${"hello, " + inputs.name}
+outputs: {}
+`
+
+// TestUnmatchedStubReportsTheInvocationInputs is the positive direction of
+// #386: when a task is invoked with no matching stub, the failure names the
+// invocation's own inputs and every tried stub's `where:` beside its verdict,
+// instead of leaving the reader to reconstruct what the invocation carried.
+func TestUnmatchedStubReportsTheInvocationInputs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", unmatchedStubWorkflow)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: the greeting uses the input it was given
+    workflow: ./workflow.yaml
+    inputs:
+      name: flowstate
+      token: shh-secret-value
+    stubs:
+      - task: log
+        where: inputs.message == 'goodbye, flowstate'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		// The invocation's actual input, which the old message never showed.
+		require.Contains(t, msg, `"hello, flowstate"`)
+		// The where: clause that did not match, and its verdict.
+		require.Contains(t, msg, "inputs.message == 'goodbye, flowstate'")
+		require.Contains(t, msg, "-> false")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic showing the invocation's inputs; got %v", c.GetFailures())
+}
+
+// TestUnmatchedStubRedactsASensitiveInput is the negative direction: a value
+// that traces back to an input the workflow declared `sensitive:` must not
+// appear in the clear in an unmatched-stub failure, even though that failure
+// text is exactly the kind of surface that ends up in CI logs (CLAUDE.md,
+// "diagnostics are a feature" and the sensitive-input containment rules).
+func TestUnmatchedStubRedactsASensitiveInput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.2
+name: greet
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: greet
+    log:
+      message: ${inputs.token}
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: the sensitive value never reaches the failure text
+    workflow: ./workflow.yaml
+    inputs:
+      token: shh-secret-value
+    stubs:
+      - task: log
+        where: inputs.message == 'goodbye, flowstate'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		require.NotContains(t, msg, "shh-secret-value")
+		require.Contains(t, msg, "[redacted: message]")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic redacting the sensitive input; got %v", c.GetFailures())
+}
