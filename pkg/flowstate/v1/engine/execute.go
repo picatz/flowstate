@@ -201,6 +201,14 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 				return err
 			}
 			if !node.GetPolicy().GetContinueOnError() {
+				// Recorded on the way out, under the same key and in the same shape a
+				// tolerated failure is recorded in, so the [v1.PartialTranscript] this
+				// run hands back names the step it stopped on. Nothing else can observe
+				// it: the run is over and no later step evaluates against this scope.
+				// The local driver records at the identical point, and it has to, or the
+				// two drivers would disagree about what a failed run did.
+				e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+
 				// The step's position is added here, on the way out, rather than
 				// where the failure was raised — so that the branch below, which
 				// keeps the failure inside this step, records it without naming

@@ -139,9 +139,10 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // The spec and transcript it returns beside the case are what branch coverage
 // is computed from ([Coverage]): spec is the workflow this case compiled and
 // ran (nil when it never compiled one), and transcript is the step outputs the
-// run produced (nil when the run failed, which returns none). Both are the same
-// values the verdict itself was reached against, so coverage counts a step
-// reached on exactly the evidence `expect.ran` counts on.
+// run produced, the partial one when the run failed ([v1.PartialTranscript]),
+// nil only when the case never reached a run at all. Both are the same values the
+// verdict itself was reached against, so coverage counts a step reached on
+// exactly the evidence `expect.ran` counts on.
 func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
@@ -285,9 +286,12 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 	close(runFinished)
 
 	// The transcript coverage reads is the same one the verdict does. A failed
-	// run returns none, so a case that failed contributes its workflow's steps
-	// to the universe and reaches nothing, the honest account, since there is
-	// no record of what ran before the failure.
+	// run hands back the partial one ([v1.PartialTranscript]): the steps it ran
+	// before it stopped, and the step it stopped on. So a case whose whole point
+	// is `expect.failed: true` credits the branch it actually exercised instead
+	// of contributing its workflow's steps to the universe and reaching none of
+	// them (issue #453), and `expect.ran`/`expect.skipped` read the same record,
+	// which is what keeps the two from disagreeing about one run.
 	transcript = outputs
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
@@ -616,14 +620,6 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 		}
 	}
 
-	// A failed run has no step outputs to compare Ran/Skipped/Outputs against
-	// in the ordinary sense — [v1.RunWithInputs] returns nil on failure — so
-	// those assertions are skipped rather than reported as additional
-	// failures once Failed has already said what needed saying.
-	if failed {
-		return failures
-	}
-
 	for _, step := range want.Ran {
 		if _, ok := outputs.GetStepValues()[step]; !ok {
 			failures = append(failures, &v1.Diagnostic{
@@ -633,7 +629,31 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 			})
 		}
 	}
+	// On a failed run, a parallel branch step's absence is unknowable rather
+	// than evidence: branch outputs merge to the top level only when the block
+	// completes, and [v1.PartialTranscript] deliberately carries no unmerged
+	// branch scope, so an absent branch step may have run right up to the
+	// failure. The transcript cannot tell that apart from a genuine skip, and
+	// fail closed (CLAUDE.md) means an unverifiable claim is refused, not
+	// accepted. Judged before the absence check below so the refusal wins.
+	branchSteps := map[string]bool{}
+	if failed {
+		parallelBranchSteps(spec.GetSteps(), branchSteps)
+	}
 	for _, step := range want.Skipped {
+		if failed && branchSteps[step] {
+			if _, ok := outputs.GetStepValues()[step]; !ok {
+				failures = append(failures, &v1.Diagnostic{
+					Step:  step,
+					Field: "expect.skipped",
+					Message: fmt.Sprintf(
+						"step %q is inside a parallel block and the run failed, so its absence from "+
+							"the transcript cannot be told apart from the block not finishing; assert a "+
+							"top-level step, or expect the run to succeed, to make this claim checkable", step),
+				})
+				continue
+			}
+		}
 		if _, ok := outputs.GetStepValues()[step]; ok {
 			failures = append(failures, &v1.Diagnostic{
 				Step:    step,
@@ -667,6 +687,19 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 			if named[id] {
 				continue
 			}
+			if failed && branchSteps[id] {
+				if _, ran := outputs.GetStepValues()[id]; !ran {
+					failures = append(failures, &v1.Diagnostic{
+						Step:  id,
+						Field: "expect.others",
+						Message: fmt.Sprintf(
+							"step %q is inside a parallel block and the run failed, so `others: skipped` "+
+								"cannot verify it was skipped rather than lost with the unfinished block; name "+
+								"it in ran:, or expect the run to succeed, to make the closed claim checkable", id),
+					})
+					continue
+				}
+			}
 			if _, ran := outputs.GetStepValues()[id]; ran {
 				failures = append(failures, &v1.Diagnostic{
 					Step:  id,
@@ -677,6 +710,17 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 				})
 			}
 		}
+	}
+
+	// `outputs:` is the one expectation a failed run still cannot answer. A run's
+	// declared outputs are the answer it was asked for, and [v1.PartialTranscript]
+	// deliberately carries none: a failed run has no answer, so comparing against
+	// an absent one would report every declared output missing on top of the
+	// failure the case already said it wanted. Ran/Skipped/Others above are a
+	// different question, what the run *did*, and the partial transcript is
+	// exactly the record of that.
+	if failed {
+		return failures
 	}
 
 	if want.Outputs != nil {
@@ -698,6 +742,36 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 // body step is not a step `others: skipped` can claim was skipped. This is
 // coverage's [collectStepUniverse] with the one deliberate difference that it
 // stops at a loop container.
+
+// parallelBranchSteps collects every step id declared inside a parallel
+// block's branches, at any nesting depth. On a failed run these are the ids
+// whose absence from the transcript is unknowable: their outputs merge to the
+// top level only when their block completes.
+func parallelBranchSteps(nodes []*v1.Node, out map[string]bool) {
+	for _, node := range nodes {
+		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
+			for _, branch := range parallel.Parallel.GetBranches() {
+				collectStepIDs(branch.GetSteps(), out)
+			}
+			continue
+		}
+	}
+}
+
+// collectStepIDs records every node id in nodes, recursing into parallel
+// branches, so a nested block's steps are counted too.
+func collectStepIDs(nodes []*v1.Node, out map[string]bool) {
+	for _, node := range nodes {
+		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
+			for _, branch := range parallel.Parallel.GetBranches() {
+				collectStepIDs(branch.GetSteps(), out)
+			}
+			continue
+		}
+		out[node.GetId()] = true
+	}
+}
+
 func topLevelStepUniverse(nodes []*v1.Node, universe map[string]bool) {
 	for _, node := range nodes {
 		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
