@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,9 @@ func TestExitCodeForClassifiesUsageVersusOrdinaryFailure(t *testing.T) {
 		{"an unknown command", errUsageText(`unknown command "nope" for "flow"`), exitCodeUsage},
 		{"too many arguments", errUsageText(`accepts 1 arg(s), received 3`), exitCodeUsage},
 		{"a flag missing its value", errUsageText(`flag needs an argument: --address`), exitCodeUsage},
+		{"a missing required flag", errUsageText(`required flag(s) "out" not set`), exitCodeUsage},
+		{"flags required together", errUsageText(`if any flags in the group [a b] are set they must all be set; missing [b]`), exitCodeUsage},
+		{"one flag of a group required", errUsageText(`at least one of the flags in the group [a b] is required`), exitCodeUsage},
 
 		{"a run that failed", errUsageText(`run "x" failed: step "web": 500`), exitCodeFailure},
 		{"a server that refused", errUsageText(`unauthenticated: no token`), exitCodeFailure},
@@ -120,6 +124,14 @@ func TestCobraUsageErrorsMatchIsUsageError(t *testing.T) {
 		{"too few arguments", []string{"validate"}},
 		{"flag needs an argument", []string{"validate", "--output"}},
 		{"invalid argument to a typed flag", []string{"watch", "x", "--interval", "not-a-duration"}},
+
+		// picatz/flowstate#393: MarkFlagRequired's "required flag(s)" wording
+		// fell through isUsageError's prefix list the way "requires " (from
+		// MinimumNArgs, tested above as "too few arguments") did not, so a
+		// missing --out exited 1 with no "Try `flow --help`" hint while a
+		// missing positional argument exited 2 with one: the same mistake,
+		// classified two different ways.
+		{"missing required flag", []string{"keys", "generate"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := newRootCommand()
@@ -141,6 +153,76 @@ func TestCobraUsageErrorsMatchIsUsageError(t *testing.T) {
 
 			assert.Equal(t, exitCodeUsage, exitCodeFor(err),
 				"a command line cobra itself refused did not exit with the usage status")
+		})
+	}
+}
+
+// TestCobraFlagGroupErrorsMatchIsUsageError pins the two wordings
+// MarkFlagsRequiredTogether, MarkFlagsOneRequired and MarkFlagsMutuallyExclusive
+// produce, per picatz/flowstate#393's note that nothing in this tree uses them
+// yet, which is exactly when to pin a wording, before a command reaches for one
+// and silently inherits a gap nothing caught. Built as a standalone command
+// rather than found on the real tree, since none of the sixteen `-o` verbs (or
+// any other command here) declares a flag group today.
+func TestCobraFlagGroupErrorsMatchIsUsageError(t *testing.T) {
+	newGroupedCommand := func() *cobra.Command {
+		cmd := &cobra.Command{
+			Use:           "grouped",
+			SilenceUsage:  true,
+			SilenceErrors: true,
+			RunE:          func(*cobra.Command, []string) error { return nil },
+		}
+		cmd.Flags().String("a", "", "")
+		cmd.Flags().String("b", "", "")
+		cmd.Flags().String("c", "", "")
+		return cmd
+	}
+
+	for _, test := range []struct {
+		name  string
+		args  []string
+		setup func(cmd *cobra.Command)
+	}{
+		{
+			name: "required together",
+			args: []string{"--a", "x"},
+			setup: func(cmd *cobra.Command) {
+				cmd.MarkFlagsRequiredTogether("a", "b")
+			},
+		},
+		{
+			name: "one required",
+			args: []string{},
+			setup: func(cmd *cobra.Command) {
+				cmd.MarkFlagsOneRequired("a", "b")
+			},
+		},
+		{
+			name: "mutually exclusive",
+			args: []string{"--a", "x", "--b", "y"},
+			setup: func(cmd *cobra.Command) {
+				cmd.MarkFlagsMutuallyExclusive("a", "b")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := newGroupedCommand()
+			test.setup(cmd)
+
+			var out, errOut strings.Builder
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs(test.args)
+
+			err := cmd.Execute()
+			require.Error(t, err, "expected cobra to refuse this flag combination")
+
+			assert.True(t, isUsageError(err),
+				"cobra's flag-group wording no longer matches isUsageError's prefixes: %q",
+				err.Error())
+
+			assert.Equal(t, exitCodeUsage, exitCodeFor(err),
+				"a flag-group violation did not exit with the usage status")
 		})
 	}
 }

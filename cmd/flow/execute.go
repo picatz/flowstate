@@ -297,6 +297,9 @@ func isUsageError(err error) bool {
 		"invalid argument",
 		"accepts ",
 		"requires ",
+		"required flag(s)",
+		"if any flags in the group [",
+		"at least one of the flags in the group [",
 	} {
 		if strings.HasPrefix(text, prefix) {
 			return true
