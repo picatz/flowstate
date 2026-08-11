@@ -47,17 +47,24 @@ import (
 
 // A FixResult reports what [Fix] did to one document.
 type FixResult struct {
-	// Source is the rewritten document, or the original when nothing changed.
+	// Source is the rewritten document, or the original when nothing changed and
+	// when anything was refused. See [FixResult.Complete]: the rewrite is per
+	// document and all or nothing.
 	Source []byte
 
 	// Changes describes each edit made, in source order, for a caller that wants
 	// to tell an author what happened rather than only that something did.
+	//
+	// A document with refusals still lists every edit here, because the point of
+	// running to the end is that one run tells an author the whole of the work.
+	// None of them are in [FixResult.Source] in that case, which is why each
+	// change carries a [FixChange.Pending] spelling as well.
 	Changes []FixChange
 
 	// Refusals are the places the rewriter could not act on safely. A document
-	// with refusals is still rewritten everywhere else — stopping entirely would
-	// mean one unrewritable step blocks the other nine — but it is not finished,
-	// and a caller must say so.
+	// with refusals is walked to the end anyway, because stopping at the first
+	// would mean one unrewritable step hides the other nine, but nothing it found
+	// is applied: see [FixResult.Complete].
 	Refusals []Diagnostic
 
 	// Notes are places worth a human's eye that are not problems. A file with
@@ -71,16 +78,43 @@ type FixResult struct {
 	Notes []Diagnostic
 }
 
-// Changed reports whether the rewrite altered the document.
-func (r FixResult) Changed() bool { return len(r.Changes) > 0 }
+// Changed reports whether [FixResult.Source] differs from the document handed
+// in.
+//
+// Not "were there edits to make": a document with refusals has edits to make and
+// none of them applied, and a caller reading this to decide whether to write
+// bytes must be told about the bytes. [FixResult.Complete] and the length of
+// Changes answer the other question between them.
+func (r FixResult) Changed() bool { return len(r.Changes) > 0 && r.Complete() }
 
-// A FixChange is one edit the rewriter made.
+// Complete reports whether the whole document could be brought forward.
+//
+// A document is rewritten entirely or not at all (issue #382). Half a migration
+// is not a checkpoint an author can stand on: `flow fix` used to stamp the
+// current edition onto a file holding a step it had just refused to rewrite, so
+// the file claimed a grammar it was not written in, `flow validate` refused it,
+// and the author was left editing a document neither edition describes rather
+// than the one they wrote. Refusing to write is the only answer that leaves them
+// the file the diagnostics are about.
+func (r FixResult) Complete() bool { return len(r.Refusals) == 0 }
+
+// A FixChange is one edit the rewriter made, or would have made.
 type FixChange struct {
 	// Line is the 1-based line the change was made at.
 	Line int
 
 	// Message says what changed, in the terms an author wrote the file in.
 	Message string
+
+	// Pending says the same thing about an edit that has not happened: what
+	// `--check` reports, and what a run that refused something reports about the
+	// edits it therefore did not apply.
+	//
+	// Written out beside Message rather than derived from it, because deriving one
+	// tense from the other is a string transformation over prose, and a report is
+	// prose. The two are written in the same call so they cannot drift apart
+	// without both being in front of whoever changes one.
+	Pending string
 }
 
 // maxFixRounds bounds how many times [Fix] rewrites a document.
@@ -119,8 +153,75 @@ const maxFixRounds = 8
 // Changes accumulate across rounds because each is an edit genuinely made. Refusals and
 // notes come from the final round alone: they describe the document as it now stands,
 // and an earlier round's refusal may be about a step a later round went on to rewrite.
+//
+// # All of the document, or none of it
+//
+// A document with any refusal left at the end comes back byte for byte as it was
+// handed in, however much of it was rewritable. See [FixResult.Complete] for what
+// the half-rewritten alternative did to a file.
+//
+// Which decides where the rest of the report is measured from, and it is not
+// where a finished run measures. The paragraph above says refusals describe the
+// document as it now stands, meaning the fixed point, which is the right answer
+// while that document is the one about to be written. When nothing is going to be
+// written, the fixed point is a document that will never exist, and a diagnostic
+// positioned in it sends an author to a line of a file they do not have: the
+// mixed fixture below moved its refused step from line 10 to line 8 by rewriting
+// the step above it, so a run reporting line 8 while leaving the file alone names
+// `message: hello`. So an incomplete run reports the first pass instead, over the
+// document the author is still holding, and both its refusals and the edits it
+// found are positions in that file.
+
+// mergeRefusals combines the first pass's refusals with any a later round
+// added. A refusal the first pass already made is the same refusal, said about
+// the file that is staying, so its position wins. One only a later round made
+// names a shape that came out of an edit now not being made; its position is
+// the best there is, and dropping it would hide hand work the author has to
+// discover by fixing the first item and rerunning. No rewrite today produces a
+// refusable shape from a clean one, so the later list adds nothing yet; this
+// exists so a rewrite added tomorrow cannot silently shorten the report.
+// Matched by message, because positions move between rounds.
+func mergeRefusals(first, later []Diagnostic) []Diagnostic {
+	merged := slices.Clone(first)
+	seen := make(map[string]bool, len(first))
+	for _, r := range first {
+		seen[r.Message] = true
+	}
+	for _, r := range later {
+		if !seen[r.Message] {
+			merged = append(merged, r)
+		}
+	}
+	return merged
+}
+
 func Fix(data []byte) (FixResult, error) {
 	out := FixResult{Source: data}
+
+	var (
+		// first is the pass over the document as it was handed in, kept because it
+		// is the only pass whose positions are positions in a file that exists.
+		first FixResult
+
+		// stuck holds the refusal for rounds that never settle, which belongs to no
+		// round in particular and so survives the swap below.
+		stuck []Diagnostic
+	)
+
+	// Every return below goes through this, so that a path added later cannot be the
+	// one that writes half a migration out.
+	finish := func() FixResult {
+		if len(out.Refusals) == 0 && len(stuck) == 0 {
+			return out
+		}
+
+		return FixResult{
+			Source:   data,
+			Changes:  first.Changes,
+			Refusals: append(mergeRefusals(first.Refusals, out.Refusals), stuck...),
+			Notes:    first.Notes,
+		}
+	}
 
 	source := data
 	for round := 1; ; round++ {
@@ -128,29 +229,32 @@ func Fix(data []byte) (FixResult, error) {
 		if err != nil {
 			return FixResult{}, err
 		}
+		if round == 1 {
+			first = result
+		}
 
 		out.Source = result.Source
 		out.Changes = append(out.Changes, result.Changes...)
 		out.Refusals, out.Notes = result.Refusals, result.Notes
 
-		if !result.Changed() {
-			return out, nil
+		if len(result.Changes) == 0 {
+			return finish(), nil
 		}
 		source = result.Source
 
 		if round == maxFixRounds {
-			out.Refusals = append(out.Refusals, Diagnostic{
+			stuck = []Diagnostic{{
 				Line:   1,
 				Column: 1,
 				Message: fmt.Sprintf(
 					"this file was still changing after %d rewrites, which means two rules are undoing "+
-						"each other rather than that the file is large; what is written out is the "+
-						"last round's result, and the difference between it and the round before is "+
-						"the pair at fault",
+						"each other rather than that the file is large; nothing was written, because a "+
+						"document a pair of rules is fighting over has no round that is the right one "+
+						"to stop at",
 					maxFixRounds),
-			})
+			}}
 
-			return out, nil
+			return finish(), nil
 		}
 	}
 }
@@ -310,7 +414,10 @@ type lineEdit struct {
 }
 
 // record adds an edit, keeping the first when two overlap.
-func (f *fixer) record(line, through int, replacement []string, message string) {
+// Both spellings of the message are taken here, for the reason [FixChange.Pending]
+// gives: a run that does not write has to describe the same edit without claiming
+// it happened.
+func (f *fixer) record(line, through int, replacement []string, message, pending string) {
 	if f.edits == nil {
 		f.edits = make(map[int]lineEdit)
 	}
@@ -318,7 +425,7 @@ func (f *fixer) record(line, through int, replacement []string, message string) 
 		return
 	}
 	f.edits[line] = lineEdit{through: through, replacement: replacement}
-	f.changes = append(f.changes, FixChange{Line: line, Message: message})
+	f.changes = append(f.changes, FixChange{Line: line, Message: message, Pending: pending})
 }
 
 // refuse records a place the rewriter would have had to guess.
@@ -847,7 +954,8 @@ func (f *fixer) stampEdition(mapping *ast.MappingNode) {
 	// untouched.
 	f.record(line, line,
 		[]string{indent + "edition: " + CurrentEdition, f.line(line)},
-		"`edition: "+CurrentEdition+"` added, which is now required")
+		"`edition: "+CurrentEdition+"` added, which is now required",
+		"`edition: "+CurrentEdition+"` would be added, which is now required")
 }
 
 // edition brings a declared edition marker up to the current one.
@@ -909,7 +1017,8 @@ func (f *fixer) edition(entry *ast.MappingValueNode) {
 
 	f.record(keySpan.Start.Line, keySpan.Start.Line,
 		[]string{line[:from] + CurrentEdition + line[through:]},
-		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition))
+		fmt.Sprintf("edition %q updated to %q", declared, CurrentEdition),
+		fmt.Sprintf("edition %q would be updated to %q", declared, CurrentEdition))
 }
 
 // A stepScope is what the walk knows about a step that the step itself cannot see.
@@ -1124,7 +1233,8 @@ func (f *fixer) renamedKey(n ast.Node, was, now string) {
 
 		f.record(span.Start.Line, span.Start.Line,
 			[]string{line[:at] + now + line[at+len(was):]},
-			fmt.Sprintf("`%s:` renamed to `%s:`", was, now))
+			fmt.Sprintf("`%s:` renamed to `%s:`", was, now),
+			fmt.Sprintf("`%s:` would be renamed to `%s:`", was, now))
 	}
 }
 
@@ -1256,7 +1366,8 @@ func (f *fixer) taskBlock(entry *ast.MappingValueNode) {
 	}
 
 	f.record(keySpan.Start.Line, through, replacement,
-		fmt.Sprintf("`task:` naming %q rewritten to `%s:`", taskName, taskName))
+		fmt.Sprintf("`task:` naming %q rewritten to `%s:`", taskName, taskName),
+		fmt.Sprintf("`task:` naming %q would be rewritten to `%s:`", taskName, taskName))
 }
 
 // inputLines renders a task's inputs dedented by one level under the task's key.
@@ -2130,6 +2241,7 @@ func (f *fixer) rootResponseScalar(node *ast.StringNode) {
 	f.changes = append(f.changes, FixChange{
 		Line:    span.Start.Line,
 		Message: "response references rooted under `" + v1.ResponseRoot + ".`",
+		Pending: "response references would be rooted under `" + v1.ResponseRoot + ".`",
 	})
 }
 
@@ -2179,6 +2291,7 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 	f.changes = append(f.changes, FixChange{
 		Line:    span.Start.Line,
 		Message: fmt.Sprintf("step references rooted under `%s`", v1.StepsRoot),
+		Pending: fmt.Sprintf("step references would be rooted under `%s`", v1.StepsRoot),
 	})
 }
 

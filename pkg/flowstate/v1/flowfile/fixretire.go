@@ -529,7 +529,9 @@ func (f *fixer) deleteStep(step *ast.MappingNode) {
 
 	through := f.blockEnd(span.Start.Line, span.Start.Column-2)
 
-	f.record(first, through, nil, "step moved into `"+varsKey+":` and removed")
+	f.record(first, through, nil,
+		"step moved into `"+varsKey+":` and removed",
+		"step would move into `"+varsKey+":` and be removed")
 }
 
 // dashLineAbove returns the line holding the sequence dash a step's keys begin
@@ -603,7 +605,8 @@ func (f *fixer) writeMovedVars(mapping *ast.MappingNode) {
 		}
 		last := f.blockEnd(keySpan.Start.Line, keySpan.Start.Column-1)
 		f.record(last, last, append([]string{f.line(last)}, lines...),
-			fmt.Sprintf("%d step(s) moved into `%s:`", len(f.movedVars), varsKey))
+			fmt.Sprintf("%d step(s) moved into `%s:`", len(f.movedVars), varsKey),
+			fmt.Sprintf("%d step(s) would move into `%s:`", len(f.movedVars), varsKey))
 
 		return
 	}
@@ -622,7 +625,8 @@ func (f *fixer) writeMovedVars(mapping *ast.MappingNode) {
 		block := append([]string{varsKey + ":"}, lines...)
 		f.record(keySpan.Start.Line, keySpan.Start.Line,
 			append(block, f.line(keySpan.Start.Line)),
-			fmt.Sprintf("%d step(s) moved into a new `%s:` block", len(f.movedVars), varsKey))
+			fmt.Sprintf("%d step(s) moved into a new `%s:` block", len(f.movedVars), varsKey),
+			fmt.Sprintf("%d step(s) would move into a new `%s:` block", len(f.movedVars), varsKey))
 
 		return
 	}

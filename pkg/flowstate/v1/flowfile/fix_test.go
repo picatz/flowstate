@@ -590,14 +590,20 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 	}
 }
 
-// TestFixRewritesWhatItCanBesideWhatItCannot is the case that decides whether
-// this is usable on a real file.
+// TestFixWalksPastWhatItCannotDoAndWritesNoneOfIt is the case that decides
+// whether this is usable on a real file, in both directions at once.
 //
-// Stopping the whole document at the first refusal would mean one hand-written
-// step blocks the other nine, and an author who fixes that step has to run the
-// tool again to find the next one. Rewriting around it means the refusals that
-// remain are the whole of the hand work.
-func TestFixRewritesWhatItCanBesideWhatItCannot(t *testing.T) {
+// Stopping the walk at the first refusal would mean one hand-written step hides
+// the other nine, and an author who fixes that step has to run the tool again to
+// find the next one. So the walk carries on and the report is the whole of the
+// hand work.
+//
+// Applying what it found is the separate question, and the answer is no (issue
+// #382): a document converts entirely or it is left as it was. So the changes
+// below are all listed and the source is byte for byte the input, which is the
+// pair of assertions that keeps one of those two decisions from quietly becoming
+// the other.
+func TestFixWalksPastWhatItCannotDoAndWritesNoneOfIt(t *testing.T) {
 	t.Parallel()
 
 	src := `edition: v2026.2
@@ -619,14 +625,23 @@ steps:
 	result, err := flowfile.Fix([]byte(src))
 	require.NoError(t, err)
 
-	assert.Len(t, result.Changes, 2, "the two rewritable steps are rewritten")
+	assert.Len(t, result.Changes, 2, "both rewritable steps are reported, not just the first")
 	require.Len(t, result.Refusals, 1, "the flow-style one is reported")
+	assert.False(t, result.Complete(), "a refusal means the document did not convert")
+	assert.False(t, result.Changed(), "nothing was applied, so nothing changed")
 
-	rewritten := string(result.Source)
-	assert.Contains(t, rewritten, "    log:\n      message: hello")
-	assert.Contains(t, rewritten, "    http:\n      url: https://example.com")
-	assert.Contains(t, rewritten, "task: {name: log, inputs: {message: hi}}",
-		"the refused step is left exactly as written")
+	// Bytes rather than "still validates", per the house rule: the file the author
+	// goes back to has to be the file the diagnostics above are about.
+	assert.Equal(t, src, string(result.Source),
+		"a document that could not be converted came back rewritten anyway")
+
+	// And what it says about the edits it did not make is said in a tense that
+	// admits it: a report claiming an edit landed, beside bytes where it did not,
+	// is the same lie told in words instead of YAML.
+	for _, change := range result.Changes {
+		assert.Contains(t, change.Pending, "would",
+			"a change has no spelling for a report about a file that was not written")
+	}
 }
 
 // TestFixIsIdempotent covers the thing a migration tool gets run twice by

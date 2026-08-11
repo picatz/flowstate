@@ -27,8 +27,17 @@ import (
 // correctness. It has to be safe to run over a directory — so a file with
 // nothing to change comes back byte for byte, and `--check` reports without
 // writing. And it has to refuse rather than guess: a shape it cannot rewrite is
-// reported with its position and left alone, because a file that looks fixed and
-// is not is worse than one that was never touched.
+// reported with its position and the file it sits in is left alone entirely,
+// because a file that looks fixed and is not is worse than one that was never
+// touched.
+//
+// The unit of that refusal is the file, and it is the whole file. `flow fix`
+// used to rewrite everything it could and report the rest, which put the current
+// edition at the top of a document still holding a step written in the grammar
+// the previous edition spoke: a file claiming a form it is not in, refused by
+// `flow validate`, and no longer the file whose diagnostics the author is
+// reading (issue #382). Other files named in the same invocation still convert
+// on their own merits, because that is the unit `fix` reports in.
 
 // fixOptions are the flags `flow fix` takes.
 type fixOptions struct {
@@ -53,8 +62,9 @@ func newFixCommand() *cobra.Command {
 			"A directory is walked for .yaml and .yml files. A file with nothing to change is left " +
 			"byte for byte as it was.\n\n" +
 			"Shapes that cannot be rewritten without guessing (a task written in flow style, or one " +
-			"standing behind a YAML alias) are reported with their position and left alone, so the " +
-			"file is never silently mangled.\n\n" +
+			"standing behind a YAML alias) are reported with their position, and the file holding " +
+			"one is not written at all: a file converts entirely or it is left exactly as it was, so " +
+			"nobody is handed half a migration.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
 			"instead of scrapes: what changed or would change, and what was refused, per file. CI " +
 			"that wants structured data rather than stderr text asks for one of those.",
@@ -191,10 +201,13 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 // A fixOutcome is what one file's rewrite amounted to.
 type fixOutcome struct {
 	// changed reports that the file was rewritten, or would be under --check.
+	//
+	// False when anything was refused, because then nothing was written: the
+	// edits that were available are still listed, and none of them landed.
 	changed bool
 
-	// refused reports that some part of the file could not be rewritten safely, so
-	// the file is not finished whatever else happened to it.
+	// refused reports that some part of the file could not be rewritten safely,
+	// which leaves the file exactly as it was found.
 	refused bool
 
 	// report is the same outcome as a schema message, built whether or not a
@@ -246,26 +259,38 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 		}
 		report.Notes = append(report.Notes, note.Proto())
 	}
-	outcome := fixOutcome{changed: result.Changed(), refused: len(result.Refusals) > 0, report: report}
+	// Whether the bytes this run produces are a rewrite at all. A refusal means
+	// they are not, because [flowfile.Fix] hands back the document as it was when a
+	// file cannot convert entirely, and neither the write below nor the lines
+	// printed above it may pretend otherwise.
+	applied := result.Changed() && !opts.check
+
+	outcome := fixOutcome{changed: result.Changed(), refused: !result.Complete(), report: report}
 	report.Changed = outcome.changed
 
-	if opts.stdout {
-		_, err := out.Write(result.Source)
-		return outcome, err
-	}
-
-	if !result.Changed() {
+	if len(result.Changes) == 0 {
 		if !outcome.refused && !machine {
 			fmt.Fprintf(reports, "%s: %s\n",
 				theme.Muted.Render(path), theme.Success.Render("already current"))
+		}
+		if opts.stdout {
+			_, err := out.Write(result.Source)
+			return outcome, err
 		}
 		return outcome, nil
 	}
 
 	for _, change := range result.Changes {
 		if !machine {
+			// The tense follows the bytes. Saying "updated" about an edit that was
+			// not written is the same dishonesty as writing half a migration, told
+			// rather than done.
+			message := change.Message
+			if !applied {
+				message = change.Pending
+			}
 			fmt.Fprintf(reports, "%s:%d: %s\n",
-				theme.Muted.Render(path), change.Line, theme.Warning.Render(change.Message))
+				theme.Muted.Render(path), change.Line, theme.Warning.Render(message))
 		}
 		report.Changes = append(report.Changes, &v1.FixChange{
 			Line:    uint32(max(change.Line, 0)),
@@ -273,7 +298,31 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 		})
 	}
 
-	if opts.check {
+	// Said after the changes rather than beside the refusals, because it is the
+	// answer to the list the author has just read: these are the edits, and none of
+	// them happened. Without it the report names every edit in a tense that says it
+	// did not happen and never says why, which reads as a tool that lost its nerve.
+	//
+	// The path sits inside the sentence rather than in front of it, because every
+	// line here that begins `<path>:` continues with a position, and this fact has
+	// none: it is about the file rather than about somewhere in it.
+	if outcome.refused && !machine {
+		fmt.Fprintln(reports, theme.Danger.Render(fmt.Sprintf(
+			"not rewritten: %s is exactly as it was, because a file converts in full or not at all; "+
+				"the %d place(s) above have to be fixed by hand first",
+			path, len(result.Refusals))))
+	}
+
+	if opts.stdout {
+		// The original document when nothing was applied, which is what
+		// [flowfile.Fix] returns for a refusal: `flow fix --stdout old.yaml > new.yaml`
+		// must not put a half-migrated document in new.yaml either. The stream is
+		// this invocation's copy of the file, and the file is the unit.
+		_, err := out.Write(result.Source)
+		return outcome, err
+	}
+
+	if !applied {
 		return outcome, nil
 	}
 
