@@ -504,6 +504,56 @@ func LooksLikeFlowfile(data []byte) bool {
 	return mapping != nil && hasRecognizedKey(mapping)
 }
 
+// LooksLikeFlowfileTest reports whether data's top-level document is a
+// Flowfile test, declaring `tests:` and not `steps:`, as opposed to a
+// Flowfile itself.
+//
+// It exists for a caller that has already used [LooksLikeFlowfile] to decide a
+// file belongs to this package and now needs to tell its two recognized shapes
+// apart. [Fix] treats both alike, rewriting either at the token level without
+// caring what either one means; a caller that goes on to parse the document
+// into a [v1.Workflow] cannot, because that schema has a `steps:` field and no
+// `tests:` one, so handing it a Flowfile test produces "unknown key \"tests\"",
+// a diagnostic accusing a valid file of a mistake it does not have (issue
+// #392). This is the routing that catches the file before that parse is
+// attempted.
+//
+// Malformed YAML, and anything larger than [maxBytes], answers false, matching
+// [LooksLikeFlowfile]: a file this cannot parse is not recognizably a test
+// file, and a caller that wants the parse error reported hands the file to
+// [Fix] instead.
+func LooksLikeFlowfileTest(data []byte) bool {
+	if len(data) > maxBytes {
+		return false
+	}
+	file, err := parser.ParseBytes(data, 0)
+	if err != nil || len(file.Docs) == 0 || file.Docs[0].Body == nil {
+		return false
+	}
+	mapping := asMapping(file.Docs[0].Body)
+	if mapping == nil {
+		return false
+	}
+	return declaresTopLevelKey(mapping, "tests") && !declaresTopLevelKey(mapping, "steps")
+}
+
+// declaresTopLevelKey reports whether mapping declares name directly at its
+// top level, skipping a merge key the same way [hasRecognizedKey] does: a
+// merge's own keys are not visible to this walk, and treating that as "does
+// not declare" rather than guessing at what it merges in is the same neutral
+// reading [hasRecognizedKey]'s doc comment gives a merge key.
+func declaresTopLevelKey(mapping *ast.MappingNode, name string) bool {
+	for _, v := range mapping.Values {
+		if _, isMerge := v.Key.(*ast.MergeKeyNode); isMerge {
+			continue
+		}
+		if key, ok := keyNameOf(v.Key); ok && key == name {
+			return true
+		}
+	}
+	return false
+}
+
 // IsMalformedYAML reports whether data is small enough to have been a
 // candidate for [LooksLikeFlowfile] at all, and fails to parse as YAML
 // outright — as opposed to parsing fine into some other, unrecognized shape.

@@ -593,3 +593,98 @@ steps:
 		t.Errorf("the refusal does not say what stopped it:\n%s", out)
 	}
 }
+
+// scaffoldDir runs `flow init` into a fresh temp directory and returns it, the
+// same scaffold TestFmtKeepsEveryCommentInTheScaffoldItWasGiven builds inline,
+// factored out so the two tests below can each start from an identical,
+// unmodified `flow init` output rather than repeating the setup.
+func scaffoldDir(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	init := newInitCommand()
+	init.SetOut(new(bytes.Buffer))
+	init.SetErr(new(bytes.Buffer))
+	init.SetArgs([]string{dir})
+	if err := init.Execute(); err != nil {
+		t.Fatalf("scaffolding: %v", err)
+	}
+
+	return dir
+}
+
+// TestFmtFormatsAnInitScaffoldWithoutError is the reproduction for issue #392.
+//
+// `flow init` writes a workflow.yaml and a workflow.test.yaml side by side.
+// `flow fmt` on that directory used to read the test file into a
+// [v1.Workflow], a schema with no `tests:` field, and report the author's
+// valid file as broken: `5:1: workflow: unknown key "tests"`. The scaffold
+// the CLI itself just wrote is exactly the directory `flow fmt .` has to
+// handle for any project `flow init` creates, so this must exit 0, and the
+// test file this command does not know how to format must come back
+// untouched rather than rewritten or refused.
+func TestFmtFormatsAnInitScaffoldWithoutError(t *testing.T) {
+	dir := scaffoldDir(t)
+
+	testPath := filepath.Join(dir, "workflow.test.yaml")
+	before := readFixtureString(t, testPath)
+
+	out, errOut, err := runFmtCommand(t, dir)
+	if err != nil {
+		t.Fatalf("flow fmt refused a directory flow init just wrote: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+	}
+
+	for _, stream := range []string{out, errOut} {
+		if strings.Contains(stream, `unknown key "tests"`) {
+			t.Fatalf("flow fmt diagnosed the test file against the workflow schema, the exact "+
+				"misdiagnosis issue #392 reports:\nstdout:\n%s\nstderr:\n%s", out, errOut)
+		}
+	}
+
+	after := readFixtureString(t, testPath)
+	if after != before {
+		t.Errorf("flow fmt rewrote a test file it has no marshaller for:\n--- before\n%s\n--- after\n%s", before, after)
+	}
+}
+
+// TestFmtOnATestFileNamedDirectlyGivesTheRightKindOfMessage is the second half
+// of issue #392: a `*.test.yaml` given to `flow fmt` explicitly, rather than
+// found by a directory walk, must be told what it is rather than diagnosed
+// against the wrong schema. Never "unknown key \"tests\"": that message
+// accuses the file of a mistake it does not have.
+func TestFmtOnATestFileNamedDirectlyGivesTheRightKindOfMessage(t *testing.T) {
+	dir := scaffoldDir(t)
+	testPath := filepath.Join(dir, "workflow.test.yaml")
+
+	out, _, err := runFmtCommand(t, testPath)
+	if err != nil {
+		t.Fatalf("flow fmt refused a test file named directly: %v\n%s", err, out)
+	}
+	if strings.Contains(out, `unknown key "tests"`) {
+		t.Fatalf("flow fmt diagnosed the test file against the workflow schema:\n%s", out)
+	}
+	if !strings.Contains(out, "test file") {
+		t.Errorf("flow fmt's message does not say this is a test file:\n%s", out)
+	}
+}
+
+// TestFmtAndFixAgreeOnAnInitScaffold is CLAUDE.md's "both drivers must agree"
+// rule applied to the two rewriting verbs rather than the two execution
+// drivers: `flow fix` and `flow fmt`, handed the identical directory `flow
+// init` produces, must reach the identical verdict about whether it succeeds.
+// Before the fix for #392 this was the disagreement the issue reports:
+// `flow fix` already exited 0 over this directory and `flow fmt` did not.
+func TestFmtAndFixAgreeOnAnInitScaffold(t *testing.T) {
+	dir := scaffoldDir(t)
+
+	_, fixErrOut, fixErr := runFixCommand(t, dir)
+	if fixErr != nil {
+		t.Fatalf("flow fix refused the directory flow init wrote: %v\n%s", fixErr, fixErrOut)
+	}
+
+	_, fmtErrOut, fmtErr := runFmtCommand(t, dir)
+	if fmtErr != nil {
+		t.Fatalf("flow fmt disagrees with flow fix over the same flow init scaffold: %v\n%s", fmtErr, fmtErrOut)
+	}
+}
