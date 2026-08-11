@@ -150,6 +150,13 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 			for _, branch := range kind.Parallel.GetBranches() {
 				ds = append(ds, checkNodeExpressions(branch.GetSteps())...)
 			}
+		case *v1.Node_Value:
+			// The step's whole content is one expression, so an operator with no
+			// overload here is the entire step being wrong, and it is the kind
+			// where saying nothing costs most: a `value:` exists to be read by
+			// several later steps, so one that fails at run time fails everything
+			// built on it at once.
+			ds = append(ds, typeErrors(id, "value", kind.Value)...)
 		case *v1.Node_Wait:
 			ds = append(ds, typeErrors(id, "wait_until", kind.Wait.GetUntil())...)
 			ds = append(ds, typeErrors(id, "sleep", kind.Wait.GetDurationExpr())...)

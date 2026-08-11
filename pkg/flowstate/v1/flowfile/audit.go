@@ -250,6 +250,13 @@ func (c *auditCollector) nodes(nodes []*v1.Node) {
 			for _, name := range slices.Sorted(maps.Keys(shaped)) {
 				c.site(id, "outputs."+name, shaped[name])
 			}
+		case *v1.Node_Value:
+			// The kind this measurement exists to have produced, which makes it
+			// the one an omission here is worst in: a file that adopts `value:`
+			// and then writes the same predicate into three of them would read as
+			// a file with nothing repeated at all, and the adoption assertions
+			// over the corpus would pass without looking at anything.
+			c.site(id, "value", kind.Value)
 		case *v1.Node_Call:
 			// The arguments are this file's writing; the callee under
 			// kind.Call.GetWorkflow() is another file's, embedded whole at

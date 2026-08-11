@@ -273,6 +273,22 @@ type parsedStep struct {
 	// one whose expression most often names another step.
 	waitUntilEntry *entry
 
+	// valueEntry is a `value:` step, whose value is the one expression the step
+	// is entirely made of.
+	//
+	// Held for the reason waitUntilEntry is, and its comment is the warning this
+	// field exists because of: an expression this model does not hold is an
+	// expression no editor surface can see, and the step kind whose *whole
+	// content* is an expression is the one where that costs most. It is also the
+	// kind most likely to name another step, since naming a fact computed from
+	// several of them is what it is for.
+	//
+	// Unlike sleepEntry there is no fence rule to apply. The compiler reads this
+	// position fence-optionally, exactly as it reads `if:` and the workflow's own
+	// `outputs:` `value:`, so a bare scalar here is expression source too and
+	// recording only the fenced form would hide half the spellings.
+	valueEntry *entry
+
 	// sleepEntry is a `sleep:` whose value is written as an expression, the
 	// computed-duration form the compiler recognizes by the fence
 	// (flowfile's computedDuration: `sleep: 30s` is a literal and
@@ -370,6 +386,9 @@ func (s *parsedStep) expressionEntries() []*entry {
 	}
 	if s.sleepEntry != nil {
 		entries = append(entries, s.sleepEntry)
+	}
+	if s.valueEntry != nil {
+		entries = append(entries, s.valueEntry)
 	}
 	if s.waitTimeoutEntry != nil {
 		entries = append(entries, s.waitTimeoutEntry)
@@ -536,6 +555,8 @@ func (s *parsedStep) kind() string {
 		return "wait_until"
 	case s.waitForSignalEntry != nil:
 		return "wait_for_signal"
+	case s.valueEntry != nil:
+		return "value"
 	default:
 		return ""
 	}
@@ -999,6 +1020,17 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 			// recording it would put a non-expression in expressionEntries.
 			if s.sleepEntry == nil && e.value != nil && e.value.fenced {
 				s.sleepEntry = e
+			}
+		case "value":
+			// No fence test, unlike `sleep:` above: this position is read
+			// fence-optionally by the compiler, so `value: inputs.n > 1` is as
+			// much an expression as the fenced spelling and both belong here.
+			//
+			// It opens no level of its own, exactly as `wait_until:` does not:
+			// the value is one expression rather than a mapping with keys under
+			// it, so there is no `value` level for `dslKeyAt` to document.
+			if s.valueEntry == nil {
+				s.valueEntry = e
 			}
 		case "wait_until":
 			// A case of its own rather than falling through to the task branch

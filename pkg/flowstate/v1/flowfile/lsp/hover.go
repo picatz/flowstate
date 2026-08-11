@@ -682,6 +682,39 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	shaping := target.shapingEntry()
 
 	var b strings.Builder
+
+	// A `value:` answers for itself completely, before the descriptor is
+	// consulted at all: it runs no task, so `known` is false for it and the
+	// branches below would describe it as a step "whose task is not registered",
+	// which is a sentence about a mistake the author did not make.
+	//
+	// It is also the only target here whose output set the grammar fixes, so this
+	// is the one answer that needs nothing looked up to be exact.
+	if target.valueEntry != nil {
+		if ref.output == "" {
+			fmt.Fprintf(&b, "**`%s`** · step %d, a computed value\n\nOutputs: `%s`, which is the whole of what it produces.",
+				rootedRef(target.id, ""), target.index+1, v1.ValueOutput)
+
+			return markdownHover(b.String(), rng)
+		}
+
+		fmt.Fprintf(&b, "**`%s`**", rootedRef(target.id, ref.output))
+		switch ref.output {
+		case v1.ValueOutput:
+			fmt.Fprintf(&b, "\n\nWhat step `%s` on line %d computed. A `value:` step is an expression evaluated where it is written, and `%s` is the one output it produces.",
+				target.id, target.rng.Start.Line+1, v1.ValueOutput)
+		case v1.StepErrorOutput:
+			// Present only on a tolerated step, exactly as it is for a task: a
+			// value can fail at run time even though retrying it is pointless.
+			fmt.Fprintf(&b, "\n\nWhy step `%s` failed, recorded in place of `%s` because the step carries `continue_on_error:`.",
+				target.id, v1.ValueOutput)
+		default:
+			fmt.Fprintf(&b, "\n\nStep `%s` is a `value:`, which produces exactly one output, `%s`; it does not produce `%s`.",
+				target.id, v1.ValueOutput, ref.output)
+		}
+
+		return markdownHover(b.String(), rng)
+	}
 	if ref.output == "" {
 		fmt.Fprintf(&b, "**`%s`** — step %d", rootedRef(target.id, ""), target.index+1)
 		if known {

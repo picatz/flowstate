@@ -794,6 +794,23 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		c.detail = "parallel"
 		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
+	case s.valueEntry != nil:
+		// The only candidate here whose output set is fixed by the *grammar*
+		// rather than read from a descriptor, a shaping expression, or a sender.
+		// So it is the one menu that can be complete with nothing consulted, and
+		// the one that has exactly one honest answer after the dot, which is the
+		// ergonomic half of the argument the `.value` spelling was chosen on.
+		c.detail = "value"
+		c.docs = fmt.Sprintf(
+			"A computed value, evaluated in the workflow where it is written. Read the whole of it as %s.",
+			rootedRef(s.id, v1.ValueOutput))
+		c.outputs = []refOutput{{
+			name:   v1.ValueOutput,
+			detail: "the computed value",
+			docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
+				"so this is the whole of what it contributes.",
+		}}
+
 	default:
 		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name

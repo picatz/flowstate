@@ -2176,6 +2176,48 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 		return Diagnostic{}, false
 	}
 
+	// A `value:` answers for its outputs exactly, and is the only kind that can
+	// answer with certainty without consulting anything: the set is one name, fixed
+	// by the grammar rather than by a task descriptor, a sender, or an author's
+	// shaping. `${steps.decided.velue}` is therefore never right, and never a false
+	// diagnostic.
+	//
+	// It is the kind where silence would cost most, too. A value exists to be read
+	// from several places, so a name nothing produces is a reference that resolves
+	// to nothing in every branch built on it at once, and a boolean that reads as
+	// nothing takes the other arm of each.
+	if _, isValue := node.GetKind().(*v1.Node_Value); isValue {
+		produced := []string{v1.ValueOutput}
+
+		// A value can fail at run time even though it cannot fail differently on
+		// a second attempt: an expression divides by zero, or names something
+		// absent. `retry:` is refused on this kind because a deterministic
+		// expression has nothing to gain from another attempt, but
+		// `continue_on_error:` is *not* refused and is not meaningless, so a
+		// tolerated value produces `error` in place of `value` on both drivers
+		// exactly as any other tolerated step does. Listing it is what keeps this
+		// from reporting the documented pattern as a mistake.
+		if node.GetPolicy().GetContinueOnError() {
+			produced = append(produced, toleratedErrorOutput)
+		}
+		if slices.Contains(produced, ref.Output) {
+			return Diagnostic{}, false
+		}
+
+		message := fmt.Sprintf(
+			"step %q has no output %q; a `value:` step produces exactly one output, `%s`, so the whole of it is read as `%s.%s.%s`",
+			ref.ID, ref.Output, v1.ValueOutput, v1.StepsRoot, ref.ID, v1.ValueOutput)
+		if !node.GetPolicy().GetContinueOnError() && ref.Output == toleratedErrorOutput {
+			message += "; `" + toleratedErrorOutput + "` exists only on a step that carries `continue_on_error:`, which this one does not"
+		}
+
+		return Diagnostic{
+			Step: stepID, Field: inputName, Value: ref.Output,
+			Message: message,
+			Code:    v1.DiagnosticCodeUnresolvedReference,
+		}, true
+	}
+
 	// A wait that shapes its own outputs answers for them exactly, which is the
 	// one thing that makes replace semantics safe to ship: `outputs:` *drops* the
 	// wait's defaults, so `${steps.gate.payload.approved}` after a shaping that

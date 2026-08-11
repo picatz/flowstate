@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -167,6 +169,56 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 			"inputs.amount_cents >= inputs.approval_threshold_cents")
 	})
 
+}
+
+// TestAuditReadsAValuesExpression is what keeps the assertions above from passing
+// vacuously.
+//
+// Every corpus assertion in this file is now a *negative*: this expression is no
+// longer repeated. A negative is satisfied both by a file that was rewritten and
+// by a walk that stopped looking, and `auditCollector.nodes` had no `value:` arm
+// when the two acceptance fixtures were rewritten to use one, so for a while the
+// second reading was the true one: the audit could not see inside a `value:` at
+// all, and a file that named a predicate once and then wrote it into three values
+// would have reported nothing repeated.
+//
+// So this is the positive direction, written against a file built here rather than
+// against the corpus: the corpus is *supposed* to hold no repeat inside a value,
+// which is exactly why it cannot prove the walk still reads one.
+func TestAuditReadsAValuesExpression(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.2
+name: repeated-in-values
+inputs:
+  amount:
+    type: int
+    required: true
+steps:
+  - id: a
+    value: ${inputs.amount > 100 && inputs.amount < 1000}
+  - id: b
+    value: ${inputs.amount > 100 && inputs.amount < 1000}
+  - id: say
+    if: ${inputs.amount > 100 && inputs.amount < 1000}
+    log:
+      message: in range
+`), 0o644))
+
+	report := auditJSON(t, path)
+
+	finding := findingFor(t, report, path, "inputs.amount > 100 && inputs.amount < 1000")
+	assert.Equal(t, 3, finding.Count,
+		"the audit does not count an expression written in a `value:` step")
+	assert.Equal(t, []int{9, 11, 13}, siteLines(finding))
+
+	// The two value sites are named by the key they are written under, so a
+	// reader is sent to the step rather than left to find it.
+	fields := []string{}
+	for _, site := range finding.Sites {
+		fields = append(fields, site.Step+"."+site.Field)
+	}
+	assert.Equal(t, []string{"a.value", "b.value", "say.if"}, fields)
 }
 
 // TestAuditOnboardingAndAccessReviewSweptClean is the negative half of the comment
