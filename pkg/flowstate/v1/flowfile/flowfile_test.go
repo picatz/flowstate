@@ -267,6 +267,28 @@ steps:
   log:
     message: ""
 `,
+		// A `value:` step in every shape the key admits: a bare expression, a
+		// fenced one, a whole structure, and one carrying the step properties
+		// that stay legal beside it. The kind writes its expression through the
+		// same writer `if:` uses, so a seed here covers the position where the
+		// two could come apart.
+		`edition: v2026.2
+name: values
+steps:
+- id: over
+  value: ${inputs.amount >= 100}
+- id: shape
+  value: "${ {'regions': ['eu', 'us'], 'count': 2} }"
+- id: guarded
+  description: a value with the properties that stay legal on this kind
+  if: ${steps.over.value}
+  vars:
+    factor: 2
+  value: size(steps.shape.value.regions) * factor
+- id: say
+  log:
+    message: ${string(steps.guarded.value)}
+`,
 	} {
 		f.Add(seed)
 	}

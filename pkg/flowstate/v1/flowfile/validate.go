@@ -443,6 +443,9 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			case *v1.Node_Call:
 				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, i, wf, depth+1, placement)...)
 
+			case *v1.Node_Value:
+				ds = append(ds, validateValue(id, kind.Value, inner, i, wf)...)
+
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -1167,6 +1170,8 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 				ds = append(ds, validateWait(id, kind.Wait, inner, index, wf)...)
 			case *v1.Node_Call:
 				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
+			case *v1.Node_Value:
+				ds = append(ds, validateValue(id, kind.Value, inner, index, wf)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -1950,6 +1955,31 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 	}
 
 	return ds
+}
+
+// validateValue checks a `value:` step: that it holds something, and that what it
+// holds resolves.
+//
+// The reference check is [validateInputRefs] unchanged, against the step's own
+// scope, because a value is evaluated exactly where it is written and sees exactly
+// what a task's inputs written there would see. There is no second scope to model
+// and no name the kind binds, which is the whole of what makes this the shortest
+// validator in the file, and is the point of the design rather than an omission.
+//
+// The three properties refused on this kind are refused elsewhere, each where it
+// has a position to be refused at: `retry:` and `timeout:` by the parser, on their
+// own keys, and `undo:` by [validateUndo] through [v1.CheckUndoPlacement], on the
+// `undo:` key. Repeating any of them here would report one mistake twice.
+func validateValue(id string, value *v1.Value, scope refScope, index int, wf *v1.Workflow) Diagnostics {
+	if value == nil {
+		return Diagnostics{{
+			Step:    id,
+			Field:   "value",
+			Message: "has no expression; a `value:` step is the expression that produces the value it names",
+		}}
+	}
+
+	return validateInputRefs(id, "value", value, scope, index, wf)
 }
 
 // declaredAnywhere reports whether a workflow has a step with this id, at any

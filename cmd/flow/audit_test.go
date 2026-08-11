@@ -60,6 +60,32 @@ func findingFor(t *testing.T, report auditReport, path, want string) auditRepeat
 	return auditRepeat{}
 }
 
+// requireNoFinding asserts that a file no longer repeats an expression.
+//
+// The negative direction of [findingFor], and the shape an adoption proof has to
+// take: a rewrite that names a repeated predicate once is only a rewrite while
+// nothing brings the copies back, and the count going to zero is the only thing
+// that says so. A test that merely stopped asserting the old finding would pass
+// just as well on a file nobody touched.
+func requireNoFinding(t *testing.T, report auditReport, path, want string) {
+	t.Helper()
+
+	for _, file := range report.Files {
+		if file.Path != path {
+			continue
+		}
+		for _, finding := range file.Findings {
+			if strings.Contains(finding.Expr, want) {
+				t.Fatalf("%s still repeats %q, %d times", path, finding.Expr, finding.Count)
+			}
+		}
+
+		return
+	}
+
+	t.Fatalf("%s is not in the report at all", path)
+}
+
 // siteLines is the lines a finding's occurrences sit on, in report order.
 func siteLines(finding auditRepeat) []int {
 	lines := make([]int, 0, len(finding.Sites))
@@ -113,53 +139,46 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 		assert.Equal(t, 1, negated)
 	})
 
-	t.Run("incident response states one timeout predicate four times", func(t *testing.T) {
+	// The three subtests below used to assert the findings this command was
+	// written to measure: incident-response's two-wait predicate four times over
+	// with its hand-negated complement, and fund-transfer's two input-derived
+	// predicates. Those are the two files #411 named as its acceptance fixtures,
+	// and each has been rewritten to a `value:` step.
+	//
+	// So they are asserted in the other direction now, which is the only direction
+	// that proves anything: the counts are zero, and they stay zero. Deleting them
+	// instead would have left the adoption unwatched, and a corpus is a thing that
+	// drifts back.
+
+	t.Run("incident response names its two-wait predicate once", func(t *testing.T) {
 		const path = corpus + "enterprise-incident-response/workflow.yaml"
 
-		finding := findingFor(t, report, path, "steps.escalated_ack.timed_out")
-		assert.Equal(t, 4, finding.Count)
-		assert.Equal(t, []int{185, 193, 229, 244}, siteLines(finding))
-		assert.False(t, finding.Negated, "the four are all written plainly")
+		// The predicate itself: `(!responder_ack.timed_out) || (responder_ack
+		// .timed_out && !escalated_ack.timed_out)`, which was written across four
+		// `if:`s because no single wait's `outputs:` shaping can see both waits.
+		requireNoFinding(t, report, path, "steps.escalated_ack.timed_out")
 
-		// Two of them are bare `if:` conditions and two are conjuncts of a longer
-		// one, which is why the walk cannot stop at whole fields.
-		assert.Equal(t, "claimed", finding.Sites[0].Step)
-		assert.Equal(t, "authorized", finding.Sites[2].Step)
-	})
-
-	t.Run("incident response also carries a hand-negated pair", func(t *testing.T) {
-		const path = corpus + "enterprise-incident-response/workflow.yaml"
-
-		finding := findingFor(t, report, path,
+		// And its complement, which is the copy that mattered most: a hand-written
+		// De Morgan expansion in an `outputs:` entry is the shape a slip corrupts
+		// while every reader nods along. One `!` on one name replaced it.
+		requireNoFinding(t, report, path,
 			"steps.responder_ack.timed_out && steps.escalated_ack.timed_out")
-		assert.Equal(t, 2, finding.Count)
-		assert.True(t, finding.Negated)
-		assert.Equal(t, []int{254, 265}, siteLines(finding))
-
-		// Both sit inside a ternary in an `outputs:` entry rather than at the top
-		// of one, so neither is a whole field and neither is a top-level conjunct.
-		assert.Equal(t, "outputs.outcome", finding.Sites[0].Field)
-		assert.False(t, finding.Sites[0].Negated)
-		assert.Equal(t, "outputs.authorized_by", finding.Sites[1].Field)
-		assert.True(t, finding.Sites[1].Negated)
 	})
 
-	t.Run("fund transfer states one threshold predicate at each of its three gates", func(t *testing.T) {
+	t.Run("fund transfer names both of its threshold predicates once", func(t *testing.T) {
 		const path = corpus + "enterprise-fund-transfer/workflow.yaml"
 
-		finding := findingFor(t, report, path,
+		// "Cleared to move": an input compared against a step, which is the second
+		// shape wait shaping cannot reach: `approval` can say what the desk
+		// answered and can know nothing about the threshold.
+		requireNoFinding(t, report, path,
 			"inputs.amount_cents < inputs.approval_threshold_cents || steps.approval.outcome")
-		assert.Equal(t, 4, finding.Count,
-			"the three `if:` gates the manual reading found, plus the `outputs.debit_reference` copy it did not")
-		assert.Equal(t, []int{159, 184, 210, 281}, siteLines(finding))
 
-		gates := []string{}
-		for _, site := range finding.Sites {
-			if site.Field == "if" {
-				gates = append(gates, site.Step)
-			}
-		}
-		assert.Equal(t, []string{"debit", "credit", "notify_settlement"}, gates)
+		// And the bare threshold test under it, pure input arithmetic with no step
+		// in it at all, which was spelled in both polarities across four `if:`s and
+		// an `outputs:` entry.
+		requireNoFinding(t, report, path,
+			"inputs.amount_cents >= inputs.approval_threshold_cents")
 	})
 
 	t.Run("access review shares one filter between two outputs", func(t *testing.T) {

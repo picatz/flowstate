@@ -360,15 +360,37 @@ func validSignalName(name string) bool {
 	return true
 }
 
-// checkWaitPolicy reports per-step policy that does nothing on a wait.
+// checkWaitPolicy reports per-step policy that does nothing on a step scheduling
+// no activity.
 //
-// A wait schedules no activity, so the two policy keys that bound and retry one
-// have nothing to act on: a `timeout:` beside a `sleep:` is not a shorter sleep,
-// and `retry:` cannot re-run a timer. Silently ignoring them would leave an author
-// believing they had bounded something. A wait's own bound is
-// `wait_for_signal.timeout`, and the diagnostic says so.
+// Two kinds schedule none. A wait is a timer, so the two policy keys that bound
+// and retry an activity have nothing to act on: a `timeout:` beside a `sleep:` is
+// not a shorter sleep, and `retry:` cannot re-run a timer. A `value:` is an
+// expression evaluated in workflow code, so it has nothing to bound either, and
+// nothing a second attempt could change, because it is deterministic and an expression
+// that failed will fail identically however many times it is asked.
+//
+// Silently ignoring either would leave an author believing they had bounded
+// something. A wait's own bound is `wait_for_signal.timeout`, and a value's is the
+// evaluation cost limit nobody writes; the diagnostics say so.
 func (c *compiler) checkWaitPolicy(step *v1.Node, fields *fieldSet, path string, r ref) {
-	if _, isWait := step.GetKind().(*v1.Node_Wait); !isWait {
+	var subject string
+	advice := map[string]string{}
+
+	switch step.GetKind().(type) {
+	case *v1.Node_Wait:
+		subject = "a waiting step"
+		advice["timeout"] = "a wait is bounded by `wait_for_signal:`'s own `timeout:`, or by the duration of a `sleep:`"
+		advice["retry"] = "there is no activity to attempt again; a wait either happens or times out"
+
+	case *v1.Node_Value:
+		subject = "a `value:` step"
+		advice["timeout"] = "a value is an expression evaluated in the workflow rather than work scheduled somewhere, " +
+			"and it is already bounded by the evaluation cost limit every expression in the file shares"
+		advice["retry"] = "a value is deterministic, so a second attempt computes exactly what the first one did; " +
+			"if the expression is wrong, it is wrong every time"
+
+	default:
 		return
 	}
 
@@ -378,12 +400,7 @@ func (c *compiler) checkWaitPolicy(step *v1.Node, fields *fieldSet, path string,
 			continue
 		}
 
-		advice := "a wait is bounded by `wait_for_signal:`'s own `timeout:`, or by the duration of a `sleep:`"
-		if name == "retry" {
-			advice = "there is no activity to attempt again; a wait either happens or times out"
-		}
-
 		c.report(spanOfNode(f.key), ref{step: r.step, path: fieldPath(path, name), label: name},
-			"does nothing on a waiting step: %s", advice)
+			"does nothing on %s: %s", subject, advice[name])
 	}
 }

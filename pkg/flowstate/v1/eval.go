@@ -1278,6 +1278,14 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 	case *Node_Wait:
 		return runWait(ctx, node, n.Wait, scope)
 
+	case *Node_Value:
+		// Through the shared [EvalValueNode] rather than inline, because the
+		// durable driver reaches the identical function from its own runNode: a
+		// value is the one step whose whole observable behaviour is what the
+		// expression evaluated to, so two spellings of it would be two answers
+		// waiting to differ.
+		return EvalValueNode(ctx, n.Value, scope)
+
 	case *Node_Call:
 		// The callee's own placement composes with the scope this call itself
 		// sits in — see [UndoScope.IntoCall] — rather than always being

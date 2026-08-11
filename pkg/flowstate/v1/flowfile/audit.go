@@ -13,11 +13,17 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// A workflow has no way to name a value and read it back, so an author who needs
-// one question answered in four places writes the question four times. Issue #411
-// proposes the entry that would hold it once; the disposition table behind that
-// issue waits on evidence of how much a corpus actually repeats itself, and this
-// is the measurement that supplies it.
+// An author who needs one question answered in four places used to write the
+// question four times, because a workflow had no way to name a value and read it
+// back. This measurement is what supplied the evidence for `value:` (#411), which
+// has landed: a repeated expression here is now one a file can collapse into a
+// named step and read as `${steps.<id>.value}`.
+//
+// The counts stayed after the feature did, and the reason is that they measure
+// something the language cannot fix. A file adopting `value:` is one whose count
+// went down by an amount somebody can see; a shape `value:` cannot reach, such as a
+// structure repeated inside a task's own inputs, keeps its count and is the
+// evidence for whatever the next entry turns out to be.
 //
 // # What this is not
 //

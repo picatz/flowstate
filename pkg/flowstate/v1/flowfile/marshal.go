@@ -263,6 +263,17 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			step = append(step, yaml.MapItem{Key: "with", Value: value})
 		}
 
+	case *v1.Node_Value:
+		// Through [exprValueToYAML], the same writer the condition above uses,
+		// because the parser reads both positions the same fence-optional way.
+		// Writing it any other way would make the round trip lossy for exactly
+		// the values an author is most likely to write here.
+		value, err := exprValueToYAML(kind.Value)
+		if err != nil {
+			return nil, fmt.Errorf("step %q value: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "value", Value: value})
+
 	default:
 		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList())
 	}

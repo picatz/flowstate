@@ -1176,6 +1176,30 @@ message Node {
     Wait wait = 7;
     Call call = 11;
     Loop loop = 12;
+
+    // Value is a computed value the step names, as `value: ${...}`.
+    //
+    // A kind of step rather than a task, because a value is not an effect: it is
+    // evaluated in workflow code, in written order, against exactly what any step
+    // in that position sees, and it replays to the same answer. Nothing is
+    // scheduled, nothing is attempted twice, and nothing outside the run is
+    // touched.
+    //
+    // What it produces is an ordinary named output called `value`, read as
+    // `steps.<id>.value` like any other. Deliberately ordinary: the alternative
+    // considered was making a whole-step reference yield the scalar directly,
+    // which would have been six characters shorter to write and would have made
+    // every tool that reads outputs uniformly (the language server's shaping,
+    // the compaction walker's whole-step marker, the JSON answer document) learn
+    // that one node kind is not like the others. The word `value` already means
+    // "the expression this name holds" in the workflow's own `outputs:` block, so
+    // it means one thing in both positions.
+    //
+    // The result may be anything a step output can hold, a list or a map as
+    // readily as a boolean, and is bounded by what already bounds every other
+    // expression and output: `DefaultCostLimit` per evaluation, and
+    // `MaxRunStateBytes` for what the run carries.
+    Value value = 13;
   }
 
   // Condition determines whether the step runs.

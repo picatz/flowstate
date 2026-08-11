@@ -392,5 +392,14 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 		for _, value := range kind.Call.GetArguments() {
 			CollectValueRefs(value, prev, refs)
 		}
+
+	case *Node_Value:
+		// The step's whole content is one expression, and it is evaluated where
+		// the step sits, so a run that suspended before reaching it needs every
+		// output that expression names to still be there on the far side of the
+		// compaction the suspension caused. Missing this would drop an output
+		// nothing appears to need and fail the run on resume, naming a step it
+		// can no longer see.
+		CollectValueRefs(kind.Value, prev, refs)
 	}
 }

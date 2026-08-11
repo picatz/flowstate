@@ -120,10 +120,23 @@ steps:
             [run.identity.subject == "" ? "an unattested caller" : run.identity.subject,
              inputs.amount_cents, inputs.from_account_id, inputs.to_account_id])}
 
+  # Does this transfer need a human at all? Pure arithmetic over two inputs,
+  # with no step in it, which is exactly why no wait's `outputs:` shaping can
+  # name it and why it was written out eight times before `value:` existed -
+  # four in this polarity and four as the `<` complement, each of which a
+  # reviewer had to check against the others by eye.
+  #
+  # A value: rather than a workflow `vars:` entry because a var is evaluated
+  # before the run starts, against nothing - it may not read `inputs.`, by
+  # design, and loosening that would smuggle ordering into a block that has
+  # none.
+  - id: over_threshold
+    value: ${inputs.amount_cents >= inputs.approval_threshold_cents}
+
   # Reached only above the threshold. `if:` on a wait is what lets a small
   # transfer skip the gate entirely rather than pay for one it does not need.
   - id: approval
-    if: ${inputs.amount_cents >= inputs.approval_threshold_cents}
+    if: ${steps.over_threshold.value}
     wait_for_signal:
       name: transfer-approved
       timeout: 4h
@@ -151,13 +164,22 @@ steps:
   # Cleared to move: either the amount never needed a gate, or the gate was
   # answered yes. `signals:` above is what makes that a real check - an
   # unattested, wrongly-claimed, or self-approving sender never reaches this
-  # payload at all - so `debit`, `credit`, and `notify_settlement` (all three
-  # share this exact condition) ask only the one question that is actually
-  # this workflow's own logic: did the desk say yes.
+  # payload at all - so this asks only the one question that is actually this
+  # workflow's own logic: did the desk say yes.
+  #
+  # It mixes an input with a step, which is the second shape a wait's own
+  # `outputs:` cannot name: `approval` can shape what the desk said, and
+  # nothing on `approval` can know about the threshold. Four readers shared
+  # this condition and each spelled it out.
+  #
+  # The short-circuit is load-bearing: under the threshold `approval` never
+  # ran, so the left disjunct has to be the one that answers.
+  - id: cleared_to_move
+    value: >-
+      ${!steps.over_threshold.value || steps.approval.outcome == "approved"}
+
   - id: debit
-    if: >-
-      ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        steps.approval.outcome == "approved"}
+    if: ${steps.cleared_to_move.value}
     http:
       method: POST
       url: https://ledger.internal.example.com/debit
@@ -180,9 +202,7 @@ steps:
         json: '${ {"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents} }'
 
   - id: credit
-    if: >-
-      ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        steps.approval.outcome == "approved"}
+    if: ${steps.cleared_to_move.value}
     http:
       method: POST
       url: https://ledger.internal.example.com/credit
@@ -206,9 +226,7 @@ steps:
   # exercises. No `retry:` here on purpose, so the example's failing case is
   # reachable in one attempt rather than several.
   - id: notify_settlement
-    if: >-
-      ${inputs.amount_cents < inputs.approval_threshold_cents ||
-        steps.approval.outcome == "approved"}
+    if: ${steps.cleared_to_move.value}
     http:
       method: POST
       url: https://settlements.internal.example.com/notify
@@ -219,16 +237,14 @@ steps:
 
   - id: rejected
     if: >-
-      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
-        steps.approval.outcome == "rejected"}
+      ${steps.over_threshold.value && steps.approval.outcome == "rejected"}
     log:
       level: warn
       message: ${"transfer of %d cents was rejected".format([inputs.amount_cents])}
 
   - id: expired
     if: >-
-      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
-        steps.approval.outcome == "expired"}
+      ${steps.over_threshold.value && steps.approval.outcome == "expired"}
     log:
       level: warn
       message: ${"approval for %d cents lapsed; the transfer did not happen".format([inputs.amount_cents])}
@@ -246,8 +262,7 @@ steps:
   # file cannot make sense of.
   - id: refused_malformed_payload
     if: >-
-      ${inputs.amount_cents >= inputs.approval_threshold_cents &&
-        steps.approval.outcome == "malformed"}
+      ${steps.over_threshold.value && steps.approval.outcome == "malformed"}
     log:
       level: warn
       message: >-
@@ -262,7 +277,7 @@ outputs:
   # never who said it.
   decision:
     value: >-
-      ${inputs.amount_cents < inputs.approval_threshold_cents
+      ${!steps.over_threshold.value
         ? "transferred"
         : (steps.approval.outcome == "expired"
             ? "expired"
@@ -278,8 +293,5 @@ outputs:
 
   debit_reference:
     value: >-
-      ${(inputs.amount_cents < inputs.approval_threshold_cents ||
-          steps.approval.outcome == "approved")
-        ? steps.debit.reference
-        : ""}
+      ${steps.cleared_to_move.value ? steps.debit.reference : ""}
     description: the ledger's debit reference, empty unless the transfer actually cleared
