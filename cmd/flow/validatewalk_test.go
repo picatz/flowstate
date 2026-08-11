@@ -95,3 +95,82 @@ func TestValidateJSONOnADirectoryReportsBothFiles(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &report))
 	require.Len(t, report.Files, 2)
 }
+
+// validateStdin runs `flow validate -` with body on stdin and returns stdout.
+func validateStdin(t *testing.T, body string, extra ...string) (string, error) {
+	t.Helper()
+
+	root := newRootCommand()
+	var out, errOut strings.Builder
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetIn(strings.NewReader(body))
+	root.SetArgs(append([]string{"validate", "-"}, extra...))
+
+	err := root.Execute()
+
+	return out.String(), err
+}
+
+// TestValidateDashReadsAWorkflowFromStdin is #397's central claim: `flow
+// validate -` reads the document from stdin instead of trying to open a file
+// literally named "-", which is what it did before.
+func TestValidateDashReadsAWorkflowFromStdin(t *testing.T) {
+	t.Parallel()
+
+	out, err := validateStdin(t, cleanWorkflow)
+	require.NoError(t, err, "output: %s", out)
+	require.Contains(t, out, "-: ")
+	require.Contains(t, out, "ok")
+}
+
+// TestValidateDashReadsATestFileFromStdin proves stdin is checked under the
+// right schema, not forced through the workflow validator regardless of what
+// it actually holds: a Flowfile test piped in still validates as a test.
+func TestValidateDashReadsATestFileFromStdin(t *testing.T) {
+	t.Parallel()
+
+	out, err := validateStdin(t, "tests:\n  - name: it runs\n    workflow: ./workflow.yaml\n    expect:\n      ran: [s]\n")
+	require.NoError(t, err, "output: %s", out)
+	require.Contains(t, out, "ok")
+}
+
+// TestValidateDashReportsAMalformedDocumentFromStdin is the negative
+// direction: a broken document piped in is still reported as a diagnostic,
+// not silently accepted just because it arrived over a pipe instead of a
+// file.
+func TestValidateDashReportsAMalformedDocumentFromStdin(t *testing.T) {
+	t.Parallel()
+
+	out, err := validateStdin(t, brokenWorkflow)
+	require.Error(t, err, "output: %s", out)
+	require.Contains(t, out, "-:")
+}
+
+// TestValidateDashCannotBeCombinedWithAnotherPath is #397's stated boundary:
+// stdin is exactly one document, so mixing "-" with a real path in one
+// invocation is refused with a message naming why, rather than silently
+// picking one of the two or reading neither.
+func TestValidateDashCannotBeCombinedWithAnotherPath(t *testing.T) {
+	t.Parallel()
+
+	path := writeWorkflow(t, "workflow.yaml", cleanWorkflow)
+
+	out, err := validateStdin(t, cleanWorkflow, path)
+	require.Error(t, err, "output: %s", out)
+	require.Contains(t, err.Error(), "cannot be combined")
+}
+
+// TestValidateDashRefusesStdinPastTheByteLimit is the bound CLAUDE.md
+// requires for anything reading untrusted input: stdin is refused rather
+// than read without limit, matching the same document bound a file on disk
+// gets.
+func TestValidateDashRefusesStdinPastTheByteLimit(t *testing.T) {
+	t.Parallel()
+
+	oversized := strings.Repeat("a", maxStdinBytes+1)
+
+	out, err := validateStdin(t, oversized)
+	require.Error(t, err, "output: %s", out)
+	require.Contains(t, err.Error(), "exceeds")
+}

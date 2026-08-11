@@ -995,7 +995,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// (#394): a named path is taken as given, a directory is walked, and a
 	// walk sorts what it finds into workflows and tests rather than refusing
 	// the directory outright.
-	targets, err := collectValidateTargets(args)
+	targets, err := collectValidateTargets(args, cmd.InOrStdin())
 	if err != nil {
 		return err
 	}
@@ -1006,7 +1006,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		path := target.path
 
 		if target.isTest {
-			diagnostics := validateTestFile(path)
+			diagnostics := validateTestFile(target)
 			if len(diagnostics) == 0 {
 				fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(path), theme.Success.Render("ok"))
 				continue
@@ -1018,7 +1018,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		diagnostics, err := flowfile.ValidateSourceFile(path)
+		diagnostics, err := validateWorkflowTarget(target)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
@@ -1076,7 +1076,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) error {
 	surface := newSurface(cmd)
 
-	targets, err := collectValidateTargets(args)
+	targets, err := collectValidateTargets(args, cmd.InOrStdin())
 	if err != nil {
 		return err
 	}
@@ -1086,16 +1086,22 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) err
 		path := target.path
 
 		if target.isTest {
-			reports = append(reports, validateTestFile(path).Report(path))
+			reports = append(reports, validateTestFile(target).Report(path))
 			continue
 		}
 
-		diagnostics, err := flowfile.ValidateSourceFile(path)
+		diagnostics, err := validateWorkflowTarget(target)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
-				if _, statErr := os.Stat(path); statErr != nil {
-					return fmt.Errorf("%s: %w", path, statErr)
+				// Stdin ("-") names nothing on disk to stat: its bytes were
+				// already read in full by [collectValidateTargets], so any
+				// error here is the document's own problem, never a missing
+				// or unreadable file.
+				if target.data == nil {
+					if _, statErr := os.Stat(path); statErr != nil {
+						return fmt.Errorf("%s: %w", path, statErr)
+					}
 				}
 				// Not a shape this can position — a document that is not YAML at
 				// all. It is still the file's problem rather than the caller's, so
