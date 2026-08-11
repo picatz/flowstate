@@ -10,11 +10,13 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // A run that cannot continue must fail, and these two tests are about the one
@@ -100,7 +102,16 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	startWorker(t, temporal)
+
+	// This run's whole subject is a run state growing until it cannot be carried,
+	// so every one of its workflow tasks legitimately handles a state near the
+	// bound and continues as new, over and over. That is real non-yielding work,
+	// and on a machine sharing itself with other suites it crosses the SDK's one
+	// second deadlock budget: see [tests.BoundaryDeadlockDetectionTimeout] for why
+	// this test raises it and why the raise costs the assertions below nothing.
+	startWorkerWithOptions(t, temporal, worker.Options{
+		DeadlockDetectionTimeout: tests.BoundaryDeadlockDetectionTimeout,
+	})
 
 	// A specification that is small, and a run that is not.
 	//

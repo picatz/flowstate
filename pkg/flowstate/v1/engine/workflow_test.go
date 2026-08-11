@@ -18,11 +18,32 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+// atABound gives an environment the deadlock budget a test running at the
+// largest input a bound admits needs, and returns it so it can wrap whichever
+// constructor built the environment.
+//
+// See [tests.BoundaryDeadlockDetectionTimeout] for why only these tests raise
+// it, and why the raise costs their assertions nothing. Only the tests named
+// there use this; a workflow goroutine that does not yield for a second anywhere
+// else is still a finding, and still fails.
+//
+// The SDK's setter replaces the worker options wholesale rather than merging, so
+// an environment that also needs an interceptor has to set both in one call
+// (see tenantWorker, which sets its own and is not a boundary test).
+func atABound(env *testsuite.TestWorkflowEnvironment) *testsuite.TestWorkflowEnvironment {
+	env.SetWorkerOptions(worker.Options{
+		DeadlockDetectionTimeout: tests.BoundaryDeadlockDetectionTimeout,
+	})
+
+	return env
+}
 
 func runWorkflow(t *testing.T, input *v1.Workflow, expected *v1.Workflow_StepOutputs) {
 	t.Helper()
@@ -1088,7 +1109,9 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	for _, test := range tests.TaskOutputElementBoundCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
-			env := testSuite.NewTestWorkflowEnvironment()
+			// At the bound on purpose, so the ten thousand elements are
+			// real work the workflow goroutine does in one task (#431).
+			env := atABound(testSuite.NewTestWorkflowEnvironment())
 			env.RegisterWorkflow(engine.Run)
 			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
@@ -1129,7 +1152,9 @@ func TestRunWorkflowForEachResultsBound(t *testing.T) {
 	for _, test := range tests.ForEachResultsBoundCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
-			env := testSuite.NewTestWorkflowEnvironment()
+			// Accumulating results right up against the byte bound is the
+			// point of these cases, so the same raise applies (#431).
+			env := atABound(testSuite.NewTestWorkflowEnvironment())
 			env.RegisterWorkflow(engine.Run)
 			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
@@ -1166,7 +1191,10 @@ func TestRunWorkflowForEachResultsBound(t *testing.T) {
 func TestRunWorkflowForEachTripCount(t *testing.T) {
 	for _, test := range tests.ForEachTripCountCases() {
 		t.Run(test.Name, func(t *testing.T) {
-			env := budgetEnv(t)
+			// The at-ceiling case runs a thousand iterations on purpose, which
+			// is exactly the work the trip-count design sized to stay under the
+			// detector, and exactly what contention takes back (#431).
+			env := atABound(budgetEnv(t))
 
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
 			require.True(t, env.IsWorkflowCompleted())

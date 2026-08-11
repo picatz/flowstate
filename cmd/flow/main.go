@@ -395,8 +395,9 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 
 	w := worker.New(c, taskQueue, worker.Options{
-		DeploymentOptions: deployment,
-		Interceptors:      interceptors,
+		DeploymentOptions:        deployment,
+		Interceptors:             interceptors,
+		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
 	})
 
 	engine.Register(w, runtime)
