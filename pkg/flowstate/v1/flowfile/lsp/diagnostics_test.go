@@ -105,7 +105,7 @@ edition: v2026.2
 			want: []want{{
 				code:       codeCELSyntax,
 				severity:   lsp.Error,
-				contains:   "Syntax error",
+				contains:   `"b" is not valid here: the expression is already complete before it`,
 				underlines: "b",
 			}},
 		},
@@ -128,7 +128,7 @@ edition: v2026.2
 			want: []want{{
 				code:       codeCELSyntax,
 				severity:   lsp.Error,
-				contains:   "Syntax error",
+				contains:   `"+" is not valid here, where a value was expected`,
 				underlines: "+",
 			}},
 		},

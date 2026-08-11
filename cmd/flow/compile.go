@@ -120,9 +120,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		if !errors.As(err, &diagnostics) {
 			diagnostics = flowfile.Diagnostics{{Message: err.Error()}}
 		}
-		for _, d := range diagnostics {
-			fmt.Fprintf(surface.Err, "%s:%s\n", surface.ErrTheme.Muted.Render(path), d.Error())
-		}
+		writeDiagnostics(surface.Err, surface.ErrTheme.Muted.Render(path), diagnostics)
 		return errCompileRefused
 	}
 
@@ -140,9 +138,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		// diagnostics to stdout because they are its answer; here the answer is
 		// the specification, so a diagnostic is the account of why there is not
 		// one — and a reader piping this into `jq` must never receive one.
-		for _, d := range diagnostics {
-			fmt.Fprintf(surface.Err, "%s:%s\n", surface.ErrTheme.Muted.Render(path), d.Error())
-		}
+		writeDiagnostics(surface.Err, surface.ErrTheme.Muted.Render(path), diagnostics)
 		return errCompileRefused
 	}
 

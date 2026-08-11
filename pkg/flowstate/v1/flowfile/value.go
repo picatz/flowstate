@@ -89,7 +89,7 @@ func ExprError(s string) error {
 		return fenceError(s)
 	}
 	if value := v1.NewExpr(inner); value.Error() != nil {
-		_, message := celFailure(value.Error(), Span{})
+		_, message := celFailure(value.Error(), Span{}, inner)
 		if containsFence(inner) {
 			return fmt.Errorf("invalid expression %q: %s; %s", inner, message, interpolationHelp)
 		}
@@ -235,7 +235,7 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref, placement sec
 
 	val := v1.NewExpr(src)
 	if err := val.Error(); err != nil {
-		at, msg := celFailure(err, span)
+		at, msg := celFailure(err, span, src)
 		if containsFence(src) {
 			// A second fence inside the first: "${a} ${b}" opens at the start and
 			// closes at the end, so it parses as one expression and fails inside.
@@ -526,7 +526,12 @@ var celErrorPattern = regexp.MustCompile(`ERROR: <input>:(\d+):(\d+): (.*)`)
 
 // celFailure narrows an expression's compile failure to the character at fault
 // and strips the wrapping that says only that a CEL expression failed to parse.
-func celFailure(err error, span Span) (Span, string) {
+//
+// src is the expression's own source, carried so that [TranslateCELMessage] can
+// name the last token an author wrote when the parser ran out of input. Nothing
+// else here reads it, and a caller that does not have it may pass "": the
+// translation loses one clause and stays correct.
+func celFailure(err error, span Span, src string) (Span, string) {
 	text := err.Error()
 	match := celErrorPattern.FindStringSubmatch(text)
 	if match == nil {
@@ -536,6 +541,13 @@ func celFailure(err error, span Span) (Span, string) {
 	msg := strings.TrimSpace(match[3])
 	line, _ := strconv.Atoi(match[1])
 	column, _ := strconv.Atoi(match[2])
+
+	// Translated before the position is applied, because the translation reads
+	// the line and column as cel-go reported them: a position within src, whose
+	// column is relative to its own line. The narrowing below is a separate
+	// question and only answers it for a single-line expression.
+	msg = TranslateCELMessage(msg, src, line, column)
+
 	if !span.IsValid() || line != 1 || column < 1 {
 		return span, msg
 	}
