@@ -46,7 +46,7 @@ flow lsp
 
 ## `flow audit`
 
-Measure how often Flowfiles repeat an expression they cannot name
+Measure how often Flowfiles repeat an expression left unnamed
 
 ```
 flow audit [path...] [flags]
@@ -54,7 +54,7 @@ flow audit [path...] [flags]
 
 Walk Flowfiles and count the expressions each one states more than once, with every occurrence placed at a line. A repetition where one occurrence is the hand-written negation of the others is marked separately, because that pair is the one a De Morgan slip corrupts silently.
 
-The audience is whoever decides what the language grows, not the author of the file. This is the evidence the held-entry proposal waits on (`value:`, issue #411): what a corpus would collapse if a workflow could name a value and read it back. It is not a linter, it has no warning tier, and it exits 0 on every finding it reports. A nonzero exit means something went wrong reading a file, never that a file repeats itself.
+The audience is whoever decides what the language grows, not the author of the file. This is the evidence `value:` (issue #411) landed on: what a corpus can collapse into a `value:` step read as `${steps.<id>.value}`. It is not a linter, it has no warning tier, and it exits 0 on every finding it reports. A nonzero exit means something went wrong reading a file, never that a file repeats itself.
 
 What it reports is a property of the file and nothing else. No deployment is consulted, no policy is read, and nothing resolves over a network.
 
