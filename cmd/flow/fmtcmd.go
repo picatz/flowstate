@@ -241,6 +241,17 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 	// rather than guess at one, it passes over the file exactly the way it
 	// would report an unchanged file: left alone, not refused, not an error.
 	if flowfile.LooksLikeFlowfileTest(data) {
+		// In --stdout mode the document stream is the product, and a pipeline
+		// like `flow fmt --stdout f > g` replaces g with whatever is written
+		// here. Passing over the file must therefore still write its bytes,
+		// unchanged: an empty stream with exit 0 would be the pipeline
+		// silently truncating a valid file, the exact class of loss this
+		// command exists to never cause.
+		if opts.stdout {
+			if _, err := out.Write(data); err != nil {
+				return fmtOutcome{}, fmt.Errorf("error writing %s to stdout: %w", path, err)
+			}
+		}
 		if !machine {
 			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path),
 				theme.Muted.Render("test file; flow fmt does not format test files"))

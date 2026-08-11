@@ -688,3 +688,22 @@ func TestFmtAndFixAgreeOnAnInitScaffold(t *testing.T) {
 		t.Fatalf("flow fmt disagrees with flow fix over the same flow init scaffold: %v\n%s", fmtErr, fmtErrOut)
 	}
 }
+
+// TestFmtStdoutPassesATestFileThroughByteForByte pins the --stdout half of
+// issue #392's fix: a pipeline like `flow fmt --stdout f > g` receives the
+// document stream as the product, so a passed-over test file must arrive on
+// stdout byte for byte. Before this, the pass-over returned early with exit 0
+// and wrote nothing, and the pipeline silently truncated a valid file.
+func TestFmtStdoutPassesATestFileThroughByteForByte(t *testing.T) {
+	dir := scaffoldDir(t)
+	testPath := filepath.Join(dir, "workflow.test.yaml")
+	want := readFixtureString(t, testPath)
+
+	out, _, err := runFmtCommand(t, "--stdout", testPath)
+	if err != nil {
+		t.Fatalf("flow fmt --stdout refused a test file: %v\n%s", err, out)
+	}
+	if out != want {
+		t.Fatalf("flow fmt --stdout did not pass the test file through byte for byte:\n--- want\n%s\n--- got\n%s", want, out)
+	}
+}
