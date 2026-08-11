@@ -183,7 +183,7 @@ and what to do about it:
 
 ```console
 $ flow validate broken.yaml
-broken.yaml:5:5: step "web": unknown task "htpp"; available tasks are http, log
+broken.yaml:5:5: step "web": unknown task "htpp"; did you mean "http"?
 broken.yaml:9:16: step "out" input "message": references step "later", which runs later; steps can only reference steps defined before them
 ```
 

@@ -608,8 +608,25 @@ func unknownTaskMessage(name string) string {
 			"process simply has not loaded it; `flow plugins` shows what a plugin "+
 			"directory provides", name, plugin)
 	}
-	return fmt.Sprintf("unknown task %q; available tasks are %s",
-		name, strings.Join(v1.TaskNames(), ", "))
+	// A near miss is named rather than the registry enumerated, which is the rule
+	// every other misspelling diagnostic in this package already follows
+	// (`unknown key "withh"; did you mean "with"?`) and the one this family was
+	// missing. The enumeration is honest but does not scale: it is the whole task
+	// registry, and a worker with plugins loaded multiplies that list, so the
+	// answer to a one-keystroke typo grows without bound while the useful part of
+	// it stays one word. `flow task run` reached the same conclusion for a name
+	// typed at a shell (see [unknownTaskRunError] there), and this is that rule
+	// arriving at the other surface that reads a task name.
+	known := v1.TaskNames()
+	if suggestion, ok := nearest.Name(name, known); ok {
+		return fmt.Sprintf("unknown task %q; did you mean %q?", name, suggestion)
+	}
+
+	// Nothing close enough to name, so the list is the only help there is, with a
+	// pointer at the command that describes each one, because for a long list
+	// reading the names is the start of the question rather than the end.
+	return fmt.Sprintf("unknown task %q; available tasks are %s (`flow tasks` describes each one)",
+		name, strings.Join(known, ", "))
 }
 
 // validateTaskStep checks everything about one task step that does not depend on

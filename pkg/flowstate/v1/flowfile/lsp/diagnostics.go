@@ -438,6 +438,12 @@ func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string
 	}
 	for _, e := range issues.Errors() {
 		rng := whole
+		// cel-go's column is zero-based here and one-based where the same error is
+		// rendered as text, which is the form the translation reads.
+		column := 0
+		if e.Location != nil {
+			column = e.Location.Column() + 1
+		}
 		if e.Location != nil {
 			// CEL's line and column address the expression source, so they are
 			// turned into an offset within it before anything is asked about the
@@ -459,7 +465,11 @@ func reportCELErrors(doc *document, set *diagnosticSet, env *cel.Env, src string
 			Severity: lsp.Error,
 			Source:   diagnosticSource,
 			Code:     codeCELSyntax,
-			Message:  e.Message,
+			// Through the same translation the CLI's diagnostics go through, and
+			// for a stronger reason: this one lands in an editor's problems pane
+			// while the author is still typing, which is the last place a lexer
+			// rule name belongs (#383).
+			Message: flowfile.TranslateCELMessage(e.Message, src, column),
 		})
 	}
 	return true

@@ -411,7 +411,9 @@ edition: v2026.2
 		params := c.change(uri, broken, 2)
 		require.Len(t, params.Diagnostics, 1)
 		assert.Equal(t, codeCELSyntax, params.Diagnostics[0].Code)
-		assert.Contains(t, params.Diagnostics[0].Message, "Syntax error")
+		assert.Contains(t, params.Diagnostics[0].Message,
+			`the expression ends after "==", which needs a value to follow`)
+		assertAuthorVocabulary(t, params.Diagnostics[0].Message)
 	})
 
 	t.Run("a forward reference in a condition is reported", func(t *testing.T) {
@@ -643,7 +645,7 @@ func TestWaitUntilSyntaxErrorLandsOnTheOffendingCharacter(t *testing.T) {
 			// mistake — the tighter range is the one that survives.
 			require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
 			assert.Equal(t, codeCELSyntax, params.Diagnostics[0].Code)
-			assert.Contains(t, params.Diagnostics[0].Message, "Syntax error")
+			assertAuthorVocabulary(t, params.Diagnostics[0].Message)
 			assert.Equal(t, tt.underlines, textInRange(src, params.Diagnostics[0].Range))
 
 			// The second `+` is the one at fault, and it is the second occurrence

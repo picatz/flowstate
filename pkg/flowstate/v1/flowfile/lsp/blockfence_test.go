@@ -93,7 +93,8 @@ edition: v2026.2
 		require.Len(t, got, 1, "expected exactly one diagnostic, got %v", messages(got))
 		assert.Equal(t, codeCELSyntax, got[0].Code)
 		assert.Equal(t, lsp.Error, got[0].Severity)
-		assert.Contains(t, got[0].Message, "Syntax error")
+		assert.Contains(t, got[0].Message, `"+" is not valid here, where a value was expected`)
+		assertAuthorVocabulary(t, got[0].Message)
 		// The break is in the middle of the expression rather than at its end,
 		// and that is load-bearing. CEL reports an unfinished expression at the
 		// last character, where the offset equals the end of the source and
