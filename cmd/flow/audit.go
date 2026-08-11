@@ -14,12 +14,12 @@ import (
 // `flow audit` is the only verb in this CLI whose audience is not the author of
 // the file it reads.
 //
-// Issue #411 proposes an entry a workflow can name and read back, so a question
-// answered in four places is written once. The disposition table behind it waits
-// on evidence: how much a real corpus repeats itself, where, and in which of the
-// shapes that a held entry would collapse. That evidence has been gathered by
-// hand twice, and by hand it is a number nobody can check and nobody can watch
-// move. This is the same reading, mechanized, so it can ride CI as a trend.
+// Issue #411 landed `value:`, an entry a workflow names and reads back, so a
+// question answered in four places is written once. The evidence that decision
+// rested on is this measurement: how much a real corpus repeats itself, where,
+// and in which shapes. It was gathered by hand twice, and by hand it is a number
+// nobody can check and nobody can watch move. This is the same reading,
+// mechanized, so it can ride CI as a trend and watch the collapse hold.
 //
 // It reports and does not judge. Nothing it prints is a diagnostic, a defect, or
 // advice to change a file, and it exits zero on every finding it has: a workflow
@@ -37,14 +37,14 @@ import (
 func newAuditCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audit [path...]",
-		Short: "Measure how often Flowfiles repeat an expression they cannot name",
+		Short: "Measure how often Flowfiles repeat an expression left unnamed",
 		Long: "Walk Flowfiles and count the expressions each one states more than once, with every " +
 			"occurrence placed at a line. A repetition where one occurrence is the hand-written " +
 			"negation of the others is marked separately, because that pair is the one a De Morgan " +
 			"slip corrupts silently.\n\n" +
 			"The audience is whoever decides what the language grows, not the author of the file. " +
 			"This is the evidence `value:` (issue #411) landed on: what a " +
-			"corpus would collapse if a workflow could name a value and read it back. It is not a " +
+			"corpus can collapse into a `value:` step read as `${steps.<id>.value}`. It is not a " +
 			"linter, it has no warning tier, and it exits 0 on every finding it reports. A nonzero " +
 			"exit means something went wrong reading a file, never that a file repeats itself.\n\n" +
 			"What it reports is a property of the file and nothing else. No deployment is consulted, " +
@@ -130,9 +130,9 @@ type auditSite struct {
 
 // auditTotals is what a trend line plots.
 //
-// Occurrences rather than findings is the number the proposal is about: a
-// predicate written four times is four things to keep in step, and collapsing it
-// to one held entry removes three of them.
+// Occurrences rather than findings is the number that matters: a predicate
+// written four times is four things to keep in step, and collapsing it into one
+// `value:` step removes three of them.
 type auditTotals struct {
 	Files            int `json:"files"`
 	FilesWithRepeats int `json:"filesWithRepeats"`
