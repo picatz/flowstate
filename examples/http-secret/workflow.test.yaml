@@ -12,7 +12,7 @@
 # The second case is the fail-closed direction, and it is the one thing `flow
 # test` owns that nothing else can stand in for: a reference no case named is
 # refused, naming the reference, rather than silently sending an empty bearer.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the bearer resolves from this file's own secrets, never from the environment
     workflow: ./workflow.yaml

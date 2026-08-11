@@ -27,7 +27,7 @@
 #     and it is the assertion a whole-fan-out `outputs:` check cannot make —
 #     `published` holding four URLs is satisfied by a run that paired every one
 #     of them with the wrong region.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: three regions publish, and the one the edge refuses is named rather than fatal
     workflow: ./workflow.yaml

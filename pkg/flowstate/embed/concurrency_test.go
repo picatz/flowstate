@@ -48,7 +48,7 @@ func TestRunLocal_ConcurrentDifferentTasksDoNotInterfere(t *testing.T) {
 			}
 
 			workflow, diags, err := Compile([]byte(fmt.Sprintf(`
-edition: v2026.2
+edition: v2026.3
 name: concurrent-%d
 steps:
   - id: step1
@@ -114,7 +114,7 @@ func TestRunLocal_ConcurrentInstallAndRunDoNotInterfere(t *testing.T) {
 			defer uninstall()
 
 			workflow, diags, err := Compile([]byte(fmt.Sprintf(`
-edition: v2026.2
+edition: v2026.3
 name: install-race-%d
 steps:
   - id: step1

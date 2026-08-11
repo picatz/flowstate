@@ -63,7 +63,7 @@ steps:
   - id: second
     log:
       message: ${vars.greeting + '!'}
-edition: v2026.2
+edition: v2026.3
 `,
 		},
 		{
@@ -96,7 +96,7 @@ steps:
   - id: a
     log:
       message: ${a b}
-edition: v2026.2
+edition: v2026.3
 `,
 			// The compiler cannot produce a workflow from a document with an
 			// unparseable expression, so its own validation never runs. The
@@ -123,7 +123,7 @@ steps:
     http:
       url: https://example.com
       expect: "1 + + 2"
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:       codeCELSyntax,
@@ -139,7 +139,7 @@ steps:
   - id: a
     shell:
       command: ls
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:       codeUnknownTask,
@@ -155,7 +155,7 @@ steps:
   - id: a
     log:
       mesage: hello
-edition: v2026.2
+edition: v2026.3
 `,
 			// Reported by the shared validator, so `flow validate` refuses the
 			// workflow too — a misspelled input is silently ignored at run time,
@@ -176,7 +176,7 @@ steps:
   - id: a
     http:
       method: GET
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:     codeGeneral,
@@ -191,7 +191,7 @@ steps:
   - id: a
     log:
       message: [1, 2]
-edition: v2026.2
+edition: v2026.3
 `,
 			// Here the key is fine and the value is not, so the range moves to the
 			// value. Which of the two is at fault comes from the schema.
@@ -207,7 +207,7 @@ edition: v2026.2
 			src: `name: notask
 steps:
   - id: a
-edition: v2026.2
+edition: v2026.3
 `,
 			// Reported by the shared validator, not here: a rule about what a
 			// step must be belongs with the compiler that enforces it. Only the
@@ -231,7 +231,7 @@ steps:
           - id: b
             log:
               message: hi
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:     codeGeneral,
@@ -261,7 +261,7 @@ steps:
         - id: body
           log:
             message: ${one}
-edition: v2026.2
+edition: v2026.3
 `,
 		},
 		{
@@ -278,7 +278,7 @@ steps:
   - id: b
     http:
       url: https://example.com
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:       codeUnresolvedReference,
@@ -297,7 +297,7 @@ steps:
   - id: a
     log:
       message: two
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:       codeGeneral,
@@ -323,7 +323,7 @@ steps:
   - id: a
     log:
       message: "cost is ${ ] not cel} dollars"
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:       codeGeneral,
@@ -339,7 +339,7 @@ steps:
   - id: a
     log:
       message: "cost is 5 dollars"
-edition: v2026.2
+edition: v2026.3
 `,
 		},
 		{
@@ -356,7 +356,7 @@ edition: v2026.2
 steps:
   - log:
       message: hello
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []want{{
 				code:       codeGeneral,
@@ -367,7 +367,7 @@ edition: v2026.2
 		},
 		{
 			name: "workflow with no name",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 steps:
   - id: a
     log:
@@ -431,14 +431,14 @@ steps:
   - id: a
     shell:
       message: hello
-edition: v2026.2
+edition: v2026.3
 `
 	const fixed = `name: fix-me
 steps:
   - id: a
     log:
       message: hello
-edition: v2026.2
+edition: v2026.3
 `
 
 	c := newClient(t)
@@ -498,7 +498,7 @@ steps:
   - id: a
     shell:
       message: hello
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()

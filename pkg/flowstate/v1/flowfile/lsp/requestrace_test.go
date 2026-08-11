@@ -42,7 +42,7 @@ steps:
         - id: shout
           log:
             message: ${n}
-edition: v2026.2
+edition: v2026.3
 `
 
 // TestHoverAnsweredWhenItArrivesWithDidOpen is the regression test for #317.

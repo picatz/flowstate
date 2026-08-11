@@ -8,7 +8,7 @@
 # for staging" and match no stub. If a body var were evaluated once rather than
 # per iteration, one of the two host lines would be wrong. Listing the five step
 # ids in `ran:` could not see either.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the same bare name means two different things, and a body var follows the iterator
     workflow: ./workflow.yaml

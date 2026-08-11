@@ -16,7 +16,7 @@ import (
 // request is dialed — so what fails, and why, is entirely about secret
 // resolution, never about the network.
 const bearerWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: bearer-test
 steps:
   - id: step1
@@ -122,7 +122,7 @@ func TestRunLocal_SecretsWithNoPolicyDeniesEverything(t *testing.T) {
 }
 
 const loopbackWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: egress-test
 steps:
   - id: step1
@@ -237,7 +237,7 @@ func TestRunLocal_CustomTaskEndToEnd(t *testing.T) {
 	}
 
 	workflow, diags, err := Compile([]byte(`
-edition: v2026.2
+edition: v2026.3
 name: double-test
 steps:
   - id: step1

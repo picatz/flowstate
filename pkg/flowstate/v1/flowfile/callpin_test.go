@@ -32,7 +32,7 @@ func digestOf(t *testing.T, source string) string {
 // assertion against line 1 passes for a compiler that reports every diagnostic
 // at the top of the document.
 func pinnedCallerSource(pin string) string {
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: caller
 description: pins what it calls
 steps:
@@ -92,7 +92,7 @@ func TestUnpinnedCallIsUnchangedByThePinFeature(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
 
-	unpinned := writeFile(t, dir, "unpinned.yaml", `edition: v2026.2
+	unpinned := writeFile(t, dir, "unpinned.yaml", `edition: v2026.3
 name: caller
 description: pins what it calls
 steps:
@@ -133,7 +133,7 @@ func TestCallDigestMismatchIsRefused(t *testing.T) {
 
 	// A real, valid callee that simply is not the one that was pinned. The pin
 	// below names an earlier version of it.
-	stale := digestOf(t, "edition: v2026.2\nname: callee\n")
+	stale := digestOf(t, "edition: v2026.3\nname: callee\n")
 	caller := writeFile(t, dir, "caller.yaml", pinnedCallerSource(stale))
 
 	_, _, err := flowfile.ParseFile(caller)
@@ -172,7 +172,7 @@ func TestCallDigestMismatchIsRefusedThoughTheCalleeIsValid(t *testing.T) {
 	require.Empty(t, mustValidate(t, calleePath), "the callee must be valid, or this test proves nothing")
 
 	// And the same caller, unpinned, compiles against it without complaint.
-	unpinned := writeFile(t, dir, "unpinned.yaml", `edition: v2026.2
+	unpinned := writeFile(t, dir, "unpinned.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -182,7 +182,7 @@ steps:
 `)
 	require.Empty(t, mustValidate(t, unpinned))
 
-	caller := writeFile(t, dir, "caller.yaml", pinnedCallerSource(digestOf(t, "edition: v2026.2\nname: callee\n")))
+	caller := writeFile(t, dir, "caller.yaml", pinnedCallerSource(digestOf(t, "edition: v2026.3\nname: callee\n")))
 	_, _, err := flowfile.ParseFile(caller)
 	require.Error(t, err, "a valid callee that is not the pinned callee must still be refused")
 	assert.Contains(t, err.Error(), "changed since the pin was written")
@@ -229,7 +229,7 @@ func TestCallDigestMalformedIsRefused(t *testing.T) {
 // one that passed.
 func TestCallDigestOnANonCallStepIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: greet
@@ -254,7 +254,7 @@ steps:
 // the grammar's word, so it can never also be a task the registry hands out.
 func TestCallDigestIsNotATaskName(t *testing.T) {
 	dir := t.TempDir()
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: greet

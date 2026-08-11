@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: enterprise-incident-response
 description: >-
   Pages an on-call responder, gathers evidence from three systems at once

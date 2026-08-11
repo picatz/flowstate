@@ -7,7 +7,7 @@
 # changes its digest, so every caller pinning it stops compiling until somebody
 # reads the change and re-pins. That is the trade the pin buys, and it is the
 # whole of it.
-edition: v2026.2
+edition: v2026.3
 name: grant-access
 
 inputs:

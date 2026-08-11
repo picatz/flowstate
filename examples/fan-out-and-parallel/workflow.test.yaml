@@ -9,7 +9,7 @@
 # and the two branch messages are pinned the same way, which is also how the
 # `parallel:` half is asserted — two branches that both ran, each with its own
 # body, joined before `summary` was reached.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: every item is processed, both branches run, and the loop's results are countable afterwards
     workflow: ./workflow.yaml

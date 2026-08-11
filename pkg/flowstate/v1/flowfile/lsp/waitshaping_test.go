@@ -16,7 +16,7 @@ import (
 func TestWaitShapingUnresolvedReferenceUnderlinesTheExpression(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: waitshape
 steps:
   - id: gate

@@ -27,7 +27,7 @@ import (
 // the next step's dash, and the last step's end is walked back over *blank* lines only —
 // so a top-level key written after the steps extends the last step past its own content.
 // A fixture that asserts where the last step ends must write the marker above instead.
-const editionSuffix = "edition: v2026.2\n"
+const editionSuffix = "edition: v2026.3\n"
 
 // TestDSLKeysMatchTheDSL is the guard on the one list in this package that is not
 // derived from a central definition.
@@ -381,7 +381,7 @@ steps:
     if: ${steps.web.status_code == 200}
     log:
       message: ok
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -437,7 +437,7 @@ steps:
   - id: later
     http:
       url: https://example.com
-edition: v2026.2
+edition: v2026.3
 `
 		params := c.open("file:///cond-fwd.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
@@ -456,7 +456,7 @@ steps:
       url: https://example.com
   - id: guarded
     if: ${PLACEHOLDER
-edition: v2026.2
+edition: v2026.3
 `
 		for _, tt := range []struct {
 			name  string
@@ -505,7 +505,7 @@ func TestWaitUntilIsFirstClass(t *testing.T) {
 	// the wait read; that task is retired, and an expression on its own no longer
 	// needs a step, so the only shape left where a wait names another step is one
 	// that fetches.
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: waits
 steps:
   - id: embargo
@@ -569,7 +569,7 @@ steps:
             url: https://example.com
   - id: hold
     wait_until: ${timestamp(steps.inner.body)}
-edition: v2026.2
+edition: v2026.3
 `
 		const leakyURI = "file:///leaky-wait.yaml"
 		params := c.open(leakyURI, leaky)
@@ -590,7 +590,7 @@ steps:
   - id: later
     http:
       url: https://example.com
-edition: v2026.2
+edition: v2026.3
 `
 		params := c.open("file:///fwd-wait.yaml", forward)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
@@ -686,7 +686,7 @@ steps:
   - id: a
     log:
       message: ${now}
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -725,7 +725,7 @@ edition: v2026.2
 steps:
   - id: window
     wait_until: ${now}
-edition: v2026.2
+edition: v2026.3
 `
 		const boundURI = "file:///one-account.yaml"
 		require.Empty(t, messages(c.open(boundURI, bound).Diagnostics),
@@ -760,7 +760,7 @@ func TestWaitKeysAreDocumentedAtTheirOwnLevel(t *testing.T) {
 	// The step-level `timeout:` sits on the task step, because a waiting step may
 	// not carry one — the validator says so, and a fixture that ignored it would
 	// be testing hover against a document `flow validate` refuses.
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: waits
 steps:
   - id: fetch
@@ -863,7 +863,7 @@ steps:
           - id: left
             http:
               method: GET
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -991,7 +991,7 @@ steps:
   - id: after
     log:
       message: PLACEHOLDER_AFTER
-edition: v2026.2
+edition: v2026.3
 `
 
 	tests := []struct {
@@ -1129,7 +1129,7 @@ steps:
   - id: after
     log:
       message: ${steps.inner.body}
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -1161,7 +1161,7 @@ steps:
         - id: body
           log:
             message: ${target}
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -1194,7 +1194,7 @@ steps:
       method: GET
       url: https://example.com/json
       outputs: "${ {'status': status_code, 'title': body} }"
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()

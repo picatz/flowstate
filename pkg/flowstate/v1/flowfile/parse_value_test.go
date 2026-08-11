@@ -21,7 +21,7 @@ import (
 func TestParseValueStep(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: w
 inputs:
   amount:
@@ -57,7 +57,7 @@ steps:
 func TestValueIsFenceOptional(t *testing.T) {
 	t.Parallel()
 
-	fenced, _, err := flowfile.Parse([]byte(`edition: v2026.2
+	fenced, _, err := flowfile.Parse([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -65,7 +65,7 @@ steps:
 `))
 	require.NoError(t, err)
 
-	bare, _, err := flowfile.Parse([]byte(`edition: v2026.2
+	bare, _, err := flowfile.Parse([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -95,7 +95,7 @@ func TestValueRefusesPolicy(t *testing.T) {
 	}{
 		{
 			name: "a timeout on a value",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: v
@@ -106,7 +106,7 @@ steps:
 		},
 		{
 			name: "a retry on a value",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: v
@@ -140,7 +140,7 @@ steps:
 func TestValueRefusesUndo(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -166,7 +166,7 @@ steps:
 func TestValueRefusesASecretReference(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := flowfile.Parse([]byte(`edition: v2026.2
+	_, _, err := flowfile.Parse([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -191,7 +191,7 @@ func TestValueSkippedThenReferencedIsUnresolved(t *testing.T) {
 	// Forward, rather than skipped: the validator cannot know an `if:` will be
 	// false, so what it can report about this shape is a reference written above
 	// the value it names. The skipped case is the engine's, and is shared.
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: w
 steps:
   - id: reads
@@ -213,7 +213,7 @@ steps:
 func TestValueRoundTripsThroughMarshal(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: w
 steps:
   - id: shape

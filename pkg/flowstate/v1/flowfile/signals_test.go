@@ -15,7 +15,7 @@ import (
 // deliver it. See [pkg/flowstate/v1/signalpolicy.go] for the enforcement
 // this describes and [pkg/flowstate/v1/server/lifecycle.go] for where it is
 // checked.
-const signaledSource = `edition: v2026.2
+const signaledSource = `edition: v2026.3
 name: deploy-gate
 steps:
   - id: approval
@@ -102,7 +102,7 @@ func TestMarshalIsTheInverseForSignals(t *testing.T) {
 func TestMarshalWritesSignalsInSortedOrder(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: multi-gate
 steps:
   - id: a
@@ -158,7 +158,7 @@ func TestSignalPolicyForAnUndeclaredNameIsMisspelled(t *testing.T) {
 func TestSignalPolicyRuleWithNothingSetIsRefused(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.2
+	source := `edition: v2026.3
 name: deploy-gate
 steps:
   - id: approval
@@ -198,7 +198,7 @@ func TestSignalPolicySubjectMustBeIssuerQualified(t *testing.T) {
 func TestAnEmptySignalsBlockDoesNotRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.2
+	source := `edition: v2026.3
 name: deploy-gate
 steps:
   - id: approval
@@ -220,7 +220,7 @@ signals: {}
 // perRunSignaledSource is [signaledSource] with a per-run rule: an
 // interpolated subject, narrowed by a co-resident `namespace:` — the shape
 // the narrowing check requires.
-const perRunSignaledSource = `edition: v2026.2
+const perRunSignaledSource = `edition: v2026.3
 name: deploy-gate
 inputs:
   expected_approver:
@@ -289,7 +289,7 @@ func TestASubjectFromRuleValidatesWhenNarrowed(t *testing.T) {
 func TestNarrowingCheckRefusesAnInterpolationOnlyRule(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.2
+	source := `edition: v2026.3
 name: deploy-gate
 inputs:
   expected_approver:
@@ -324,7 +324,7 @@ signals:
 func TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.2
+	source := `edition: v2026.3
 name: deploy-gate
 inputs:
   expected_approver:

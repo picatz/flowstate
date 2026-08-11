@@ -35,7 +35,7 @@
 # first deadline collapsed onto the first lapse. `at: 721h` and `at: 3000h`
 # produced the identical run. Two of the cases below now differ only in that
 # number, which is the whole of the proof that it means something.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a deadline lapses, the reminder goes out, and the renewal that follows stops the loop
     workflow: ./workflow.yaml

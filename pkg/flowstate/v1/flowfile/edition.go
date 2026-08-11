@@ -45,7 +45,19 @@ import (
 // A `v` makes it a string in every YAML parser, which deletes that whole problem for
 // every edition after the first. The workaround stays for reading `2026.1`, and can go
 // when that edition does.
-const CurrentEdition = "v2026.2"
+//
+// # v2026.3: optional traversal is part of the language, and the edition says so
+//
+// This edition's grammar includes CEL optional types' read-side surface — `.?`
+// traversal and `orValue()` — as a documented part of the dialect (issue #412).
+// The extension is additive: every v2026.2 file is byte-for-byte a valid v2026.3
+// file with the same meaning, so `flow fix` brings a file forward by stamping the
+// marker, and rewrites the `has(x.y) && x.y` guarded-read idiom into the spelling
+// this edition exists to carry. An engine that predates this edition refuses a
+// v2026.3 file with the unknown-edition diagnostic below, which is the whole
+// point of the marker: refusal rather than reinterpretation, on the one dialect
+// axis the language has.
+const CurrentEdition = "v2026.3"
 
 // firstEdition is the unprefixed spelling, kept so a file written in it can be read far
 // enough to be rewritten.
@@ -56,8 +68,13 @@ const CurrentEdition = "v2026.2"
 // no-deprecation decision was made to avoid.
 const firstEdition = "2026.1"
 
+// editionV2026_2 is the edition before optionals were part of the documented
+// dialect. Known so `flow fix` can bring a file forward; not compiled, because
+// there is one grammar in a build (see the package comment above).
+const editionV2026_2 = "v2026.2"
+
 // knownEditions are every edition this build recognises, oldest first.
-var knownEditions = []string{firstEdition, CurrentEdition}
+var knownEditions = []string{firstEdition, editionV2026_2, CurrentEdition}
 
 // KnownEditions returns the editions this build recognises, oldest first.
 func KnownEditions() []string {

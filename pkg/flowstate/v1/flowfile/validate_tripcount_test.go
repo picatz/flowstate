@@ -51,7 +51,7 @@ func forEachOverLiteralSource(n int) string {
 		entries[i] = strconv.Itoa(i)
 	}
 
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: literal-items
 steps:
   - id: fan

@@ -26,7 +26,7 @@ import (
 
 // takesInputs is a workflow declaring one of every shape an argument has: required,
 // defaulted, and each type the coercion has to tell apart.
-const takesInputs = `edition: v2026.2
+const takesInputs = `edition: v2026.3
 name: takes-inputs
 
 inputs:
@@ -263,7 +263,7 @@ func TestDeclaredOutputsAreReportedToAPerson(t *testing.T) {
 // TestAWorkflowWithNoDeclaredOutputsSaysNothing: an "outputs" heading over nothing
 // would read as a run that failed to produce what it promised.
 func TestAWorkflowWithNoDeclaredOutputsSaysNothing(t *testing.T) {
-	_, stderr, err := runLocal(t, `edition: v2026.2
+	_, stderr, err := runLocal(t, `edition: v2026.3
 name: plain
 steps:
   - id: greet

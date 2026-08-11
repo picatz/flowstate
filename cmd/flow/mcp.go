@@ -864,7 +864,7 @@ func runLocalToolHandler(posture *cobra.Command) mcp.ToolHandler {
 
 		if strings.TrimSpace(args.Source) == "" {
 			return toolError(errors.New(
-				"source is required: pass the Flowfile YAML to execute, e.g. \"edition: v2026.2\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")), nil
+				"source is required: pass the Flowfile YAML to execute, e.g. \"edition: v2026.3\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")), nil
 		}
 
 		workflow, err := parseFlowfileSource([]byte(args.Source))
@@ -1063,7 +1063,7 @@ func testToolHandler() mcp.ToolHandler {
 		if strings.TrimSpace(args.Workflow) == "" {
 			return toolError(errors.New(
 				"workflow is required: pass the Flowfile YAML under test, e.g. " +
-					"\"edition: v2026.2\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")), nil
+					"\"edition: v2026.3\\nname: demo\\nsteps:\\n- id: hi\\n  log:\\n    message: hello\"")), nil
 		}
 		if strings.TrimSpace(args.Tests) == "" {
 			return toolError(errors.New(

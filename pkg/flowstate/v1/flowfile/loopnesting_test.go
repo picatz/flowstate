@@ -38,7 +38,7 @@ func TestNestedLoopIsRefused(t *testing.T) {
 		{
 			name:    "a loop directly inside a loop is refused",
 			refused: true,
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: outer
@@ -65,7 +65,7 @@ steps:
 		{
 			name:    "a loop transitively inside a loop, through a for_each, is refused",
 			refused: true,
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: outer
@@ -97,7 +97,7 @@ steps:
 		{
 			name:    "a for_each inside a loop is accepted",
 			refused: false,
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: outer
@@ -121,7 +121,7 @@ steps:
 		{
 			name:    "a parallel inside a loop is accepted",
 			refused: false,
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: outer
@@ -162,7 +162,7 @@ steps:
 func TestLoopAsNameOutputReferenceIsCaught(t *testing.T) {
 	t.Parallel()
 
-	loop := `edition: v2026.2
+	loop := `edition: v2026.3
 name: t
 steps:
   - id: countup

@@ -11,7 +11,7 @@
 # That is what lets `checkout` and `payments` be told apart at all: they are
 # probed at the identical url, so nothing in this workflow's task inputs
 # separates them.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: two services down and one up are named individually, and the run still completes
     workflow: ./workflow.yaml

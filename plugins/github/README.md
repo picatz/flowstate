@@ -38,7 +38,7 @@ the fence.
 
 <!-- example: examples/plugins/github/workflow.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: github-pull-request-get
 description: Reads a public pull request's state using the "github" plugin - the one read task this example runs by default.
 
@@ -90,7 +90,7 @@ outputs:
 
 <!-- example: examples/plugins/github/issue-comment.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: github-issue-comment
 description: Posts a real comment on a real issue or pull request using the "github" plugin's one non-idempotent task. Requires inputs; never runs by accident.
 
@@ -148,7 +148,7 @@ outputs:
 
 <!-- example: examples/plugins/github/triage.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: github-review-and-issue-triage
 description: A review-triage pass over a public repository using the "github" plugin's read/audit tier - what is open, which files a candidate change touches, and the full record of whichever issue needs the next look. Runs with no arguments.
 
@@ -428,7 +428,7 @@ both directions:
 
 <!-- example: examples/plugins/github/list-resume.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: github-list-resume
 description: Reads a repository's open issues in two bounded pages using github.issue_list's cursor input - the resume shape issue #216 asks every bounded list task to grow, closed for this plugin's read/audit-tier listings. Runs with no arguments.
 

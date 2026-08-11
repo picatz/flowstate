@@ -13,7 +13,7 @@
 # step's would, and a later failure takes every registration back in reverse —
 # across the call boundary, and across every iteration of the loop that made the
 # calls.
-edition: v2026.2
+edition: v2026.3
 name: shift-traffic
 description: Move a percentage of traffic to the new version, record it, and check the canary.
 

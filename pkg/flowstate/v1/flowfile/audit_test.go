@@ -47,7 +47,7 @@ func findAudit(t *testing.T, found []RepeatedExpr, want string) RepeatedExpr {
 // mark would then be on so many findings that the pair it exists to surface would
 // be unfindable.
 func TestAuditMarksOnlyWhatTheNegationDirectlyCovers(t *testing.T) {
-	found := auditOf(t, `edition: v2026.2
+	found := auditOf(t, `edition: v2026.3
 name: negation
 steps:
   - id: yes
@@ -84,7 +84,7 @@ steps:
 // repeats `@result + [r]`, which is every time anyone writes `filter`, and never
 // reports the `filter` two fields share.
 func TestAuditReadsMacrosAsTheyWereWritten(t *testing.T) {
-	found := auditOf(t, `edition: v2026.2
+	found := auditOf(t, `edition: v2026.3
 name: macros
 steps:
   - id: one
@@ -113,7 +113,7 @@ steps:
 // workflows sharing a predicate cannot share a held entry either way, so the
 // count is per file and the report is keyed by file.
 func TestAuditCountsWithinOneFileOnly(t *testing.T) {
-	const one = `edition: v2026.2
+	const one = `edition: v2026.3
 name: one
 steps:
   - id: gate
@@ -124,7 +124,7 @@ steps:
 
 	require.Empty(t, auditOf(t, one), "one statement of a predicate is not a repetition")
 
-	found := auditOf(t, `edition: v2026.2
+	found := auditOf(t, `edition: v2026.3
 name: two
 steps:
   - id: gate
@@ -143,7 +143,7 @@ steps:
 // caller that compiled a workflow without asking for source positions gets. The
 // counts are the answer; the lines are what is lost.
 func TestAuditSurvivesNoPositions(t *testing.T) {
-	wf, _, err := Parse([]byte(`edition: v2026.2
+	wf, _, err := Parse([]byte(`edition: v2026.3
 name: unplaced
 steps:
   - id: gate
@@ -176,7 +176,7 @@ func TestAuditSeesCallArguments(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeAuditFile(t, dir, "callee.yaml", `edition: v2026.2
+	writeAuditFile(t, dir, "callee.yaml", `edition: v2026.3
 name: callee
 inputs:
   tenant:
@@ -190,7 +190,7 @@ outputs:
   greeting:
     value: ${'hello ' + inputs.tenant}
 `)
-	caller := writeAuditFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeAuditFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 inputs:
   region:
@@ -236,7 +236,7 @@ steps:
 func TestAuditSeesComputedSignalSubjects(t *testing.T) {
 	t.Parallel()
 
-	found := auditOf(t, `edition: v2026.2
+	found := auditOf(t, `edition: v2026.3
 name: gated
 inputs:
   expected_approver:

@@ -121,17 +121,17 @@ func TestFixLooksLikeFlowfileAgreesWithFix(t *testing.T) {
 	}{
 		{
 			name: "a Flowfile",
-			data: []byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
+			data: []byte("edition: v2026.3\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
 			want: true,
 		},
 		{
 			name: "a Flowfile test",
-			data: []byte("edition: v2026.2\ntests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {}\n"),
+			data: []byte("edition: v2026.3\ntests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {}\n"),
 			want: true,
 		},
 		{
 			name: "a Flowfile declaring no steps at all",
-			data: []byte("edition: v2026.2\nname: t\n"),
+			data: []byte("edition: v2026.3\nname: t\n"),
 			want: true,
 		},
 	} {
@@ -243,7 +243,7 @@ func TestFixStillFixesAZeroStepFlowfile(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.Refusals, "name: alone is not distinctive enough to qualify")
 
-	current, err := flowfile.Fix([]byte("edition: v2026.2\nname: t\n"))
+	current, err := flowfile.Fix([]byte("edition: v2026.3\nname: t\n"))
 	require.NoError(t, err)
 	assert.Empty(t, current.Refusals, "edition: is distinctive, so a zero-step Flowfile is still recognized")
 	assert.False(t, current.Changed())
@@ -263,17 +263,17 @@ func TestLooksLikeFlowfileTest(t *testing.T) {
 	}{
 		{
 			name: "a Flowfile test",
-			data: []byte("edition: v2026.2\ntests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {}\n"),
+			data: []byte("edition: v2026.3\ntests:\n  - name: a case\n    workflow: ./workflow.yaml\n    expect: {}\n"),
 			want: true,
 		},
 		{
 			name: "a Flowfile",
-			data: []byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
+			data: []byte("edition: v2026.3\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
 			want: false,
 		},
 		{
 			name: "a document declaring both tests and steps",
-			data: []byte("edition: v2026.2\nsteps:\n  - id: a\n    log:\n      message: hi\ntests:\n  - name: a\n    workflow: ./w.yaml\n    expect: {}\n"),
+			data: []byte("edition: v2026.3\nsteps:\n  - id: a\n    log:\n      message: hi\ntests:\n  - name: a\n    workflow: ./w.yaml\n    expect: {}\n"),
 			want: false,
 		},
 		{

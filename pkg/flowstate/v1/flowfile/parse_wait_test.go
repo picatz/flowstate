@@ -26,7 +26,7 @@ func TestParseWait(t *testing.T) {
 	}{
 		{
 			name: "a sleep",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -42,7 +42,7 @@ steps:
 			// would have been rejected with "not a duration" — for the exact thing
 			// the feature is advertised as doing.
 			name: "a sleep of a week",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -54,7 +54,7 @@ steps:
 		},
 		{
 			name: "a sleep mixing days and hours",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -66,7 +66,7 @@ steps:
 		},
 		{
 			name: "a wait_until expression",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: window
@@ -80,7 +80,7 @@ steps:
 		{
 			// The form someone writes first, and the one that has to be short.
 			name: "a signal, written as a scalar",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -93,7 +93,7 @@ steps:
 		},
 		{
 			name: "a signal with a timeout",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -108,7 +108,7 @@ steps:
 		},
 		{
 			name: "a signal with an underscore in its name",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -124,7 +124,7 @@ steps:
 			// stays a literal in `duration`, and only this one reaches
 			// `duration_expr`. Both readings live on the same key.
 			name: "a computed sleep",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -143,7 +143,7 @@ steps:
 			// and *accepted* by the validator in TestValidateAcceptsWaits below —
 			// two different claims, and the second is the one that used to fail.
 			name: "a computed sleep reading the clock",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -155,7 +155,7 @@ steps:
 		},
 		{
 			name: "a signal with a computed timeout",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: gate
@@ -209,7 +209,7 @@ func TestParseWaitDiagnostics(t *testing.T) {
 	}{
 		{
 			name: "a sleep that is not a duration",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -219,7 +219,7 @@ steps:
 		},
 		{
 			name: "a sleep of no time at all",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -229,7 +229,7 @@ steps:
 		},
 		{
 			name: "a signal with no name",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -240,7 +240,7 @@ steps:
 		},
 		{
 			name: "a signal name with a space in it",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -252,7 +252,7 @@ steps:
 			// A step timeout does nothing to a wait, and an author who wrote one
 			// believed it bounded something.
 			name: "a step timeout on a wait",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -263,7 +263,7 @@ steps:
 		},
 		{
 			name: "a retry on a wait",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -278,7 +278,7 @@ steps:
 			// same reason a retry on a signal is — a timer has nothing to attempt
 			// again.
 			name: "a retry on a sleep",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -292,7 +292,7 @@ steps:
 			// The third arm gets the same refusal: wait_until schedules no activity
 			// a step-level timeout could bound.
 			name: "a step timeout on a wait_until",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: hold
@@ -306,7 +306,7 @@ steps:
 			// wait — so a `timeout:` on the *step* is the confusion the diagnostic
 			// exists to catch, and its advice points at the inside-the-wait spelling.
 			name: "a step timeout on a wait_for_signal",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -317,7 +317,7 @@ steps:
 		},
 		{
 			name: "two kinds of work at once",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: confused
@@ -328,7 +328,7 @@ steps:
 		},
 		{
 			name: "an unknown key inside a signal",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -364,7 +364,7 @@ steps:
 func TestRetryTimeoutStayOnTaskSteps(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: w
 steps:
   - id: fetch
@@ -393,7 +393,7 @@ steps:
 func TestValidateAcceptsWaits(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: gated
 steps:
   - id: start
@@ -427,7 +427,7 @@ steps:
 func TestValidateReportsUnresolvableWaitUntil(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: w
 steps:
   - id: window
@@ -449,7 +449,7 @@ steps:
 func TestValidateAcceptsComputedDurations(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: computed
 inputs:
   grace:
@@ -498,7 +498,7 @@ func TestValidateRefusesNowOutsideAWait(t *testing.T) {
 			// The one ARCHITECTURE.md argues from: a task input may be resolved
 			// inside an activity, where each retry would read a different value.
 			name: "a task input",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: t
@@ -512,7 +512,7 @@ steps:
 			// in a wait — and a condition that read a clock would put a
 			// nondeterministic branch in history.
 			name: "a step condition",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: t
@@ -526,7 +526,7 @@ steps:
 			// An activity, and the one seam replay does not cover: re-evaluated at
 			// the top of every Continue-As-New segment.
 			name: "a workflow var",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 vars:
   x: ${now}
@@ -541,7 +541,7 @@ steps:
 			// The collision that rooting cannot fix: an iterator is bare too, so it
 			// and the clock genuinely share a namespace.
 			name: "a loop iterator",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: t
@@ -559,7 +559,7 @@ steps:
 			// A step's own vars are bare within that step, so one called `now`
 			// would shadow the clock inside that step's own wait.
 			name: "a step var",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: t
@@ -597,7 +597,7 @@ func TestValidateReportsUnresolvableComputedDurations(t *testing.T) {
 	}{
 		{
 			name: "a computed sleep",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause
@@ -606,7 +606,7 @@ steps:
 		},
 		{
 			name: "a computed timeout",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: gate
@@ -640,7 +640,7 @@ func cmpWorkflows(a, b *v1.Workflow) string {
 func TestWaitOutputsAreReferenceable(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -674,7 +674,7 @@ steps:
 func TestParseWaitOutputsShaping(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -719,7 +719,7 @@ steps:
 func TestValidateWaitOutputsShapingScope(t *testing.T) {
 	t.Parallel()
 
-	src := []byte(`edition: v2026.2
+	src := []byte(`edition: v2026.3
 name: w
 inputs:
   approver:
@@ -763,7 +763,7 @@ func TestValidateWaitOutputsShapingDiagnostics(t *testing.T) {
 			// ship at all: shaping *drops* `payload`, so a later reference to it
 			// reads nothing. Reported, with the one-line fix named.
 			name: "a later step reads a name the shaping dropped",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -783,7 +783,7 @@ steps:
 			// gets the suggestion rather than the re-exposure advice, because
 			// `approvd` is not one of the wait's own outputs.
 			name: "a later step misspells a shaped name",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -803,7 +803,7 @@ steps:
 			// ordinary unknown name, which is what keeps a step legitimately called
 			// `payload` from being shadowed everywhere.
 			name: "the wait's result is not bound outside the shaping block",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -820,7 +820,7 @@ steps:
 		},
 		{
 			name: "a shaping expression names a step that does not exist",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -835,7 +835,7 @@ steps:
 			// An empty block would silently produce a step with no outputs at all,
 			// since shaping replaces rather than extends.
 			name: "an empty outputs block",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: approval
@@ -849,7 +849,7 @@ steps:
 			// The grammar refuses shaping on the two arms whose result is only the
 			// passage of time — structurally, since neither takes a mapping at all.
 			name: "a sleep cannot carry shaping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: w
 steps:
   - id: pause

@@ -30,7 +30,7 @@ func diffFixtures(t *testing.T, oldSrc, newSrc string) flowfile.Diagnostics {
 // which is the point: a break is a shrunk contract, not a broken file.
 const fixtureStep = "steps:\n  - id: noop\n    log:\n      message: done\n"
 
-func fixtureHeader() string { return "edition: v2026.2\nname: demo\n" }
+func fixtureHeader() string { return "edition: v2026.3\nname: demo\n" }
 
 // TestBreakingRequiredInputAdded is the first break class: an input a caller must
 // now supply. The negative direction is asserted beside it: an added *optional*
@@ -324,8 +324,8 @@ func gitInitRepoFiles(t *testing.T, files map[string]string) string {
 // differ per directory, so this exercises only the path scoping, not the
 // same-name refusal.
 func TestBreakingFromSubdirectory(t *testing.T) {
-	here := "edition: v2026.2\nname: here\n" + fixtureStep
-	elsewhere := "edition: v2026.2\nname: elsewhere\n" + fixtureStep
+	here := "edition: v2026.3\nname: here\n" + fixtureStep
+	elsewhere := "edition: v2026.3\nname: elsewhere\n" + fixtureStep
 	dir := gitInitRepoFiles(t, map[string]string{
 		"svc/a/workflow.yaml": here,
 		"svc/b/workflow.yaml": elsewhere,
@@ -344,7 +344,7 @@ func TestBreakingFromSubdirectory(t *testing.T) {
 // collision would compare one file and miss the other; the command names both
 // files and fails instead.
 func TestBreakingRefusesDuplicateNames(t *testing.T) {
-	same := "edition: v2026.2\nname: shared\n" + fixtureStep
+	same := "edition: v2026.3\nname: shared\n" + fixtureStep
 	dir := gitInitRepoFiles(t, map[string]string{
 		"svc/a/workflow.yaml": same,
 		"svc/b/workflow.yaml": same,

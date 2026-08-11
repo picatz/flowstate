@@ -31,7 +31,7 @@ func TestStubAimedAtAValueSaysWhatItIs(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir+"/workflow.yaml", `edition: v2026.2
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
 name: stub-value
 inputs:
   amount:

@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: vcs-log-and-diff
 description: Reads a public repository's recent history and diffs two of its tags, using the "vcs" plugin (go-git).
 

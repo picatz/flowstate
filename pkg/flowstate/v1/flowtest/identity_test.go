@@ -28,7 +28,7 @@ import (
 // reads true for every local delivery, scripted or not, which is what keeps a
 // scripted sender distinguishable from an attested production one.
 const policedGateWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: policed-gate
 
 signals:

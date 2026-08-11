@@ -8,7 +8,7 @@
 # nothing else": an exclusion that stopped working produces a sixth message
 # (windows/arm64) that no stub here answers, and the case fails on it rather than
 # passing with an extra build nobody noticed.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the two axes expand to every combination except the excluded one
     workflow: ./workflow.yaml

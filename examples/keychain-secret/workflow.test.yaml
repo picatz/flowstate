@@ -3,7 +3,7 @@
 # and this case passes on Linux CI where that tool does not exist at all:
 # `secrets:` binds the reference's text form for one case, and an in-memory
 # provider answers it, so the scheme need not have a real provider in this build.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the bearer resolves from this file's own secrets, never from a real keychain
     workflow: ./workflow.yaml

@@ -20,7 +20,7 @@
 #     drivers. What is assertable, and is the reason the retry is in the file at
 #     all, is that a retryable failure which outlasts its policy still ends up
 #     *tolerated* rather than failing the run.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a permanently rejected record and a transient vendor outage are both tolerated, and told apart
     workflow: ./workflow.yaml

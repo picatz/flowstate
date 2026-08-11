@@ -9,7 +9,7 @@
 # what makes the first case an assertion about compensation rather than about
 # `undo:` merely being written down — a compensation that ran on every path
 # would pass the first case and fail this one.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the third step failing takes the first two back, in reverse
     workflow: ./workflow.yaml

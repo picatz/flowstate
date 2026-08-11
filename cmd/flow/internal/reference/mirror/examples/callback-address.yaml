@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: callback-address
 description: >-
   Hands an external reviewer the address of this very run, then waits for the
@@ -85,10 +85,12 @@ steps:
       name: review-decided
       timeout: 6s
 
-  # `has()` guards the payload read, because a lapsed gate carries no payload at
-  # all — `timed_out` is how a wait reports that, rather than failing.
+  # A lapsed gate carries no payload at all — `timed_out` is how a wait reports
+  # that, rather than failing — so `accepted` reads the maybe-absent key with
+  # `.?` and its default beside it. `rejected` keeps `has()`, because it asks a
+  # different question: answered *no*, which only an answer can be.
   - id: accepted
-    if: ${has(steps.decision.payload.accepted) && steps.decision.payload.accepted}
+    if: ${steps.decision.payload.?accepted.orValue(false)}
     log:
       message: >-
         ${"%s was accepted by %s".format(

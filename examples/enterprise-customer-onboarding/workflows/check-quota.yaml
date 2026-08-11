@@ -13,7 +13,7 @@
 # the honest way to exercise "the precondition failed," not "expect: itself
 # evaluated to false" - a real difference this file's own comment would
 # otherwise paper over.
-edition: v2026.2
+edition: v2026.3
 name: check-quota
 
 inputs:

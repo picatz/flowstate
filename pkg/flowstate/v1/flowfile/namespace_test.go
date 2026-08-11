@@ -32,7 +32,7 @@ func TestAProfileFunctionIsNotAnUnknownName(t *testing.T) {
 	}{
 		{
 			name: "a task input",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -42,7 +42,7 @@ steps:
 		},
 		{
 			name: "a workflow var",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 vars:
   shouted: ${regex.replace("ab", "a", "c")}
@@ -54,7 +54,7 @@ steps:
 		},
 		{
 			name: "a step's own var",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -66,7 +66,7 @@ steps:
 		},
 		{
 			name: "a condition",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -77,7 +77,7 @@ steps:
 		},
 		{
 			name: "a loop's items expression",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: each
@@ -115,7 +115,7 @@ func TestAQualifierIsExemptAndALibraryNameIsNot(t *testing.T) {
 	t.Parallel()
 
 	using := func(expr string) string {
-		return "edition: v2026.2\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${" +
+		return "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${" +
 			expr + "}\n"
 	}
 
@@ -148,7 +148,7 @@ func TestTheExemptSetComesFromTheProfile(t *testing.T) {
 	require.NotEmpty(t, qualifiers, "the profile declares no namespaced functions, so this checks nothing")
 
 	for qualifier := range qualifiers {
-		src := "edition: v2026.2\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${string(" +
+		src := "edition: v2026.3\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${string(" +
 			qualifier + ")}\n"
 
 		// Whether the expression type-checks is CEL's business — `string(base64)` may
@@ -167,7 +167,7 @@ func TestTheExemptSetComesFromTheProfile(t *testing.T) {
 func TestAnUnknownNameIsStillUnknown(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: s

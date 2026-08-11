@@ -33,7 +33,7 @@ func TestAnRPCToolAnswerIsBounded(t *testing.T) {
 	// and each one is reported. That is the realistic shape — a caller sends a
 	// legal request and the reply is what gets large.
 	var source strings.Builder
-	source.WriteString("edition: v2026.2\nname: x\nsteps:\n")
+	source.WriteString("edition: v2026.3\nname: x\nsteps:\n")
 	for i := range 400 {
 		fmt.Fprintf(&source, "  - id: step%04d\n    nope:\n      x: y\n", i)
 	}
@@ -85,7 +85,7 @@ func TestAnRPCToolAnswerUnderTheCeilingIsUnchanged(t *testing.T) {
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name":   "ok.yaml",
-				"source": []byte("edition: v2026.2\nname: x\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
+				"source": []byte("edition: v2026.3\nname: x\nsteps:\n  - id: a\n    log:\n      message: hi\n"),
 			}},
 		},
 	})

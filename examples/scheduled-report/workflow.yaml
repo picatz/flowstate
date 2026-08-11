@@ -19,7 +19,7 @@
 # Everything a firing needs is checked at that moment, while there is somebody there
 # to be told: the specification, the cadence, and the arguments below. What fires at
 # seven in the morning has already been refused if it was going to be.
-edition: v2026.2
+edition: v2026.3
 name: scheduled-report
 
 # A scheduled workload is the case parameters were made for: one file, and a

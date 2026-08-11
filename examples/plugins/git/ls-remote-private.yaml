@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: git-ls-remote-private
 description: Reads a private repository's branch refs using the "git" plugin's git.ls_remote task - the exact same task as workflow.yaml, with one more field filled in. Requires inputs; never runs by accident.
 

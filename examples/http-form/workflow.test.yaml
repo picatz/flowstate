@@ -10,7 +10,7 @@
 # The `report` step then reads the header back out of the parsed response, so the
 # second `where:` pins that `${steps.token.json.headers['Content-Type']}`
 # resolved through a bracket index into a parsed body rather than to nothing.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a form value containing spaces stays one value, and the content type is read back
     workflow: ./workflow.yaml

@@ -16,7 +16,7 @@
 # The `report` step's `where:` closes the loop back through `fields:`, which are
 # string-valued: `tag` is joined *there*, by `join(", ")` in the file, which is
 # only meaningful because it arrived as a list.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a list query value stays a list, and a json body carries an earlier step's value
     workflow: ./workflow.yaml

@@ -51,7 +51,7 @@
 #
 # (needs `flow server` and `flow worker` running; see the main README's
 # Quickstart)
-edition: v2026.2
+edition: v2026.3
 name: renewal-reminder
 description: >-
   Nudges a customer every billing period until they renew or cancel — the

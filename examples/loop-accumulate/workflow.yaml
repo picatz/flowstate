@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: loop-accumulate
 description: A bounded loop that folds a running total across iterations, carrying a map as its state and stopping on a condition — the loop primitive shown with no plugin dependency.
 

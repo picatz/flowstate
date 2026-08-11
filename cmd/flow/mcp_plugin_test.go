@@ -144,7 +144,7 @@ func mcpValidateDiagnostics(t *testing.T, posture *cobra.Command, source string)
 func TestPluginDirWiresPluginTasksIntoTheMCPSurface(t *testing.T) {
 	dir := buildExamplePluginDir(t)
 
-	workflow := `edition: v2026.2
+	workflow := `edition: v2026.3
 name: greet
 steps:
   - id: hi

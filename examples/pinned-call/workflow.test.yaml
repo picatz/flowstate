@@ -5,7 +5,7 @@
 # fails here rather than months later on somebody's submit. There is no
 # assertion below about the digest, and there does not need to be one: a stale
 # pin means this file never gets as far as running.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

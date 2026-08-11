@@ -1,7 +1,7 @@
 # A JSON response is text until something parses it. `json_parse` turns a body
 # into a value expressions can index, and a step's own `vars:` gives that value
 # a name so the parse is written once rather than at every use.
-edition: v2026.2
+edition: v2026.3
 name: http-json
 steps:
   - id: web

@@ -22,7 +22,7 @@ func TestTheEnvironmentCacheIsBounded(t *testing.T) {
 	for i := range maxCachedEnvs * 2 {
 		// A distinct name per file, so each one is a cache key nothing else uses.
 		src := strings.Join([]string{
-			"edition: v2026.2",
+			"edition: v2026.3",
 			"name: check",
 			"steps:",
 			"  - id: say",

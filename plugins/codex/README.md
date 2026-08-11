@@ -89,7 +89,7 @@ the fence.
 
 <!-- example: examples/plugins/codex/workflow.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: codex-exec
 description: Runs one bounded OpenAI Codex agentic turn with the "codex" plugin - a read-only question, no filesystem or network access granted to the agent.
 

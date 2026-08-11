@@ -48,7 +48,7 @@ func ExampleMarshal() {
 
 	fmt.Println(string(b))
 	// Output:
-	// edition: v2026.2
+	// edition: v2026.3
 	// name: hello
 	// steps:
 	// - id: a
@@ -61,7 +61,7 @@ func ExampleMarshal() {
 
 func ExampleUnmarshal() {
 	inputYAML := `
-edition: v2026.2
+edition: v2026.3
 name: hello
 steps:
   - id: a
@@ -84,7 +84,7 @@ steps:
 
 func TestFlowFileRoundTrip(t *testing.T) {
 	inputYAML := `
-edition: v2026.2
+edition: v2026.3
 name: hello
 steps:
   - id: a
@@ -114,7 +114,7 @@ steps:
 
 func TestFlowfile_MapWithExprValues(t *testing.T) {
 	data := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: http-with-headers
 steps:
   - id: web
@@ -135,7 +135,7 @@ steps:
 
 func TestFlowfile_ListWithExprValues(t *testing.T) {
 	data := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: list-exprs
 steps:
   - id: s
@@ -154,7 +154,7 @@ steps:
 
 	// all-literal list remains literal
 	data2 := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: list-literals
 steps:
   - id: s
@@ -181,7 +181,7 @@ steps:
 func FuzzRoundTrip(f *testing.F) {
 	for _, seed := range []string{
 		// A basic case to start with.
-		`edition: v2026.2
+		`edition: v2026.3
 name: hello
 steps:
 - id: a
@@ -192,7 +192,7 @@ steps:
     message: ${steps.a.body}
 `,
 		// Conditions and policy, in both the fenced and bare spellings.
-		`edition: v2026.2
+		`edition: v2026.3
 name: policy
 description: ""
 steps:
@@ -214,7 +214,7 @@ steps:
     message: ""
 `,
 		// Nested control flow, including a loop inside a branch.
-		`edition: v2026.2
+		`edition: v2026.3
 name: control
 steps:
 - id: loop
@@ -243,7 +243,7 @@ steps:
 `,
 		// Structures, expressions inside them, and the zero values the engine
 		// relies on surviving.
-		`edition: v2026.2
+		`edition: v2026.3
 name: shapes
 steps:
 - id: a
@@ -272,7 +272,7 @@ steps:
 		// that stay legal beside it. The kind writes its expression through the
 		// same writer `if:` uses, so a seed here covers the position where the
 		// two could come apart.
-		`edition: v2026.2
+		`edition: v2026.3
 name: values
 steps:
 - id: over

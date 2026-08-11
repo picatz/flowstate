@@ -45,7 +45,7 @@ steps:
     example.greet:
       name: world
       greeting: Hello
-edition: v2026.2
+edition: v2026.3
 `
 
 func TestAPluginsTasksReachTheEditor(t *testing.T) {

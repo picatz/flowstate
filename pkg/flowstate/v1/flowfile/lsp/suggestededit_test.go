@@ -14,7 +14,7 @@ import (
 
 // misspelledKeySource carries one misspelled step key and nothing else wrong, so
 // the only quickfix in play is the one under test.
-const misspelledKeySource = `edition: v2026.2
+const misspelledKeySource = `edition: v2026.3
 name: quickfix
 steps:
   - id: a
@@ -96,7 +96,7 @@ func TestCodeActionEditMatchesTheDiagnosticsSuggestedEdit(t *testing.T) {
 func TestNoCodeActionWhereTheDiagnosticCarriesNoEdit(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: quickfix
 steps:
   - id: a

@@ -16,7 +16,7 @@ import (
 // branch the amount takes, so telling them apart proves a step-form stub scopes
 // to a step id rather than to the task both share.
 const defaultsWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: defaults-fixture
 inputs:
   amount:

@@ -11,7 +11,7 @@
 # continued-execution chain; the shared driver cases in
 # `pkg/flowstate/v1/tests/runaddress.go` are where those two answers are held to
 # one definition.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

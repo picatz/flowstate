@@ -7,7 +7,7 @@
 #
 # Only failures that could plausibly succeed on another attempt are retried, so a
 # step that failed because its inputs were invalid fails once regardless of retry.
-edition: v2026.2
+edition: v2026.3
 name: conditional-and-retry
 vars:
   check: ready

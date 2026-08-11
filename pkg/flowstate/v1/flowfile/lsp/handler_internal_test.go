@@ -41,7 +41,7 @@ func TestAnnounceInboundOrdersTheBuild(t *testing.T) {
 	uri := lsp.DocumentURI("file:///ordered.yaml")
 
 	release := s.announceInbound(requestWithParams(t, "textDocument/didOpen", lsp.DidOpenTextDocumentParams{
-		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "edition: v2026.2\n"},
+		TextDocument: lsp.TextDocumentItem{URI: uri, Version: 1, Text: "edition: v2026.3\n"},
 	}))
 
 	if got := func() int {
@@ -71,7 +71,7 @@ func TestAnnounceInboundOrdersTheBuild(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 
-	s.docs.open(uri, 1, "edition: v2026.2\n", nil)
+	s.docs.open(uri, 1, "edition: v2026.3\n", nil)
 	release()
 
 	select {

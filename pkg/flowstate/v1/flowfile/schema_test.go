@@ -58,7 +58,7 @@ func TestValidateTaskInputs(t *testing.T) {
 		},
 		{
 			name: "a string where a mapping belongs",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -70,7 +70,7 @@ steps:
 		},
 		{
 			name: "http without a url",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -88,7 +88,7 @@ steps:
 			// literal — and it is still not reported, because an expression's type
 			// is not knowable when the workflow is compiled.
 			name: "an expression is not type-checked",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 vars:
   count: one
@@ -100,7 +100,7 @@ steps:
 		},
 		{
 			name: "a whole number satisfies a floating-point field",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -112,7 +112,7 @@ steps:
 		},
 		{
 			name: "an input the task evaluates itself is not checked",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -123,7 +123,7 @@ steps:
 		},
 		{
 			name: "a literal mapping for a declared mapping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -135,7 +135,7 @@ steps:
 		},
 		{
 			name: "an unknown task is reported once, not input by input",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -151,7 +151,7 @@ steps:
 		// never hold is reported before the run rather than at it.
 		{
 			name: "a var literal of the wrong type routed through a reference",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 vars:
   flag: "yes"
@@ -165,7 +165,7 @@ steps:
 		},
 		{
 			name: "a declared input of the wrong type routed through a reference",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 inputs:
   count:
@@ -183,7 +183,7 @@ steps:
 		// for a false one.
 		{
 			name: "a var literal of the right type is not refused",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 vars:
   note: hello
@@ -195,7 +195,7 @@ steps:
 		},
 		{
 			name: "a declared input of the right type is not refused",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 inputs:
   note:
@@ -211,7 +211,7 @@ steps:
 			// the file fixes — `string(inputs.count)` is a string however `count` is
 			// declared — so it is left to the run rather than judged here.
 			name: "a computed expression over a typed input is not refused",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 inputs:
   count:
@@ -226,7 +226,7 @@ steps:
 			// A var whose value is itself an expression has no type knowable here, so
 			// a reference to it stays unchecked even into a typed field.
 			name: "a reference to an expression-valued var is not refused",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 vars:
   computed: ${1 + 1}
@@ -265,7 +265,7 @@ steps:
 // TestValidateTaskInputsInNestedSteps pins that a body step and a branch step are
 // checked too, since a loop body is where a workflow does most of its work.
 func TestValidateTaskInputsInNestedSteps(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: loop
@@ -302,7 +302,7 @@ steps:
 // the input at fault, which is the whole reason they are worth having over a runtime
 // failure.
 func TestValidateTaskInputsPositions(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -329,7 +329,7 @@ steps:
 func TestExpressionInputTypeMismatchIsPositionedAndNamesBothTypes(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 vars:
   flag: "yes"
@@ -373,7 +373,7 @@ steps:
 
 // logInput returns a workflow whose single log step has the given inputs body.
 func logInput(inputs string) string {
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -402,11 +402,11 @@ func TestAnInputThatMustBeAnExpressionIsCheckedEvenThoughItIsDeferred(t *testing
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"a mapping": "edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"a mapping": "edition: v2026.3\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect:\n        status_code: 200\n",
-		"a bare string": "edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"a bare string": "edition: v2026.3\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect: status_code == 200\n",
-		"a literal boolean": "edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"a literal boolean": "edition: v2026.3\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect: true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -431,7 +431,7 @@ func TestAnExpressionInputWrittenAsAnExpressionIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"edition: v2026.3\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      expect: ${status_code == 200}\n      outputs: \"${ {'code': status_code} }\"\n"))
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(workflow),
@@ -458,7 +458,7 @@ func TestALiteralOutputsMapIsStillAccepted(t *testing.T) {
 	t.Parallel()
 
 	workflow, err := flowfile.Unmarshal([]byte(
-		"edition: v2026.2\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
+		"edition: v2026.3\nname: t\nsteps:\n  - id: f\n    http:\n      url: https://example.com\n" +
 			"      outputs:\n        note: constant\n"))
 	require.NoError(t, err)
 	assert.Empty(t, flowfile.Validate(workflow),

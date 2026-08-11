@@ -5,7 +5,7 @@
 # reach three hosts, and an explicit two-element `targets:` reaches two, with
 # `hosts_placed` and the `summary` sentence both following the loop's own
 # `results` rather than the argument.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

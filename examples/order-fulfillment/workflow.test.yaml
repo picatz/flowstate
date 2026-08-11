@@ -10,7 +10,7 @@
 # the task, so `expect:` never runs here and the equivalent failure is declared
 # with `fails:` on the `arrange_shipment` request. The compensations, the order
 # they run in, and the resolved ids they carry are all reached for real.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the ordinary path ships the order and reports the two ids it created
     workflow: ./workflow.yaml

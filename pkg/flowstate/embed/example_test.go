@@ -38,7 +38,7 @@ func Example_compileAndRun() {
 
 	// 2. Compile a Flowfile from bytes, the same compile boundary flow validate uses.
 	workflow, diags, err := embed.Compile([]byte(`
-edition: v2026.2
+edition: v2026.3
 name: greeter
 steps:
   - id: welcome

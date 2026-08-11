@@ -3,7 +3,7 @@
 # There is no step that "runs CEL". An expression is written wherever a value
 # belongs — a `vars:` binding, a task input, an `if:` — and the same dialect
 # reaches all of them.
-edition: v2026.2
+edition: v2026.3
 name: expressions
 vars:
   greeting: hello
@@ -41,3 +41,38 @@ steps:
       first: ${['zeta', 'alpha', 'mu'].sortBy(name, name)[0]}
     log:
       message: ${first}
+
+  # Optional traversal is the dialect's read-with-default (edition v2026.3).
+  # `.?` reads a field that may be absent and `orValue` puts the default beside
+  # the read, where `has(x.y) && x.y` spelled the path twice with a guard in
+  # front. `has()` stays for the question it still answers: presence itself.
+  - id: prefs
+    value: "${{'volume': 7}}"
+
+  # `.?` in a step's own `vars:` and in its `if:`. `volume` was recorded above,
+  # so the read finds it; `muted` never was, so the read resolves to `orValue`'s
+  # false and the comparison lets the step run.
+  - id: tuned
+    vars:
+      level: ${string(steps.prefs.value.?volume.orValue(0))}
+    if: ${steps.prefs.value.?muted.orValue(false) == false}
+    log:
+      message: ${level}
+
+  # `.?` in `items:`: a list the value may not carry, iterated as its fallback.
+  - id: announce
+    for_each:
+      items: ${steps.prefs.value.?stations.orValue(['default'])}
+      as: station
+      steps:
+        - id: name_station
+          log:
+            message: ${station}
+
+# `.?` reaches a declared output the same way it reaches every other position:
+# one dialect, so the answer a run reports may read a maybe-absent field with
+# its default beside it.
+outputs:
+  volume:
+    value: ${steps.prefs.value.?volume.orValue(0)}
+    description: the recorded volume, or 0 when the preferences never said
