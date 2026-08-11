@@ -1,6 +1,8 @@
 package flowfile
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -161,4 +163,112 @@ steps:
 	for _, site := range found[0].Sites {
 		assert.Zero(t, site.Line, "a position nobody recorded must read as unknown rather than as line 1")
 	}
+}
+
+// TestAuditSeesCallArguments covers the position the node switch reaches last:
+// a call's `with:` binds arguments with expressions this file wrote, so two
+// call sites sharing one computed argument are a repetition the report must
+// carry. The callee's own expressions must NOT be counted against the caller,
+// even though the compiler embeds the callee's spec whole: a library workflow
+// audited through its three callers would otherwise report its internals three
+// times in files that never wrote them.
+func TestAuditSeesCallArguments(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeAuditFile(t, dir, "callee.yaml", `edition: v2026.2
+name: callee
+inputs:
+  tenant:
+    type: string
+    required: true
+steps:
+  - id: a
+    log:
+      message: ${'hi ' + inputs.tenant}
+outputs:
+  greeting:
+    value: ${'hello ' + inputs.tenant}
+`)
+	caller := writeAuditFile(t, dir, "caller.yaml", `edition: v2026.2
+name: caller
+inputs:
+  region:
+    type: string
+    required: true
+steps:
+  - id: primary
+    call: ./callee.yaml
+    with:
+      tenant: ${inputs.region + '-prod'}
+  - id: secondary
+    call: ./callee.yaml
+    with:
+      tenant: ${inputs.region + '-prod'}
+`)
+
+	wf, positions, err := ParseFile(caller)
+	require.NoError(t, err)
+
+	found := Audit(wf, positions)
+
+	finding := findAudit(t, found, `inputs.region + "-prod"`)
+	require.Equal(t, 2, finding.Count())
+	require.Equal(t, "primary", finding.Sites[0].Step)
+	require.Equal(t, "with.tenant", finding.Sites[0].Field)
+	require.Equal(t, "secondary", finding.Sites[1].Step)
+
+	// The callee's own repetition ('hi/hello ' + inputs.tenant share the
+	// inputs.tenant read, but each computation appears once) must not leak into
+	// the caller's report: nothing from the embedded spec is a site here.
+	for _, repeat := range found {
+		for _, site := range repeat.Sites {
+			require.NotEqual(t, "a", site.Step,
+				"the embedded callee's step leaked into the caller's audit: %q", repeat.Expr)
+		}
+	}
+}
+
+// TestAuditSeesComputedSignalSubjects covers the workflow-level position
+// outside vars, steps and outputs: a signal rule's `subject:` written as an
+// expression lands in subject_from, and two rules resolving the same computed
+// subject are a repetition like any other.
+func TestAuditSeesComputedSignalSubjects(t *testing.T) {
+	t.Parallel()
+
+	found := auditOf(t, `edition: v2026.2
+name: gated
+inputs:
+  expected_approver:
+    type: string
+    required: true
+signals:
+  deploy-approved:
+    allow:
+      - subject: "${'https://issuer.example.com#' + inputs.expected_approver}"
+        namespace: release-managers-ns
+  teardown-approved:
+    allow:
+      - subject: "${'https://issuer.example.com#' + inputs.expected_approver}"
+        namespace: release-managers-ns
+steps:
+  - id: gate
+    wait_for_signal: deploy-approved
+`)
+
+	finding := findAudit(t, found, `"https://issuer.example.com#" + inputs.expected_approver`)
+	require.Equal(t, 2, finding.Count())
+	require.Equal(t, "", finding.Sites[0].Step)
+	require.Equal(t, "signals.deploy-approved.allow[0].subject", finding.Sites[0].Field)
+	require.Equal(t, "signals.teardown-approved.allow[0].subject", finding.Sites[1].Field)
+}
+
+// writeAuditFile is call_test.go's writeFile, restated here because that helper
+// lives in the external test package and this file is the internal one.
+func writeAuditFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
 }

@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -163,10 +164,14 @@ type auditCollector struct {
 
 // workflow walks every position the language puts an expression in.
 //
-// Deliberately the same traversal [checkExpressionTypes] makes, field for field,
-// because both answer a question about every expression a file contains rather
-// than about a scope: a position the language grows appears in both or is missed
-// by both, and having them agree keeps that one visible gap rather than two.
+// The traversal [checkExpressionTypes] makes, field for field, plus the two
+// positions that check deliberately leaves to other validators: a call's
+// `with:` arguments, which validate_call.go checks against the callee's own
+// declarations, and a signal rule's computed `subject:`, which signals.go
+// checks when it routes the expression to subject_from. A type-checker skips a
+// position something else already reports on; this walk answers what the
+// author wrote, so a position with an expression in it belongs here whichever
+// validator owns its diagnostics.
 func (c *auditCollector) workflow(wf *v1.Workflow) {
 	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
 		c.site("", v1.VarsRoot+"."+name, wf.GetVars()[name])
@@ -180,6 +185,16 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 		// are not the same string. The field is the one that gets reported.
 		name := "outputs." + declaration.GetName()
 		c.siteAt("", name, name+".value", declaration.GetValue())
+	}
+
+	for _, policy := range slices.Sorted(maps.Keys(wf.GetSignals())) {
+		for i, rule := range wf.GetSignals()[policy].GetAllow() {
+			// A computed subject is written under `subject:`; the parser routes
+			// it to subject_from when it interpolates, so the field reported is
+			// the one the author wrote and the value read is where it landed.
+			field := fmt.Sprintf("signals.%s.allow[%d].subject", policy, i)
+			c.site("", field, rule.GetSubjectFrom())
+		}
 	}
 }
 
@@ -228,6 +243,15 @@ func (c *auditCollector) nodes(nodes []*v1.Node) {
 			shaped := kind.Wait.GetSignal().GetOutputs()
 			for _, name := range slices.Sorted(maps.Keys(shaped)) {
 				c.site(id, "outputs."+name, shaped[name])
+			}
+		case *v1.Node_Call:
+			// The arguments are this file's writing; the callee under
+			// kind.Call.GetWorkflow() is another file's, embedded whole at
+			// compile time and audited when the walk reads that file itself.
+			// Recursing into it would count a library workflow's expressions
+			// against every caller.
+			for _, name := range slices.Sorted(maps.Keys(kind.Call.GetArguments())) {
+				c.site(id, "with."+name, kind.Call.GetArguments()[name])
 			}
 		}
 	}
