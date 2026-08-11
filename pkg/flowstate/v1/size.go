@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -249,3 +250,17 @@ func CheckRunStateSize(st *RunState) error {
 			"since every output a later step can still reach is carried across every suspension",
 		size, MaxRunStateBytes, proto.Size(st.GetWorkflow()))
 }
+
+// WorkerDeadlockDetectionTimeout is the workflow-task deadlock budget every
+// flowstate worker runs with, production and test alike.
+//
+// The SDK's default panics a workflow task whose goroutine has not yielded for
+// a second. Flowstate's documented bounds admit inputs whose workflow-side
+// processing legitimately approaches that second (a task output at the
+// element bound, a for_each at its trip ceiling), and a contended host turns
+// that second into more. A budget the rehearsal passes and production fails
+// would make local runs lie about what production will do, so there is one
+// value and every worker reads it: large enough that work at a documented
+// bound fits with margin on a busy host, small enough that a genuinely
+// wedged workflow goroutine is still caught quickly (#431).
+const WorkerDeadlockDetectionTimeout = 5 * time.Second
