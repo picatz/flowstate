@@ -346,7 +346,8 @@ func writeAuditSummary(out io.Writer, theme ui.Theme, totals auditTotals) error 
 		totals.Repeated, totals.FilesWithRepeats, totals.Files, totals.Occurrences, totals.NegatedPairs)))
 
 	_, err := fmt.Fprintln(out, theme.Muted.Render(
-		"None of this is a defect. It is what a held entry (`value:`, #411) would collapse."))
+		"None of this is a defect. Where the repeated value spans steps or reads an input, "+
+			"a `value:` step (#411) names it once and every reader compares that name."))
 
 	return err
 }

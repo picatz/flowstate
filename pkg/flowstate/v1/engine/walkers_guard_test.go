@@ -63,3 +63,25 @@ func TestCollectNodeRefsDescendsEveryContainer(t *testing.T) {
 		})
 	}
 }
+
+// TestCollectNodeRefsReadsAValuesExpression is the same guard for a kind that is
+// not a container and so is invisible to the loop above: the exhaustiveness check
+// binds container kinds, because those are the ones with a body to descend into.
+//
+// A `value:` has no body and one expression, and that expression is the whole of
+// what the step is. An arm missing here prunes an output nothing appears to need
+// and fails the resumed run naming a step it can no longer see, which is #176
+// exactly, arriving through the one kind the container guard cannot watch.
+func TestCollectNodeRefsReadsAValuesExpression(t *testing.T) {
+	prev := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{"outer": {}}}
+
+	refs := map[string]map[string]struct{}{}
+	collectNodeRefs(&v1.Node{
+		Id:   "named",
+		Kind: &v1.Node_Value{Value: v1.NewExpr("steps.outer.val + 1")},
+	}, prev, refs)
+
+	require.Contains(t, refs, "outer",
+		"collectNodeRefs does not read a `value:` expression: the output it names is pruned "+
+			"on Continue-As-New and the resumed run fails on a spec that never changed")
+}

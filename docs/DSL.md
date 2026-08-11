@@ -1244,20 +1244,88 @@ expression-known — churn on a contracting surface buys nothing. Refused, and
 recorded so the next proposal engages the flow-mapping counterexample rather than
 the aesthetics.
 
-### `value:` is refused, for now
+### `value:` landed, on the evidence the refusal asked for (#411)
 
-If a pure result-producing step existed, `value:` would be its right name — it says
-what the step contributes, accepts literals and expressions equally, and avoids the
-false implications of `set:`, `eval:`, `compute:`, and `run:`. But everything it
-does is `vars:` wearing a step id, and it drags real debt behind it: whether
-`${steps.roster}` should then mean the value directly, which breaks the uniform
-named-outputs model every tool reads. Adding it later is additive and cheap;
-removing it later will never happen. So: refused until a corpus file hurts without
-it, and the word joins the reserved list so no plugin takes it in the meantime.
-`assert:` is held on the same terms — it is pure, so it would be a node kind, and
-`if:` plus a failing step nearly covers it; whichever of it and Phase 2's `check:`
-lands first must be designed knowing the other is coming, because two spellings of
-"refuse to proceed" is one too many.
+This entry was refused "until a corpus file hurts without it, and the word joins the
+reserved list so no plugin takes it in the meantime." Six files hurt, the word was
+still held, and the tripwire fired. It is grammar now.
+
+A `value:` step names what an expression computes:
+
+```yaml
+- id: cleared_to_move
+  value: >-
+    ${!steps.over_threshold.value || steps.approval.outcome == "approved"}
+```
+
+It is a **node kind**, not a task, because a value is not an effect (principle 2:
+the retired `cel:` task was this capability filed in the wrong category). It is
+evaluated in workflow code, in written order, against exactly what a task's inputs
+written in the same position would see: `vars.<name>`, `inputs.<name>`, the outputs
+of steps already run, and any name an enclosing loop or the step's own `vars:` bound.
+It schedules nothing.
+
+#### The read form is `${steps.<id>.value}`, and that was the decision
+
+The result is an **ordinary named output called `value`**. There is no whole-step
+scalar special case anywhere in the language or in any tool.
+
+That is the debt this entry's refusal recorded, settled in the direction the refusal
+pointed. The shorter spelling, `${steps.cleared_to_move}` meaning the scalar, costs
+six fewer characters per read and makes every tool that reads outputs uniformly grow
+an exception: the language server's shaping, compaction's whole-step marker, the
+embed accessors, the JSON answer document, audit rendering. The two are not
+interconvertible later in either direction, so the permanent choice went to the one
+that keeps the model everything already reads. `value` also already means "the
+expression this name holds" in the workflow's own `outputs:` block, so the word means
+one thing in both positions.
+
+Negation is therefore `${!steps.cleared_to_move.value}`: one spelling of the fact and
+one `!`. That is the whole point: the shape that justified this entry was a predicate
+spanning two steps, or mixing `inputs:` with a step, written out in four `if:`s and
+then *hand-expanded* into its own complement in an `outputs:` block, where a De Morgan
+slip corrupts a file every reader nods along to.
+
+#### What it may hold, and what it refuses
+
+The result may be anything a step output can hold: a boolean, a string, a list, a
+mapping. Nothing narrows it on the way into the run's state.
+
+Three properties are refused on the kind, each reported on its own key with a
+position:
+
+- **`retry:`**, because a value is deterministic, so a second attempt computes exactly
+  what the first one did. An expression that is wrong is wrong every time.
+- **`timeout:`**, because there is no activity to bound.
+- **`undo:`**, because a value changes nothing outside the run, so there is nothing to
+  take back. Write the compensation on the steps whose effects the value decides.
+
+A `${secret(...)}` reference may not be written here, for the reason it may not go in
+`vars:`: the workflow evaluates this, and what the workflow evaluates is written to
+durable history.
+
+`if:` composes exactly as it does on every other kind. A value that is skipped
+produces no outputs, so a later reference to it does not resolve, which is the honest
+outcome, since the value genuinely does not exist.
+
+#### Cost
+
+No new bound, and that is deliberate. Each evaluation is bounded by `DefaultCostLimit`
+like every other expression in the file; the file is bounded by `MaxSpecBytes`; the
+result spends `MaxRunStateBytes` exactly as any other step output does. A value counts
+against the step budget like any step. There was nothing here to invent, which is the
+strongest argument the shape had.
+
+#### `flow fix` still will not hoist one
+
+Detecting a repeated predicate is a report (`flow audit` does it); rewriting one into
+a named value is not, and will not be. The rewriter would have to invent the name, and
+a rewriter that guesses names is the class of bug `flow fix` exists to never be.
+
+`assert:` remains held on the terms this entry used to share. It is pure, so it would
+be a node kind, and `if:` plus a failing step nearly covers it; whichever of it and
+Phase 2's `check:` lands first must be designed knowing the other is coming, because
+two spellings of "refuse to proceed" is one too many.
 
 ### Plugins appear in the syntax, deliberately distinguishable
 
@@ -1361,7 +1429,7 @@ policy is, in its own reviewed change.
 | `http:` | kept | — (auth landed as `bearer:`/`credential:`; idempotency key, egress declarations held) |
 | `log:` | **new (landed)** | — |
 | `exec:` | new, gated on its policy | — |
-| `value:` | refused for now, name reserved | `vars:` until a corpus file proves otherwise |
+| `value:` | **landed (#411)**, node kind, read as `${steps.<id>.value}` | nothing; the corpus proved otherwise, since `vars:` cannot read a step or an input |
 | `assert:` | held | `if:` + failure, pending Phase 2 `check:` |
 | `!expr` | refused | whole-value `${...}`, fence-optional where the schema knows |
 | plugin tasks | dotted keys, `plugins:` header in Phase 3 | — |

@@ -81,7 +81,7 @@ var (
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call"}
+	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
@@ -1372,6 +1372,17 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
 				step.Kind = &v1.Node_Wait{Wait: wait}
 			}
+		case "value":
+			// The same fence-optional reading the workflow's own `outputs:` gives
+			// its `value:`, because it is the same thing in a second position: the
+			// schema knows this is an expression, so a bare string here is
+			// expression source rather than text.
+			step.Kind = &v1.Node_Value{Value: c.exprValue(kind.value, kindPath, ref{
+				step:  step.GetId(),
+				path:  kindPath,
+				label: "value",
+			})}
+
 		case "call":
 			withField, hasWith := fields.get("with")
 			digestField, hasDigest := fields.get("digest")

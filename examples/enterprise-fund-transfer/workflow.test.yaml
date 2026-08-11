@@ -53,7 +53,7 @@ tests:
       - step: notify_settlement
         returns: {}
     expect:
-      ran: [request, debit, credit, notify_settlement]
+      ran: [request, over_threshold, cleared_to_move, debit, credit, notify_settlement]
       others: skipped
       outputs:
         decision: transferred
@@ -102,7 +102,7 @@ tests:
         payload:
           approved: false
     expect:
-      ran: [request, approval, rejected]
+      ran: [request, over_threshold, approval, cleared_to_move, rejected]
       others: skipped
       outputs:
         decision: rejected
@@ -114,7 +114,7 @@ tests:
       amount_cents: 5000000
       idempotency_key: transfer-2026-08-06-0004
     expect:
-      ran: [request, approval, expired]
+      ran: [request, over_threshold, approval, cleared_to_move, expired]
       others: skipped
       outputs:
         decision: expired
@@ -139,7 +139,7 @@ tests:
       - step: notify_settlement
         returns: {}
     expect:
-      ran: [request, approval, debit, credit, notify_settlement]
+      ran: [request, over_threshold, approval, cleared_to_move, debit, credit, notify_settlement]
       others: skipped
       outputs:
         decision: transferred
@@ -163,7 +163,7 @@ tests:
           claims:
             role: engineer
     expect:
-      ran: [request, approval, expired]
+      ran: [request, over_threshold, approval, cleared_to_move, expired]
       others: skipped
       outputs:
         decision: expired
@@ -184,7 +184,7 @@ tests:
         payload:
           note: wrong shape entirely
     expect:
-      ran: [request, approval, refused_malformed_payload]
+      ran: [request, over_threshold, approval, cleared_to_move, refused_malformed_payload]
       others: skipped
       outputs:
         decision: refused_malformed_payload

@@ -422,6 +422,29 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowValue covers `value:` in the local driver.
+//
+// The engine package runs the identical [tests.ValueCases] against the durable
+// driver. That pairing is the point of the set rather than a habit: a value's
+// whole observable behaviour is the answer it computed and the name it computed
+// it under, so a driver evaluating it in a different scope, at a different
+// moment, or storing it anywhere but `steps.<id>.value` would make a local
+// rehearsal quietly wrong about production. One shared [v1.EvalValueNode] is what
+// keeps them together; these are what prove it is what both of them reach.
+func TestRunWorkflowValue(t *testing.T) {
+	for _, test := range tests.ValueCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "reading a value that never ran was expected to fail the run")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsRefused is the negative direction of the same corpus: a
 // submission that must be refused before anything runs.
 //
