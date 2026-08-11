@@ -95,6 +95,41 @@ func TestRunWorkflowLoop(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowLoopExhaustionTranscript is the local half of what an
+// exhausted loop's transcript entry says (#157's question 3): the iterations
+// that ran recorded under `results` — tolerated failures naming the state they
+// carried — and nothing at all for iterations the spent budget never let
+// start. The engine package runs the identical cases against the durable
+// driver, which is the only thing that can say the two agree.
+func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
+	for _, test := range tests.LoopExhaustionTranscriptCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.Error(t, err, "these loops exhaust their budget on purpose")
+			require.Contains(t, err.Error(), "ran its full budget",
+				"exhaustion must keep its distinct sentence")
+
+			// Compared whole: an entry for an iteration the loop never ran is
+			// as wrong as a missing entry for one it did — the failed/never-
+			// attempted line is exactly what this record exists to draw.
+			require.Empty(t, cmp.Diff(test.Expected, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowToleratedIterationIdentity is the local half of a tolerated
+// iteration failure carrying its `as:` binding (#157's question 3): the failed
+// entry names its item directly, and a later step's expression can read it,
+// instead of reconstructing identity downstream by set subtraction. The engine
+// package runs the identical cases against the durable driver.
+func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
+	for _, test := range tests.ToleratedIterationIdentityCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
 // TestRunWorkflowPolicy covers conditions and per-step policy in the local
 // driver. The same cases run against the durable driver in the engine package,
 // which is what keeps the two from diverging.

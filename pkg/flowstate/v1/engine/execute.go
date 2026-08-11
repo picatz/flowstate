@@ -896,8 +896,14 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		if i >= max {
 			// The budget is spent and `until:` never held: a distinct failure, not a
 			// silent stop. The run ends here rather than reporting the partial results
-			// as though the loop had finished.
-			return nodeFailed(v1.LoopIterationLimitError(max))
+			// as though the loop had finished — but the failure carries them, so the
+			// recorded entry distinguishes an iteration that ran and failed from one
+			// that was never attempted ([v1.LoopExhaustedError], stored by
+			// failedStepOutputs through the record failedAt extracts at this raise).
+			// truncated omits the account on a resume that already dropped earlier
+			// segments' iterations, for [v1.LoopStateOutputsHonest]'s exact reason:
+			// a suffix published as the whole history is a wrong answer.
+			return nodeFailed(v1.LoopExhausted(results, max, truncated))
 		}
 
 		e.setLoopStateFrame(inner, i, results, state)
@@ -1021,8 +1027,13 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 	// final-iteration `update:` that cannot resolve — `${steps.page.next_cursor}`
 	// where the last page carries no next cursor — would fail a durable run that the
 	// local rehearsal completes. That divergence is invariant 3's exact shape.
+	// The carried state the iteration ran with rides on any tolerated failure
+	// the body recorded ([v1.AttachIterationBinding]) — nil for a loop that
+	// binds nothing, which attaches nothing. Attached here, on the narrowed
+	// body outputs the caller accumulates, so the byte bound weighs it; the
+	// local driver attaches at the identical point in its runLoop.
 	if stop {
-		return bodyOutputs(loop.GetBody(), iterationOutputs), true, nil, nil
+		return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state), true, nil, nil
 	}
 
 	next, err := v1.LoopNextState(context.Background(), loop, nested.scope)
@@ -1030,7 +1041,7 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		return nil, false, nil, err
 	}
 
-	return bodyOutputs(loop.GetBody(), iterationOutputs), false, next, nil
+	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state), false, next, nil
 }
 
 // runIteration executes the loop body once against its own output scope.
@@ -1078,7 +1089,11 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		return nil, err
 	}
 
-	return bodyOutputs(loop.GetBody(), iterationOutputs), nil
+	// The iteration's item rides on any tolerated failure the body recorded
+	// ([v1.AttachIterationBinding]), attached on the narrowed outputs the
+	// caller accumulates so the byte bound weighs it — the identical point the
+	// local driver's runForEach attaches at, and the concurrent path below.
+	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), item), nil
 }
 
 // runIterationsConcurrently runs iterations with bounded concurrency.
@@ -1142,7 +1157,11 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					continue
 				}
 				undos[i] = iterationUndo
-				results[i] = bodyOutputs(loop.GetBody(), worker.scope.GetOutputs())
+				// The item attaches to tolerated failures here exactly as the
+				// sequential path's runIteration attaches it, so which
+				// scheduling ran an iteration cannot change what its failure
+				// entry names.
+				results[i] = v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), worker.scope.GetOutputs()), items[i])
 			}
 			done.Send(gctx, nil)
 		})

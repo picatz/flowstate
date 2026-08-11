@@ -2610,6 +2610,24 @@ any other step's, and their names are system-chosen, not the author's:
   stopped. Present only when the loop declared `as:`; a stateless loop reports
   `results` alone.
 
+A third name appears *inside* a `results` entry, only on a failure that was
+tolerated: **`item`**, the `as:` value the iteration ran with — a `for_each`'s
+current item, a `loop:`'s carried state — attached by the engine beside the
+`error` a tolerated step records, identically on both drivers and on the
+concurrent path (`v1.AttachIterationBinding`). It exists because the alternative
+was backwards: a failed iteration's entry used to be `{"error": …}` and nothing
+else, so "which records failed" had to be reconstructed downstream by set
+subtraction — the input list minus the ids that succeeded — recomputing from its
+complement a value that was in scope at the moment the failure was recorded
+(#157). Now it is read directly:
+`${steps.enrich.results.filter(r, has(r.lookup.error)).map(r, r.lookup.item)}` —
+`examples/data-enrichment`'s `failed:` output is exactly that line. The name is
+fixed rather than the author's `as:` name, for the same reason `state` is below:
+renaming a binding must not change the shape downstream expressions read. A loop
+that binds nothing (`loop:` with no `as:`) attaches nothing — there is no binding
+to carry. And the value is inside what the `results` byte bound weighs, so an
+oversized item cannot ride in under the ceiling.
+
 The name is `state`, deliberately, and **not** the author's `as:` name. This trips
 first-timers, so it is worth stating outright: writing `as: acc` binds `acc` *inside*
 the loop — in the body, `until:` and `update:` — and nowhere else, because a bare
@@ -2706,6 +2724,28 @@ hide exactly the runaway the bound exists to catch. The bound is asserted *reach
 not merely not-exceeded (the List lesson): `tests.LoopCases`'s runaway case can only
 end by exhausting its three iterations, and both drivers are held to that failure;
 `examples/loop-accumulate`'s second test case proves it from a Flowfile.
+
+**And the failure carries its account.** The transcript entry an exhausted loop
+leaves behind is not the sentence alone: it carries the iterations that ran under
+`results`, shaped exactly as a completing loop shapes them, beside the `error`
+(`v1.LoopExhaustedError`). That is what lets a reader distinguish three things
+that used to blur into one — an iteration that ran (present, empty or with its
+body's outputs), an iteration that ran and *failed*, tolerated by
+`continue_on_error:` (present, its entry carrying the step's `error` and its
+`item`, below), and an iteration that was **never attempted** (absent, because the
+budget was already spent). A claim about something that did not happen is a wrong
+answer, not a formatting choice — the same line `undo:` draws between "was
+attempted and failed" and "was never attempted". Exhaustion is the one failure
+entitled to publish a loop's iterations, because it is the one failure whose every
+recorded iteration finished; a loop that fails *mid*-body still contributes only
+its own step to the transcript, exactly as before. Tolerate the exhaustion itself
+(`continue_on_error:` on the loop step) and the account is not just in the
+transcript but in scope: `${steps.<id>.results}` and `${steps.<id>.error}` are
+readable by later steps. Both drivers are held to the identical entry by
+`tests.LoopExhaustionTranscriptCases`; the one place the account is withheld is a
+durable resume that already dropped earlier segments' iterations (the retention
+rule above), where publishing the surviving suffix as `results` would be the
+short-but-complete lie `v1.LoopStateOutputsHonest` refuses on the completing path.
 
 ### A `for_each` is bounded on its trip count too
 

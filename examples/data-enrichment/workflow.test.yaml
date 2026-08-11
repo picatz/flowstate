@@ -60,8 +60,9 @@ tests:
       outputs:
         enriched: [alpha, beta, gamma]
         # Named rather than counted: this is what a caller deciding whether to
-        # retry the batch actually needs, and it is derived from the absence of
-        # an id rather than from anything the failure carried.
+        # retry the batch actually needs, and it is read off the failure entry
+        # itself — the engine attaches the loop's `as:` value to a tolerated
+        # failure as `item`, beside the `error` it records.
         failed: [flagged]
         attempted: 4
         vendor_outage_tolerated: true

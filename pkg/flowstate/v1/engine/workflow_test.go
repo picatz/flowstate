@@ -1426,6 +1426,36 @@ func TestRunWorkflowLoop(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowToleratedIterationIdentity is the durable half of a tolerated
+// iteration failure carrying its `as:` binding (#157's question 3).
+//
+// The local driver runs the identical [tests.ToleratedIterationIdentityCases].
+// The concurrent case is the one only this driver can actually exercise as
+// written — `max_parallel` schedules iterations onto coroutines here where the
+// local driver runs them in order regardless — so this caller is what holds
+// the concurrent path's failure entries to the sequential answer.
+func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
+	for _, test := range tests.ToleratedIterationIdentityCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError(),
+				"every failure in these cases is tolerated, so the run must complete")
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowToleratedStepFailure is the durable half of the outermost-step
 // cases.
 //

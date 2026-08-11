@@ -38,6 +38,41 @@ func partialTranscriptProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflow
 	return partial, nil
 }
 
+// TestRunWorkflowLoopExhaustionTranscript is the durable half of what an
+// exhausted loop's transcript entry says (#157's question 3), run through
+// [partialTranscriptProbe] for the reason every transcript case here is: the
+// value under test rides beside a failure Temporal would otherwise drop.
+//
+// The local driver runs the identical [tests.LoopExhaustionTranscriptCases].
+// What the pairing holds the two to: the iterations that ran are recorded under
+// the failed loop's own `results` — a tolerated failure among them naming the
+// state it carried under `item` — and an iteration the spent budget never let
+// start has no entry at all, on either driver, so ran-and-failed and
+// never-attempted cannot blur into each other on just one of them.
+func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
+	for _, test := range tests.LoopExhaustionTranscriptCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(partialTranscriptProbe)
+			env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything).Return(Task)
+			env.OnActivity(TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScope)
+			env.OnActivity(WorkflowVars, mock.Anything, mock.Anything).Return(WorkflowVars)
+
+			env.ExecuteWorkflow(partialTranscriptProbe, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+
+			// Compared whole: an entry for an iteration the loop never ran is as
+			// wrong as a missing entry for one it did.
+			require.Empty(t, cmp.Diff(test.Expected, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowPartialTranscript is the durable half of what a failed run hands
 // back about what it did (issue #453).
 //

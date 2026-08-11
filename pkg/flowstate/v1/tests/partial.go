@@ -51,7 +51,9 @@ type PartialTranscriptCase struct {
 //     and writes its own `results`, so a body step that ran inside the iteration
 //     that failed is *not* in the record. Both drivers keep it that way, and a
 //     driver that reached into the unfinished nesting would be inventing a record
-//     the other one does not have.
+//     the other one does not have. (Exhaustion is the deliberate exception,
+//     covered by [LoopExhaustionTranscriptCases]: every iteration an exhausted
+//     loop recorded ran to completion, so its entry carries them.)
 //
 // The failure in each is a step's own `vars:` indexing past the end of a list:
 // it compiles, it fails when evaluated, it carries no TaskError, and it needs no

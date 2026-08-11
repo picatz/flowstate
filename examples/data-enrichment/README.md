@@ -69,10 +69,13 @@ restart by hand.
   the record — `${'.../record/' + record}` — would need to be an expression, and an
   expression is not something a test harness can safely repoint, which is exactly
   why none of the http examples in this portfolio build a URL that way.
-- **`failed` recovers identity by subtraction.** A failed iteration's own result
-  carries no identifier — the step never reached its `outputs:` expression, because
-  `expect` decided before that point — so there is nothing to read back off it
-  directly. What there is instead is `inputs.records`, the list this run started
-  with, and `enriched`, what actually finished; `failed` is the first with the
-  second's members filtered back out, using CEL's `in` on a list built from the same
-  `filter`+`map` that produced `enriched` a few lines above.
+- **`failed` reads identity straight off the failures.** A failed iteration never
+  reached its `outputs:` expression — `expect` decided before that point — so the
+  step's own outputs carry nothing. What the failure entry does carry is what the
+  engine attaches to it: the loop's `as:` value, recorded as `item` beside the
+  `error` a tolerated step leaves behind. `failed` is therefore one line —
+  `filter` the entries that carry an `error`, `map` each to its `item` — with no
+  reference to `inputs.records` at all. (Before the engine attached the binding,
+  this had to be spelled by set subtraction: `inputs.records` minus the ids that
+  succeeded, reconstructing from its complement a value that was in scope at the
+  failure and got dropped — the shape issue #157 records as backwards.)

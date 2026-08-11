@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -546,11 +548,19 @@ func NewLiteralMap(m map[string]any) *Value {
 		return &Value{Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_NullValue{}}}}
 	}
 
+	// Sorted, so the same map encodes as the same message every time. The
+	// entries of an [expr.MapValue] are a repeated field, and a Go map's
+	// iteration order is deliberately random — so an unsorted walk here made
+	// every multi-key map literal this system records (a loop's per-iteration
+	// `results` entries above all) a value that differed from one construction
+	// to the next, unassertable by proto.Equal and unstable for no reason a
+	// reader of the run record could see. CEL itself gives entry order no
+	// meaning, so sorting changes nothing an expression can observe.
 	entries := make([]*expr.MapValue_Entry, 0, len(m))
-	for k, v := range m {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		entries = append(entries, &expr.MapValue_Entry{
 			Key:   NewLiteral(k).GetLiteral(),
-			Value: NewValue(v).GetLiteral(),
+			Value: NewValue(m[k]).GetLiteral(),
 		})
 	}
 
@@ -1127,7 +1137,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 				// no later step evaluates against this scope, and the successful path
 				// never reaches this line. The durable driver records at the identical
 				// point, for the identical reason.
-				scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
+				scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
@@ -1135,7 +1145,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// the id is implied by the key this is recorded under, and repeating it
 			// would make `${steps.<id>.error}` name its own step. The durable
 			// driver draws the same line at the same place — see stepFailed.
-			scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
+			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 			continue
 		}
 		if outputs != nil {
@@ -1143,6 +1153,27 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 		}
 	}
 	return nil
+}
+
+// failureRecord shapes a step failure into the outputs recorded under that
+// step's id: [FailedStepOutputs] for an ordinary failure, and the richer
+// [LoopExhaustedError.Record] — `error` plus the `results` that ran — when the
+// step is a loop that spent its whole budget.
+//
+// The exhaustion is recognised by direct type assertion, never through an
+// unwrap chain, and that is the point rather than a shortcut: only the loop's
+// own step raises the error bare, so only the loop's own entry carries the
+// account. The same exhaustion propagating out of a call or an enclosing
+// for_each arrives here wrapped in a position (`workflow %q: …`,
+// `iteration %d: …`) and records as the plain failure it is at that level —
+// which is also exactly what the durable driver's failedAt does, reading the
+// raw error at the one site it is raised and never copying the record into the
+// wrappers it builds above it.
+func failureRecord(err error) *Node_Outputs {
+	if exhausted, ok := err.(*LoopExhaustedError); ok {
+		return exhausted.Record()
+	}
+	return FailedStepOutputs(StepErrorText(err))
 }
 
 // runNodeWithVars executes a node with its own `vars:` block bound.
@@ -1449,8 +1480,13 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// (see [AccumulateForEachResult]); the position wrap is spelled the way the
 		// durable driver's stepFailed composes it, `"iteration %d: "`, so the
 		// recorded sentence matches across drivers.
+		// The iteration's item rides on any tolerated failure the body recorded
+		// ([AttachIterationBinding]), attached before the accumulate so the byte
+		// bound weighs it — and at the identical point the durable driver
+		// attaches it, in both its sequential and concurrent paths.
 		var sizeErr error
-		iterations, resultsBytes, sizeErr = AccumulateForEachResult(iterations, resultsBytes, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		iterations, resultsBytes, sizeErr = AccumulateForEachResult(iterations, resultsBytes,
+			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), item))
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}
@@ -1511,8 +1547,12 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 	for i := 0; ; i++ {
 		if i >= max {
 			// The budget is spent and `until:` never held. A distinct failure, not a
-			// silent stop: the loop did not do what it was asked.
-			return nil, LoopIterationLimitError(max)
+			// silent stop: the loop did not do what it was asked. The error carries
+			// the iterations that ran, so the recorded entry can say which of them
+			// failed and that nothing past the budget was ever attempted — see
+			// [LoopExhaustedError]. Never truncated here: a local run has no resume
+			// to have dropped history across.
+			return nil, LoopExhausted(iterations, max, false)
 		}
 
 		// Each iteration starts from the outputs visible before the loop, so a body
@@ -1542,8 +1582,13 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
+		// The carried state the iteration ran with rides on any tolerated
+		// failure the body recorded ([AttachIterationBinding]) — nil for a loop
+		// that binds nothing, which attaches nothing. Before the accumulate so
+		// the byte bound weighs it, matching the durable driver's point.
 		var sizeErr error
-		iterations, resultsBytes, sizeErr = AccumulateLoopResult(iterations, resultsBytes, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		iterations, resultsBytes, sizeErr = AccumulateLoopResult(iterations, resultsBytes,
+			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), state))
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}

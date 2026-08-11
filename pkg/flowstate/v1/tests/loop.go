@@ -130,6 +130,46 @@ func LoopCases() []Case {
 			},
 		},
 		{
+			// The boundary the exhaustion cases sit one step past: a loop whose
+			// `until:` holds on its final budgeted iteration *completes*, at
+			// exactly the bound. Running max_iterations times and finishing is
+			// success with a full `results`; running max_iterations times
+			// without finishing is the distinct exhaustion failure
+			// ([LoopExhaustionTranscriptCases]) — the trip count alone does not
+			// decide, `until:` does, and both drivers must draw the line
+			// between the two on the same side of the same iteration.
+			Name: "a loop whose condition holds on its final budgeted iteration completes at the bound",
+			Workflow: &v1.Workflow{
+				Name:    "loop-exactly-at-bound",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "exact",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State:   "s",
+							Initial: v1.NewLiteral("a"),
+							Update:  v1.NewExpr(`s + "x"`),
+							// Holds after the third body run (s is "a", "ax",
+							// "axx"), which is the last trip the budget allows.
+							Until:         v1.NewExpr("size(s) >= 3"),
+							MaxIterations: 3,
+							Body:          []*v1.Node{says("tick", "going")},
+						}},
+					},
+				},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"exact": {NamedValues: map[string]*v1.Value{
+					"results": v1.NewLiteralList(
+						map[string]any{"tick": map[string]any{}},
+						map[string]any{"tick": map[string]any{}},
+						map[string]any{"tick": map[string]any{}},
+					),
+					"state": v1.NewLiteral("axx"),
+				}},
+			}},
+		},
+		{
 			// A loop whose condition never holds runs its whole budget and then fails,
 			// distinctly. The bound is *reached* here, not merely respected: with
 			// `until:` false and no state to change, the only way this run ends is by
