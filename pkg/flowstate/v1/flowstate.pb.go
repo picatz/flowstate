@@ -6514,18 +6514,27 @@ func (x *FixChange) GetMessage() string {
 // report belongs to which. `Changed` answers "would git see a diff" on its own,
 // because a file with nothing to change produces neither a change nor a refusal
 // and would otherwise look indistinguishable from one that was never reached.
+//
+// The file is also the unit the rewrite happens in: one that cannot be converted
+// entirely is not written at all, while the others named in the same invocation
+// convert on their own merits.
 type FixReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// File is the path as it was given on the command line, so a reader can find it
 	// again without resolving anything.
 	File string `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
 	// Changed reports that the file was rewritten, or would be under `--check`.
+	// False whenever anything was refused, because then nothing was written at all.
 	Changed bool `protobuf:"varint,2,opt,name=changed,proto3" json:"changed,omitempty"`
-	// Changes is every edit made, in source order. Empty when nothing changed.
+	// Changes is every edit made, or that would have been made had the file
+	// converted, in source order. Empty when there was nothing to do. A file with
+	// refusals lists what it found here and applies none of it, so that one run
+	// tells an author the whole of the work rather than the first item of it.
 	Changes []*FixChange `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
 	// Refusals are the places the rewriter could not act on safely, positioned where
-	// a position exists. A file with refusals is not finished whatever `Changed`
-	// says, because the parts that were not refused may still have been rewritten.
+	// a position exists. A file with refusals was left exactly as it was: the
+	// rewrite is per file and all or nothing, because half a migration is a file
+	// claiming a form it is not in.
 	Refusals []*Diagnostic `protobuf:"bytes,4,rep,name=refusals,proto3" json:"refusals,omitempty"`
 	// Notes are places worth a human's eye that are not problems and do not affect
 	// whether the file is finished: a comment mentioning a step that has moved, for

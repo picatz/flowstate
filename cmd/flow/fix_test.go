@@ -152,8 +152,8 @@ steps:
 `
 
 // oldStyleMixed has one step the rewriter can act on and one it must refuse, so
-// the two halves of an unfinished run can be told apart: what it could do, it
-// did, and the run still failed.
+// the two halves of an unfinished run can be told apart: what it could have done
+// is reported, none of it is written, and the run fails.
 const oldStyleMixed = `edition: v2026.2
 name: mixed
 steps:
@@ -166,29 +166,52 @@ steps:
     task: {name: log, inputs: {message: "hi!"}}
 `
 
-// partlyFixedMixed is oldStyleMixed after a run: the block-style step rewritten,
-// the flow-style one left exactly as it was written.
-const partlyFixedMixed = `edition: v2026.2
+// repairedMixed is oldStyleMixed with the step the rewriter refuses written
+// across lines by hand, which is the whole of what its diagnostic asks for.
+//
+// The second half of issue #382's test shape: after the hand edit, the file
+// converts. A migration that refuses is only tolerable if doing what it says
+// makes it stop refusing.
+const repairedMixed = `edition: v2026.2
+name: mixed
+steps:
+  - id: greet
+    task:
+      name: log
+      inputs:
+        message: hello
+  - id: shout
+    task:
+      name: log
+      inputs:
+        message: "hi!"
+`
+
+// fixedMixed is repairedMixed after a run: both steps rewritten, nothing else
+// touched.
+const fixedMixed = `edition: v2026.2
 name: mixed
 steps:
   - id: greet
     log:
       message: hello
   - id: shout
-    task: {name: log, inputs: {message: "hi!"}}
+    log:
+      message: "hi!"
 `
 
-// The 1-based line the refused step is on *after* the run — line 8 of
-// partlyFixedMixed, not line 10 of oldStyleMixed.
+// The 1-based line the refused step is on in oldStyleMixed as the author wrote
+// it, which is the only file that will exist when the run ends.
 //
-// Which is the line worth naming, and it used to be the other one. `flow fix`
-// rewrites until nothing changes and reports the last round's refusals, so a
-// diagnostic describes the file as it now sits on disk. Before that it described
-// the file as read: the rewrite above it removed two lines, and the author was
-// sent to line 10 of a file whose refused step had moved to line 8.
-//
-// Nobody had noticed, because the number was only ever compared against itself.
-const mixedRefusedLine = 8
+// This number has now been each of the two lines it could be, and the reason it
+// moved back is issue #382. `flow fix` rewrites until nothing changes and used
+// to report the last round's refusals *and* write that round out, so line 8 was
+// the line on disk: the refused step's line once the rewrite above it had
+// removed two lines. Since a document that cannot be converted is no longer
+// written at all, line 8 of the file the author still has is `message: hello`,
+// two steps away from anything wrong. A position is a position in a file that
+// exists.
+const mixedRefusedLine = 10
 
 // runFixCommand runs `flow fix` the way a shell does — through the command, so
 // the flag spellings are part of what is under test — and returns its two
@@ -785,13 +808,22 @@ func TestFixDirectoryWalkStillSkipsPolicyAndObservabilityFilesSilently(t *testin
 	}
 }
 
-// TestFixRewritesWhatItCanBeforeGivingUp is why a refusal is a status rather
-// than a stop.
+// TestFixReportsEverythingAndWritesNothingWhenItCannotFinish is issue #382,
+// reproduced at the boundary the issue was found at.
 //
-// One unrewritable step must not block the other nine: the author wants the ones
-// the tool understood done, and the one it did not left exactly as it was to fix
-// by hand — with the run still failing so that nobody mistakes it for finished.
-func TestFixRewritesWhatItCanBeforeGivingUp(t *testing.T) {
+// A run that cannot finish used to write what it could, which put `edition:
+// v2026.2` at the top of a file still holding a step written in the grammar the
+// previous edition spoke. The exit code and the report were honest and the file
+// was not: it claimed a form it was not in, `flow validate` refused it, and the
+// author was left editing a hybrid neither edition describes instead of the file
+// the diagnostics named.
+//
+// Bytes rather than "still validates", because a corrupted file validating is
+// exactly how this class of bug has got through here before. What the run says
+// is checked beside them: one unrewritable step must still not hide the other
+// nine, so the edit it could not apply is reported too, and the refusal names
+// the position in the file that is still there.
+func TestFixReportsEverythingAndWritesNothingWhenItCannotFinish(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleMixed)
 
@@ -800,13 +832,99 @@ func TestFixRewritesWhatItCanBeforeGivingUp(t *testing.T) {
 		t.Error("a file with a refused step reported success")
 	}
 
-	if got := string(readFixture(t, path)); got != partlyFixedMixed {
-		t.Errorf("either the step it could rewrite was skipped or the one it refused was touched:\n--- want\n%s\n--- got\n%s",
-			partlyFixedMixed, got)
+	if got := string(readFixture(t, path)); got != oldStyleMixed {
+		t.Errorf("a run that could not finish rewrote the file anyway:\n--- before\n%s\n--- after\n%s",
+			oldStyleMixed, got)
 	}
 
 	if refusal := reportAt(t, reportsFor(t, out, path), mixedRefusedLine, out); refusal.column == 0 {
 		t.Errorf("the refusal names a line but no column: %q", refusal.message)
+	}
+
+	// The edit it found is still reported, and reported as one that has not
+	// happened. Both halves matter: dropping it would send the author back for a
+	// second run to learn the rest of the work, and saying "rewritten" about an
+	// edit that is not in the file is the same falsehood as writing half of one.
+	if !strings.Contains(out, "would be rewritten to `log:`") {
+		t.Errorf("the edit that could not be applied is missing, or is claimed to have happened:\n%s", out)
+	}
+	if strings.Contains(out, "`task:` naming \"log\" rewritten to") {
+		t.Errorf("an edit that was not written is reported as though it were:\n%s", out)
+	}
+
+	// And the report says why the bytes are untouched. Without it the reader has a
+	// list of edits in the conditional and no statement that the file is as they
+	// left it.
+	if !strings.Contains(out, "not rewritten") {
+		t.Errorf("the run never says the file was left alone:\n%s", out)
+	}
+}
+
+// TestFixConvertsOnceTheRefusedStepIsRepairedByHand is the other half of the
+// same promise: refusing has to be a state an author can get out of.
+//
+// A migration that leaves a file alone is only useful if the diagnostic it
+// leaves behind is the whole of the hand work: do what it says, run it again,
+// and the file converts. Byte-compared for the same reason everything else here
+// is: "it validates now" would also be true of a file the rewriter mangled in
+// some other way.
+func TestFixConvertsOnceTheRefusedStepIsRepairedByHand(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldStyleMixed)
+
+	if _, _, err := runFixCommand(t, path); err == nil {
+		t.Fatal("the file with a refused step reported success")
+	}
+
+	// The hand edit the refusal asks for, and nothing else.
+	if err := os.WriteFile(path, []byte(repairedMixed), 0o644); err != nil {
+		t.Fatalf("writing the repaired fixture: %v", err)
+	}
+
+	out, _, err := runFixCommand(t, path)
+	if err != nil {
+		t.Fatalf("a file with nothing left to refuse still did not convert: %v\n%s", err, out)
+	}
+
+	if got := string(readFixture(t, path)); got != fixedMixed {
+		t.Errorf("the repaired file did not convert as written:\n--- want\n%s\n--- got\n%s", fixedMixed, got)
+	}
+}
+
+// TestFixLeavesTheEditionOffAFileItCannotConvert states the invariant the bug
+// broke, positively and on its own: no file ever gains an edition its content
+// does not parse under.
+//
+// Separate from the byte comparison above because it is the property rather than
+// the reproduction. A future rewriter could keep every step it refuses untouched
+// and still stamp the header, which is the failure this repo actually shipped,
+// and a whole-file comparison would catch it only for as long as this particular
+// fixture is the one being compared.
+func TestFixLeavesTheEditionOffAFileItCannotConvert(t *testing.T) {
+	// The issue's own fixture: an edition this build upgrades, over a step it
+	// cannot rewrite mechanically.
+	const oldEditionUnfixable = `edition: "2026.1"
+name: fixme
+steps:
+  - id: greet
+    task: echo
+`
+
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", oldEditionUnfixable)
+
+	out, _, err := runFixCommand(t, path)
+	if err == nil {
+		t.Fatalf("a file holding a step `fix` cannot rewrite reported success:\n%s", out)
+	}
+
+	got := string(readFixture(t, path))
+	if got != oldEditionUnfixable {
+		t.Errorf("the file changed at all:\n--- before\n%s\n--- after\n%s", oldEditionUnfixable, got)
+	}
+	if strings.Contains(got, flowfile.CurrentEdition) {
+		t.Errorf("the file now declares edition %s over a step written in the grammar the previous one spoke:\n%s",
+			flowfile.CurrentEdition, got)
 	}
 }
 
@@ -838,6 +956,38 @@ func TestFixDoesNotPrintUsageWhenAFileNeedsWork(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFixRefusalStopsAtTheFileItIsAbout keeps the atomicity from growing a size
+// it was never meant to have.
+//
+// A file converts entirely or not at all, and "a file" is the whole of that
+// sentence: a sweep over a directory that abandoned every other file because one
+// of them held a hand-written step would make `flow fix examples/` useless on
+// exactly the trees it exists for, and would answer a corruption bug with a
+// tool that does nothing. So both directions are asserted together, because a
+// change to either one is a change to where the boundary sits.
+func TestFixRefusalStopsAtTheFileItIsAbout(t *testing.T) {
+	dir := t.TempDir()
+
+	// Named in an order that puts the refused file first, so a run that gave up on
+	// the first refusal would leave the other untouched and look like this test
+	// passing for the wrong reason if only the refused file were checked.
+	refused := writeFixture(t, dir, "a-refused.yaml", oldStyleMixed)
+	converts := writeFixture(t, dir, "b-converts.yaml", oldStyleSingle)
+
+	out, _, err := runFixCommand(t, dir)
+	if err == nil {
+		t.Fatalf("a sweep holding a file it could not finish reported success:\n%s", out)
+	}
+
+	if got := string(readFixture(t, refused)); got != oldStyleMixed {
+		t.Errorf("the file that could not be converted was written anyway:\n--- before\n%s\n--- after\n%s",
+			oldStyleMixed, got)
+	}
+	if got := string(readFixture(t, converts)); got == oldStyleSingle {
+		t.Errorf("a file with nothing wrong with it was abandoned because another file in the sweep was refused:\n%s", got)
 	}
 }
 
@@ -1231,6 +1381,12 @@ func TestFixStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
 // in a way that reads as though the rewriter mangled the document. So the
 // document is the whole of stdout, and the refusal goes where a pipe will not
 // pick it up.
+//
+// Which document is the other half, and it is the one that went in. `>` writes a
+// file, so `--stdout` is where the rewrite lands rather than an exception to
+// where it lands: a run that could not convert the document has nothing to
+// redirect but the document it was given, or the redirect produces the same half
+// migration in a file with a different name (issue #382).
 func TestFixStdoutKeepsReportsOffTheDocument(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", oldStyleMixed)
@@ -1240,8 +1396,8 @@ func TestFixStdoutKeepsReportsOffTheDocument(t *testing.T) {
 		t.Error("a refused file reported success")
 	}
 
-	if out != partlyFixedMixed {
-		t.Errorf("stdout is not exactly the document:\n--- want\n%s\n--- got\n%s", partlyFixedMixed, out)
+	if out != oldStyleMixed {
+		t.Errorf("stdout is not exactly the document that was given:\n--- want\n%s\n--- got\n%s", oldStyleMixed, out)
 	}
 	if got := string(readFixture(t, path)); got != oldStyleMixed {
 		t.Errorf("--stdout wrote back to the file as well:\n--- before\n%s\n--- after\n%s", oldStyleMixed, got)

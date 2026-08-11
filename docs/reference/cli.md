@@ -187,7 +187,7 @@ flow fix [path...] [flags]
 
 Rewrite Flowfiles written in an older edition of the language into the current one, preserving comments, formatting, and everything the change does not touch. A directory is walked for .yaml and .yml files. A file with nothing to change is left byte for byte as it was.
 
-Shapes that cannot be rewritten without guessing (a task written in flow style, or one standing behind a YAML alias) are reported with their position and left alone, so the file is never silently mangled.
+Shapes that cannot be rewritten without guessing (a task written in flow style, or one standing behind a YAML alias) are reported with their position, and the file holding one is not written at all: a file converts entirely or it is left exactly as it was, so nobody is handed half a migration.
 
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, and what was refused, per file. CI that wants structured data rather than stderr text asks for one of those.
 
