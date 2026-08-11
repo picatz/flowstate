@@ -154,6 +154,19 @@ steps:
     wait_for_signal:
       name: activation-confirmed
       timeout: 1h
+      outputs:
+        # The go-live test, stated ONCE here on the step that produced the
+        # payload, the way approval-gate shapes its gate (#207). It used to be
+        # re-derived three times: positive in `activate`'s `if:`, hand-negated
+        # in `activation_deferred`'s, and spelled again in `outputs.activated`
+        # - a De Morgan slip in the negated copy is exactly the corruption
+        # this shaping exists to stop. Every reader now compares this one
+        # recorded name.
+        confirmed: ${has(payload.confirmed) && payload.confirmed}
+        # Re-exposed because `outputs:` replaces what the wait produced:
+        # `activation_deferred`'s log line still distinguishes a lapsed
+        # window from an explicit non-confirmation.
+        timed_out: ${timed_out}
 
   # The step most likely to fail in practice, and the one that triggers
   # compensation in this file's failing test case - reversing `provision_access`,
@@ -162,8 +175,7 @@ steps:
   # one's own boundary exactly as docs/DSL.md's "Compensation composes
   # through a call" describes.
   - id: activate
-    if: >-
-      ${has(steps.activation_confirmation.payload.confirmed) && steps.activation_confirmation.payload.confirmed}
+    if: ${steps.activation_confirmation.confirmed}
     http:
       method: POST
       url: https://provisioning.internal.example.com/tenants/activate
@@ -174,8 +186,7 @@ steps:
             "access_id": steps.provision_access.resource_id} }
 
   - id: activation_deferred
-    if: >-
-      ${!(has(steps.activation_confirmation.payload.confirmed) && steps.activation_confirmation.payload.confirmed)}
+    if: ${!steps.activation_confirmation.confirmed}
     log:
       level: warn
       message: >-
@@ -185,8 +196,7 @@ steps:
 
 outputs:
   activated:
-    value: >-
-      ${has(steps.activation_confirmation.payload.confirmed) && steps.activation_confirmation.payload.confirmed}
+    value: ${steps.activation_confirmation.confirmed}
     description: whether the account manager confirmed go-live and the tenant was actually activated
 
   tenant:
