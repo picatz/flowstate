@@ -398,19 +398,31 @@ func UndoCases(base string) []UndoCase {
 		},
 		{
 			// #418's slice 0.5, pinned: `undo:` unwinds in reverse *written*
-			// order, never reverse completion order. The first branch holds two
-			// chained steps and the second holds one, so on the durable driver
-			// the second branch completes — and registers into its private log —
-			// while the first is still mid-flight: the branches finish in
-			// reverse of the order they are written. If completion order could
+			// order, never reverse completion order. If completion order could
 			// reach the unwind, "quick" would come off last; the written-order
 			// rule says it comes off first, because its branch is written last.
 			// The compensations after the prefix are order-exact, which is the
 			// whole claim.
+			//
+			// The `sleep:` opening the first branch is what makes the forcing
+			// *deterministic* rather than probable. A branch that is merely
+			// longer — more chained activities — still leaves the scheduler
+			// free to finish it first, and in that execution a completion-order
+			// merge produces the very order this case expects, so the
+			// regression it pins against would pass unseen. A timer cannot be
+			// raced past: the durable test environment advances virtual time
+			// only once no activity is runnable, so the second branch's step
+			// has completed — and registered into its private log — before the
+			// first branch starts any work at all. Locally the branches are
+			// sequential and the hold is a short real sleep, so nothing blocks
+			// on work that has not started yet.
 			Name: "parallel siblings unwind in reverse written order not completion order",
 			Workflow: &v1.Workflow{Name: "undo-parallel-written-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
 				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
 					{Steps: []*v1.Node{
+						{Id: "hold", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Duration{Duration: durationpb.New(100 * time.Millisecond)},
+						}}},
 						undoing(records("slow_a", base, "a1"), base, "/do/undo"),
 						undoing(records("slow_b", base, "a2"), base, "/do/undo"),
 					}},
