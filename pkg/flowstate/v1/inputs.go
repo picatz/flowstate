@@ -87,6 +87,28 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		return nil, err
 	}
 
+	// And beside those two, for the third time the same reason applies. A
+	// `verify:` key written as a literal rather than as a secret reference
+	// satisfies the schema's map shape perfectly — protovalidate has nothing to
+	// say about which `Value.kind` a signing key is — so before this line a
+	// hand-built `RunRequest` carrying `verify: {hmac-sha256: "whsec_live_…"}`
+	// was accepted and the signing key was then written into Temporal history
+	// with the specification, which invariant 8 says is durable and broadly
+	// readable. `flow validate` refused it against a line and a column and a
+	// specification that never was a Flowfile went through untouched: the
+	// Flowfile path and the RPC path were enforcing different rules about a
+	// secret.
+	//
+	// The whole set-level checker rather than only the `verify:` half, because
+	// the rest of what it refuses is wrong on a hand-built specification for the
+	// identical reasons it is wrong in a file — a scheme nothing implements can
+	// never accept a delivery, a missing `idempotency_key` turns every
+	// redelivery into a second run, and two webhooks under one name are a
+	// mapping nothing can address unambiguously.
+	if err := CheckWebhookTriggers(wf.GetTriggers()); err != nil {
+		return nil, err
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration

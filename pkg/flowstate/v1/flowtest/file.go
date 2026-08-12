@@ -63,7 +63,6 @@ package flowtest
 import (
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -712,17 +711,13 @@ const OthersSkipped = "skipped"
 // Load reads and parses a `*.test.yaml`, applying [MaxTestFileBytes] before
 // anything is unmarshaled and [MaxTestsPerFile]/[MaxStubsPerTest]/
 // [MaxSignalsPerTest] after.
+//
+// The byte bound is applied to the stream through [readBounded] rather than to
+// what a prior [os.Stat] reported, for the reasons that function records: a
+// fixture path naming `/dev/zero` stats as empty and reads without end, and a
+// file swapped between the sizing and the reading is bounded by neither size.
 func Load(path string) (*File, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if info.Size() > MaxTestFileBytes {
-		return nil, fmt.Errorf("%s: %d bytes exceeds the %d byte limit for a test file",
-			path, info.Size(), MaxTestFileBytes)
-	}
-
-	data, err := os.ReadFile(path)
+	data, err := readBounded(path, MaxTestFileBytes, "test file")
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}

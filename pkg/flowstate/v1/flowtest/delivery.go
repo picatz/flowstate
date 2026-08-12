@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -17,12 +16,15 @@ import (
 // test instead of the one part of a workflow debuggable only in production.
 //
 // A delivery on disk is read here and nowhere else, under the byte bound a live
-// receiver will apply to a request body ([v1.MaxWebhookPayloadBytes]) — checked
-// against the file's size *before* it is read into memory, which is the whole point
-// of the bound: one applied after the read has already lost. It is the ordinary
-// treatment of untrusted input in this repository, and a fixture is untrusted like
-// anything else: a `*.test.yaml` and its testdata can arrive with a called
-// workflow's repository or out of a fork.
+// receiver will apply to a request body ([v1.MaxWebhookPayloadBytes]). It is the
+// ordinary treatment of untrusted input in this repository, and a fixture is
+// untrusted like anything else: a `*.test.yaml` and its testdata can arrive with a
+// called workflow's repository or out of a fork.
+//
+// The bound is on the *stream* — see [readBounded], which is also where the two
+// ways a size-then-read bound is not a bound are written down. Briefly: a symlink
+// to `/dev/zero` stats as nothing and reads forever, and a file replaced between
+// the two calls is bounded by the size of the file that is gone.
 
 // loadDelivery reads a stored delivery: one JSON document with `headers` and
 // `body`.
@@ -35,17 +37,7 @@ import (
 // Verified is left false here and set by the case, deliberately: this function
 // knows what arrived, not whether it was genuine. See [TriggerDelivery].
 func loadDelivery(path string) (v1.WebhookDelivery, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return v1.WebhookDelivery{}, fmt.Errorf("reading the delivery: %w", err)
-	}
-	if info.Size() > v1.MaxWebhookPayloadBytes {
-		return v1.WebhookDelivery{}, fmt.Errorf(
-			"the delivery %s is %d bytes, more than the %d a delivery may be",
-			path, info.Size(), v1.MaxWebhookPayloadBytes)
-	}
-
-	data, err := os.ReadFile(path)
+	data, err := readBounded(path, v1.MaxWebhookPayloadBytes, "delivery")
 	if err != nil {
 		return v1.WebhookDelivery{}, fmt.Errorf("reading the delivery: %w", err)
 	}

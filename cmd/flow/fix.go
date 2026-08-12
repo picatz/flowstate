@@ -388,9 +388,22 @@ func collectFlowfiles(paths []string) ([]string, error) {
 			}
 			switch filepath.Ext(p) {
 			case ".yaml", ".yml":
-				data, err := os.ReadFile(p)
+				// Bounded exactly as [collectValidateTargets]'s walk is, and
+				// for the reason written there: a directory can hold a file of
+				// any size somebody else chose, and reading one whole merely to
+				// classify it defeats every bound applied afterward. This walk
+				// had the unbounded read that one was fixed to avoid, which is
+				// how a bound that lives in one of two sibling walks tends to
+				// end up. A file past the bound classifies as neither a
+				// Flowfile nor a test, which is what
+				// [flowfile.LooksLikeFlowfile] answers for one that size
+				// anyway.
+				data, truncated, err := readFileBounded(p)
 				if err != nil {
 					return fmt.Errorf("error reading %s: %w", p, err)
+				}
+				if truncated {
+					return nil
 				}
 				if flowfile.LooksLikeFlowfile(data) || flowfile.IsMalformedYAML(data) {
 					out = append(out, p)

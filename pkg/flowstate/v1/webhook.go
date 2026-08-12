@@ -249,6 +249,13 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 // Two sources sharing a name are two mappings a reader cannot tell apart and a
 // `flow test` case cannot address — it would replay against whichever came first,
 // silently — so the duplicate is refused rather than resolved.
+//
+// Called from [BindRunInputs], beside [CheckVarsHoldNoSecretRef] and
+// [CheckWaitPromptsAreAskable] and for the reason they are: it is the one function
+// every submit path already calls, so a specification that never was a Flowfile is
+// held to these rules too. Without that, a hand-built `RunRequest` could write a
+// literal signing key into durable history — see the call site for the full
+// argument.
 func CheckWebhookTriggers(triggers *Triggers) error {
 	seen := make(map[string]bool, len(triggers.GetWebhooks()))
 	for _, trigger := range triggers.GetWebhooks() {
