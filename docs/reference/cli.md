@@ -1044,7 +1044,30 @@ flow server --verbose
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--profile <string>` | `string` | — | — | Temporal configuration profile to use |
+| `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
+| `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
+| `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
+| `--secret-dir-namespaced` | `bool` | `false` | — | resolve file: secrets below a separate <secret-dir>/<namespace>/ directory |
+| `--secret-env <string,...>` | `stringSlice` | — | `FLOWSTATE_SECRET_ENV_ALLOW` | environment secret names this process may resolve (comma-separated or repeatable; values come from FLOWSTATE_SECRET_<NAME>) |
+| `--secret-env-namespace <string,...>` | `stringSlice` | — | — | tenant-to-prefix mapping NAMESPACE=PREFIX for env: secrets (repeatable) |
+| `--secret-keychain` | `bool` | `false` | — | resolve keychain: secrets from the macOS keychain (default $FLOWSTATE_SECRET_KEYCHAIN, macOS only) |
+| `--secret-keychain-namespaced` | `bool` | `false` | — | give each tenant its own keychain service, <service>/<namespace> |
+| `--secret-keychain-service <string>` | `string` | — | `FLOWSTATE_SECRET_KEYCHAIN_SERVICE` | keychain service name entries are stored under (default $FLOWSTATE_SECRET_KEYCHAIN_SERVICE, then "flowstate") |
+| `--secret-op` | `bool` | `false` | — | resolve op: secrets through the 1Password CLI (default $FLOWSTATE_SECRET_OP) |
+| `--secret-op-namespaced` | `bool` | `false` | — | give each tenant its own 1Password vault, named after the namespace |
+| `--secret-op-vault <string>` | `string` | — | `FLOWSTATE_SECRET_OP_VAULT` | 1Password vault read when a run has no namespace (default $FLOWSTATE_SECRET_OP_VAULT, then "flowstate") |
+| `--secret-require-namespace` | `bool` | `false` | — | refuse every secret read whose authenticated identity has no tenant namespace |
+| `--secret-vault-addr <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_ADDR` | address of the Vault or OpenBao instance vault: secrets are read from, such as https://vault.example.com:8200 (default $FLOWSTATE_SECRET_VAULT_ADDR) |
+| `--secret-vault-ca-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_CA_FILE` | PEM CA bundle to verify the vault's certificate against, instead of the system roots (default $FLOWSTATE_SECRET_VAULT_CA_FILE) |
+| `--secret-vault-kubernetes-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT` | where the Kubernetes auth method is mounted (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT, then "kubernetes") |
+| `--secret-vault-kubernetes-role <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | Vault role to authenticate as via the Kubernetes auth method, using this pod's projected service account token (default $FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE; exactly one of this or a token must be configured) |
+| `--secret-vault-mount <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_MOUNT` | where the KV v2 engine is mounted (default $FLOWSTATE_SECRET_VAULT_MOUNT, then "secret") |
+| `--secret-vault-namespace <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_NAMESPACE` | Vault Enterprise or OpenBao namespace header (default $FLOWSTATE_SECRET_VAULT_NAMESPACE; this is the vault's own namespace, not the tenant namespace a run authenticates with) |
+| `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
+| `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 | `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
+| `--webhook <string,...>` | `stringArray` | — | — | serve deliveries for the webhooks declared in this Flowfile, at /webhooks/<workflow>/<trigger>. Repeatable. The file is compiled, its `verify:` keys are resolved, and this deployment's own checks are run against it at startup, so a workflow this deployment cannot serve stops the server rather than refusing deliveries later. Needs the --secret-* flags that reach the signing keys |
+| `--webhook-namespace <string>` | `string` | — | — | the Flowstate tenant a delivery's run belongs to, and the tenant its `verify:` keys are read in. A sender presents a signature rather than an identity, so there is no caller to take a tenant from and an operator names it here. Required on a deployment whose trust policy maps tenants onto Temporal namespaces, which has nowhere to route the unnamed tenant; a single-tenant deployment leaves it empty |
 
 ## `flow server dev`
 

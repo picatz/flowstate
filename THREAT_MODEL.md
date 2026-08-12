@@ -171,6 +171,34 @@ development posture (read at `cmd/flow/main.go:148`, resolved to
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
 attested signals, #337, not landed.
 
+### Webhook sender to server
+
+**Today.** Mounted only when a deployment passes `--webhook`, at
+`POST /webhooks/<workflow>/<trigger>` (`cmd/flow/routing.go`,
+`pkg/flowstate/v1/server/webhook.go`). A sender authenticates by signing the raw
+body under the key the trigger's `verify:` names, resolved through the deployment's
+secret providers when the flag is read rather than per request; a scheme this build
+cannot check, or a key this deployment cannot resolve, stops the server. Comparison
+is constant-time (`hmac.Equal`) and the key is revealed only into an HMAC. The body
+is capped by `http.MaxBytesReader` as the first statement of the handler, so no path
+below it can read past `v1.MaxWebhookPayloadBytes`; deliveries in flight are bounded
+and shed with a 503 past the bound; `with:` evaluation is bounded by the CEL cost
+limit; candidate signatures per header are bounded. Every refusal decided before a
+delivery is known genuine — unknown workflow, unknown trigger, bad signature — is one
+status and one sentence, with an HMAC spent on the unrouted path so the timings
+match. A run's id is a digest over tenant, workflow, trigger and idempotency key, so
+a redelivery joins rather than duplicating and a key cannot address another tenant's
+run or be read back out of the id.
+
+**Limits.** The route is cleartext like the rest of the server, so a signature and
+body are on the wire in the clear unless TLS is terminated in front. Verification
+proves possession of a shared key, not the sender's identity: anyone holding the key
+can deliver. `--secret-require-namespace` is incompatible with the receiver, which
+resolves in the deployment's own tenant.
+
+**Planned.** Per-trigger rate limits, enable and disable per deployment beyond the
+flag, and stored deliveries for replay, #490, not landed.
+
 ### Server to worker
 
 **Today.** Tenant is recorded in the run's memo at submit and authorized against on

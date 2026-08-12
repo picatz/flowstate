@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/authn"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // serverHandler routes the server's HTTP surface, deciding what authentication
@@ -44,7 +45,24 @@ import (
 // cause can carry the wrapped text of a parse failure, and the token itself is
 // in the request's Authorization header, which is exactly why the observer logs
 // fields it chooses rather than the request.
-func serverHandler(logger *slog.Logger, verifier auth.Verifier, broker *auth.Broker, rpc http.Handler) http.Handler {
+//
+// # Why the webhook receiver sits outside authentication too
+//
+// A webhook sender holds no Flowstate credential and never will: a payments
+// provider POSTs to a URL and signs the body with a shared key. That signature
+// *is* the authentication, checked by the receiver against the key the trigger's
+// `verify:` names, and a delivery that does not verify is refused — so the route
+// is unauthenticated in the sense that no bearer token is required and in no other
+// sense. Wrapping it in the authenticator would make a webhook impossible to
+// deliver to rather than making it safer.
+//
+// It is mounted only when a deployment asked for it (--webhook). A deployment that
+// did not has no such route at all, which is the fail-closed default this file's
+// per-route wrapping exists to keep.
+func serverHandler(
+	logger *slog.Logger, verifier auth.Verifier, broker *auth.Broker,
+	rpc http.Handler, webhooks *server.WebhookReceiver,
+) http.Handler {
 	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "rejected unauthenticated request",
@@ -71,6 +89,14 @@ func serverHandler(logger *slog.Logger, verifier auth.Verifier, broker *auth.Bro
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+
+	// Typed rather than an [http.Handler], so that "this deployment configured
+	// no webhooks" is a nil pointer this can see: a nil handler in an interface
+	// is a non-nil interface, and mounting one would serve the route and panic on
+	// the first delivery.
+	if webhooks != nil {
+		mux.Handle(server.WebhookPathPrefix, webhooks)
+	}
 
 	if broker != nil {
 		issuer := broker.Issuer()

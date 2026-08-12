@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+	flowstateserver "github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // TestIdentityDocumentsAreReachableWithoutCredentials is the regression guard for
@@ -36,7 +39,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
 		},
-	))
+	), nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -89,7 +92,7 @@ func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 
 	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
-	))
+	), nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -141,7 +144,7 @@ func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a health probe reached the RPC handler")
-		}))
+		}), nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -185,7 +188,7 @@ func TestARejectionIsLoggedWithoutTheToken(t *testing.T) {
 	handler := serverHandler(logger, refusingVerifier{}, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a rejected request reached the RPC handler")
-		}))
+		}), nil)
 
 	const token = "not-a-real-credential-but-must-not-appear"
 
@@ -222,8 +225,94 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 	}
 	require.NotNil(t, server, "there is no server command")
 
-	for _, name := range []string{"identity-claim", "deployment-name", "auth-policy", "identity-key"} {
+	for _, name := range []string{
+		"identity-claim", "deployment-name", "auth-policy", "identity-key",
+
+		// The receiver's own surface, and the secret flags it cannot resolve a
+		// `verify:` key without. A --webhook the command did not declare would
+		// read its zero value forever, and the deployment would look like one
+		// that simply serves no webhooks.
+		"webhook", "secret-env", "secret-dir",
+	} {
 		require.NotNil(t, server.Flags().Lookup(name),
 			"`flow server` does not take --%s, so a deployment cannot configure it", name)
 	}
+}
+
+// TestTheWebhookRouteIsMountedOnlyWhenConfigured pins both halves of the one
+// route this server serves without a bearer token.
+//
+// A sender presents a signature over the body rather than a credential, so
+// wrapping the receiver in the authenticator would make a webhook undeliverable.
+// The other half is the fail-closed one: a deployment that configured no webhooks
+// must have no such route, and a request there meets the authenticated default
+// like anything else.
+func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	receiver, err := flowstateserver.New(nil).NewWebhookReceiver(t.Context(), "",
+		[]*v1.Workflow{{
+			Name:    "order-webhook",
+			Profile: v1.CurrentProfile,
+			Triggers: &v1.Triggers{Webhooks: []*v1.WebhookTrigger{{
+				Name: "storefront",
+				Verify: map[string]*v1.Value{
+					v1.WebhookSchemeHMACSHA256: {Kind: &v1.Value_SecretRef{
+						SecretRef: &v1.SecretRef{Scheme: "env", Name: "K"},
+					}},
+				},
+				IdempotencyKey: v1.NewExpr(`event.body.id`),
+			}}},
+			Steps: []*v1.Node{{Id: "record", Kind: &v1.Node_Value{Value: v1.NewLiteral("ok")}}},
+		}}, staticStore(t))
+	require.NoError(t, err)
+
+	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("a delivery reached the RPC handler")
+		}), receiver))
+	defer served.Close()
+
+	resp, err := served.Client().Post(served.URL+"/webhooks/order-webhook/storefront",
+		"application/json", bytes.NewReader([]byte(`{"id":"evt_1"}`)))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// The receiver answered — refusing the unsigned delivery, which is its job —
+	// rather than the authenticator refusing the request for want of a token.
+	require.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"a delivery was answered by something other than the receiver")
+
+	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil))
+	defer unconfigured.Close()
+
+	absent, err := unconfigured.Client().Post(unconfigured.URL+"/webhooks/order-webhook/storefront",
+		"application/json", bytes.NewReader([]byte(`{"id":"evt_1"}`)))
+	require.NoError(t, err)
+	defer absent.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, absent.StatusCode,
+		"a deployment that configured no webhooks served the webhook route anyway")
+}
+
+// staticProvider resolves any reference to a fixed value, standing in for
+// whatever backend a deployment configured.
+type staticProvider struct{}
+
+func (staticProvider) Scheme() string { return "env" }
+
+func (staticProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	return secrets.NewSecret(req.Ref, "whsec_routing_test"), nil
+}
+
+// staticStore is the secret machinery a receiver is handed here. The receiver
+// scopes it to its own namespace itself, which is why it takes the store.
+func staticStore(t *testing.T) *secrets.Store {
+	t.Helper()
+
+	store, err := secrets.NewStore(staticProvider{})
+	require.NoError(t, err)
+
+	return store
 }

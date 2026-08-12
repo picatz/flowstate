@@ -1332,11 +1332,29 @@ retried delivery is a second run. What the validator does *not* do is resolve
 anything: whether the secret exists and whether this deployment has that scheme
 configured are a deployment's answers.
 
-**Declaring is not receiving.** There is no HTTP endpoint yet: this block compiles into
-the specification, both drivers ignore it, and `flow run local` runs a file with a
-webhook on it once, now. What exists today is the declaration, its checks, and the
-mapping — which is the part a file controls, and the part `flow test` replays offline
-from a stored delivery:
+**Declaring is not serving.** A file declares a webhook; a deployment decides whether
+*this* installation serves it, because staging must not fire the production webhook.
+`flow server --webhook ./workflow.yaml` mounts the declaration at
+
+```
+POST /webhooks/<workflow>/<trigger>
+```
+
+unauthenticated in one sense only: a sender presents a signature over the body rather
+than a bearer token, which is the credential a webhook has. Everything decidable
+before a request arrives is decided when that flag is read — the file is compiled, the
+schemes are checked against what this build can verify, and every `verify:` key is
+resolved through the deployment's `--secret-*` providers — so a deployment that cannot
+serve a webhook fails to start rather than refusing deliveries at three in the morning.
+The generic `hmac_sha256` scheme reads `X-Flowstate-Signature` (hex, optionally
+`sha256=`-prefixed, over the raw body); `stripe` reads `Stripe-Signature` with its own
+five-minute replay window. A delivery that verifies starts a run whose id is derived
+from `idempotency_key:`, so a redelivery joins that run instead of starting a second
+one, and both drivers ignore the block entirely — `flow run local` still runs a file
+with a webhook on it once, now.
+
+The mapping is the part a file controls, and it is the part `flow test` replays
+offline from a stored delivery, with no network and no receiver:
 
 ```yaml
 tests:
@@ -1361,9 +1379,10 @@ tests:
 
 No network, deterministic, and it turns the argument mapping into a unit test — the
 one part of a workflow that would otherwise be debuggable only in production. The
-mapping is real; the verification *outcome* is declared, because there is no receiver
-to compute it yet. `examples/webhook-trigger` is the worked example, and it runs in
-CI like the rest.
+mapping is real; the verification *outcome* is declared rather than computed, so a
+case can assert what happens to a delivery that does not verify without holding a
+signing key. `examples/webhook-trigger` is the worked example, and it runs in CI like
+the rest.
 
 ### `${...}` stays; `!expr` is refused
 

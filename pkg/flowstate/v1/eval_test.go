@@ -504,6 +504,30 @@ func TestRunWorkflowWebhookTrigger(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowWebhookDelivery covers a run started by a delivery in the local
+// driver.
+//
+// The engine package runs the identical [tests.WebhookDeliveryCases] against the
+// durable driver. What the pairing is for is the *values*: a delivery's inputs
+// come out of a JSON payload rather than off a command line, so they are the one
+// set of inputs whose Go types nobody wrote down, and a driver that read a
+// payload's number differently would refuse a run its rehearsal accepted.
+func TestRunWorkflowWebhookDelivery(t *testing.T) {
+	for _, test := range tests.WebhookDeliveryCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			require.NotNil(t, test.Inputs, "the delivery did not bind, so there is nothing to run")
+
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowSwitch covers `switch:` in the local driver.
 //
 // The engine package runs the identical [tests.SwitchCases] against the durable

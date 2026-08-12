@@ -13,13 +13,18 @@
 # a column before anything is deployed. A per-trigger mapping block could not — it
 # would state what an input is a second time, with nothing forcing the two to agree.
 #
-# # Declaring is not receiving
+# # Declaring is not serving
 #
-# Nothing here serves an HTTP endpoint. There is no receiver in Flowstate yet: this
-# block is a declaration, checked when the file compiles and replayed offline by
-# `flow test` against a stored delivery (see workflow.test.yaml and
-# testdata/stripe-charge.json). Both execution drivers ignore it, which is what
-# keeps this example runnable in CI like every other one:
+# Nothing in this file serves an HTTP endpoint. The block is a declaration; a
+# deployment decides whether *this* installation serves it, with
+#
+#     flow server --webhook examples/webhook-trigger/workflow.yaml
+#
+# which mounts it at POST /webhooks/webhook-trigger/stripe and resolves the
+# `verify:` key below at startup. Without that flag the declaration is checked when
+# the file compiles and replayed offline by `flow test` against a stored delivery
+# (see workflow.test.yaml and testdata/stripe-charge.json). Both execution drivers
+# ignore it, which is what keeps this example runnable in CI like every other one:
 #
 #     flow run local examples/webhook-trigger/workflow.yaml
 #
