@@ -97,6 +97,15 @@ func (l *UndoLog) Register(entry *PendingUndo) {
 // ranges by the child's stable DSL position (iteration index or branch index),
 // never by completion time. This structural position is the ordering key shared
 // by both drivers; entries inside a child retain their own registration order.
+//
+// This discipline is what makes the unwind's author-facing contract hold — see
+// [RunUndoLog]: the log reads in *written* order even where the work that filled
+// it completed in some other order, so reversing it is reverse-written order.
+// Issue #418 (slice 0.5) decided that contract explicitly: completion order is
+// the one thing concurrency promises is never observable, and the undo stack
+// must not become the place it leaks. A parent that appended children as they
+// finished instead of by their position would pass every sequential test and
+// unwind a `parallel:` differently from one run to the next.
 func (l *UndoLog) Append(child *UndoLog) {
 	if l == nil || child == nil {
 		return
@@ -154,12 +163,21 @@ type UndoResult struct {
 // list. Registration order and not completion *time*: nothing here reads a clock,
 // and a clock would not survive replay anyway.
 //
-// The two orders coincide today because a compensation may only be written at
-// [UndoScopeTopLevel], [UndoScopeCall] or [UndoScopeLoop], and both drivers run
-// all three strictly in order — a call's own body runs to completion, in
-// declaration order, before the step after the call does, and a `loop:` runs one
-// iteration to completion before it evaluates `until:` and starts the next. See
-// [CheckUndoPlacement] for the one placement that is refused and why.
+// Issue #418 (slice 0.5) states the resulting author-facing contract in one
+// sentence: `undo:` unwinds in reverse *written* order, never reverse completion
+// order. Registration decides membership — a step that never succeeded has
+// nothing to undo — and the text decides the order of what registered. In the
+// sequential placements ([UndoScopeTopLevel], [UndoScopeCall], [UndoScopeLoop])
+// registration order and written order coincide, because both drivers run those
+// strictly in order — a call's own body runs to completion, in declaration
+// order, before the step after the call does, and a `loop:` runs one iteration
+// to completion before it evaluates `until:` and starts the next. In the
+// concurrent placement ([UndoScopeConcurrent]) they would *not* coincide if the
+// log were appended as children finished, which is why [UndoLog.Append] merges
+// each child's private log by its structural position: by the time this
+// function reverses the log, the log already reads in written order, and
+// completion order — the one thing concurrency promises is never observable —
+// cannot leak out through the unwind.
 //
 // A loop body registering once per iteration is the case where "reverse of
 // registration" says something the declaration list cannot: three iterations of
@@ -413,16 +431,17 @@ const (
 // IntoCall reports the placement a callee's own steps run at, given the
 // placement of the `call:` step that reaches them.
 //
-// Not always [UndoScopeCall]. A call is transparent to whatever restriction
-// already applies to the scope it sits in — it does not launder one away. A
-// call reached from the top level, from another call's body, or from a `loop:`
-// body composes onto the same sequential, well-ordered stack
-// ([UndoScopeCall]); a call reached from inside a `for_each` body or a
-// `parallel` branch stays exactly as refused as a bare task step there would
-// be, because nothing about wrapping concurrent work in a call changes why it
-// was refused — a callee's steps still run once per branch or once per
-// iteration, in the same scope that made registration order undefined in the
-// first place.
+// Not always [UndoScopeCall]. A call is transparent to whatever scope already
+// applies where it sits — it does not launder one away. A call reached from
+// the top level, from another call's body, or from a `loop:` body composes
+// onto the same sequential, well-ordered stack ([UndoScopeCall]); a call
+// reached from inside a `for_each` body or a `parallel` branch stays
+// [UndoScopeConcurrent], exactly as a bare task step there is, because nothing
+// about wrapping concurrent work in a call changes what makes it concurrent —
+// a callee's steps still run once per branch or once per iteration, so their
+// registrations belong in that child's private log and take the child's
+// structural position at the merge, never a position of their own on the
+// run-level log.
 //
 // [UndoScopeLoop] composing to [UndoScopeCall] rather than passing through is
 // #253, and it is not a weakening of the rule above: a loop body is an
