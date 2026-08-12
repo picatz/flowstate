@@ -7,6 +7,10 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/operators"
+	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -31,6 +35,28 @@ import (
 // the corpus is has() doing the job it keeps. `has(p) && !p` is not the negated
 // twin — it asks "answered no", not "not answered yes" — and is untouched.
 //
+// # A textual match proposes; the parse tree decides
+//
+// The byte patterns below can only see bytes, and an operand boundary is not a
+// property of bytes. In `has(p.q) && p.q == false`, `==` binds tighter than
+// `&&`, so the substring `has(p.q) && p.q` is not a node of the tree — the tree
+// is `has(p.q) && (p.q == false)` — and splicing `p.?q.orValue(false)` over
+// that substring reverses the gate: with the field absent, the original
+// short-circuits to false and the splice evaluates `false == false`, true.
+// That is precisely the corruption class CLAUDE.md's rewriter section records:
+// the result still parses, still validates, and computes something else.
+//
+// So no splice is trusted on the strength of its neighbouring bytes. The
+// original expression is parsed with the profile's environment — where the
+// grammar's answer about what `&&` binds is a fact rather than a guess — and
+// the idiom is rewritten a second time on that tree ([expectedOptionalAST]).
+// The spliced text is accepted only when it parses back to exactly the tree the
+// structural rewrite produced ([equalParsedExpr]); any disagreement, in either
+// direction, leaves the source untouched. Conjunction chains are compared
+// flattened, because `&&` is associative and cel-go balances a long chain
+// rather than left-nesting it, so the same expression can nest differently on
+// the two sides of the comparison.
+//
 // # Why this one rewrite does not need a scope
 //
 // The rewriter-safety history in CLAUDE.md is about names: both corruptions came
@@ -40,8 +66,8 @@ import (
 // binding `has(x.y) && x.y` read, so the scope question that makes rooting hard
 // does not arise. What it needs instead is *syntax* honesty: a match inside a
 // string literal is prose, so literals are masked before matching; and the
-// rewritten expression is re-parsed before it is accepted, so a splice this
-// reasoning missed cannot leave a file that no longer parses.
+// rewritten expression must parse back to the tree described above, so a splice
+// this reasoning missed cannot leave a file that means something else.
 //
 // # Why it runs only while a file is being brought forward
 //
@@ -88,7 +114,12 @@ func rewriteOptionalReads(src string) (string, bool) {
 	if !strings.Contains(src, "has(") {
 		return src, false
 	}
-	if !parsesInProfile(src) {
+	env := profileEnv()
+	if env == nil {
+		return src, false
+	}
+	orig, ok := parseInProfile(env, src)
+	if !ok {
 		// Not a valid expression, and not this rewriter's problem to report — the
 		// validator says it far better. Left alone rather than half-rewritten.
 		return src, false
@@ -111,8 +142,21 @@ func rewriteOptionalReads(src string) (string, bool) {
 	if out == src {
 		return src, false
 	}
-	if !parsesInProfile(out) {
-		// A splice the reasoning above missed. Nothing is written on a guess.
+
+	// The textual match proposed; the grammar decides. The idiom is rewritten a
+	// second time on the parse tree, where an operand's extent is a fact, and
+	// the splice is accepted only when its result parses to exactly that tree —
+	// see the package comment's operand-boundary section for the reversal this
+	// refuses.
+	expected, transformed := expectedOptionalAST(env, orig)
+	if !transformed {
+		return src, false
+	}
+	got, ok := parseInProfile(env, out)
+	if !ok {
+		return src, false
+	}
+	if !equalParsedExpr(got, expected) {
 		return src, false
 	}
 	return out, true
@@ -170,11 +214,18 @@ func rewriteConjunctions(src, masked string) string {
 	return out
 }
 
-// cleanNeighbours reports whether the characters around a match leave it whole:
-// nothing before that would bind to its start, nothing after that would select
-// from, call, or index its end. bareHas says the match starts at `has`, whose
-// one dangerous neighbour is a `!` — `!has(P) && P` negates the guard alone, and
-// rewriting the conjunction under it would negate the read instead.
+// cleanNeighbours screens out matches whose adjacent characters visibly extend
+// them: something before that would bind to the start, something after that
+// would select from, call, or index the end. bareHas says the match starts at
+// `has`, whose one dangerous neighbour is a `!` — `!has(P) && P` negates the
+// guard alone, and rewriting the conjunction under it would negate the read
+// instead.
+//
+// This is a proposer-side screen, not the decider: bytes cannot see operand
+// boundaries (` == false` after a match extends it just as surely as `.` does),
+// so whether a match is whole is settled by the parse-tree comparison in
+// [rewriteOptionalReads], which refuses every splice this screen lets through
+// wrongly.
 func cleanNeighbours(masked string, from, through int, bareHas bool) bool {
 	if from > 0 {
 		before := masked[from-1]
@@ -208,20 +259,373 @@ func optionalSpelling(path string) string {
 	return path[:i] + ".?" + path[i+1:]
 }
 
-// parsesInProfile reports whether source parses in the profile's environment —
-// the same environment the compiler parses with, so the two agree about what
-// the language is (see [rootedUnder] for why that identity matters).
-func parsesInProfile(src string) bool {
+// profileEnv returns the profile's environment — the same environment the
+// compiler parses with, so the two agree about what the language is (see
+// [rootedUnder] for why that identity matters) — or nil when it cannot be
+// built, which refuses the rewrite rather than acting on a guess.
+func profileEnv() *cel.Env {
 	libs, err := v1.ProfileLibraries(v1.CurrentProfile)
 	if err != nil {
-		return false
+		return nil
 	}
 	env, err := v1.DefaultEvaluator().Env(libs...)
 	if err != nil {
+		return nil
+	}
+	return env
+}
+
+// parseInProfile parses source in the profile's environment, answering the
+// parse tree in the protobuf form [equalParsedExpr] compares.
+func parseInProfile(env *cel.Env, src string) (*exprpb.Expr, bool) {
+	parsed, issues := env.Parse(src)
+	if issues != nil && issues.Err() != nil {
+		return nil, false
+	}
+	checked, err := cel.AstToParsedExpr(parsed)
+	if err != nil {
+		return nil, false
+	}
+	return checked.GetExpr(), true
+}
+
+// expectedOptionalAST rewrites the guarded-read idiom on the parse tree itself,
+// reporting whether anything matched. The result is what a textual splice
+// *claims* to mean, built where an operand's extent cannot be misread; the
+// caller accepts a splice only when its parse equals this tree.
+//
+// The whole-expression ternary is handled first and alone, mirroring
+// [rewriteOptionalReads]: when the root is `has(P) ? P : D`, the default D is
+// grafted into `orValue` untouched — nothing inside D is rewritten in the same
+// round, and the fixed-point loop sees D's own idioms on the next parse.
+func expectedOptionalAST(env *cel.Env, root *exprpb.Expr) (*exprpb.Expr, bool) {
+	if call := root.GetCallExpr(); call.GetFunction() == operators.Conditional &&
+		call.GetTarget() == nil && len(call.GetArgs()) == 3 {
+		if guard, ok := testOnlySelectPath(call.GetArgs()[0]); ok {
+			if read, ok := plainSelectPath(call.GetArgs()[1]); ok && read == guard {
+				repl, ok := parseInProfile(env, optionalSpelling(guard)+".orValue(false)")
+				if !ok || len(repl.GetCallExpr().GetArgs()) != 1 {
+					return root, false
+				}
+				repl.GetCallExpr().Args[0] = call.GetArgs()[2]
+				return repl, true
+			}
+		}
+	}
+	return transformOptionalIdioms(env, root)
+}
+
+// transformOptionalIdioms walks one parsed expression and rewrites every
+// `has(P) && P` conjunction pair into optional traversal, reporting whether
+// any pair matched. Unchanged nodes are shared, changed ones rebuilt; the
+// input is never mutated.
+func transformOptionalIdioms(env *cel.Env, e *exprpb.Expr) (*exprpb.Expr, bool) {
+	if e == nil {
+		return nil, false
+	}
+	switch kind := e.GetExprKind().(type) {
+	case *exprpb.Expr_CallExpr:
+		if op, ok := logicOp(e); ok && op == operators.LogicalAnd {
+			return transformConjunctionChain(env, e)
+		}
+		call := kind.CallExpr
+		target, targetChanged := transformOptionalIdioms(env, call.GetTarget())
+		args, argsChanged := transformOptionalExprs(env, call.GetArgs())
+		if !targetChanged && !argsChanged {
+			return e, false
+		}
+		return &exprpb.Expr{ExprKind: &exprpb.Expr_CallExpr{CallExpr: &exprpb.Expr_Call{
+			Target:   target,
+			Function: call.GetFunction(),
+			Args:     args,
+		}}}, true
+	case *exprpb.Expr_SelectExpr:
+		sel := kind.SelectExpr
+		operand, changed := transformOptionalIdioms(env, sel.GetOperand())
+		if !changed {
+			return e, false
+		}
+		return &exprpb.Expr{ExprKind: &exprpb.Expr_SelectExpr{SelectExpr: &exprpb.Expr_Select{
+			Operand:  operand,
+			Field:    sel.GetField(),
+			TestOnly: sel.GetTestOnly(),
+		}}}, true
+	case *exprpb.Expr_ListExpr:
+		elements, changed := transformOptionalExprs(env, kind.ListExpr.GetElements())
+		if !changed {
+			return e, false
+		}
+		return &exprpb.Expr{ExprKind: &exprpb.Expr_ListExpr{ListExpr: &exprpb.Expr_CreateList{
+			Elements:        elements,
+			OptionalIndices: kind.ListExpr.GetOptionalIndices(),
+		}}}, true
+	case *exprpb.Expr_StructExpr:
+		st := kind.StructExpr
+		changed := false
+		entries := make([]*exprpb.Expr_CreateStruct_Entry, len(st.GetEntries()))
+		for i, entry := range st.GetEntries() {
+			key, keyChanged := transformOptionalIdioms(env, entry.GetMapKey())
+			value, valueChanged := transformOptionalIdioms(env, entry.GetValue())
+			if !keyChanged && !valueChanged {
+				entries[i] = entry
+				continue
+			}
+			changed = true
+			next := &exprpb.Expr_CreateStruct_Entry{Value: value, OptionalEntry: entry.GetOptionalEntry()}
+			if _, isField := entry.GetKeyKind().(*exprpb.Expr_CreateStruct_Entry_FieldKey); isField {
+				next.KeyKind = &exprpb.Expr_CreateStruct_Entry_FieldKey{FieldKey: entry.GetFieldKey()}
+			} else {
+				next.KeyKind = &exprpb.Expr_CreateStruct_Entry_MapKey{MapKey: key}
+			}
+			entries[i] = next
+		}
+		if !changed {
+			return e, false
+		}
+		return &exprpb.Expr{ExprKind: &exprpb.Expr_StructExpr{StructExpr: &exprpb.Expr_CreateStruct{
+			MessageName: st.GetMessageName(),
+			Entries:     entries,
+		}}}, true
+	case *exprpb.Expr_ComprehensionExpr:
+		c := kind.ComprehensionExpr
+		iterRange, changedRange := transformOptionalIdioms(env, c.GetIterRange())
+		accuInit, changedInit := transformOptionalIdioms(env, c.GetAccuInit())
+		loopCondition, changedCond := transformOptionalIdioms(env, c.GetLoopCondition())
+		loopStep, changedStep := transformOptionalIdioms(env, c.GetLoopStep())
+		result, changedResult := transformOptionalIdioms(env, c.GetResult())
+		if !changedRange && !changedInit && !changedCond && !changedStep && !changedResult {
+			return e, false
+		}
+		return &exprpb.Expr{ExprKind: &exprpb.Expr_ComprehensionExpr{ComprehensionExpr: &exprpb.Expr_Comprehension{
+			IterVar:       c.GetIterVar(),
+			IterVar2:      c.GetIterVar2(),
+			IterRange:     iterRange,
+			AccuVar:       c.GetAccuVar(),
+			AccuInit:      accuInit,
+			LoopCondition: loopCondition,
+			LoopStep:      loopStep,
+			Result:        result,
+		}}}, true
+	}
+	return e, false
+}
+
+// transformOptionalExprs maps [transformOptionalIdioms] over a slice, sharing
+// it when nothing underneath changed.
+func transformOptionalExprs(env *cel.Env, exprs []*exprpb.Expr) ([]*exprpb.Expr, bool) {
+	changed := false
+	out := make([]*exprpb.Expr, len(exprs))
+	for i, e := range exprs {
+		next, c := transformOptionalIdioms(env, e)
+		out[i] = next
+		changed = changed || c
+	}
+	if !changed {
+		return exprs, false
+	}
+	return out, true
+}
+
+// transformConjunctionChain rewrites the idiom inside one `&&` chain. The
+// chain is flattened first — `&&` is associative, and cel-go balances a long
+// chain rather than left-nesting it, so "the operand after the guard" is only
+// readable on the flat list — and an adjacent (has(P), P) pair anywhere on it
+// is the idiom: `a && has(x.y) && x.y` guards the same read `has(x.y) && x.y`
+// guards, whichever way the parser chose to nest it.
+func transformConjunctionChain(env *cel.Env, e *exprpb.Expr) (*exprpb.Expr, bool) {
+	ops := flattenLogic(e, operators.LogicalAnd)
+	changed := false
+	out := make([]*exprpb.Expr, 0, len(ops))
+	for i := 0; i < len(ops); i++ {
+		if i+1 < len(ops) {
+			if guard, ok := testOnlySelectPath(ops[i]); ok {
+				if read, ok := plainSelectPath(ops[i+1]); ok && read == guard {
+					if repl, ok := parseInProfile(env, optionalSpelling(guard)+".orValue(false)"); ok {
+						out = append(out, repl)
+						changed = true
+						i++
+						continue
+					}
+				}
+			}
+		}
+		op, c := transformOptionalIdioms(env, ops[i])
+		out = append(out, op)
+		changed = changed || c
+	}
+	if !changed {
+		return e, false
+	}
+	if len(out) == 1 {
+		return out[0], true
+	}
+	conj := out[0]
+	for _, op := range out[1:] {
+		conj = &exprpb.Expr{ExprKind: &exprpb.Expr_CallExpr{CallExpr: &exprpb.Expr_Call{
+			Function: operators.LogicalAnd,
+			Args:     []*exprpb.Expr{conj, op},
+		}}}
+	}
+	return conj, true
+}
+
+// logicOp reports the operator when e is a bare `&&` or `||` call.
+func logicOp(e *exprpb.Expr) (string, bool) {
+	call := e.GetCallExpr()
+	if call == nil || call.GetTarget() != nil || len(call.GetArgs()) != 2 {
+		return "", false
+	}
+	switch fn := call.GetFunction(); fn {
+	case operators.LogicalAnd, operators.LogicalOr:
+		return fn, true
+	}
+	return "", false
+}
+
+// flattenLogic returns e's operand list under one associative operator,
+// unfolding however the parser chose to nest the chain.
+func flattenLogic(e *exprpb.Expr, op string) []*exprpb.Expr {
+	if found, ok := logicOp(e); !ok || found != op {
+		return []*exprpb.Expr{e}
+	}
+	args := e.GetCallExpr().GetArgs()
+	return append(flattenLogic(args[0], op), flattenLogic(args[1], op)...)
+}
+
+// testOnlySelectPath returns the dotted path a has() guard asks about —
+// `has(a.b.c)` expands to a test-only select of `a.b.c` — or refuses anything
+// that is not a has() over a plain select path.
+func testOnlySelectPath(e *exprpb.Expr) (string, bool) {
+	sel := e.GetSelectExpr()
+	if sel == nil || !sel.GetTestOnly() {
+		return "", false
+	}
+	prefix, ok := selectChainPath(sel.GetOperand())
+	if !ok {
+		return "", false
+	}
+	return prefix + "." + sel.GetField(), true
+}
+
+// plainSelectPath returns the dotted path of a plain read — an identifier
+// followed by field selects, no call, no index, no has() — or refuses.
+func plainSelectPath(e *exprpb.Expr) (string, bool) {
+	sel := e.GetSelectExpr()
+	if sel == nil || sel.GetTestOnly() {
+		return "", false
+	}
+	prefix, ok := selectChainPath(sel.GetOperand())
+	if !ok {
+		return "", false
+	}
+	return prefix + "." + sel.GetField(), true
+}
+
+// selectChainPath spells out an ident-rooted select chain, refusing anything
+// that is not one.
+func selectChainPath(e *exprpb.Expr) (string, bool) {
+	switch kind := e.GetExprKind().(type) {
+	case *exprpb.Expr_IdentExpr:
+		return kind.IdentExpr.GetName(), true
+	case *exprpb.Expr_SelectExpr:
+		if kind.SelectExpr.GetTestOnly() {
+			return "", false
+		}
+		prefix, ok := selectChainPath(kind.SelectExpr.GetOperand())
+		if !ok {
+			return "", false
+		}
+		return prefix + "." + kind.SelectExpr.GetField(), true
+	}
+	return "", false
+}
+
+// equalParsedExpr reports whether two parsed expressions are the same tree,
+// ignoring IDs — the one part of a parse that depends on where in a larger
+// text the expression sat. `&&` and `||` chains are compared flattened: the
+// parser balances a long chain, so the same source can nest differently on
+// the two sides, and associativity is what makes the flat comparison the
+// true one.
+func equalParsedExpr(a, b *exprpb.Expr) bool {
+	if a == nil || b == nil {
+		return (a == nil) == (b == nil)
+	}
+	if op, ok := logicOp(a); ok {
+		other, okB := logicOp(b)
+		if !okB || op != other {
+			return false
+		}
+		return equalParsedExprs(flattenLogic(a, op), flattenLogic(b, op))
+	}
+	if _, ok := logicOp(b); ok {
 		return false
 	}
-	_, issues := env.Parse(src)
-	return issues == nil || issues.Err() == nil
+	switch ka := a.GetExprKind().(type) {
+	case *exprpb.Expr_ConstExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_ConstExpr)
+		return ok && proto.Equal(ka.ConstExpr, kb.ConstExpr)
+	case *exprpb.Expr_IdentExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_IdentExpr)
+		return ok && ka.IdentExpr.GetName() == kb.IdentExpr.GetName()
+	case *exprpb.Expr_SelectExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_SelectExpr)
+		return ok && ka.SelectExpr.GetField() == kb.SelectExpr.GetField() &&
+			ka.SelectExpr.GetTestOnly() == kb.SelectExpr.GetTestOnly() &&
+			equalParsedExpr(ka.SelectExpr.GetOperand(), kb.SelectExpr.GetOperand())
+	case *exprpb.Expr_CallExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_CallExpr)
+		return ok && ka.CallExpr.GetFunction() == kb.CallExpr.GetFunction() &&
+			equalParsedExpr(ka.CallExpr.GetTarget(), kb.CallExpr.GetTarget()) &&
+			equalParsedExprs(ka.CallExpr.GetArgs(), kb.CallExpr.GetArgs())
+	case *exprpb.Expr_ListExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_ListExpr)
+		return ok && slices.Equal(ka.ListExpr.GetOptionalIndices(), kb.ListExpr.GetOptionalIndices()) &&
+			equalParsedExprs(ka.ListExpr.GetElements(), kb.ListExpr.GetElements())
+	case *exprpb.Expr_StructExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_StructExpr)
+		if !ok || ka.StructExpr.GetMessageName() != kb.StructExpr.GetMessageName() ||
+			len(ka.StructExpr.GetEntries()) != len(kb.StructExpr.GetEntries()) {
+			return false
+		}
+		for i, entry := range ka.StructExpr.GetEntries() {
+			other := kb.StructExpr.GetEntries()[i]
+			if entry.GetFieldKey() != other.GetFieldKey() ||
+				entry.GetOptionalEntry() != other.GetOptionalEntry() ||
+				!equalParsedExpr(entry.GetMapKey(), other.GetMapKey()) ||
+				!equalParsedExpr(entry.GetValue(), other.GetValue()) {
+				return false
+			}
+		}
+		return true
+	case *exprpb.Expr_ComprehensionExpr:
+		kb, ok := b.GetExprKind().(*exprpb.Expr_ComprehensionExpr)
+		if !ok {
+			return false
+		}
+		ca, cb := ka.ComprehensionExpr, kb.ComprehensionExpr
+		return ca.GetIterVar() == cb.GetIterVar() &&
+			ca.GetIterVar2() == cb.GetIterVar2() &&
+			ca.GetAccuVar() == cb.GetAccuVar() &&
+			equalParsedExpr(ca.GetIterRange(), cb.GetIterRange()) &&
+			equalParsedExpr(ca.GetAccuInit(), cb.GetAccuInit()) &&
+			equalParsedExpr(ca.GetLoopCondition(), cb.GetLoopCondition()) &&
+			equalParsedExpr(ca.GetLoopStep(), cb.GetLoopStep()) &&
+			equalParsedExpr(ca.GetResult(), cb.GetResult())
+	}
+	return false
+}
+
+// equalParsedExprs compares two expression slices element-wise.
+func equalParsedExprs(a, b []*exprpb.Expr) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !equalParsedExpr(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // maskCELLiterals blanks the contents of string and bytes literals (and `//`

@@ -117,6 +117,11 @@ func TestFixLeavesNearMissIdiomsAloneWhileStampingTheEdition(t *testing.T) {
 		`${!has(steps.a.payload.ok) && steps.a.payload.ok}`,  // negated guard, bare read
 		`${has(steps.a.payload.ok) && steps.a.payload.okay}`, // paths differ
 		`${"has(a.b) && a.b"}`,                               // prose
+		// The operand-boundary reversal (PR #483's P1): `==` binds tighter than
+		// `&&`, so the read is `steps.a.payload.ok == false` and the textual
+		// idiom is a fragment of it; rewriting would turn an absent field's
+		// false into true.
+		`${has(steps.a.payload.ok) && steps.a.payload.ok == false}`,
 	}
 
 	for _, expr := range expressions {
