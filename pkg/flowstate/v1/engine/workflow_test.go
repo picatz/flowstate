@@ -1784,8 +1784,7 @@ func TestRunWorkflowUndoOnCancellation(t *testing.T) {
 			require.Equal(t, test.Summary, summary,
 				"the cancelled run does not carry the account of what was compensated")
 
-			require.Equal(t, test.Recorded, recorded(),
-				"the effects that happened, and their order, are not what compensating a cancelled run should have produced")
+			tests.AssertCancellationRecorded(t, test, recorded())
 		})
 	}
 }

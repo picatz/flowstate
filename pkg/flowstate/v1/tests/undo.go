@@ -566,6 +566,39 @@ func UndoCases(base string) []UndoCase {
 			Recorded:        []string{"kaboom", "right", "undo-right"},
 			UnorderedPrefix: 2,
 		},
+		{
+			// A compensation's inputs are a reference site, so they join like any
+			// other. `later` names nothing outstanding in its own task — its URL is
+			// a literal — and its `undo:` names `steps.a.said`, which is the async
+			// step still in flight. The join analysis has to see that, because the
+			// order of events is what makes missing it unrecoverable: the step runs,
+			// its effect happens, and *then* the compensation is resolved against a
+			// scope that does not hold `a` yet. The run fails there having performed
+			// an effect it has no registered way to take back, which is the one
+			// outcome the undo invariant exists to forbid.
+			//
+			// With the join in place `a` is published before `later` runs, so `a`'s
+			// token arrives first and the compensation resolves — the order is exact
+			// rather than a set, which is itself the assertion.
+			Name: "a compensation input joins the async step it names",
+			Workflow: &v1.Workflow{Name: "undo-async-undo-input", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				async(records("a", base, "a")),
+				func() *v1.Node {
+					node := records("later", base, "later")
+					node.Undo = &v1.Compensation{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"url": v1.NewExpr(`"` + base + `/do/undo-later-" + steps.a.said`),
+						},
+					}}
+
+					return node
+				}(),
+				fails("boom", base, "boom"),
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "later"`,
+			Recorded: []string{"a", "later", "boom", "undo-later-a"},
+		},
 	}
 }
 
@@ -623,6 +656,29 @@ type UndoCancellationCase struct {
 
 	// Recorded is every token the recording server must have received, in order.
 	Recorded []string
+
+	// UnorderedPrefix is how many leading entries of Recorded are compared as a
+	// set rather than a sequence, exactly as [UndoCase.UnorderedPrefix] is. Zero
+	// for every sequential case; a case with an `async:` step sets it to the
+	// number of work requests in flight together, because which of them reaches
+	// the server first is the durable driver's scheduler's choice and no claim of
+	// this corpus. The compensations that follow the prefix stay order-exact,
+	// which is the claim. Use [AssertCancellationRecorded] rather than comparing
+	// Recorded directly.
+	UnorderedPrefix int
+}
+
+// AssertCancellationRecorded compares what the recording server received against a
+// cancellation case's expectation. One comparison, shared by both drivers, for the
+// reason [AssertRecorded] is: the two must not come to disagree about what "in
+// order" means on the path where they have the least code in common.
+func AssertCancellationRecorded(t testing.TB, c UndoCancellationCase, got []string) {
+	t.Helper()
+
+	AssertRecorded(t, UndoCase{
+		Recorded:        c.Recorded,
+		UnorderedPrefix: c.UnorderedPrefix,
+	}, got)
 }
 
 // parks returns a step that waits far longer than any test will, so that a
@@ -733,6 +789,36 @@ func UndoCancellationCases(base string) []UndoCancellationCase {
 			Summary: `; compensation ran in reverse order: could not undo "second": ` +
 				notFound("undo-b") + `, undid "first"`,
 			Recorded: []string{"a", "b", "z", "undo-b", "undo-a"},
+		},
+		{
+			// The two features joined rather than each half: `async:` and
+			// cancellation. `a` is started where it is written, nothing reads it, and
+			// the cancellation arrives while it is still the scope's outstanding
+			// work — so what takes it back is the scope's end draining what it
+			// started on a path that is leaving, followed by a compensation running
+			// in a scope the cancellation does not reach. Either half missing loses
+			// the same thing: an effect that happened, with nothing taken back.
+			//
+			// [UndoCases] has the failure-path twin of this ("an async step nothing
+			// joined is still compensated"). Cancellation gets its own because it is
+			// the path where the drain and the disconnected scope have to compose,
+			// and the corpus had no case where an async step was outstanding when a
+			// run was stopped.
+			Name: "cancelling a run compensates an async step nothing joined",
+			Workflow: &v1.Workflow{
+				Name:    "undo-cancel-async-unjoined",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					async(undoing(records("a", base, "a"), base, "/do/undo")),
+					reaches("reached", base, "z"),
+					parks("hold"),
+				},
+			},
+			Summary: `; compensation ran in reverse order: undid "a"`,
+			// The two work requests overlap on the durable driver, so which arrives
+			// first is the scheduler's; the compensation after them is the claim.
+			Recorded:        []string{"a", "z", "undo-a"},
+			UnorderedPrefix: 2,
 		},
 	}
 }

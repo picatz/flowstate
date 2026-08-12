@@ -235,6 +235,42 @@ func TestCompactOutputsForRemainingSteps_Table(t *testing.T) {
 	}
 }
 
+// TestCompactOutputsForRemainingSteps_UndoInputs is the neighbouring hole behind
+// #418 slice 1's compensation-join finding, in the caller that suffers from it
+// worst.
+//
+// A compensation's inputs are resolved at the instant its step *succeeds*, so an
+// output only they name has to survive the handover exactly as one a task's own
+// inputs name does. Missing it prunes the output at Continue-As-New and fails the
+// run in the next segment at the moment it registers the compensation — after the
+// step's effect has already happened, which is the one outcome the undo invariant
+// forbids. It is also precisely the failure the schema comment on `PendingUndo`
+// predicts for "a fifth reference site that walk does not know about".
+func TestCompactOutputsForRemainingSteps_UndoInputs(t *testing.T) {
+	prev := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"a": {NamedValues: map[string]*v1.Value{"result": v1.NewLiteral("a")}},
+	}}
+
+	// The remaining step's own task names nothing; only its `undo:` does.
+	steps := []*v1.Node{
+		{Id: "s0", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}},
+		{
+			Id:   "s1",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")}}},
+			Undo: &v1.Compensation{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
+				"message": v1.NewExpr("a.result"),
+			}}},
+		},
+	}
+
+	trimmed := compactOutputsForRemainingSteps(steps, 1, prev, nil)
+	require.NotNil(t, trimmed)
+
+	outs, kept := trimmed.StepValues["a"]
+	require.True(t, kept, "an output only a remaining step's `undo:` names was pruned at the handover")
+	require.Contains(t, outs.GetNamedValues(), "result")
+}
+
 // Test_activityError_retryAfter covers carrying a server's Retry-After to the
 // substrate, and the two ways that could go wrong.
 //

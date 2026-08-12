@@ -290,11 +290,11 @@ func CollectValueRefs(value *Value, prev *Workflow_StepOutputs, refs map[string]
 // CollectNodeRefs records every step output a node could still need.
 //
 // Every expression site in the node counts, not only a task's inputs: a
-// step's condition, a step's own `vars:`, a loop's item list and everything
-// in its body, every branch of a parallel block, and a wait's own
-// expression. Dropping an output one of those needs is a correctness
-// failure; keeping one it turns out not to need only costs payload. So when
-// in doubt this keeps more.
+// step's condition, a step's own `vars:`, a step's `undo:` inputs, a loop's
+// item list and everything in its body, every branch of a parallel block,
+// and a wait's own expression. Dropping an output one of those needs is a
+// correctness failure; keeping one it turns out not to need only costs
+// payload. So when in doubt this keeps more.
 //
 // A call's own body is deliberately excluded — only its arguments are
 // walked. An argument is resolved in the *caller's* scope, so a reference
@@ -318,6 +318,38 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 	// *properties* rather than parts of one kind of work: a `for_each` and a
 	// `wait` carry `vars:` exactly as a task step does.
 	for _, value := range node.GetVars() {
+		CollectValueRefs(value, prev, refs)
+	}
+
+	// A compensation's inputs, which are a step property too, and the reference
+	// site this walk was missing.
+	//
+	// An `undo:` is resolved at the instant its step *succeeds*, in that step's
+	// own scope — see [UndoRegistrationFor] — so every output it names has to be
+	// there at that moment, exactly as a task's own inputs do. It is a later
+	// moment than the step's inputs but the same run and the same scope, which
+	// is what makes it belong here rather than anywhere special.
+	//
+	// All three callers of this walk had the same blind spot behind that
+	// omission, and each fails in a way that ends with an effect performed and no
+	// compensation registered for it:
+	//
+	//   - [AsyncJoinTargets]. A step whose body names nothing outstanding but
+	//     whose `undo:` names an async step joined nothing, ran, succeeded, and
+	//     then could not resolve its own compensation against an output that was
+	//     still in flight. #418 slice 1's first P1.
+	//   - Continue-As-New compaction (the durable driver's
+	//     `compactOutputsForFrames`). An output only a remaining step's `undo:`
+	//     names was pruned at the handover, and the step failed registering its
+	//     compensation in the next segment — the failure mode that schema comment
+	//     on [PendingUndo] predicts for "a fifth reference site that walk does
+	//     not know about", arriving by the one route resolution-at-registration
+	//     did not close.
+	//   - [LoopResultsReferenced]. A loop's `results` read only by a later step's
+	//     `undo:` was suppressed as unreferenced, with the same ending.
+	//
+	// One walk, so one fix. Growing [Compensation] means growing this.
+	for _, value := range node.GetUndo().GetTask().GetInputs() {
 		CollectValueRefs(value, prev, refs)
 	}
 
