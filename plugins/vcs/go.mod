@@ -1,6 +1,6 @@
 module github.com/picatz/flowstate/plugins/vcs
 
-go 1.25.4
+go 1.26.0
 
 toolchain go1.26.5
 
