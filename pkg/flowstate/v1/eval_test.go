@@ -483,6 +483,31 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowSwitch covers `switch:` in the local driver.
+//
+// The engine package runs the identical [tests.SwitchCases] against the durable
+// driver. The pairing is the point: which branch a value takes, what the record
+// says, and that an unresolvable discriminant fails rather than defaulting are
+// the whole observable surface of a dispatch, and every one is decided by the
+// one [v1.SelectSwitchCase] both drivers call.
+func TestRunWorkflowSwitch(t *testing.T) {
+	for _, test := range tests.SwitchCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(out), "outputs predicate failed: %v", out)
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsRefused is the negative direction of the same corpus: a
 // submission that must be refused before anything runs.
 //

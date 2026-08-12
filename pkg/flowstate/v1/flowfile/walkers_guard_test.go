@@ -35,6 +35,15 @@ func sameScopeContainers() map[string]func(body []*v1.Node) *v1.Node {
 				Branches: []*v1.Parallel_Branch{{Steps: body}},
 			}}}
 		},
+		"switch": func(body []*v1.Node) *v1.Node {
+			// The probe body sits in the default slot so a walker that descends
+			// only the cases still fails; see the v1 guard's builder.
+			return &v1.Node{Id: "c_switch", Kind: &v1.Node_Switch{Switch: &v1.Switch{
+				Value:   v1.NewExpr("'x'"),
+				Cases:   []*v1.Switch_Case{{Values: []*v1.Value{v1.NewLiteral("y")}}},
+				Default: &v1.Switch_Default{Steps: body},
+			}}}
+		},
 	}
 }
 

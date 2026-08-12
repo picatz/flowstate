@@ -263,6 +263,13 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 			step = append(step, yaml.MapItem{Key: "with", Value: value})
 		}
 
+	case *v1.Node_Switch:
+		value, err := switchToYAML(kind.Switch)
+		if err != nil {
+			return nil, fmt.Errorf("step %q switch: %w", node.GetId(), err)
+		}
+		step = append(step, yaml.MapItem{Key: "switch", Value: value})
+
 	case *v1.Node_Value:
 		// Through [exprValueToYAML], the same writer the condition above uses,
 		// because the parser reads both positions the same fence-optional way.
@@ -414,6 +421,66 @@ func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
 		return nil, err
 	}
 	return append(out, yaml.MapItem{Key: "steps", Value: steps}), nil
+}
+
+// switchToYAML writes a `switch:` node in reading order: the value it
+// dispatches on, the cases, then the default when one exists.
+//
+// Built key-by-key, because a key nothing writes back is a key `flow fix`
+// silently removes. A single-value case is written as the scalar and a
+// multi-value case as the list, which under fmt's semantic contract makes
+// `case: [x]` canonicalize to `case: x` — legitimate for fmt, and `flow fix`'s
+// byte-for-byte surface never rewrites a file it is not changing. `steps:` is
+// always written, `[]` included: an empty body is written-down ignoring, and
+// dropping the key would turn it into a parse error on the way back in.
+func switchToYAML(sw *v1.Switch) (yaml.MapSlice, error) {
+	value, err := exprValueToYAML(sw.GetValue())
+	if err != nil {
+		return nil, fmt.Errorf("value: %w", err)
+	}
+	out := yaml.MapSlice{{Key: "value", Value: value}}
+
+	cases := make([]any, 0, len(sw.GetCases()))
+	for i, c := range sw.GetCases() {
+		var caseValue any
+		values := c.GetValues()
+		if len(values) == 1 {
+			caseValue, err = inputValueToYAML(values[0])
+			if err != nil {
+				return nil, fmt.Errorf("case %d: %w", i+1, err)
+			}
+		} else {
+			list := make([]any, 0, len(values))
+			for j, v := range values {
+				element, err := inputValueToYAML(v)
+				if err != nil {
+					return nil, fmt.Errorf("case %d value %d: %w", i+1, j+1, err)
+				}
+				list = append(list, element)
+			}
+			caseValue = list
+		}
+
+		steps, err := stepsToYAML(c.GetSteps())
+		if err != nil {
+			return nil, fmt.Errorf("case %d: %w", i+1, err)
+		}
+		cases = append(cases, yaml.MapSlice{
+			{Key: "case", Value: caseValue},
+			{Key: "steps", Value: steps},
+		})
+	}
+	out = append(out, yaml.MapItem{Key: "cases", Value: cases})
+
+	if def := sw.GetDefault(); def != nil {
+		steps, err := stepsToYAML(def.GetSteps())
+		if err != nil {
+			return nil, fmt.Errorf("default: %w", err)
+		}
+		out = append(out, yaml.MapItem{Key: "default", Value: yaml.MapSlice{{Key: "steps", Value: steps}}})
+	}
+
+	return out, nil
 }
 
 // retryToYAML writes a retry policy, leaving out what was never set so that the

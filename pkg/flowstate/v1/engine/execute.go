@@ -521,6 +521,9 @@ func (e *executor) runNode(node *v1.Node, depth, susp int, descend bool) error {
 	case *v1.Node_Value:
 		return e.runValue(node, kind.Value)
 
+	case *v1.Node_Switch:
+		return e.runSwitch(node, kind.Switch, depth, susp)
+
 	default:
 		return &ErrRunFailed{Message: fmt.Sprintf("unsupported node kind: %T", node.Kind)}
 	}
@@ -544,6 +547,38 @@ func (e *executor) runValue(node *v1.Node, value *v1.Value) error {
 	}
 	e.scope.Outputs.StepValues[node.GetId()] = outputs
 
+	return nil
+}
+
+// runSwitch dispatches on one value and runs the body [v1.SelectSwitchCase]
+// picks — the identical function the local driver calls, so the two cannot
+// disagree about which branch a value takes or what the record says.
+//
+// The discriminant evaluates inline in workflow code, the same position `if:`
+// and a loop's `items:` already evaluate at, and the evaluated value goes on
+// the record under the step's id, which is the replay anchor: a replay
+// re-evaluates against the same recorded scope and takes the branch the record
+// says.
+//
+// The body runs at its own frame depth but a deeper *suspend* depth, so the
+// switch is never a suspension position: the taken body completes before any
+// Continue-As-New, exactly as a parallel branch's does, and a resume path can
+// therefore never point inside one. Waits inside a body still park and resume
+// normally — opacity is to suspension, not to waiting. The body runs on this
+// same executor against this same scope, which is what merges its step outputs
+// into the enclosing namespace the way parallel branches merge theirs; exactly
+// one body ran, so there is nothing to collide with.
+func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) error {
+	body, outputs, err := v1.SelectSwitchCase(context.Background(), sw, e.scope)
+	if err != nil {
+		return nodeFailed(err)
+	}
+
+	if err := e.runNodes(body, depth+1, susp+1); err != nil {
+		return err
+	}
+
+	e.scope.Outputs.StepValues[node.GetId()] = outputs
 	return nil
 }
 

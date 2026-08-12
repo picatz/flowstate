@@ -502,6 +502,12 @@ func countCompiledNodes(nodes []*v1.Node) int {
 			for _, branch := range kind.Parallel.GetBranches() {
 				n += countCompiledNodes(branch.GetSteps())
 			}
+		case *v1.Node_Switch:
+			// Every body counts, the default's included: which one runs is a
+			// runtime fact, and the expansion budget bounds what was compiled.
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				n += countCompiledNodes(body)
+			}
 		}
 	}
 	return n

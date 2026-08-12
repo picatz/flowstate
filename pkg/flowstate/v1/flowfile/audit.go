@@ -241,6 +241,11 @@ func (c *auditCollector) nodes(nodes []*v1.Node) {
 			for _, branch := range kind.Parallel.GetBranches() {
 				c.nodes(branch.GetSteps())
 			}
+		case *v1.Node_Switch:
+			c.site(id, "value", kind.Switch.GetValue())
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				c.nodes(body)
+			}
 		case *v1.Node_Wait:
 			c.site(id, "wait_until", kind.Wait.GetUntil())
 			c.site(id, "sleep", kind.Wait.GetDurationExpr())

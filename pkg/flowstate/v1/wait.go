@@ -568,6 +568,15 @@ func SignalNames(spec *Workflow) []string {
 				for _, branch := range kind.Parallel.GetBranches() {
 					walk(branch.GetSteps())
 				}
+
+			case *Node_Switch:
+				// A `wait_for_signal:` inside a case body declares a channel
+				// like one anywhere else — every body, not only the branch a
+				// run happens to take, because the signal policy and the
+				// pre-suspend drain are properties of the specification.
+				for _, body := range SwitchBodies(kind.Switch) {
+					walk(body)
+				}
 			}
 		}
 	}

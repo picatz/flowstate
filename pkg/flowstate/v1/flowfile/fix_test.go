@@ -518,6 +518,17 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 		// leaves the block alone rather than assuming that from the absence
 		// of a bug report.
 		"edition: v2026.2\nname: t\nsteps:\n  - id: approval\n    wait_for_signal:\n      name: deploy-approved\n      timeout: 24h\nsignals:\n  deploy-approved:\n    allow:\n      - subject: \"https://issuer.example.com#release-manager@example.com\"\n      - claims:\n          team: release-managers\n",
+		// A `switch:` with comments, odd spacing, a single-element list case and
+		// an empty default body. `flow fix` is the byte-for-byte surface, so
+		// none of it moves: fmt may canonicalize `case: [x]` to `case: x` under
+		// its semantic contract, and fix must not.
+		"edition: v2026.2\nname: t\ninputs:\n  action:\n    type: string\n    required: true\nsteps:\n  - id: route\n    switch:\n      value: ${inputs.action}\n      cases:\n        # the ordinary path\n        - case: opened\n          steps:\n            - id: triage\n              log:\n                message:   hi\n        - case: [closed]\n          steps: []\n      default:\n        steps: []\n",
+		// A switch inside a for_each body, dispatching on the loop's own
+		// binding — the composition that has bitten the rewriter before. The
+		// binding (`resource`) is bare in the discriminant and in a body
+		// step's input, beside a body step whose id could shadow it; nothing
+		// here may be rewritten into a `steps.` reference.
+		"edition: v2026.2\nname: t\nsteps:\n  - id: resource\n    log:\n      message: a step sharing the binding's name\n  - id: process\n    for_each:\n      items: ${['bucket', 'instance']}\n      as: resource\n      steps:\n        - id: dispatch\n          switch:\n            value: ${resource}\n            cases:\n              - case: bucket\n                steps:\n                  - id: check_bucket\n                    log:\n                      message: ${resource}\n              - case: instance\n                steps: []\n",
 	}
 
 	for _, src := range srcs {

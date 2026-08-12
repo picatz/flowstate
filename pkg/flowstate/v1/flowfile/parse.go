@@ -81,12 +81,20 @@ var (
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
-	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value"}
+	nodeKindKeys = []string{"for_each", "loop", "parallel", "sleep", "wait_until", "wait_for_signal", "call", "value", "switch"}
 
 	retryKeys   = []string{"attempts", "interval", "backoff", "max_interval"}
 	forEachKeys = []string{"items", "as", "max_parallel", "steps"}
 	loopKeys    = []string{"steps", "until", "max_iterations", "as", "init", "update"}
 	branchKeys  = []string{"steps"}
+
+	// The keys of a `switch:` mapping, of one entry in its `cases:` list, and of
+	// its `default:`. The discriminant key is `value:` — not `on:`, which is a
+	// YAML 1.1 boolean spelling, and a key some tool in a future chain would
+	// read as `true` is the Norway problem placed load-bearing.
+	switchKeys        = []string{"value", "cases", "default"}
+	switchCaseKeys    = []string{"case", "steps"}
+	switchDefaultKeys = []string{"steps"}
 )
 
 // A step names the work it does directly — `http:` with the request under it —
@@ -1371,6 +1379,10 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		case "wait_for_signal":
 			if wait := c.waitForSignal(kind.value, kindPath, r); wait != nil {
 				step.Kind = &v1.Node_Wait{Wait: wait}
+			}
+		case "switch":
+			if sw := c.switchNode(kind.value, kindPath, r); sw != nil {
+				step.Kind = &v1.Node_Switch{Switch: sw}
 			}
 		case "value":
 			// The same fence-optional reading the workflow's own `outputs:` gives

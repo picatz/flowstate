@@ -893,6 +893,47 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowSwitch covers `switch:` against the durable driver, pairing
+// TestRunWorkflowValue's local run of the identical [tests.SwitchCases].
+//
+// The discriminant evaluates in workflow code, so no activity mock stands
+// between this and the branch taken — which is the property under test: which
+// case a value takes, what the record says, and that an unresolvable
+// discriminant fails rather than defaulting are all decided by the one
+// [v1.SelectSwitchCase] both drivers call.
+func TestRunWorkflowSwitch(t *testing.T) {
+	for _, test := range tests.SwitchCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				require.Error(t, env.GetWorkflowError(), "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(&out), "outputs predicate failed: %v", &out)
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsRefused is the negative direction, against the durable
 // driver's own submit boundary.
 //

@@ -98,6 +98,10 @@ func checkNegationDrift(nodes []*v1.Node) Diagnostics {
 			for _, branch := range kind.Parallel.GetBranches() {
 				ds = append(ds, checkNegationDrift(branch.GetSteps())...)
 			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				ds = append(ds, checkNegationDrift(body)...)
+			}
 		}
 	}
 

@@ -1327,6 +1327,104 @@ be a node kind, and `if:` plus a failing step nearly covers it; whichever of it 
 Phase 2's `check:` lands first must be designed knowing the other is coming, because
 two spellings of "refuse to proceed" is one too many.
 
+### `switch:` landed — the word buys the checks, not the branch (#357)
+
+The branching was always expressible: three sibling `if:` steps against one value,
+which `examples/approval-gate` defends well. What was inexpressible was the
+*checking*. Nothing ties three equalities together, so a validator cannot see that
+they intend a total dispatch over one value — it cannot catch the typo'd literal
+that is legal CEL and silently never matches, cannot notice a value nobody handles,
+and the run cannot record that an unhandled value arrived. Grouping the cases under
+one construct is the precondition for every one of those, and that is what earned
+the word.
+
+```yaml
+- id: on_event
+  switch:
+    value: ${inputs.event.action}
+    cases:
+      - case: opened
+        steps:
+          - id: triage
+            http:
+              method: POST
+              url: ${inputs.triage_url}
+      - case: [closed, merged]
+        steps:
+          - id: archive
+            log:
+              message: ${"archiving %s".format([inputs.event.number])}
+      - case: synchronize
+        steps: []
+    default:
+      steps:
+        - id: unhandled
+          log:
+            message: ${"unhandled action: %s".format([inputs.event.action])}
+```
+
+A mapping under the kind key — `value:`, `cases:`, optional `default:` — like every
+block construct (`for_each: {items, as, steps}`). The discriminant key is `value:`,
+not `on:`, which is a YAML 1.1 boolean spelling and a Norway problem placed
+load-bearing. One evaluation of the discriminant per execution, cases tried in
+written order, first literal match wins, no fallthrough; a `case:` is a scalar or a
+list flattened into one membership check (Go's `case a, b:`). Matching is literal
+equality only — CEL's, so `case: 1` matches a discriminant of `1.0` — and a case
+needing a predicate is what `if:` remains for: **cases are literals; a computed
+comparison is what `if:` is for** is a fatal diagnostic, and so are its
+range-looking cousins (`case: 2xx`, `case: 400-499`).
+
+#### The record, and what `default:` means
+
+The step's outputs record the dispatch: `${steps.on_event.value}` is what the
+switch observed, and `${steps.on_event.case}` is the case literal that took it —
+null when none did. An unmatched value with no `default:` runs nothing *and says
+so*: an observable, greppable record downstream steps can dispatch on, which is the
+runtime half of the silent-nothing fix and the drift detector for the day the
+producer grows a label the file never learned.
+
+`default:` means "a value arrived that I didn't enumerate," never "I couldn't
+compute the value." An unresolvable discriminant — a skipped step's output, say —
+**fails the step**; letting evaluation failure flow into the default path would
+make `default:` swallow bugs, the opposite of what the slot is for.
+
+An empty body (`steps: []`) is legal and load-bearing: `case: synchronize` with an
+empty body is ignoring a value *written down* where a reviewer can see it, and an
+empty `default:` is how "and I mean to handle nothing else" is spelled when the
+domain is checkable — Rust's `_ => {}`, both times. A switch that is only a
+`default:` is refused: an unconditional block wearing a switch's clothes.
+
+#### The diagnostics, where the domain is the file's to know
+
+Where the discriminant's domain is a property of the file — today, a wait outcome
+whose shaping expression is conditionals over string literals, the approval gate's
+ternary; enum-typed inputs extend the tier when they land — the validator checks
+the whole dispatch, every diagnostic fatal like every other in this language:
+
+- an impossible case value, with the nearest legal spelling;
+- a duplicate case after list-flattening (the second occurrence can never match);
+- exhaustiveness: no `default:` claims every value is handled, and the missing
+  ones are reported by name (Rust's E0004 at this tier);
+- an unreachable `default:` beside cases that already exhaust the domain;
+- a type mismatch — a case literal of a type the discriminant can never produce.
+
+An open domain — a webhook field, an input — is deliberately silent, per the
+report-what-the-file-owns rule; the record covers that gap at run time.
+
+#### Scope, and the id namespace
+
+Bodies are ordinary step lists. Exactly one runs, in order, in the run's own
+scope, and its step outputs merge into the enclosing namespace the way a parallel
+branch's do — so ids must be unique across the whole switch for the same reason
+they must be unique across branches, which a fixture pins. Deliberately *no new
+bare names*: case bodies see the ordinary scope, because a bare binding is a
+six-site change and this construct does not need one. The switch is never a
+suspension position; its bodies may contain waits, and the container machinery
+handles them as it does a parallel branch's.
+
+`examples/webhook-routing` is the construct end to end, its `default:` logging the
+unexpected action — which doubles as the documentation for why the slot exists.
+
 ### Plugins appear in the syntax, deliberately distinguishable
 
 ARCHITECTURE.md says a plugin task should be "indistinguishable from a built-in."

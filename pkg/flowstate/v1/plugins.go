@@ -109,6 +109,13 @@ func walkPluginNodes(nodes []*Node, depth int, visit func(wf *Workflow) error) e
 				}
 			}
 		}
+		if sw := node.GetSwitch(); sw != nil {
+			for _, body := range SwitchBodies(sw) {
+				if err := walkPluginNodes(body, depth+1, visit); err != nil {
+					return err
+				}
+			}
+		}
 		if callee := node.GetCall().GetWorkflow(); callee != nil {
 			if err := walkPluginWorkflows(callee, depth+1, visit); err != nil {
 				return fmt.Errorf("step %q calls workflow %q: %w", node.GetId(), callee.GetName(), err)

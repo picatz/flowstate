@@ -21,6 +21,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [logging](logging) | `log:` — a message for a person to read, with `level:` and `fields:`, and no outputs | no |
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
+| [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
 | [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
