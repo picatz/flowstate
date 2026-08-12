@@ -1435,7 +1435,8 @@ func TestRunWorkflowLoop(t *testing.T) {
 // local driver runs them in order regardless — so this caller is what holds
 // the concurrent path's failure entries to the sequential answer.
 func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
-	for _, test := range tests.ToleratedIterationIdentityCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ToleratedIterationIdentityCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()

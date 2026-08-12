@@ -2614,7 +2614,11 @@ A third name appears *inside* a `results` entry, only on a failure that was
 tolerated: **`item`**, the `as:` value the iteration ran with — a `for_each`'s
 current item, a `loop:`'s carried state — attached by the engine beside the
 `error` a tolerated step records, identically on both drivers and on the
-concurrent path (`v1.AttachIterationBinding`). It exists because the alternative
+concurrent path (`v1.AttachIterationBinding`). What decides the attachment is
+the walk's own record that the step failed and was tolerated, never the shape
+of the outputs — so a step that *succeeds* while legitimately declaring outputs
+named `error` or `item` (an http task shaping response fields under those
+names) keeps its declared shape untouched. It exists because the alternative
 was backwards: a failed iteration's entry used to be `{"error": …}` and nothing
 else, so "which records failed" had to be reconstructed downstream by set
 subtraction — the input list minus the ids that succeeded — recomputing from its

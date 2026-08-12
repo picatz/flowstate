@@ -1030,7 +1030,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// then nothing below this line does anything.
 	undo := NewUndoLog(nil)
 
-	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0); err != nil {
+	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
 		// The run cannot continue, so whatever already happened is taken back —
 		// reverse order, every entry attempted, one summary appended to the failure.
 		// [RunUndoLog] owns all three of those rules and the durable driver reaches
@@ -1093,7 +1093,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 // tells this level whether — and how — a compensation written here may be
 // honoured; see [CheckUndoPlacement] and [UndoScope], which refuse the shapes
 // that cannot be, rather than silently dropping them.
-func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) error {
+//
+// tolerated, when non-nil, collects the id of every step whose failure this
+// level records and continues past. A loop passes a fresh set per iteration so
+// [AttachIterationBinding] can key on the driver's own record of tolerance
+// rather than on the shape of the outputs — the one place "this step failed and
+// was tolerated" is a fact is the line below that records it. Everything that
+// is not a loop body passes nil, which collects nothing.
+func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) error {
 	for _, node := range nodes {
 		// Refused before the step runs rather than after it succeeds, so a workload
 		// the engine cannot honour does not perform half of itself first.
@@ -1145,6 +1152,9 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// the id is implied by the key this is recorded under, and repeating it
 			// would make `${steps.<id>.error}` name its own step. The durable
 			// driver draws the same line at the same place — see stepFailed.
+			if tolerated != nil {
+				tolerated[node.GetId()] = struct{}{}
+			}
 			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 			continue
 		}
@@ -1393,7 +1403,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 		return nil, err
 	}
 
-	if err := runNodes(ctx, callee.GetSteps(), inner, undo, placement, depth); err != nil {
+	if err := runNodes(ctx, callee.GetSteps(), inner, undo, placement, depth, nil); err != nil {
 		// Named, because a failure inside a called workflow reported without
 		// saying which one leaves a reader looking through the caller for a step
 		// that is not there.
@@ -1452,8 +1462,14 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 
 		// Accumulate privately, then merge by iteration index. Completion time is
 		// deliberately not part of the compensation ordering contract.
+		//
+		// toleratedSteps is the iteration's own record of which body steps
+		// failed and were tolerated — the marker [AttachIterationBinding] keys
+		// on below, so a successful step that merely *declares* an output
+		// named `error` is never mistaken for a failure.
 		iterationUndo := NewUndoLog(nil)
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth); err != nil {
+		toleratedSteps := map[string]struct{}{}
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
 			undo.Append(iterationUndo)
 			if loop.GetMaxParallel() > 1 {
 				// A concurrent fan-out launches every iteration before it can
@@ -1481,12 +1497,13 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// durable driver's stepFailed composes it, `"iteration %d: "`, so the
 		// recorded sentence matches across drivers.
 		// The iteration's item rides on any tolerated failure the body recorded
-		// ([AttachIterationBinding]), attached before the accumulate so the byte
-		// bound weighs it — and at the identical point the durable driver
-		// attaches it, in both its sequential and concurrent paths.
+		// ([AttachIterationBinding], keyed on toleratedSteps — the walk's own
+		// record, never the outputs' names), attached before the accumulate so
+		// the byte bound weighs it — and at the identical point the durable
+		// driver attaches it, in both its sequential and concurrent paths.
 		var sizeErr error
 		iterations, resultsBytes, sizeErr = AccumulateForEachResult(iterations, resultsBytes,
-			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), item))
+			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), item, toleratedSteps))
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}
@@ -1578,7 +1595,13 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// Where the composed placement is still [UndoScopeConcurrent] — a loop
 		// inside a for_each body — [CheckUndoPlacement] refuses it rather than this
 		// level quietly ignoring it.
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth); err != nil {
+		//
+		// toleratedSteps collects which body steps failed and were tolerated —
+		// the marker the attach below keys on, per iteration, so a successful
+		// step that merely declares an output named `error` is never mistaken
+		// for a failure.
+		toleratedSteps := map[string]struct{}{}
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
@@ -1588,7 +1611,7 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// the byte bound weighs it, matching the durable driver's point.
 		var sizeErr error
 		iterations, resultsBytes, sizeErr = AccumulateLoopResult(iterations, resultsBytes,
-			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), state))
+			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), state, toleratedSteps))
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}
@@ -1661,7 +1684,7 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		// thinking about, and silently omits every other one the type grows.
 		branchScope := scope.WithOutputs(branchOutputs)
 		branchUndo := NewUndoLog(nil)
-		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth); err != nil {
+		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
 			undo.Append(branchUndo)
 			// Branches are concurrent by declaration: the durable driver has
 			// launched every one of them before it can learn that any failed,

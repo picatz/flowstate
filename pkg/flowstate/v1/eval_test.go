@@ -120,10 +120,13 @@ func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
 // TestRunWorkflowToleratedIterationIdentity is the local half of a tolerated
 // iteration failure carrying its `as:` binding (#157's question 3): the failed
 // entry names its item directly, and a later step's expression can read it,
-// instead of reconstructing identity downstream by set subtraction. The engine
-// package runs the identical cases against the durable driver.
+// instead of reconstructing identity downstream by set subtraction — while a
+// successful step that merely declares outputs named `error`/`item` keeps its
+// shape untouched. The engine package runs the identical cases against the
+// durable driver.
 func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
-	for _, test := range tests.ToleratedIterationIdentityCases() {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ToleratedIterationIdentityCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})

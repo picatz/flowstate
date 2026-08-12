@@ -162,7 +162,16 @@ func LoopExhaustionTranscriptCases() []PartialTranscriptCase {
 // the engine held at the moment it recorded the failure.
 // `examples/data-enrichment` spells the direct form from a Flowfile; these hold
 // both drivers to the shape it reads.
-func ToleratedIterationIdentityCases() []Case {
+//
+// httpBaseURL serves the one case that needs a task capable of *declaring*
+// outputs under reserved-looking names: the decoy case, whose successful step
+// shapes its response into outputs literally named `error` and `item`. That
+// case is what pins the attachment to the walk's own record of tolerance — an
+// implementation keyed on the presence of an output named `error` would misread
+// the decoy as a failure and inject (and overwrite) `item` inside a successful
+// step's declared shape, which is exactly the misclassification it must fail
+// on.
+func ToleratedIterationIdentityCases(httpBaseURL string) []Case {
 	// The direct spelling: the failed iterations, named by their own failure
 	// entries, with no reference to the input list at all.
 	const failedItems = `steps.fan.results.filter(r, has(r.work.error)).map(r, r.work.item) == ["b"]`
@@ -248,6 +257,62 @@ func ToleratedIterationIdentityCases() []Case {
 						map[string]any{"work": map[string]any{}},
 					),
 					"state": v1.NewLiteral("ax"),
+				}},
+				"saw": {},
+			}},
+		},
+		{
+			// The decoy: a step that SUCCEEDS while declaring outputs literally
+			// named `error` and `item` — the http task shaping its response
+			// into those names — beside a sibling that genuinely fails and is
+			// tolerated. The successful step's declared shape must come through
+			// untouched (its `item` still the value it declared, no binding
+			// injected over it), while the real failure still names its item.
+			// This is the case that keys the attachment to the driver's own
+			// record of tolerance: an output-name heuristic reads the decoy as
+			// a failure and overwrites `decoy` with the iteration's item, which
+			// the exact comparison and the reading step both refuse.
+			Name: "a successful step whose declared outputs are named error and item is not mistaken for a failure",
+			Workflow: &v1.Workflow{
+				Name:    "foreach-decoy-outputs",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{
+					{
+						Id: "fan",
+						Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+							Items:    v1.NewLiteralList("a", "b"),
+							Iterator: "record",
+							Body: []*v1.Node{
+								{
+									Id: "shape",
+									Kind: &v1.Node_Task{Task: &v1.Task{
+										Name: "http",
+										Inputs: map[string]*v1.Value{
+											"method":  v1.NewLiteral("GET"),
+											"url":     v1.NewLiteral(httpBaseURL + "/status/200"),
+											"outputs": v1.NewExpr(`{"error": "all good", "item": "decoy"}`),
+										},
+									}},
+								},
+								failsWhen("work", `record == "b"`),
+							},
+						}},
+					},
+				}, pins("saw",
+					`steps.fan.results[0].shape.item == "decoy" && steps.fan.results[1].shape.item == "decoy" && steps.fan.results[1].work.item == "b"`)...),
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"fan": {NamedValues: map[string]*v1.Value{
+					"results": v1.NewLiteralList(
+						map[string]any{
+							"shape": map[string]any{"error": "all good", "item": "decoy"},
+							"work":  map[string]any{},
+						},
+						map[string]any{
+							"shape": map[string]any{"error": "all good", "item": "decoy"},
+							"work":  map[string]any{"error": outOfBounds, "item": "b"},
+						},
+					),
 				}},
 				"saw": {},
 			}},

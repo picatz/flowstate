@@ -62,9 +62,12 @@ const StepErrorOutput = "error"
 // also [DefaultIterator], the name a `for_each` binds when the author writes
 // none — the reading it already teaches.
 //
-// It appears only beside [StepErrorOutput], on an entry recorded through
-// [AttachIterationBinding]: a step that succeeded reports its task's own
-// outputs and nothing else, so presence of `item` never shadows a real output.
+// It is attached by [AttachIterationBinding], and only to steps the driver's
+// own node walk recorded as failed-and-tolerated — a fact each driver marks at
+// the moment it records the failure, never an inference from the outputs' own
+// names. A step that *succeeds* while declaring an output literally named
+// `error` (or `item`) keeps its declared shape untouched: the marker, not the
+// name, is what decides.
 const StepErrorItemOutput = "item"
 
 // StepErrorText renders a step failure into the string recorded under

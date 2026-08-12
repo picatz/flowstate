@@ -171,20 +171,28 @@ func (e *LoopExhaustedError) Record() *Node_Outputs {
 // attaches nothing: there is no binding to carry, and inventing one would be a
 // claim about a scope the body never had.
 //
-// Only failure entries are touched (those carrying [StepErrorOutput], the
-// presence/absence the whole `${steps.<id>.error}` idiom already keys on), and
-// each is replaced by a copy rather than written through: the same
-// [Node_Outputs] is still referenced by the iteration's own scope, and a
-// recording helper that mutates what a live scope points at is a bug waiting
-// for a reader.
-func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value) *Workflow_StepOutputs {
-	if iteration == nil || bound == nil {
+// tolerated is the set of body step ids whose failure the iteration's own node
+// walk recorded and continued past — each driver's runNodes marks the id at the
+// exact moment it records the failure, which is the one place "this step failed
+// and was tolerated" is a fact rather than an inference. The set, and not the
+// shape of the outputs, is what decides attachment: a step that *succeeds*
+// while legitimately declaring an output named `error` (an http task shaping a
+// response field under that name, say) must keep its declared shape untouched,
+// and an output-name heuristic here would have misread it as a failure and
+// injected — or worse, overwritten — an `item` inside a successful step's own
+// outputs. Only ids in the set are touched, and each is replaced by a copy
+// rather than written through: the same [Node_Outputs] is still referenced by
+// the iteration's own scope, and a recording helper that mutates what a live
+// scope points at is a bug waiting for a reader.
+func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, tolerated map[string]struct{}) *Workflow_StepOutputs {
+	if iteration == nil || bound == nil || len(tolerated) == 0 {
 		return iteration
 	}
 
 	decorated := map[string]*Node_Outputs{}
-	for id, outputs := range iteration.GetStepValues() {
-		if _, failed := outputs.GetNamedValues()[StepErrorOutput]; !failed {
+	for id := range tolerated {
+		outputs, ok := iteration.GetStepValues()[id]
+		if !ok {
 			continue
 		}
 		named := make(map[string]*Value, len(outputs.GetNamedValues())+1)
