@@ -47,6 +47,33 @@ the evidence, done.
 > turns a missing principal into an identity with no subject ... Say both,
 > instead of an absolute claim the code does not make.
 
+## The bot-review loop
+
+Automated review (Codex, Copilot) lands on every PR. The procedure is
+fixed, and it is a token and API budget as much as a writing one:
+
+1. **Fetch once per PR, not once per finding.** `get_review_comments`
+   returns the threads with their `isResolved`/`isOutdated` metadata.
+   Never fetch the full PR object just to check state; its body is large
+   and you already know the PR. Use `get_check_runs` for CI status.
+2. **Triage the whole set in one pass.** Classify each finding: real (fix
+   it), stale (a later commit already fixed it; no action), or wrong
+   (skip, and say why in the session report, not on GitHub).
+3. **One agent per PR carrying all real findings**, never one agent per
+   finding. Route to the branch owner if it has context left, otherwise a
+   fresh cheaper agent with the branch as the handoff.
+4. **The pushed fix is the reply.** No prose replies to bots, and never
+   argue with one: two AIs debating through a human's GitHub account is
+   noise the owner has to read.
+5. **Resolve the thread once the fix has landed**, with
+   `resolve_review_thread` and the node ID from step 1. Resolve stale and
+   duplicate threads too; an unresolved thread that needed no action still
+   costs a human a read. Resolution is the acknowledgment.
+6. **Respect the API budget.** The GitHub REST and GraphQL limit is shared
+   across everything the account does, and polling PR state exhausted it
+   in one wave. Prefer webhook events over polling, batch reads, and back
+   off when the limit is hit rather than retrying.
+
 ## Failure modes
 
 - **The debate**: paragraphs arguing with a bot in a thread. The bot does
@@ -61,3 +88,4 @@ the evidence, done.
 Authoring: does each comment name what breaks, what that costs, and what to
 do, with evidence? Would I stake the severity label on it? Responding: is
 the fix pushed, and does my reply say anything the commit message does not?
+Every thread on this PR is resolved or has a pending fix.
