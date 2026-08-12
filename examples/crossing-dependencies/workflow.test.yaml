@@ -1,0 +1,49 @@
+# The claim worth pinning is the one a reader of the file cannot check by eye:
+# that marking two steps `async:` changed *when* work happens and nothing about
+# *what* the run says. So the assertions here are exactly the assertions the same
+# file would carry with every `async:` deleted — the same steps ran, and the same
+# outputs came out — which is the point rather than a weak test. An implementation
+# where a join published the wrong step's answer, or where the scope's end
+# dropped the step nothing reads, fails these.
+#
+# `notify` in `ran:` is the third rule under test: nothing in the file reads it,
+# and it is still collected before the run finishes.
+#
+# What is not assertable from here is the latency, which is the whole reason the
+# markers are in the file. Overlap is a property of a driver's scheduler rather
+# than of a transcript, so it is proved where the scheduler is — the durable
+# driver's TestRunWorkflowAsyncOverlapsLaterWork, whose stubbed peer refuses to
+# answer the async step until the step written after it has arrived.
+edition: v2026.3
+tests:
+  - name: crossing dependencies produce exactly what the same file would produce in written order
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: inputs.url == 'https://ci.example.com/build'
+        returns:
+          tag: v2026.8.1
+      - task: http
+        where: inputs.url == 'https://infra.example.com/machines'
+        returns:
+          host: host-7
+      # The two readers. Each is stubbed on the body it was handed, which is how
+      # this file asserts that the join published the step the reader named and
+      # not whichever finished first: `test` must arrive carrying the build's tag
+      # and `deploy` the machine's host, never the other way around.
+      - task: http
+        where: inputs.url == 'https://ci.example.com/test-runs' && inputs.body == 'v2026.8.1'
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://infra.example.com/deployments' && inputs.body == 'host-7'
+        returns: {}
+      - task: http
+        where: inputs.url == 'https://chat.example.com/announce'
+        returns: {}
+      - task: log
+        where: inputs.message == 'v2026.8.1 deployed to host-7'
+        returns: {}
+    expect:
+      ran: [build, provision, test, deploy, notify, summary]
+      outputs:
+        released: v2026.8.1 on host-7

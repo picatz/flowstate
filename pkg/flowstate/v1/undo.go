@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -69,6 +70,10 @@ var ErrUndoBudget = errors.New("not attempted: the compensation budget for a can
 // for the reason a run's signal carry is: a compensation registered anywhere is
 // registered for the whole run, and a copy per level would let one be run twice or
 // not at all.
+// A nil element is a slot [UndoLog.Reserve] handed out and [UndoLog.Fill] has
+// not filled — a step that started and has not finished, or one that finished
+// without a compensation to register. [UndoLog.Pending] drops them, so nothing
+// outside this type ever sees a hole.
 type UndoLog struct {
 	pending []*PendingUndo
 }
@@ -110,16 +115,70 @@ func (l *UndoLog) Append(child *UndoLog) {
 	if l == nil || child == nil {
 		return
 	}
-	l.pending = append(l.pending, child.pending...)
+	l.pending = append(l.pending, child.Pending()...)
+}
+
+// Reserve takes the position an async step will occupy, before that step has
+// finished, and returns the slot to hand [UndoLog.Fill] when it does.
+//
+// This is what keeps [RunUndoLog]'s contract true once a scope may run steps out
+// of written order. An async step is *started* where it is written and *joined*
+// somewhere later, and a scope's joins need not happen in the order it started
+// things — `use_b` written before `use_a` joins the second async step first. A
+// log appended at join time would therefore read in join order, and reversing it
+// would unwind an earlier-written step before a later-written one: reverse
+// completion order, wearing reverse registration order's clothes, in the one
+// place #418 slice 0.5 decided it must never appear. Reserving at the written
+// position and filling on completion keeps the log reading in written order, so
+// the reversal is reverse written order exactly as it is for a sequential scope.
+//
+// A slot whose step fails, or succeeds with no `undo:`, is simply never filled:
+// membership still belongs to registration — a step that never succeeded has
+// nothing to take back — and only the *order* comes from the text.
+func (l *UndoLog) Reserve() int {
+	if l == nil {
+		return -1
+	}
+	l.pending = append(l.pending, nil)
+
+	return len(l.pending) - 1
+}
+
+// Fill puts a compensation into the slot [UndoLog.Reserve] handed out.
+//
+// A nil entry leaves the slot empty, so the caller can hand over whatever
+// [UndoRegistrationFor] returned without asking whether the step declared an
+// `undo:` — the same shape [UndoLog.Register] has for a sequential step.
+func (l *UndoLog) Fill(slot int, entry *PendingUndo) {
+	if l == nil || entry == nil || slot < 0 || slot >= len(l.pending) {
+		return
+	}
+	l.pending[slot] = entry
 }
 
 // Pending returns the compensations registered so far, oldest first, for carrying
 // across a Continue-As-New.
+//
+// Reserved-and-unfilled slots are dropped rather than carried: what travels in
+// [RunState.pending_undo] is compensations, and a hole is the absence of one. A
+// scope always joins what it started before it can suspend, so a slot is never
+// still open at the moment this is read for a Continue-As-New.
 func (l *UndoLog) Pending() []*PendingUndo {
 	if l == nil {
 		return nil
 	}
-	return l.pending
+	if !slices.Contains(l.pending, nil) {
+		return l.pending
+	}
+
+	filled := make([]*PendingUndo, 0, len(l.pending))
+	for _, entry := range l.pending {
+		if entry != nil {
+			filled = append(filled, entry)
+		}
+	}
+
+	return filled
 }
 
 // Len reports how many compensations are registered.
@@ -127,7 +186,8 @@ func (l *UndoLog) Len() int {
 	if l == nil {
 		return 0
 	}
-	return len(l.pending)
+
+	return len(l.Pending())
 }
 
 // UndoResult is what one compensation did.
@@ -178,6 +238,14 @@ type UndoResult struct {
 // function reverses the log, the log already reads in written order, and
 // completion order — the one thing concurrency promises is never observable —
 // cannot leak out through the unwind.
+//
+// An `async:` step is the third shape, and the one that would have broken the
+// contract most quietly. It starts where it is written and is joined wherever a
+// later step first mentions it, so a scope's joins can happen in an order its
+// text does not have — and a log appended at join time would read in join order.
+// [UndoLog.Reserve] takes the slot at the written position and
+// [UndoLog.Fill] completes it, so the log still reads in written order and this
+// reversal still means what the sentence above says it means.
 //
 // A loop body registering once per iteration is the case where "reverse of
 // registration" says something the declaration list cannot: three iterations of

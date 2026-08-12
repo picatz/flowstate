@@ -195,6 +195,25 @@ func TestLoopResultsReferenced(t *testing.T) {
 			"a reference written inside a callee's own steps must not reach the caller's loop")
 	})
 
+	t.Run("a later step's undo inputs read results", func(t *testing.T) {
+		// The neighbouring hole behind #418 slice 1's compensation-join finding.
+		// A compensation's inputs are resolved when its step succeeds, so an
+		// output only they name is as live as one a task's own inputs name — and
+		// suppressing a loop's `results` because nothing *but* an `undo:` read
+		// them would fail the run at the moment it registered that compensation,
+		// with the effect already performed.
+		wf := loopWorkflow("loop", []*v1.Node{{
+			Id:   "after",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+			Undo: &v1.Compensation{Task: &v1.Task{
+				Name:   "log",
+				Inputs: map[string]*v1.Value{"message": v1.NewExpr("string(size(steps.loop.results))")},
+			}},
+		}}, nil)
+		require.True(t, v1.LoopResultsReferenced(wf, "loop"),
+			"a loop's results read only by a later step's `undo:` must survive")
+	})
+
 	t.Run("nil spec is conservative", func(t *testing.T) {
 		require.True(t, v1.LoopResultsReferenced(nil, "loop"),
 			"an unknown tree cannot be proven unreachable")

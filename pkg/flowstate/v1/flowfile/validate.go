@@ -414,6 +414,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 		// level, or whatever a callee reached through a call composes to; see
 		// [validateAtDepth]'s doc.
 		ds = append(ds, validateUndo(id, node, inner, i, wf, placement)...)
+		ds = append(ds, validateAsync(id, node, placement)...)
 
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
@@ -1209,6 +1210,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		// the engine's own refusal at run time — see [v1.CheckUndoPlacement] for
 		// which placements are allowed.
 		ds = append(ds, validateUndo(id, node, inner, index, wf, placement)...)
+		ds = append(ds, validateAsync(id, node, placement)...)
 
 		task := node.GetTask()
 		if task == nil {
@@ -1341,6 +1343,39 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 // step's own inputs and for the same reason: their scope is the response, which
 // this validator cannot see, and reporting them would train authors to ignore the
 // tool.
+// validateAsync reports an `async:` the engine will not honour, on the key that
+// carries it.
+//
+// # Where the rule lives
+//
+// [v1.CheckAsyncPlacement], which both drivers call before a step runs. One rule
+// spelled once cannot disagree with itself, and this is the same arrangement
+// `undo:` has for the same reason. What this adds is the position: an author
+// meets the refusal in their editor, on their own `async:` key, rather than as a
+// run that fails on its first step.
+//
+// # What is deliberately not reported here
+//
+// Nothing about whether the concurrency is *worth* it. A step marked async that
+// the very next step joins is legal, costs nothing, and may well be a file in
+// the middle of being written; a diagnostic there would be the validator having
+// an opinion about the shape of a workload rather than about the file being
+// wrong. The same rule keeps the width bound out: [v1.CheckAsyncWidth] counts
+// what one scope has outstanding at one moment, which depends on which steps an
+// `if:` skips, and a validator that guessed would report a file wrong on the
+// strength of data it cannot see.
+func validateAsync(id string, node *v1.Node, placement v1.UndoScope) Diagnostics {
+	err := v1.CheckAsyncPlacement(node, placement)
+	if err == nil {
+		return nil
+	}
+
+	return Diagnostics{{
+		Step: id, Field: "async", Message: err.Error(),
+		Code: v1.DiagnosticCodePlacementRefusal,
+	}}
+}
+
 func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow, placement v1.UndoScope) Diagnostics {
 	undo := node.GetUndo()
 	if undo == nil {

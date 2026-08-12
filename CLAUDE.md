@@ -205,7 +205,8 @@ pointed at prose. `docs/reference/` is derived from the task registry, the cobra
 tree, the MCP tool table and one hand-kept env-var table — the four surfaces the doc
 audit found had drifted — so adding a task, a flag, an RPC or a variable and not
 regenerating fails here. Never hand-edit a file under `docs/reference/`; edit what it
-is derived from (`cmd/flow/docsgen.go` for the env-var prose) and run `make docs`.
+is derived from (`cmd/flow/internal/docsgen/envvars.go` for the env-var prose) and
+run `make docs`.
 
 `govulncheck` reports *reachability* against a database fetched when it runs, so it
 can go red on a tree nobody touched — a new advisory is not a new bug in your diff.

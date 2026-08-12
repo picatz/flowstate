@@ -426,6 +426,33 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		write(w, map[string]any{"indexed": true})
 	})
 
+	// crossing-dependencies: the N-graph's four peers, on four hosts that
+	// `PointAtStandIn` collapses onto this one — so the paths carry the meaning
+	// and have to stay distinct from every other example's, which is why the
+	// deployment target here is `/deployments` and not the `/deploys` that
+	// enterprise-incident-response already reads.
+	//
+	// The two started steps answer with the values their readers name, because
+	// what that example demonstrates is a *crossing* dependency: the run only
+	// says the right thing if the join published the build's answer to the step
+	// that asked for the build and the machine's to the step that asked for the
+	// machine. The two readers echo what they were handed for the same reason.
+	mux.HandleFunc("/build", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"tag": "v2026.8.1"})
+	})
+	mux.HandleFunc("/machines", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"host": "host-7"})
+	})
+	mux.HandleFunc("/test-runs", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"passed": true})
+	})
+	mux.HandleFunc("/deployments", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{})
+	})
+	mux.HandleFunc("/announce", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		missing = append(missing, r.URL.Path)

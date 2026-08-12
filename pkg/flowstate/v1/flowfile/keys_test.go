@@ -238,10 +238,14 @@ func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
 func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
 	t.Parallel()
 
-	// Every held word, not one exemplar: `async` (issue #418) joined `needs`
-	// here, and a word reserved in stepkeys.go but never written into a file by
-	// a test is a reservation nothing would notice losing.
-	for _, word := range []string{"needs", "async"} {
+	// Every held word, not one exemplar: a word reserved in stepkeys.go but never
+	// written into a file by a test is a reservation nothing would notice losing.
+	//
+	// `async` (issue #418) sat here beside `needs` and has left, because it is
+	// grammar now — which is exactly what a reservation is for, and why the loop
+	// is over the list rather than over one exemplar: a word graduating out of it
+	// is an ordinary edit here rather than a rewrite.
+	for _, word := range []string{"needs", "assert"} {
 		t.Run(word, func(t *testing.T) {
 			t.Parallel()
 

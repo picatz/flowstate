@@ -95,15 +95,15 @@ func TestBuildPlan(t *testing.T) {
 		},
 		{
 			name:    "the cobra and MCP surfaces fire the docs leg",
-			changed: []string{"cmd/flow/docsgen.go"},
+			changed: []string{"cmd/flow/internal/docsgen/cli.go"},
 			want: plan{
-				goFiles:    []string{"cmd/flow/docsgen.go"},
-				fileDirs:   []string{"cmd/flow"},
+				goFiles:    []string{"cmd/flow/internal/docsgen/cli.go"},
+				fileDirs:   []string{"cmd/flow/internal/docsgen"},
 				docs:       true,
 				appearance: true,
 				reasons: map[string]string{
-					"docs":       "cmd/flow/docsgen.go",
-					"appearance": "cmd/flow/docsgen.go",
+					"docs":       "cmd/flow/internal/docsgen/cli.go",
+					"appearance": "cmd/flow/internal/docsgen/cli.go",
 				},
 			},
 		},

@@ -1,11 +1,10 @@
-package main
+package docsgen
 
 import (
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -13,146 +12,38 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// The generated reference is only worth having if it cannot quietly stop being
-// true, so the tests here are all about the ways it could.
+// The env-var table is the one document here written by hand, so it is the one
+// with a test that walks the tree rather than comparing bytes.
 //
-// Three of them, one per way. It has to be reproducible, or CI's `git diff
-// --exit-code` pin fails for reasons that are about the machine rather than the
-// change. It has to be committed, so the pin is checkable at all — and checking
-// it here as well means an author finds out from `go test` rather than from a
-// round trip through CI. And the one table that is written by hand, the
-// environment variables, has to be held to the tree in both directions.
+// It travels with the table rather than with the reference's other tests, which
+// live in cmd/flow beside the live values they render: this pair needs no
+// command tree and no MCP registration, only the table in envvars.go and the
+// source files under cmd/ and pkg/.
 
-// referenceDir is the committed reference, from this package's directory.
-const referenceDir = "../../docs/reference"
-
-// TestGeneratedDocsAreStable is the property the CI pin rests on.
+// testGenerator is a generator over sources these two tests do not read.
 //
-// A generator that ranges over a map produces a document that is correct and
-// different every time, which makes `git diff --exit-code` a coin flip and
-// teaches everyone to re-run it until it passes. Rendering twice and comparing
-// bytes is the cheapest way to catch an unsorted iteration the moment it is
-// introduced, and it fails deterministically enough to be believed — Go
-// randomizes map order per range, so an unsorted listing of any size loses this
-// almost immediately.
-func TestGeneratedDocsAreStable(t *testing.T) {
-	for _, doc := range referenceDocuments() {
-		t.Run(doc.name, func(t *testing.T) {
-			assert.Equal(t, doc.render(), doc.render(),
-				"generating %s twice produced two different documents; something iterates unsorted", doc.name)
-		})
-	}
-}
+// [Generator.documentedEnvironmentVariables] is a method because one of its
+// rows takes the address default from the sources, and nothing else here
+// touches them; the rest is whatever [New] will accept.
+func testGenerator(t *testing.T) *Generator {
+	t.Helper()
 
-// TestGeneratedDocsAreCommitted is the same check CI makes, made here first.
-//
-// CI is a backstop rather than the feedback loop: a task added, a flag renamed or
-// an RPC introduced changes these files, and finding that out from a red build is
-// a round trip that bought nothing. The failure says what to run, because the fix
-// is one command and the alternative is somebody hand-editing a generated file.
-func TestGeneratedDocsAreCommitted(t *testing.T) {
-	for _, doc := range referenceDocuments() {
-		t.Run(doc.name, func(t *testing.T) {
-			committed, err := os.ReadFile(filepath.Join(referenceDir, doc.name))
-			require.NoError(t, err, "the generated reference moved and this test did not")
-
-			assert.Equal(t, doc.render(), string(committed),
-				"docs/reference/%s is out of date; run `flow docs generate` and commit the result", doc.name)
-		})
-	}
-}
-
-// TestGeneratingRestoresTheEnvironment keeps the generator from being a command
-// with a side effect.
-//
-// It has to clear the environment to be reproducible — flag defaults are read
-// from it when the command tree is built — and clearing it is exactly the kind of
-// thing that gets left cleared. In-process that would be invisible here and
-// catastrophic in a test binary, where the next test would run against an
-// environment this one emptied.
-func TestGeneratingRestoresTheEnvironment(t *testing.T) {
-	t.Setenv("FLOWSTATE_ADDRESS", "example.test:9999")
-	t.Setenv("FLOWSTATE_TOKEN", "not-a-real-token")
-
-	rendered := renderCLIReference()
-
-	assert.Equal(t, "example.test:9999", os.Getenv("FLOWSTATE_ADDRESS"),
-		"generating the CLI reference left FLOWSTATE_ADDRESS cleared")
-	assert.Equal(t, "not-a-real-token", os.Getenv("FLOWSTATE_TOKEN"),
-		"generating the CLI reference left FLOWSTATE_TOKEN cleared")
-
-	assert.NotContains(t, rendered, "example.test:9999",
-		"the generated CLI reference recorded the environment it was generated in")
-}
-
-// TestEnvironmentMirrorsAreDerived pins the derivation the CLI reference's
-// Environment column depends on.
-//
-// The mapping from a variable to the flag it feeds exists nowhere as data —
-// pflag sees a default string and cannot know where it came from — so it is
-// recovered by setting a sentinel and looking for it. That is clever enough to
-// deserve a test that it still works: a change to how a default is composed
-// (wrapping it in a `cmp.Or`, say, which is already how two of them are written)
-// could silently empty the whole column, and an empty column reads as "no flag
-// takes a variable" rather than as a broken derivation.
-func TestEnvironmentMirrorsAreDerived(t *testing.T) {
-	var mirrors map[string]string
-	withCleanEnvironment(func() {
-		mirrors = environmentMirrors()
+	generator, err := New(Sources{
+		NewRoot:        func() *cobra.Command { return &cobra.Command{Use: "flow"} },
+		UseLine:        func(c *cobra.Command) string { return c.CommandPath() },
+		FlagName:       func(f *pflag.Flag) string { return "--" + f.Name },
+		MCPTools:       []MCPTool{{Name: "flowstate_validate"}},
+		DefaultAddress: "127.0.0.1:8080",
 	})
+	require.NoError(t, err)
 
-	assert.Equal(t, "FLOWSTATE_ADDRESS", mirrors["flow get address"],
-		"--address no longer reads FLOWSTATE_ADDRESS, or the derivation stopped working")
-	assert.Equal(t, "TEMPORAL_TASK_QUEUE", mirrors["flow worker task-queue"],
-		"--task-queue no longer reads TEMPORAL_TASK_QUEUE, or the derivation stopped working")
-}
-
-// TestEveryMCPToolHasALocality holds the one hand-kept fact on the MCP reference
-// to the tools that are actually registered.
-//
-// Where a tool answers — in this process or against a server — is carried by a Go
-// func value in mcp.go's dispatch table, which nothing outside can inspect. So it
-// is written down, and written down once; this is what stops it being written
-// down wrongly. Both directions, because each fails differently: a method with no
-// entry is documented as needing a server when it does not, and an entry for a
-// method that is gone is a line about a tool nobody can call.
-func TestEveryMCPToolHasALocality(t *testing.T) {
-	t.Parallel()
-
-	methods := map[string]bool{}
-	for _, method := range workflowServiceMethods() {
-		methods[method.name] = true
-	}
-
-	for name := range mcpLocalTools {
-		assert.True(t, methods[name],
-			"mcpLocalTools names %q, which is not a service method any more", name)
-	}
-
-	// The other direction is not "every method is local" — most are not — but that
-	// every method was *considered*. A method absent from the map is documented as
-	// remote, which is right today only because the map was written when those
-	// methods were. So the assertion is that the tool set the reference renders
-	// covers the registered set exactly.
-	documented := map[string]bool{}
-	for _, tool := range mcpTools() {
-		documented[tool.name] = true
-	}
-	for _, method := range workflowServiceMethods() {
-		assert.True(t, documented[mcpToolName(method.name)],
-			"the MCP reference does not document %q", mcpToolName(method.name))
-	}
-	// Both of this surface's non-RPC tools, individually — not just any local
-	// tool — so a third one added the way flowstate_test was (#241) and left
-	// out of [mcpTools] fails here rather than shipping mute in the reference.
-	for name := range documentedLocalTools {
-		assert.True(t, documented[name],
-			"the MCP reference does not document %q, which flow mcp registers with no RPC behind it", name)
-	}
+	return generator
 }
 
 // envVarLiteral matches a string literal that is one of this project's
@@ -196,12 +87,12 @@ var exemptSourceDirs = []string{
 //
 // A file added here is a claim that a variable is read under a name no reader can
 // grep for, so each one wants a sentence rather than a line.
-// cmd/flow/docsgen.go reads whatever the table names, in order to clear and
-// restore it — a read of every documented variable and, necessarily, of none
-// that is not.
+// cmd/flow/internal/docsgen/cli.go reads whatever the table names, in order to
+// clear and restore it — a read of every documented variable and, necessarily,
+// of none that is not.
 var exemptDynamicReads = map[string]bool{
-	"pkg/flowstate/v1/secrets/env.go": true,
-	"cmd/flow/docsgen.go":             true,
+	"pkg/flowstate/v1/secrets/env.go":  true,
+	"cmd/flow/internal/docsgen/cli.go": true,
 }
 
 // TestEveryEnvironmentReadIsDocumented is the drift test, and the point of the
@@ -223,12 +114,13 @@ var exemptDynamicReads = map[string]bool{
 func TestEveryEnvironmentReadIsDocumented(t *testing.T) {
 	t.Parallel()
 
+	generator := testGenerator(t)
 	found := scanEnvironmentReads(t)
 
 	for name, where := range found.names {
-		assert.True(t, environmentVariableIsDocumented(name),
+		assert.True(t, generator.environmentVariableIsDocumented(name),
 			"%s is read in %s and docs/reference/envvars.md does not carry it; "+
-				"add it to documentedEnvironmentVariables in cmd/flow/docsgen.go and regenerate",
+				"add it to documentedEnvironmentVariables in cmd/flow/internal/docsgen/envvars.go and regenerate",
 			name, strings.Join(where, ", "))
 	}
 
@@ -251,9 +143,10 @@ func TestEveryEnvironmentReadIsDocumented(t *testing.T) {
 func TestEveryDocumentedEnvironmentVariableIsRead(t *testing.T) {
 	t.Parallel()
 
+	generator := testGenerator(t)
 	found := scanEnvironmentReads(t)
 
-	for _, variable := range documentedEnvironmentVariables() {
+	for _, variable := range generator.documentedEnvironmentVariables() {
 		if variable.family {
 			continue
 		}
@@ -265,8 +158,8 @@ func TestEveryDocumentedEnvironmentVariableIsRead(t *testing.T) {
 
 // environmentVariableIsDocumented reports whether the table covers a name,
 // exactly or through a family.
-func environmentVariableIsDocumented(name string) bool {
-	for _, variable := range documentedEnvironmentVariables() {
+func (g *Generator) environmentVariableIsDocumented(name string) bool {
+	for _, variable := range g.documentedEnvironmentVariables() {
 		if variable.name == name {
 			return true
 		}
@@ -301,7 +194,7 @@ func environmentVariableIsDocumented(name string) bool {
 func scanEnvironmentReads(t *testing.T) scannedSource {
 	t.Helper()
 
-	root, err := filepath.Abs("../..")
+	root, err := filepath.Abs("../../../..")
 	require.NoError(t, err)
 
 	found := scannedSource{names: map[string][]string{}}

@@ -20,7 +20,7 @@ func TestGenerated(t *testing.T) {
 		{"pkg/flowstate/v1/flowstate.pb.go", []string{"proto/flowstate/v1/flowstate.proto", "buf", "generate"}},
 		{"pkg/flowstate/v1/plugin/protocol.pb.go", []string{"buf", "generate"}},
 		{"docs/reference/tasks.md", []string{"make docs"}},
-		{"docs/reference/envvars.md", []string{"cmd/flow/docsgen.go"}},
+		{"docs/reference/envvars.md", []string{"cmd/flow/internal/docsgen/envvars.go"}},
 		{"cmd/flow/internal/reference/mirror/DSL.md", []string{"docs/DSL.md", "go generate ./cmd/flow/internal/reference"}},
 		{"cmd/flow/internal/reference/mirror/examples/hello.yaml", []string{"go generate ./cmd/flow/internal/reference"}},
 		{"pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb", []string{"buf", "build"}},

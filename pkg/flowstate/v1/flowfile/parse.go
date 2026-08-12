@@ -77,7 +77,10 @@ var (
 	// `digest` is the second of those: the content hash the caller pins its
 	// callee to, checked against the bytes the call reads when this file is
 	// compiled. See [compiler.verifySourcePin].
-	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "with", "digest"}
+	// `async` is here rather than in nodeKindKeys for the reason `undo` is: it
+	// is not a kind of work, it is a property of a step doing some other kind —
+	// the one marker that lets execution depart from written order (#418).
+	stepPropertyKeys = []string{"id", "description", "if", "vars", "timeout", "retry", "continue_on_error", "undo", "async", "with", "digest"}
 
 	// nodeKindKeys are the kinds of work that are not a task, and so name a node
 	// kind in the schema rather than anything in the registry.
@@ -1465,6 +1468,19 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		undoPath := fieldPath(path, "undo")
 		c.pos.record(undoPath, spanOfNode(f.key))
 		step.Undo = c.undo(f.value, undoPath, r)
+	}
+
+	// Read where it is written, above the work: `async: true` says how this step
+	// relates to the ones around it, which is a thing to know before reading what
+	// it does. Set only when true, so that a step spelling out the default is
+	// equal to one that says nothing — the same rule `continue_on_error:` follows,
+	// and what keeps Marshal an exact inverse.
+	if f, found := fields.get("async"); found {
+		async, ok := c.boolean(f.value, fieldPath(path, "async"),
+			ref{step: step.GetId(), path: fieldPath(path, "async"), label: "async"})
+		if ok {
+			step.Async = async
+		}
 	}
 
 	step.Policy = c.policy(fields, path, r)
