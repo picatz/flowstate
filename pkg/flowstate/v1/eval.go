@@ -1266,6 +1266,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 // unwind in reverse written order. What it deliberately does not rehearse is
 // latency, which is the one thing `async:` is for and the one thing a local
 // rehearsal has never claimed to predict.
+//
 // A held step is one of two shapes, and never both: either the work already ran
 // and outputs/err are what it produced, or the schedule held it back and run is
 // the work itself, waiting for the join to call it once
@@ -1924,9 +1925,10 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 	for _, i := range ScheduleOrder(SchedulerFromContext(ctx), SchedulePointParallelBranches, len(parallel.GetBranches())) {
 		branch := parallel.GetBranches()[i]
 		// Every branch starts from the outputs that existed before the block, so
-		// a branch cannot observe a sibling's work even though they run in order
-		// here. A workflow that accidentally depended on that would behave
-		// differently under concurrent execution.
+		// a branch cannot observe a sibling's work even though they run one at a
+		// time here, in whatever order the schedule chose. A workflow that
+		// accidentally depended on that would behave differently under concurrent
+		// execution.
 		branchOutputs := cloneStepOutputs(before)
 
 		// Derived rather than rebuilt. A hand-built Scope here is how the profile
