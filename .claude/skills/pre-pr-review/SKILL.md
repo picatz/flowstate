@@ -48,6 +48,17 @@ pre-push pass.
    byte. Test by comparing bytes or compiling the result; "output still
    validates" has let every rewriter bug through.
 
+7. **A gate reports green only for what it actually ran.** A check that
+   reports green by not running is worse than no check at all, because it
+   spends the same trust a real pass earns without doing the work. If a
+   leg cannot run in this environment, say so by name rather than staying
+   silent or claiming a pass. The local appearance gate now prints a NOT
+   VERIFIED line when vhs and ttyd are absent, points at the CI job that
+   does run it and at `make appearance-update`, and never claims the check
+   passed. Generalize this before opening a PR: for every gate leg you
+   could not run locally, name it in the PR body rather than letting
+   silence read as green.
+
 ## Receiver-cost checks
 
 Over the PR body and every shipped artifact:
