@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/log"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -478,6 +482,42 @@ func TestRoutesReportsWhatIsServed(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, []string{"order-webhook/storefront"}, newReceiver(t).Routes())
+}
+
+// TestADeliveryTheDeploymentCannotStartIsRetryable is the other half of that
+// asymmetry, and the one a sender's retry logic depends on.
+//
+// A payload that will never bind and a cluster that was briefly unreachable are
+// both "verified, and no run" — but a provider must not retry the first and must
+// retry the second. Answering both with one status would make a provider either
+// hammer a payload that can never work or give up on an outage.
+func TestADeliveryTheDeploymentCannotStartIsRetryable(t *testing.T) {
+	t.Parallel()
+
+	// A client that dials only when used, at a port nothing answers on: the
+	// receiver's own path is exercised exactly as it would be against a cluster
+	// that has gone away.
+	unreachable, err := client.NewLazyClient(client.Options{
+		HostPort: "127.0.0.1:1",
+		Logger:   log.NewStructuredLogger(slog.New(slog.DiscardHandler)),
+	})
+	require.NoError(t, err)
+
+	receiver, err := server.New(unreachable).NewWebhookReceiver(t.Context(),
+		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret})
+	require.NoError(t, err)
+
+	resp := deliver(t, receiver, "/webhooks/order-webhook/storefront",
+		deliveryBody("evt_unreachable"), signed)
+
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode,
+		"a delivery this deployment could not start was answered as though the payload were at fault")
+	assert.NotEmpty(t, resp.Header.Get("Retry-After"), "a retryable refusal did not say so")
+
+	said, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(said), "127.0.0.1",
+		"the refusal described this deployment's own infrastructure to the sender")
 }
 
 // TestAVerifiedDeliveryThatDoesNotMapIsReportedHonestly is the asymmetry the

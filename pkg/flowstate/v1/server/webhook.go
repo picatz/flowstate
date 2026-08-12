@@ -115,6 +115,16 @@ const (
 	deliveryMemoKey = "flowstate.delivery"
 )
 
+// errDeliveryNotStarted marks the one failure past verification that is the
+// *deployment's* rather than the payload's: everything up to here said the
+// delivery was good and then the run could not be created.
+//
+// It exists so the two are answered differently, which matters to a sender that
+// retries: a payload that will never bind must not be retried, and a cluster that
+// was briefly unreachable must be. Distinguishing them by error text would be a
+// promise about wording that nothing keeps.
+var errDeliveryNotStarted = errors.New("the run this delivery names could not be started")
+
 // WebhookReceiver serves deliveries to the webhooks a deployment has been
 // configured to accept.
 //
@@ -460,12 +470,25 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Verified: true,
 	})
 	if err != nil {
-		// A verified delivery that cannot start a run is the deployment's or the
-		// file's problem, not the sender's guess: it is reported honestly,
-		// because whoever holds the signing key is entitled to know their payload
-		// did not map.
 		r.log.ErrorContext(req.Context(), "a verified delivery did not start a run",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+
+		if errors.Is(err, errDeliveryNotStarted) {
+			// The deployment could not do what it was asked, which a sender must
+			// retry — so a status that means "try again" rather than one that
+			// means "this payload will never work". The sentence is generic on
+			// purpose: what went wrong between this server and Temporal is not
+			// the sender's business even when the sender is genuine.
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "the delivery could not be started; retry", http.StatusServiceUnavailable)
+
+			return
+		}
+
+		// Otherwise the payload did not satisfy the file — a mapping reaching a
+		// field it does not carry, an input that will not bind — which no retry
+		// fixes. Reported precisely, because whoever holds the signing key is
+		// entitled to know why their delivery did nothing.
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 
 		return
@@ -630,7 +653,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 			}, nil
 		}
 
-		return AcceptedDelivery{}, fmt.Errorf("starting the run this delivery names: %w", err)
+		return AcceptedDelivery{}, fmt.Errorf("%w: %w", errDeliveryNotStarted, err)
 	}
 
 	return AcceptedDelivery{
