@@ -137,6 +137,16 @@ type executor struct {
 	// there.
 	undoScope v1.UndoScope
 
+	// undoSlot, when non-nil, is the position in the shared [v1.UndoLog] that
+	// this executor's one step fills instead of appending to the end.
+	//
+	// Set only on the executor an async step is launched onto, and nil
+	// everywhere else, which is why it is a pointer: zero is a perfectly good
+	// slot, so an int field would make every executor literal that omits it
+	// claim slot zero. See [v1.UndoLog.Reserve] for what the slot is for — the
+	// log has to read in written order even when joins do not happen in it.
+	undoSlot *int
+
 	// tolerated, when non-nil, collects the id of every step whose failure this
 	// executor's own runNodes records and continues past. Set only on the
 	// executors built for a loop or for_each iteration body, whose caller hands
@@ -170,12 +180,32 @@ type signalCarry struct {
 //
 // depth is the frame depth (see the package comment above); susp is the suspend
 // depth, which a call leaves unchanged and everything else that nests advances.
-func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
+func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 	start := 0
 	resuming := depth < len(e.resume)
 	if resuming {
 		start = int(e.resume[depth].GetNextNode())
 	}
+
+	// This scope's outstanding async work, in the order it was started — which is
+	// written order, since a scope starts a step where it is written.
+	var started []*asyncStep
+
+	// A scope's end joins everything it started, and *every* way out of the loop
+	// below is an end: the successful one, the failing one, and the
+	// Continue-As-New one. Draining here rather than at the successful exit is
+	// what makes that structural rather than remembered. It is also what keeps
+	// the run deterministic when a step fails while siblings are still in
+	// flight: a coroutine still running when this function returned would
+	// register its compensation after the failure had already unwound, or never,
+	// depending on scheduling — the completion order leaking into the one place
+	// #418 slice 0.5 decided it never may. Nothing is published here; a scope
+	// that is leaving does not merge outputs nobody joined.
+	defer func() {
+		for _, outstanding := range started {
+			outstanding.wait(e.ctx)
+		}
+	}()
 
 	for i := start; i < len(nodes); i++ {
 		node := nodes[i]
@@ -186,6 +216,27 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 		// still, with a position, which is where an author actually meets it.
 		if err := v1.CheckUndoPlacement(node, e.undoScope); err != nil {
 			return stepFailed(err, "step %q", node.GetId())
+		}
+		// The same rule at the same point, for the same reason: a step marked
+		// `async:` where this engine will not honour it must not run half of
+		// itself first. The local driver refuses at the identical point, and
+		// `flow validate` refuses it earlier still, with a position.
+		if err := v1.CheckAsyncPlacement(node, e.undoScope); err != nil {
+			return stepFailed(err, "step %q", node.GetId())
+		}
+
+		// Every syntactic mention of an outstanding async step's outputs joins it
+		// first, and the joins happen here, ahead of the condition, because the
+		// condition is itself a mention: an `if:` naming an async step waits for
+		// it and may then still skip the step. That is the honest outcome — the
+		// data decided the skip — and the local driver joins at the identical
+		// point.
+		for _, id := range v1.AsyncJoinTargets(node, asyncIDs(started), e.scope.GetOutputs()) {
+			joined, remaining := takeAsync(started, id)
+			started = remaining
+			if err := e.joinAsync(joined); err != nil {
+				return err
+			}
 		}
 
 		e.setFrame(depth, i)
@@ -204,45 +255,19 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 			continue
 		}
 
-		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
-			if errors.Is(err, errContinueAsNew) {
-				return err
-			}
-			// Cancellation is not a step failure, so `continue_on_error` does not
-			// get to tolerate it. That policy says "this task may fail without
-			// stopping the workload"; it says nothing about the workload being
-			// stopped, and the two are opposite instructions.
-			//
-			// Without this the run walks on after being cancelled. Every
-			// remaining step then fails immediately with the same cancellation —
-			// the context is already cancelled — and each is tolerated in turn,
-			// so runNodes returns nil and the workflow *completes*. `flow cancel`
-			// would report success and the outputs would read as an ordinary
-			// best-effort failure. That is worse than the FAILED status this
-			// branch set out to fix, because nothing about it looks wrong.
-			if temporal.IsCanceledError(err) {
-				return err
-			}
-			if !node.GetPolicy().GetContinueOnError() {
-				// Recorded on the way out, under the same key and in the same shape a
-				// tolerated failure is recorded in, so the [v1.PartialTranscript] this
-				// run hands back names the step it stopped on. Nothing else can observe
-				// it: the run is over and no later step evaluates against this scope.
-				// The local driver records at the identical point, and it has to, or the
-				// two drivers would disagree about what a failed run did.
-				e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
-
-				// The step's position is added here, on the way out, rather than
-				// where the failure was raised — so that the branch below, which
-				// keeps the failure inside this step, records it without naming
-				// the step it is already filed under. The local driver adds its
-				// `step %q` at exactly this point too.
+		if node.GetAsync() {
+			if err := v1.CheckAsyncWidth(len(started), node.GetId()); err != nil {
 				return stepFailed(err, "step %q", node.GetId())
 			}
-			workflow.GetLogger(e.ctx).Info("step failed but is allowed to continue",
-				"id", node.GetId(), "error", err.Error())
-			e.noteTolerated(node.GetId())
-			e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+			started = append(started, e.startAsync(node, depth, susp))
+
+			continue
+		}
+
+		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
+			if propagate := e.recordOutcome(node, err); propagate != nil {
+				return propagate
+			}
 		}
 
 		e.processed++
@@ -250,15 +275,87 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 
 		// Suspending is only possible where the position is representable, and
 		// only between steps that a call cannot make opaque. A deeper suspend
-		// level (a for_each body, a parallel branch) completes first.
-		if susp == 0 && i < len(nodes)-1 && e.shouldSuspend() {
+		// level (a for_each body, a parallel branch) completes first — and so
+		// does async work this scope started: a segment that continued as new
+		// with a coroutine still running would hand the next segment a scope
+		// whose outstanding work exists in neither of them. The scope-end join
+		// below is a few steps away at most, since the list is capped.
+		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			e.setFrame(depth, i+1)
+
 			return errContinueAsNew
 		}
 	}
 
-	// This level finished, so it contributes nothing to a resume path.
+	// This level finished, so it joins what it started, in written order, before
+	// it contributes nothing to a resume path.
+	for len(started) > 0 {
+		joined := started[0]
+		started = started[1:]
+		if err := e.joinAsync(joined); err != nil {
+			return err
+		}
+	}
+
 	e.truncateFrames(depth)
+
+	return nil
+}
+
+// recordOutcome applies one finished step's failure to the scope and reports the
+// error the enclosing walk should propagate, or nil where the step's policy
+// tolerates it.
+//
+// One body for the step run in written order and for the async step heard at its
+// join, because every decision in it — is this a cancellation, does
+// `continue_on_error:` tolerate it, what is recorded under the step's id — has to
+// come out the same either way, and `async:` changes only where a failure is
+// heard. The local driver keeps its own two callers on one body
+// ([v1.recordStepOutcome]'s equivalent) for the same reason.
+func (e *executor) recordOutcome(node *v1.Node, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, errContinueAsNew) {
+		return err
+	}
+	// Cancellation is not a step failure, so `continue_on_error` does not
+	// get to tolerate it. That policy says "this task may fail without
+	// stopping the workload"; it says nothing about the workload being
+	// stopped, and the two are opposite instructions.
+	//
+	// Without this the run walks on after being cancelled. Every
+	// remaining step then fails immediately with the same cancellation —
+	// the context is already cancelled — and each is tolerated in turn,
+	// so runNodes returns nil and the workflow *completes*. `flow cancel`
+	// would report success and the outputs would read as an ordinary
+	// best-effort failure. That is worse than the FAILED status this
+	// branch set out to fix, because nothing about it looks wrong.
+	if temporal.IsCanceledError(err) {
+		return err
+	}
+	if !node.GetPolicy().GetContinueOnError() {
+		// Recorded on the way out, under the same key and in the same shape a
+		// tolerated failure is recorded in, so the [v1.PartialTranscript] this
+		// run hands back names the step it stopped on. Nothing else can observe
+		// it: the run is over and no later step evaluates against this scope.
+		// The local driver records at the identical point, and it has to, or the
+		// two drivers would disagree about what a failed run did.
+		e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+
+		// The step's position is added here, on the way out, rather than
+		// where the failure was raised — so that the branch below, which
+		// keeps the failure inside this step, records it without naming
+		// the step it is already filed under. The local driver adds its
+		// `step %q` at exactly this point too.
+		return stepFailed(err, "step %q", node.GetId())
+	}
+	workflow.GetLogger(e.ctx).Info("step failed but is allowed to continue",
+		"id", node.GetId(), "error", err.Error())
+	e.noteTolerated(node.GetId())
+	e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
+
 	return nil
 }
 
@@ -331,7 +428,14 @@ func (e *executor) registerUndo(node *v1.Node, scope *v1.Scope) error {
 	if err != nil {
 		return nodeFailed(err)
 	}
-	e.undo.Register(entry)
+	// An async step fills the slot its written position reserved; everything else
+	// appends, where registration order and written order coincide. See
+	// [v1.UndoLog.Reserve] and [executor.startAsync].
+	if e.undoSlot != nil {
+		e.undo.Fill(*e.undoSlot, entry)
+	} else {
+		e.undo.Register(entry)
+	}
 
 	return nil
 }

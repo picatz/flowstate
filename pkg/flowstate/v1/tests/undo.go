@@ -486,7 +486,111 @@ func UndoCases(base string) []UndoCase {
 			Recorded:        []string{"s", "l", "r", "t", "boom", "undo-t", "undo-r", "undo-l", "undo-s"},
 			UnorderedPrefix: 3,
 		},
+		{
+			// #418 slice 1 against #418 slice 0.5: the same reverse-written-order
+			// rule, now with steps whose *joins* happen in an order the text does
+			// not have. `use_b` is written before `use_a`, so the second async
+			// step is joined first — and an implementation that appended each
+			// compensation where it was joined would build the log as
+			// setup, b, a and unwind a before b. Written order says the opposite,
+			// and it is the whole claim: the reader of a failed run must be told
+			// what was taken back in the order the file can be read in, not in
+			// the order a scheduler happened to resolve things.
+			//
+			// The forcing needs no timer, unlike the `parallel:` case above, and
+			// that is what makes this deterministic on both drivers: the
+			// disagreement is created by the *text* (which step reads which)
+			// rather than by which coroutine finished first, so a local run whose
+			// async work is sequential reproduces it exactly.
+			Name: "async steps unwind in reverse written order not join order",
+			Workflow: &v1.Workflow{Name: "undo-async-written-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				undoing(records("setup", base, "s"), base, "/do/undo"),
+				async(undoing(records("a", base, "a"), base, "/do/undo")),
+				async(undoing(records("b", base, "b"), base, "/do/undo")),
+				joins("use_b", base, "ub", "b"),
+				joins("use_a", base, "ua", "a"),
+				fails("boom", base, "boom"),
+			}},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "b", undid "a", ` +
+				`undid "setup"`,
+			Recorded: []string{
+				"s", "a", "b", "ub-b", "ua-a", "boom",
+				"undo-b", "undo-a", "undo-s",
+			},
+			// Everything up to the failure is a set: which of the two async
+			// requests reaches the server first is the scheduler's choice and no
+			// claim of this corpus, and the two readers are only ordered relative
+			// to the step each joins. The compensations after it are order-exact,
+			// which is the claim.
+			UnorderedPrefix: 5,
+		},
+		{
+			// An effect that happened is compensable even though nothing joined
+			// it. `a` is started and the scope leaves on a failure before any
+			// step reads it — so the scope's end joins it on the way out, and the
+			// compensation the step registered when it succeeded comes off.
+			// Without the drain on the failing path this is the case that would
+			// leave a provisioned thing behind, or register it after the unwind
+			// had already run, depending on scheduling.
+			Name: "an async step nothing joined is still compensated",
+			Workflow: &v1.Workflow{Name: "undo-async-unjoined", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				async(undoing(records("a", base, "a"), base, "/do/undo")),
+				fails("boom", base, "boom"),
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "a"`,
+			Recorded:        []string{"a", "boom", "undo-a"},
+			UnorderedPrefix: 2,
+		},
+		{
+			// The membership half, for async: written order decides where a
+			// registration sits in the unwind and never invents one. The async
+			// step fails, so its `undo:` stays absent while the sequential step
+			// written after it — which ran, because a failure not yet joined
+			// cannot stop anything — is taken back.
+			Name: "a failed async step registers no compensation",
+			Workflow: &v1.Workflow{Name: "undo-async-failed", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				func() *v1.Node {
+					node := async(fails("kaboom", base, "kaboom"))
+					node.Undo = &v1.Compensation{Task: &v1.Task{
+						Name:   "http",
+						Inputs: map[string]*v1.Value{"url": v1.NewLiteral(base + "/do/undo-kaboom")},
+					}}
+
+					return node
+				}(),
+				undoing(records("right", base, "right"), base, "/do/undo"),
+				joins("reads_it", base, "never", "kaboom"),
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "right"`,
+			Recorded:        []string{"kaboom", "right", "undo-right"},
+			UnorderedPrefix: 2,
+		},
 	}
+}
+
+// async marks a step to be started where it is written and joined where it is
+// read.
+func async(node *v1.Node) *v1.Node {
+	node.Async = true
+
+	return node
+}
+
+// joins returns a step that posts a token and, in posting it, names an async
+// step's output — which is what joins that step here.
+//
+// The reference is in the URL rather than in a condition so that the join and
+// the effect are the same request: the recorded token carries the joined step's
+// own answer (`ub-b`), so a case cannot pass by joining the wrong step.
+func joins(id, base, token, step string) *v1.Node {
+	return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{
+		Name: "http",
+		Inputs: map[string]*v1.Value{
+			"url":     v1.NewExpr(`"` + base + `/do/` + token + `-" + steps.` + step + `.said`),
+			"outputs": v1.NewExpr(`{"said": response.body}`),
+		},
+	}}}
 }
 
 // UndoCancellationCase is a workflow cancelled while it is parked, paired with

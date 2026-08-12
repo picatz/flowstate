@@ -1277,6 +1277,59 @@ message Node {
   // a kind of work a step does. It is a property of a step that does some other
   // kind, exactly as `policy` and `condition` are.
   Compensation undo = 10;
+
+  // Async marks a step execution may depart from written order for, as
+  // `async: true`.
+  //
+  // The opt-in half of structured concurrency (issue #418). Flowstate already
+  // carries every dependency edge in the most natural position there is —
+  // `${steps.build.artifact}` *is* the edge, written at the point of use — so
+  // the open question was never how an author states edges but when execution
+  // may leave written order. This is the answer: never, unless a step says so.
+  //
+  // Three rules carry it, and each is a property of the *scope* the step is
+  // written in rather than of the step:
+  //
+  //   - **Default unchanged.** A step without this runs in written order. No
+  //     specification that predates the field changes meaning.
+  //   - **A reference is a join.** Any syntactic mention of an async step's
+  //     outputs — in `if:`, `vars:`, a task input, a `value:` expression, a
+  //     `has()` guard, a call's arguments — waits for it before that step
+  //     evaluates anything. Total by design: a presence check that could answer
+  //     "not finished yet" would make completion order observable, which is the
+  //     one thing this design promises it never is.
+  //   - **A scope's end joins what it started.** The end of the enclosing step
+  //     list — a workflow, a callee's body, a loop body, a switch case — joins
+  //     every async step still outstanding, in written order, on the failing
+  //     path as well as the succeeding one. There is no fire-and-forget.
+  //
+  // Outputs therefore become visible only at joins, at fixed textual positions,
+  // so two runs that complete their async steps in different orders record the
+  // same thing. A failure is reported against the async step itself and surfaces
+  // where it is joined.
+  //
+  // # What may carry it
+  //
+  // A task step, at a sequential placement. [CheckAsyncPlacement] owns the rules
+  // and both drivers plus the validator ask it: control flow has no work of its
+  // own to overlap, a `wait:` marked async would be a parked step joined only at
+  // scope end — a deadlock its author cannot see — and a `value:` is a pure
+  // instant computation with nothing to overlap. A `for_each` body or a
+  // `parallel` branch refuses it too, in this slice: concurrency inside
+  // concurrency multiplies width by a factor the enclosing construct chooses,
+  // and the answer to that belongs with async `call:` rather than ahead of it.
+  //
+  // # Bounded
+  //
+  // Width is bounded by [MaxAsyncInFlight] per scope, checked as work is
+  // launched rather than trusted to the step cap, because it is the count of
+  // simultaneously outstanding activities — the resource — rather than the count
+  // of steps in the file.
+  //
+  // Field 15 and a bare bool rather than an arm of the `kind` oneof, for the
+  // reason `undo` is field 10: departing from written order is not a kind of
+  // work, it is a property of a step doing some other kind.
+  bool async = 15;
 }
 
 // Compensation is what undoes one step.

@@ -1101,11 +1101,54 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 // was tolerated" is a fact is the line below that records it. Everything that
 // is not a loop body passes nil, which collects nothing.
 func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) error {
+	// The scope's outstanding async work, in the order it was started — which is
+	// written order, since a scope starts a step where it is written. See
+	// [asyncHeld] for why this driver holds a completed result rather than a
+	// running one.
+	var (
+		started []string
+		held    = map[string]*asyncHeld{}
+	)
+
+	// join publishes one outstanding async step at the position that asked for
+	// it: its outputs become visible here, or its failure is reported here,
+	// through exactly the same [recordStepOutcome] a step written in order
+	// reaches. Nothing about being async changes what a failure says or whether
+	// `continue_on_error:` tolerates it — only where it is heard.
+	join := func(id string) error {
+		outcome, outstanding := held[id]
+		if !outstanding {
+			return nil
+		}
+		delete(held, id)
+		started = slices.DeleteFunc(started, func(other string) bool { return other == id })
+
+		return recordStepOutcome(ctx, outcome.node, outcome.outputs, outcome.err, scope, tolerated)
+	}
+
 	for _, node := range nodes {
 		// Refused before the step runs rather than after it succeeds, so a workload
 		// the engine cannot honour does not perform half of itself first.
 		if err := CheckUndoPlacement(node, placement); err != nil {
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		// The same rule at the same point, for the same reason: a step marked
+		// `async:` where this engine will not honour it must not run half of
+		// itself first. `flow validate` refuses it earlier, with a position.
+		if err := CheckAsyncPlacement(node, placement); err != nil {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+
+		// Every mention is a join, and every mention includes the ones evaluated
+		// before the step runs — its `if:` first of all. So the joins happen here,
+		// ahead of the condition, rather than around the work: a condition that
+		// names an async step waits for it and then may still skip the step, which
+		// is the honest outcome (the data decided the skip) and the one the
+		// durable driver reaches at the identical point.
+		for _, id := range AsyncJoinTargets(node, started, scope.GetOutputs()) {
+			if err := join(id); err != nil {
+				return err
+			}
 		}
 
 		nodeCtx := ctx
@@ -1120,48 +1163,118 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
-		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, tolerated)
-		if err != nil {
-			// Cancellation is not a step failure, so `continue_on_error` does not
-			// get to tolerate it — the durable driver says the same thing at the
-			// same point, and for the same reason: that policy says "this task may
-			// fail without stopping the workload", not "the workload may not be
-			// stopped". Tolerated, a cancelled run would walk on through every
-			// remaining step, fail each one instantly on the same dead context,
-			// record each as a best-effort failure, and *succeed*.
-			//
-			// Asked of the run's context rather than of the error, because a
-			// step's own `timeout:` also arrives here as a context error and that
-			// one is an ordinary failure the policy exists to tolerate.
-			if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-				return fmt.Errorf("step %q: %w", node.GetId(), err)
+		if node.GetAsync() {
+			if err := CheckAsyncWidth(len(started), node.GetId()); err != nil {
+				return err
 			}
-			if !node.GetPolicy().GetContinueOnError() {
-				// Recorded on the way out, under the same key and in the same shape a
-				// tolerated failure is recorded in, so that the [PartialTranscript] the
-				// run hands back names the step it stopped on rather than ending one
-				// step short of the truth. Nothing else can observe it: the run is over,
-				// no later step evaluates against this scope, and the successful path
-				// never reaches this line. The durable driver records at the identical
-				// point, for the identical reason.
-				scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 
-				return fmt.Errorf("step %q: %w", node.GetId(), err)
-			}
-			// Recorded without the `step %q` position the propagating path adds:
-			// the id is implied by the key this is recorded under, and repeating it
-			// would make `${steps.<id>.error}` name its own step. The durable
-			// driver draws the same line at the same place — see stepFailed.
-			if tolerated != nil {
-				tolerated[node.GetId()] = struct{}{}
-			}
-			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+			// The slot is taken *here*, where the step is written, and filled when
+			// the step finishes. That is what keeps the unwind in reverse written
+			// order once joins can happen in an order the text does not have — see
+			// [UndoLog.Reserve].
+			slot := undo.Reserve()
+			outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, slot, tolerated)
+			held[node.GetId()] = &asyncHeld{node: node, outputs: outputs, err: err}
+			started = append(started, node.GetId())
+
 			continue
 		}
-		if outputs != nil {
-			scope.Outputs.StepValues[node.GetId()] = outputs
+
+		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, registerAtCompletion, tolerated)
+		if err := recordStepOutcome(ctx, node, outputs, err, scope, tolerated); err != nil {
+			return err
 		}
 	}
+
+	// The scope's end joins everything it started, in written order. Not only on
+	// the way out successfully: a scope that is failing has already returned
+	// above, and what it leaves behind is nothing, because this driver's async
+	// work is complete by the time it is held. The durable driver, whose work is
+	// genuinely in flight, has to drain on both paths — see its runNodes.
+	for _, id := range slices.Clone(started) {
+		if err := join(id); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// asyncHeld is one async step's finished result, waiting for the position that
+// joins it.
+//
+// This driver runs an async step's work where it is written, in order, and holds
+// what it produced until a join asks for it — the same rehearsal `parallel:` gets
+// here, whose branches also run in written order locally while running
+// concurrently in production. What that buys is that everything an author can
+// *see* is identical on both drivers: outputs appear at joins, a failure is heard
+// at the join rather than where the step is written, and the compensations
+// unwind in reverse written order. What it deliberately does not rehearse is
+// latency, which is the one thing `async:` is for and the one thing a local
+// rehearsal has never claimed to predict.
+type asyncHeld struct {
+	node    *Node
+	outputs *Node_Outputs
+	err     error
+}
+
+// registerAtCompletion is the slot value meaning "this step is not async, so
+// register its compensation at the end of the log the moment it succeeds" — the
+// sequential behaviour, where registration order and written order coincide.
+const registerAtCompletion = -1
+
+// recordStepOutcome applies one finished step's result to the scope, and reports
+// the error the enclosing walk should propagate.
+//
+// One function for the step written in order and the async step heard at its
+// join, because every decision in it — is this a cancellation, does
+// `continue_on_error:` tolerate it, what is recorded under the step's id — must
+// come out the same either way. The durable driver keeps the same two callers on
+// one body for the same reason.
+func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, err error, scope *Scope, tolerated map[string]struct{}) error {
+	if err != nil {
+		// Cancellation is not a step failure, so `continue_on_error` does not
+		// get to tolerate it — the durable driver says the same thing at the
+		// same point, and for the same reason: that policy says "this task may
+		// fail without stopping the workload", not "the workload may not be
+		// stopped". Tolerated, a cancelled run would walk on through every
+		// remaining step, fail each one instantly on the same dead context,
+		// record each as a best-effort failure, and *succeed*.
+		//
+		// Asked of the run's context rather than of the error, because a
+		// step's own `timeout:` also arrives here as a context error and that
+		// one is an ordinary failure the policy exists to tolerate.
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		if !node.GetPolicy().GetContinueOnError() {
+			// Recorded on the way out, under the same key and in the same shape a
+			// tolerated failure is recorded in, so that the [PartialTranscript] the
+			// run hands back names the step it stopped on rather than ending one
+			// step short of the truth. Nothing else can observe it: the run is over,
+			// no later step evaluates against this scope, and the successful path
+			// never reaches this line. The durable driver records at the identical
+			// point, for the identical reason.
+			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+
+			return fmt.Errorf("step %q: %w", node.GetId(), err)
+		}
+		// Recorded without the `step %q` position the propagating path adds:
+		// the id is implied by the key this is recorded under, and repeating it
+		// would make `${steps.<id>.error}` name its own step. The durable
+		// driver draws the same line at the same place — see stepFailed.
+		if tolerated != nil {
+			tolerated[node.GetId()] = struct{}{}
+		}
+		scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+
+		return nil
+	}
+
+	if outputs != nil {
+		scope.Outputs.StepValues[node.GetId()] = outputs
+	}
+
 	return nil
 }
 
@@ -1201,7 +1314,13 @@ func failureRecord(err error) *Node_Outputs {
 // Evaluated after the condition deliberately: `if:` decides whether the step runs
 // at all, so a var it declares does not exist yet when the question is asked —
 // and a var whose expression would fail must not fail a step that is skipped.
-func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
+//
+// slot is [registerAtCompletion] for a step written in order, and the position
+// [UndoLog.Reserve] handed out for an async one. Either way the compensation is
+// resolved here, at the moment the step succeeds and while its inner scope is
+// live; what the slot decides is only *where in the log* it lands, which is what
+// keeps the unwind in reverse written order when joins are out of order.
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, slot int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
@@ -1226,7 +1345,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 	if err != nil {
 		return nil, err
 	}
-	undo.Register(entry)
+	if slot == registerAtCompletion {
+		undo.Register(entry)
+	} else {
+		undo.Fill(slot, entry)
+	}
 
 	return outputs, nil
 }
