@@ -396,6 +396,96 @@ func UndoCases(base string) []UndoCase {
 			Recorded:        []string{"kaboom", "right", "undo-right"},
 			UnorderedPrefix: 2,
 		},
+		{
+			// #418's slice 0.5, pinned: `undo:` unwinds in reverse *written*
+			// order, never reverse completion order. If completion order could
+			// reach the unwind, "quick" would come off last; the written-order
+			// rule says it comes off first, because its branch is written last.
+			// The compensations after the prefix are order-exact, which is the
+			// whole claim.
+			//
+			// The `sleep:` opening the first branch is what makes the forcing
+			// *deterministic* rather than probable. A branch that is merely
+			// longer — more chained activities — still leaves the scheduler
+			// free to finish it first, and in that execution a completion-order
+			// merge produces the very order this case expects, so the
+			// regression it pins against would pass unseen. A timer cannot be
+			// raced past: the durable test environment advances virtual time
+			// only once no activity is runnable, so the second branch's step
+			// has completed — and registered into its private log — before the
+			// first branch starts any work at all. Locally the branches are
+			// sequential and the hold is a short real sleep, so nothing blocks
+			// on work that has not started yet.
+			Name: "parallel siblings unwind in reverse written order not completion order",
+			Workflow: &v1.Workflow{Name: "undo-parallel-written-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{
+						{Id: "hold", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Duration{Duration: durationpb.New(100 * time.Millisecond)},
+						}}},
+						undoing(records("slow_a", base, "a1"), base, "/do/undo"),
+						undoing(records("slow_b", base, "a2"), base, "/do/undo"),
+					}},
+					{Steps: []*v1.Node{undoing(records("quick", base, "c"), base, "/do/undo")}},
+				}}}},
+				fails("boom", base, "boom"),
+			}},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "quick", undid "slow_b", ` +
+				`undid "slow_a"`,
+			Recorded:        []string{"a1", "a2", "c", "boom", "undo-c", "undo-a2", "undo-a1"},
+			UnorderedPrefix: 3,
+		},
+		{
+			// The membership half of the same rule. Written order decides where
+			// a registration sits in the unwind; it never invents one for a
+			// sibling that failed — registration still happens only at a step's
+			// completion, so the failing branch's `undo:` stays absent while
+			// the completed sibling's runs. Without this, reverse-written order
+			// could be misread as a walk over the file.
+			Name: "a failed parallel sibling registers no compensation",
+			Workflow: &v1.Workflow{Name: "undo-parallel-failed-sibling", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{func() *v1.Node {
+						node := fails("kaboom", base, "kaboom")
+						node.Undo = &v1.Compensation{Task: &v1.Task{
+							Name:   "http",
+							Inputs: map[string]*v1.Value{"url": v1.NewLiteral(base + "/do/undo-kaboom")},
+						}}
+
+						return node
+					}()}},
+					{Steps: []*v1.Node{undoing(records("right", base, "right"), base, "/do/undo")}},
+				}}}},
+			}},
+			Fails: true, Summary: `; compensation ran in reverse order: undid "right"`,
+			Recorded:        []string{"kaboom", "right", "undo-right"},
+			UnorderedPrefix: 2,
+		},
+		{
+			// Sequential steps and a parallel block unwind as one written
+			// order: the step after the block comes off first, then the
+			// block's branches in reverse written order, then the step before
+			// it. The prefix covers only the block's two concurrent requests
+			// plus the sequential step before them for the leading-window
+			// mechanics; everything after — including every compensation — is
+			// order-exact.
+			Name: "sequential and parallel steps unwind as one reverse written order",
+			Workflow: &v1.Workflow{Name: "undo-mixed-written-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+				undoing(records("before", base, "s"), base, "/do/undo"),
+				{Id: "both", Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{Branches: []*v1.Parallel_Branch{
+					{Steps: []*v1.Node{undoing(records("left", base, "l"), base, "/do/undo")}},
+					{Steps: []*v1.Node{undoing(records("right", base, "r"), base, "/do/undo")}},
+				}}}},
+				undoing(records("after", base, "t"), base, "/do/undo"),
+				fails("boom", base, "boom"),
+			}},
+			Fails: true,
+			Summary: `; compensation ran in reverse order: undid "after", undid "right", ` +
+				`undid "left", undid "before"`,
+			Recorded:        []string{"s", "l", "r", "t", "boom", "undo-t", "undo-r", "undo-l", "undo-s"},
+			UnorderedPrefix: 3,
+		},
 	}
 }
 

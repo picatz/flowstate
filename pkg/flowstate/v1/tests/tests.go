@@ -1,3 +1,8 @@
+// Package tests holds the behavior cases both execution drivers must pass.
+// The local interpreter and the durable engine each run every [Case] set
+// here, which is what keeps `flow run local` honest about what a Temporal run
+// will do; add a case to this package rather than to one driver's own tests,
+// and check that both drivers actually call the set it joins.
 package tests
 
 import (
