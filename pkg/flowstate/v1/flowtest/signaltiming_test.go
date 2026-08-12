@@ -55,7 +55,7 @@ import (
 // counts the iterations whose wait actually lapsed, so it *is* the period the
 // signal landed in, minus one.
 const periodsWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: periods
 steps:
   - id: periods
@@ -201,7 +201,7 @@ func TestAnsweredGateDoesNotDragTheClockToItsUnusedDeadline(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: two-gates
 steps:
   - id: first
@@ -262,7 +262,7 @@ func TestSignalDeliveredWhileTheRunIsElsewhereDoesNotStopTheClock(t *testing.T) 
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: asleep-when-it-lands
 steps:
   - id: nap
@@ -318,7 +318,7 @@ func TestAGateAnsweredBeforeItBlocksDoesNotSpendItsTimeout(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: answered-early
 steps:
   - id: first

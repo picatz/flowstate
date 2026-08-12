@@ -261,7 +261,7 @@ func TestFixLeavesAMacrosBoundVariableAlone(t *testing.T) {
 			// legal — a step is `steps.<id>` and a bound name is bare, so the two do
 			// not share a namespace — and it is what the rewriter has to get right.
 			src := strings.Join([]string{
-				"edition: v2026.2",
+				"edition: v2026.3",
 				"name: collide",
 				"steps:",
 				"  - id: name",
@@ -305,7 +305,7 @@ func TestFixLeavesAMacrosBoundVariableAlone(t *testing.T) {
 // that evaluates to the wrong thing leaves the step absent from the outputs.
 func flowfileAsserting(expression, want string) string {
 	return strings.Join([]string{
-		"edition: v2026.2",
+		"edition: v2026.3",
 		"name: macros",
 		"steps:",
 		"  - id: say",

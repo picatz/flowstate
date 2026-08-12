@@ -19,7 +19,7 @@
 # `service` has no default, so one of those two is required — which is why the
 # inputs.json beside this file exists: it is what CI runs the example with, and it is
 # the shortest answer to "what does this need".
-edition: v2026.2
+edition: v2026.3
 name: parameterized-deploy
 
 inputs:

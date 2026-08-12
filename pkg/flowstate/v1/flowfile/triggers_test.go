@@ -16,7 +16,7 @@ import (
 
 // The spelling this feature ships under, written once so a change to it fails a
 // test rather than quietly becoming a second grammar.
-const triggeredSource = `edition: v2026.2
+const triggeredSource = `edition: v2026.3
 name: nightly-report
 triggers:
   schedule:
@@ -148,7 +148,7 @@ func TestTriggerDiagnosticsCarryAPosition(t *testing.T) {
 		},
 		{
 			name: "a schedule with no cadence at all",
-			source: `edition: v2026.2
+			source: `edition: v2026.3
 name: nightly-report
 triggers:
   schedule:
@@ -193,7 +193,7 @@ steps:
 func TestAnEmptyTriggersBlockIsRefused(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	_, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: nightly-report
 triggers: {}
 steps:
@@ -242,7 +242,7 @@ func TestAnUnknownOverlapPolicyIsReported(t *testing.T) {
 func TestAZoneBesideAnIntervalIsReported(t *testing.T) {
 	t.Parallel()
 
-	source := `edition: v2026.2
+	source := `edition: v2026.3
 name: nightly-report
 triggers:
   schedule:
@@ -266,7 +266,7 @@ steps:
 // It uses all three ways a calendar field may be written (a whole number, a list
 // of them, and the long `{start, end, step}` form), because the round trip below is
 // only worth anything if it covers the spelling a shorter writer would lose.
-const boundedRecoverySource = `edition: v2026.2
+const boundedRecoverySource = `edition: v2026.3
 name: nightly-report
 triggers:
   schedule:
@@ -376,7 +376,7 @@ func TestCalendarDiagnosticsCarryAPosition(t *testing.T) {
 	t.Parallel()
 
 	source := func(field, value string) string {
-		return `edition: v2026.2
+		return `edition: v2026.3
 name: nightly-report
 triggers:
   schedule:
@@ -426,7 +426,7 @@ func TestCalendarsThatCompileButCannotMeanWhatTheySay(t *testing.T) {
 	t.Parallel()
 
 	source := func(calendar string) string {
-		return `edition: v2026.2
+		return `edition: v2026.3
 name: nightly-report
 triggers:
   schedule:
@@ -480,7 +480,7 @@ steps:
 func TestAZoneBesideACalendarIsNotReported(t *testing.T) {
 	t.Parallel()
 
-	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	diagnostics, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: nightly-report
 triggers:
   schedule:

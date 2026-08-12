@@ -47,7 +47,7 @@ what that value contains:
 
 <!-- example: examples/plugins/sql/workflow.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: sql-query
 description: Reads bounded, typed rows from a sqlite database using the "sql" plugin's sql.query task - a parameterized WHERE clause, a required row bound, and a result a later step can filter with CEL.
 
@@ -199,7 +199,7 @@ commit-acknowledgement-lost case - the INSERT that may have committed.
 
 <!-- example: examples/plugins/sql/transfer.yaml -->
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: sql-transfer
 description: Moves money between two accounts using the "sql" plugin's sql.exec task - four statements, one transaction, committed or rolled back together inside this single step, provably idempotent on retry.
 

@@ -22,7 +22,7 @@ import (
 
 // fetching is a one-step workflow that requests a URL.
 func fetching(url string) string {
-	return fmt.Sprintf(`edition: v2026.2
+	return fmt.Sprintf(`edition: v2026.3
 name: fetches
 steps:
   - id: web
@@ -162,7 +162,7 @@ func TestAURLTheAuthorHasNotWrittenYetIsNotChecked(t *testing.T) {
 		t.Run(url, func(t *testing.T) {
 			t.Parallel()
 
-			source := `edition: v2026.2
+			source := `edition: v2026.3
 name: fetches
 vars:
   endpoint: https://example.com

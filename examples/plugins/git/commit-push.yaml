@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: git-commit-push
 description: Commits one file to a branch and pushes it using the "git" plugin's git.commit_push task. Requires inputs; never runs by accident.
 

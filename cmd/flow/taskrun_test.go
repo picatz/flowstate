@@ -148,7 +148,7 @@ func TestAnInvocationTheEgressPolicyRefusesIsRefusedExactlyAsALocalRunIs(t *test
 	_, _, taskErr := taskRun(t, "http", "--input", "url="+target)
 	require.Error(t, taskErr, "the default egress policy allowed a loopback request")
 
-	_, _, runErr := runLocal(t, `edition: v2026.2
+	_, _, runErr := runLocal(t, `edition: v2026.3
 name: fetches
 steps:
   - id: http

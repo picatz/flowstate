@@ -21,7 +21,7 @@ func TestRunFileSecretResolvesFromTestFile(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: bearer-request
 steps:
   - id: call
@@ -61,7 +61,7 @@ func TestRunFileSecretWithNoEntryIsRefused(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: bearer-request
 steps:
   - id: call
@@ -109,7 +109,7 @@ func TestRunFileSecretSchemeNeedNotExist(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: vault-backed-call
 steps:
   - id: call
@@ -155,7 +155,7 @@ func TestRunFileNestedSecretWithNoEntryIsRefused(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: header-request
 steps:
   - id: call
@@ -208,7 +208,7 @@ func TestRunFileNestedSecretResolvesFromTestFile(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: header-request
 steps:
   - id: call
@@ -249,7 +249,7 @@ func TestRunFileNestedSecretTwoLevelsDeep(t *testing.T) {
 	t.Parallel()
 
 	const workflow = `
-edition: v2026.2
+edition: v2026.3
 name: deep-json
 steps:
   - id: call
@@ -333,7 +333,7 @@ func TestLoadRejectsMalformedSecretRef(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: whatever
 steps:
   - id: noop
@@ -367,7 +367,7 @@ func TestLoadRejectsTooManySecrets(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: whatever
 steps:
   - id: noop
@@ -412,7 +412,7 @@ func TestSecretsContainmentShapes(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: bearer-request
 steps:
   - id: call

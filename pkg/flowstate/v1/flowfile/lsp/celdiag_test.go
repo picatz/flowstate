@@ -75,7 +75,7 @@ func TestEditorCELDiagnosticsAreInTheAuthorsVocabulary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := "name: broken\nsteps:\n  - id: a\n    log:\n      message: \"" +
-				tc.expr + "\"\nedition: v2026.2\n"
+				tc.expr + "\"\nedition: v2026.3\n"
 			uri := "file:///cel-vocabulary-" + strings.ReplaceAll(tc.name, " ", "-") + ".yaml"
 
 			got := c.open(uri, src).Diagnostics
@@ -105,7 +105,7 @@ steps:
       message: |-
         ${vars.x &&
           vars.y +}
-edition: v2026.2
+edition: v2026.3
 `
 
 	got := c.open("file:///cel-multiline.yaml", src).Diagnostics

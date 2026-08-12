@@ -13,7 +13,7 @@
 # test" to compare a scripted sender against beyond the fixed empty identity
 # [v1.NewPolicedLocalSignals] documents, and no realistic sender ever equals
 # that.
-edition: v2026.2
+edition: v2026.3
 
 # Stated once for every case (issue #416). Both accounts and the threshold are
 # the same transfer throughout; only the amount and the idempotency key change,

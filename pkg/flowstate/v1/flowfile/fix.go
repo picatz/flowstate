@@ -223,9 +223,17 @@ func Fix(data []byte) (FixResult, error) {
 		}
 	}
 
+	// Whether the optional-read rewrite runs is decided once, from the document
+	// as it was handed in. Deciding per round would turn the rewrite off the
+	// moment an earlier round stamps the current edition, so a site another
+	// pass touched in round one — whose splice is deferred to the re-parse —
+	// would be modernised or not depending on which line it shared. One
+	// question, one answer, for the whole run.
+	modernize := modernizesEdition(data)
+
 	source := data
 	for round := 1; ; round++ {
-		result, err := fixOnce(source)
+		result, err := fixOnce(source, modernize)
 		if err != nil {
 			return FixResult{}, err
 		}
@@ -260,8 +268,9 @@ func Fix(data []byte) (FixResult, error) {
 }
 
 // fixOnce is one rewriting pass over a document. See [Fix], which runs it to a fixed
-// point.
-func fixOnce(data []byte) (FixResult, error) {
+// point. modernize says the document is being brought forward from an older edition,
+// which is when the optional-read rewrite runs — see [modernizesEdition].
+func fixOnce(data []byte, modernize bool) (FixResult, error) {
 	if len(data) > maxBytes {
 		return FixResult{}, Diagnostics{{
 			Line:   1,
@@ -319,6 +328,17 @@ func fixOnce(data []byte) (FixResult, error) {
 		// reference would come out unrooted. That is not hypothetical; it is what
 		// happened, and it showed up as a rewritten file the validator refused.
 		f.expressions(doc.Body, stepIDs(doc.Body))
+	}
+	if modernize {
+		// After rooting, for a reason and with a consequence. The idiom rewrite
+		// reads the same lines the rooting pass substitutes into, so a scalar both
+		// passes want is found by whichever ran first and deferred by the other —
+		// the fixed-point loop re-parses and the deferred one lands next round.
+		// Running the idiom pass second means what it rewrites is already in the
+		// rooted spelling, so the paths it compares are the paths that will stay.
+		for _, doc := range file.Docs {
+			f.optionalReads(doc.Body)
+		}
 	}
 	for _, doc := range file.Docs {
 		f.collectRetirementContext(doc.Body)
@@ -706,7 +726,7 @@ func asMapping(n ast.Node) *ast.MappingNode {
 // grammar itself allows at the top level.
 //
 // The second half exists for a real edge case, not a hypothetical one: a
-// Flowfile that declares no steps at all — `edition: v2026.2\nname: t\n` and
+// Flowfile that declares no steps at all — `edition: v2026.3\nname: t\n` and
 // nothing else — is a legal, if useless, workflow ([compiler] reads `steps:`
 // with `fields.get`, so its absence is not an error), and
 // TestFixLeavesACurrentFileByteForByte already fixed one before this allowlist

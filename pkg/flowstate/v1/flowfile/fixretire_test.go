@@ -61,7 +61,7 @@ func refusals(t *testing.T, src string) []string {
 func TestARetiredStepWhoseValueIsReadMovesIntoVars(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: greet
@@ -72,7 +72,7 @@ steps:
       message: ${steps.greet.result}
 `)
 
-	assert.Equal(t, `edition: v2026.2
+	assert.Equal(t, `edition: v2026.3
 name: t
 vars:
   greet: ${"hello"}
@@ -96,7 +96,7 @@ steps:
 func TestTheDeletionIsBoundedByTheDashIsTheWholeStep(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: greet
@@ -110,7 +110,7 @@ steps:
 
 	assert.NotContains(t, got, "echo:", "the task block outlived the step it belonged to")
 	assert.NotContains(t, got, "description: says hello", "a key of the deleted step was left behind")
-	assert.Equal(t, `edition: v2026.2
+	assert.Equal(t, `edition: v2026.3
 name: t
 vars:
   greet: ${"hello"}
@@ -134,7 +134,7 @@ steps:
 func TestAMovedValueIsFoldedIntoTheOneThatReadsIt(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: greet
@@ -150,7 +150,7 @@ steps:
       message: ${steps.shout.result}
 `)
 
-	assert.Equal(t, `edition: v2026.2
+	assert.Equal(t, `edition: v2026.3
 name: t
 vars:
   greet: ${"hello"}
@@ -171,7 +171,7 @@ steps:
 func TestACelStepsExpressionIsAlreadyTheSource(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: total
@@ -195,7 +195,7 @@ steps:
 func TestAMovedMapLiteralIsQuotedForYAML(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: shape
@@ -220,7 +220,7 @@ steps:
 func TestNothingReadsItSoTheRewriterRefuses(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: greet
@@ -247,7 +247,7 @@ steps:
 func TestAValueReadingASurvivingStepHasNowhereToGo(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -277,7 +277,7 @@ steps:
 func TestAValueReadingADeclaredVarHasNowhereToGoEither(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 vars:
   who: world
@@ -304,7 +304,7 @@ steps:
 func TestAStepAloneInABlockCannotBeMovedOut(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 steps:
   - id: fan
@@ -336,7 +336,7 @@ steps:
 func TestAMovedValueWillNotOverwriteAnExistingVar(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 vars:
   greet: something else
@@ -360,7 +360,7 @@ steps:
 func TestAMovedValueJoinsAnExistingVarsBlock(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 vars:
   # the region this deploys to
@@ -374,7 +374,7 @@ steps:
       message: ${vars.region + steps.greet.result}
 `)
 
-	assert.Equal(t, `edition: v2026.2
+	assert.Equal(t, `edition: v2026.3
 name: t
 vars:
   # the region this deploys to
@@ -396,7 +396,7 @@ steps:
 func TestTheRetirementRewriteIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	once := fixed(t, `edition: v2026.2
+	once := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: greet
@@ -428,7 +428,7 @@ steps:
 func TestAFlattenedTaskIsThenRetired(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   - id: greet
@@ -441,7 +441,7 @@ steps:
       message: ${steps.greet.result}
 `)
 
-	assert.Equal(t, `edition: v2026.2
+	assert.Equal(t, `edition: v2026.3
 name: t
 vars:
   greet: ${"hello"}
@@ -476,7 +476,7 @@ steps:
 func TestAValueReadingALoopLocalNameStaysWhereItIs(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 steps:
   - id: each
@@ -506,7 +506,7 @@ steps:
 func TestANameBoundByAnEnclosingBlocksVarsIsAlsoLocal(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 steps:
   - id: each
@@ -540,7 +540,7 @@ steps:
 func TestAGuardedStepKeepsItsGuard(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 vars:
   enabled: ${false}
@@ -574,7 +574,7 @@ steps:
 func TestAnExpressionThatComputedAnExpressionIsRefused(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 steps:
   - id: total
@@ -603,7 +603,7 @@ steps:
 func TestACommentIsNotAReference(t *testing.T) {
 	t.Parallel()
 
-	messages := strings.Join(refusals(t, `edition: v2026.2
+	messages := strings.Join(refusals(t, `edition: v2026.3
 name: t
 steps:
   # formerly read as steps.greet.result
@@ -627,7 +627,7 @@ steps:
 func TestACommentStillDoesNotHideARealReference(t *testing.T) {
 	t.Parallel()
 
-	got := fixed(t, `edition: v2026.2
+	got := fixed(t, `edition: v2026.3
 name: t
 steps:
   # this one really is read, just below
@@ -663,7 +663,7 @@ steps:
 func TestFixNotesAnUnfencedDeferredInputThatNamesAStep(t *testing.T) {
 	t.Parallel()
 
-	result, err := flowfile.Fix([]byte(`edition: v2026.2
+	result, err := flowfile.Fix([]byte(`edition: v2026.3
 name: t
 steps:
   - id: a
@@ -699,7 +699,7 @@ steps:
 func TestFixLeavesAnUnfencedDeferredInputAlone(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: a

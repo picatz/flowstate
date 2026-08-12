@@ -1120,7 +1120,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
-		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, tolerated)
 		if err != nil {
 			// Cancellation is not a step failure, so `continue_on_error` does not
 			// get to tolerate it — the durable driver says the same thing at the
@@ -1201,13 +1201,13 @@ func failureRecord(err error) *Node_Outputs {
 // Evaluated after the condition deliberately: `if:` decides whether the step runs
 // at all, so a var it declares does not exist yet when the question is asked —
 // and a var whose expression would fail must not fail a step that is skipped.
-func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	outputs, err := runNode(ctx, node, inner, undo, placement, depth)
+	outputs, err := runNode(ctx, node, inner, undo, placement, depth, tolerated)
 	if err != nil {
 		return nil, err
 	}
@@ -1283,7 +1283,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 }
 
 // runNode executes one node and returns the outputs it records.
-func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	switch n := node.Kind.(type) {
 	case *Node_Task:
 		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
@@ -1333,7 +1333,7 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// loop's does. placement passes through unchanged: the body runs once,
 		// in order, in the run's own scope, so an `undo:` there means exactly
 		// what it would mean on the same step written under an `if:`.
-		return runSwitch(pushWaitAncestor(ctx, node.GetId()), n.Switch, scope, undo, placement, depth)
+		return runSwitch(pushWaitAncestor(ctx, node.GetId()), n.Switch, scope, undo, placement, depth, tolerated)
 
 	case *Node_Call:
 		// The callee's own placement composes with the scope this call itself
@@ -1431,13 +1431,29 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 // recursion into [runNodes] against the same scope, which is what merges the
 // body's step outputs into the enclosing namespace the way a parallel branch's
 // merge — exactly one body ran, so there is nothing to collide with.
-func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+//
+// tolerated passes straight through rather than being reset to nil, and that is
+// the same answer the durable driver gives: its runSwitch recurses on its *own*
+// executor, so the body inherits whatever collector that executor carries. The
+// reason both say it is that a switch body is not a nested scope the way a
+// parallel branch or a callee is — its step outputs merge into the enclosing
+// namespace, so a body step that fails and is tolerated is, from the enclosing
+// walk's view, exactly as tolerated as a sibling written beside the switch.
+//
+// Nothing reads a switch-body id out of the set today: the only reader is
+// [AttachIterationBinding], and what reaches it is filtered through
+// [onlyBodyOutputs] to the loop body's *direct* ids, which a body step of a
+// switch is not. So this is structure rather than an observable difference —
+// written this way because the alternative is the two drivers threading one
+// piece of state differently, which is the shape every disagreement found so
+// far has had.
+func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	body, outputs, err := SelectSwitchCase(ctx, sw, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := runNodes(ctx, body, scope, undo, placement, depth); err != nil {
+	if err := runNodes(ctx, body, scope, undo, placement, depth, tolerated); err != nil {
 		return nil, err
 	}
 

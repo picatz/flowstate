@@ -26,7 +26,7 @@ worker. This is a compact variant of [examples/approval-gate](examples/approval-
 which carries the fully annotated version:
 
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: approval-gate
 description: Wait for a human to approve a deploy, then act on what they decided.
 

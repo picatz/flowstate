@@ -127,7 +127,7 @@ func TestALoopBodyStaysInsideItsLoopAtEveryDepth(t *testing.T) {
 // through the bug rather than through a rule this does not model.
 func nestedBranches(depth int, message string) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.2\nname: branch-depth\nsteps:\n")
+	b.WriteString("edition: v2026.3\nname: branch-depth\nsteps:\n")
 
 	// Two spaces per level for the `- id:` and its `parallel:`, plus the branch's
 	// own `- steps:` — the shape below repeats exactly, so the indent is arithmetic
@@ -164,7 +164,7 @@ func nestedBranches(depth int, message string) string {
 // through the for_each call site instead of the parallel one.
 func nestedLoops(depth int, message string) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.2\nname: loop-depth\nsteps:\n")
+	b.WriteString("edition: v2026.3\nname: loop-depth\nsteps:\n")
 
 	indent := "  "
 	for level := 1; level < depth; level++ {

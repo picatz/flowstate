@@ -23,7 +23,7 @@ func writeFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-const simpleCalleeSource = `edition: v2026.2
+const simpleCalleeSource = `edition: v2026.3
 name: callee
 inputs:
   tenant:
@@ -44,7 +44,7 @@ outputs:
 func TestCallCompiles(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -71,7 +71,7 @@ steps:
 func TestCallMissingRequiredInput(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -88,7 +88,7 @@ steps:
 func TestCallUndeclaredArgument(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -109,7 +109,7 @@ steps:
 // consuming a path an author wrote.
 func TestCallRefusesAbsolutePath(t *testing.T) {
 	dir := t.TempDir()
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -126,7 +126,7 @@ func TestCallRefusesEscapingUpward(t *testing.T) {
 	sub := filepath.Join(dir, "sub")
 	require.NoError(t, os.MkdirAll(sub, 0o755))
 	writeFile(t, dir, "outside.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "sub/caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "sub/caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -180,7 +180,7 @@ func TestCallArgumentTypeChecked(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.2
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -211,7 +211,7 @@ steps:
 // identical bound at the call boundary catches it at compile time instead.
 func TestCallArgumentOverTheElementBoundRefused(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.2
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
 name: callee
 inputs:
   records:
@@ -223,7 +223,7 @@ steps:
 `)
 
 	oversizedList := "[" + strings.Repeat("0, ", 10_000) + "0]"
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -242,7 +242,7 @@ steps:
 // element bound's worth of items is satisfiable, so it must not be refused.
 func TestCallArgumentAtTheElementBoundAccepted(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.2
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
 name: callee
 inputs:
   records:
@@ -254,7 +254,7 @@ steps:
 `)
 
 	exactList := "[" + strings.Repeat("0, ", 9_999) + "0]" // 9,999 + 1 = 10,000
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -287,7 +287,7 @@ func TestCallRefusesEscapingThroughASymlink(t *testing.T) {
 		t.Skipf("cannot create a symlink on this platform: %v", err)
 	}
 
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -313,7 +313,7 @@ func TestCallAllowsASymlinkThatStaysWithinTheDirectory(t *testing.T) {
 		t.Skipf("cannot create a symlink on this platform: %v", err)
 	}
 
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -330,7 +330,7 @@ steps:
 // (bytes, no location) is refused rather than silently attempted against the
 // working directory.
 func TestCallRefusesWithNoPath(t *testing.T) {
-	_, _, err := flowfile.Parse([]byte(`edition: v2026.2
+	_, _, err := flowfile.Parse([]byte(`edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -344,13 +344,13 @@ steps:
 // check: a calls b calls a, caught before the parser recurses forever.
 func TestCallDetectsCycleAcrossFiles(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "a.yaml", `edition: v2026.2
+	writeFile(t, dir, "a.yaml", `edition: v2026.3
 name: a
 steps:
   - id: next
     call: ./b.yaml
 `)
-	writeFile(t, dir, "b.yaml", `edition: v2026.2
+	writeFile(t, dir, "b.yaml", `edition: v2026.3
 name: b
 steps:
   - id: next
@@ -385,7 +385,7 @@ func TestCallArgumentSecretRefused(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.2
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -407,14 +407,14 @@ steps:
 // drivers.
 func TestCallIsolationFlowfile(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.2
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
 name: callee
 steps:
   - id: peek
     log:
       message: ${string(has(steps.caller_step))}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: caller_step
@@ -453,7 +453,7 @@ func buildCallDiamond(t *testing.T, dir string, depth, leafSteps int) string {
 	var root string
 	for i := range depth {
 		var b strings.Builder
-		fmt.Fprintf(&b, "edition: v2026.2\nname: l%d\nsteps:\n", i)
+		fmt.Fprintf(&b, "edition: v2026.3\nname: l%d\nsteps:\n", i)
 		// Two calls to the next file: the fan-out of two per level is what makes
 		// the embedded copies multiply rather than add.
 		fmt.Fprintf(&b, "  - id: c1\n    call: ./l%d.yaml\n", i+1)
@@ -465,7 +465,7 @@ func buildCallDiamond(t *testing.T, dir string, depth, leafSteps int) string {
 	}
 
 	var leaf strings.Builder
-	fmt.Fprintf(&leaf, "edition: v2026.2\nname: l%d\nsteps:\n", depth)
+	fmt.Fprintf(&leaf, "edition: v2026.3\nname: l%d\nsteps:\n", depth)
 	for s := range leafSteps {
 		fmt.Fprintf(&leaf, "  - id: s%d\n    log:\n      message: hi\n", s)
 	}

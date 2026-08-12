@@ -18,7 +18,7 @@ import (
 // cost. This is the same test written before the same debt could be taken on
 // again.
 
-const valueSrc = `edition: v2026.2
+const valueSrc = `edition: v2026.3
 name: values
 inputs:
   amount:
@@ -94,7 +94,7 @@ func TestHoverOnAValuesOutput(t *testing.T) {
 func TestCompletionOffersAValuesOutput(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: values
 inputs:
   amount:
@@ -126,7 +126,7 @@ steps:
 func TestCompletionDescribesAValueStepAsItsKind(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: values
 inputs:
   amount:

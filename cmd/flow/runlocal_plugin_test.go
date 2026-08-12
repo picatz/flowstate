@@ -141,7 +141,7 @@ func TestRunLocalExecutesAPluginTaskFromAnExample(t *testing.T) {
 // server.go's pinPlugins calls, so this asserts the sentences a server gives
 // rather than a local paraphrase of them.
 func TestRunLocalRefusesAPluginRequirementItCannotSatisfy(t *testing.T) {
-	const requiresExample = `edition: v2026.2
+	const requiresExample = `edition: v2026.3
 name: needs-a-plugin
 plugins:
   example: v%s

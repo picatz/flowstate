@@ -60,7 +60,7 @@ func TestFixJSONReportsAChangeWithItsPosition(t *testing.T) {
 // rewriter would not touch still produces a report, with the refusal in it
 // rather than only a nonzero exit status.
 func TestFixJSONReportsARefusalWithItsPosition(t *testing.T) {
-	const inFlowStyle = `edition: v2026.2
+	const inFlowStyle = `edition: v2026.3
 name: flow-style
 steps:
   - id: greet
@@ -195,7 +195,7 @@ func TestFixStdoutAndMachineOutputAreRefused(t *testing.T) {
 func TestFmtJSONReportsAChangeAndARefusal(t *testing.T) {
 	dir := t.TempDir()
 	changedPath := writeFixture(t, dir, "changed.yaml", cleanWorkflow+"\n")
-	badPath := writeFixture(t, dir, "bad.yaml", "edition: v2026.2\nname: x\n  steps: [\n")
+	badPath := writeFixture(t, dir, "bad.yaml", "edition: v2026.3\nname: x\n  steps: [\n")
 
 	out, _, err := runFmtCommand(t, "--check", "-o", "jsonl", changedPath, badPath)
 	require.Error(t, err)

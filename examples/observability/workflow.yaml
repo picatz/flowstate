@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: observability
 description: A run shaped to be worth looking at in Grafana and in the Temporal UI.
 

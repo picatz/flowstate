@@ -18,7 +18,7 @@ import (
 func TestACommentOnAContainerItselfIsNeverSilentlyDeleted(t *testing.T) {
 	t.Parallel()
 
-	source := []byte(`edition: v2026.2
+	source := []byte(`edition: v2026.3
 name: container-comment
 vars:
   # deliberately empty, and the reason lives in this comment

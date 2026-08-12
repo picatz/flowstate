@@ -9,7 +9,7 @@
 # unreliable. A workflow whose callee makes a real network request would stub
 # that task exactly the same way: one `stubs:` entry, matched by task name,
 # answered wherever the call reaches it.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

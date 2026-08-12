@@ -49,7 +49,7 @@ func TestCompletion(t *testing.T) {
 			src: `name: c
 steps:
   - |
-edition: v2026.2
+edition: v2026.3
 `,
 			want: v1.TaskNames(),
 			detailContains: map[string]string{
@@ -64,7 +64,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - ht|
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"http"},
 		},
@@ -75,7 +75,7 @@ steps:
   - id: a
     http:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			// url is the only required input, so it sorts ahead of the rest.
 			want: []string{"url", "method", "headers", "body", "outputs"},
@@ -94,7 +94,7 @@ steps:
       url: https://example.com
       method: GET
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"headers", "body", "outputs"},
 			notWant: []string{"url", "method"},
@@ -106,7 +106,7 @@ steps:
   - id: a
     log:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"message", "level", "fields"},
 		},
@@ -120,7 +120,7 @@ steps:
   - id: a
     shell:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{},
 		},
@@ -137,7 +137,7 @@ steps:
   - id: beta
     log:
       message: ${|}
-edition: v2026.2
+edition: v2026.3
 `,
 			// The root is *first*, rather than the only thing offered. The
 			// profile's functions are offered after it — an author who is stuck in
@@ -167,7 +167,7 @@ steps:
   - id: fourth
     log:
       message: four
-edition: v2026.2
+edition: v2026.3
 `,
 			// Only steps that will have run. Offering `third` or `fourth` would
 			// be offering a workflow the engine refuses.
@@ -187,7 +187,7 @@ steps:
   - id: gamma
     log:
       message: ${steps.|}
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"beta", "alpha"},
 		},
@@ -201,7 +201,7 @@ steps:
   - id: out
     log:
       message: ${steps.web.|}
-edition: v2026.2
+edition: v2026.3
 `,
 			// Derived from the task's Outputs descriptor rather than listed here,
 			// so an output added to the schema appears in completion without this
@@ -223,7 +223,7 @@ steps:
   - id: out
     log:
       message: ${steps.web.st|}
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"status_code"},
 		},
@@ -240,7 +240,7 @@ steps:
   - id: out
     log:
       message: ${steps.web.body.|}
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{},
 		},
@@ -254,7 +254,7 @@ steps:
   - id: web
     http:
       url: https://example.com
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{},
 		},
@@ -268,7 +268,7 @@ steps:
   - id: out
     log:
       message: ${string(steps.we|)}
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"web"},
 		},
@@ -295,7 +295,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - |
-edition: v2026.2
+edition: v2026.3
 `,
 			// The order is the order a step is written in, not the alphabet: the id
 			// that names it, the prose saying why it is there, then the work it does,
@@ -325,7 +325,7 @@ steps:
   - id: approval
     wait_for_signal:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"name", "timeout", "prompt", "outputs"},
 		},
@@ -342,7 +342,7 @@ steps:
         - id: body
           http:
             |
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []string{"url", "method", "headers"},
 		},
@@ -356,7 +356,7 @@ steps:
           - id: left
             log:
               |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"message", "level", "fields"},
 		},
@@ -377,7 +377,7 @@ steps:
         - id: body
           log:
             message: ${|
-edition: v2026.2
+edition: v2026.3
 `,
 			// Nearest first: the binding of the block the cursor stands in, then
 			// the root spanning the whole document.
@@ -405,7 +405,7 @@ steps:
         - id: body
           log:
             message: ${steps.|
-edition: v2026.2
+edition: v2026.3
 `,
 			// The enclosing loop is excluded — it has not finished, so it has no
 			// results yet — and so is the body step itself.
@@ -425,7 +425,7 @@ steps:
       message: hi
   - id: window
     wait_until: ${|
-edition: v2026.2
+edition: v2026.3
 `,
 			first: "now",
 			want:  []string{"now", "steps"},
@@ -450,7 +450,7 @@ steps:
   - id: after
     log:
       message: ${|
-edition: v2026.2
+edition: v2026.3
 `,
 			first:   "steps",
 			want:    []string{"steps"},
@@ -466,7 +466,7 @@ steps:
       message: hi
   - id: window
     wait_until: ${steps.|
-edition: v2026.2
+edition: v2026.3
 `,
 			exact:   []string{"before"},
 			notWant: []string{"now"},
@@ -484,7 +484,7 @@ steps:
       steps:
         - id: window
           wait_until: ${|
-edition: v2026.2
+edition: v2026.3
 `,
 			first: "each",
 			want:  []string{"each", "now", "steps"},
@@ -504,7 +504,7 @@ steps:
   - id: a
     shell:
       wait_until: ${|
-edition: v2026.2
+edition: v2026.3
 `,
 			first:   "steps",
 			want:    []string{"steps"},
@@ -517,7 +517,7 @@ steps:
   - id: a
     for_each:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"items", "as", "max_parallel", "steps"},
 		},
@@ -528,7 +528,7 @@ steps:
   - id: a
     retry:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{"attempts", "interval", "backoff", "max_interval"},
 		},
@@ -546,7 +546,7 @@ steps:
   - id: a
     log:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact:   []string{"message", "level", "fields"},
 			notWant: []string{"name", "description", "inputs"},
@@ -558,7 +558,7 @@ steps:
   - id: a
     log:
       message: hello |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{},
 		},
@@ -567,7 +567,7 @@ edition: v2026.2
 			src: `name: c
 steps:
   - id: |
-edition: v2026.2
+edition: v2026.3
 `,
 			exact: []string{},
 		},
@@ -651,7 +651,7 @@ func TestGrammarKeysAreOfferedOnlyWhereTheyMeanSomething(t *testing.T) {
 			src: `name: c
 steps:
   - |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"description"},
 			notWant: []string{"edition", "name"},
@@ -666,7 +666,7 @@ steps:
   - id: a
     for_each:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"items"},
 			notWant: []string{"description", "edition"},
@@ -678,7 +678,7 @@ steps:
   - id: a
     retry:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"attempts"},
 			notWant: []string{"description", "edition"},
@@ -690,7 +690,7 @@ steps:
   - id: a
     wait_for_signal:
       |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"name", "timeout"},
 			notWant: []string{"description", "edition"},
@@ -702,7 +702,7 @@ steps:
   - id: a
     parallel:
       - |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"steps"},
 			notWant: []string{"description", "edition"},
@@ -718,7 +718,7 @@ steps:
       items: ${x}
       steps:
         - |
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"description"},
 			notWant: []string{"edition"},
@@ -737,7 +737,7 @@ steps:
   - id: second
     log:
       message: ${steps.|}
-edition: v2026.2
+edition: v2026.3
 `,
 			want:    []string{"first"},
 			notWant: []string{"description", "edition"},
@@ -816,7 +816,7 @@ func TestCompletionReplacesThePartialWord(t *testing.T) {
 	src, pos := splitCursor(t, `name: c
 steps:
   - ht|
-edition: v2026.2
+edition: v2026.3
 `)
 	c := newClient(t)
 	c.initialize()
@@ -852,7 +852,7 @@ steps:
   - id: out
     log:
       message: ${|}
-edition: v2026.2
+edition: v2026.3
 `)
 	c := newClient(t)
 	c.initialize()
@@ -900,7 +900,7 @@ steps:
   - id: a
     log:
       mes|
-edition: v2026.2
+edition: v2026.3
 `)
 	// Confirm the premise: this document does not compile.
 	require.NotEmpty(t, diagnose(newDocument("file:///x", 1, src, nil)),
@@ -1017,7 +1017,7 @@ steps:
   - id: out
     log:
       message: ${PLACEHOLDER
-edition: v2026.2
+edition: v2026.3
 `
 
 	c := newClient(t)

@@ -25,7 +25,7 @@ func TestValidateSource(t *testing.T) {
 		{
 			name: "valid workflow",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: valid
 steps:
   - id: a
@@ -39,7 +39,7 @@ steps:
 		{
 			name: "duplicate step ids",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: dupes
 steps:
   - id: a
@@ -59,7 +59,7 @@ steps:
 			// wrong thing.
 			name: "missing step id",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: no-id
 steps:
   - log:
@@ -70,7 +70,7 @@ steps:
 		{
 			name: "unknown task",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: unknown-task
 steps:
   - id: a
@@ -89,7 +89,7 @@ steps:
 			// an operator.
 			name: "step id is a CEL literal",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: literal-id
 steps:
   - id: "true"
@@ -111,7 +111,7 @@ steps:
 			// still identifiers.
 			name: "step id is a word CEL reserves only in identifier position",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: reserved-but-selectable
 steps:
   - id: loop
@@ -131,7 +131,7 @@ steps:
 			// spellings appear here and neither can be read as the other.
 			name: "a step may be called now",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: now-and-the-clock
 steps:
   - id: now
@@ -147,7 +147,7 @@ steps:
 		{
 			name: "step id is not a valid identifier",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: bad-ident
 steps:
   - id: my-step
@@ -159,7 +159,7 @@ steps:
 		{
 			name: "reference to unknown step",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: unknown-ref
 steps:
   - id: a
@@ -176,7 +176,7 @@ steps:
 		{
 			name: "a bare reference to a step is the retired spelling",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: retired-spelling
 steps:
   - id: a
@@ -191,7 +191,7 @@ steps:
 		{
 			name: "a bare reference to something that is not a step is still a mistake",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: not-a-step
 steps:
   - id: a
@@ -206,7 +206,7 @@ steps:
 		{
 			name: "forward reference",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: forward-ref
 steps:
   - id: a
@@ -221,7 +221,7 @@ steps:
 		{
 			name: "self reference",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: self-ref
 steps:
   - id: a
@@ -233,7 +233,7 @@ steps:
 		{
 			name: "workflow with no name",
 			src: `
-edition: v2026.2
+edition: v2026.3
 steps:
   - id: a
     log:
@@ -248,7 +248,7 @@ steps:
 			// that cries wolf gets ignored.
 			name: "task-evaluated inputs are not checked for step references",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: output-shaping
 steps:
   - id: web
@@ -265,7 +265,7 @@ steps:
 			// run time.
 			name: "condition referencing a later step",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: forward-condition
 steps:
   - id: a
@@ -281,7 +281,7 @@ steps:
 		{
 			name: "condition referencing an unknown step",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: unknown-condition
 steps:
   - id: a
@@ -294,7 +294,7 @@ steps:
 		{
 			name: "condition inside a loop body may use the iterator",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: loop-condition
 steps:
   - id: each
@@ -318,7 +318,7 @@ steps:
 			// but that one expression can name both and be understood.
 			name: "a loop iterator may share a step's id",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: iterator-shares-an-id
 steps:
   - id: item
@@ -342,7 +342,7 @@ steps:
 			// loop's binding.
 			name: "the steps root does not reach a loop binding",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: root-misses-the-binding
 steps:
   - id: each
@@ -358,7 +358,7 @@ steps:
 		{
 			name: "parallel branch referencing a sibling branch",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: cross-branch
 steps:
   - id: fan
@@ -377,7 +377,7 @@ steps:
 		{
 			name: "step after a parallel block may reference branch outputs",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: join
 steps:
   - id: fan
@@ -405,7 +405,7 @@ steps:
 			// leave the case green and testing the rewriter instead of the rule.
 			name: "step after a loop may not reference body steps",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: loop-leak
 steps:
   - id: each
@@ -432,7 +432,7 @@ steps:
 			// fixture used to do.
 			name: "a comprehension binds its own variable",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: comprehension
 steps:
   - id: a
@@ -450,7 +450,7 @@ steps:
 			// unknown step in an expression that is entirely correct.
 			name: "a comprehension may bind the steps root",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: shadowed-root
 steps:
   - id: a
@@ -465,7 +465,7 @@ steps:
 			// run time, three steps into a run nobody can act on.
 			name: "a typo'd field of run.identity is refused",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-identity-typo
 steps:
   - id: a
@@ -477,7 +477,7 @@ steps:
 		{
 			name: "a typo'd field directly under run is refused",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-field-typo
 steps:
   - id: a
@@ -489,7 +489,7 @@ steps:
 		{
 			name: "every legal field of run validates cleanly",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-legal-fields
 steps:
   - id: a
@@ -506,7 +506,7 @@ steps:
 			// closed set below is what keeps the diagnostic above honest.
 			name: "a run may read its own address",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-address
 steps:
   - id: a
@@ -522,7 +522,7 @@ steps:
 			// thing that has to be deleted on purpose.
 			name: "run has no clock and no attempt count",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-start-time
 steps:
   - id: a
@@ -539,7 +539,7 @@ steps:
 			// standard refuses to draw.
 			name: "an arbitrary claims key, indexed, validates cleanly",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-claims-index
 steps:
   - id: a
@@ -550,7 +550,7 @@ steps:
 		{
 			name: "an arbitrary claims key, dotted, validates cleanly",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-claims-dot
 steps:
   - id: a
@@ -566,7 +566,7 @@ steps:
 			// is taught about run refs too.
 			name: "a workflow var may not read run, even through a legal field",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: run-in-vars
 vars:
   starter: ${run.identity.subject}
@@ -618,7 +618,7 @@ func TestBareNameDoesNotFabricateStepSuggestion(t *testing.T) {
 		// bare name. `a` is a real step but not a near edit-distance match to `step`,
 		// so no "did you mean" is offered.
 		src := `
-edition: v2026.2
+edition: v2026.3
 name: typo-root
 steps:
   - id: a
@@ -645,7 +645,7 @@ steps:
 		// `totl` is one edit from the declared step `total`, so the diagnostic names
 		// it — a suggestion that actually resolves once rooted.
 		src := `
-edition: v2026.2
+edition: v2026.3
 name: near-miss
 steps:
   - id: total
@@ -666,7 +666,7 @@ steps:
 // TestValidateSourceReportsLineNumbers verifies diagnostics carry a source
 // position, so an editor can place them and a human can find them.
 func TestValidateSourceReportsLineNumbers(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: positions
 steps:
   - id: first
@@ -776,7 +776,7 @@ func TestExprRules(t *testing.T) {
 // compilation rather than becoming literal text.
 func TestExprErrorsSurfaceFromCompilation(t *testing.T) {
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: bad-expr
 steps:
   - id: a
@@ -834,7 +834,7 @@ func TestEveryExampleSurvivesTheSchema(t *testing.T) {
 func TestAnIllegalWorkflowNameIsReportedBeforeItIsSubmitted(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: my workflow
 steps:
   - id: a
@@ -895,7 +895,7 @@ func TestAWorkflowTooLargeToRunIsReportedAtValidateTime(t *testing.T) {
 	expression := "first.result" + strings.Repeat(" + first.result", 180)
 
 	var src strings.Builder
-	src.WriteString("edition: v2026.2\nname: expands\nsteps:\n  - id: first\n    log:\n      message: hello\n")
+	src.WriteString("edition: v2026.3\nname: expands\nsteps:\n  - id: first\n    log:\n      message: hello\n")
 	for i := range 99 {
 		fmt.Fprintf(&src, "  - id: s%d\n    log:\n      message: ${%s}\n", i, expression)
 	}

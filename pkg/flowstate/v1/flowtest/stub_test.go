@@ -20,7 +20,7 @@ import (
 // probes carry the identical url on purpose. The loop's own binding is the only
 // thing that separates them, which is what these tests are about (#269).
 const loopWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: loop-binding
 steps:
   - id: checks
@@ -172,7 +172,7 @@ tests:
 // what an unmatched-stub failure prints about the invocation it could not
 // answer (#386).
 const unmatchedStubWorkflow = `
-edition: v2026.2
+edition: v2026.3
 name: greet
 inputs:
   name:
@@ -245,7 +245,7 @@ func TestUnmatchedStubRedactsASensitiveInput(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: greet
 inputs:
   token:
@@ -302,7 +302,7 @@ func TestUnmatchedStubRedactsASensitiveValueNestedInAStructuredInput(t *testing.
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: headers-probe
 inputs:
   token:
@@ -358,7 +358,7 @@ func TestUnmatchedStubRedactsASensitiveValueInsideAList(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: list-probe
 inputs:
   token:
@@ -415,7 +415,7 @@ func TestUnmatchedStubRedactsASensitiveValueConcatenatedIntoAString(t *testing.T
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: concat-probe
 inputs:
   token:
@@ -477,7 +477,7 @@ func TestUnmatchedStubSurvivesAWhereEvaluationError(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: greet
 steps:
   - id: greet
@@ -538,7 +538,7 @@ func TestUnmatchedStubValueTruncatesOnARuneBoundary(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: greet
 inputs:
   text:

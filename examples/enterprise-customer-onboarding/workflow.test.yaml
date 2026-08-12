@@ -4,7 +4,7 @@
 # not, and control flow (including each provisioner's own `undo:`, registered
 # from inside its callee - see docs/DSL.md's "Compensation composes through a
 # call") runs unmodified.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

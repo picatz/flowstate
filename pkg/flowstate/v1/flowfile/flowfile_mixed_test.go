@@ -48,7 +48,7 @@ func TestFlowfile_MixedStructures_ExprBuildAndEval(t *testing.T) {
 		{
 			name: "map with inner expr",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -63,7 +63,7 @@ steps:
 		{
 			name: "list with inner expr",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -79,7 +79,7 @@ steps:
 		{
 			name: "map with list containing expr",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -96,7 +96,7 @@ steps:
 		{
 			name: "list of maps with expr",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -113,7 +113,7 @@ steps:
 		{
 			name: "map with quoted key expr",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -128,7 +128,7 @@ steps:
 		{
 			name: "map with quoted+backslash key expr",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -143,7 +143,7 @@ steps:
 		{
 			name: "deep nested mixed structures",
 			yaml: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s

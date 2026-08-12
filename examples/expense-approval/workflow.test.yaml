@@ -8,7 +8,7 @@
 # `steps.<gate>.sender.identity.subject`, which is attested by the delivery
 # rather than claimed by the payload, so a case supplying `sender:` and a case
 # supplying none produce different values for the same `approved: true`.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

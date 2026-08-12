@@ -5,7 +5,7 @@
 # So a case here exercises the whole composition: the loop's three iterations,
 # the call boundary each one crosses, and the compensations registered on the far
 # side of it.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

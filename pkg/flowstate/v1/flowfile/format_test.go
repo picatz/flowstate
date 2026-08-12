@@ -50,7 +50,7 @@ func TestFormatKeepsCommentsInEveryPositionTheGrammarAllows(t *testing.T) {
 			name: "top of file, above a key, trailing a value, and under the last key",
 			src: `# The file starts by saying what grammar it is in.
 # Two lines of it.
-edition: v2026.2
+edition: v2026.3
 name: greeter # what the run is called
 description: greets
 
@@ -78,7 +78,7 @@ steps:
 `,
 			want: `# The file starts by saying what grammar it is in.
 # Two lines of it.
-edition: v2026.2
+edition: v2026.3
 name: greeter # what the run is called
 description: greets
 
@@ -105,7 +105,7 @@ steps:
 		},
 		{
 			name: "inside nested control flow, and beside a folded scalar the formatter unfolds",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: shapes
 description: >-
   A folded description the formatter unfolds, with a comment above the key it
@@ -134,7 +134,7 @@ steps:
   - id: hold
     sleep: 30s # a wait
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: shapes
 description: A folded description the formatter unfolds, with a comment above the key it belongs to.
 steps:
@@ -164,7 +164,7 @@ steps:
 		},
 		{
 			name: "above a block scalar",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: blocks
 steps:
   - id: greet
@@ -174,7 +174,7 @@ steps:
         first line
         second line
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: blocks
 steps:
 - id: greet
@@ -187,7 +187,7 @@ steps:
 		},
 		{
 			name: "beside an anchor and the alias that reads it",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: anchored
 vars:
   # the anchored value
@@ -198,7 +198,7 @@ steps:
     log:
       message: *base
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: anchored
 vars:
   # the anchored value
@@ -227,7 +227,7 @@ steps:
 func TestFormatMovesACommentWithTheKeyItSitsAbove(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: sorted
 steps:
   - id: fetch
@@ -238,7 +238,7 @@ steps:
       method: GET
 `
 
-	const want = `edition: v2026.2
+	const want = `edition: v2026.3
 name: sorted
 steps:
 - id: fetch
@@ -260,14 +260,14 @@ func TestFormatWithoutCommentsWritesExactlyMarshalsBytes(t *testing.T) {
 	t.Parallel()
 
 	for _, src := range []string{
-		`edition: v2026.2
+		`edition: v2026.3
 name: greeter
 steps:
   - id: greet
     log:
       message: hello world
 `,
-		`edition: v2026.2
+		`edition: v2026.3
 name: shapes
 description: >-
   Folded, and unfolded on the way back out.
@@ -314,7 +314,7 @@ func TestFormatIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	const src = `# a header
-edition: v2026.2
+edition: v2026.3
 name: greeter # trailing
 inputs:
   name:
@@ -354,7 +354,7 @@ func TestFormatRefusesACommentItCannotKeep(t *testing.T) {
 	}{
 		{
 			name: "inside a mapping reached through a merge key",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: merged
 vars:
   common: &common
@@ -369,7 +369,7 @@ steps:
 		},
 		{
 			name: "inside a block written back as one expression",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: report
 steps:
   - id: report
@@ -412,7 +412,7 @@ steps:
 func TestFormatKeepsACommentWhoseKeyContainsAPathSeparator(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: dotted
 steps:
   - id: send
@@ -427,7 +427,7 @@ steps:
           b: two
 `
 
-	const want = `edition: v2026.2
+	const want = `edition: v2026.3
 name: dotted
 steps:
 - id: send
@@ -451,7 +451,7 @@ steps:
 func TestFormatRefusesSourceItCannotRead(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: greeter
 steps:
   - id: greet

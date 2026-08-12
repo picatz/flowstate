@@ -12,7 +12,7 @@
 # itself closed without one. A case exercising a genuinely attested sender
 # would add `sender: {claims: {role: compliance-reviewer}}` to its `signals:`
 # entry, the same way `examples/approval-gate/`'s own happy-path case does.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

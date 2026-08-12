@@ -5,7 +5,7 @@
 # A wait resolves against `flow test`'s virtual clock, so `days(30)` and a
 # deadline in 2099 cost nothing to assert - which is what makes it reasonable to
 # test the enterprise branch at its real size rather than at a toy one.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: an enterprise contract waits its own grace period and signs off inside the deadline
     workflow: ./workflow.yaml

@@ -4,7 +4,7 @@
 # wherever a value belongs. What that buys over the `printf:` task it replaced is a
 # specification: `format` is defined at the CEL level and pinned by the profile, which
 # a task wrapping Go's fmt could never be.
-edition: v2026.2
+edition: v2026.3
 name: string-formatting
 vars:
   name: ${"flowstate"}

@@ -218,13 +218,13 @@ func TestCodeActionOnARefusalOffersNothing(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"a task written in flow style": `edition: v2026.2
+		"a task written in flow style": `edition: v2026.3
 name: x
 steps:
   - id: greet
     task: {name: echo, inputs: {message: hi}}
 `,
-		"a binding through an unresolvable alias": `edition: v2026.2
+		"a binding through an unresolvable alias": `edition: v2026.3
 name: x
 steps:
   - id: loop

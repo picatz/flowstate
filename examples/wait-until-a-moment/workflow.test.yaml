@@ -12,7 +12,7 @@
 # `flow test` runs on virtual time ([v1.VirtualClock]), so `now + seconds(2)` in
 # `settle` costs the case nothing: the two-second timer is satisfied by the clock
 # advancing, not by anybody waiting.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a computed moment and a moment already past both release the run
     workflow: ./workflow.yaml

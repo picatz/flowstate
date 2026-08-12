@@ -6,7 +6,7 @@
 # `outcome` is the assertion that makes it data rather than a log line: `lapsed`
 # against `answered`, computed from `timed_out`, which the engine always
 # observes and which is therefore always there to branch on.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: nobody answers, the gate lapses, and the run carries on down the other branch
     workflow: ./workflow.yaml
@@ -50,9 +50,9 @@ tests:
     workflow: ./workflow.yaml
     signals:
       # Somebody answered, so `timed_out` is false and `postponed` is skipped —
-      # but `has()` is what keeps `publish` from reading a key the sender never
-      # supplied, so neither arm runs. `outcome` still says the gate was
-      # answered, which is the fact it reports.
+      # but `publish` reads the key with `.?`, and a key the sender never
+      # supplied resolves to `orValue`'s false, so neither arm runs. `outcome`
+      # still says the gate was answered, which is the fact it reports.
       - name: release-approved
         payload:
           note: acknowledged, deciding later

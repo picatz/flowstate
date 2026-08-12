@@ -71,7 +71,7 @@ steps:
   - id: greet
     example.greet:
       message: hello
-edition: v2026.2
+edition: v2026.3
 `
 
 // TestAPluginTaskIsUnknownToAServerWithNoRegistry is the direction that must not

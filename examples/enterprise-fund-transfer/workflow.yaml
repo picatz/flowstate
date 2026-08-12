@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: enterprise-fund-transfer
 description: >-
   Moves money between two ledger accounts, requiring a role-authorized human

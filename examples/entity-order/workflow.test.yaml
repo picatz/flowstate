@@ -13,7 +13,7 @@
 # pkg/flowstate/v1/wait_local.go) hands them to the loop's two successive
 # waits in the order they were queued — proving the carried `order.total_cents`
 # genuinely accumulates rather than being recomputed from one payload.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

@@ -17,7 +17,7 @@ import (
 // otherwise compiles cleanly, so a test can focus entirely on what one
 // declaration says.
 func constrainedInputWorkflow(decl string) string {
-	return "edition: v2026.2\nname: t\ninputs:\n  x:\n" + decl + "\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	return "edition: v2026.3\nname: t\ninputs:\n  x:\n" + decl + "\nsteps:\n  - id: a\n    log:\n      message: hi\n"
 }
 
 // TestAConstraintKeyMismatchedToTheDeclaredTypeIsReported is the load-time
@@ -214,7 +214,7 @@ func TestAStaleLiteralDefaultAgainstAConstraintIsReported(t *testing.T) {
 func TestAnOutputMustThatDoesNotCompileIsReported(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"+
+	got := diagnose(t, "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n"+
 		"outputs:\n  answer:\n    value: ${1}\n    must: \"this == now\"\n")
 	assert.Contains(t, got, "answer")
 	assert.Contains(t, got, "now")
@@ -229,7 +229,7 @@ func TestACallArgumentViolatingTheCalleesConstraintIsReported(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", `edition: v2026.2
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
 name: callee
 inputs:
   region:
@@ -241,7 +241,7 @@ steps:
     log:
       message: ${inputs.region}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: c

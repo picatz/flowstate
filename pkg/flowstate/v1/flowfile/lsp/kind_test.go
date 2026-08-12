@@ -25,7 +25,7 @@ import (
 // loopVarFile is a legal Flowfile whose only enclosing block is a `loop:`, with
 // a `vars:` declared on it and read from inside the body — the exact shape that
 // rendered the malformed sentence.
-const loopVarFile = `edition: v2026.2
+const loopVarFile = `edition: v2026.3
 name: loop-var-hover
 steps:
   - id: countup
@@ -93,7 +93,7 @@ func TestOutlineNamesEveryKindTheModelRecords(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: every-kind
 steps:
   - id: a-task
@@ -170,7 +170,7 @@ steps:
 func TestLoopBodyScoping(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: loop-scope
 steps:
   - id: before
@@ -243,7 +243,7 @@ steps:
 func TestALoopWithoutAsBindsNothing(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: stateless
 steps:
   - id: poll

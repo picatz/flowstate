@@ -25,7 +25,7 @@ import (
 func TestUndoCompiles(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: make
@@ -66,7 +66,7 @@ steps:
 func TestUndoReadsItsOwnStepsOutputs(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: make
@@ -95,7 +95,7 @@ func TestUndoDiagnostics(t *testing.T) {
 	}{
 		{
 			name: "nothing under it",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -108,7 +108,7 @@ steps:
 		},
 		{
 			name: "two tasks",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -125,7 +125,7 @@ steps:
 		},
 		{
 			name: "control flow under it",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -144,7 +144,7 @@ steps:
 		},
 		{
 			name: "the retired spelling",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -196,7 +196,7 @@ func TestUndoValidationDiagnostics(t *testing.T) {
 	}{
 		{
 			name: "unknown task",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -211,7 +211,7 @@ steps:
 		},
 		{
 			name: "an input the task does not have",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -226,7 +226,7 @@ steps:
 		},
 		{
 			name: "a reference to a step that does not exist",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -241,7 +241,7 @@ steps:
 		},
 		{
 			name: "a reference to a step that has not run yet",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -312,7 +312,7 @@ func TestUndoCompensationHasThePluginCarveOut(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			src := `edition: v2026.2
+			src := `edition: v2026.3
 name: t
 steps:
   - id: book
@@ -350,7 +350,7 @@ steps:
 func TestUndoInsideANamedLoopBodyIsAccepted(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: pages
@@ -391,7 +391,7 @@ func TestUndoInsideACallFromALoopBodyIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	writeFile(t, dir, "shift.yaml", `edition: v2026.2
+	writeFile(t, dir, "shift.yaml", `edition: v2026.3
 name: shift
 inputs:
   percent:
@@ -404,7 +404,7 @@ steps:
       log:
         message: ${"rolling back " + string(inputs.percent)}
 `)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: rollout
@@ -438,7 +438,7 @@ steps:
 func TestUndoOnACallStepIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+	caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -479,7 +479,7 @@ steps:
 // straight into a run failing on its first step; this test also stands as the
 // regression pin for that half of the fix now that both agree.
 func TestUndoInsideACalleeValidates(t *testing.T) {
-	calleeSrc := `edition: v2026.2
+	calleeSrc := `edition: v2026.3
 name: callee
 inputs:
   tenant:
@@ -507,7 +507,7 @@ outputs:
 	t.Run("reached through a call", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, dir, "callee.yaml", calleeSrc)
-		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.2
+		caller := writeFile(t, dir, "caller.yaml", `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -551,7 +551,7 @@ func TestUndoInsideConcurrentControlFlowIsAccepted(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"for_each body": `edition: v2026.2
+		"for_each body": `edition: v2026.3
 name: t
 steps:
   - id: fan
@@ -566,7 +566,7 @@ steps:
             log:
               message: bye
 `,
-		"parallel branch": `edition: v2026.2
+		"parallel branch": `edition: v2026.3
 name: t
 steps:
   - id: both
@@ -606,7 +606,7 @@ steps:
 func TestUndoOnControlFlowIsRefusedWithAPosition(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: fan

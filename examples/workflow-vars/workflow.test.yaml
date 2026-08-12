@@ -11,7 +11,7 @@
 # it, which is the whole of its point — it exists to show an unfenced literal
 # staying a literal, and `flow validate` (not this file) is what checks that it
 # was not read as a step reference.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: an ambient var reaches the top level and the inside of a loop alike
     workflow: ./workflow.yaml

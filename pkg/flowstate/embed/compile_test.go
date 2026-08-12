@@ -7,7 +7,7 @@ import (
 
 func TestCompile_ValidFlowfile(t *testing.T) {
 	data := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: hello
 steps:
   - id: hello
@@ -32,7 +32,7 @@ steps:
 
 func TestCompile_MalformedFlowfileIsADiagnostic(t *testing.T) {
 	data := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: hello
 steps:
   - id: step1
@@ -70,7 +70,7 @@ steps:
 // run time, not to Compile.
 func TestCompile_DoesNotCheckTaskExistence(t *testing.T) {
 	data := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: hello
 steps:
   - id: step1
@@ -108,7 +108,7 @@ func TestCompile_CallStepIsRefused(t *testing.T) {
 	// Compiling from bytes has no file identity to resolve a `call:` step's
 	// target against, so it must be refused rather than silently ignored.
 	data := []byte(`
-edition: v2026.2
+edition: v2026.3
 name: caller
 steps:
   - id: step1

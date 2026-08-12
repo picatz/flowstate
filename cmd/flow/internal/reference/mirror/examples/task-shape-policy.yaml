@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: task-shape-policy
 description: >-
   A step the author has already weakened to `if: true`, refused anyway by a

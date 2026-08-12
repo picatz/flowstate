@@ -280,7 +280,7 @@ steps:
   - id: out
     log:
       message: ${steps.web.body}
-edition: v2026.2
+edition: v2026.3
 `
 	// The reads below all probe the `web` segment of `${steps.web.body}`, where
 	// hover, completion and definition each have real work to do — a position with
@@ -402,7 +402,7 @@ steps:
       url: https://example.com
       headers:
         Authorization: Bearer 
-edition: v2026.2
+edition: v2026.3
 ` + secret + `
       mesage: typo-to-force-a-diagnostic
 `

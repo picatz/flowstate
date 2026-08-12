@@ -26,7 +26,7 @@ import (
 func waitUntil(t *testing.T, expression string) *v1.Value {
 	t.Helper()
 
-	source := "edition: v2026.2\nname: t\nsteps:\n  - id: hold\n    wait_until: " + expression + "\n"
+	source := "edition: v2026.3\nname: t\nsteps:\n  - id: hold\n    wait_until: " + expression + "\n"
 
 	workflow, err := flowfile.Unmarshal([]byte(source))
 	require.NoError(t, err, "the expression did not compile")
@@ -171,7 +171,7 @@ func TestAStepMayBeCalledNow(t *testing.T) {
 	// an `http:` step because a step's outputs are the thing under test here and
 	// `log:` deliberately has none; this workflow is compiled and validated rather
 	// than run, so nothing reaches the host.
-	source := "edition: v2026.2\nname: t\nsteps:\n" +
+	source := "edition: v2026.3\nname: t\nsteps:\n" +
 		"  - id: now\n    http:\n      method: GET\n      url: https://example.test/opens-at\n" +
 		"  - id: hold\n    wait_until: ${steps.now.body}\n"
 
@@ -226,7 +226,7 @@ func TestWaitDeadlineNowDoesNotShadowALoopIterator(t *testing.T) {
 
 	// Which is why the name cannot be chosen. Without this the workflow above is
 	// authorable, and the only symptom is a wait that ends at the wrong moment.
-	source := "edition: v2026.2\nname: t\nvars:\n  targets: ${['a']}\n" +
+	source := "edition: v2026.3\nname: t\nvars:\n  targets: ${['a']}\n" +
 		"steps:\n" +
 		"  - id: sweep\n    for_each:\n      items: ${vars.targets}\n      as: now\n" +
 		"      steps:\n        - id: hold\n          wait_until: ${now}\n"

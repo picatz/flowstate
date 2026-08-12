@@ -8,7 +8,7 @@
 # a check that the whole reference, field included, is what the workflow asks for
 # and what a `secrets:` key has to name. Binding `op:github` alone would not
 # answer it.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the bearer resolves from this file's own secrets, never from a real 1Password account
     workflow: ./workflow.yaml

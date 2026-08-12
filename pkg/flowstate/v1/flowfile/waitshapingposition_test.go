@@ -28,7 +28,7 @@ const unknownBareNameHelp = "; a bare name is a loop's iterator, a name this ste
 func TestWaitShapingDiagnosticLandsOnTheExpression(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: waitshape
 steps:
   - id: gate
@@ -66,7 +66,7 @@ steps:
 func TestWaitShapingDiagnosticMidExpressionPointsAtTheValue(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: waitshape
 steps:
   - id: gate
@@ -101,7 +101,7 @@ steps:
 func TestWaitTimeoutExpressionDiagnosticLandsOnTheExpression(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: waitshape
 steps:
   - id: gate
@@ -131,7 +131,7 @@ steps:
 func TestWaitShapingValidBlockIsClean(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: waitshape
 steps:
   - id: gate

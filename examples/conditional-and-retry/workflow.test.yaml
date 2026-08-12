@@ -18,7 +18,7 @@
 # `${steps.notify.error}` has nothing to resolve, and the run fails on
 # `carry_on` — the failure mode `has()` exists to guard, demonstrated rather
 # than described.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the false branch is skipped, the failure is tolerated, and its text is carried forward
     workflow: ./workflow.yaml

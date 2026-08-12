@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: github-review-and-issue-triage
 description: A review-triage pass over a public repository using the "github" plugin's read/audit tier - what is open, which files a candidate change touches, and the full record of whichever issue needs the next look. Runs with no arguments.
 

@@ -161,7 +161,7 @@ func TestSecretReferenceRejected(t *testing.T) {
 		},
 		{
 			name: "in a loop's items",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -240,7 +240,7 @@ steps:
 // nested is a property of the task, so a case about a header needs a task that has
 // headers.
 func httpInput(input string) string {
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -349,7 +349,7 @@ func TestSecretReferenceNestsWhereTheTaskAppliesIt(t *testing.T) {
 // expression is reported at the call rather than at the start of the value, since
 // the whole point of catching this at compile time is being able to point at it.
 func TestSecretReferenceReportsPosition(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -384,7 +384,7 @@ steps:
 // TestSecretMarkerIsOnlyACall pins that the marker is a call and nothing else, so a
 // step or an output named `secret` keeps working.
 func TestSecretMarkerIsOnlyACall(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: secret
@@ -415,7 +415,7 @@ steps:
 // TestSecretReferenceValidates covers the whole authoring path, which is what the
 // bug was really about: `flow validate` reported "ok" and the run failed.
 func TestSecretReferenceValidates(t *testing.T) {
-	good := []byte(`edition: v2026.2
+	good := []byte(`edition: v2026.3
 name: uses-a-secret
 steps:
   - id: notify
@@ -432,7 +432,7 @@ steps:
 		t.Fatalf("expected no diagnostics, got:\n%s", ds.Error())
 	}
 
-	bad := []byte(`edition: v2026.2
+	bad := []byte(`edition: v2026.3
 name: broken-secret
 steps:
   - id: notify

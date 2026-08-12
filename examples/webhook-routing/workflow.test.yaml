@@ -4,7 +4,7 @@
 # *record* — `steps.on_event.case` through the `handled` output — because the
 # record is the half of the design that exists for the runs where nothing
 # visible happens.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

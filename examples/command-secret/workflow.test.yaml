@@ -10,7 +10,7 @@
 # that program installed. It does not: what is under test is that the workflow
 # asks for `command:github-token` and receives what was bound to it, and that a
 # case which forgets to bind it is refused rather than handed an empty bearer.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the bearer resolves from this file's own secrets, never by running a command
     workflow: ./workflow.yaml

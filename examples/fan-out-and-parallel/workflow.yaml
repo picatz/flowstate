@@ -7,7 +7,7 @@
 # A loop reports every iteration through its own `results` output, rather than
 # leaking body outputs into the enclosing scope where iterations would overwrite
 # each other.
-edition: v2026.2
+edition: v2026.3
 name: fan-out-and-parallel
 vars:
   targets: ${['alpha', 'beta', 'gamma']}

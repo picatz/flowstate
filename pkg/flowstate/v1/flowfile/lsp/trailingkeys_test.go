@@ -36,7 +36,7 @@ func TestATrailingTopLevelKeyIsNotInsideTheLastStep(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 
-	const leading = `edition: v2026.2
+	const leading = `edition: v2026.3
 name: placement
 vars:
   greeting: hi
@@ -53,7 +53,7 @@ steps:
       message: hello
 vars:
   greeting: hi
-edition: v2026.2
+edition: v2026.3
 `
 
 	for _, key := range []string{"vars", "edition"} {
@@ -97,7 +97,7 @@ steps:
             message: hi
 vars:
   greeting: ${|}
-edition: v2026.2
+edition: v2026.3
 `
 
 	clean, pos := splitCursor(t, src)

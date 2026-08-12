@@ -1,6 +1,6 @@
 # A callee, meant to be called - but also runnable on its own, the same
 # property provision-database.yaml documents.
-edition: v2026.2
+edition: v2026.3
 name: provision-access
 
 inputs:

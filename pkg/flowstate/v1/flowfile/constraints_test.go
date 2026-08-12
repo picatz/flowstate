@@ -30,7 +30,7 @@ import (
 // tooManyLogFields is a `log:` step with one more field than the schema allows.
 func tooManyLogFields() string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.2\nname: t\nsteps:\n  - id: s\n    log:\n      message: hi\n      fields:\n")
+	b.WriteString("edition: v2026.3\nname: t\nsteps:\n  - id: s\n    log:\n      message: hi\n      fields:\n")
 	for i := range 33 {
 		fmt.Fprintf(&b, "        k%d: v\n", i)
 	}
@@ -53,7 +53,7 @@ func TestADeclaredRuleIsCheckedOnALiteral(t *testing.T) {
 	}{
 		{
 			name: "a string pattern",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -66,7 +66,7 @@ steps:
 		},
 		{
 			name: "a string format",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -106,7 +106,7 @@ steps:
 func TestARuleIsNotCheckedAgainstAnExpression(t *testing.T) {
 	t.Parallel()
 
-	require.Empty(t, diagnose(t, `edition: v2026.2
+	require.Empty(t, diagnose(t, `edition: v2026.3
 name: t
 vars:
   verb: GET
@@ -131,7 +131,7 @@ steps:
 func TestAMissingRequiredInputIsReportedOnce(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, `edition: v2026.2
+	got := diagnose(t, `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -154,7 +154,7 @@ steps:
 func TestAWrongTypeIsNotAlsoAReportedRule(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, `edition: v2026.2
+	got := diagnose(t, `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -198,7 +198,7 @@ func TestTheDiagnosticCarriesTheSchemasOwnWords(t *testing.T) {
 		"the fixture stopped breaking a rule, so this compares nothing")
 	require.NotEmpty(t, invalid.Violations)
 
-	got := diagnose(t, `edition: v2026.2
+	got := diagnose(t, `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -246,7 +246,7 @@ func TestPopulateLiteralsIgnoresEverythingElse(t *testing.T) {
 func TestOneBadInputDoesNotSilenceTheOthers(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, `edition: v2026.2
+	got := diagnose(t, `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -274,7 +274,7 @@ steps:
 func TestAValueInsideAMapIsChecked(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, `edition: v2026.2
+	got := diagnose(t, `edition: v2026.3
 name: t
 steps:
   - id: web

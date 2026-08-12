@@ -28,7 +28,7 @@ import (
 // waitClockFile uses `now` in the two positions #319 found withheld (an
 // expression-valued `sleep:` and a signal's `timeout:`) and in the signal's
 // `outputs:` shaping, which validateWait scopes from the same waiting scope.
-const waitClockFile = `edition: v2026.2
+const waitClockFile = `edition: v2026.3
 name: wait-clock
 steps:
   - id: pause
@@ -115,7 +115,7 @@ func TestHoverDescribesTheClockInEveryWaitExpression(t *testing.T) {
 func TestCompletionStillOffersTheClockWhileTheDocumentDoesNotParse(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: mid-edit
 steps:
   - id: pause
@@ -156,7 +156,7 @@ steps:
 func TestTheClockStopsAtTheWait(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: no-clock-here
 steps:
   - id: fetch
@@ -221,7 +221,7 @@ func TestNowDocNamesEveryPositionTheValidatorBinds(t *testing.T) {
 // one, and walks every entry the shaping mapping holds regardless of depth
 // (validate.go:1889-1897), so the clock is bound just as much two levels down
 // as it is at the top of `outputs:`.
-const waitClockNestedShapingFile = `edition: v2026.2
+const waitClockNestedShapingFile = `edition: v2026.3
 name: wait-clock-nested
 steps:
   - id: approval
@@ -276,7 +276,7 @@ func TestCompletionOffersTheClockInNestedShaping(t *testing.T) {
 	t.Run("a document that does not parse", func(t *testing.T) {
 		t.Parallel()
 
-		const src = `edition: v2026.2
+		const src = `edition: v2026.3
 name: wait-clock-nested-midedit
 steps:
   - id: approval
@@ -310,7 +310,7 @@ steps:
 func TestNestedOutputsOutsideAWaitDoNotBindTheClock(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: no-clock-in-nested-outputs
 steps:
   - id: fetch
@@ -346,7 +346,7 @@ steps:
 // the cursor's own line is a continuation line rather than the `sleep:` line
 // itself. TestBlockScalarContinuationClock uses it to answer, rather than
 // assume, what keyPath does with a continuation line: see that test's comment.
-const waitClockBlockScalarFile = `edition: v2026.2
+const waitClockBlockScalarFile = `edition: v2026.3
 name: wait-clock-block-scalar
 steps:
   - id: pause

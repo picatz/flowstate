@@ -23,7 +23,7 @@ import (
 func TestNestedBlockScalarReportsAnInterpolation(t *testing.T) {
 	t.Parallel()
 
-	const quotedInMapping = `edition: v2026.2
+	const quotedInMapping = `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -36,7 +36,7 @@ steps:
         note: "hello ${steps.a.said}"
 `
 
-	const quotedInSequence = `edition: v2026.2
+	const quotedInSequence = `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -57,7 +57,7 @@ steps:
 	}{
 		{
 			name: "block scalar in a mapping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -74,7 +74,7 @@ steps:
 		},
 		{
 			name: "folded scalar in a mapping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -91,7 +91,7 @@ steps:
 		},
 		{
 			name: "block scalar in a sequence",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -109,7 +109,7 @@ steps:
 		},
 		{
 			name: "folded scalar in a sequence",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -129,7 +129,7 @@ steps:
 			// An unterminated fence is the other half of fenceError, and it took
 			// the same silent path.
 			name: "unterminated fence in a block scalar",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -142,7 +142,7 @@ steps:
         note: |
           hello ${steps.a.said
 `,
-			like: `edition: v2026.2
+			like: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -196,7 +196,7 @@ steps:
 func TestNestedBlockScalarWithoutAFenceIsLiteralText(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: post

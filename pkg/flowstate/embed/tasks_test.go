@@ -21,7 +21,7 @@ func echoTask(name string) v1.TaskFunc {
 
 func echoWorkflowSource(taskName string) []byte {
 	return []byte(`
-edition: v2026.2
+edition: v2026.3
 name: echo-test
 steps:
   - id: step1

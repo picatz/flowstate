@@ -23,7 +23,7 @@
 #
 # Note the two spellings are different things: `response.body` is this response, read
 # here; `steps.web.body` is this step's output, read later.
-edition: v2026.2
+edition: v2026.3
 name: http-output-shaping
 # `outputs` is evaluated where it is written, so the names in scope there are the
 # ones in scope here: `response` for what came back, plus everything the file

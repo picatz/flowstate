@@ -55,7 +55,7 @@ func TestValidateDiagnosticsAllShareOnePositionSpelling(t *testing.T) {
 	// Two problems in one file, so the second diagnostic is the one that used to
 	// arrive with no filename in front of it. Both are refused by the compiler,
 	// which is what makes them a parse error rather than a validation report.
-	const twoParseProblems = `edition: v2026.2
+	const twoParseProblems = `edition: v2026.3
 name: broken
 steps:
   - id: greet
@@ -104,7 +104,7 @@ func TestValidateDiagnosticsFromValidationShareTheSameSpelling(t *testing.T) {
 // `flow run local` and `flow test` share. It printed the path, a colon, a
 // newline, and then bare positions, so no line of it was linkable at all.
 func TestLoadWorkflowDiagnosticsNameTheirFile(t *testing.T) {
-	const twoParseProblems = `edition: v2026.2
+	const twoParseProblems = `edition: v2026.3
 name: broken
 steps:
   - id: greet

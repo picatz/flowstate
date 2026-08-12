@@ -36,7 +36,7 @@ func TestASyntaxErrorInVarsLandsOnTheOffendingCharacter(t *testing.T) {
 	}{
 		{
 			name: "at the top of the file",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 vars:
   broken: ${1 + + 2}
@@ -48,7 +48,7 @@ steps:
 		},
 		{
 			name: "on a step",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -60,7 +60,7 @@ steps:
 		},
 		{
 			name: "on a loop, where it is in scope for the body too",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: each
@@ -116,7 +116,7 @@ steps:
 func TestAVarNamedLikeADeferredInputIsNotParsedAsCEL(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: s
@@ -150,7 +150,7 @@ func TestHoverInsideAWorkflowVarSaysWhatCannotBeReadThere(t *testing.T) {
 	t.Parallel()
 
 	const uri = "file:///workflow-var-hover.yaml"
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 vars:
   a: hello
@@ -187,7 +187,7 @@ func TestGoToDefinitionWorksFromAStepsVars(t *testing.T) {
 	t.Parallel()
 
 	const uri = "file:///step-var-definition.yaml"
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -223,7 +223,7 @@ func TestHoverWorksFromAStepsVars(t *testing.T) {
 	t.Parallel()
 
 	const uri = "file:///step-var-hover.yaml"
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: web
@@ -266,7 +266,7 @@ steps:
 func TestTheEditorShowsARuleTheSchemaStates(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: web

@@ -129,7 +129,7 @@ func TestKeyNamePlusDiagnosticMatchesKeyNameOf(t *testing.T) {
 func TestExplicitKeyIsReportedInTheAuthorsWords(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := Parse([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    ? log\n    : {}\n"))
+	_, _, err := Parse([]byte("edition: v2026.3\nname: t\nsteps:\n  - id: a\n    ? log\n    : {}\n"))
 	require.Error(t, err)
 
 	var ds Diagnostics
@@ -245,7 +245,7 @@ func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
 		t.Run(word, func(t *testing.T) {
 			t.Parallel()
 
-			src := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    " + word + ":\n      x: 1\n    log:\n      message: hi\n"
+			src := "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    " + word + ":\n      x: 1\n    log:\n      message: hi\n"
 			_, err := Unmarshal([]byte(src))
 			require.Error(t, err, "`%s:` is not a step key in this build and was accepted", word)
 
@@ -266,7 +266,7 @@ func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
 func TestAMisspelledKeyStillGetsItsSuggestion(t *testing.T) {
 	t.Parallel()
 
-	_, err := Unmarshal([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    timeut: 5s\n    log:\n      message: hi\n"))
+	_, err := Unmarshal([]byte("edition: v2026.3\nname: t\nsteps:\n  - id: a\n    timeut: 5s\n    log:\n      message: hi\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `did you mean "timeout"?`,
 		"a genuine misspelling lost its suggestion")
@@ -290,9 +290,9 @@ func TestAFutureKeyReadsTheSameWhereverItIsWritten(t *testing.T) {
 	t.Parallel()
 
 	for name, src := range map[string]string{
-		"workflow": "edition: v2026.2\nname: t\nneeds:\n  x: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n",
-		"step":     "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    needs:\n      x: 1\n    log:\n      message: hi\n",
-		"loop body": "edition: v2026.2\nname: t\nsteps:\n  - id: loop\n    for_each:\n      items: [1, 2]\n      steps:\n" +
+		"workflow": "edition: v2026.3\nname: t\nneeds:\n  x: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+		"step":     "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    needs:\n      x: 1\n    log:\n      message: hi\n",
+		"loop body": "edition: v2026.3\nname: t\nsteps:\n  - id: loop\n    for_each:\n      items: [1, 2]\n      steps:\n" +
 			"        - id: inner\n          needs:\n            x: 1\n          log:\n            message: hi\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -341,10 +341,10 @@ func TestALiveElsewhereEntryIsTrue(t *testing.T) {
 	// A word that has finished arriving is refused nowhere. `vars` reached its second
 	// position, so both spellings compile — which is what makes its absence from the
 	// map above correct rather than merely untested.
-	_, err := Unmarshal([]byte("edition: v2026.2\nname: t\nvars:\n  x: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n"))
+	_, err := Unmarshal([]byte("edition: v2026.3\nname: t\nvars:\n  x: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n"))
 	require.NoError(t, err, "`vars:` is grammar at the workflow level and was refused there")
 
-	_, err = Unmarshal([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    log:\n      message: ${x}\n"))
+	_, err = Unmarshal([]byte("edition: v2026.3\nname: t\nsteps:\n  - id: a\n    vars:\n      x: 1\n    log:\n      message: ${x}\n"))
 	require.NoError(t, err, "`vars:` is grammar on a step and was refused there")
 }
 
@@ -356,7 +356,7 @@ func TestALiveElsewhereEntryIsTrue(t *testing.T) {
 func TestAnUnknownWorkflowKeyIsStillUnknown(t *testing.T) {
 	t.Parallel()
 
-	_, err := Unmarshal([]byte("edition: v2026.2\nname: t\nnonsense: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n"))
+	_, err := Unmarshal([]byte("edition: v2026.3\nname: t\nnonsense: 1\nsteps:\n  - id: a\n    log:\n      message: hi\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown key "nonsense"`,
 		"a genuinely unknown workflow key stopped being reported")

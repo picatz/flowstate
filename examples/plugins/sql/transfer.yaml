@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: sql-transfer
 description: Moves money between two accounts using the "sql" plugin's sql.exec task - four statements, one transaction, committed or rolled back together inside this single step, provably idempotent on retry.
 

@@ -64,7 +64,7 @@ func TestTheTestToolRunsAPassingCase(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callTest(t, session, map[string]any{
-		"workflow": `edition: v2026.2
+		"workflow": `edition: v2026.3
 name: basic
 inputs:
   tenant:
@@ -117,7 +117,7 @@ func TestTheTestToolReportsAFailingCaseHonestly(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callTest(t, session, map[string]any{
-		"workflow": `edition: v2026.2
+		"workflow": `edition: v2026.3
 name: basic
 steps:
   - id: greet
@@ -156,7 +156,7 @@ func TestTheTestToolRefusesAnUnstubbedTask(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callTest(t, session, map[string]any{
-		"workflow": `edition: v2026.2
+		"workflow": `edition: v2026.3
 name: basic
 steps:
   - id: fetch
@@ -200,7 +200,7 @@ func TestTheTestToolStubsMakeNoRequest(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callTest(t, session, map[string]any{
-		"workflow": fmt.Sprintf(`edition: v2026.2
+		"workflow": fmt.Sprintf(`edition: v2026.3
 name: reaches-out
 steps:
   - id: fetch
@@ -243,7 +243,7 @@ func TestTheTestToolNeedsNoEgressPolicy(t *testing.T) {
 	require.NoError(t, applyMCPEgressPolicy(posture))
 	session := connectMCP(t, posture)
 
-	workflow := `edition: v2026.2
+	workflow := `edition: v2026.3
 name: exfiltrate
 steps:
   - id: fetch
@@ -293,7 +293,7 @@ func TestTheTestToolRequiresWorkflowAndTests(t *testing.T) {
 
 	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name:      testToolName,
-		Arguments: map[string]any{"workflow": "edition: v2026.2\nname: x\nsteps: []"},
+		Arguments: map[string]any{"workflow": "edition: v2026.3\nname: x\nsteps: []"},
 	})
 	require.NoError(t, err)
 	require.True(t, result.IsError)
@@ -311,7 +311,7 @@ func TestTheTestToolRefusesUnknownArguments(t *testing.T) {
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
 		Name: testToolName,
 		Arguments: map[string]any{
-			"workflow": "edition: v2026.2\nname: x\nsteps: []",
+			"workflow": "edition: v2026.3\nname: x\nsteps: []",
 			"tests":    "tests:\n  - name: x\n    expect: {}",
 			"vars":     map[string]any{"oops": true},
 		},
@@ -330,7 +330,7 @@ func TestTheTestToolRefusesUnparseableSources(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callTest(t, session, map[string]any{
-		"workflow": "edition: v2026.2\nname: x\nsteps: []",
+		"workflow": "edition: v2026.3\nname: x\nsteps: []",
 		"tests":    "tests: [{name: x, stubs: [{task: http, returns: {}, fails: {message: no}}]}]",
 	})
 	require.True(t, result.IsError, "a *.test.yaml declaring both returns and fails validated clean")
@@ -357,7 +357,7 @@ func TestTheTestToolAnswerIsBounded(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, answer := callTest(t, session, map[string]any{
-		"workflow": fmt.Sprintf(`edition: v2026.2
+		"workflow": fmt.Sprintf(`edition: v2026.3
 name: basic
 steps:
   - id: greet

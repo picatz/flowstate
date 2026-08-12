@@ -37,10 +37,10 @@ func FuzzMCPToolArguments(f *testing.F) {
 		``,
 		`{}`,
 		// A well-formed Validate call, the smallest real RPC argument.
-		`{"file":{"path":"a.flow.yaml","content":"edition: v2026.2\nname: a\nsteps: []\n"}}`,
+		`{"file":{"path":"a.flow.yaml","content":"edition: v2026.3\nname: a\nsteps: []\n"}}`,
 		// A well-formed run_local call, including the signals map that is this
 		// tool's one extra piece of untrusted structure.
-		`{"source":"edition: v2026.2\nname: a\nsteps: []\n","signals":{"go":{"ok":true}}}`,
+		`{"source":"edition: v2026.3\nname: a\nsteps: []\n","signals":{"go":{"ok":true}}}`,
 		// An unknown field. DiscardUnknown is deliberately false on both
 		// decoders, so this must be reported rather than silently dropped —
 		// exactly the diagnostics principle CLAUDE.md states for the DSL
