@@ -1,4 +1,5 @@
 ---
+name: comms-session
 description: Session and status updates to the owner during agent work
 ---
 

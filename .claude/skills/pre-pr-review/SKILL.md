@@ -1,4 +1,5 @@
 ---
+name: pre-pr-review
 description: Self-review before opening any PR, over the diff and every shipped artifact
 ---
 

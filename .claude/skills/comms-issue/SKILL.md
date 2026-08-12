@@ -1,4 +1,5 @@
 ---
+name: comms-issue
 description: Issue bodies, design passes, and decision records
 ---
 

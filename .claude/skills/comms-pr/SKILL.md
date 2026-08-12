@@ -1,4 +1,5 @@
 ---
+name: comms-pr
 description: Write a PR body that explains what the diff cannot (why, decisions, testing, risks, omissions)
 ---
 

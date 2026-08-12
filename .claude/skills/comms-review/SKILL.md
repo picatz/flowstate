@@ -1,4 +1,5 @@
 ---
+name: comms-review
 description: Author review comments and respond to review findings, ours and bots'
 ---
 
