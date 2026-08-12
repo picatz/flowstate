@@ -1,0 +1,476 @@
+# The weekly deep tier — #482 slice B, adopted at weekly cadence by the owner
+# decision of 2026-08-12. The PR lane (ci.yml) stays exactly as required as it is
+# today; nothing here gates a merge. This tier runs the checks whose signal
+# accumulates with clock time rather than with any diff: fuzzing given minutes
+# per target instead of the smoke's seconds, the ordering suite at five times the
+# local count, soak runs of the heavyweight packages, the full example corpus on
+# both drivers against a real Temporal dev server, and govulncheck on a schedule
+# because advisories arrive by calendar, not by commit.
+#
+# A scheduled run fails with nobody watching, so every job files an issue on
+# failure: labeled deep-tier, deduplicated by title against open issues before
+# filing, carrying the corpus entry or log excerpt and a link to the run that
+# produced it. Actions and tools are pinned by commit for the reasons ci.yml
+# records at length.
+name: Deep
+
+on:
+  schedule:
+    # Saturday 08:00 UTC: off-peak for the weekday PR lane and for both US and
+    # EU working hours, so a red deep run never queues behind (or ahead of)
+    # anyone's iteration loop.
+    - cron: '0 8 * * 6'
+  workflow_dispatch:
+
+# Read-only by default, exactly as in ci.yml. The jobs that file issues say so
+# themselves — naming permissions on a job replaces this block for that job, so
+# each of them restates contents: read alongside issues: write.
+permissions:
+  contents: read
+
+env:
+  GOVULNCHECK_VERSION: v1.6.0
+
+# One deep run at a time: a manual dispatch during the scheduled run would only
+# contend with it, and a deep run's record is worth keeping, so nothing is
+# cancelled.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # Every fuzz target in the repo, each given ten minutes instead of the smoke's
+  # thirty seconds. Bounded per CLAUDE.md's fuzz recipe: -parallel 1 and a memory
+  # limit because a fuzzer's purpose is to find the input that explodes, and the
+  # targets run sequentially in one job so at most one fuzzer holds memory at a
+  # time. -fuzztime bounds time, not memory; GOMEMLIMIT is the memory bound.
+  #
+  # continue-on-error on each target so one crasher does not hide the others'
+  # results; the gate step at the end turns any failure back into a red job. A
+  # crasher is written to the package's testdata/fuzz/<target>/ directory, and
+  # since the tracked corpus is committed, a crasher from this run is exactly an
+  # untracked file there — which is what the collect and report steps key on.
+  fuzz-deep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz deep (FuzzRoundTrip)
+        id: roundtrip
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 10m ./pkg/flowstate/v1/flowfile/ 2>&1 | tee fuzz-FuzzRoundTrip.log
+
+      - name: Fuzz deep (FuzzCELCompile)
+        id: celcompile
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 10m ./pkg/flowstate/v1/flowfile/ 2>&1 | tee fuzz-FuzzCELCompile.log
+
+      - name: Fuzz deep (FuzzMCPToolArguments)
+        id: mcpargs
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 10m ./cmd/flow/ 2>&1 | tee fuzz-FuzzMCPToolArguments.log
+
+      - name: Fuzz deep (FuzzMessageDescriptor)
+        id: msgdesc
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 10m ./pkg/flowstate/v1/plugin/ 2>&1 | tee fuzz-FuzzMessageDescriptor.log
+
+      # A crasher from this run is an untracked file under a testdata/fuzz/
+      # directory (the committed seed corpus is tracked, so it never matches).
+      # Staged into a scratch directory so the artifact carries only what this
+      # run found.
+      - name: Collect crashing inputs
+        id: collect
+        run: |
+          set -euo pipefail
+          new=$(git ls-files --others --exclude-standard | grep '/testdata/fuzz/' || true)
+          if [ -z "$new" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "no crashing inputs were written"
+            exit 0
+          fi
+          while IFS= read -r f; do
+            mkdir -p "$RUNNER_TEMP/crashers/$(dirname "$f")"
+            cp "$f" "$RUNNER_TEMP/crashers/$f"
+          done <<< "$new"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload crashing inputs
+        if: steps.collect.outputs.found == 'true'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: fuzz-crashers
+          path: ${{ runner.temp }}/crashers/
+          retention-days: 90
+
+      # One issue per crasher, and one per target that failed without writing a
+      # crasher (a broken fuzz harness is a broken check). Deduplicated by title
+      # against open deep-tier issues, so a crasher nobody has triaged yet is not
+      # refiled every Saturday.
+      - name: File issues for crashers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ROUNDTRIP_OUTCOME: ${{ steps.roundtrip.outcome }}
+          CELCOMPILE_OUTCOME: ${{ steps.celcompile.outcome }}
+          MCPARGS_OUTCOME: ${{ steps.mcpargs.outcome }}
+          MSGDESC_OUTCOME: ${{ steps.msgdesc.outcome }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          already_open() {
+            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
+          }
+          crashers=$(git ls-files --others --exclude-standard | grep '/testdata/fuzz/' || true)
+          for entry in $crashers; do
+            target=$(basename "$(dirname "$entry")")
+            pkgdir=${entry%%/testdata/fuzz/*}
+            name=$(basename "$entry")
+            title="deep-tier: ${target} found a crashing input"
+            if already_open "$title"; then
+              echo "an open issue already covers ${target}; not filing another"
+              continue
+            fi
+            body=$(mktemp)
+            {
+              echo "The weekly deep tier's long-run fuzz job found an input that crashes \`${target}\`."
+              echo
+              echo "Produced by workflow run: ${RUN_URL} (the input is also attached there as the \`fuzz-crashers\` artifact)."
+              echo
+              echo "Corpus entry \`${entry}\` (Go fuzz corpus text; base64 of the exact bytes):"
+              echo
+              echo '```'
+              base64 "$entry"
+              echo '```'
+              echo
+              echo "Reproduce: decode the entry back to \`${entry}\` (\`base64 -d\`), then:"
+              echo
+              echo '```'
+              echo "GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run '${target}/${name}' ./${pkgdir}/"
+              echo '```'
+              echo
+              echo "Per CLAUDE.md, a crasher the fuzzer finds is a real defect with a corpus entry to triage, never flake to re-run away."
+            } > "$body"
+            gh issue create --title "$title" --label deep-tier --body-file "$body"
+          done
+          harness() {
+            target=$1; outcome=$2; log=$3
+            [ "$outcome" = failure ] || return 0
+            if printf '%s\n' "$crashers" | grep -q "/${target}/"; then return 0; fi
+            title="deep-tier: ${target} failed without writing a crasher"
+            if already_open "$title"; then
+              echo "an open issue already covers the ${target} harness failure; not filing another"
+              return 0
+            fi
+            body=$(mktemp)
+            {
+              echo "The weekly deep tier's fuzz step for \`${target}\` failed, but no corpus entry was written. A broken fuzz harness is a broken check, so this is a defect in the harness or its bounds rather than a crasher to triage."
+              echo
+              echo "Produced by workflow run: ${RUN_URL}"
+              echo
+              echo "Log tail:"
+              echo
+              echo '```'
+              tail -n 60 "$log"
+              echo '```'
+            } > "$body"
+            gh issue create --title "$title" --label deep-tier --body-file "$body"
+          }
+          harness FuzzRoundTrip "$ROUNDTRIP_OUTCOME" fuzz-FuzzRoundTrip.log
+          harness FuzzCELCompile "$CELCOMPILE_OUTCOME" fuzz-FuzzCELCompile.log
+          harness FuzzMCPToolArguments "$MCPARGS_OUTCOME" fuzz-FuzzMCPToolArguments.log
+          harness FuzzMessageDescriptor "$MSGDESC_OUTCOME" fuzz-FuzzMessageDescriptor.log
+
+      - name: A failed target fails the job
+        if: steps.roundtrip.outcome == 'failure' || steps.celcompile.outcome == 'failure' || steps.mcpargs.outcome == 'failure' || steps.msgdesc.outcome == 'failure'
+        run: |
+          echo "::error::at least one fuzz target failed; see the deep-tier issue(s) filed by this run and the fuzz-crashers artifact"
+          exit 1
+
+  # The ordering-claims tier at five times the local count, plus soak runs of the
+  # three heavyweight packages. -cpu=1 on flowtest is the point, not a smaller
+  # version of the others: GOMAXPROCS=1 interleaves only at yield points, which
+  # reaches orderings a multi-core run reaches rarely or never, and a defect
+  # there is a wrong answer rather than a crash the race detector would catch.
+  # The -count=10 legs run the packages whose tests boot real Temporal dev
+  # servers often enough for a rare flake to become a reproducible failure.
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Ordering claims at 5x local count
+        id: soak-flowtest
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=1GiB go test -race -cpu=1 -count=100 -timeout 3600s ./pkg/flowstate/v1/flowtest/ 2>&1 | tee soak-flowtest.log
+
+      - name: Soak pkg/flowstate/v1
+        id: soak-core
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=2GiB go test -race -count=10 -timeout 3600s ./pkg/flowstate/v1/ 2>&1 | tee soak-core.log
+
+      - name: Soak pkg/flowstate/v1/engine
+        id: soak-engine
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=2GiB go test -race -count=10 -timeout 3600s ./pkg/flowstate/v1/engine/ 2>&1 | tee soak-engine.log
+
+      - name: Soak pkg/flowstate/v1/server
+        id: soak-server
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=2GiB go test -race -count=10 -timeout 3600s ./pkg/flowstate/v1/server/ 2>&1 | tee soak-server.log
+
+      - name: File issues for failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FLOWTEST_OUTCOME: ${{ steps.soak-flowtest.outcome }}
+          CORE_OUTCOME: ${{ steps.soak-core.outcome }}
+          ENGINE_OUTCOME: ${{ steps.soak-engine.outcome }}
+          SERVER_OUTCOME: ${{ steps.soak-server.outcome }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          already_open() {
+            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
+          }
+          file_failure() {
+            title=$1; outcome=$2; log=$3; cmd=$4
+            [ "$outcome" = failure ] || return 0
+            if already_open "$title"; then
+              echo "an open issue already covers '${title}'; not filing another"
+              return 0
+            fi
+            fails=$(grep -E '^ *--- FAIL' "$log" | sort -u || true)
+            body=$(mktemp)
+            {
+              echo "The weekly deep tier's soak job failed. The soak exists to turn a rare flake into a reproducible failure, so this is a real finding: a defect that only shows under repetition or under a single-CPU schedule."
+              echo
+              echo "Produced by workflow run: ${RUN_URL}"
+              echo
+              if [ -n "$fails" ]; then
+                echo "Failing tests:"
+                echo
+                echo '```'
+                echo "$fails"
+                echo '```'
+                echo
+              fi
+              echo "Log tail:"
+              echo
+              echo '```'
+              tail -n 80 "$log"
+              echo '```'
+              echo
+              echo "Reproduce:"
+              echo
+              echo '```'
+              echo "$cmd"
+              echo '```'
+            } > "$body"
+            gh issue create --title "$title" --label deep-tier --body-file "$body"
+          }
+          file_failure "deep-tier: soak failure in pkg/flowstate/v1/flowtest" "$FLOWTEST_OUTCOME" soak-flowtest.log "GOMEMLIMIT=1GiB go test -race -cpu=1 -count=100 -timeout 3600s ./pkg/flowstate/v1/flowtest/"
+          file_failure "deep-tier: soak failure in pkg/flowstate/v1" "$CORE_OUTCOME" soak-core.log "GOMEMLIMIT=2GiB go test -race -count=10 -timeout 3600s ./pkg/flowstate/v1/"
+          file_failure "deep-tier: soak failure in pkg/flowstate/v1/engine" "$ENGINE_OUTCOME" soak-engine.log "GOMEMLIMIT=2GiB go test -race -count=10 -timeout 3600s ./pkg/flowstate/v1/engine/"
+          file_failure "deep-tier: soak failure in pkg/flowstate/v1/server" "$SERVER_OUTCOME" soak-server.log "GOMEMLIMIT=2GiB go test -race -count=10 -timeout 3600s ./pkg/flowstate/v1/server/"
+
+      - name: A failed soak fails the job
+        if: steps.soak-flowtest.outcome == 'failure' || steps.soak-core.outcome == 'failure' || steps.soak-engine.outcome == 'failure' || steps.soak-server.outcome == 'failure'
+        run: |
+          echo "::error::at least one soak leg failed; see the deep-tier issue(s) filed by this run"
+          exit 1
+
+  # The full example corpus, three ways: every example on the durable driver
+  # against a real Temporal dev server (the tests boot it themselves, exactly as
+  # ci.yml's test job runs them), every example on the local driver (both drivers
+  # must agree, so running one without the other would miss exactly the
+  # disagreements the corpus exists to catch), and every example's own test file
+  # through flow test with branch coverage required. -count=1 so a cache restored
+  # by setup-go can never answer for a run whose whole point is to execute.
+  examples-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Every example runs durably against a real Temporal dev server
+        id: durable
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=2GiB go test -race -count=1 -timeout 1800s -run TestEveryExampleRunsDurably ./pkg/flowstate/v1/engine/ 2>&1 | tee examples-durable.log
+
+      - name: Every example runs on the local driver
+        id: local
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=2GiB go test -race -count=1 -timeout 900s -run 'TestEveryOfflineExampleRuns|TestEveryNetworkedExampleRuns' ./pkg/flowstate/v1/ 2>&1 | tee examples-local.log
+
+      - name: Every example passes its own tests, every branch reached or reasoned
+        id: flowtest-cli
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go run ./cmd/flow test --coverage-required examples/ 2>&1 | tee examples-flowtest.log
+
+      - name: File issues for failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DURABLE_OUTCOME: ${{ steps.durable.outcome }}
+          LOCAL_OUTCOME: ${{ steps.local.outcome }}
+          FLOWTEST_CLI_OUTCOME: ${{ steps.flowtest-cli.outcome }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          already_open() {
+            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
+          }
+          file_failure() {
+            title=$1; outcome=$2; log=$3; cmd=$4
+            [ "$outcome" = failure ] || return 0
+            if already_open "$title"; then
+              echo "an open issue already covers '${title}'; not filing another"
+              return 0
+            fi
+            fails=$(grep -E '^ *--- FAIL' "$log" | sort -u || true)
+            body=$(mktemp)
+            {
+              echo "The weekly deep tier's examples matrix failed."
+              echo
+              echo "Produced by workflow run: ${RUN_URL}"
+              echo
+              if [ -n "$fails" ]; then
+                echo "Failing tests:"
+                echo
+                echo '```'
+                echo "$fails"
+                echo '```'
+                echo
+              fi
+              echo "Log tail:"
+              echo
+              echo '```'
+              tail -n 80 "$log"
+              echo '```'
+              echo
+              echo "Reproduce:"
+              echo
+              echo '```'
+              echo "$cmd"
+              echo '```'
+            } > "$body"
+            gh issue create --title "$title" --label deep-tier --body-file "$body"
+          }
+          file_failure "deep-tier: examples failure on the durable driver" "$DURABLE_OUTCOME" examples-durable.log "GOMEMLIMIT=2GiB go test -race -count=1 -timeout 1800s -run TestEveryExampleRunsDurably ./pkg/flowstate/v1/engine/"
+          file_failure "deep-tier: examples failure on the local driver" "$LOCAL_OUTCOME" examples-local.log "GOMEMLIMIT=2GiB go test -race -count=1 -timeout 900s -run 'TestEveryOfflineExampleRuns|TestEveryNetworkedExampleRuns' ./pkg/flowstate/v1/"
+          file_failure "deep-tier: examples failure in flow test --coverage-required" "$FLOWTEST_CLI_OUTCOME" examples-flowtest.log "go run ./cmd/flow test --coverage-required examples/"
+
+      - name: A failed leg fails the job
+        if: steps.durable.outcome == 'failure' || steps.local.outcome == 'failure' || steps.flowtest-cli.outcome == 'failure'
+        run: |
+          echo "::error::at least one examples leg failed; see the deep-tier issue(s) filed by this run"
+          exit 1
+
+  # The same scan the PR lane runs, on a clock instead of a diff: advisories
+  # arrive by calendar, so a tree nobody touched can go red here. That is why a
+  # failure files an issue that says so — per CLAUDE.md, a finding on an
+  # untouched tree is almost certainly a newly published advisory reaching a
+  # dependency, and the fix is a bump that belongs to everyone, not to whichever
+  # file the scan happens to name.
+  vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Vulnerability scan
+        id: scan
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... 2>&1 | tee govulncheck.log
+
+      - name: File an issue for findings
+        if: steps.scan.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          title="deep-tier: govulncheck reports reachable vulnerabilities"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already covers the govulncheck findings; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "The weekly deep tier's govulncheck scan went red."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            echo "Per CLAUDE.md: govulncheck reports reachability against a database fetched when it runs, so a failure on this schedule is almost certainly a newly published advisory reaching a dependency of an untouched tree — an advisory that arrived by clock, not a bug introduced by any diff. Verify by running the scan against main; if main fails too, the fix is a dependency bump that belongs to everyone, and it should be reported that way even though the scan names specific files."
+            echo
+            echo "Findings:"
+            echo
+            echo '```'
+            tail -n 120 govulncheck.log
+            echo '```'
+            echo
+            echo "Reproduce locally (toolchain pinned to match go.mod, per CLAUDE.md):"
+            echo
+            echo '```'
+            echo "GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."
+            echo '```'
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"
+
+      - name: Findings fail the job
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "::error::govulncheck reported reachable vulnerabilities; see the deep-tier issue filed by this run"
+          exit 1

@@ -2244,6 +2244,33 @@ Registration order is a sequence the engine appends to as steps succeed. It repl
 identically, it carries across a Continue-As-New as a list, and it is a fact about the
 run rather than about the file.
 
+Completion order deserves more than the mechanical refusal above, because a clock is
+not the only way to observe it — appending to the log as concurrent children finish
+would encode it with no timestamp anywhere — and ruling that out is a decision of
+its own ([#418](https://github.com/picatz/flowstate/issues/418), slice 0.5). In
+every sequential scope completion order is indistinguishable from registration
+order, which is what makes it dangerous: an implementation that merged concurrent
+children's registrations as they *finished* would pass every sequential case and
+unwind a `parallel:` differently from one run to the next, at the worst possible
+moment. The rule is therefore stated in two halves. **Registration decides
+membership**: a step that never succeeded — skipped, failed, never started — has
+nothing to undo, exactly as above. **The text decides order**: `undo:` unwinds in
+reverse *written* order, so two parallel siblings that both completed come off in
+reverse of the order their branches appear in the file, regardless of which
+finished first. Completion order is the one thing concurrency promises is never
+observable, and the undo stack is not allowed to become the place it leaks. One
+answer covers `parallel:` today and any future construct that overlaps work.
+Mechanically, this is why each concurrent child accumulates a private log that its
+parent merges by structural position — the next section and
+[`UndoLog.Append`](../pkg/flowstate/v1/undo.go) — so that by the time the unwind
+reverses the run's log, the log already reads in written order. Where the file has
+no single textual position per registration — a `loop:` body registering once per
+iteration, a `for_each` registering once per item — the iteration or item index
+stands where the text has one position, newest first, which is the only reading of
+"written order" a repeated line can have. `tests/undo.go` pins the parallel half
+in both drivers, with a branch pair forced to complete in reverse of the order
+they are written.
+
 ### The scope a compensation sees, and *when* it sees it
 
 A compensation's inputs are resolved **at the moment its step succeeds**, not at the
@@ -2437,31 +2464,33 @@ at the moment a segment suspends, regardless of which level registered each entr
 callee's compensation registered before a suspend is carried exactly as a top-level
 step's would be and is undone in the same reverse order if a later segment fails.
 
-A call is what makes this well defined where a `for_each` and a `parallel:` are not:
-it is sequential, compile-time-vendored control flow. The callee's steps run to
-completion, in declaration order, before the step after the call runs, on both
+A call is what makes this well defined with no ordering key beyond the sequence
+itself: it is sequential, compile-time-vendored control flow. The callee's steps run
+to completion, in declaration order, before the step after the call runs, on both
 drivers — so "reverse of registration order" means the one thing whether or not a call
-boundary sits in the middle of it. Nothing about isolation changes either:
+boundary sits in the middle of it, where a `for_each` or a `parallel:` needs the
+structural key above to make written order hold. Nothing about isolation changes either:
 [`CallScope`](../pkg/flowstate/v1/call.go) still refuses a callee reading the caller's
 steps or vars, a compensation's own scope is still the step's outputs the moment it
 succeeded, and a callee's `undo:` still resolves `${steps.<id>.<output>}` against its
 own outputs exactly as a top-level step's does.
 
-**A call is transparent to a restriction that already applies, not an escape from
-one.** A callee's placement is not unconditionally `UndoScopeCall` — it is
+**A call is transparent to the scope that already applies, not an escape from
+it.** A callee's placement is not unconditionally `UndoScopeCall` — it is
 `callSitePlacement.IntoCall()`, composed with whatever scope the `call:` step
 itself sits in. A call reached from the top level or from another call's body
 composes to `UndoScopeCall`, which is the case above. A call reached from *inside*
-a `for_each` body or a `parallel:` branch composes to that same restriction
-instead, and its callee's `undo:` is refused with that restriction's own message.
-A `loop:` body composes to `UndoScopeCall` because a loop body is itself an
-accepting placement (below), so there is nothing left there for a call to launder.
-Without this, a `for_each`
-whose body did nothing but `call:` a workflow with a compensating step would have
-been an unintended way to route a compensation around the exact refusal invariant 3
-exists to enforce: the callee's steps still run once per iteration or once per
-branch, in the same scope that made registration order undefined in the first
-place, whether or not a call sits between the two. One function,
+a `for_each` body or a `parallel:` branch stays `UndoScopeConcurrent` instead: its
+callee's compensations land in the enclosing child's private log and take that
+child's structural position at the merge, exactly as a bare task step's there
+would. A `loop:` body composes to `UndoScopeCall` because a loop body is itself an
+accepting placement (below), so there is nothing there for a call to change.
+Without this composition, a `for_each` whose body did nothing but `call:` a
+workflow with a compensating step would have routed its registrations onto the
+run-level log directly, in whatever order iterations happened to finish — the
+exact completion-order leak the structural key exists to close. The callee's steps
+still run once per iteration or once per branch, in the same scope, whether or not
+a call sits between the two. One function,
 [`UndoScope.IntoCall`](../pkg/flowstate/v1/undo.go), composes this identically for
 both execution drivers and `flow validate`.
 
@@ -2477,7 +2506,12 @@ concurrent child accumulates successful work privately. At the join, its registr
 are merged by input iteration index or branch declaration index, followed by registration
 order inside that child. Compensation reverses that total order. Completion time is never
 part of the key, so local sequential rehearsal and durable concurrent execution agree;
-partial completion, retries, cancellation, and a nested `call:` cannot perturb it.
+partial completion, retries, cancellation, and a nested `call:` cannot perturb it. This
+is the mechanism behind the reverse-*written*-order contract
+([#418](https://github.com/picatz/flowstate/issues/418), argued under "Reverse order, of
+registration" above): the structural key is how written order is derived where the text
+has one position per registration, and the private-log-then-merge shape is what keeps a
+child's finishing time out of the run's one log.
 
 **`undo:` is *not* refused inside a `loop:` body.** It was, and the reason it gave did
 not survive being checked (#253). The refusal said that a sequential loop's registration
