@@ -652,12 +652,12 @@ func exprToText(parsed *expr.ParsedExpr) (string, error) {
 func literalToYAML(literal *expr.Value) (any, error) {
 	switch kind := literal.GetKind().(type) {
 	case *expr.Value_StringValue:
-		if containsFence(kind.StringValue) {
-			return nil, fmt.Errorf(
-				"is the literal string %q, which cannot be written: ${ marks an expression, so it would be read back as one",
-				kind.StringValue)
-		}
-		return kind.StringValue, nil
+		// Written with its fences escaped rather than refused. Until #413 there
+		// was no spelling for a literal `${` in a value, so a workflow built in
+		// Go holding one could not be written out at all and saying so was the
+		// only honest answer. `$${` is that spelling, and reading the result back
+		// produces this string again — which is what Marshal owes.
+		return escapeFences(kind.StringValue), nil
 	case *expr.Value_Int64Value:
 		return kind.Int64Value, nil
 	case *expr.Value_Uint64Value:

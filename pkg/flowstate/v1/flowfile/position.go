@@ -494,3 +494,44 @@ func spanWithin(n ast.Node, inner string) Span {
 	start := advance(outer.Start, text[:i])
 	return Span{Start: start, End: advance(start, inner)}
 }
+
+// spanOfFence returns the span of one fence's expression source inside node,
+// searching from a byte offset in node's own text and answering the offset to
+// search from next.
+//
+// The offset is what [spanWithin] cannot do and what a scalar holding more than
+// one fence needs. spanWithin finds the first occurrence of the text it is given,
+// which is the right answer when a value holds one expression and the wrong one
+// as soon as it holds two the same: in `${who} and ${who}` both fences would be
+// underlined at the first, so an error in the second would be reported on the
+// first. Walking a cursor forward gives each fence its own position, in the order
+// they were written.
+//
+// The whole fence including its braces is what is searched for, rather than the
+// source alone, so that a fence's source appearing earlier inside a string
+// literal cannot capture it. The returned span still covers the source alone,
+// because that is what a CEL column is relative to.
+//
+// It falls back to the node's whole span, and leaves the cursor where it was,
+// wherever the decoded text is not a slice of the document — a folded block
+// scalar, a quoted scalar carrying an escape. A whole-value span is the honest
+// answer there; a computed one would point at a character the author did not
+// write, which is the wrong-position failure this package treats as worse than no
+// position at all.
+func spanOfFence(n ast.Node, source string, from int) (Span, int) {
+	outer := spanOfNode(n)
+	text := tokenText(n.GetToken())
+	if !outer.IsValid() || from < 0 || from > len(text) {
+		return outer, from
+	}
+
+	whole := fenceOpen + source + fenceClose
+	i := strings.Index(text[from:], whole)
+	if i < 0 {
+		return outer, from
+	}
+	i += from
+
+	start := advance(outer.Start, text[:i+len(fenceOpen)])
+	return Span{Start: start, End: advance(start, source)}, i + len(whole)
+}

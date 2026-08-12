@@ -228,15 +228,47 @@ func isStringConcat(e *expr.Expr) bool {
 
 // flattenConcat unwraps a `+` chain into its operands, left to right. An operand
 // that is not itself a `+` is returned whole — so `"a" + inputs.token + "b"`
-// yields the three leaves, and `string(inputs.token)` is returned as the one
+// yields the three leaves, and a call other than the one below is returned as the
 // call it is, never descended into: a value inside a call is derived, and this
 // reports only what a `+` puts in the clear.
+//
+// The one exception is `string(x)` in an operand position, which is unwrapped to
+// x. That is not a softening of the derived rule; it is what keeps the rule
+// meaning the same thing after #413. A message written `token: ${inputs.token}`
+// is interpolation, and interpolation desugars to `'token: ' + string(inputs.token)`
+// — the `string()` is the compiler's, put there because CEL's `+` needs two
+// strings, not the author's. Reading it as a derivation would mean the plainest
+// possible spelling of this leak, the one the lint exists to catch, stopped being
+// caught the moment the language grew a nicer way to write it.
+//
+// It follows that the same unwrapping applies to a `string()` an author typed
+// inside a concatenation, since after compilation the two are the same
+// expression and nothing can tell them apart. That is the right answer anyway:
+// `${'token: ' + string(inputs.token)}` does put the value in the log verbatim.
+// What is deliberately unchanged is `${string(inputs.token)}` written as the
+// whole message, with no concatenation at all — the known, accepted gap this
+// file's doc records — because that one never reaches here.
 func flattenConcat(e *expr.Expr) []*expr.Expr {
 	if isStringConcat(e) {
 		args := e.GetExprKind().(*expr.Expr_CallExpr).CallExpr.GetArgs()
 		return append(flattenConcat(args[0]), flattenConcat(args[1])...)
 	}
-	return []*expr.Expr{e}
+	return []*expr.Expr{unwrapStringConversion(e)}
+}
+
+// unwrapStringConversion returns the argument of a global `string(x)` call, and e
+// itself for anything else. See [flattenConcat] for why one call, and only in an
+// operand position, is transparent here.
+func unwrapStringConversion(e *expr.Expr) *expr.Expr {
+	call, ok := e.GetExprKind().(*expr.Expr_CallExpr)
+	if !ok {
+		return e
+	}
+	c := call.CallExpr
+	if c.GetTarget() != nil || c.GetFunction() != "string" || len(c.GetArgs()) != 1 {
+		return e
+	}
+	return c.GetArgs()[0]
 }
 
 // identName returns the name of e when it is a bare identifier, empty otherwise.

@@ -1,0 +1,38 @@
+# Each claim is about the *rendered text*, which is the only thing
+# interpolation decides. Every stub carries a `where:`, so a value that rendered
+# differently reaches no stub and fails the case rather than passing quietly.
+#
+# The `attempts` claim is the one that is not about text. `${7}` is exactly one
+# fence, so it stays the integer seven — and a build that rendered a whole-value
+# fence as text would still produce `budget 7 attempts` in the message below, so
+# the integer is asserted in `outputs:`, where its type is what is compared.
+edition: v2026.3
+tests:
+  - name: text and expressions in one value render as one sentence
+    workflow: ./workflow.yaml
+    inputs:
+      version: v2.1.0
+      environment: production
+    stubs:
+      - task: log
+        where: inputs.message == 'an unattested caller requests deploying v2.1.0 to production'
+        returns: {}
+      - task: log
+        where: inputs.message == 'attempt 2, forced false, budget 90s'
+        returns: {}
+      # A folded block scalar joins its lines with a space before any fence is
+      # read, so the two lines are one sentence.
+      - task: log
+        where: inputs.message == 'deploying v2.1.0 to production'
+        returns: {}
+      # The escape produced two characters, not an expression.
+      - task: log
+        where: "inputs.message == 'write ${inputs.version} to interpolate it'"
+        returns: {}
+      - task: log
+        where: inputs.message == 'budget 7 attempts'
+        returns: {}
+    expect:
+      ran: [announce, kinds, summary, teach, attempts, report]
+      outputs:
+        attempts: 7

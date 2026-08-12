@@ -52,14 +52,24 @@
 //	  X-Trace: ${steps.trace.result}  # compiles to {'X-Trace': steps.trace.result}
 //	  X-Env: production
 //
-// The fence has to span the whole value. There is no string interpolation, so
-// "hello ${steps.name.result}" is reported rather than quietly shipped as literal
-// text; write it as one expression instead, as ${'hello ' + steps.name.result}.
-// Where the fence
-// ends is decided by compiling its contents, not by counting braces, so an
-// expression containing braces of its own is fine: "${ {'k': 1} }" is one
-// expression. [ExprSource] and [ExprError] answer the question directly, for tooling
-// that has to make the same decision.
+// A value may mix literal text with expressions, and may hold several of them:
+// "hello ${steps.name.result}" is the text and the value joined, and
+// "${a} and ${b}" is two expressions with a word between (#413). Each fence holds
+// one ordinary CEL expression, each is rendered with CEL's own string(), and the
+// scalar compiles to the single expression that concatenates the pieces — so there
+// is nothing about interpolation for either driver to implement or to disagree
+// about. `$${` is a literal `${`.
+//
+// A scalar that is *exactly* one fence is the case that keeps whole-value typing:
+// ${0} is the integer zero, where "${0} " is the text "0 ". [SplitFence] is that
+// test, [Fences] lists every expression a value holds, and [ExprSource] and
+// [ExprError] answer the whole-value question for tooling that has to make the
+// same decision.
+//
+// Where a fence ends is decided by compiling its contents when the value is one
+// fence, and by matching braces around CEL's string literals and comments when it
+// is not — so an expression containing braces of its own is fine either way:
+// "${ {'k': 1} }" is one expression.
 //
 // Fields the schema does not type as expressions — a step's `id`, a task's `name`, a
 // `timeout` — are read when the workflow is compiled, before anything could be

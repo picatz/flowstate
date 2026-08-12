@@ -76,7 +76,25 @@ type value struct {
 	// is a valid expression is decided by running the CEL parser, which the
 	// diagnostics do anyway — and a broken expression still needs a position, so
 	// recognizing the fence has to work without the answer.
+	//
+	// It answers the *whole-value* question specifically, and stays that question
+	// now that a scalar may hold several fences, because the consumers that read
+	// it want that one: a `sleep:` whose value is an expression, a shaped output
+	// whose type is what the expression evaluates to. A scalar mixing text with
+	// expressions is a string and is none of those things. Everything that wants
+	// the expressions *in* a value, wherever they are, reads fences instead.
 	fenced bool
+
+	// fences lists every ${...} in the scalar, in the order written, whether the
+	// scalar is one fence or text around several.
+	//
+	// The one-fence model this replaced is the reason it exists. Hover, go-to-
+	// definition, and the CEL squiggle each looked at `expr` alone, so on
+	// `${a} and ${b}` they saw one expression at best and, before #413 made that
+	// value legal, nothing at all. A consumer that walks a list cannot silently
+	// answer for the first branch and ignore the rest, which is the defect class
+	// this repository has now had four of.
+	fences []fence
 
 	// inline reports that the decoded text — and so the expr cut out of it —
 	// occupies a contiguous run of the document's own bytes, so an offset within
@@ -115,6 +133,23 @@ type value struct {
 	// a byte of any document line. Those values have neither flag, and get whole
 	// ranges or nothing — see #306.
 	lineMap []lineSpan
+}
+
+// A fence is one ${...} inside a value, together with where it sits.
+type fence struct {
+	// source is the expression between the braces.
+	source string
+
+	// at is the byte offset of source within the value's decoded text, so that a
+	// span inside the expression maps through the value's own text mapping. It
+	// is the whole of what makes the several-fences case no harder than one:
+	// there is no "the fence starts two bytes in" to assume anywhere.
+	at int
+
+	// rng covers the fence as written, `${` and `}` included. It is the coarse
+	// answer — what a squiggle falls back to, and the region a cursor is tested
+	// against — and is always available, even where no finer position is.
+	rng lsp.Range
 }
 
 // A lineSpan places one line of a value's decoded text in the document.
@@ -1324,6 +1359,7 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 			// one — the header's start — is exactly what a consumer that reached
 			// past the mapping methods would use.
 		}
+		v.recordFences(ix, v.rng)
 		return v
 	}
 
@@ -1370,6 +1406,7 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 			v.expr = source
 			v.exprRange = v.rng
 		}
+		v.recordFences(ix, v.rng)
 		return v
 	}
 
@@ -1385,7 +1422,72 @@ func buildValue(n ast.Node, ix *lineIndex) *value {
 			v.exprRange = ix.rangeOfOffsets(start+inner, start+inner+len(exprOpen)+len(source)+len(exprClose))
 		}
 	}
+	v.recordFences(ix, v.rng)
 	return v
+}
+
+// recordFences fills in the list of ${...} a scalar holds.
+//
+// The rule is [flowfile.Fences], the compiler's own, rather than a scan kept
+// here, for the reason the whole-value rule is taken from [flowfile.SplitFence]:
+// an editor that disagreed with the engine about where a fence ends would
+// squiggle, complete, and navigate against a file that means something else.
+//
+// Each fence's range is computed through the value's own text mapping, so a
+// block scalar's fences get real ranges where the mapping can place them and the
+// whole value's range where it cannot. fallback is that whole-value range: the
+// coarse answer is still true, and a wrong-but-precise one is the failure this
+// package treats as worse than an imprecise one.
+func (v *value) recordFences(ix *lineIndex, fallback lsp.Range) {
+	found := flowfile.Fences(v.text)
+	if len(found) == 0 {
+		return
+	}
+	v.fences = make([]fence, 0, len(found))
+	for _, f := range found {
+		rng := fallback
+		if mapped, ok := v.textSpan(ix, f.Open, f.End); ok {
+			rng = mapped
+		}
+		v.fences = append(v.fences, fence{source: f.Source, at: f.At, rng: rng})
+	}
+}
+
+// fenceSpan returns the document range covering [start,end) of one fence's
+// expression source — the generalization of [value.exprSpan] to a value that may
+// hold several.
+func (v *value) fenceSpan(ix *lineIndex, f fence, start, end int) (lsp.Range, bool) {
+	return v.textSpan(ix, f.at+start, f.at+end)
+}
+
+// fenceMapper hands out that view for one fence.
+func (v *value) fenceMapper(ix *lineIndex, f fence) spanMapper {
+	return func(start, end int) (lsp.Range, bool) { return v.fenceSpan(ix, f, start, end) }
+}
+
+// fenceAt returns the fence a document position is inside, with the offset
+// within that fence's source the position names.
+//
+// The position has to be inside the fence's own range, so that a cursor in the
+// literal text between two fences answers for neither. It reports false when the
+// value has no mapping fine enough to say where in the source the cursor is,
+// which is the same decline [value.exprCursor] makes and for the same reason.
+func (v *value) fenceAt(ix *lineIndex, pos lsp.Position) (fence, int, bool) {
+	for _, f := range v.fences {
+		if !contains(f.rng, pos) {
+			continue
+		}
+		off, ok := v.textOffsetOfDoc(ix.offsetOfPosition(pos))
+		if !ok {
+			return fence{}, 0, false
+		}
+		cursor := off - f.at
+		if cursor < 0 || cursor > len(f.source) {
+			return fence{}, 0, false
+		}
+		return f, cursor, true
+	}
+	return fence{}, 0, false
 }
 
 // The fence delimiters, needed to locate the fence in the source text. The rule
@@ -1406,12 +1508,10 @@ const literalIndicator = "|"
 // written.
 type spanMapper func(start, end int) (lsp.Range, bool)
 
-// exprMapper and textMapper hand out that view of a value's expression source
-// and of its decoded text.
-func (v *value) exprMapper(ix *lineIndex) spanMapper {
-	return func(start, end int) (lsp.Range, bool) { return v.exprSpan(ix, start, end) }
-}
-
+// textMapper hands out that view of a value's decoded text. The per-fence
+// counterpart is [value.fenceMapper]; there is no whole-value expression mapper,
+// because a value may hold several expressions and every consumer that wants one
+// wants to say which.
 func (v *value) textMapper(ix *lineIndex) spanMapper {
 	return func(start, end int) (lsp.Range, bool) { return v.textSpan(ix, start, end) }
 }
@@ -1438,50 +1538,16 @@ func (v *value) textSpan(ix *lineIndex, start, end int) (lsp.Range, bool) {
 	return ix.rangeOfOffsets(from, to), true
 }
 
-// exprSpan returns the document range covering [start,end) of the value's
-// expression source.
-//
-// The expression sits inside the fence, so its offsets are the text's shifted by
-// the opening `${`. That shift is the whole of the "first line is different"
-// problem: an expression's line 1 begins two bytes into the text's line 1 and
-// every later line begins where the text's does. Adding it before the line
-// lookup, rather than to a column afterwards, is what keeps that from becoming a
-// per-line special case to get wrong.
-func (v *value) exprSpan(ix *lineIndex, start, end int) (lsp.Range, bool) {
-	if !v.fenced {
-		return lsp.Range{}, false
-	}
-	return v.textSpan(ix, start+len(exprOpen), end+len(exprOpen))
-}
-
-// exprSpanOrWhole is [value.exprSpan] for a caller with nowhere to decline to:
+// fenceSpanOrWhole is [value.fenceSpan] for a caller with nowhere to decline to:
 // hover has already decided there is something to say, and a hover with no range
-// underlines nothing at all. The whole value's range is the same coarse-and-true
-// answer a diagnostic falls back to.
-func (v *value) exprSpanOrWhole(ix *lineIndex, start, end int) lsp.Range {
-	if rng, ok := v.exprSpan(ix, start, end); ok {
+// underlines nothing at all. The fence's own range is the coarse-and-true answer
+// there, and is narrower than the whole value's whenever a value holds more than
+// one fence.
+func (v *value) fenceSpanOrWhole(ix *lineIndex, f fence, start, end int) lsp.Range {
+	if rng, ok := v.fenceSpan(ix, f, start, end); ok {
 		return rng
 	}
-	return v.exprRange
-}
-
-// exprCursor returns the offset within the value's expression source that a
-// document position names, and reports false when the position is not inside
-// that source — the header line of a block scalar, the indentation stripped off
-// a content line, or anywhere at all in a value with no mapping.
-func (v *value) exprCursor(ix *lineIndex, pos lsp.Position) (int, bool) {
-	if !v.fenced {
-		return 0, false
-	}
-	off, ok := v.textOffsetOfDoc(ix.offsetOfPosition(pos))
-	if !ok {
-		return 0, false
-	}
-	cursor := off - len(exprOpen)
-	if cursor < 0 || cursor > len(v.expr) {
-		return 0, false
-	}
-	return cursor, true
+	return f.rng
 }
 
 // docOffsetOfText converts an offset within the decoded text to a document byte

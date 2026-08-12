@@ -2311,19 +2311,44 @@ func (f *fixer) rootResponseScalar(node *ast.StringNode) {
 	})
 }
 
-// rootScalar rewrites one fenced scalar in place.
+// rootScalar rewrites the fenced expressions in one scalar in place.
+//
+// Every fence, not the whole-value one: since #413 a scalar may hold text and
+// several expressions, and a rewriter that asked the whole-value question would
+// leave `hello ${who.result}` untouched while stamping the new edition onto the
+// file. That is not a silent corruption — the bare reference is refused by the
+// validator afterwards — but it is the other half of the same failure CLAUDE.md
+// records, `flow fix` exiting zero on a file the validator then rejects. A
+// rewriter has to know what the grammar holds, and the grammar now holds more
+// than one expression per value.
+//
+// The splice walks left to right behind a cursor rather than searching the whole
+// line for each fence, because two fences in a value may be written identically:
+// in `${who.result} then ${who.result}` a search from the value's start would
+// rewrite the first one twice and the second never.
 func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
-	inner, fenced := SplitFence(node.Value)
-	if !fenced {
+	fences := Fences(node.Value)
+	if len(fences) == 0 {
 		return
 	}
 
-	rooted, changed, err := rootedExpr(inner, steps)
-	if err != nil {
-		f.refuse(node, "%s", err.Error())
-		return
+	type rewrite struct{ want, replacement string }
+	var rewrites []rewrite
+	for _, fence := range fences {
+		rooted, changed, err := rootedExpr(fence.Source, steps)
+		if err != nil {
+			f.refuse(node, "%s", err.Error())
+			return
+		}
+		if !changed {
+			continue
+		}
+		rewrites = append(rewrites, rewrite{
+			want:        fenceOpen + fence.Source + fenceClose,
+			replacement: fenceOpen + rooted + fenceClose,
+		})
 	}
-	if !changed {
+	if len(rewrites) == 0 {
 		return
 	}
 
@@ -2334,25 +2359,32 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 		return
 	}
 
-	line := f.line(span.Start.Line)
-	want, replacement := fenceOpen+inner+fenceClose, fenceOpen+rooted+fenceClose
-
 	// Located from the value's own column rather than by searching the line, so a
 	// fence written earlier on the same line — in a comment, or in another value in
 	// flow style — cannot be the one rewritten.
-	from, located := byteOffsetOfColumn(line, span.Start.Column)
+	line := f.line(span.Start.Line)
+	cursor, located := byteOffsetOfColumn(line, span.Start.Column)
 	if !located {
 		return
 	}
-	at := strings.Index(line[from:], want)
-	if at < 0 {
-		f.refuse(node,
-			"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
-		return
-	}
-	at += from
 
-	f.lines[span.Start.Line-1] = line[:at] + replacement + line[at+len(want):]
+	// Built whole and assigned once, so a value whose fences cannot all be found
+	// leaves the line exactly as it was. A half-rewritten line is the one outcome
+	// worse than an unrewritten one.
+	rewritten := line
+	for _, rw := range rewrites {
+		at := strings.Index(rewritten[cursor:], rw.want)
+		if at < 0 {
+			f.refuse(node,
+				"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
+			return
+		}
+		at += cursor
+		rewritten = rewritten[:at] + rw.replacement + rewritten[at+len(rw.want):]
+		cursor = at + len(rw.replacement)
+	}
+
+	f.lines[span.Start.Line-1] = rewritten
 	f.substituted = true
 	f.changes = append(f.changes, FixChange{
 		Line:    span.Start.Line,

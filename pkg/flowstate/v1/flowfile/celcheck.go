@@ -503,7 +503,14 @@ var unknownFunction = regexp.MustCompile(`^undeclared reference to '([^']+)'`)
 // nothing downstream can parse it back. A `fields:` value is read by a log sink, and
 // `{"a":1,"b":["x","y"]}` is the one of the two it can do something with. `format`
 // is for putting a *scalar* into a sentence.
-var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list)\(`)
+// A null is matched alongside them because #413 made this reachable from a value
+// that never calls `string()` in its source at all: interpolation desugars each
+// fence to `string(<fence>)`, so `deployed by ${inputs.who}` on an input that can
+// be absent arrives here as this message about a call the author did not write.
+// The advice has to fit what they *did* write, which is why the null case gets a
+// sentence about saying what a missing value should read as rather than one about
+// rendering a structure.
+var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list|null_type)`)
 
 // forAnAuthor turns one of cel-go's sentences into one written for the person who
 // typed the expression.
@@ -521,7 +528,11 @@ func forAnAuthor(message string) string {
 			match[1])
 	}
 
-	if stringOfAStructure.MatchString(message) {
+	if match := stringOfAStructure.FindStringSubmatch(message); match != nil {
+		if match[1] == "null_type" {
+			return message + "; string() takes a value, and a null has none to render, " +
+				"so say what a missing one should read as — `${x.orValue('unknown')}`, or a conditional"
+		}
 		return message + "; string() takes a scalar, so render a map or a list with json.encode(value)"
 	}
 
