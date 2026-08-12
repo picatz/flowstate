@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -233,6 +235,94 @@ func TestGHCLIMergeTarget(t *testing.T) {
 		if owner, repo, number, ok := ghCLIMergeTarget(cmd); ok {
 			t.Errorf("ghCLIMergeTarget(%q) identified a PR (%q, %q, %d) it should not have", cmd, owner, repo, number)
 		}
+	}
+}
+
+// TestUnidentifiedMergeCallWarns is the gap the coordinator flagged: a
+// merge attempt this hook recognizes but cannot identify a PR for must warn
+// the same way an API failure does, not allow silently. A call that is not
+// a merge attempt at all gets no warning, because there is nothing to warn
+// about.
+func TestUnidentifiedMergeCallWarns(t *testing.T) {
+	t.Parallel()
+
+	warns := []struct {
+		name string
+		in   *hook.Input
+	}{
+		{"bare gh pr merge", &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": "gh pr merge"}}},
+		{"gh pr merge with flags but no repo", &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": "gh pr merge --squash"}}},
+		{"gh pr merge with a number but no -R", &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": "gh pr merge 498"}}},
+		{"mcp call missing pullNumber", &hook.Input{ToolName: "mcp__github__merge_pull_request", ToolInput: map[string]any{"owner": "picatz", "repo": "flowstate"}}},
+		{"mcp call missing repo", &hook.Input{ToolName: "mcp__github__merge_pull_request", ToolInput: map[string]any{"owner": "picatz", "pullNumber": float64(498)}}},
+	}
+	for _, tt := range warns {
+		if _, _, _, ok := mergeTarget(tt.in); ok {
+			t.Fatalf("%s: mergeTarget unexpectedly identified a PR", tt.name)
+		}
+		reason := unidentifiedMergeWarning(tt.in)
+		if reason == "" {
+			t.Errorf("%s: unidentifiedMergeWarning returned no warning for a merge attempt", tt.name)
+			continue
+		}
+		if !strings.Contains(reason, "MERGING WITHOUT THE CHECK") {
+			t.Errorf("%s: warning does not say the merge proceeded unchecked: %s", tt.name, reason)
+		}
+	}
+	if reason := unidentifiedMergeWarning(warns[2].in); !strings.Contains(reason, "-R") {
+		t.Errorf("bare-number case does not say how to make the PR identifiable: %s", reason)
+	}
+
+	silent := []struct {
+		name string
+		in   *hook.Input
+	}{
+		{"not a merge call", &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": "gh pr list"}}},
+		{"unrelated MCP tool", &hook.Input{ToolName: "mcp__github__get_pull_request", ToolInput: map[string]any{}}},
+		{"prose mentioning gh pr merge", &hook.Input{ToolName: "Bash", ToolInput: map[string]any{"command": `git commit -m "docs: gh pr merge 42"`}}},
+	}
+	for _, tt := range silent {
+		if reason := unidentifiedMergeWarning(tt.in); reason != "" {
+			t.Errorf("%s: warned on a call that is not an identifiable merge attempt: %s", tt.name, reason)
+		}
+	}
+}
+
+// TestWarnReachesStderrAndPermissionReason confirms the fail-open warning
+// (shared by the API-failure and unidentified-PR paths) actually reaches a
+// human: stderr, and the tool call's permission-decision reason.
+func TestWarnReachesStderrAndPermissionReason(t *testing.T) {
+	origStdout, origStderr := os.Stdout, os.Stderr
+	outR, outW, _ := os.Pipe()
+	errR, errW, _ := os.Pipe()
+	os.Stdout, os.Stderr = outW, errW
+	defer func() { os.Stdout, os.Stderr = origStdout, origStderr }()
+
+	const reason = "mergeguard: test warning reaches a human"
+	warn(reason)
+
+	outW.Close()
+	errW.Close()
+	stdout, _ := io.ReadAll(outR)
+	stderr, _ := io.ReadAll(errR)
+
+	if !strings.Contains(string(stderr), reason) {
+		t.Errorf("warning did not reach stderr: %q", stderr)
+	}
+	var decision struct {
+		HookSpecificOutput struct {
+			PermissionDecision       string `json:"permissionDecision"`
+			PermissionDecisionReason string `json:"permissionDecisionReason"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(stdout, &decision); err != nil {
+		t.Fatalf("stdout is not the expected JSON: %v (%q)", err, stdout)
+	}
+	if decision.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Errorf("permissionDecision = %q, want allow", decision.HookSpecificOutput.PermissionDecision)
+	}
+	if decision.HookSpecificOutput.PermissionDecisionReason != reason {
+		t.Errorf("permissionDecisionReason = %q, want %q", decision.HookSpecificOutput.PermissionDecisionReason, reason)
 	}
 }
 

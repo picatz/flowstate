@@ -77,7 +77,10 @@ func main() {
 
 	owner, repo, number, ok := mergeTarget(in)
 	if !ok {
-		return // not a merge call this hook can identify
+		if reason := unidentifiedMergeWarning(in); reason != "" {
+			warn(reason)
+		}
+		return // not a merge call, or a merge call this hook could not identify
 	}
 
 	tok, ok := githubToken()
@@ -137,6 +140,28 @@ func mergeTarget(in *hook.Input) (owner, repo string, number int, ok bool) {
 	}
 }
 
+// unidentifiedMergeWarning reports the fail-open warning for a tool call
+// that is a merge attempt this hook recognizes but could not identify a PR
+// for, or "" when the call is not a merge attempt at all (in which case
+// main stays silent, correctly: there is nothing to warn about). Silence on
+// an unidentified merge attempt is the same failure mode as silence on an
+// API error — a check that reports nothing looks identical to a check that
+// passed — so both paths warn the same way: on stderr and as the visible
+// permission-decision reason.
+func unidentifiedMergeWarning(in *hook.Input) string {
+	switch in.ToolName {
+	case "mcp__github__merge_pull_request":
+		return "mergeguard: this merge_pull_request call did not carry a usable owner, repo and pullNumber, so unresolved review threads were not checked. MERGING WITHOUT THE CHECK."
+	case "Bash":
+		if isGHPRMergeInvocation(in.Command()) {
+			return "mergeguard: could not identify the pull request from this `gh pr merge` invocation, so unresolved review threads were not checked. MERGING WITHOUT THE CHECK. Name the PR explicitly (a full PR URL, or a number together with -R/--repo owner/repo) to make it checkable."
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
 // mcpMergeTarget reads owner, repo and pullNumber directly from the MCP
 // tool's structured arguments — the exact path, no inference.
 func mcpMergeTarget(in *hook.Input) (owner, repo string, number int, ok bool) {
@@ -156,11 +181,61 @@ func mcpMergeTarget(in *hook.Input) (owner, repo string, number int, ok bool) {
 // after it, up to the next control operator or the end of the string.
 var ghPRMerge = regexp.MustCompile(`\bgh\s+pr\s+merge\b(.*)`)
 
+// ghPRMergeTrigger is the same trigger with no capture group, applied to a
+// quote-stripped copy of the command: see isGHPRMergeInvocation.
+var ghPRMergeTrigger = regexp.MustCompile(`\bgh\s+pr\s+merge\b`)
+
 // prURL matches a full pull-request URL, which is self-identifying.
 var prURL = regexp.MustCompile(`^https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)$`)
 
 // repoFlagValue matches an explicit -R/--repo owner/repo flag value.
 var repoFlagValue = regexp.MustCompile(`^([^/\s]+)/([^/\s]+)$`)
+
+// isGHPRMergeInvocation reports whether cmd actually invokes `gh pr merge`,
+// as opposed to merely mentioning the words — a commit message or a grep
+// pattern quoting them must never trigger this guard, the same false-alarm
+// concern pidguard's package doc names. stripQuoted drops the *contents* of
+// quoted regions entirely (not just the quote characters), so a trigger
+// found in the stripped copy is one that appears outside any quoting in the
+// original and is safe to act on there too.
+func isGHPRMergeInvocation(cmd string) bool {
+	return ghPRMergeTrigger.MatchString(stripQuoted(cmd))
+}
+
+// stripQuoted removes single- and double-quoted regions (contents and all)
+// and backslash-escaped characters, so `git commit -m "docs: gh pr merge
+// 42"` never looks like an invocation. Ported from pidguard's guard of the
+// same name and for the same reason.
+func stripQuoted(s string) string {
+	var b strings.Builder
+	var inSingle, inDouble, escaped bool
+	for _, r := range s {
+		switch {
+		case escaped:
+			escaped = false
+		case inSingle:
+			if r == '\'' {
+				inSingle = false
+			}
+		case inDouble:
+			switch r {
+			case '\\':
+				escaped = true
+			case '"':
+				inDouble = false
+			}
+		case r == '\\':
+			escaped = true
+		case r == '\'':
+			inSingle = true
+		case r == '"':
+			inDouble = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // ghCLIMergeTarget recognizes `gh pr merge` only when the command names the
 // PR explicitly: a full PR URL, or a bare number alongside an explicit
@@ -169,6 +244,9 @@ var repoFlagValue = regexp.MustCompile(`^([^/\s]+)/([^/\s]+)$`)
 // lookup, which this hook does not reproduce; it returns ok=false rather
 // than guess.
 func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
+	if !isGHPRMergeInvocation(cmd) {
+		return "", "", 0, false
+	}
 	m := ghPRMerge.FindStringSubmatch(cmd)
 	if m == nil {
 		return "", "", 0, false
