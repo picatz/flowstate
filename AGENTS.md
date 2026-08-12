@@ -28,19 +28,19 @@ the tests pass.
 
 ## The verification gate
 
-`make check` runs everything CI runs, in the order CI runs it, in under a
-couple of minutes. Run it before calling anything done:
+The diff-scoped gate is the default before pushing a PR branch; PR CI is the
+full gate, and `make check` is the same full list run locally:
 
-    make check
+    go run ./tools/gate    # diff-scoped tier (or: make gate)
+    make check             # full CI-parity rehearsal
 
-Bound test runs individually if you're not running the full gate:
+Bound test runs individually if you're not running a gate tier:
 
     GOMEMLIMIT=1GiB go test -timeout 120s ./pkg/flowstate/v1/...
     GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzName -fuzztime 60s ./path/
 
-See CLAUDE.md's "Run what CI runs, before pushing" for what each check catches
-and the toolchain pins (`GOTOOLCHAIN=go1.26.5`) `govulncheck` and `staticcheck`
-need to scan clean.
+See CLAUDE.md's "The gate" section for what each check catches and the
+toolchain pins (`GOTOOLCHAIN=go1.26.5`) `govulncheck` and `staticcheck` need.
 
 ## Working alongside other agents
 
