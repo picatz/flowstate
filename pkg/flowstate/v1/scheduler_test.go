@@ -38,6 +38,26 @@ func TestWrittenOrderIsWhatANonSimulatedRunGets(t *testing.T) {
 	require.False(t, v1.WrittenOrder.Interleave(v1.SchedulePointAsyncLaunch, "a"))
 }
 
+// TestAdversarialOrderIsTheOppositeAndIsFixed pins the schedule the
+// deterministic cases are written against.
+//
+// It has to be reached identically every run and by nothing resembling a choice,
+// because that is the whole difference between it and the seeded search: a
+// search proves a claim about the seeds it drew, and this proves one about a
+// schedule every run takes.
+func TestAdversarialOrderIsTheOppositeAndIsFixed(t *testing.T) {
+	require.Equal(t, []int{3, 2, 1, 0}, v1.AdversarialOrder.Order(v1.SchedulePointParallelBranches, 4))
+	require.Equal(t, []int{0}, v1.AdversarialOrder.Order(v1.SchedulePointParallelBranches, 1))
+	require.Empty(t, v1.AdversarialOrder.Order(v1.SchedulePointParallelBranches, 0))
+	require.True(t, v1.AdversarialOrder.Interleave(v1.SchedulePointAsyncLaunch, "a"))
+
+	// A genuine permutation, so the engine's own guard passes it through rather
+	// than substituting written order and quietly running the cases against the
+	// schedule they exist to depart from.
+	require.Equal(t, []int{2, 1, 0},
+		v1.ScheduleOrder(v1.AdversarialOrder, v1.SchedulePointParallelBranches, 3))
+}
+
 // brokenScheduler answers with things that are not permutations — the shapes a
 // buggy or hostile scheduler would produce.
 type brokenScheduler struct{ order []int }

@@ -106,6 +106,41 @@ func (writtenOrder) Interleave(SchedulePoint, string) bool { return false }
 // when nothing was injected, the same relationship [RealClock] has to [Clock].
 var WrittenOrder Scheduler = writtenOrder{}
 
+// adversarialOrder is the deterministic opposite of [WrittenOrder]: units
+// advance in reverse declaration order, and every async step's work is held
+// until its join.
+type adversarialOrder struct{}
+
+func (adversarialOrder) Order(_ SchedulePoint, n int) []int {
+	order := make([]int, n)
+	for i := range order {
+		order[i] = n - 1 - i
+	}
+
+	return order
+}
+
+func (adversarialOrder) Interleave(SchedulePoint, string) bool { return true }
+
+// AdversarialOrder is the one schedule furthest from written order, chosen by
+// nothing: every branch advances last-first and every async step's work waits
+// for its join.
+//
+// The counterpart to the seeded search rather than a competitor to it, and the
+// division of labour is the point. A search over seeds *finds* an interleaving
+// that breaks an invariant, which is what it is for and what nothing else can
+// do. It is a poor way to *keep* one: change the corpus, change the seeds or
+// reorder a case and the schedule that exposed a defect may never be generated
+// again, so a regression comes back silently while the search reports green
+// having explored elsewhere. So a defect a search finds is pinned here, by a
+// case that names it and a schedule that reaches it every single time, with no
+// seed involved.
+//
+// Both defects #477 slice 0 found are pinned that way — see
+// [pkg/flowstate/v1/tests.AsyncUnwindCases], which both drivers run, and the
+// local driver runs a second time under this scheduler.
+var AdversarialOrder Scheduler = adversarialOrder{}
+
 // schedulerContextKey is the context key carrying a [Scheduler].
 type schedulerContextKey struct{}
 
