@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -41,20 +42,70 @@ import (
 // webhookSecret is the signing key every delivery in this file is signed with.
 const webhookSecret = "whsec_test_receiver"
 
-// fixedKeys is a resolver holding one key, standing in for whatever backend a
-// deployment configured. It resolves anything, because what is under test here is
-// the receiver rather than the secret machinery, which has its own suite.
-type fixedKeys struct {
-	value string
-	err   error
+// keyProvider is the deployment's secret backend: one signing key per tenant,
+// recording which tenant it was asked in.
+//
+// A provider rather than a [secrets.Resolver], because a resolver is already
+// scoped to a namespace and the namespace is exactly what these tests are about.
+// The receiver is handed the [secrets.Store] and scopes it itself, so `seen` is
+// the record of which tenant's secrets a receiver actually reached — the negative
+// direction, which a resolver standing in for a whole backend cannot express.
+type keyProvider struct {
+	// keys is namespace -> the signing key held in it. A namespace absent here
+	// holds no key, which is what a tenant that never configured one looks like.
+	keys map[string]string
+
+	// err, when set, is what the backend answers regardless of tenant.
+	err error
+
+	mu   sync.Mutex
+	seen []string
 }
 
-func (k fixedKeys) Resolve(_ context.Context, ref secrets.Ref) (secrets.Secret, error) {
-	if k.err != nil {
-		return secrets.Secret{}, k.err
+func (p *keyProvider) Scheme() string { return "env" }
+
+func (p *keyProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	p.mu.Lock()
+	p.seen = append(p.seen, req.Namespace)
+	p.mu.Unlock()
+
+	if p.err != nil {
+		return secrets.Secret{}, p.err
 	}
 
-	return secrets.NewSecret(ref, k.value), nil
+	value, held := p.keys[req.Namespace]
+	if !held {
+		return secrets.Secret{}, fmt.Errorf("%w: no signing key in namespace %q",
+			secrets.ErrNotFound, req.Namespace)
+	}
+
+	return secrets.NewSecret(req.Ref, value), nil
+}
+
+// namespaces reports every tenant this backend was asked to resolve in.
+func (p *keyProvider) namespaces() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return slices.Clone(p.seen)
+}
+
+// storeOf wraps a backend in the store a deployment hands the receiver.
+func storeOf(t *testing.T, provider *keyProvider) *secrets.Store {
+	t.Helper()
+
+	store, err := secrets.NewStore(provider)
+	require.NoError(t, err)
+
+	return store
+}
+
+// keyStore holds one signing key, in the unnamed tenant most of this file serves
+// under: a single-tenant deployment, which is what an empty namespace means.
+func keyStore(t *testing.T, value string) *secrets.Store {
+	t.Helper()
+
+	return storeOf(t, &keyProvider{keys: map[string]string{"": value}})
 }
 
 // orderWebhookWorkflow is the served specification: a signature with an `int` in
@@ -101,7 +152,7 @@ func newReceiver(t *testing.T, opts ...server.WebhookOption) *server.WebhookRece
 	t.Helper()
 
 	receiver, err := server.New(nil).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret}, opts...)
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret), opts...)
 	require.NoError(t, err)
 
 	return receiver
@@ -150,7 +201,7 @@ func TestADeliveryStartsARun(t *testing.T) {
 	startWorker(t, temporal)
 
 	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret})
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
 	body := deliveryBody("evt_start")
@@ -200,7 +251,7 @@ func TestARedeliveryDoesNotStartASecondRun(t *testing.T) {
 	startWorker(t, temporal)
 
 	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret})
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
 	body := deliveryBody("evt_retried")
@@ -240,7 +291,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	startWorker(t, temporal)
 
 	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret})
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
 	const arrivals = 8
@@ -300,7 +351,7 @@ func TestAnUnverifiableDeliveryIsRefused(t *testing.T) {
 	startWorker(t, temporal)
 
 	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret})
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
 	body := deliveryBody("evt_forged")
@@ -314,6 +365,63 @@ func TestAnUnverifiableDeliveryIsRefused(t *testing.T) {
 	accepted := readAccepted(t, deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed))
 	assert.False(t, accepted.Joined,
 		"a genuine delivery joined a run, so the forged delivery of the same event had started one")
+}
+
+// TestADeliveryIsOneJSONDocumentAndNothingAfterIt is the parser-strictness half of
+// "bound anything that consumes untrusted input", where what is bounded is the
+// grammar rather than a resource.
+//
+// `Decoder.Decode` reads one value and stops, so a body holding a document plus
+// anything else decoded as the document and discarded the rest — and the run was
+// then started from a prefix, which can say something other than the payload as a
+// whole says. Every case here carries a *valid* first document, because a receiver
+// that only refuses malformed JSON passes all of them.
+func TestADeliveryIsOneJSONDocumentAndNothingAfterIt(t *testing.T) {
+	t.Parallel()
+
+	// Over a cluster that is never reached: a body this refuses is refused before
+	// a run is attempted, and the whitespace cases below have to get *past* that
+	// point to prove they were not refused, which means having somewhere to fail
+	// afterwards instead.
+	receiver, err := server.New(unreachableTemporal(t)).NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	first := deliveryBody("evt_prefix")
+
+	for name, body := range map[string]string{
+		"a second document":       first + first,
+		"a trailing scalar":       first + ` 12`,
+		"trailing arbitrary text": first + ` not-json`,
+		"a trailing NUL":          first + "\x00",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// Signed genuinely: the point is that a sender holding the key still
+			// cannot get a run started from a prefix of what they sent.
+			resp := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode,
+				"a body carrying more than one JSON document was accepted, so the run was started "+
+					"from the first document alone")
+		})
+	}
+
+	// And what is still one document: trailing whitespace is not a second value,
+	// and refusing it would refuse most senders' pretty-printed payloads.
+	for name, body := range map[string]string{
+		"trailing whitespace": first + "\n\t ",
+		"leading whitespace":  "  " + first,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			resp := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
+			assert.NotEqual(t, http.StatusBadRequest, resp.StatusCode,
+				"a single document surrounded by whitespace was refused as more than one document")
+		})
+	}
 }
 
 // TestARefusalDoesNotSayWhichRefusalItIs is the part of fail-closed that is about
@@ -410,8 +518,8 @@ func TestAReceiverRefusesAKeyItCannotResolve(t *testing.T) {
 	t.Parallel()
 
 	_, err := server.New(nil).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()},
-		fixedKeys{err: fmt.Errorf("no such secret")})
+		"", []*v1.Workflow{orderWebhookWorkflow()},
+		storeOf(t, &keyProvider{err: fmt.Errorf("no such secret")}))
 	require.Error(t, err, "a receiver started holding a webhook whose signing key it cannot resolve")
 	assert.Contains(t, err.Error(), "storefront", "the refusal does not name the webhook at fault")
 }
@@ -436,8 +544,8 @@ func TestAReceiverRefusesAWorkflowItCannotServe(t *testing.T) {
 		"two workflows under one name":      {orderWebhookWorkflow(), orderWebhookWorkflow()},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := server.New(nil).NewWebhookReceiver(t.Context(), workflows,
-				fixedKeys{value: webhookSecret})
+			_, err := server.New(nil).NewWebhookReceiver(t.Context(), "", workflows,
+				keyStore(t, webhookSecret))
 			require.Error(t, err, "the receiver accepted a configuration it cannot serve")
 		})
 	}
@@ -504,7 +612,7 @@ func TestADeliveryTheDeploymentCannotStartIsRetryable(t *testing.T) {
 	require.NoError(t, err)
 
 	receiver, err := server.New(unreachable).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{orderWebhookWorkflow()}, fixedKeys{value: webhookSecret})
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
 	resp := deliver(t, receiver, "/webhooks/order-webhook/storefront",

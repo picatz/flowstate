@@ -250,7 +250,7 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	receiver, err := flowstateserver.New(nil).NewWebhookReceiver(t.Context(),
+	receiver, err := flowstateserver.New(nil).NewWebhookReceiver(t.Context(), "",
 		[]*v1.Workflow{{
 			Name:    "order-webhook",
 			Profile: v1.CurrentProfile,
@@ -264,7 +264,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 				IdempotencyKey: v1.NewExpr(`event.body.id`),
 			}}},
 			Steps: []*v1.Node{{Id: "record", Kind: &v1.Node_Value{Value: v1.NewLiteral("ok")}}},
-		}}, staticResolver{})
+		}}, staticStore(t))
 	require.NoError(t, err)
 
 	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil,
@@ -296,10 +296,23 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 		"a deployment that configured no webhooks served the webhook route anyway")
 }
 
-// staticResolver resolves any reference to a fixed value, standing in for
+// staticProvider resolves any reference to a fixed value, standing in for
 // whatever backend a deployment configured.
-type staticResolver struct{}
+type staticProvider struct{}
 
-func (staticResolver) Resolve(_ context.Context, ref secrets.Ref) (secrets.Secret, error) {
-	return secrets.NewSecret(ref, "whsec_routing_test"), nil
+func (staticProvider) Scheme() string { return "env" }
+
+func (staticProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	return secrets.NewSecret(req.Ref, "whsec_routing_test"), nil
+}
+
+// staticStore is the secret machinery a receiver is handed here. The receiver
+// scopes it to its own namespace itself, which is why it takes the store.
+func staticStore(t *testing.T) *secrets.Store {
+	t.Helper()
+
+	store, err := secrets.NewStore(staticProvider{})
+	require.NoError(t, err)
+
+	return store
 }

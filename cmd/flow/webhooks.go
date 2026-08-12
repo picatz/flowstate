@@ -25,10 +25,17 @@ import (
 func addWebhookFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("webhook", nil,
 		"serve deliveries for the webhooks declared in this Flowfile, at "+
-			"/webhooks/<workflow>/<trigger>. Repeatable. The file is compiled and its `verify:` keys "+
-			"are resolved at startup, so a workflow this deployment cannot serve stops the server "+
-			"rather than refusing deliveries later. Needs the --secret-* flags that reach the "+
-			"signing keys")
+			"/webhooks/<workflow>/<trigger>. Repeatable. The file is compiled, its `verify:` keys "+
+			"are resolved, and this deployment's own checks are run against it at startup, so a "+
+			"workflow this deployment cannot serve stops the server rather than refusing deliveries "+
+			"later. Needs the --secret-* flags that reach the signing keys")
+
+	cmd.Flags().String("webhook-namespace", "",
+		"the Flowstate tenant a delivery's run belongs to, and the tenant its `verify:` keys are "+
+			"read in. A sender presents a signature rather than an identity, so there is no caller "+
+			"to take a tenant from and an operator names it here. Required on a deployment whose "+
+			"trust policy maps tenants onto Temporal namespaces, which has nowhere to route the "+
+			"unnamed tenant; a single-tenant deployment leaves it empty")
 }
 
 // webhookReceiver builds the receiver for whatever --webhook names, or nil when
@@ -76,18 +83,19 @@ func webhookReceiver(cmd *cobra.Command, flowServer *server.FlowstateServer, log
 		return nil, err
 	}
 
-	// The deployment's own tenant, which is the tenant a delivery's run belongs
-	// to: a sender presents a signature, not an identity, so there is no caller
-	// to derive a namespace from and the server's configured one is what a
-	// webhook run is recorded under. A deployment running with
-	// --secret-require-namespace therefore refuses here, out loud, rather than
-	// resolving a key in a tenant nobody chose.
-	resolver, err := store.For(nil)
-	if err != nil {
-		return nil, fmt.Errorf("scoping the secret store the webhook receiver resolves through: %w", err)
-	}
+	// The tenant an operator established, handed over *with* the store rather than
+	// used to scope it here: the receiver scopes the keys itself, from the same
+	// value it records a delivery's run under, so the tenant a key is read in and
+	// the tenant the run belongs to cannot be given different answers. See
+	// [server.FlowstateServer.NewWebhookReceiver].
+	//
+	// A deployment running with --secret-require-namespace and no
+	// --webhook-namespace is refused there, out loud, rather than resolving a key
+	// in a tenant nobody chose — as is one whose trust policy maps tenants onto
+	// Temporal namespaces and has no entry for the tenant named here.
+	namespace, _ := cmd.Flags().GetString("webhook-namespace")
 
-	receiver, err := flowServer.NewWebhookReceiver(cmd.Context(), workflows, resolver,
+	receiver, err := flowServer.NewWebhookReceiver(cmd.Context(), namespace, workflows, store,
 		server.WithWebhookLogger(logger))
 	if err != nil {
 		return nil, err

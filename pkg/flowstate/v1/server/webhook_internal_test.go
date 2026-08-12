@@ -18,11 +18,23 @@ import (
 // package: what it does when more deliveries arrive than it will process at once,
 // and what a workflow id is derived from.
 
-// oneKey resolves every reference to the same value.
+// oneKey is a backend resolving every reference in every tenant to one value.
 type oneKey struct{ value string }
 
-func (k oneKey) Resolve(_ context.Context, ref secrets.Ref) (secrets.Secret, error) {
-	return secrets.NewSecret(ref, k.value), nil
+func (k oneKey) Scheme() string { return "env" }
+
+func (k oneKey) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	return secrets.NewSecret(req.Ref, k.value), nil
+}
+
+// oneKeyStore is the store a receiver in these tests is handed.
+func oneKeyStore(t *testing.T) *secrets.Store {
+	t.Helper()
+
+	store, err := secrets.NewStore(oneKey{value: "k"})
+	require.NoError(t, err)
+
+	return store
 }
 
 func servedWorkflow() *v1.Workflow {
@@ -52,7 +64,7 @@ func TestADeliveryPastTheConcurrencyBoundIsShed(t *testing.T) {
 	t.Parallel()
 
 	receiver, err := New(nil).NewWebhookReceiver(t.Context(),
-		[]*v1.Workflow{servedWorkflow()}, oneKey{value: "k"}, WithWebhookConcurrency(1))
+		"", []*v1.Workflow{servedWorkflow()}, oneKeyStore(t), WithWebhookConcurrency(1))
 	require.NoError(t, err)
 
 	// The one token this receiver has, taken and not returned.

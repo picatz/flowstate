@@ -136,6 +136,19 @@ var errDeliveryNotStarted = errors.New("the run this delivery names could not be
 type WebhookReceiver struct {
 	server *FlowstateServer
 
+	// namespace is the tenant every delivery this receiver accepts is recorded
+	// under, and the tenant its signing keys were read in.
+	//
+	// One field for both, which is the whole of the fix: a sender presents a
+	// signature rather than an identity, so there is no caller to derive a tenant
+	// from and the operator establishes it. Written down twice — once for the run
+	// and once for the resolver — it could disagree with itself, and the
+	// disagreement that matters is a webhook reading another tenant's signing key.
+	// [FlowstateServer.NewWebhookReceiver] takes the [secrets.Store] rather than
+	// an already-scoped [secrets.Resolver] for exactly that reason: the scoping
+	// happens here, from this value.
+	namespace string
+
 	// routes is workflow name -> trigger name -> what serving it needs. Built
 	// once and never written again, which is what makes it safe to read from
 	// every request goroutine with no lock.
@@ -233,18 +246,71 @@ func WithWebhookLogger(log *slog.Logger) WebhookOption {
 // holds; there is no arm where a delivery arrives and the answer is "we could not
 // check that".
 //
-// resolver is the deployment's secret machinery, namespace-scoped by the caller,
-// and is used here and never again: what the receiver keeps is the resolved
-// [secrets.Secret], which cannot be printed, logged, marshaled or compared with
-// ==. Nothing resolved here reaches a specification, a memo or workflow history —
-// the specification carries the reference the file wrote, exactly as it does for
-// every other secret in this system.
+// # The namespace
+//
+// namespace is the tenant a delivery's run belongs to, established by the operator
+// because a sender has none to offer: a webhook is proved by a signature, not by a
+// credential naming a tenant. It decides two things that must be one thing, which
+// is why they are one argument:
+//
+//   - the tenant recorded on every run a delivery starts, and so the Temporal
+//     namespace the run is routed to. Left empty on a deployment that maps tenants
+//     to namespaces, every genuine delivery was refused: nothing supplied it, so
+//     the run was attributed to the empty tenant, which such a mapping has no entry
+//     for. That refusal is now taken here, at startup, where an operator can read
+//     it.
+//   - the tenant its `verify:` keys are read in. A receiver recorded under one
+//     tenant and resolving keys in another is a cross-tenant secret read, so the
+//     resolver is scoped here, from this value, rather than by the caller: this
+//     takes the [secrets.Store] and never an already-scoped [secrets.Resolver],
+//     because the two cannot then be given different answers.
+//
+// The empty namespace is a tenant like any other and the right answer for a
+// single-tenant deployment — it is not a wildcard, and it reaches no named
+// tenant's secrets. See [secrets.Store.For].
+//
+// store is the deployment's secret machinery. It is used here and never again:
+// what the receiver keeps is the resolved [secrets.Secret], which cannot be
+// printed, logged, marshaled or compared with ==. Nothing resolved here reaches a
+// specification, a memo or workflow history — the specification carries the
+// reference the file wrote, exactly as it does for every other secret in this
+// system.
 func (s *FlowstateServer) NewWebhookReceiver(
-	ctx context.Context, workflows []*v1.Workflow, resolver secrets.Resolver, opts ...WebhookOption,
+	ctx context.Context, namespace string, workflows []*v1.Workflow, store *secrets.Store, opts ...WebhookOption,
 ) (*WebhookReceiver, error) {
-	if resolver == nil {
-		return nil, fmt.Errorf("a webhook receiver needs a secret resolver: every trigger's `verify:` names a " +
+	if store == nil {
+		return nil, fmt.Errorf("a webhook receiver needs a secret store: every trigger's `verify:` names a " +
 			"key, and a deployment that cannot resolve one cannot check a delivery")
+	}
+
+	// An unnamed receiver belongs to the deployment's own tenant, which is what
+	// [WithNamespace] means and is empty on a deployment that names no tenants at
+	// all. Resolved here so that the value scoping the keys below is the same value
+	// [FlowstateServer.identityFor] will fall back to when the run is created:
+	// taking one from here and the other from there is how they come to disagree.
+	if namespace == "" {
+		namespace = s.namespace
+	}
+
+	// Scoped once, from the namespace the runs will be recorded under. A malformed
+	// namespace, or an empty one under a store built with
+	// [secrets.WithRequiredNamespace], is refused here rather than resolving a key
+	// in a tenant nobody chose.
+	resolver, err := store.For(secrets.Namespace(namespace))
+	if err != nil {
+		return nil, fmt.Errorf("scoping the signing keys of the webhooks served for namespace %q: %w",
+			namespace, err)
+	}
+
+	// And the run half of that same namespace, asked now rather than on the first
+	// delivery. A deployment mapping tenants onto Temporal namespaces with no entry
+	// for this one can serve no delivery at all, so it must not start advertising
+	// an endpoint: the answer would be a refusal per delivery, in a log line, at
+	// whatever hour the provider first fired.
+	if _, err := s.clientFor(namespace); err != nil {
+		return nil, fmt.Errorf("no Temporal namespace is configured for the webhook receiver's namespace %q, "+
+			"so no delivery could start a run: give the receiver a namespace this deployment maps, or map "+
+			"this one: %w", namespace, err)
 	}
 
 	decoy := make([]byte, sha256.Size)
@@ -253,7 +319,9 @@ func (s *FlowstateServer) NewWebhookReceiver(
 	}
 
 	receiver := &WebhookReceiver{
-		server:   s,
+		server:    s,
+		namespace: namespace,
+
 		routes:   make(map[string]map[string]*webhookRoute, len(workflows)),
 		inFlight: make(chan struct{}, DefaultWebhookConcurrency),
 		now:      time.Now,
@@ -294,6 +362,23 @@ func (r *WebhookReceiver) register(ctx context.Context, workflow *v1.Workflow, r
 	}
 	if err := v1.CheckWebhookTriggers(workflow.GetTriggers()); err != nil {
 		return fmt.Errorf("workflow %q cannot be served: %w", name, err)
+	}
+
+	// And the half a *deployment* answers, asked now rather than on the first
+	// delivery. [FlowstateServer.validateSpecification] is the specification-only
+	// part of the submission every delivery will make: the plugins this deployment
+	// has against the ones the file requires, the credential targets it permits,
+	// the declared signal policies, the specification's size. None of those answers
+	// can change between here and a delivery, so asking at a delivery only moves
+	// the refusal somewhere nobody is looking — a webhook advertised at startup,
+	// answering 422 to every genuine delivery, with the reason in a log line.
+	//
+	// On a clone, because the check pins the plugin selection onto what it is given
+	// and the receiver's copy is the pristine specification each delivery clones
+	// afresh. What is wanted here is the answer, not the artifact.
+	if err := r.server.validateSpecification(proto.Clone(workflow).(*v1.Workflow)); err != nil {
+		return fmt.Errorf("workflow %q cannot be served by this deployment, so no delivery to its webhooks "+
+			"could ever start a run: %w", name, err)
 	}
 
 	triggers := workflow.GetTriggers().GetWebhooks()
@@ -605,9 +690,17 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// so what is recorded is the trigger that admitted them — established by this
 	// deployment's configuration, never taken from the request, the same rule
 	// every other identity in this server follows.
+	//
+	// Including the tenant, which is the receiver's own and is the same value its
+	// signing keys were resolved under. A principal with no namespace would fall
+	// back to whatever [WithNamespace] was given, which is nothing on a deployment
+	// that instead maps tenants — and the empty tenant is one such a mapping
+	// refuses to route, so every genuine delivery ended in a 422 nobody could act
+	// on from outside.
 	identity := r.server.identityFor(auth.ContextWithPrincipal(ctx, auth.Principal{
-		Issuer:  webhookIssuer,
-		Subject: route.workflow.GetName() + "/" + route.trigger.GetName(),
+		Issuer:    webhookIssuer,
+		Subject:   route.workflow.GetName() + "/" + route.trigger.GetName(),
+		Namespace: r.namespace,
 	}))
 
 	memo, temporal, options, err := r.server.prepareCreate(ctx, identity, spec, bound)
@@ -713,6 +806,25 @@ func decodeDeliveryBody(body []byte) (any, error) {
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, fmt.Errorf("the delivery body is not a JSON document: %w", err)
+	}
+
+	// And nothing after it. [json.Decoder.Decode] reads one value and stops, so
+	// `{"id":"a"} {"id":"b"}` — or a document followed by arbitrary bytes — decoded
+	// as the first value and silently discarded the rest, starting a run from a
+	// prefix that can mean something other than what the payload as a whole says.
+	// A delivery is one document, so end of input is part of the contract and is
+	// checked rather than assumed.
+	//
+	// This reads no more than the first decode could: the reader is over `body`,
+	// which [http.MaxBytesReader] bounded to [v1.MaxWebhookPayloadBytes] before a
+	// byte of it was read, and a [bytes.Reader] cannot yield more than it holds.
+	// Into a [json.RawMessage] so that nothing is built from what follows — the
+	// question is only whether anything does, and either answer that is not
+	// [io.EOF] is a refusal.
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("the delivery body carries more than one JSON document: a delivery is a " +
+			"single JSON value with nothing after it, so send one document per delivery")
 	}
 
 	return v1.NormalizeDeliveryNumbers(decoded), nil
