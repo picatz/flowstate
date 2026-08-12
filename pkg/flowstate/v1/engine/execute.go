@@ -136,6 +136,29 @@ type executor struct {
 	// while the two disagree completely about whether a compensation belongs
 	// there.
 	undoScope v1.UndoScope
+
+	// tolerated, when non-nil, collects the id of every step whose failure this
+	// executor's own runNodes records and continues past. Set only on the
+	// executors built for a loop or for_each iteration body, whose caller hands
+	// the set to [v1.AttachIterationBinding]: the attach keys on the walk's own
+	// record of tolerance, never on the shape of the outputs, so a successful
+	// step that merely declares an output named `error` is never mistaken for a
+	// failure. Deliberately not inherited by deeper executors (a parallel
+	// branch, a callee): a failure tolerated inside those is recorded inside
+	// their own scopes, below the entries an iteration's `results` carries, so
+	// marking it here would name a step the iteration record does not hold. The
+	// local driver threads the identical set through its runNodes parameter.
+	tolerated map[string]struct{}
+}
+
+// noteTolerated records that this executor's walk tolerated the step's failure,
+// where a collector is attached. The one durable-driver write site is runNodes'
+// continue_on_error branch — the same statement that records the failure — which
+// is what makes the set a fact about what happened rather than an inference.
+func (e *executor) noteTolerated(id string) {
+	if e.tolerated != nil {
+		e.tolerated[id] = struct{}{}
+	}
 }
 
 // signalCarry holds the run's early-arriving signals.
@@ -218,6 +241,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 			}
 			workflow.GetLogger(e.ctx).Info("step failed but is allowed to continue",
 				"id", node.GetId(), "error", err.Error())
+			e.noteTolerated(node.GetId())
 			e.scope.Outputs.StepValues[node.GetId()] = failedStepOutputs(err)
 		}
 
@@ -896,8 +920,14 @@ func (e *executor) runLoop(node *v1.Node, loop *v1.Loop, depth, susp int, descen
 		if i >= max {
 			// The budget is spent and `until:` never held: a distinct failure, not a
 			// silent stop. The run ends here rather than reporting the partial results
-			// as though the loop had finished.
-			return nodeFailed(v1.LoopIterationLimitError(max))
+			// as though the loop had finished — but the failure carries them, so the
+			// recorded entry distinguishes an iteration that ran and failed from one
+			// that was never attempted ([v1.LoopExhaustedError], stored by
+			// failedStepOutputs through the record failedAt extracts at this raise).
+			// truncated omits the account on a resume that already dropped earlier
+			// segments' iterations, for [v1.LoopStateOutputsHonest]'s exact reason:
+			// a suffix published as the whole history is a wrong answer.
+			return nodeFailed(v1.LoopExhausted(results, max, truncated))
 		}
 
 		e.setLoopStateFrame(inner, i, results, state)
@@ -995,6 +1025,10 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		undoScope: e.undoScope.IntoLoop(),
 
 		callDepth: e.callDepth,
+
+		// The iteration's own record of which body steps failed and were
+		// tolerated — what the attach below keys on.
+		tolerated: map[string]struct{}{},
 	}
 	if descend {
 		nested.resume = e.resume
@@ -1021,8 +1055,13 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 	// final-iteration `update:` that cannot resolve — `${steps.page.next_cursor}`
 	// where the last page carries no next cursor — would fail a durable run that the
 	// local rehearsal completes. That divergence is invariant 3's exact shape.
+	// The carried state the iteration ran with rides on any tolerated failure
+	// the body recorded ([v1.AttachIterationBinding]) — nil for a loop that
+	// binds nothing, which attaches nothing. Attached here, on the narrowed
+	// body outputs the caller accumulates, so the byte bound weighs it; the
+	// local driver attaches at the identical point in its runLoop.
 	if stop {
-		return bodyOutputs(loop.GetBody(), iterationOutputs), true, nil, nil
+		return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), true, nil, nil
 	}
 
 	next, err := v1.LoopNextState(context.Background(), loop, nested.scope)
@@ -1030,7 +1069,7 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		return nil, false, nil, err
 	}
 
-	return bodyOutputs(loop.GetBody(), iterationOutputs), false, next, nil
+	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), state, nested.tolerated), false, next, nil
 }
 
 // runIteration executes the loop body once against its own output scope.
@@ -1066,6 +1105,10 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		undoScope: v1.UndoScopeConcurrent,
 
 		callDepth: e.callDepth,
+
+		// The iteration's own record of which body steps failed and were
+		// tolerated — what the attach below keys on.
+		tolerated: map[string]struct{}{},
 	}
 	if descend {
 		nested.resume = e.resume
@@ -1078,7 +1121,11 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		return nil, err
 	}
 
-	return bodyOutputs(loop.GetBody(), iterationOutputs), nil
+	// The iteration's item rides on any tolerated failure the body recorded
+	// ([v1.AttachIterationBinding]), attached on the narrowed outputs the
+	// caller accumulates so the byte bound weighs it — the identical point the
+	// local driver's runForEach attaches at, and the concurrent path below.
+	return v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), iterationOutputs), item, nested.tolerated), nil
 }
 
 // runIterationsConcurrently runs iterations with bounded concurrency.
@@ -1135,6 +1182,10 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					// several iterations at once are a set with several
 					// members rather than a contested position.
 					waits: e.waits,
+
+					// The iteration's own record of which body steps failed
+					// and were tolerated — what the attach below keys on.
+					tolerated: map[string]struct{}{},
 				}
 				if err := worker.runNodes(loop.GetBody(), depth, susp); err != nil {
 					undos[i] = iterationUndo
@@ -1142,7 +1193,11 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 					continue
 				}
 				undos[i] = iterationUndo
-				results[i] = bodyOutputs(loop.GetBody(), worker.scope.GetOutputs())
+				// The item attaches to tolerated failures here exactly as the
+				// sequential path's runIteration attaches it, so which
+				// scheduling ran an iteration cannot change what its failure
+				// entry names.
+				results[i] = v1.AttachIterationBinding(bodyOutputs(loop.GetBody(), worker.scope.GetOutputs()), items[i], worker.tolerated)
 			}
 			done.Send(gctx, nil)
 		})

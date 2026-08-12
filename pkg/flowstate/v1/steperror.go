@@ -44,6 +44,32 @@ import (
 // than in each place that needs it.
 const StepErrorOutput = "error"
 
+// StepErrorItemOutput is the name a tolerated failure inside a loop iteration
+// records the iteration's own binding under — the `as:` value in scope when the
+// step failed, readable as `${steps.<loop id>.results[i].<step id>.item}`.
+//
+// The information was always in scope at the failure: a `for_each` body runs
+// with its item bound, a `loop:` body with its carried state. It used to be
+// dropped, so "which records failed" had to be reconstructed downstream by set
+// subtraction — `inputs.records` minus the ids that succeeded — recomputing
+// from the complement a value the engine held at the moment it recorded the
+// failure (#157). Attaching it makes the failure entry name its own item.
+//
+// One fixed name rather than the author's `as:` name, deliberately: the `as:`
+// name is bound *inside* the loop and nowhere else (the same reason a loop's
+// final state is read as `state`, not as the `as:` name), and renaming a
+// binding must not change the shape downstream expressions read. `item` is
+// also [DefaultIterator], the name a `for_each` binds when the author writes
+// none — the reading it already teaches.
+//
+// It is attached by [AttachIterationBinding], and only to steps the driver's
+// own node walk recorded as failed-and-tolerated — a fact each driver marks at
+// the moment it records the failure, never an inference from the outputs' own
+// names. A step that *succeeds* while declaring an output literally named
+// `error` (or `item`) keeps its declared shape untouched: the marker, not the
+// name, is what decides.
+const StepErrorItemOutput = "item"
+
 // StepErrorText renders a step failure into the string recorded under
 // [StepErrorOutput].
 //
