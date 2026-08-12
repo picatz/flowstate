@@ -409,6 +409,85 @@ jobs:
           echo "::error::at least one examples leg failed; see the deep-tier issue(s) filed by this run"
           exit 1
 
+  # A leaked coroutine, which is invisible to every other tier: the race
+  # detector proves two goroutines never corrupt shared state and says
+  # nothing about one of them existing forever, and a workflow test's
+  # assertions on the *result* pass whether or not everything it started got
+  # joined. #492's `async:` runs a step's whole body on a Temporal coroutine
+  # (workflow.Go in pkg/flowstate/v1/engine/async.go's startAsync) and joins
+  # it with a channel receive on every exit a scope can take -- the newest
+  # and least-settled concurrency in the tree, per #495.
+  #
+  # The "goroutineleak" runtime/pprof profile is GA in Go 1.26 but gated
+  # behind GOEXPERIMENT=goroutineleakprofile at build time, so it is off in
+  # every other job; this is the one place in the repo that turns it on.
+  # TestAsyncCoroutinesDoNotLeak (pkg/flowstate/v1/engine) drives every
+  # tests.AsyncCases scenario -- including the failing and
+  # continue_on_error cases whose scope has to join on the way out -- against
+  # the durable driver's TestWorkflowEnvironment, then asks the runtime
+  # whether it can prove any goroutine will never run again. It skips rather
+  # than fails when the profile is not registered, which is why this job's
+  # own presence is what makes it run at all.
+  goroutineleak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Goroutine leak check on the async coroutine drain
+        id: leakcheck
+        continue-on-error: true
+        env:
+          GOEXPERIMENT: goroutineleakprofile
+        run: |
+          set -o pipefail
+          GOMEMLIMIT=1GiB go test -timeout 900s -run TestAsyncCoroutinesDoNotLeak -v ./pkg/flowstate/v1/engine/ 2>&1 | tee goroutineleak.log
+
+      - name: File an issue for a leak
+        if: steps.leakcheck.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          title="deep-tier: async coroutine leak detected"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already covers the async coroutine leak; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "The weekly deep tier's goroutine leak check found a coroutine started by \`engine.startAsync\` (pkg/flowstate/v1/engine/async.go) that the runtime can prove will never run again."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            echo "Log tail:"
+            echo
+            echo '```'
+            tail -n 120 goroutineleak.log
+            echo '```'
+            echo
+            echo "Reproduce:"
+            echo
+            echo '```'
+            echo "GOEXPERIMENT=goroutineleakprofile GOMEMLIMIT=1GiB go test -timeout 900s -run TestAsyncCoroutinesDoNotLeak -v ./pkg/flowstate/v1/engine/"
+            echo '```'
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"
+
+      - name: A leak fails the job
+        if: steps.leakcheck.outcome == 'failure'
+        run: |
+          echo "::error::the goroutine leak check found a coroutine that will never run again; see the deep-tier issue filed by this run"
+          exit 1
+
   # The same scan the PR lane runs, on a clock instead of a diff: advisories
   # arrive by calendar, so a tree nobody touched can go red here. That is why a
   # failure files an issue that says so — per CLAUDE.md, a finding on an
