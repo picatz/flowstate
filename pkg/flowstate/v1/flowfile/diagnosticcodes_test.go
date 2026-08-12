@@ -182,8 +182,8 @@ func diagnosticCodeCases() []diagnosticCodeCase {
 // produces exactly the code it was engineered to.
 //
 // This is the other direction of docs/reference/diagnostics.md's own drift
-// guard: cmd/flow/docsgen.go renders the registry, so a code declared there and
-// never assigned would still generate cleanly — nothing about `flow docs
+// guard: cmd/flow/internal/docsgen renders the registry, so a code declared
+// there and never assigned would still generate cleanly — nothing about `flow docs
 // generate` can tell a real code from an aspirational one. Only running the
 // validator and checking what comes out can.
 func TestDiagnosticCodesAreAssigned(t *testing.T) {

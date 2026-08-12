@@ -1,0 +1,373 @@
+package docsgen
+
+import (
+	"fmt"
+	"strings"
+)
+
+// environmentVariable is one variable this build reads.
+type environmentVariable struct {
+	// name is the variable, or the family's spelling where family is set.
+	name string
+
+	// value is what happens when it is unset.
+	value string
+
+	// purpose is what setting it does.
+	purpose string
+
+	// read is where the process reads it, as a package path or file — so a reader
+	// who doubts the sentence can go and check it.
+	read string
+
+	// family marks an entry that stands for a *set* of variables rather than one
+	// name: `FLOWSTATE_SECRET_<NAME>`, the OTLP exporter's own configuration. The
+	// drift test does not require a literal for these, and the mirror probe skips
+	// them, because there is no single name to set.
+	family bool
+}
+
+// documentedEnvironmentVariables is the one place this repository says which
+// variables it reads.
+//
+// Hand-kept, because there is no registration point to derive it from: a variable
+// is read wherever it is needed — a flag default here, a condition there, a size
+// ceiling in the server — and inventing a registry every read site had to call
+// would be a fifth thing to forget rather than a first thing to derive.
+//
+// What makes it honest is [TestEveryEnvironmentReadIsDocumented], which parses
+// every non-test file under cmd/ and pkg/, collects the variable names they
+// mention and every os.Getenv/os.LookupEnv call site, and fails on one this list
+// does not carry — and fails the other way too, on an entry nothing reads any
+// more. This table drifting is therefore a red test rather than a wrong document,
+// which is the whole reason it is allowed to be written by hand.
+func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
+	return []environmentVariable{
+		{
+			name:    "FLOWSTATE_ADDRESS",
+			value:   g.src.DefaultAddress,
+			purpose: "Address the API server listens on, and that the client commands connect to.",
+			read:    "cmd/flow/client.go, cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
+			value:   "unset",
+			purpose: "Permit the `http` task to reach loopback addresses. Ignored while an `--egress-policy` file is in force: a policy that wants loopback says `allow_loopback: true`.",
+			read:    "pkg/flowstate/v1/eval_task_library.go",
+		},
+		{
+			name:    "FLOWSTATE_AUTH_POLICY",
+			value:   "unset",
+			purpose: "Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
+		},
+		{
+			name:    "FLOWSTATE_BACKGROUND",
+			value:   "unset",
+			purpose: "Declare the terminal background (`dark`/`light`) instead of querying for it. Also the way out of the four-second wait on a terminal that never answers the query.",
+			read:    "cmd/flow/internal/ui/ui.go",
+		},
+		{
+			name:    "FLOWSTATE_BUILD_ID",
+			value:   "unset",
+			purpose: "Default for `--build-id`: this worker binary's version identifier, unique per build. Required alongside the deployment name.",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_DEPLOYMENT_NAME",
+			value:   "unset",
+			purpose: "Default for `--deployment-name`: the Worker Deployment this worker belongs to. A worker refuses to start without both halves of a version unless `--allow-unversioned-interpreter` accepts the risk.",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_EGRESS_POLICY",
+			value:   "unset",
+			purpose: "Default for `--egress-policy`: a YAML policy governing the `http` task. When set it replaces the built-in policy entirely rather than merging with it.",
+			read:    "cmd/flow/egress.go",
+		},
+		{
+			name:    "FLOWSTATE_TASK_POLICY",
+			value:   "unset",
+			purpose: "Default for `--task-policy`: a YAML task-shape policy (#187) governing which identities may dispatch which tasks. When set it replaces the built-in policy (no restriction) entirely rather than merging with it.",
+			read:    "cmd/flow/taskpolicy.go",
+		},
+		{
+			name:    "FLOWSTATE_IDENTITY_KEY",
+			value:   "unset",
+			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation.",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
+		},
+		{
+			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
+			value:   "false",
+			purpose: "Set to `true` to permit sending a bearer token over plain HTTP to somewhere that is not loopback. A refusal by default, because a token on the wire in the clear belongs to whatever is between here and there.",
+			read:    "cmd/flow/credentials.go",
+		},
+		{
+			name:    "FLOWSTATE_MAX_STEPS_PER_RUN",
+			value:   "unset",
+			purpose: "Server-side ceiling on the steps one run may submit. An unparseable or non-positive value is ignored rather than lowering the bound.",
+			read:    "pkg/flowstate/v1/server/server.go",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_DIR",
+			value:   "unset",
+			purpose: "Default for `--plugin-dir`: directories to discover plugins in, separated the way `$PATH` is, the form an image bakes in rather than repeating on every command line.",
+			read:    "cmd/flow/plugins.go",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_HOST_FD",
+			value:   "unset",
+			purpose: "Handshake: the descriptor a plugin watches to learn its host has gone. Set by the host on the child process; never configured by an operator.",
+			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_MAGIC_COOKIE",
+			value:   "unset",
+			purpose: "Handshake: refuses to serve a plugin protocol to a process that did not mean to launch one. Set by the host on the child process.",
+			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS",
+			value:   "unset",
+			purpose: "Handshake: the protocol versions the host offers. Set by the host on the child process.",
+			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_SOCKET",
+			value:   "unset",
+			purpose: "Handshake: the socket path a plugin serves on. Set by the host on the child process.",
+			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+		},
+		{
+			name:    "FLOWSTATE_PLUGIN_TOKEN",
+			value:   "unset",
+			purpose: "Handshake: the per-launch token a plugin authenticates its host with. Set by the host on the child process.",
+			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_COMMAND",
+			value:   "unset",
+			purpose: "Default for `--secret-command`: the argv of the command that resolves `command:` secrets, `$PATH`-list-separated (the executable first). `{{name}}` and, with `--secret-command-namespaced`, `{{namespace}}` are substituted literally into one argument, never through a shell.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_DIR",
+			value:   "unset",
+			purpose: "Default for `--secret-dir`: the directory `file:` secrets are read from.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_ENV_ALLOW",
+			value:   "unset",
+			purpose: "Default for `--secret-env`: comma-separated names this process may resolve as `env:` secrets.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_KEYCHAIN",
+			value:   "unset",
+			purpose: "Default for `--secret-keychain`: set to resolve `keychain:` secrets from the macOS keychain. Refused at startup, with a message naming the platform, on any OS other than macOS.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_KEYCHAIN_SERVICE",
+			value:   "unset",
+			purpose: "Default for `--secret-keychain-service`: the keychain service name entries are stored under, in place of the built-in default.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_OP",
+			value:   "unset",
+			purpose: "Default for `--secret-op`: set to resolve `op:` secrets through the 1Password CLI. Refused at startup when the `op` CLI is not on `PATH`.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_OP_VAULT",
+			value:   "unset",
+			purpose: "Default for `--secret-op-vault`: the 1Password vault read when a run has no namespace, in place of the built-in default.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_ADDR",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-addr`: the address of the Vault or OpenBao instance `vault:` secrets are read from. Unset, no vault provider is registered.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_CA_FILE",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-ca-file`: a PEM CA bundle to verify the vault's certificate against, instead of the system roots.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-kubernetes-mount`: where the Kubernetes auth method is mounted, in place of the built-in default.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-kubernetes-role`: the Vault role to authenticate as via the Kubernetes auth method, using this pod's projected service account token. Exactly one of this or a token must be configured.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_MOUNT",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-mount`: where the KV v2 engine is mounted, in place of the built-in default.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_NAMESPACE",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-namespace`: the Vault Enterprise or OpenBao namespace header. This is the vault's own namespace, not the tenant namespace a run authenticates with.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_PATH_PREFIX",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-path-prefix`: a path prefix inside the mount, above the namespace segment.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_TOKEN",
+			value:   "unset",
+			purpose: "A static Vault client token, read directly when `--secret-vault-token-file` (and `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`) is unset. For a development vault or a test; a long-running worker should prefer the file form or Kubernetes auth, since this one cannot be rotated without a restart.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_VAULT_TOKEN_FILE",
+			value:   "unset",
+			purpose: "Default for `--secret-vault-token-file`: a file holding a static Vault client token, re-read on every login so a rotated token is picked up without a restart.",
+			read:    "cmd/flow/secrets.go",
+		},
+		{
+			name:    "FLOWSTATE_SECRET_<NAME>",
+			value:   "unset",
+			purpose: "The value of an `env:` secret. Read only for a name the allowlist carries, and only inside the activity that applies it: the reference is what travels, never the value.",
+			read:    "pkg/flowstate/v1/secrets/env.go",
+			family:  true,
+		},
+		{
+			name:    "FLOWSTATE_SYMBOLS",
+			value:   "unset",
+			purpose: "Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong.",
+			read:    "cmd/flow/internal/ui/ui.go",
+		},
+		{
+			name:    "FLOWSTATE_TOKEN",
+			value:   "unset",
+			purpose: "Bearer token the client authenticates with, used when no token file is set.",
+			read:    "cmd/flow/credentials.go",
+		},
+		{
+			name:    "FLOWSTATE_TOKEN_FILE",
+			value:   "unset",
+			purpose: "Default for `--token-file`: a file holding the bearer token, re-read per request so a rotated token is picked up without a restart.",
+			read:    "cmd/flow/client.go",
+		},
+		{
+			name:    "FLOWSTATE_VERBOSE_LOGGING",
+			value:   "false",
+			purpose: "Default for `--verbose`. Read as a condition rather than as a string, so it does not appear as a flag default in the CLI reference.",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
+			value:   "unset",
+			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+			value:   "unset",
+			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+			value:   "unset",
+			purpose: "The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_EXPORTER_OTLP_*",
+			value:   "—",
+			purpose: "Headers, protocol, timeouts and the rest: read by the OTLP exporters themselves rather than re-spelled here, so anything else OTLP-speaking is configured the same way.",
+			read:    "go.opentelemetry.io/otel exporters",
+			family:  true,
+		},
+		{
+			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",
+			value: "unset",
+			purpose: "Default for `--task-queue-prefix` on both `flow server` and `flow worker`: route each " +
+				"tenant's runs to a task queue named `<prefix>_<namespace>` instead of the single shared " +
+				"queue. Unset routes nothing, which is the zero-configuration behaviour. It has to be the " +
+				"same value on the server and on every worker, because a worker that spelled it differently " +
+				"would poll a queue nothing submits to, which is why one variable is the convenient way to " +
+				"set it. A worker also needs `--tenant` to say which of those queues is its own.",
+			read: "cmd/flow/main.go",
+		},
+		{
+			name:  "TEMPORAL_ADDRESS",
+			value: "unset",
+			purpose: "Temporal's own environment configuration, honoured by every command that dials a " +
+				"cluster: `flow server` and `flow worker` resolve it through the SDK, and `--address` " +
+				"overrides it. `flow server dev` is the exception, and refuses to start while it is set: " +
+				"that command starts a Temporal of its own, so a variable naming somebody else's cluster " +
+				"would be silently unused while its operator believed their runs were landing there.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
+			name:  "TEMPORAL_PROFILE",
+			value: "unset",
+			purpose: "Selects a profile from the same `temporal.toml` the `temporal` CLI reads, which is " +
+				"how one binary moves between a laptop, a self-hosted cluster and Cloud without a scheme " +
+				"invented here. Refused by `flow server dev` for the same reason as `TEMPORAL_ADDRESS`.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
+			name:  "TEMPORAL_CONFIG_FILE",
+			value: "unset",
+			purpose: "Path to the TOML configuration file the profile is read from, honoured by the SDK's " +
+				"environment configuration wherever a cluster is dialed. Refused by `flow server dev` for " +
+				"the same reason as `TEMPORAL_ADDRESS`: an explicit file pointing at another cluster would " +
+				"be the same silent misrouting through a different spelling.",
+			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
+		},
+		{
+			name:    "TEMPORAL_TASK_QUEUE",
+			value:   "flowstate-run-task-queue",
+			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",
+			read:    "cmd/flow/main.go",
+		},
+	}
+}
+
+// renderEnvVarReference documents every variable this build reads.
+//
+// The table VISION names as the proven drifter — it shipped ten variables short
+// — so it is the one with the most machinery behind it. The prose is written by
+// hand and the *set* is not: see [documentedEnvironmentVariables].
+func (g *Generator) renderEnvVarReference() string {
+	var b strings.Builder
+
+	b.WriteString(generatedNotice + "\n\n")
+	b.WriteString("# Environment variable reference\n\n")
+	b.WriteString("Every variable this build reads. There is no single registration point to derive\n")
+	b.WriteString("this from (a variable is read where it is needed), so the prose is written by\n")
+	b.WriteString("hand in `cmd/flow/internal/docsgen/envvars.go` and the *set* is enforced: a test\n")
+	b.WriteString("parses every non-test file under `cmd/` and `pkg/`, collects the variable names\n")
+	b.WriteString("and the `os.Getenv`/`os.LookupEnv` call sites, and fails on a read this table\n")
+	b.WriteString("does not carry or an entry nothing reads any more.\n\n")
+	b.WriteString("Where a variable is the default of a flag, the flag wins when both are given.\n")
+	b.WriteString("[cli.md](cli.md) says which flag each one feeds.\n\n")
+
+	b.WriteString("| Variable | Default | Purpose | Read in |\n|---|---|---|---|\n")
+	for _, variable := range g.documentedEnvironmentVariables() {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | `%s` |\n",
+			cell(variable.name), orDash(codeOrEmpty(variable.value)), cell(variable.purpose), cell(variable.read))
+	}
+
+	return b.String()
+}

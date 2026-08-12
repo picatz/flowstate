@@ -4,10 +4,10 @@
 
 Every variable this build reads. There is no single registration point to derive
 this from (a variable is read where it is needed), so the prose is written by
-hand in `cmd/flow/docsgen.go` and the *set* is enforced: a test parses every
-non-test file under `cmd/` and `pkg/`, collects the variable names and the
-`os.Getenv`/`os.LookupEnv` call sites, and fails on a read this table does not
-carry or an entry nothing reads any more.
+hand in `cmd/flow/internal/docsgen/envvars.go` and the *set* is enforced: a test
+parses every non-test file under `cmd/` and `pkg/`, collects the variable names
+and the `os.Getenv`/`os.LookupEnv` call sites, and fails on a read this table
+does not carry or an entry nothing reads any more.
 
 Where a variable is the default of a flag, the flag wins when both are given.
 [cli.md](cli.md) says which flag each one feeds.
