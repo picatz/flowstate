@@ -117,20 +117,28 @@ this section exists to prevent.
    from step 2, including stale, outdated, and duplicate ones, not only
    the one you acted on. Multiple reviewers frequently file the same
    finding, and every copy needs closing. Resolution is the
-   acknowledgment, and it is also what keeps the next review round cheap
-   to read: an unresolved thread that needed no action still costs a fetch
-   on every later round.
+   acknowledgment, and it is what keeps the next review round cheap to
+   *read*, not cheap to fetch: `get_review_comments` returns resolved and
+   unresolved threads alike, exposing `isResolved` only as metadata, so an
+   unresolved thread costs no extra API call. What it costs is triage and
+   human attention, and, on the PR page, visual noise. Resolve for that
+   reason, not to save a fetch.
 9. **Respect the API budget.** The GitHub REST and GraphQL limit is shared
    across everything the account does, and polling PR state exhausted it
    in one wave. Prefer webhook events over polling, batch reads, and back
    off when the limit is hit rather than retrying.
-10. **Know what the API cannot do.** GitHub exposes resolve and unresolve
-    for review threads only. There is no dismiss and no minimize for a
-    review's top-level summary body, so that block cannot be collapsed
-    after the fact once posted. The way to reduce those is reviewer
-    configuration, automatic review set to request-only rather than on
-    every push, which is a repository setting and therefore an owner
-    decision, not something an agent changes.
+10. **Know what the API can and cannot do.** GitHub exposes resolve and
+    unresolve for review threads through the API we use. Dismissing a
+    review also exists, in both REST and GraphQL: it invalidates that
+    review's state, so a `REQUEST_CHANGES` no longer blocks, but it does
+    not hide or collapse the review's top-level body. Minimizing or
+    hiding that body is the operation the API genuinely does not offer.
+    Our MCP tool surface currently exposes resolve and unresolve for
+    threads but not dismissal, so treat dismissal as unavailable in
+    practice until that changes. The way to reduce noisy review bodies at
+    the source is reviewer configuration, automatic review set to
+    request-only rather than on every push, which is a repository setting
+    and therefore an owner decision, not something an agent changes.
 
 ## The API budget is bounded
 
