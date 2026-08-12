@@ -189,6 +189,14 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		step = append(step, yaml.MapItem{Key: "vars", Value: value})
 	}
 
+	// Above the policy and the work, the position the parser reads it in: how a
+	// step relates to the ones around it is read before how long it may take.
+	// Only when true, so an absent marker and an explicit `async: false` stay one
+	// value through a round trip.
+	if node.GetAsync() {
+		step = append(step, yaml.MapItem{Key: "async", Value: true})
+	}
+
 	if policy := node.GetPolicy(); policy != nil {
 		if timeout := policy.GetTimeout(); timeout != nil {
 			step = append(step, yaml.MapItem{Key: "timeout", Value: durationToYAML(timeout)})

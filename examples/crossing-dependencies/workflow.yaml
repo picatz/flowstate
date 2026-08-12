@@ -1,0 +1,92 @@
+# Sequential steps and `parallel:` express every workload whose dependencies form
+# levels. The one shape they cannot express is the crossing dependency — the
+# N-graph — where `test` needs only the build and `deploy` needs only the machine.
+#
+# Written as barriers, that costs latency for nothing:
+#
+#   steps:
+#     - id: barrier_one
+#       parallel:
+#         - steps: [build]
+#           steps: [provision]
+#     - id: barrier_two
+#       parallel:
+#         - steps: [test]        # waits for provision as well, for no reason
+#           steps: [deploy]      # waits for build as well, for no reason
+#
+# `async: true` says the one thing barriers cannot: this step may overlap what
+# follows it. Three rules carry the rest, and none of them is written anywhere but
+# on the steps themselves:
+#
+#   1. A step without `async:` runs in written order. Nothing here changes meaning
+#      by being read top to bottom.
+#   2. A reference is a join. `${steps.build.tag}` waits for `build` right there,
+#      in the step that reads it — the edge and the join are the same token, and
+#      there is no graph anywhere else to reconstruct or to keep in step.
+#   3. A scope's end joins whatever it started. `notify` below is never read by
+#      anything, and the run still collects it before finishing. "Fire and forget"
+#      does not exist here; "fire and definitely collect before leaving" does.
+#
+# What that buys is latency and nothing else: the outputs are identical either
+# way, because data becomes visible only at joins, at fixed positions in the text.
+# Two runs whose steps finished in different orders record the same thing.
+#
+#   flow run local examples/crossing-dependencies/workflow.yaml
+edition: v2026.3
+name: crossing-dependencies
+
+outputs:
+  released:
+    value: ${"%s on %s".format([steps.build.tag, steps.provision.host])}
+    description: what was built and where it went
+
+steps:
+  # Two independent pieces of work, both started here rather than waited for.
+  # Neither reads the other, which is what makes marking them safe: an async step
+  # sees the outputs that existed when it started and never a sibling's.
+  - id: build
+    async: true
+    http:
+      url: https://ci.example.com/build
+      method: POST
+      outputs: "${ {'tag': json_parse(response.body).tag} }"
+
+  - id: provision
+    async: true
+    http:
+      url: https://infra.example.com/machines
+      method: POST
+      outputs: "${ {'host': json_parse(response.body).host} }"
+
+  # The crossing dependency, in both directions. `test` names `build` and so waits
+  # for the build here — while `provision` is still in flight. `deploy` names
+  # `provision` and waits for it here, by which time the build has long finished.
+  # Neither step waits for the other's dependency, and neither says so anywhere
+  # except by reading what it actually needs.
+  - id: test
+    http:
+      url: https://ci.example.com/test-runs
+      method: POST
+      body: ${steps.build.tag}
+
+  - id: deploy
+    http:
+      url: https://infra.example.com/deployments
+      method: POST
+      body: ${steps.provision.host}
+
+  # Started and never read. The scope's end joins it before the run finishes, so a
+  # failure here still fails the run and its `undo:` — had it carried one — would
+  # still be registered. Work nothing joins is not work nobody waits for.
+  - id: notify
+    async: true
+    http:
+      url: https://chat.example.com/announce
+      method: POST
+      body: rollout started
+
+  # Ordinary, unmarked, and therefore exactly where it is written: after
+  # everything above, because it reads two of them.
+  - id: summary
+    log:
+      message: ${"%s deployed to %s".format([steps.build.tag, steps.provision.host])}

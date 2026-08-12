@@ -23,6 +23,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |
 | [fan-out-and-parallel](fan-out-and-parallel) | `for_each` fan-out over a computed list, and concurrent `parallel:` branches | no |
+| [crossing-dependencies](crossing-dependencies) | `async:` — the N-graph, where each later step waits only for what it names, with the two-barrier version it replaces written in the file's own comment | no |
 | [loop-accumulate](loop-accumulate) | `loop:` carrying state between iterations until a condition holds, bounded by `max_iterations:`, reporting `results` and `state` | no |
 | [loop-poll-until](loop-poll-until) | `loop:` in its stateless mode — a bounded poll that repeats a check until the body reports ready, or gives up at `max_iterations:` | yes |
 | [paged-fan-out](paged-fan-out) | The batch shape — a `loop:` walking a cursor API to exhaustion with a `for_each` inside it fanning out over each page under `max_parallel:`, and the file honest about the window draining at every page boundary | yes |

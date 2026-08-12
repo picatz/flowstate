@@ -2000,7 +2000,59 @@ type Node struct {
 	// Field 10 rather than an arm of the `kind` oneof, because a compensation is not
 	// a kind of work a step does. It is a property of a step that does some other
 	// kind, exactly as `policy` and `condition` are.
-	Undo          *Compensation `protobuf:"bytes,10,opt,name=undo,proto3" json:"undo,omitempty"`
+	Undo *Compensation `protobuf:"bytes,10,opt,name=undo,proto3" json:"undo,omitempty"`
+	// Async marks a step execution may depart from written order for, as
+	// `async: true`.
+	//
+	// The opt-in half of structured concurrency (issue #418). Flowstate already
+	// carries every dependency edge in the most natural position there is —
+	// `${steps.build.artifact}` *is* the edge, written at the point of use — so
+	// the open question was never how an author states edges but when execution
+	// may leave written order. This is the answer: never, unless a step says so.
+	//
+	// Three rules carry it, and each is a property of the *scope* the step is
+	// written in rather than of the step:
+	//
+	//   - **Default unchanged.** A step without this runs in written order. No
+	//     specification that predates the field changes meaning.
+	//   - **A reference is a join.** Any syntactic mention of an async step's
+	//     outputs — in `if:`, `vars:`, a task input, a `value:` expression, a
+	//     `has()` guard, a call's arguments — waits for it before that step
+	//     evaluates anything. Total by design: a presence check that could answer
+	//     "not finished yet" would make completion order observable, which is the
+	//     one thing this design promises it never is.
+	//   - **A scope's end joins what it started.** The end of the enclosing step
+	//     list — a workflow, a callee's body, a loop body, a switch case — joins
+	//     every async step still outstanding, in written order, on the failing
+	//     path as well as the succeeding one. There is no fire-and-forget.
+	//
+	// Outputs therefore become visible only at joins, at fixed textual positions,
+	// so two runs that complete their async steps in different orders record the
+	// same thing. A failure is reported against the async step itself and surfaces
+	// where it is joined.
+	//
+	// # What may carry it
+	//
+	// A task step, at a sequential placement. [CheckAsyncPlacement] owns the rules
+	// and both drivers plus the validator ask it: control flow has no work of its
+	// own to overlap, a `wait:` marked async would be a parked step joined only at
+	// scope end — a deadlock its author cannot see — and a `value:` is a pure
+	// instant computation with nothing to overlap. A `for_each` body or a
+	// `parallel` branch refuses it too, in this slice: concurrency inside
+	// concurrency multiplies width by a factor the enclosing construct chooses,
+	// and the answer to that belongs with async `call:` rather than ahead of it.
+	//
+	// # Bounded
+	//
+	// Width is bounded by [MaxAsyncInFlight] per scope, checked as work is
+	// launched rather than trusted to the step cap, because it is the count of
+	// simultaneously outstanding activities — the resource — rather than the count
+	// of steps in the file.
+	//
+	// Field 15 and a bare bool rather than an arm of the `kind` oneof, for the
+	// reason `undo` is field 10: departing from written order is not a kind of
+	// work, it is a property of a step doing some other kind.
+	Async         bool `protobuf:"varint,15,opt,name=async,proto3" json:"async,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2154,6 +2206,13 @@ func (x *Node) GetUndo() *Compensation {
 		return x.Undo
 	}
 	return nil
+}
+
+func (x *Node) GetAsync() bool {
+	if x != nil {
+		return x.Async
+	}
+	return false
 }
 
 type isNode_Kind interface {
@@ -11695,7 +11754,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\x10ScheduleBackfill\x12=\n" +
 	"\bstart_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\astartAt\x129\n" +
 	"\x06end_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\x05endAt\x12I\n" +
-	"\aoverlap\x18\x03 \x01(\x0e2%.flowstate.v1.ScheduleTrigger.OverlapB\b\xbaH\x05\x82\x01\x02\x10\x01R\aoverlap\"\xe5\a\n" +
+	"\aoverlap\x18\x03 \x01(\x0e2%.flowstate.v1.ScheduleTrigger.OverlapB\b\xbaH\x05\x82\x01\x02\x10\x01R\aoverlap\"\xfb\a\n" +
 	"\x04Node\x123\n" +
 	"\x02id\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x02id\x12(\n" +
 	"\x04task\x18\x02 \x01(\v2\x12.flowstate.v1.TaskH\x00R\x04task\x122\n" +
@@ -11711,7 +11770,8 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\vdescription\x18\b \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x01R\vdescription\x88\x01\x01\x12@\n" +
 	"\x04vars\x18\t \x03(\v2\x1c.flowstate.v1.Node.VarsEntryB\x0e\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x04vars\x12.\n" +
 	"\x04undo\x18\n" +
-	" \x01(\v2\x1a.flowstate.v1.CompensationR\x04undo\x1a\xc3\x01\n" +
+	" \x01(\v2\x1a.flowstate.v1.CompensationR\x04undo\x12\x14\n" +
+	"\x05async\x18\x0f \x01(\bR\x05async\x1a\xc3\x01\n" +
 	"\aOutputs\x12c\n" +
 	"\fnamed_values\x18\x01 \x03(\v2+.flowstate.v1.Node.Outputs.NamedValuesEntryB\x13\xe2A\x01\x02\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\vnamedValues\x1aS\n" +
 	"\x10NamedValuesEntry\x12\x10\n" +

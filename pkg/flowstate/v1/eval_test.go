@@ -508,6 +508,35 @@ func TestRunWorkflowSwitch(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowAsync covers `async:` in the local driver.
+//
+// The engine package runs the identical [tests.AsyncCases] against the durable
+// driver, and the pairing is the point rather than a convention: this driver
+// runs an async step's work where it is written and holds the result until the
+// join, where the durable one genuinely overlaps it — so every observable a
+// case names (which output appears where, which failure is heard where, what a
+// mention joins) is exactly what could drift between the two.
+func TestRunWorkflowAsync(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.AsyncCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+
+				return
+			}
+			require.NoError(t, err)
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(out), "outputs predicate failed: %v", out)
+
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsRefused is the negative direction of the same corpus: a
 // submission that must be refused before anything runs.
 //
@@ -835,8 +864,7 @@ func TestRunWorkflowUndoOnCancellation(t *testing.T) {
 					"the cancellation does not carry the account of what was compensated")
 			}
 
-			require.Equal(t, test.Recorded, recorded(),
-				"the effects that happened, and their order, are not what compensating a cancelled run should have produced")
+			tests.AssertCancellationRecorded(t, test, recorded())
 		})
 	}
 }

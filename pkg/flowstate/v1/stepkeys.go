@@ -40,6 +40,15 @@ var grammarStepKeys = []string{
 	"retry",
 	"continue_on_error",
 
+	// Structured concurrency's opt-in marker (#418): the one property that lets
+	// execution depart from written order, where every reference to the step's
+	// outputs is a join and the end of the enclosing scope joins whatever it
+	// started. Reserved in [futureStepKeys] before it was built and moved here
+	// when it became grammar, which is what the reservation was for: the design
+	// that named it as a step key got the word, and no plugin could claim it in
+	// the meantime.
+	"async",
+
 	// How a step is taken back when a later one fails and the run cannot continue.
 	// Reserved before it was built, which is exactly what [futureStepKeys] is for:
 	// it moved from there to here when `undo:` became grammar, and no plugin had
@@ -130,14 +139,6 @@ var futureStepKeys = []string{
 	// `value:` sat here beside it and is now grammar; the move is what the
 	// reservation was for.
 	"assert",
-
-	// Structured concurrency's opt-in marker (issue #418): a step property that
-	// lets execution depart from written order, with every reference a join and
-	// every scope end joining what it started. A step key in a design that named
-	// it as one — the owner greenlit reserving it while the rest is built —
-	// held so no plugin takes the word in the meantime, the same promise
-	// `value:` and `assert:` kept.
-	"async",
 }
 
 // reservedStepKeys is every word a task name may not take.
