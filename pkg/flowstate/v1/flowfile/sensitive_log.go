@@ -94,6 +94,20 @@ func sensitiveLogInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostic
 			ds = append(ds, d)
 		}
 
+		// A compensation runs the same tasks a step runs, so a `log:` that
+		// surfaces a sensitive input is the same mistake written in the `undo:`
+		// position, and it is the position where it matters most: compensation
+		// runs when something has already gone wrong, which is when logs get
+		// read closely. The field is the `undo:` key rather than `message` for
+		// the reason validateUndoInputs documents — a field naming the inner
+		// input would be looked up against the step's own task — so the inner
+		// field moves into the sentence instead.
+		if d, ok := sensitiveLogInTask(node.GetId(), node.GetUndo().GetTask(), sensitive); ok {
+			d.Field = "undo"
+			d.Message = "in this step's compensation: " + d.Message
+			ds = append(ds, d)
+		}
+
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
 			ds = append(ds, sensitiveLogInNodes(kind.ForEach.GetBody(), sensitive)...)

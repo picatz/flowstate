@@ -191,3 +191,72 @@ steps:
 	}
 	assert.Equal(t, 1, found, "a sensitive log inside a for_each body must be caught")
 }
+
+// TestSensitiveLogInCompensation pins the `undo:` position, which the walk did
+// not visit until #507: it read a step's own task and never the task its
+// compensation runs, so a `log:` written as cleanup could surface a sensitive
+// input with nothing reporting it. That position is the one that matters most,
+// because compensation runs after something has already gone wrong and its logs
+// are read closely.
+func TestSensitiveLogInCompensation(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: compensated
+inputs:
+  token:
+    type: string
+    sensitive: true
+steps:
+  - id: grant
+    log:
+      message: granting access
+    undo:
+      log:
+        message: ${inputs.token}
+`
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	var found []flowfile.Diagnostic
+	for _, d := range ds {
+		if d.Code == v1.DiagnosticCodeSensitiveInLog {
+			found = append(found, d)
+		}
+	}
+
+	require.Len(t, found, 1, "a sensitive log in a compensation must be caught")
+	assert.Equal(t, "grant", found[0].Step)
+	assert.Equal(t, "undo", found[0].Field,
+		"the field is the undo: key, because one naming the inner input would be looked up against the step's own task")
+	assert.Contains(t, found[0].Message, "compensation")
+	assert.Positive(t, found[0].Line, "the diagnostic must carry a source position")
+}
+
+// TestOrdinaryCompensationLogIsQuiet is the negative direction: the new
+// traversal must not make every compensation that logs anything a diagnostic.
+func TestOrdinaryCompensationLogIsQuiet(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: compensated
+inputs:
+  token:
+    type: string
+    sensitive: true
+steps:
+  - id: grant
+    log:
+      message: granting access
+    undo:
+      log:
+        message: ${inputs.token != ""}
+`
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	for _, d := range ds {
+		assert.NotEqual(t, v1.DiagnosticCodeSensitiveInLog, d.Code,
+			"a compensation logging something derived from a sensitive input is the remedy, not the mistake")
+	}
+}
