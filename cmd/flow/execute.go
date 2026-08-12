@@ -57,7 +57,7 @@ func execute(ctx context.Context, root *cobra.Command) error {
 	// are build steps rather than capabilities. That also keeps them out of the
 	// command tree the README's pin tests and the generated CLI reference walk,
 	// which is the right answer — `flow docs generate` documents the product and
-	// is not part of it. See docsgen.go.
+	// is not part of it. See docs.go.
 	root.AddCommand(newDocsCommand())
 
 	if _, err := root.ExecuteContextC(ctx); err != nil {
