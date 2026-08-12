@@ -213,15 +213,35 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 // [checkTriggerExpressions] before #502 added it there. A rewriter that cannot
 // see an expression cannot rewrite it, and `flow fix` reads this walk's report,
 // so an omission here is the same shape as that one was.
+//
+// [v1.Triggers.Webhooks] holds only webhook entries — a `- schedule:` entry
+// sitting among them in the file compiles into [v1.Triggers.Schedule] instead
+// and leaves no slot behind — so its own range index is not the entry's
+// position in the `triggers:` list the author wrote whenever a schedule sits
+// before or between webhooks. [Positions.TriggerPath] recovers the original
+// position by name, recorded when the compiler still had it; ranging with an
+// index and recomputing `triggers[i]` here, the way this used to, addresses
+// the wrong entry (#506's finding, r3769308758).
 func (c *auditCollector) triggers(wf *v1.Workflow) {
-	for i, webhook := range wf.GetTriggers().GetWebhooks() {
-		at := indexPath("triggers", i)
+	for _, webhook := range wf.GetTriggers().GetWebhooks() {
+		name := webhook.GetName()
+
+		at, ok := c.pos.TriggerPath(name)
+		if !ok {
+			// No positions at all (Audit(wf, nil)), or a name this walk cannot
+			// place — either way, nothing here can locate this trigger's
+			// expressions, and guessing at a path would risk landing on
+			// whichever entry happens to share that guessed index. c.siteAt
+			// degrades to Line: 0 on its own when pos is nil; skip explicitly
+			// rather than pass a path a non-nil pos might coincidentally match.
+			continue
+		}
 
 		// Field names the position the way [ExprSite] elsewhere names one that
 		// is not scoped to a step: the signals walk above qualifies `subject`
 		// with the policy it belongs to for the identical reason — a file with
 		// more than one webhook must not have two sites read as the same one.
-		field := fmt.Sprintf("triggers[%d:%s]", i, webhook.GetName())
+		field := fmt.Sprintf("triggers[%s]", name)
 
 		c.siteAt("", field+".idempotency_key", fieldPath(at, "idempotency_key"), webhook.GetIdempotencyKey())
 

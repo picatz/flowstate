@@ -293,8 +293,63 @@ steps:
 	finding := findAudit(t, found, `event.headers["stripe-signature"] + event.headers["stripe-id"]`)
 	require.Equal(t, 2, finding.Count())
 	require.Equal(t, "", finding.Sites[0].Step)
-	require.Equal(t, "triggers[0:stripe].idempotency_key", finding.Sites[0].Field)
-	require.Equal(t, "triggers[0:stripe].with.order_id", finding.Sites[1].Field)
+	require.Equal(t, "triggers[stripe].idempotency_key", finding.Sites[0].Field)
+	require.Equal(t, "triggers[stripe].with.order_id", finding.Sites[1].Field)
+}
+
+// TestAuditTriggerWalkPositionsSurviveAnInterleavedSchedule is #506's finding
+// (r3769308758): [v1.Triggers.Webhooks] holds only webhook entries, so its
+// range index is not the entry's position in the `triggers:` list the author
+// wrote whenever a `- schedule:` sits before or between webhooks — a walk that
+// recomputes `triggers[i]` from that index addresses the wrong list entry.
+//
+// The fixture puts a schedule between two webhooks with the same
+// idempotency_key expression, so the audit reports one repeated finding with a
+// site per webhook, and this pins each site to its webhook's *actual* source
+// line rather than merely asserting a line was produced: `first`'s
+// idempotency_key is written on line 9 and `second`'s on line 15, with the
+// schedule occupying the list slot between them. Recomputing the position from
+// the compressed Webhooks index would place `second` at the *schedule's* list
+// slot (index 1), which records nothing at `.idempotency_key`, so the bug
+// this guards reads as a silently dropped line (0) rather than merely a wrong
+// one — still a failure an exact-line assertion catches and a
+// merely-positive one would not.
+func TestAuditTriggerWalkPositionsSurviveAnInterleavedSchedule(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: interleaved
+inputs:
+  order_id: { type: string, required: true }
+triggers:
+  - webhook: first
+    verify:
+      first: ${secret('env:FIRST_SECRET')}
+    idempotency_key: ${event.headers["id"] + event.headers["ts"]}
+  - schedule:
+      cron: "0 2 * * *"
+  - webhook: second
+    verify:
+      second: ${secret('env:SECOND_SECRET')}
+    idempotency_key: ${event.headers["id"] + event.headers["ts"]}
+steps:
+  - id: record
+    log:
+      message: hi
+`
+
+	found := auditOf(t, src)
+
+	finding := findAudit(t, found, `event.headers["id"] + event.headers["ts"]`)
+	require.Equal(t, 2, finding.Count())
+
+	require.Equal(t, "triggers[first].idempotency_key", finding.Sites[0].Field)
+	assert.Equal(t, 9, finding.Sites[0].Line, "first's idempotency_key is written on line 9")
+
+	require.Equal(t, "triggers[second].idempotency_key", finding.Sites[1].Field)
+	assert.Equal(t, 15, finding.Sites[1].Line,
+		"second's idempotency_key is written on line 15; recomputing its position from the "+
+			"compressed Webhooks index would address the schedule entry's list slot instead")
 }
 
 // writeAuditFile is call_test.go's writeFile, restated here because that helper

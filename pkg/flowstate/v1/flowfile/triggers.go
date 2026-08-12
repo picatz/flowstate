@@ -200,6 +200,13 @@ func (c *compiler) triggerList(sequence *ast.SequenceNode, path string, r ref) *
 		case "webhook":
 			fields := c.check(entries, entryRef, webhookKeys)
 			if webhook := c.webhookTrigger(fields, p, entryRef); webhook != nil {
+				// [v1.Triggers.Webhooks] holds only webhook entries, so its own
+				// index is not this entry's position in the `triggers:` list the
+				// author wrote whenever a `- schedule:` sits before or between
+				// webhooks. p is that original position, still known here;
+				// recorded by name so a later walk over Webhooks (which has lost
+				// the list index) can recover it — see [Positions.TriggerPath].
+				c.pos.recordTrigger(webhook.GetName(), p)
 				triggers.Webhooks = append(triggers.Webhooks, webhook)
 			}
 
