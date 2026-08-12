@@ -1,4 +1,12 @@
-.PHONY: check test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update
+
+# Diff-scoped local gate (#482): build, gofmt on changed files, vet and
+# bounded -race tests for the packages the diff touches plus their reverse
+# dependencies, and the conditional legs (buf, docs drift, examples, flowtest
+# ordering) only when their inputs changed. The default before pushing a PR
+# branch; PR CI runs the full list as the gate that decides. See CLAUDE.md.
+gate:
+	go run ./tools/gate
 
 # Full CI-parity loop, verbatim commands, in CI order. See CLAUDE.md.
 check:

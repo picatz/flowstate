@@ -74,20 +74,63 @@ behaves oddly, check:
 
     ps -Ao pid,rss,args | grep -E '\.test|-fuzz' | grep -v grep
 
-## Run what CI runs, before pushing
+## The gate: diff-scoped before a push, full on PR CI
 
-CI is a backstop, not the feedback loop. Every check in `.github/workflows/ci.yml`
-runs locally in under a couple of minutes, so discovering a failure there means a
-round trip that bought nothing — and on a shared runner it means someone else waits
-behind it too.
+Two tiers over one list of checks. The diff-scoped tier runs locally before a
+push and covers what your diff can reach. PR CI runs the full list as seven
+parallel jobs in about six minutes and is the gate that decides; the
+orchestrator's webhook loop watches the PR and drives red back to green.
+`make check` runs the same full list locally, and remains the rehearsal for
+main-composition verification and for anyone who wants the whole answer on
+their own machine.
+
+Before pushing a PR branch, run the diff-scoped tier:
+
+    go run ./tools/gate        # or: make gate
+
+It computes the changed files against the merge-base with origin/main, maps
+them to packages, expands to every package whose build or tests can see a
+changed one, then runs the build, gofmt on the changed files, and vet plus
+bounded `-race` tests for the affected set. Conditional legs fire only when
+their inputs changed: the buf trio and the descriptorset pin on `proto/`, the
+docs mirror and reference drift checks on `docs/DSL.md` and the registry,
+cobra and MCP surfaces, example fix and coverage checks on `examples/`, and
+the `-cpu=1` ordering line when the flowtest package is affected. Every leg
+prints one line saying it ran or why it was skipped, so a skip is a decision
+you can read rather than a gap.
+
+This inverts the old default of this section, which told everyone to run the
+full list locally before every push because a CI round trip bought nothing.
+That reasoning predates a six-minute parallel CI and a standing red-to-green
+driver: in the last wave, five agents each re-ran the full list serially on
+one contended machine at 30 to 60 minutes per gate, to predict an answer CI
+returns in six (#482). What survives is the bound, not the venue: nothing
+merges red, and every required check still runs on every PR.
+
+Two habits the last wave paid for, now written down. Editing `docs/DSL.md`
+requires `go generate ./cmd/flow/internal/reference`, because that package
+holds a generated mirror of the document and `TestTheMirrorMatchesTheRepository`
+fails on drift; the gate's docs leg runs this for you. And generated files
+(`*.pb.go`, `docs/reference/`, the reference mirror, the descriptorset) are
+never edited directly: edit the source they derive from and regenerate. The
+hooks under `tools/hooks/` enforce both at edit time.
+
+### `make check`: the full rehearsal
+
+Every check in `.github/workflows/ci.yml`, run locally, in CI order. Run it
+when verifying what main composes to, before release-shaped changes, when a
+CI failure needs local reproduction, or whenever the diff-scoped answer is
+not the whole answer you want:
 
     go build ./...
     go vet ./...
     gofmt -l ./cmd ./pkg                       # must print nothing
     GOMEMLIMIT=2GiB go test -race -timeout 900s ./...
+    make test-plugins                          # the plugin modules ./... cannot reach
     GOMEMLIMIT=1GiB go test -race -cpu=1 -count=20 -timeout 300s ./pkg/flowstate/v1/flowtest/
-    go run ./cmd/flow fix --check examples/*/workflow.yaml
+    go run ./cmd/flow fix --check examples/
     go run ./cmd/flow test --coverage-required examples/
+    go run ./cmd/flow breaking --against origin/main examples/
     make fuzz-smoke
     make appearance
     docker compose -f examples/observability/docker-compose.yaml config -q
