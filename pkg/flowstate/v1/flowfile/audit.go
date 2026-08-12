@@ -202,6 +202,33 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 			c.site("", field, rule.GetSubjectFrom())
 		}
 	}
+
+	c.triggers(wf)
+}
+
+// triggers walks the expressions a trigger carries, at the same paths
+// [checkTriggerExpressions] and [validateWebhookTriggers] use, so a repetition
+// spanning a trigger's `with:` or `idempotency_key:` and the rest of the file is
+// counted rather than invisible to this walk the way it was to
+// [checkTriggerExpressions] before #502 added it there. A rewriter that cannot
+// see an expression cannot rewrite it, and `flow fix` reads this walk's report,
+// so an omission here is the same shape as that one was.
+func (c *auditCollector) triggers(wf *v1.Workflow) {
+	for i, webhook := range wf.GetTriggers().GetWebhooks() {
+		at := indexPath("triggers", i)
+
+		// Field names the position the way [ExprSite] elsewhere names one that
+		// is not scoped to a step: the signals walk above qualifies `subject`
+		// with the policy it belongs to for the identical reason — a file with
+		// more than one webhook must not have two sites read as the same one.
+		field := fmt.Sprintf("triggers[%d:%s]", i, webhook.GetName())
+
+		c.siteAt("", field+".idempotency_key", fieldPath(at, "idempotency_key"), webhook.GetIdempotencyKey())
+
+		for _, argument := range slices.Sorted(maps.Keys(webhook.GetArguments())) {
+			c.siteAt("", field+".with."+argument, fieldPath(fieldPath(at, "with"), argument), webhook.GetArguments()[argument])
+		}
+	}
 }
 
 // nodes walks every expression a list of steps carries, at any depth.

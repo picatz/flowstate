@@ -3,7 +3,6 @@ package flowfile
 import (
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -423,7 +422,7 @@ func Parse(data []byte) (*v1.Workflow, *Positions, error) {
 // package doc on `v1.Call` for why filesystem access belongs at the edge that
 // already has an author's files, and never at a worker.
 func ParseFile(path string) (*v1.Workflow, *Positions, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, nil, err
 	}

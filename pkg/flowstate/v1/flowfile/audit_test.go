@@ -263,6 +263,40 @@ steps:
 	require.Equal(t, "signals.teardown-approved.allow[0].subject", finding.Sites[1].Field)
 }
 
+// TestAuditSeesTriggerExpressions is issue #505: the audit walked vars, steps
+// and declared outputs, and never `wf.Triggers`, so an expression a webhook's
+// `with:` or `idempotency_key:` repeated was invisible to whatever the audit
+// fed — including `flow fix`, which cannot rewrite what it cannot see. This
+// pins the fix at the two positions [checkTriggerExpressions] type-checks and
+// [validateWebhookTriggers] scope-checks, so all three now agree on where a
+// trigger's expressions live.
+func TestAuditSeesTriggerExpressions(t *testing.T) {
+	t.Parallel()
+
+	found := auditOf(t, `edition: v2026.3
+name: order-webhook
+inputs:
+  order_id: { type: string, required: true }
+triggers:
+  - webhook: stripe
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+    idempotency_key: ${event.headers["stripe-signature"] + event.headers["stripe-id"]}
+    with:
+      order_id: ${event.headers["stripe-signature"] + event.headers["stripe-id"]}
+steps:
+  - id: record
+    log:
+      message: ${'order ' + inputs.order_id}
+`)
+
+	finding := findAudit(t, found, `event.headers["stripe-signature"] + event.headers["stripe-id"]`)
+	require.Equal(t, 2, finding.Count())
+	require.Equal(t, "", finding.Sites[0].Step)
+	require.Equal(t, "triggers[0:stripe].idempotency_key", finding.Sites[0].Field)
+	require.Equal(t, "triggers[0:stripe].with.order_id", finding.Sites[1].Field)
+}
+
 // writeAuditFile is call_test.go's writeFile, restated here because that helper
 // lives in the external test package and this file is the internal one.
 func writeAuditFile(t *testing.T, dir, name, content string) string {

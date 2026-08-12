@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -1948,7 +1947,7 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 // ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
 // resolving any `call:` step relative to path's own directory — see [ParseFile].
 func ValidateSourceFile(path string) (Diagnostics, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, err
 	}
