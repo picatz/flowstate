@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -1384,21 +1383,30 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 
 	var ds Diagnostics
 
+	// Kind is set alongside Field on every diagnostic below, wherever it names
+	// the `undo:` key itself, so [validateParsed] positions it through
+	// [Positions.LocateKind] rather than the candidate search
+	// [Positions.Locate] does. The step's own primary task may declare an
+	// input literally named `undo` — a plugin task's input names come from
+	// its own descriptor, so `undo` is not reserved — and Locate's candidate
+	// search tries every registered task's `.undo` input before the step's
+	// own `<step>.undo`, which would misplace these on that unrelated input.
 	if err := v1.CheckUndoPlacement(node, placement); err != nil {
 		return append(ds, Diagnostic{
-			Step: id, Field: "undo", Message: err.Error(),
+			Step: id, Field: "undo", Kind: "undo", Message: err.Error(),
 			Code: v1.DiagnosticCodePlacementRefusal,
 		})
 	}
 
 	task := undo.GetTask()
 	if task.GetName() == "" {
-		return append(ds, Diagnostic{Step: id, Field: "undo", Message: "compensation has no task"})
+		return append(ds, Diagnostic{Step: id, Field: "undo", Kind: "undo", Message: "compensation has no task"})
 	}
 	if _, known := v1.LookupTask(task.GetName()); !known {
 		return append(ds, Diagnostic{
 			Step:    id,
 			Field:   "undo",
+			Kind:    "undo",
 			Message: unknownTaskMessage(task.GetName()),
 			Code:    v1.DiagnosticCodeUnknownTask,
 		})
@@ -1439,7 +1447,7 @@ func validateUndoInputs(id string, task *v1.Task) Diagnostics {
 		if d.Field != "" {
 			message = fmt.Sprintf("input %q: %s", d.Field, message)
 		}
-		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Value: d.Value, Message: message, Code: d.Code})
+		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Kind: "undo", Value: d.Value, Message: message, Code: d.Code})
 	}
 
 	return ds
@@ -1948,7 +1956,7 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 // ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
 // resolving any `call:` step relative to path's own directory — see [ParseFile].
 func ValidateSourceFile(path string) (Diagnostics, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, err
 	}

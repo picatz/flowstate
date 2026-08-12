@@ -202,6 +202,53 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 			c.site("", field, rule.GetSubjectFrom())
 		}
 	}
+
+	c.triggers(wf)
+}
+
+// triggers walks the expressions a trigger carries, at the same paths
+// [checkTriggerExpressions] and [validateWebhookTriggers] use, so a repetition
+// spanning a trigger's `with:` or `idempotency_key:` and the rest of the file is
+// counted rather than invisible to this walk the way it was to
+// [checkTriggerExpressions] before #502 added it there. A rewriter that cannot
+// see an expression cannot rewrite it, and `flow fix` reads this walk's report,
+// so an omission here is the same shape as that one was.
+//
+// [v1.Triggers.Webhooks] holds only webhook entries — a `- schedule:` entry
+// sitting among them in the file compiles into [v1.Triggers.Schedule] instead
+// and leaves no slot behind — so its own range index is not the entry's
+// position in the `triggers:` list the author wrote whenever a schedule sits
+// before or between webhooks. [Positions.TriggerPath] recovers the original
+// position by name, recorded when the compiler still had it; ranging with an
+// index and recomputing `triggers[i]` here, the way this used to, addresses
+// the wrong entry (#506's finding, r3769308758).
+func (c *auditCollector) triggers(wf *v1.Workflow) {
+	for _, webhook := range wf.GetTriggers().GetWebhooks() {
+		name := webhook.GetName()
+
+		at, ok := c.pos.TriggerPath(name)
+		if !ok {
+			// No positions at all (Audit(wf, nil)), or a name this walk cannot
+			// place — either way, nothing here can locate this trigger's
+			// expressions, and guessing at a path would risk landing on
+			// whichever entry happens to share that guessed index. c.siteAt
+			// degrades to Line: 0 on its own when pos is nil; skip explicitly
+			// rather than pass a path a non-nil pos might coincidentally match.
+			continue
+		}
+
+		// Field names the position the way [ExprSite] elsewhere names one that
+		// is not scoped to a step: the signals walk above qualifies `subject`
+		// with the policy it belongs to for the identical reason — a file with
+		// more than one webhook must not have two sites read as the same one.
+		field := fmt.Sprintf("triggers[%s]", name)
+
+		c.siteAt("", field+".idempotency_key", fieldPath(at, "idempotency_key"), webhook.GetIdempotencyKey())
+
+		for _, argument := range slices.Sorted(maps.Keys(webhook.GetArguments())) {
+			c.siteAt("", field+".with."+argument, fieldPath(fieldPath(at, "with"), argument), webhook.GetArguments()[argument])
+		}
+	}
 }
 
 // nodes walks every expression a list of steps carries, at any depth.
@@ -405,6 +452,23 @@ func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
 		// than against the expression under it, an `undo:` input being the one
 		// this corpus has, so the key's line is the answer there and the header
 		// adjustment below does not apply to it.
+		//
+		// `undo` is addressed exactly, the same way [validateParsed] routes a
+		// `Kind` through [Positions.LocateKind]: `<step>.undo` is a key of the
+		// step itself, and the step's own primary task may separately declare an
+		// input literally named `undo` — a plugin task's input names come from
+		// its own descriptor, so `undo` is not a reserved word there. The
+		// candidate search [Positions.Locate] does tries every registered task's
+		// `.undo` input before the step's own `<step>.undo`, so on a step whose
+		// task has such an input, Locate would resolve to that unrelated input
+		// instead of the compensation. LocateKind has no candidate search to go
+		// wrong.
+		if field == "undo" {
+			if span, ok := c.pos.LocateKind(step, "undo"); ok {
+				return span.Start.Line
+			}
+			return 0
+		}
 		if span, ok := c.pos.Locate(step, field); ok {
 			return span.Start.Line
 		}
