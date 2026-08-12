@@ -645,6 +645,35 @@ and Temporal warns rather than failing. So declared signal channels are drained 
 suspending and their payloads carried in `RunState`. The useful side effect is that
 approving in advance works, which people will do whether or not it was designed for.
 
+### Schedules, and what an author may see of them
+
+`parallel:` and `async:` are the two places execution is allowed to depart from written
+order, and the promise attached to both is that the departure is not observable: the same
+file, the same inputs and the same doubles produce the same transcript, the same outputs,
+the same failure and the same compensation order, whatever order the work actually
+happened in. The durable driver earns that promise against Temporal's coroutine
+scheduler. The local driver used to earn it by never departing at all — branches ran in
+declaration order and an async step's work ran where it was written — which makes a local
+run reproducible and makes it the *worst* possible witness for the promise, because
+written order is the one schedule least likely to expose a dependency on order.
+
+So the local driver's two scheduling decisions are a value rather than a constant. A
+`Scheduler` on the context answers them — in what order do these branches advance, and
+does this launched step's work happen now or at its join — and `WrittenOrder`, the answer
+every run outside a simulation gets, is precisely what the driver did before.
+`NewSeededScheduler` answers from a PRNG instead, so an interleaving has a name that is
+one number long. `pkg/flowstate/v1/dst` is what does something with that: run one workflow
+once per seed and assert every observable matches the written-order baseline's, over the
+same shared corpus both drivers already run (`pkg/flowstate/v1/tests`). A divergence
+prints its seed and the command that replays it.
+
+Two things this deliberately is not. It is not a Go scheduler: the engine's own decision
+points are the space that matters, data races stay the race detector's job, and the
+`flowtest` package's ordering claims stay the `-cpu=1` tier's. And it is not a claim
+about the durable driver, whose orderings are Temporal's and whose obligation is replay
+determinism against its own history — what keeps the two honest is that the cases being
+explored are the cases both of them run.
+
 ### Data flow between steps
 
 Each step produces named, typed outputs, recorded under its step ID. Later steps reference
