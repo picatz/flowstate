@@ -41,6 +41,16 @@ func sameScopeContainers() map[string]func(body []*Node) *Node {
 				Branches: []*Parallel_Branch{{Steps: body}},
 			}}}
 		},
+		"switch": func(body []*Node) *Node {
+			// The probe body sits in the *default*, deliberately: a walker that
+			// descends the cases and misses the default slot passes a
+			// cases-only probe and still drops whatever the default holds.
+			return &Node{Id: "c_switch", Kind: &Node_Switch{Switch: &Switch{
+				Value:   NewExpr("'x'"),
+				Cases:   []*Switch_Case{{Values: []*Value{NewLiteral("y")}, Steps: nil}},
+				Default: &Switch_Default{Steps: body},
+			}}}
+		},
 	}
 }
 

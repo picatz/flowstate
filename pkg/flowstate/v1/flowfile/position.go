@@ -211,6 +211,12 @@ func fieldCandidates(base, field string) []string {
 		base+"."+field,
 		base+".for_each."+field,
 		base+".wait_for_signal."+field,
+
+		// A `switch:` mapping's own fields — its `value:`, each `cases[N].case`
+		// and the `default:` — are recorded one level below the step exactly as
+		// a loop's are under `for_each`; without this candidate a diagnostic
+		// about a case literal falls back to the whole step (#318's lesson).
+		base+".switch."+field,
 	)
 }
 

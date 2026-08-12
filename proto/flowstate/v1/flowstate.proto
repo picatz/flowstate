@@ -1200,6 +1200,13 @@ message Node {
     // expression and output: `DefaultCostLimit` per evaluation, and
     // `MaxRunStateBytes` for what the run carries.
     Value value = 13;
+
+    // Switch dispatches on one value, as `switch: {value, cases, default}`.
+    //
+    // See [Switch] for the semantics; the reason it is a node kind rather than
+    // sugar over `if:`-guarded steps is that sugar is invisible to Marshal, so
+    // `flow fmt` would rewrite an author's `switch:` into its expansion.
+    Switch switch = 14;
   }
 
   // Condition determines whether the step runs.
@@ -2154,6 +2161,116 @@ message Loop {
   // `${state + steps.tick.amount}` (fold the body's output into an accumulator).
   // Required when [state] is set and refused when it is not.
   Value update = 6;
+}
+
+// Switch dispatches on one value: the discriminant is evaluated once, cases are
+// tried in written order, the first literal match wins, and there is no
+// fallthrough. Matching is literal equality only; a case needing a predicate is
+// what a step's `if:` remains for.
+//
+// # Why grouping the cases is the feature
+//
+// The branching is expressible today as sibling `if:` steps against one value.
+// What is inexpressible without this message is the *checking*: nothing ties
+// those steps together, so a validator cannot see that they intend a total
+// dispatch over one value — it cannot catch a typo'd literal that is legal CEL
+// and simply never matches, cannot notice a value nobody handles, and the run
+// cannot record that an unhandled value arrived. The word buys the checks, not
+// the branch.
+//
+// # Evaluation and the record
+//
+// The discriminant evaluates inline in workflow code — the sanctioned exception
+// to activity purity, exactly as a step's `if:` and a loop's `items:` do — and
+// the evaluated value goes on the record: the step's outputs carry the observed
+// value ([SwitchValueOutput]) and the case that took it ([SwitchCaseOutput],
+// null when none did). That record is the replay anchor for the durable driver
+// and the drift detector for an operator: an unmatched value with no `default:`
+// runs nothing, and *says so*, observably, rather than falling through in
+// silence.
+//
+// An unresolvable discriminant — one referencing a skipped step's output, say —
+// is an error, never `unmatched`. Fail closed: `default:` means "a value
+// arrived that I didn't enumerate", never "I couldn't compute the value";
+// letting evaluation failure flow into the default path would make `default:`
+// swallow bugs, the opposite of what the slot is for.
+//
+// # Equality where YAML scalar typing and CEL equality meet
+//
+// Matching follows CEL's equality for scalars: numbers compare numerically
+// across int, uint and double (`case: 1` matches a discriminant of `1.0`),
+// strings and booleans compare as themselves, and values of incomparable kinds
+// simply do not match. YAML 1.2 typing decides what a case literal *is*, so
+// `case: no` in a country-code switch is the string "no", not a boolean —
+// this grammar's YAML parser speaks 1.2, where only `true`/`false` are
+// booleans. Where the discriminant's type is knowable the validator makes most
+// cross-type cases unreachable by refusing them as mismatches.
+//
+// # The bodies
+//
+// Case bodies and the default body are ordinary step lists, scoped like a
+// parallel branch's for outputs: exactly one body runs, its step outputs merge
+// into the enclosing namespace, and ids must be unique across the whole switch
+// for the same reason they must be unique across branches — expressions resolve
+// them from one namespace. An *empty* body (`steps: []`) is legal and
+// load-bearing: `case: ignore` with an empty body is how ignoring a value is
+// written down where a reviewer can see it, and an empty `default:` is how "and
+// I mean to handle nothing else" is written when the domain is checkable —
+// Rust's `_ => {}`, both times. A switch with only a `default:` is refused by
+// the schema: that is an unconditional block wearing a switch's clothes.
+message Switch {
+  // Case is one dispatch arm: the literals it matches, and the steps it runs.
+  message Case {
+    // Values are the literals this case matches, spelled `case:` in the DSL as
+    // a scalar or a list; a list is flattened into one membership check (Go's
+    // `case a, b:`). Static literals only — a computed case would erase every
+    // check the validator can make for the whole switch, so `flow validate`
+    // refuses an expression here and both drivers fail closed on one that
+    // arrives anyway.
+    repeated Value values = 1 [
+      (buf.validate.field).required = true,
+      (buf.validate.field).repeated = {
+        min_items: 1
+        max_items: 100
+      }
+    ];
+
+    // Steps is the body to run when this case matches. May be empty: an empty
+    // body is written-down ignoring, reviewable where silence would not be.
+    repeated Node steps = 2 [(buf.validate.field).repeated = {max_items: 100}];
+  }
+
+  // Default is the body that runs when no case matches. Its own message rather
+  // than a repeated field on [Switch], so that "no default" and "a default with
+  // an empty body" stay distinguishable — the first claims exhaustiveness where
+  // the domain is checkable, the second is deliberate, written-down
+  // non-handling.
+  message Default {
+    repeated Node steps = 1 [(buf.validate.field).repeated = {max_items: 100}];
+  }
+
+  // Value is the discriminant, evaluated exactly once per execution.
+  Value value = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Cases are tried in written order; the first match wins. At least one,
+  // because a switch that is only a `default:` dispatches on nothing.
+  repeated Case cases = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+
+  // Default runs when no case matches. Optional: absent, an unmatched value
+  // runs nothing and the step's outputs record that none matched. A key beside
+  // `cases:` rather than a magic case entry, so YAML map semantics give
+  // uniqueness for free and no way exists to write a default that positionally
+  // swallows later cases.
+  Default default = 3;
 }
 
 // Call runs another workflow as a step.

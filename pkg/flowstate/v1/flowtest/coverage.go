@@ -295,6 +295,16 @@ func collectStepUniverse(nodes []*v1.Node, universe map[string]bool) {
 		case *v1.Node_Loop:
 			universe[node.GetId()] = true
 			collectStepUniverse(kind.Loop.GetBody(), universe)
+		case *v1.Node_Switch:
+			// The switch itself records outputs (the observed value and the case
+			// that took it), so it is a countable step; its body steps merge into
+			// the enclosing scope the way parallel branch steps do, so they count
+			// in the same universe — which is what makes `flow test`'s coverage
+			// report the case body no test reaches.
+			universe[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				collectStepUniverse(body, universe)
+			}
 		default:
 			// Task, Wait, Call: a leaf for coverage. A call's own steps are the
 			// callee file's to account for, so the call node is counted but not
@@ -335,6 +345,16 @@ func markReached(nodes []*v1.Node, present map[string]*v1.Node_Outputs, reached 
 			}
 			reached[node.GetId()] = true
 			markReachedInResults(kind.Loop.GetBody(), resultsList(out.GetNamedValues()), reached)
+		case *v1.Node_Switch:
+			// The switch records its own outputs, and the taken body's steps
+			// merge into the enclosing scope, so both are read from present
+			// directly, exactly as a parallel branch's are.
+			if _, ok := present[node.GetId()]; ok {
+				reached[node.GetId()] = true
+			}
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				markReached(body, present, reached)
+			}
 		default:
 			if _, ok := present[node.GetId()]; ok {
 				reached[node.GetId()] = true
@@ -386,6 +406,13 @@ func markReachedInLiteral(nodes []*v1.Node, present map[string]*expr.Value, reac
 			}
 			reached[node.GetId()] = true
 			markReachedInResults(kind.Loop.GetBody(), resultsListLiteral(out), reached)
+		case *v1.Node_Switch:
+			if _, ok := present[node.GetId()]; ok {
+				reached[node.GetId()] = true
+			}
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				markReachedInLiteral(body, present, reached)
+			}
 		default:
 			if _, ok := present[node.GetId()]; ok {
 				reached[node.GetId()] = true

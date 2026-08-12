@@ -56,6 +56,12 @@ var grammarStepKeys = []string{
 	"wait_for_signal",
 	"call",
 
+	// Dispatch on one value: literal cases tried in written order, first match
+	// wins, an optional `default:` beside them. A node kind in the schema, so a
+	// task could never provide it; reserved by design in #357 before it was
+	// built, and grammar now.
+	"switch",
+
 	// A value the step names, computed from an expression the engine evaluates.
 	// Reserved before it was built, like `undo:` above, and moved here from
 	// [futureStepKeys] when it became grammar, which is the whole point of

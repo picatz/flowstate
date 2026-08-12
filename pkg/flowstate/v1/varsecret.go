@@ -90,6 +90,13 @@ func checkNodeVars(nodes []*Node, depth int) error {
 				return err
 			}
 		}
+		if sw := node.GetSwitch(); sw != nil {
+			for _, body := range SwitchBodies(sw) {
+				if err := checkNodeVars(body, depth+1); err != nil {
+					return err
+				}
+			}
+		}
 		if parallel := node.GetParallel(); parallel != nil {
 			for _, branch := range parallel.GetBranches() {
 				if err := checkNodeVars(branch.GetSteps(), depth+1); err != nil {

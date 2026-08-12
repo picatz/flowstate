@@ -61,6 +61,17 @@ func validateCredentialNodes(nodes []*Node, available map[string]struct{}, targe
 				}
 			}
 		}
+		if sw := node.GetSwitch(); sw != nil {
+			// Every case body and the default: only one of them will run, but a
+			// literal credential target in any of them is a file property this
+			// preflight exists to refuse before side effects, whichever branch a
+			// run would take.
+			for _, body := range SwitchBodies(sw) {
+				if err := validateCredentialNodes(body, available, targets); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }

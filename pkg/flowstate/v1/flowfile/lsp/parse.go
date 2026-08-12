@@ -289,6 +289,18 @@ type parsedStep struct {
 	// recording only the fenced form would hide half the spellings.
 	valueEntry *entry
 
+	// switchEntry is a `switch:` step written in its mapping form, held so the
+	// outline names the kind and hover documents its keys.
+	switchEntry *entry
+
+	// switchValueEntry is a switch's `value:` — the discriminant, the one
+	// expression the construct holds. Held for the reason waitUntilEntry is: an
+	// expression this model does not hold is one no editor surface can see, and
+	// the discriminant is the expression most likely to name another step
+	// (`${steps.approval.outcome}` is the motivating spelling). Case literals
+	// are never expressions, so nothing else in the construct is recorded.
+	switchValueEntry *entry
+
 	// sleepEntry is a `sleep:` whose value is written as an expression, the
 	// computed-duration form the compiler recognizes by the fence
 	// (flowfile's computedDuration: `sleep: 30s` is a literal and
@@ -389,6 +401,9 @@ func (s *parsedStep) expressionEntries() []*entry {
 	}
 	if s.valueEntry != nil {
 		entries = append(entries, s.valueEntry)
+	}
+	if s.switchValueEntry != nil {
+		entries = append(entries, s.switchValueEntry)
 	}
 	if s.waitTimeoutEntry != nil {
 		entries = append(entries, s.waitTimeoutEntry)
@@ -557,6 +572,8 @@ func (s *parsedStep) kind() string {
 		return "wait_for_signal"
 	case s.valueEntry != nil:
 		return "value"
+	case s.switchEntry != nil:
+		return "switch"
 	default:
 		return ""
 	}
@@ -1083,6 +1100,18 @@ func fillParsedStep(s *parsedStep, entries []*entry) {
 					if s.loopUpdateEntry == nil {
 						s.loopUpdateEntry = le
 					}
+				}
+			}
+		case "switch":
+			if s.switchEntry != nil || e.value == nil || e.value.kind != kindMapping {
+				continue
+			}
+			s.switchEntry = e
+			for _, se := range e.value.entries {
+				if se.key == "value" && s.switchValueEntry == nil {
+					// Fence-optional, like a loop's `items:`: the compiler reads
+					// this position as an expression either way.
+					s.switchValueEntry = se
 				}
 			}
 		case "call":

@@ -289,6 +289,53 @@ steps:
   log:
     message: ${string(steps.guarded.value)}
 `,
+		// A `switch:` in every shape the construct admits: a scalar case, a
+		// list case, an empty body, a default, and one nested inside a
+		// for_each body dispatching on the loop's own binding — the position
+		// where the rewriter has bitten before. The empty `steps: []` is a
+		// seed on purpose: it is the one body shape Marshal must write back
+		// rather than drop.
+		`edition: v2026.3
+name: dispatch
+steps:
+- id: route
+  switch:
+    value: ${inputs.action}
+    cases:
+    - case: opened
+      steps:
+      - id: triage
+        log:
+          message: triage
+    - case: [closed, merged]
+      steps:
+      - id: archive
+        log:
+          message: archive
+    - case: ignore
+      steps: []
+    default:
+      steps:
+      - id: unhandled
+        log:
+          message: unhandled
+- id: process
+  for_each:
+    items: ${['bucket', 'instance']}
+    as: resource
+    steps:
+    - id: dispatch
+      switch:
+        value: ${resource}
+        cases:
+        - case: bucket
+          steps:
+          - id: check_bucket
+            log:
+              message: bucket
+        - case: [1, 2.5, true]
+          steps: []
+`,
 	} {
 		f.Add(seed)
 	}

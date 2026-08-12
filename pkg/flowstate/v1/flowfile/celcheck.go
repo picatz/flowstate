@@ -150,6 +150,14 @@ func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 			for _, branch := range kind.Parallel.GetBranches() {
 				ds = append(ds, checkNodeExpressions(branch.GetSteps())...)
 			}
+		case *v1.Node_Switch:
+			// The discriminant is the switch's one expression; case literals hold
+			// none by construction, and every body — the default's included — is
+			// checked whichever branch a run would take.
+			ds = append(ds, typeErrors(id, "value", kind.Switch.GetValue())...)
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				ds = append(ds, checkNodeExpressions(body)...)
+			}
 		case *v1.Node_Value:
 			// The step's whole content is one expression, so an operator with no
 			// overload here is the entire step being wrong, and it is the kind

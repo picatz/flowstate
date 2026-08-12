@@ -1,0 +1,106 @@
+# One test per branch, because the branches are the example: each case body,
+# the empty case, and the default are all reached across these five, which is
+# what `--coverage-required` holds this file to. Every test also asserts the
+# *record* — `steps.on_event.case` through the `handled` output — because the
+# record is the half of the design that exists for the runs where nothing
+# visible happens.
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: an enumerated action takes its own case, and only that body runs
+    workflow: ./workflow.yaml
+    inputs:
+      action: opened
+      number: 101
+    stubs:
+      - task: log
+        where: "inputs.message == 'triaging #101'"
+        returns: {}
+      - task: log
+        where: "inputs.message == 'handled as opened'"
+        returns: {}
+    expect:
+      ran: [on_event, triage, record]
+      skipped: [archive, unhandled]
+      outputs:
+        observed: opened
+        handled: true
+
+  - name: a list case matches any member, and the record names the member
+    workflow: ./workflow.yaml
+    inputs:
+      action: merged
+      number: 202
+    stubs:
+      - task: log
+        where: "inputs.message == 'archiving #202'"
+        returns: {}
+      - task: log
+        where: "inputs.message == 'handled as merged'"
+        returns: {}
+    expect:
+      ran: [on_event, archive, record]
+      skipped: [triage, unhandled]
+      outputs:
+        observed: merged
+        handled: true
+
+  - name: the other member of the list case shares the same body
+    workflow: ./workflow.yaml
+    inputs:
+      action: closed
+      number: 203
+    stubs:
+      - task: log
+        where: "inputs.message == 'archiving #203'"
+        returns: {}
+    expect:
+      ran: [on_event, archive, record]
+      skipped: [triage, unhandled]
+      outputs:
+        observed: closed
+        handled: true
+
+  - name: an empty case body is written-down ignoring, matched and recorded
+    workflow: ./workflow.yaml
+    inputs:
+      action: synchronize
+      number: 303
+    stubs:
+      - task: log
+        where: "inputs.message == 'handled as synchronize'"
+        returns: {}
+    expect:
+      # The switch matched - `handled` says so - and deliberately ran nothing:
+      # every handler body is skipped, which is precisely what `steps: []`
+      # wrote down.
+      ran: [on_event, record]
+      skipped: [triage, archive, unhandled]
+      outputs:
+        observed: synchronize
+        handled: true
+
+  - name: a value nobody enumerated lands in the default, observably
+    workflow: ./workflow.yaml
+    inputs:
+      action: labeled
+      number: 404
+    stubs:
+      - task: log
+        where: "inputs.message == 'unhandled action: labeled' && inputs.level == 'warn'"
+        returns: {}
+      - task: log
+        where: "inputs.message == 'no handler enumerated labeled'"
+        returns: {}
+    expect:
+      ran: [on_event, unhandled, record]
+      skipped: [triage, archive]
+      outputs:
+        observed: labeled
+        # The default ran because no case took the value, and the record is
+        # what says so - the drift detector for the day the provider grows an
+        # action this file never learned.
+        handled: false

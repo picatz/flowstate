@@ -127,15 +127,16 @@ outputs:
   enriched:
     value: ${steps.enrich.results.filter(r, has(r.lookup.id)).map(r, r.lookup.id)}
     description: records the lookup completed for
-  # A failed iteration's own result carries no identifier to read back, so
-  # this is `inputs.records` with whatever *did* get enriched taken back out
-  # — the set of records this run attempted and did not finish, named rather
-  # than counted, which is the one thing a caller deciding whether to retry
-  # the batch actually needs.
+  # A failed iteration's entry names its own record: the engine attaches the
+  # loop's `as:` value to a tolerated failure as `item`, right beside the
+  # `error` it records — so the records this run attempted and did not finish
+  # are read straight off the failures, named rather than counted, which is
+  # the one thing a caller deciding whether to retry the batch actually
+  # needs. (This used to be spelled by set subtraction — `inputs.records`
+  # minus the ids that succeeded — reconstructing downstream a value the
+  # engine held at the moment it recorded the failure.)
   failed:
-    value: >-
-      ${inputs.records.filter(r,
-        !(r in steps.enrich.results.filter(rr, has(rr.lookup.id)).map(rr, rr.lookup.id)))}
+    value: ${steps.enrich.results.filter(r, has(r.lookup.error)).map(r, r.lookup.item)}
     description: records this run could not enrich, after retries
   attempted:
     value: ${size(inputs.records)}

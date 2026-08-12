@@ -893,6 +893,47 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowSwitch covers `switch:` against the durable driver, pairing
+// TestRunWorkflowValue's local run of the identical [tests.SwitchCases].
+//
+// The discriminant evaluates in workflow code, so no activity mock stands
+// between this and the branch taken — which is the property under test: which
+// case a value takes, what the record says, and that an unresolvable
+// discriminant fails rather than defaulting are all decided by the one
+// [v1.SelectSwitchCase] both drivers call.
+func TestRunWorkflowSwitch(t *testing.T) {
+	for _, test := range tests.SwitchCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				require.Error(t, env.GetWorkflowError(), "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			if test.ExpectedOutputsPredicate != nil {
+				require.True(t, test.ExpectedOutputsPredicate(&out), "outputs predicate failed: %v", &out)
+				return
+			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowInputsRefused is the negative direction, against the durable
 // driver's own submit boundary.
 //
@@ -1421,6 +1462,37 @@ func TestRunWorkflowLoop(t *testing.T) {
 				require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
 				return
 			}
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowToleratedIterationIdentity is the durable half of a tolerated
+// iteration failure carrying its `as:` binding (#157's question 3).
+//
+// The local driver runs the identical [tests.ToleratedIterationIdentityCases].
+// The concurrent case is the one only this driver can actually exercise as
+// written — `max_parallel` schedules iterations onto coroutines here where the
+// local driver runs them in order regardless — so this caller is what holds
+// the concurrent path's failure entries to the sequential answer.
+func TestRunWorkflowToleratedIterationIdentity(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.ToleratedIterationIdentityCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError(),
+				"every failure in these cases is tolerated, so the run must complete")
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
 		})
 	}

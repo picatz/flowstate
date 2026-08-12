@@ -28,9 +28,14 @@ package flowstatev1
 //   - anything from inside a `parallel` block or a loop body that did not finish.
 //     Neither driver merges a failed parallel's branch outputs into the enclosing
 //     scope, and a loop's per-iteration outputs only reach the transcript when the
-//     loop node completes and writes its own `results`. A transcript that reached
-//     into an unfinished nesting would be one driver inventing a record the other
-//     does not keep, which is the direction invariant 3 exists to prevent.
+//     loop node completes and writes its own `results` — or when it exhausts its
+//     iteration budget, which is the one failure whose every recorded iteration
+//     *did* finish: an exhausted loop's entry carries the `results` that ran
+//     beside its `error` ([LoopExhaustedError]), because there the account is
+//     whole and dropping it would erase the failed-versus-never-attempted line
+//     the record exists to draw. A transcript that reached into an unfinished
+//     nesting would be one driver inventing a record the other does not keep,
+//     which is the direction invariant 3 exists to prevent.
 //
 // # Why a copy
 //

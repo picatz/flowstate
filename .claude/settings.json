@@ -1,0 +1,35 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/genguard"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/pidguard"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/gofmtcheck"
+          }
+        ]
+      }
+    ]
+  }
+}

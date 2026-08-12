@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -546,11 +548,19 @@ func NewLiteralMap(m map[string]any) *Value {
 		return &Value{Kind: &Value_Literal{Literal: &expr.Value{Kind: &expr.Value_NullValue{}}}}
 	}
 
+	// Sorted, so the same map encodes as the same message every time. The
+	// entries of an [expr.MapValue] are a repeated field, and a Go map's
+	// iteration order is deliberately random — so an unsorted walk here made
+	// every multi-key map literal this system records (a loop's per-iteration
+	// `results` entries above all) a value that differed from one construction
+	// to the next, unassertable by proto.Equal and unstable for no reason a
+	// reader of the run record could see. CEL itself gives entry order no
+	// meaning, so sorting changes nothing an expression can observe.
 	entries := make([]*expr.MapValue_Entry, 0, len(m))
-	for k, v := range m {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
 		entries = append(entries, &expr.MapValue_Entry{
 			Key:   NewLiteral(k).GetLiteral(),
-			Value: NewValue(v).GetLiteral(),
+			Value: NewValue(m[k]).GetLiteral(),
 		})
 	}
 
@@ -1020,7 +1030,7 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// then nothing below this line does anything.
 	undo := NewUndoLog(nil)
 
-	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0); err != nil {
+	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
 		// The run cannot continue, so whatever already happened is taken back —
 		// reverse order, every entry attempted, one summary appended to the failure.
 		// [RunUndoLog] owns all three of those rules and the durable driver reaches
@@ -1083,7 +1093,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 // tells this level whether — and how — a compensation written here may be
 // honoured; see [CheckUndoPlacement] and [UndoScope], which refuse the shapes
 // that cannot be, rather than silently dropping them.
-func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) error {
+//
+// tolerated, when non-nil, collects the id of every step whose failure this
+// level records and continues past. A loop passes a fresh set per iteration so
+// [AttachIterationBinding] can key on the driver's own record of tolerance
+// rather than on the shape of the outputs — the one place "this step failed and
+// was tolerated" is a fact is the line below that records it. Everything that
+// is not a loop body passes nil, which collects nothing.
+func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) error {
 	for _, node := range nodes {
 		// Refused before the step runs rather than after it succeeds, so a workload
 		// the engine cannot honour does not perform half of itself first.
@@ -1103,7 +1120,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
-		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth)
+		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, tolerated)
 		if err != nil {
 			// Cancellation is not a step failure, so `continue_on_error` does not
 			// get to tolerate it — the durable driver says the same thing at the
@@ -1127,7 +1144,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 				// no later step evaluates against this scope, and the successful path
 				// never reaches this line. The durable driver records at the identical
 				// point, for the identical reason.
-				scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
+				scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 
 				return fmt.Errorf("step %q: %w", node.GetId(), err)
 			}
@@ -1135,7 +1152,10 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// the id is implied by the key this is recorded under, and repeating it
 			// would make `${steps.<id>.error}` name its own step. The durable
 			// driver draws the same line at the same place — see stepFailed.
-			scope.Outputs.StepValues[node.GetId()] = FailedStepOutputs(StepErrorText(err))
+			if tolerated != nil {
+				tolerated[node.GetId()] = struct{}{}
+			}
+			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 			continue
 		}
 		if outputs != nil {
@@ -1143,6 +1163,27 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 		}
 	}
 	return nil
+}
+
+// failureRecord shapes a step failure into the outputs recorded under that
+// step's id: [FailedStepOutputs] for an ordinary failure, and the richer
+// [LoopExhaustedError.Record] — `error` plus the `results` that ran — when the
+// step is a loop that spent its whole budget.
+//
+// The exhaustion is recognised by direct type assertion, never through an
+// unwrap chain, and that is the point rather than a shortcut: only the loop's
+// own step raises the error bare, so only the loop's own entry carries the
+// account. The same exhaustion propagating out of a call or an enclosing
+// for_each arrives here wrapped in a position (`workflow %q: …`,
+// `iteration %d: …`) and records as the plain failure it is at that level —
+// which is also exactly what the durable driver's failedAt does, reading the
+// raw error at the one site it is raised and never copying the record into the
+// wrappers it builds above it.
+func failureRecord(err error) *Node_Outputs {
+	if exhausted, ok := err.(*LoopExhaustedError); ok {
+		return exhausted.Record()
+	}
+	return FailedStepOutputs(StepErrorText(err))
 }
 
 // runNodeWithVars executes a node with its own `vars:` block bound.
@@ -1160,13 +1201,13 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 // Evaluated after the condition deliberately: `if:` decides whether the step runs
 // at all, so a var it declares does not exist yet when the question is asked —
 // and a var whose expression would fail must not fail a step that is skipped.
-func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
 	}
 
-	outputs, err := runNode(ctx, node, inner, undo, placement, depth)
+	outputs, err := runNode(ctx, node, inner, undo, placement, depth, tolerated)
 	if err != nil {
 		return nil, err
 	}
@@ -1242,7 +1283,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 }
 
 // runNode executes one node and returns the outputs it records.
-func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	switch n := node.Kind.(type) {
 	case *Node_Task:
 		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
@@ -1285,6 +1326,14 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// expression evaluated to, so two spellings of it would be two answers
 		// waiting to differ.
 		return EvalValueNode(ctx, n.Value, scope)
+
+	case *Node_Switch:
+		// Sequential, exactly-one-body work, so a wait inside the taken body
+		// reports this step as its nearest enclosing one, the way a sequential
+		// loop's does. placement passes through unchanged: the body runs once,
+		// in order, in the run's own scope, so an `undo:` there means exactly
+		// what it would mean on the same step written under an `if:`.
+		return runSwitch(pushWaitAncestor(ctx, node.GetId()), n.Switch, scope, undo, placement, depth, tolerated)
 
 	case *Node_Call:
 		// The callee's own placement composes with the scope this call itself
@@ -1362,7 +1411,7 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 		return nil, err
 	}
 
-	if err := runNodes(ctx, callee.GetSteps(), inner, undo, placement, depth); err != nil {
+	if err := runNodes(ctx, callee.GetSteps(), inner, undo, placement, depth, nil); err != nil {
 		// Named, because a failure inside a called workflow reported without
 		// saying which one leaves a reader looking through the caller for a step
 		// that is not there.
@@ -1370,6 +1419,45 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	}
 
 	return CallOutputs(ctx, callee, inner)
+}
+
+// runSwitch dispatches on one value and runs the body [SelectSwitchCase] picks.
+//
+// The selection — one evaluation of the discriminant, first literal match in
+// written order, default when none, an error when the discriminant cannot be
+// computed — is entirely [SelectSwitchCase]'s, shared with the durable driver,
+// so the two cannot disagree about which branch a value takes or what the
+// record says. What is local here is only how the chosen body runs: a plain
+// recursion into [runNodes] against the same scope, which is what merges the
+// body's step outputs into the enclosing namespace the way a parallel branch's
+// merge — exactly one body ran, so there is nothing to collide with.
+//
+// tolerated passes straight through rather than being reset to nil, and that is
+// the same answer the durable driver gives: its runSwitch recurses on its *own*
+// executor, so the body inherits whatever collector that executor carries. The
+// reason both say it is that a switch body is not a nested scope the way a
+// parallel branch or a callee is — its step outputs merge into the enclosing
+// namespace, so a body step that fails and is tolerated is, from the enclosing
+// walk's view, exactly as tolerated as a sibling written beside the switch.
+//
+// Nothing reads a switch-body id out of the set today: the only reader is
+// [AttachIterationBinding], and what reaches it is filtered through
+// [onlyBodyOutputs] to the loop body's *direct* ids, which a body step of a
+// switch is not. So this is structure rather than an observable difference —
+// written this way because the alternative is the two drivers threading one
+// piece of state differently, which is the shape every disagreement found so
+// far has had.
+func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
+	body, outputs, err := SelectSwitchCase(ctx, sw, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := runNodes(ctx, body, scope, undo, placement, depth, tolerated); err != nil {
+		return nil, err
+	}
+
+	return outputs, nil
 }
 
 // runForEach runs a loop body once per item.
@@ -1421,8 +1509,14 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 
 		// Accumulate privately, then merge by iteration index. Completion time is
 		// deliberately not part of the compensation ordering contract.
+		//
+		// toleratedSteps is the iteration's own record of which body steps
+		// failed and were tolerated — the marker [AttachIterationBinding] keys
+		// on below, so a successful step that merely *declares* an output
+		// named `error` is never mistaken for a failure.
 		iterationUndo := NewUndoLog(nil)
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth); err != nil {
+		toleratedSteps := map[string]struct{}{}
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
 			undo.Append(iterationUndo)
 			if loop.GetMaxParallel() > 1 {
 				// A concurrent fan-out launches every iteration before it can
@@ -1449,8 +1543,14 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// (see [AccumulateForEachResult]); the position wrap is spelled the way the
 		// durable driver's stepFailed composes it, `"iteration %d: "`, so the
 		// recorded sentence matches across drivers.
+		// The iteration's item rides on any tolerated failure the body recorded
+		// ([AttachIterationBinding], keyed on toleratedSteps — the walk's own
+		// record, never the outputs' names), attached before the accumulate so
+		// the byte bound weighs it — and at the identical point the durable
+		// driver attaches it, in both its sequential and concurrent paths.
 		var sizeErr error
-		iterations, resultsBytes, sizeErr = AccumulateForEachResult(iterations, resultsBytes, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		iterations, resultsBytes, sizeErr = AccumulateForEachResult(iterations, resultsBytes,
+			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), item, toleratedSteps))
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}
@@ -1511,8 +1611,12 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 	for i := 0; ; i++ {
 		if i >= max {
 			// The budget is spent and `until:` never held. A distinct failure, not a
-			// silent stop: the loop did not do what it was asked.
-			return nil, LoopIterationLimitError(max)
+			// silent stop: the loop did not do what it was asked. The error carries
+			// the iterations that ran, so the recorded entry can say which of them
+			// failed and that nothing past the budget was ever attempted — see
+			// [LoopExhaustedError]. Never truncated here: a local run has no resume
+			// to have dropped history across.
+			return nil, LoopExhausted(iterations, max, false)
 		}
 
 		// Each iteration starts from the outputs visible before the loop, so a body
@@ -1538,12 +1642,23 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// Where the composed placement is still [UndoScopeConcurrent] — a loop
 		// inside a for_each body — [CheckUndoPlacement] refuses it rather than this
 		// level quietly ignoring it.
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth); err != nil {
+		//
+		// toleratedSteps collects which body steps failed and were tolerated —
+		// the marker the attach below keys on, per iteration, so a successful
+		// step that merely declares an output named `error` is never mistaken
+		// for a failure.
+		toleratedSteps := map[string]struct{}{}
+		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
+		// The carried state the iteration ran with rides on any tolerated
+		// failure the body recorded ([AttachIterationBinding]) — nil for a loop
+		// that binds nothing, which attaches nothing. Before the accumulate so
+		// the byte bound weighs it, matching the durable driver's point.
 		var sizeErr error
-		iterations, resultsBytes, sizeErr = AccumulateLoopResult(iterations, resultsBytes, onlyBodyOutputs(loop.GetBody(), iterationOutputs))
+		iterations, resultsBytes, sizeErr = AccumulateLoopResult(iterations, resultsBytes,
+			AttachIterationBinding(onlyBodyOutputs(loop.GetBody(), iterationOutputs), state, toleratedSteps))
 		if sizeErr != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, sizeErr)
 		}
@@ -1616,7 +1731,7 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		// thinking about, and silently omits every other one the type grows.
 		branchScope := scope.WithOutputs(branchOutputs)
 		branchUndo := NewUndoLog(nil)
-		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth); err != nil {
+		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
 			undo.Append(branchUndo)
 			// Branches are concurrent by declaration: the durable driver has
 			// launched every one of them before it can learn that any failed,

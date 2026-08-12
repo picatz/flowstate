@@ -1133,6 +1133,45 @@ func (f *fixer) step(n ast.Node, scope stepScope) {
 			f.nested(v.Value, forEachStepsKey, inner.with(loopBindings(v.Value)...))
 		case "parallel":
 			f.branches(v.Value, inner)
+		case "switch":
+			// Every case body and the default's are descended with the scope
+			// *unchanged*: a switch binds no bare name — no iterator, no carried
+			// state — which is exactly what makes it safe for this rewriter, and
+			// the fact worth stating, because the two files `flow fix` has
+			// corrupted were both a rewriter knowing less about scope than the
+			// grammar does. The case literals themselves are never expressions,
+			// so nothing in them is a rewrite candidate.
+			f.switchBodies(v.Value, inner)
+		}
+	}
+}
+
+// switchBodies descends into a switch's case bodies and its default body.
+func (f *fixer) switchBodies(n ast.Node, scope stepScope) {
+	mapping, ok := unwrapAnchor(n).(*ast.MappingNode)
+	if !ok {
+		if single, isOne := unwrapAnchor(n).(*ast.MappingValueNode); isOne {
+			mapping = &ast.MappingNode{Values: []*ast.MappingValueNode{single}}
+		} else {
+			return
+		}
+	}
+	for _, v := range mapping.Values {
+		name, keyed := keyNameOf(v.Key)
+		if !keyed {
+			continue
+		}
+		switch name {
+		case "cases":
+			seq, isSeq := unwrapAnchor(v.Value).(*ast.SequenceNode)
+			if !isSeq {
+				continue
+			}
+			for _, entry := range seq.Values {
+				f.nested(entry, "steps", scope)
+			}
+		case "default":
+			f.nested(v.Value, "steps", scope)
 		}
 	}
 }

@@ -82,6 +82,140 @@ func LoopIterationLimitError(max int) error {
 		max)
 }
 
+// LoopExhaustedError is the failure a loop raises at the moment it exhausts its
+// iteration budget, carrying the record of the iterations that ran so the
+// transcript can distinguish an iteration that ran and failed from one that was
+// never attempted.
+//
+// The sentence a reader gets is [LoopIterationLimitError]'s, unchanged — one
+// constructor still owns it, and this type's Error delegates to it so the two
+// cannot drift. What this adds is the account: [LoopExhaustedError.Record] is
+// what both drivers store under the loop's own step id in place of the bare
+// `error` text, so the failed loop's entry carries `results` alongside `error`
+// exactly as a completed loop's entry would.
+//
+// The distinction it draws is `undo:`'s (see [ErrUndoBudget]): a claim about
+// something that did not happen is a wrong answer, not a formatting choice. An
+// iteration recorded in `results` ran — one whose entry carries a step `error`
+// ran and *failed*, tolerated by `continue_on_error:` — and an iteration absent
+// from `results` was never attempted, because the budget was already spent.
+// Before this, exhaustion recorded the sentence alone and dropped the record,
+// so a reader could not tell three iterations that failed from three that never
+// started.
+//
+// Raised by both drivers at the point each detects the exhaustion, and consumed
+// by each driver's own step-failure recording site — the local driver's
+// runNodes and the durable driver's failedAt — which read it *directly*, never
+// through an unwrap chain. That is deliberate: the record belongs to the loop's
+// own transcript entry and to no other. A wrapped exhaustion propagating out of
+// a call or an enclosing for_each is an ordinary failure at that level, and
+// attaching the inner loop's iterations to an outer step's entry would file the
+// account under a step that did not run them.
+type LoopExhaustedError struct {
+	// Max is the budget the loop spent, from [LoopMaxIterations].
+	Max int
+
+	// Attempted is the per-iteration record accumulated before the budget ran
+	// out — the same slice a completing loop would have shaped into `results`.
+	Attempted []*Workflow_StepOutputs
+
+	// Truncated reports that Attempted is only a suffix of the loop's real
+	// history: a durable resume already dropped earlier segments' iterations
+	// ([LoopResumeResults]), so publishing what is left as `results` would
+	// read as a short but complete account when it is neither — the exact
+	// dishonesty [LoopStateOutputsHonest] refuses on the completing path.
+	// Record omits `results` entirely when this is set. Only the durable
+	// driver ever sets it; a local run has no resume to truncate across.
+	Truncated bool
+}
+
+// LoopExhausted reports a loop that ran its whole budget of max iterations
+// without `until:` ever holding, carrying the record of what ran.
+func LoopExhausted(attempted []*Workflow_StepOutputs, max int, truncated bool) *LoopExhaustedError {
+	return &LoopExhaustedError{Max: max, Attempted: attempted, Truncated: truncated}
+}
+
+// Error is [LoopIterationLimitError]'s sentence, verbatim: the account travels
+// beside the failure, never inside the text an author's tooling matches on.
+func (e *LoopExhaustedError) Error() string {
+	return LoopIterationLimitError(e.Max).Error()
+}
+
+// Record shapes the exhaustion into the outputs recorded under the loop's own
+// step id: the failure text under [StepErrorOutput], plus the iterations that
+// ran under [LoopResultsField] — through the same [LoopOutputs] a completing
+// loop reports them through, so an iteration reads identically whether the loop
+// finished or exhausted. Both drivers store exactly this, which is what keeps
+// the failed loop's transcript entry one shape rather than two.
+func (e *LoopExhaustedError) Record() *Node_Outputs {
+	out := FailedStepOutputs(StepErrorText(e))
+	if !e.Truncated {
+		out.NamedValues[LoopResultsField] = LoopOutputs(e.Attempted).NamedValues[LoopResultsField]
+	}
+	return out
+}
+
+// AttachIterationBinding returns an iteration's body outputs with the loop's
+// bound `as:` value recorded on every tolerated failure in it, under
+// [StepErrorItemOutput].
+//
+// Called by both drivers at the identical point — on the narrowed body outputs,
+// right before the iteration is accumulated into `results` — so a failure entry
+// names its item identically whether the iteration ran locally or durably, and
+// so the attached value is weighed by the same [MaxLoopResultsBytes] bound as
+// everything else the iteration reports: an oversized item cannot ride in under
+// the ceiling, because it is inside what the ceiling weighs.
+//
+// bound is the value the iteration ran with — a `for_each`'s current item, a
+// `loop:`'s carried state — and nil for a loop that binds nothing, which
+// attaches nothing: there is no binding to carry, and inventing one would be a
+// claim about a scope the body never had.
+//
+// tolerated is the set of body step ids whose failure the iteration's own node
+// walk recorded and continued past — each driver's runNodes marks the id at the
+// exact moment it records the failure, which is the one place "this step failed
+// and was tolerated" is a fact rather than an inference. The set, and not the
+// shape of the outputs, is what decides attachment: a step that *succeeds*
+// while legitimately declaring an output named `error` (an http task shaping a
+// response field under that name, say) must keep its declared shape untouched,
+// and an output-name heuristic here would have misread it as a failure and
+// injected — or worse, overwritten — an `item` inside a successful step's own
+// outputs. Only ids in the set are touched, and each is replaced by a copy
+// rather than written through: the same [Node_Outputs] is still referenced by
+// the iteration's own scope, and a recording helper that mutates what a live
+// scope points at is a bug waiting for a reader.
+func AttachIterationBinding(iteration *Workflow_StepOutputs, bound *Value, tolerated map[string]struct{}) *Workflow_StepOutputs {
+	if iteration == nil || bound == nil || len(tolerated) == 0 {
+		return iteration
+	}
+
+	decorated := map[string]*Node_Outputs{}
+	for id := range tolerated {
+		outputs, ok := iteration.GetStepValues()[id]
+		if !ok {
+			continue
+		}
+		named := make(map[string]*Value, len(outputs.GetNamedValues())+1)
+		for name, v := range outputs.GetNamedValues() {
+			named[name] = v
+		}
+		named[StepErrorItemOutput] = bound
+		decorated[id] = &Node_Outputs{NamedValues: named}
+	}
+	if len(decorated) == 0 {
+		return iteration
+	}
+
+	out := &Workflow_StepOutputs{StepValues: make(map[string]*Node_Outputs, len(iteration.GetStepValues()))}
+	for id, outputs := range iteration.GetStepValues() {
+		out.StepValues[id] = outputs
+	}
+	for id, outputs := range decorated {
+		out.StepValues[id] = outputs
+	}
+	return out
+}
+
 // EvalLoopUntil evaluates a loop's stop condition against the scope the body
 // finished in, requiring a boolean.
 //
@@ -351,6 +485,10 @@ func collectStepIDs(nodes []*Node, into map[string]*Node_Outputs) {
 		case *Node_Parallel:
 			for _, branch := range k.Parallel.GetBranches() {
 				collectStepIDs(branch.GetSteps(), into)
+			}
+		case *Node_Switch:
+			for _, body := range SwitchBodies(k.Switch) {
+				collectStepIDs(body, into)
 			}
 		}
 	}

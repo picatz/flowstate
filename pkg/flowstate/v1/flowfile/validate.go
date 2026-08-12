@@ -434,10 +434,8 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			case *v1.Node_Parallel:
 				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, depth)...)
 				// Branch outputs are merged into the enclosing scope once the
-				// block completes, so a later step may reference them by id.
-				for _, branchID := range branchStepIDs(kind.Parallel) {
-					scope.steps[branchID] = true
-				}
+				// block completes, so a later step may reference them by id —
+				// recordStepInScope below adds them.
 
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
@@ -448,13 +446,21 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, i, wf)...)
 
+			case *v1.Node_Switch:
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, depth, placement)...)
+				// Exactly one body runs and its outputs merge into the enclosing
+				// scope, the way a parallel branch's do, so a later step may
+				// reference a case-body step by id — and simply not resolve at
+				// run time when a different case took the value, the same honest
+				// outcome referencing an `if:`-skipped step already has.
+
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
 					Message: "step must have one of " + stepKindList(),
 				})
 			}
-			scope.steps[id] = true
+			recordStepInScope(scope, node)
 			continue
 		}
 
@@ -714,8 +720,28 @@ func mergedStepIDs(nodes []*v1.Node) []string {
 		if p, ok := node.GetKind().(*v1.Node_Parallel); ok {
 			ids = append(ids, branchStepIDs(p.Parallel)...)
 		}
+		if s, ok := node.GetKind().(*v1.Node_Switch); ok {
+			ids = append(ids, switchStepIDs(s.Switch)...)
+		}
 	}
 	return ids
+}
+
+// recordStepInScope marks a finished step in the scope the steps after it are
+// checked against: its own id, plus — for a parallel block or a switch — the
+// nested ids whose outputs execution merges out, which is exactly
+// [mergedStepIDs] of this one node.
+//
+// One helper for both walks, because they briefly disagreed: the top-level walk
+// merged a switch's case-body ids and [validateNested] recorded only the
+// switch's own id, so the same later-sibling reference to a case-body step was
+// legal at the top level and refused inside a `for_each` body — a scope rule
+// with two spellings is two rules. Whatever a step contributes to the names
+// after it is decided here, once.
+func recordStepInScope(scope refScope, node *v1.Node) {
+	for _, id := range mergedStepIDs([]*v1.Node{node}) {
+		scope.steps[id] = true
+	}
 }
 
 // A refScope is what the expressions in one step may name.
@@ -1030,6 +1056,14 @@ func bodyHasNestedLoop(nodes []*v1.Node) bool {
 					return true
 				}
 			}
+		case *v1.Node_Switch:
+			// A switch body shares its enclosing suspend scope — a `loop:` in a
+			// case body inside a loop body is the same unexercised nesting.
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				if bodyHasNestedLoop(body) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -1191,13 +1225,18 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, index, wf)...)
+			case *v1.Node_Switch:
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, depth, placement)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
 					Message: "step must have one of " + stepKindList(),
 				})
 			}
-			scope.steps[id] = true
+			// The same merge the top-level walk performs: a parallel block's
+			// branch steps and a switch's case-body steps are referenceable by
+			// the siblings after it, at any nesting.
+			recordStepInScope(scope, node)
 			continue
 		}
 
@@ -2171,6 +2210,12 @@ func declaredAnywhere(id string, wf *v1.Workflow) bool {
 						return true
 					}
 				}
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					if walk(body) {
+						return true
+					}
+				}
 			}
 		}
 		return false
@@ -2499,6 +2544,12 @@ func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 			case *v1.Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
 					if found := walk(branch.GetSteps()); found != nil {
+						return found
+					}
+				}
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					if found := walk(body); found != nil {
 						return found
 					}
 				}

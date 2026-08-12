@@ -90,6 +90,10 @@ func sensitivePromptInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnos
 			for _, branch := range kind.Parallel.GetBranches() {
 				ds = append(ds, sensitivePromptInNodes(branch.GetSteps(), sensitive)...)
 			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				ds = append(ds, sensitivePromptInNodes(body, sensitive)...)
+			}
 		}
 	}
 

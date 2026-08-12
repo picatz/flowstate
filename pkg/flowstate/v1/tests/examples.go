@@ -546,6 +546,12 @@ func AnyStep(nodes []*v1.Node, pred func(*v1.Node) bool) bool {
 			if AnyStep(kind.Loop.GetBody(), pred) {
 				return true
 			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				if AnyStep(body, pred) {
+					return true
+				}
+			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				if AnyStep(branch.GetSteps(), pred) {
@@ -715,6 +721,13 @@ func pointAtStandIn(nodes []*v1.Node, standIn *url.URL, loops []binding) []strin
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				unpointable = append(unpointable, pointAtStandIn(branch.GetSteps(), standIn, bindings)...)
+			}
+		case *v1.Node_Switch:
+			// Every body, the default's included: which branch a test drives the
+			// run down is the test's business, and an unpointed URL in any of
+			// them would reach the real host the moment a test covers it.
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				unpointable = append(unpointable, pointAtStandIn(body, standIn, bindings)...)
 			}
 		case *v1.Node_Call:
 			// A callee's own steps are a request too — missed at first for the
@@ -915,6 +928,10 @@ func httpStepIDs(nodes []*v1.Node) []string {
 			ids = append(ids, httpStepIDs(kind.ForEach.GetBody())...)
 		case *v1.Node_Loop:
 			ids = append(ids, httpStepIDs(kind.Loop.GetBody())...)
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				ids = append(ids, httpStepIDs(body)...)
+			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
 				ids = append(ids, httpStepIDs(branch.GetSteps())...)
