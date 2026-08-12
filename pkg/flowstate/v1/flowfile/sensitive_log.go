@@ -94,6 +94,31 @@ func sensitiveLogInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostic
 			ds = append(ds, d)
 		}
 
+		// A compensation runs the same tasks a step runs, so a `log:` that
+		// surfaces a sensitive input is the same mistake written in the `undo:`
+		// position, and it is the position where it matters most: compensation
+		// runs when something has already gone wrong, which is when logs get
+		// read closely. The field is the `undo:` key rather than `message` for
+		// the reason validateUndoInputs documents — a field naming the inner
+		// input would be looked up against the step's own task — so the inner
+		// field moves into the sentence instead.
+		//
+		// Kind is set alongside Field so [validateParsed] routes the position
+		// through [Positions.LocateKind] rather than [Positions.Locate]: the
+		// step's own primary task may declare an input literally named `undo`
+		// (a plugin task's input names come from its own descriptor, so `undo`
+		// is not reserved), and Locate's candidate search tries every
+		// registered task's `.undo` input before the step's own `<step>.undo`.
+		// On such a step, Field alone would underline that unrelated primary-
+		// task input instead of the compensation. LocateKind addresses
+		// `<step>.undo` exactly, with no candidate search to go wrong.
+		if d, ok := sensitiveLogInTask(node.GetId(), node.GetUndo().GetTask(), sensitive); ok {
+			d.Field = "undo"
+			d.Kind = "undo"
+			d.Message = "in this step's compensation: " + d.Message
+			ds = append(ds, d)
+		}
+
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_ForEach:
 			ds = append(ds, sensitiveLogInNodes(kind.ForEach.GetBody(), sensitive)...)
