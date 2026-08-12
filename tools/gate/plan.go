@@ -43,6 +43,12 @@ type plan struct {
 	docs     bool // reference mirror + generated docs drift
 	examples bool // flow fix --check, flow test, flow breaking
 
+	// appearance means the diff could move a recorded golden: styled
+	// output and help text live in cmd/flow, and the goldens embed a
+	// sample Flowfile stamped with CurrentEdition, so an edition bump
+	// moves them without touching a line of styling code (#483).
+	appearance bool
+
 	// plugins are the plugin modules with changes (e.g. "plugins/openai").
 	// They are separate Go modules, reported rather than gated here.
 	plugins []string
@@ -151,6 +157,14 @@ func buildPlan(changed []string) plan {
 		if strings.HasPrefix(f, "examples/") {
 			p.examples = true
 			reason("examples", f)
+		}
+
+		// Anything that could change what the CLI prints, which the
+		// appearance goldens record.
+		if strings.HasPrefix(f, "cmd/flow/") && strings.HasSuffix(f, ".go") ||
+			f == "pkg/flowstate/v1/flowfile/edition.go" {
+			p.appearance = true
+			reason("appearance", f)
 		}
 	}
 

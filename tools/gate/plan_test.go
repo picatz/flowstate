@@ -97,10 +97,51 @@ func TestBuildPlan(t *testing.T) {
 			name:    "the cobra and MCP surfaces fire the docs leg",
 			changed: []string{"cmd/flow/docsgen.go"},
 			want: plan{
-				goFiles:  []string{"cmd/flow/docsgen.go"},
-				fileDirs: []string{"cmd/flow"},
-				docs:     true,
-				reasons:  map[string]string{"docs": "cmd/flow/docsgen.go"},
+				goFiles:    []string{"cmd/flow/docsgen.go"},
+				fileDirs:   []string{"cmd/flow"},
+				docs:       true,
+				appearance: true,
+				reasons: map[string]string{
+					"docs":       "cmd/flow/docsgen.go",
+					"appearance": "cmd/flow/docsgen.go",
+				},
+			},
+		},
+		{
+			// The goldens embed a sample Flowfile stamped with
+			// CurrentEdition, so an edition bump moves recorded
+			// appearance without touching styling code. #483 shipped
+			// exactly that and found out on CI.
+			name:    "an edition bump fires the appearance notice",
+			changed: []string{"pkg/flowstate/v1/flowfile/edition.go"},
+			want: plan{
+				goFiles:    []string{"pkg/flowstate/v1/flowfile/edition.go"},
+				fileDirs:   []string{"pkg/flowstate/v1/flowfile"},
+				appearance: true,
+				reasons:    map[string]string{"appearance": "pkg/flowstate/v1/flowfile/edition.go"},
+			},
+		},
+		{
+			name:    "styled output and help text fire the appearance notice",
+			changed: []string{"cmd/flow/internal/ui/style.go"},
+			want: plan{
+				goFiles:    []string{"cmd/flow/internal/ui/style.go"},
+				fileDirs:   []string{"cmd/flow/internal/ui"},
+				docs:       true,
+				appearance: true,
+				reasons: map[string]string{
+					"docs":       "cmd/flow/internal/ui/style.go",
+					"appearance": "cmd/flow/internal/ui/style.go",
+				},
+			},
+		},
+		{
+			name:    "an engine change does not fire the appearance notice",
+			changed: []string{"pkg/flowstate/v1/engine/policy.go"},
+			want: plan{
+				goFiles:  []string{"pkg/flowstate/v1/engine/policy.go"},
+				fileDirs: []string{"pkg/flowstate/v1/engine"},
+				reasons:  map[string]string{},
 			},
 		},
 		{

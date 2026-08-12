@@ -182,6 +182,28 @@ func run() error {
 		g.skip("examples", "no changes under examples/")
 	}
 
+	// Conditional: the recorded appearance goldens. This leg never fails
+	// the gate and never claims a pass, because the test it would run
+	// skips when vhs, ttyd or ffmpeg is absent, and a leg reporting green
+	// by not running is worse than one that is honestly elsewhere. #483's
+	// edition bump moved the sample Flowfile printed by `flow tasks http`,
+	// the golden still said the old edition, and a silent local skip sent
+	// that to CI to discover. So: run it where the tooling exists, and say
+	// plainly that it is unverified where it does not.
+	if p.appearance {
+		if missing := missingAppearanceTools(); len(missing) > 0 {
+			fmt.Printf("gate: appearance: NOT VERIFIED locally (%s absent); CI's appearance job owns this. "+
+				"If this change alters printed output, expect that job to fail and re-record with `make appearance-update`.\n",
+				strings.Join(missing, ", "))
+			g.unverified++
+		} else {
+			g.leg("appearance", p.reasons["appearance"]+" changed",
+				commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-timeout", "900s", "-count=1", "-run", "TestAppearance", "./cmd/flow/internal/appearance/"))
+		}
+	} else {
+		g.skip("appearance", "no changes to styled output, help text, or the current edition")
+	}
+
 	// Plugin modules are separate Go modules this gate does not walk.
 	if len(p.plugins) > 0 {
 		g.skip("plugins", fmt.Sprintf("%s changed, but plugin modules are outside this gate; run `make test-plugins`", strings.Join(p.plugins, ", ")))
@@ -354,9 +376,24 @@ func checkNoUntracked(pathspecs []string) error {
 // gate runs legs, records failures, and keeps going so one run reports
 // everything it can rather than one failure per round trip.
 type gate struct {
-	ran      int
-	skipped  int
-	failures []string
+	ran        int
+	skipped    int
+	unverified int
+	failures   []string
+}
+
+// appearanceTools are the three binaries charmbracelet/vhs needs to record
+// a styled surface; without any one of them the appearance test skips.
+var appearanceTools = []string{"vhs", "ttyd", "ffmpeg"}
+
+func missingAppearanceTools() []string {
+	var missing []string
+	for _, tool := range appearanceTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			missing = append(missing, tool)
+		}
+	}
+	return missing
 }
 
 func (g *gate) leg(name, why string, cmds ...cmdSpec) {
@@ -439,6 +476,12 @@ func (g *gate) summary() error {
 		}
 		return fmt.Errorf("%d leg(s) failed", len(g.failures))
 	}
-	fmt.Printf("gate: PASS (%d leg(s) run, %d skipped)\n", g.ran, g.skipped)
+	// The unverified count rides on the pass line on purpose: a reader
+	// should not have to scroll back to learn the gate left something to CI.
+	unverified := ""
+	if g.unverified > 0 {
+		unverified = fmt.Sprintf(", %d NOT VERIFIED locally, see above", g.unverified)
+	}
+	fmt.Printf("gate: PASS (%d leg(s) run, %d skipped%s)\n", g.ran, g.skipped, unverified)
 	return nil
 }
