@@ -11,12 +11,20 @@
 //	                 command for Bash, tool-specific fields for MCP calls
 //
 // A PreToolUse hook refuses a call by printing a permissionDecision of
-// "deny" (Deny); allows one while surfacing why by printing a
-// permissionDecision of "allow" with a reason, also echoed to stderr (Warn);
-// a PostToolUse hook informs without blocking by printing additionalContext
-// (Advise). All exit 0; exit codes are left out of the contract on purpose,
-// because exit 2 blocks unconditionally and these guards want their reasons
-// read as structured output.
+// "deny" (Deny); surfaces a warning that leaves the normal permission flow
+// untouched by printing only systemMessage, no permissionDecision at all,
+// also echoed to stderr (Warn); a PostToolUse hook informs without blocking
+// by printing additionalContext (Advise). All exit 0; exit codes are left
+// out of the contract on purpose, because exit 2 blocks unconditionally and
+// these guards want their reasons read as structured output.
+//
+// permissionDecision has three values, and only one of them is neutral:
+// "allow" bypasses the normal permission prompt entirely, "deny" blocks
+// unconditionally, and "ask" (or omitting the field) preserves the prompt
+// exactly as if the hook had made no decision. Warn's job is to say a check
+// did not run without granting anything the hook's absence would not also
+// grant, so it must never emit "allow" — that would make a blind guard a
+// permission escalation precisely when it has nothing to vouch for.
 //
 // Parsing is deliberately lenient, and lenient means silent: these guards
 // are advisory, so an input the parser does not recognize allows rather
@@ -112,22 +120,25 @@ func Advise(context string) {
 	})
 }
 
-// Warn prints the PreToolUse JSON that allows the tool call while carrying
-// reason as the visible permission-decision explanation, and also writes
-// reason to stderr so it is visible even where the decision reason is not
-// rendered. It exists for a guard whose check could not run at all (a
-// dependency down, an API unreachable) and that must fail open rather than
-// block on a check it never performed — see mergeguard (#498), whose
-// posture is fail open, loudly: never claim a check passed when it did not
-// run, and say plainly what was skipped.
+// Warn prints the PreToolUse JSON that surfaces reason as a visible
+// systemMessage without touching the permission decision — the tool call
+// proceeds through whatever the normal permission flow would have done had
+// this hook not run at all — and also writes reason to stderr so it is
+// visible even where systemMessage is not rendered. It exists for a guard
+// whose check could not run at all (a dependency down, an API unreachable)
+// and that must fail open rather than block on a check it never performed —
+// see mergeguard (#498), whose posture is fail open, loudly: never claim a
+// check passed when it did not run, say plainly what was skipped, and never
+// grant more than the hook's own absence would have granted. An earlier
+// version of this function emitted permissionDecision: "allow", which does
+// not mean neutral fail-open under the hook contract — it bypasses the
+// permission prompt outright, turning a blind check into a merge that
+// executes immediately when it would otherwise have asked. Do not
+// reintroduce a permissionDecision here.
 func Warn(reason string) {
 	fmt.Fprintln(os.Stderr, reason)
 	writeJSON(map[string]any{
-		"hookSpecificOutput": map[string]any{
-			"hookEventName":            "PreToolUse",
-			"permissionDecision":       "allow",
-			"permissionDecisionReason": reason,
-		},
+		"systemMessage": reason,
 	})
 }
 

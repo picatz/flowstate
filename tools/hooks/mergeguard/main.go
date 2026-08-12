@@ -49,6 +49,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,10 +84,12 @@ func main() {
 		return // not a merge call, or a merge call this hook could not identify
 	}
 
-	tok, ok := githubToken()
+	tokCtx, tokCancel := context.WithTimeout(context.Background(), tokenLookupTimeout)
+	tok, ok := githubToken(tokCtx)
+	tokCancel()
 	if !ok {
 		warn(fmt.Sprintf(
-			"mergeguard: no GH_TOKEN or GITHUB_TOKEN in the environment, so the review-thread check on %s/%s#%d did not run. MERGING WITHOUT THE CHECK.",
+			"mergeguard: no GH_TOKEN or GITHUB_TOKEN in the environment, and `gh auth token` returned none either, so the review-thread check on %s/%s#%d did not run. MERGING WITHOUT THE CHECK.",
 			owner, repo, number))
 		return
 	}
@@ -115,15 +118,45 @@ func warn(reason string) {
 	hook.Warn(reason)
 }
 
-// githubToken reads the token gh itself would use, GH_TOKEN taking
-// precedence over GITHUB_TOKEN to match gh's own precedence.
-func githubToken() (string, bool) {
+// tokenLookupTimeout bounds the `gh auth token` subprocess. It is a
+// separate, shorter budget from requestTimeout: a hung or missing gh binary
+// must not eat into the time available for the actual GraphQL call.
+const tokenLookupTimeout = 5 * time.Second
+
+// ghBinary is the executable githubTokenFromGH runs, overridable in tests so
+// the fallback exercises a real subprocess without depending on a real gh
+// installation or real stored credentials.
+var ghBinary = "gh"
+
+// githubToken reads the token gh itself would use, in gh's own documented
+// precedence: GH_TOKEN or GITHUB_TOKEN from the environment first, and only
+// when neither is set, the credential `gh auth login` stored, via
+// `gh auth token`. Stopping at "no environment variable" treats an operator
+// authenticated only through `gh auth login` as unauthenticated and skips
+// the check while the `gh pr merge` that follows succeeds anyway.
+func githubToken(ctx context.Context) (string, bool) {
 	for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
 		if v := os.Getenv(key); v != "" {
 			return v, true
 		}
 	}
-	return "", false
+	return githubTokenFromGH(ctx)
+}
+
+// githubTokenFromGH shells out to `gh auth token` for the credential gh has
+// stored, bounded by ctx. Any failure (gh not installed, not logged in,
+// timeout) returns ok=false; the caller's fail-open path handles it the
+// same as a missing environment variable.
+func githubTokenFromGH(ctx context.Context) (string, bool) {
+	out, err := exec.CommandContext(ctx, ghBinary, "auth", "token").Output()
+	if err != nil {
+		return "", false
+	}
+	tok := strings.TrimSpace(string(out))
+	if tok == "" {
+		return "", false
+	}
+	return tok, true
 }
 
 // mergeTarget identifies the owner, repo and PR number a tool call would
@@ -190,6 +223,22 @@ var prURL = regexp.MustCompile(`^https://github\.com/([^/\s]+)/([^/\s]+)/pull/(\
 
 // repoFlagValue matches an explicit -R/--repo owner/repo flag value.
 var repoFlagValue = regexp.MustCompile(`^([^/\s]+)/([^/\s]+)$`)
+
+// ghMergeValueFlags are `gh pr merge` flags (per `gh pr merge --help`) that
+// take a separate argument that is not the PR target: --author-email,
+// --body, --body-file, --match-head-commit and -t/--subject. -R/--repo also
+// takes a value but is handled separately, since its value identifies the
+// repo rather than being skipped. Without consuming these, a value that
+// happens to precede the target (`gh pr merge --match-head-commit "$sha"
+// 498 -R owner/repo`) is mistaken for the target itself.
+var ghMergeValueFlags = map[string]bool{
+	"--author-email":      true,
+	"--body":              true,
+	"--body-file":         true,
+	"--match-head-commit": true,
+	"--subject":           true,
+	"-t":                  true,
+}
 
 // isGHPRMergeInvocation reports whether cmd actually invokes `gh pr merge`,
 // as opposed to merely mentioning the words — a commit message or a grep
@@ -259,16 +308,27 @@ func ghCLIMergeTarget(cmd string) (owner, repo string, number int, ok bool) {
 	var flagOwner, flagRepo, target string
 	fields := strings.Fields(unquote(rest))
 	skipNext := false
+	skipIsRepo := false
 	for _, f := range fields {
 		if skipNext {
-			if sub := repoFlagValue.FindStringSubmatch(f); sub != nil {
-				flagOwner, flagRepo = sub[1], sub[2]
+			if skipIsRepo {
+				if sub := repoFlagValue.FindStringSubmatch(f); sub != nil {
+					flagOwner, flagRepo = sub[1], sub[2]
+				}
 			}
 			skipNext = false
+			skipIsRepo = false
 			continue
 		}
 		switch {
 		case f == "-R" || f == "--repo":
+			skipNext = true
+			skipIsRepo = true
+		case ghMergeValueFlags[f]:
+			// A value-taking flag whose argument is not the PR target:
+			// --author-email, --body, --body-file, --match-head-commit,
+			// -t/--subject. Consume its value so it is never mistaken for
+			// the positional target.
 			skipNext = true
 		case strings.HasPrefix(f, "--repo="):
 			if sub := repoFlagValue.FindStringSubmatch(strings.TrimPrefix(f, "--repo=")); sub != nil {
@@ -309,10 +369,14 @@ type thread struct {
 	Body string
 }
 
-const reviewThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!) {
+const reviewThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           isResolved
           comments(first: 1) {
@@ -327,21 +391,45 @@ const reviewThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!
   }
 }`
 
+// reviewThreadsPageSize is the page size requested per call; 100 is
+// GraphQL's own maximum for a `first` argument on this connection.
+const reviewThreadsPageSize = 100
+
+// maxReviewThreadRequests and maxReviewThreadsScanned bound the walk over a
+// PR's review threads the same way CLAUDE.md's List bounds a paged listing:
+// by requests made *and* by items read, because the peer (GitHub) controls
+// how many threads come back per page. Five pages of 100 is enough for any
+// PR with a functioning review process; one that has more open threads than
+// that has bigger problems than this hook, but the walk must say so rather
+// than quietly read as clean.
+const (
+	maxReviewThreadRequests = 5
+	maxReviewThreadsScanned = maxReviewThreadRequests * reviewThreadsPageSize
+)
+
+// reviewThreadsPage is one page of review threads, and exactly the shape
+// the GraphQL query's reviewThreads field returns.
+type reviewThreadsPage struct {
+	PageInfo struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []struct {
+		IsResolved bool `json:"isResolved"`
+		Comments   struct {
+			Nodes []struct {
+				URL  string `json:"url"`
+				Body string `json:"body"`
+			} `json:"nodes"`
+		} `json:"comments"`
+	} `json:"nodes"`
+}
+
 type graphQLResponse struct {
 	Data struct {
 		Repository struct {
 			PullRequest struct {
-				ReviewThreads struct {
-					Nodes []struct {
-						IsResolved bool `json:"isResolved"`
-						Comments   struct {
-							Nodes []struct {
-								URL  string `json:"url"`
-								Body string `json:"body"`
-							} `json:"nodes"`
-						} `json:"comments"`
-					} `json:"nodes"`
-				} `json:"reviewThreads"`
+				ReviewThreads reviewThreadsPage `json:"reviewThreads"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	} `json:"data"`
@@ -351,26 +439,77 @@ type graphQLResponse struct {
 }
 
 // unresolvedThreads queries endpoint for owner/repo#number's review threads
-// and returns the ones that are not resolved. It is bounded to the first
-// 100 threads and the first comment of each: this guard exists to name what
-// to clear, not to be a complete review-thread browser, and a PR carrying
-// more than 100 open threads has bigger problems than this hook.
+// and returns the ones that are not resolved, walking every page rather
+// than trusting the first one: a PR with its first 100 threads resolved and
+// an unresolved thread on page two must not read as clean just because page
+// one did. The walk is bounded by both requests made and threads scanned;
+// if it hits either bound while GitHub still reports more pages, it returns
+// an error rather than concluding "all resolved" from a partial view, and
+// the caller's fail-open path treats that exactly like any other API
+// failure — a check that could not finish is not a check that passed.
 func unresolvedThreads(ctx context.Context, client *http.Client, endpoint, token, owner, repo string, number int) ([]thread, error) {
+	var (
+		threads []thread
+		cursor  string
+		scanned int
+	)
+	for requests := 0; ; requests++ {
+		if requests >= maxReviewThreadRequests {
+			return nil, fmt.Errorf("exceeded %d requests walking review threads (%d seen so far) with more pages remaining; treating the check as incomplete rather than resolved", maxReviewThreadRequests, scanned)
+		}
+
+		page, err := fetchReviewThreadsPage(ctx, client, endpoint, token, owner, repo, number, cursor)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, n := range page.Nodes {
+			scanned++
+			if scanned > maxReviewThreadsScanned {
+				return nil, fmt.Errorf("exceeded %d review threads scanned with more pages remaining; treating the check as incomplete rather than resolved", maxReviewThreadsScanned)
+			}
+			if n.IsResolved {
+				continue
+			}
+			t := thread{}
+			if len(n.Comments.Nodes) > 0 {
+				t.URL = n.Comments.Nodes[0].URL
+				t.Body = n.Comments.Nodes[0].Body
+			}
+			threads = append(threads, t)
+		}
+
+		if !page.PageInfo.HasNextPage {
+			return threads, nil
+		}
+		cursor = page.PageInfo.EndCursor
+	}
+}
+
+// fetchReviewThreadsPage performs one bounded GraphQL request for a single
+// page of review threads, starting after cursor ("" for the first page).
+func fetchReviewThreadsPage(ctx context.Context, client *http.Client, endpoint, token, owner, repo string, number int, cursor string) (reviewThreadsPage, error) {
+	var zero reviewThreadsPage
+
+	variables := map[string]any{
+		"owner":  owner,
+		"repo":   repo,
+		"number": number,
+	}
+	if cursor != "" {
+		variables["cursor"] = cursor
+	}
 	body, err := json.Marshal(map[string]any{
-		"query": reviewThreadsQuery,
-		"variables": map[string]any{
-			"owner":  owner,
-			"repo":   repo,
-			"number": number,
-		},
+		"query":     reviewThreadsQuery,
+		"variables": variables,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("encode request: %w", err)
+		return zero, fmt.Errorf("encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return zero, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -378,39 +517,27 @@ func unresolvedThreads(ctx context.Context, client *http.Client, endpoint, token
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request: %w", err)
+		return zero, fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return zero, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, truncate(string(respBody), 300))
+		return zero, fmt.Errorf("status %d: %s", resp.StatusCode, truncate(string(respBody), 300))
 	}
 
 	var gr graphQLResponse
 	if err := json.Unmarshal(respBody, &gr); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return zero, fmt.Errorf("decode response: %w", err)
 	}
 	if len(gr.Errors) > 0 {
-		return nil, fmt.Errorf("graphql error: %s", gr.Errors[0].Message)
+		return zero, fmt.Errorf("graphql error: %s", gr.Errors[0].Message)
 	}
 
-	var threads []thread
-	for _, n := range gr.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		if n.IsResolved {
-			continue
-		}
-		t := thread{}
-		if len(n.Comments.Nodes) > 0 {
-			t.URL = n.Comments.Nodes[0].URL
-			t.Body = n.Comments.Nodes[0].Body
-		}
-		threads = append(threads, t)
-	}
-	return threads, nil
+	return gr.Data.Repository.PullRequest.ReviewThreads, nil
 }
 
 func truncate(s string, n int) string {
