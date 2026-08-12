@@ -35,7 +35,7 @@ evaluates itself, in its own scope, after it has run far enough to have one: it
 is how `http`'s `outputs` may name `status_code`.
 
 A step that uses it:
-  edition: v2026.2
+  edition: v2026.3
   name: example
   steps:
     - id: http
