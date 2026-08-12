@@ -1,6 +1,8 @@
 package tests
 
 import (
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -19,6 +21,12 @@ import (
 // constants that produce them — for the reason ValueCases spells
 // `steps.over.value` out: the constant keeps the drivers agreeing, and only a
 // literal can pin what the constant has to be.
+// uintLiteral builds the Uint64Value literal [v1.NewLiteral] has no spelling
+// for: a magnitude no int64 holds, which CEL writes as a `u` literal.
+func uintLiteral(v uint64) *expr.Value {
+	return &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: v}}
+}
+
 func SwitchCases() []Case {
 	return []Case{
 		{
@@ -207,6 +215,62 @@ func SwitchCases() []Case {
 			}),
 		},
 		{
+			// The other edge of the same pin: numeric equality is CEL's, not
+			// float64's. 9007199254740992 and 9007199254740993 (2^53 and
+			// 2^53+1) are distinct int64 values a float64 cannot tell apart, so
+			// a matcher that compared through float64 sent both to the first
+			// case. Integer matching is exact at every magnitude, so the
+			// discriminant takes its own case and the record says which.
+			Name: "integer cases above double precision dispatch exactly",
+			Workflow: &v1.Workflow{
+				Name:    "switch-bigint",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{{
+					Id: "route",
+					Kind: &v1.Node_Switch{Switch: &v1.Switch{
+						Value: v1.NewExpr("9007199254740993"),
+						Cases: []*v1.Switch_Case{
+							{Values: []*v1.Value{v1.NewLiteral(int64(9007199254740992))}, Steps: []*v1.Node{says("low", "2^53")}},
+							{Values: []*v1.Value{v1.NewLiteral(int64(9007199254740993))}, Steps: []*v1.Node{says("high", "2^53+1")}},
+						},
+					}},
+				}}, pins("show", "steps.route.case == 9007199254740993")...),
+			},
+			ExpectedOutputs: withStep(held("high", "show"), "route", map[string]*v1.Value{
+				v1.SwitchValueOutput: v1.NewLiteral(int64(9007199254740993)),
+				v1.SwitchCaseOutput:  v1.NewLiteral(int64(9007199254740993)),
+			}),
+		},
+		{
+			// And across signedness: a uint discriminant above int64's range
+			// equals no int64 — not even the int64 maximum a float64 rounds to
+			// the same value — while the uint case it genuinely is takes it.
+			// CEL's int/uint equality compares by value with the range checked,
+			// and the switch answers the same. The case literal is built as a
+			// bare Uint64Value because [v1.NewLiteral] deliberately refuses a
+			// uint64 no int64 can hold — this magnitude only reaches a switch
+			// through CEL's own `u` literals.
+			Name: "a uint discriminant above int64 range skips the int case that floats to it",
+			Workflow: &v1.Workflow{
+				Name:    "switch-uint-range",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{{
+					Id: "route",
+					Kind: &v1.Node_Switch{Switch: &v1.Switch{
+						Value: v1.NewExpr("9223372036854775808u"),
+						Cases: []*v1.Switch_Case{
+							{Values: []*v1.Value{v1.NewLiteral(int64(9223372036854775807))}, Steps: []*v1.Node{says("int_max", "int64 max")}},
+							{Values: []*v1.Value{v1.NewLiteral(uintLiteral(9223372036854775808))}, Steps: []*v1.Node{says("uint_case", "2^63")}},
+						},
+					}},
+				}}, pins("show", "steps.route.case == 9223372036854775808u")...),
+			},
+			ExpectedOutputs: withStep(held("uint_case", "show"), "route", map[string]*v1.Value{
+				v1.SwitchValueOutput: v1.NewLiteral(uintLiteral(9223372036854775808)),
+				v1.SwitchCaseOutput:  v1.NewLiteral(uintLiteral(9223372036854775808)),
+			}),
+		},
+		{
 			// Composition: a switch inside a for_each body, dispatching on the
 			// loop's own binding — the scoping stress test from the design. Each
 			// iteration takes a different case, the per-iteration records travel
@@ -240,6 +304,49 @@ func SwitchCases() []Case {
 			ExpectedOutputsPredicate: func(out *v1.Workflow_StepOutputs) bool {
 				// The pin above is the load-bearing assertion; here it is enough
 				// that the observing arm ran and its negation did not.
+				_, held := out.GetStepValues()["show"]
+				_, failed := out.GetStepValues()["show_else"]
+				return held && !failed
+			},
+		},
+		{
+			// The merge inside a nested scope: a later sibling *in the loop
+			// body* reads a case-body step's output, exactly as a top-level
+			// step after a switch may. Execution runs the chosen body in the
+			// iteration's own scope, so the reference resolves; the validator
+			// agrees (its nested walk merges the same set the top-level walk
+			// does), and this case holds both drivers to the resolving half.
+			Name: "a sibling after a nested switch resolves a case-body output",
+			Workflow: &v1.Workflow{
+				Name:    "switch-nested-merge",
+				Profile: v1.CurrentProfile,
+				Steps: append([]*v1.Node{{
+					Id: "process",
+					Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+						Items:    v1.NewLiteralList("bucket"),
+						Iterator: "resource",
+						Body: []*v1.Node{
+							{
+								Id: "dispatch",
+								Kind: &v1.Node_Switch{Switch: &v1.Switch{
+									Value: v1.NewExpr("resource"),
+									Cases: []*v1.Switch_Case{
+										{Values: []*v1.Value{v1.NewLiteral("bucket")}, Steps: []*v1.Node{{
+											Id:   "mark",
+											Kind: &v1.Node_Value{Value: v1.NewExpr(`resource + "!"`)},
+										}}},
+									},
+								}},
+							},
+							{
+								Id:   "readback",
+								Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.mark.value + "?"`)},
+							},
+						},
+					}},
+				}}, pins("show", `steps.process.results[0].readback.value == "bucket!?"`)...),
+			},
+			ExpectedOutputsPredicate: func(out *v1.Workflow_StepOutputs) bool {
 				_, held := out.GetStepValues()["show"]
 				_, failed := out.GetStepValues()["show_else"]
 				return held && !failed

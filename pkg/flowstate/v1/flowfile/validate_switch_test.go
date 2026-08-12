@@ -292,6 +292,109 @@ steps:
 	assert.Empty(t, ds, "a case-body step must be referenceable after the switch: %v", ds)
 }
 
+// The duplicate check compares integers exactly. 9007199254740992 and
+// 9007199254740993 (2^53 and 2^53+1) are distinct int64 values a float64
+// cannot tell apart, so a matcher comparing through float64 flagged the second
+// as a duplicate of the first — and dispatched both to the first body. Neither
+// is a duplicate; a genuine duplicate at the same magnitude still is.
+func TestSwitchIntegerCasesAboveDoublePrecisionAreNotDuplicates(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, `edition: v2026.2
+name: t
+steps:
+  - id: route
+    switch:
+      value: ${9007199254740993}
+      cases:
+        - case: 9007199254740992
+          steps: []
+        - case: 9007199254740993
+          steps: []
+`)
+	assert.Empty(t, ds, "distinct int64 cases one float64 apart from nothing must both be legal: %v", ds)
+
+	ds = validateSwitchSrc(t, `edition: v2026.2
+name: t
+steps:
+  - id: route
+    switch:
+      value: ${9007199254740993}
+      cases:
+        - case: 9007199254740993
+          steps: []
+        - case: 9007199254740993
+          steps: []
+`)
+	require.NotEmpty(t, ds, "an exact integer duplicate must still be refused")
+	assert.Contains(t, diagnosticMessages(ds), "case 9007199254740993 is already handled")
+}
+
+// The nested half of the merge decision TestSwitchBodyOutputsAreReferenceableAfterTheBlock
+// pins at the top level: inside a for_each body, a later sibling may reference
+// a case-body step too. The nested walk used to record only the switch's own
+// id, so the same reference execution resolves was legal after a top-level
+// switch and refused after a nested one.
+func TestSwitchNestedInForEachMergesCaseBodySteps(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, `edition: v2026.2
+name: t
+steps:
+  - id: process
+    for_each:
+      items: ${['bucket']}
+      as: resource
+      steps:
+        - id: dispatch
+          switch:
+            value: ${resource}
+            cases:
+              - case: bucket
+                steps:
+                  - id: mark
+                    value: ${resource + "!"}
+        - id: readback
+          value: ${steps.mark.value + "?"}
+`)
+	assert.Empty(t, ds, "a case-body step must be referenceable by a later sibling in the loop body: %v", ds)
+}
+
+// A case-body step may not reuse the switch's own id: the switch records its
+// `value` and `case` outputs under that id, so a body step wearing it would
+// validate clean and then have its outputs silently replaced — the id is taken
+// before any body runs, even though enclosing.steps does not hold it yet.
+func TestSwitchBodyStepReusingTheSwitchIDIsRefused(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, `edition: v2026.2
+name: t
+inputs:
+  env:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.env}
+      cases:
+        - case: prod
+          steps:
+            - id: route
+              log:
+                message: prod
+`)
+	require.NotEmpty(t, ds, "a body step reusing the switch's own id must be refused")
+	text := diagnosticMessages(ds)
+	assert.Contains(t, text, "id is already used outside case 1")
+	for _, d := range ds {
+		if strings.Contains(d.Message, "already used outside") {
+			assert.Equal(t, "route", d.Step)
+			assert.Positive(t, d.Line, "the collision diagnostic must carry a position")
+		}
+	}
+}
+
 // A switch that is only a default dispatches on nothing and is refused; an
 // empty `cases:` list is the same mistake spelled at the parser.
 func TestSwitchWithOnlyADefaultIsRefused(t *testing.T) {

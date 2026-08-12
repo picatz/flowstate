@@ -240,8 +240,15 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	// step at validate time). Each body is validated against the enclosing scope
 	// only: a body cannot see a sibling body's steps, since at most one of them
 	// exists in any run.
-	seenIDs := make(map[string]bool, len(enclosing.steps))
+	seenIDs := make(map[string]bool, len(enclosing.steps)+1)
 	maps.Copy(seenIDs, enclosing.steps)
+	// The switch's own id, which enclosing.steps does not hold yet — the walk
+	// records a step only after validating it. Without this seed a body step
+	// reusing the switch's id validates clean and then has its outputs silently
+	// replaced when the switch records `value` and `case` under that id.
+	if id != "" {
+		seenIDs[id] = true
+	}
 
 	checkBody := func(body []*v1.Node, where string) {
 		for _, node := range body {

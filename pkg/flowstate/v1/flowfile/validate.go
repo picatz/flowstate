@@ -434,10 +434,8 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			case *v1.Node_Parallel:
 				ds = append(ds, validateParallel(id, kind.Parallel, inner, i, wf, depth)...)
 				// Branch outputs are merged into the enclosing scope once the
-				// block completes, so a later step may reference them by id.
-				for _, branchID := range branchStepIDs(kind.Parallel) {
-					scope.steps[branchID] = true
-				}
+				// block completes, so a later step may reference them by id —
+				// recordStepInScope below adds them.
 
 			case *v1.Node_Wait:
 				ds = append(ds, validateWait(id, kind.Wait, inner, i, wf)...)
@@ -455,9 +453,6 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 				// reference a case-body step by id — and simply not resolve at
 				// run time when a different case took the value, the same honest
 				// outcome referencing an `if:`-skipped step already has.
-				for _, bodyID := range switchStepIDs(kind.Switch) {
-					scope.steps[bodyID] = true
-				}
 
 			default:
 				ds = append(ds, Diagnostic{
@@ -465,7 +460,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 					Message: "step must have one of " + stepKindList(),
 				})
 			}
-			scope.steps[id] = true
+			recordStepInScope(scope, node)
 			continue
 		}
 
@@ -730,6 +725,23 @@ func mergedStepIDs(nodes []*v1.Node) []string {
 		}
 	}
 	return ids
+}
+
+// recordStepInScope marks a finished step in the scope the steps after it are
+// checked against: its own id, plus — for a parallel block or a switch — the
+// nested ids whose outputs execution merges out, which is exactly
+// [mergedStepIDs] of this one node.
+//
+// One helper for both walks, because they briefly disagreed: the top-level walk
+// merged a switch's case-body ids and [validateNested] recorded only the
+// switch's own id, so the same later-sibling reference to a case-body step was
+// legal at the top level and refused inside a `for_each` body — a scope rule
+// with two spellings is two rules. Whatever a step contributes to the names
+// after it is decided here, once.
+func recordStepInScope(scope refScope, node *v1.Node) {
+	for _, id := range mergedStepIDs([]*v1.Node{node}) {
+		scope.steps[id] = true
+	}
 }
 
 // A refScope is what the expressions in one step may name.
@@ -1221,7 +1233,10 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 					Message: "step must have one of " + stepKindList(),
 				})
 			}
-			scope.steps[id] = true
+			// The same merge the top-level walk performs: a parallel block's
+			// branch steps and a switch's case-body steps are referenceable by
+			// the siblings after it, at any nesting.
+			recordStepInScope(scope, node)
 			continue
 		}
 

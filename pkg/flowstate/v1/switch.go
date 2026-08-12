@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -151,10 +153,13 @@ func evalSwitchValue(ctx context.Context, value *Value, scope *Scope) (*expr.Val
 // would say and a switch must not disagree with the construct it replaces.
 // Strings, booleans, bytes and null compare as themselves; values of
 // incomparable kinds do not match, they simply take no case.
+//
+// The duplicate-case validator reads this too, so "these two literals are one
+// case" and "this value takes that case" cannot drift apart.
 func SwitchLiteralsEqual(a, b *expr.Value) bool {
-	if an, aok := numericLiteral(a); aok {
-		bn, bok := numericLiteral(b)
-		return bok && an == bn
+	if an, aok := numericRefValue(a); aok {
+		bn, bok := numericRefValue(b)
+		return bok && an.Equal(bn) == types.True
 	}
 
 	switch ak := a.GetKind().(type) {
@@ -178,21 +183,27 @@ func SwitchLiteralsEqual(a, b *expr.Value) bool {
 	}
 }
 
-// numericLiteral reports a literal's numeric value when it holds one.
+// numericRefValue reports a literal's cel-go runtime value when it holds a
+// number, so numeric matching is cel-go's own [ref.Val] Equal rather than a
+// spelling of it here.
 //
-// float64 as the common type is how CEL's cross-type numeric equality already
-// behaves for the magnitudes a dispatch literal plausibly is; an integer too
-// large to represent exactly compares approximately, which is written down here
-// rather than hidden.
-func numericLiteral(v *expr.Value) (float64, bool) {
+// This used to convert both sides to float64, which conflates every pair of
+// integers a float64 cannot tell apart: 9007199254740992 and 9007199254740993
+// compared equal, though `x == 9007199254740993` in the `if:` a switch replaces
+// distinguishes them. cel-go compares same-typed integers exactly, int against
+// uint by value with sign and range checks, and an integer against a double by
+// CEL's numeric equality (common/types/compare.go) — delegating means a switch
+// answers precisely what the expression language answers, including at the
+// margins nobody thought to write down.
+func numericRefValue(v *expr.Value) (ref.Val, bool) {
 	switch kind := v.GetKind().(type) {
 	case *expr.Value_Int64Value:
-		return float64(kind.Int64Value), true
+		return types.Int(kind.Int64Value), true
 	case *expr.Value_Uint64Value:
-		return float64(kind.Uint64Value), true
+		return types.Uint(kind.Uint64Value), true
 	case *expr.Value_DoubleValue:
-		return kind.DoubleValue, true
+		return types.Double(kind.DoubleValue), true
 	default:
-		return 0, false
+		return nil, false
 	}
 }
