@@ -12,10 +12,59 @@ invariant to the deeper tier. The split is by consequence of a subtle
 mistake, not by diff size: a one-line rewriter change is deep work, a
 300-line generated-docs refresh is not.
 
+## Effort and token discipline
+
+Slice G of #482 (owner direction, 2026-08-12). Routing is a factory
+control, not a preference. Match the tier to the hardest decision in the
+slice, never to the file count: a 500-line mechanical sweep is Sonnet
+work, a 40-line change to compensation ordering is not.
+
+| Tier | Work |
+|---|---|
+| Fable | Design passes, architecture decisions, semantics that must be right the first time, adjudicating a P1. |
+| Opus | Implementation from a settled spec, review-fix rounds, conflict resolution. The default builder. |
+| Sonnet | Mechanical and bounded: keyword reservations, workflow and YAML authoring, doc sweeps, corpus sweeps, fixture additions, dedup and lint fixes, regeneration chores. |
+
+Seven waste sources measured in wave 1, each with the rule it produced:
+
+1. **Model inheritance.** Subagents inherit the orchestrator's model when
+   a dispatch omits `model`. Wave 1 ran nine agents at the top tier for
+   roughly 1.9M tokens, several of them doing mechanical work. Rule:
+   every dispatch sets `model` explicitly; an unset model is a silent
+   top-tier spend.
+2. **Gate polling.** Agents waiting on a full `make check` spent six
+   figures of tokens on monitor and status loops. Rule: run the
+   diff-scoped gate, push, and let PR CI be the full gate; never poll a
+   long-running gate in a loop.
+3. **Duplicate gates.** One agent had two full `make check` runs alive at
+   once. Rule: one gate run per branch state; check before starting
+   another.
+4. **Saturation.** An agent near its context limit loops on its own final
+   summary instead of taking follow-ups, and recovery costs a fresh agent
+   anyway. Rule: one slice per agent; route post-completion fixes to a
+   fresh cheaper agent with the branch as the handoff, and confirm the
+   original has stopped before the replacement writes.
+5. **Context ballast.** Completed task-board entries are re-injected into
+   the orchestrator's context every few turns. Rule: prune the board when
+   work merges; the durable record is git and GitHub.
+6. **Unbounded reports.** Rule: dispatch briefs state a report budget,
+   for example "report in under 200 words: what landed, gate result,
+   deviations."
+7. **Re-derivation.** Rule: the brief carries the settled decisions, file
+   paths, and constraints the agent would otherwise rediscover. A brief
+   that costs 500 tokens to write saves tens of thousands.
+
+Pace against the weekly window: heavy design work early in the cycle,
+mechanical and review-fix work late. When the top-tier budget is spent,
+design pauses and building continues, not the reverse.
+
 ## Dispatch-prompt checklist
 
 Every dispatch prompt carries:
 
+- **An explicit `model`.** Never dispatch on inheritance.
+- **A report budget**, stated in words and in content.
+- **The gate tier expected**: diff-scoped, not full `make check`.
 - **Claims verified against main at write time.** A load-bearing assertion
   about the tree ("X is reserved", "Y already lands this") is checked
   against origin/main before it enters the prompt. Wave-1 friction item 6:
