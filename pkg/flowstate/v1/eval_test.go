@@ -483,6 +483,27 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowWebhookTrigger covers a declared `triggers:` webhook in the
+// local driver.
+//
+// The engine package runs the identical [tests.WebhookTriggerCases] against the
+// durable driver, and the pairing is the whole point of the set: what a trigger
+// declaration does to a run is *nothing*, on both drivers, and a rehearsal that
+// disagreed with production about that would be a rehearsal of a different file.
+func TestRunWorkflowWebhookTrigger(t *testing.T) {
+	for _, test := range tests.WebhookTriggerCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowSwitch covers `switch:` in the local driver.
 //
 // The engine package runs the identical [tests.SwitchCases] against the durable

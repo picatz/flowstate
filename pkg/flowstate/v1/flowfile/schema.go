@@ -692,10 +692,33 @@ var bindsNow = map[string]bool{
 	waitForSignalKey: true,
 }
 
+// triggersKey opens the block where `event` is bound, which the rewriter reads for
+// the same reason it reads [bindsNow]: a file may legitimately contain a step
+// called `event`, and rooting the name inside a trigger would turn a working
+// mapping into `steps.event` — a file that still passes `flow validate` and
+// computes something else, which is the corruption class CLAUDE.md's rewriter
+// section records.
+//
+// The whole subtree rather than the two keys that hold expressions (`with:` and
+// `idempotency_key:`), for the reason [waitForSignalKey] takes the whole of a
+// wait: nothing else under `triggers:` is an expression a step reference could
+// legally appear in — a webhook's name and its `verify:` schemes are read when the
+// file compiles — so taking the subtree suppresses nothing that could be rooted.
+// The extent is the one the engine uses: [v1.BindWebhookTriggerInputs] binds
+// `event` for every expression a trigger carries, and for nothing else in the
+// language.
+const triggersKey = "triggers"
+
 const (
 
 	// nowBinding is the clock, bound bare and only inside a wait.
 	nowBinding = "now"
+
+	// eventBinding is the delivery, bound bare and only inside a trigger. Not
+	// reserved as a step id, unlike `now`: inside a trigger there is no step scope
+	// for a step of this name to be shadowed *by*, so nothing an author writes can
+	// become ambiguous.
+	eventBinding = v1.EventRoot
 
 	// loopUntilKey and loopUpdateKey are the two loop expressions that see the
 	// carried state (evaluated after the body each iteration); loopInitKey does not,

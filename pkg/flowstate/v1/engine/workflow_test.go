@@ -893,6 +893,44 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowWebhookTrigger covers a declared `triggers:` webhook against
+// the durable driver, pairing the local run of the identical
+// [tests.WebhookTriggerCases].
+//
+// The route differs in the way that makes the pairing worth having: here the
+// declaration crosses the wire inside [v1.RunState.Workflow], is written to
+// history, and is carried through every Continue-As-New — so a driver that read
+// it, or a compaction that dropped it into a run that then behaved differently,
+// would show up here and nowhere else.
+func TestRunWorkflowWebhookTrigger(t *testing.T) {
+	for _, test := range tests.WebhookTriggerCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				require.Error(t, env.GetWorkflowError(), "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowSwitch covers `switch:` against the durable driver, pairing
 // TestRunWorkflowValue's local run of the identical [tests.SwitchCases].
 //

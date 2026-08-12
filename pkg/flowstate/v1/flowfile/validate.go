@@ -1550,6 +1550,23 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		// `flow fix` — after which they resolve as rooted references and get the
 		// right message from unresolvedStep. Keeping the two branches here would
 		// have been code that cannot run, which is the kind that rots unnoticed.
+		if ref == v1.EventRoot {
+			// Reported as what it is rather than as an unknown step, for the reason
+			// `now` is below: `event` does exist, and an author has read about it or
+			// copied a trigger's `with:`, so "unknown step" sends them looking for a
+			// step they never wrote. What they need is where the name is bound and
+			// what to do instead — which is the design's own rule, not an
+			// implementation limit: everything a workflow operates on arrives
+			// through `with:` into `inputs:`, so a step reading the payload directly
+			// would be a second input path `flow validate` could not check.
+			ds = append(ds, Diagnostic{
+				Step: stepID, Field: inputName,
+				Message: "`" + v1.EventRoot + "` is the delivery a trigger was started by, bound inside a " +
+					"webhook's `with:` and `idempotency_key:` and nowhere else; bind what this step needs " +
+					"under that `with:` and read it here as `" + v1.InputsRoot + ".<name>`",
+			})
+			continue
+		}
 		if ref == v1.NowIdentifier {
 			// Reported as what it is rather than as an unknown step. `now` does
 			// exist — an author has read about it, or copied a `wait_until:` — so

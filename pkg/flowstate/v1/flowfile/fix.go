@@ -1871,6 +1871,13 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// the wait resolves, and nowhere else.
 				steps = without(steps, waitShapingNames)
 			}
+			if named && name == triggersKey {
+				// `event` is bound throughout a trigger and nowhere else in the
+				// language. Subtracted for this subtree alone, the way `now` is below,
+				// because outside `triggers:` it is an ordinary name and a step may
+				// legitimately be called it. See [triggersKey].
+				steps = without(steps, map[string]bool{eventBinding: true})
+			}
 			if named && bindsNow[name] {
 				// `now` is bound inside a wait and nowhere else. Subtracted for
 				// this value alone rather than for the step, because outside a wait

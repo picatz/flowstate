@@ -1,0 +1,20 @@
+{
+  "headers": {
+    "Stripe-Signature": "t=1755043200,v1=6f0b6c2c2f2f4c1f9b0d2a3c4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "id": "evt_3PqLd2X1",
+    "type": "charge.captured",
+    "data": {
+      "object": {
+        "id": "ch_3PqLd2X1",
+        "amount": 4200,
+        "currency": "usd",
+        "metadata": {
+          "order_id": "ord_H1x9"
+        }
+      }
+    }
+  }
+}

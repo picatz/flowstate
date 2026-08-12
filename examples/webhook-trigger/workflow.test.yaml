@@ -1,0 +1,57 @@
+# Replaying a stored delivery is what turns a trigger's argument mapping into a
+# unit test rather than the one part of a workflow debuggable only in production.
+#
+# No network and nothing to run: `trigger:` points at a delivery on disk, and the
+# `with:` expressions are evaluated by the same function a live receiver will call,
+# against the same CEL cost limit, and bound through the same `BindRunInputs` a
+# submit uses. So a mapping that reaches a field the payload does not carry fails
+# here, in seconds, instead of at three in the morning.
+#
+# The verification *outcome* is declared rather than computed, and the second case
+# is where that matters: there is no signature arithmetic in Flowstate yet, so
+# `signature: invalid` says "this delivery did not verify" and the case asserts what
+# Flowstate does about it. Which is the half that is a property of the file — an
+# unverifiable delivery is refused, never allowed on the grounds that it could not
+# be checked.
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a stripe delivery starts a run with the mapped inputs
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./testdata/stripe-charge.json
+    expect:
+      # What the delivery mapped to, in both directions: an input this does not
+      # name is reported too, so adding an input and forgetting this call site
+      # fails here rather than passing quietly around the new one.
+      inputs:
+        order_id: ord_H1x9
+        amount: 4200
+
+      # The key the delivery is deduped by. Worth asserting rather than trusting:
+      # an expression reaching the wrong header is wrong in the direction nothing
+      # else notices — every delivery gets its own key, or every delivery gets the
+      # same one, and both look like working software until a retry happens.
+      idempotency_key: t=1755043200,v1=6f0b6c2c2f2f4c1f9b0d2a3c4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071
+
+      # The run those inputs produced, asserted like any other case's.
+      ran: [record]
+      outputs:
+        order: ord_H1x9
+        amount: 4200
+
+  - name: an unverifiable delivery is refused, and no run happens
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./testdata/stripe-charge.json
+      signature: invalid
+    expect:
+      # Not `failed: true`: a refused delivery does not produce a failed run, it
+      # produces no run. That is the point of deciding verification before
+      # anything the delivery chose is evaluated.
+      refused: true
