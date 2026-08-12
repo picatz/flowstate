@@ -126,15 +126,17 @@ func run() error {
 	}
 
 	// Conditional: the buf trio plus the descriptorset pin, when the schema
-	// (or buf's own config) changed. The diff check is scoped to the
-	// generated artifacts so unrelated uncommitted work does not fail it.
+	// (or buf's own config) changed. The verification is scoped to the
+	// generated artifacts so unrelated uncommitted work does not fail it,
+	// and covers both drift in tracked artifacts and artifacts the
+	// generator newly created (a .pb.go for a proto file this diff adds).
 	if p.proto {
 		g.leg("proto", p.reasons["proto"]+" changed",
 			buf("lint"),
 			buf("breaking", "--against", ".git#branch=origin/main"),
 			buf("generate"),
 			buf("build", "--exclude-imports", "-o", "pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb"),
-			diffClean("generated code disagrees with the schema; stage and commit the regenerated files",
+			generatedClean("generated code disagrees with the schema; stage and commit the regenerated files",
 				"*.pb.go", "pkg/flowstate/v1/protodoc/"),
 		)
 	} else {
@@ -143,17 +145,29 @@ func run() error {
 
 	// Conditional: the derived-docs surfaces. Editing docs/DSL.md requires
 	// `go generate ./cmd/flow/internal/reference` (the mirror test enforces
-	// it), and the registry/cobra/MCP surfaces feed docs/reference/; the leg
-	// regenerates both and pins the result.
-	if p.docs {
-		g.leg("docs", p.reasons["docs"]+" changed",
+	// it), and the registry, cobra, MCP and schema surfaces feed
+	// docs/reference/; the leg regenerates both and pins the result.
+	//
+	// Two triggers. buildPlan's path rules are the readable, unit-tested
+	// approximation; needsDocs is the authoritative one, because `flow docs
+	// generate` runs the cmd/flow binary and so its real source set is that
+	// binary's dependency closure. Either firing runs the leg.
+	docsWhy := ""
+	switch {
+	case p.docs:
+		docsWhy = p.reasons["docs"] + " changed"
+	case needsDocs(affected):
+		docsWhy = "cmd/flow is affected, so the binary that generates docs/reference/ may emit different output"
+	}
+	if docsWhy != "" {
+		g.leg("docs", docsWhy,
 			command("go", "generate", "./cmd/flow/internal/reference"),
 			command("go", "run", "./cmd/flow", "docs", "generate"),
-			diffClean("derived docs disagree with their sources; stage and commit the regenerated files",
+			generatedClean("derived docs disagree with their sources; stage and commit the regenerated files",
 				"docs/reference/", "cmd/flow/internal/reference/"),
 		)
 	} else {
-		g.skip("docs", "no changes to docs/DSL.md or the registry/cobra/MCP surfaces")
+		g.skip("docs", "no changes to docs/DSL.md, the schema, or the registry/cobra/MCP surfaces, and cmd/flow is unaffected")
 	}
 
 	// Conditional: the example corpus. Same three checks CI's test job runs
@@ -252,12 +266,15 @@ func repoRelDir(dir string) (string, bool) {
 	return strings.ReplaceAll(strings.TrimPrefix(dir, prefix), string(os.PathSeparator), "/"), true
 }
 
-// cmdSpec is one command a leg runs: argv plus any environment additions.
-// checkDiff marks the git-diff-clean pin so its failure carries an
-// explanation instead of a bare exit status.
+// cmdSpec is one step a leg runs: either an external command (argv, plus
+// any environment additions) or an in-process check (verify), never both.
+// failMsg carries an explanation so a failure says what it means rather
+// than reporting a bare exit status.
 type cmdSpec struct {
 	argv    []string
 	env     []string
+	verify  func() error
+	label   string
 	failMsg string
 }
 
@@ -273,10 +290,65 @@ func buf(args ...string) cmdSpec {
 	return command("go", append([]string{"run", "github.com/bufbuild/buf/cmd/buf@" + bufVersion}, args...)...)
 }
 
-func diffClean(failMsg string, pathspecs ...string) cmdSpec {
-	c := command("git", append([]string{"diff", "--exit-code", "--"}, pathspecs...)...)
-	c.failMsg = failMsg
-	return c
+// generatedClean is the pin that follows every generate step: after
+// regenerating, the named pathspecs must hold nothing the commit does not
+// already have.
+//
+// Two conditions, not one. `git diff --exit-code` sees a *tracked* artifact
+// the generator rewrote, and is blind to one the generator newly *created*:
+// a mirror for a newly added example, a `.pb.go` for a new proto file, a new
+// page under docs/reference/ all arrive untracked, and a diff-only pin
+// reports success while the artifact is missing from the commit. That is the
+// worst failure a gate has — passing when it should fail — so the untracked
+// half is checked explicitly with `git ls-files --others --exclude-standard`
+// over the same pathspecs, and its failure names the files.
+func generatedClean(failMsg string, pathspecs ...string) cmdSpec {
+	return cmdSpec{
+		label:   "verify " + strings.Join(pathspecs, " "),
+		failMsg: failMsg,
+		verify: func() error {
+			if err := checkTrackedClean(pathspecs); err != nil {
+				return err
+			}
+			return checkNoUntracked(pathspecs)
+		},
+	}
+}
+
+// Both halves take the *index* as their reference point, which is what
+// makes them agree on one question: "is the regenerated output exactly what
+// you have already recorded?" A tracked file that differs from the index
+// answers no; a file the index has never heard of answers no as well. That
+// is also the workflow-friendly reading — an author who edits the schema,
+// runs the gate, and then stages and commits what it regenerated passes on
+// the second run, where comparing against HEAD would fail them for the
+// entirely normal state of having staged but not yet committed.
+
+// checkTrackedClean fails when a tracked file under pathspecs differs from
+// the index, which is `git diff --exit-code` with the names kept.
+func checkTrackedClean(pathspecs []string) error {
+	out, err := gitOutput(append([]string{"diff", "--name-only", "--"}, pathspecs...)...)
+	if err != nil {
+		return err
+	}
+	if files := strings.Fields(out); len(files) > 0 {
+		return fmt.Errorf("regenerating rewrote files you have not staged: %s", strings.Join(files, " "))
+	}
+	return nil
+}
+
+// checkNoUntracked fails when regenerating produced a file the index has
+// never seen. Ignored files are excluded (--exclude-standard), so build
+// output a .gitignore already covers is not mistaken for a missing artifact.
+func checkNoUntracked(pathspecs []string) error {
+	out, err := gitOutput(append([]string{"ls-files", "--others", "--exclude-standard", "--"}, pathspecs...)...)
+	if err != nil {
+		return err
+	}
+	if files := strings.Fields(out); len(files) > 0 {
+		return fmt.Errorf("regenerating created files that are not in the commit: %s (run `git add` on them)", strings.Join(files, " "))
+	}
+	return nil
 }
 
 // gate runs legs, records failures, and keeps going so one run reports
@@ -291,23 +363,33 @@ func (g *gate) leg(name, why string, cmds ...cmdSpec) {
 	fmt.Printf("gate: %s: running (%s)\n", name, why)
 	g.ran++
 	for _, c := range cmds {
-		display := strings.Join(c.argv, " ")
-		if len(c.env) > 0 {
-			display = strings.Join(c.env, " ") + " " + display
+		display := c.label
+		if display == "" {
+			display = strings.Join(c.argv, " ")
+			if len(c.env) > 0 {
+				display = strings.Join(c.env, " ") + " " + display
+			}
 		}
 		fmt.Printf("gate: %s: $ %s\n", name, display)
-		cmd := exec.Command(c.argv[0], c.argv[1:]...)
-		cmd.Env = append(os.Environ(), c.env...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
+
+		var err error
+		if c.verify != nil {
+			err = c.verify()
+		} else {
+			cmd := exec.Command(c.argv[0], c.argv[1:]...)
+			cmd.Env = append(os.Environ(), c.env...)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			err = cmd.Run()
+		}
+		if err != nil {
 			msg := fmt.Sprintf("%s: `%s` failed: %v", name, display, err)
 			if c.failMsg != "" {
 				msg += " (" + c.failMsg + ")"
 			}
 			g.failures = append(g.failures, msg)
-			// Later commands in the same leg depend on earlier ones
-			// (generate before diff), so stop this leg here.
+			// Later steps in the same leg depend on earlier ones
+			// (generate before verify), so stop this leg here.
 			return
 		}
 	}

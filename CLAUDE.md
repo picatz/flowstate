@@ -93,11 +93,24 @@ them to packages, expands to every package whose build or tests can see a
 changed one, then runs the build, gofmt on the changed files, and vet plus
 bounded `-race` tests for the affected set. Conditional legs fire only when
 their inputs changed: the buf trio and the descriptorset pin on `proto/`, the
-docs mirror and reference drift checks on `docs/DSL.md` and the registry,
-cobra and MCP surfaces, example fix and coverage checks on `examples/`, and
-the `-cpu=1` ordering line when the flowtest package is affected. Every leg
-prints one line saying it ran or why it was skipped, so a skip is a decision
-you can read rather than a gap.
+docs mirror and reference drift checks on `docs/DSL.md` and on anything that
+reaches the binary generating them, example fix and coverage checks on
+`examples/`, and the `-cpu=1` ordering line when the flowtest package is
+affected. Every leg prints one line saying it ran or why it was skipped, so a
+skip is a decision you can read rather than a gap.
+
+Two things that gate leg earns its keep by getting right, both of them ways a
+gate can pass when it should fail. A generate-then-verify leg checks for
+*untracked* output as well as drift, because `git diff` answers a question
+about tracked files only: a generator that creates a new artifact leaves it
+untracked, and a diff-only pin reports success while the artifact is missing
+from the commit. And the schema is a documentation source, not only a code
+one: `flow docs generate` reads a task's field names, types and
+required-ness from the protovalidate rules on the schema, and builds the MCP
+tool list by walking the service descriptor, so a proto-only edit fires the
+docs leg too. More generally the docs leg fires whenever `cmd/flow` is in the
+affected set, because that command *is* the generator and its real source set
+is its own dependency closure.
 
 This inverts the old default of this section, which told everyone to run the
 full list locally before every push because a CI round trip bought nothing.

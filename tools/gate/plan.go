@@ -15,6 +15,10 @@ const modulePath = "github.com/picatz/flowstate"
 // CLAUDE.md on `-cpu=1`): when it is affected, the gate runs the ordering leg.
 const flowtestPkg = modulePath + "/pkg/flowstate/v1/flowtest"
 
+// cmdFlowPkg is the CLI whose binary generates docs/reference/: when it is
+// affected, its output can have moved. See needsDocs.
+const cmdFlowPkg = modulePath + "/cmd/flow"
+
 // plan is what the changed-file list alone decides: which conditional legs
 // fire, which files gofmt checks, and which directories feed the
 // file-to-package resolution. It is pure so the mapping is testable without
@@ -99,6 +103,21 @@ func buildPlan(changed []string) plan {
 		if strings.HasPrefix(f, "proto/") || f == "buf.gen.yaml" || f == "buf.work.yaml" {
 			p.proto = true
 			reason("proto", f)
+
+			// And the schema is a *docs* source too, which is not
+			// obvious and is why this is spelled out rather than
+			// left to the switch below. `flow docs generate`
+			// derives a task's field names, types, required-ness
+			// and bounds from the protovalidate rules on the
+			// schema-backed descriptors, and derives the MCP tool
+			// list by walking the service descriptor. So a
+			// proto-only edit that adds a field, tightens a
+			// constraint or adds an RPC moves docs/reference/
+			// without touching a single .go file. Triggering only
+			// the proto leg there would let the gate pass with
+			// stale reference docs.
+			p.docs = true
+			reason("docs", f)
 		}
 
 		// The derived-docs surfaces: docs/DSL.md and the example
@@ -108,6 +127,12 @@ func buildPlan(changed []string) plan {
 		// the top-level pkg/flowstate/v1 package. Any of them changing
 		// can move docs/reference/ or the mirror, so the docs leg
 		// regenerates both and pins the result.
+		//
+		// These path rules are a fast, testable approximation. The
+		// authoritative trigger is in run(): `flow docs generate` runs
+		// the cmd/flow binary, so anything in that binary's transitive
+		// dependency closure is a docs source, and run() fires this leg
+		// whenever cmd/flow lands in the affected set.
 		switch {
 		case f == "docs/DSL.md":
 			p.docs = true
@@ -241,8 +266,27 @@ func affectedPackages(pkgs []pkgMeta, changed map[string]bool) []string {
 // needsOrdering reports whether the affected set includes the flowtest
 // package, whose ordering claims get the dedicated `-cpu=1 -count=20` leg.
 func needsOrdering(affected []string) bool {
-	for _, ip := range affected {
-		if ip == flowtestPkg {
+	return contains(affected, flowtestPkg)
+}
+
+// needsDocs reports whether the affected set reaches the cmd/flow package.
+//
+// This is the authoritative docs trigger, and it is a package question
+// rather than a path one because `flow docs generate` *runs the binary*:
+// the true source set of docs/reference/ is cmd/flow's transitive
+// dependency closure, which affectedPackages already computes. Any change
+// that reaches the binary can move its output, including ones no path rule
+// would think to name — a task registered from a subpackage, a diagnostic
+// code's text, a generated .pb.go that changed a field's required-ness.
+// buildPlan's path rules stay as the fast approximation and as what the
+// unit tests pin; this closes over everything they cannot see.
+func needsDocs(affected []string) bool {
+	return contains(affected, cmdFlowPkg)
+}
+
+func contains(paths []string, want string) bool {
+	for _, ip := range paths {
+		if ip == want {
 			return true
 		}
 	}

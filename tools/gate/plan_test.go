@@ -30,12 +30,23 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
-			name:    "proto edits fire the proto leg",
+			// A proto-only edit is also a docs edit: `flow docs
+			// generate` reads a task's field names, types and
+			// required-ness from the protovalidate rules on the
+			// schema-backed descriptors, and builds the MCP tool
+			// list by walking the service descriptor. Firing only
+			// the proto leg here would let the gate pass with
+			// stale docs/reference/.
+			name:    "a proto-only edit fires the proto leg AND the docs leg",
 			changed: []string{"proto/flowstate/v1/flowstate.proto"},
 			want: plan{
 				fileDirs: []string{"proto/flowstate/v1"},
 				proto:    true,
-				reasons:  map[string]string{"proto": "proto/flowstate/v1/flowstate.proto"},
+				docs:     true,
+				reasons: map[string]string{
+					"proto": "proto/flowstate/v1/flowstate.proto",
+					"docs":  "proto/flowstate/v1/flowstate.proto",
+				},
 			},
 		},
 		{
@@ -44,7 +55,11 @@ func TestBuildPlan(t *testing.T) {
 			want: plan{
 				fileDirs: []string{"."},
 				proto:    true,
-				reasons:  map[string]string{"proto": "buf.gen.yaml"},
+				docs:     true,
+				reasons: map[string]string{
+					"proto": "buf.gen.yaml",
+					"docs":  "buf.gen.yaml",
+				},
 			},
 		},
 		{
@@ -146,8 +161,11 @@ func TestBuildPlan(t *testing.T) {
 				docs:     true,
 				examples: true,
 				reasons: map[string]string{
-					"proto":    "proto/flowstate/v1/flowstate.proto",
-					"docs":     "docs/DSL.md",
+					"proto": "proto/flowstate/v1/flowstate.proto",
+					// The schema is a docs source too, and it
+					// is first in this diff, so it is the
+					// trigger recorded rather than DSL.md.
+					"docs":     "proto/flowstate/v1/flowstate.proto",
 					"examples": "examples/hello/workflow.yaml",
 				},
 			},
@@ -261,5 +279,39 @@ func TestNeedsOrdering(t *testing.T) {
 	}
 	if !needsOrdering([]string{modulePath + "/pkg/flowstate/v1/engine", flowtestPkg}) {
 		t.Error("ordering leg must fire when flowtest is affected")
+	}
+}
+
+// TestNeedsDocs pins the authoritative docs trigger: `flow docs generate`
+// runs the cmd/flow binary, so anything reaching that binary can move its
+// output, whether or not a path rule in buildPlan names it.
+func TestNeedsDocs(t *testing.T) {
+	t.Parallel()
+
+	if needsDocs([]string{modulePath + "/pkg/flowstate/v1/flowtest"}) {
+		t.Error("docs leg must not fire on the affected set alone when cmd/flow is unaffected")
+	}
+	if !needsDocs([]string{modulePath + "/pkg/flowstate/v1", cmdFlowPkg}) {
+		t.Error("docs leg must fire when cmd/flow is affected")
+	}
+}
+
+// TestProtoChangeReachesTheDocsBinary is the same claim one level down: a
+// change to the generated code a proto edit produces reaches cmd/flow
+// through the package graph, so even a plan that failed to fire the docs
+// leg on the path rule would still be caught by needsDocs.
+func TestProtoChangeReachesTheDocsBinary(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	pkgs := []pkgMeta{
+		{ImportPath: m + "/pkg/flowstate/v1"},
+		{ImportPath: cmdFlowPkg, Deps: []string{m + "/pkg/flowstate/v1"}},
+		{ImportPath: m + "/pkg/flowstate/v1/flowtest", Deps: []string{m + "/pkg/flowstate/v1"}},
+	}
+	// The .pb.go a proto edit rewrites lives in pkg/flowstate/v1.
+	affected := affectedPackages(pkgs, map[string]bool{m + "/pkg/flowstate/v1": true})
+	if !needsDocs(affected) {
+		t.Errorf("a schema change must reach the docs binary; affected = %v", affected)
 	}
 }
