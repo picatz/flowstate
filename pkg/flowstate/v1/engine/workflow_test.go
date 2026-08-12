@@ -903,7 +903,30 @@ func TestRunWorkflowValue(t *testing.T) {
 // it, or a compaction that dropped it into a run that then behaved differently,
 // would show up here and nowhere else.
 func TestRunWorkflowWebhookTrigger(t *testing.T) {
-	for _, test := range tests.WebhookTriggerCases() {
+	runTriggerCases(t, tests.WebhookTriggerCases())
+}
+
+// TestRunWorkflowWebhookDelivery covers a run started by a delivery against the
+// durable driver, pairing the local run of the identical
+// [tests.WebhookDeliveryCases].
+//
+// Here the mapped inputs cross the wire inside [v1.RunState.Inputs] and are
+// written to history, which is where a value that only *looked* like an integer
+// would stop looking like one.
+func TestRunWorkflowWebhookDelivery(t *testing.T) {
+	for _, test := range tests.WebhookDeliveryCases() {
+		require.NotNil(t, test.Inputs, "the delivery did not bind, so there is nothing to run")
+	}
+
+	runTriggerCases(t, tests.WebhookDeliveryCases())
+}
+
+// runTriggerCases runs one trigger corpus, so the two above cannot drift in how
+// they run what they were given.
+func runTriggerCases(t *testing.T, cases []tests.Case) {
+	t.Helper()
+
+	for _, test := range cases {
 		t.Run(test.Name, func(t *testing.T) {
 			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
 			require.NoError(t, err, "the submission was refused")

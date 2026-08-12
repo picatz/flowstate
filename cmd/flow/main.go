@@ -720,10 +720,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
+	flowServer := server.New(c, serverOpts...)
+
+	// The webhook receiver, if this deployment serves any. Built before the
+	// server starts listening, because every decision it can make in advance is
+	// made when it is built: a Flowfile that will not compile, a scheme this
+	// build cannot verify, a signing key this deployment cannot resolve. A
+	// receiver that exists is one whose whole configuration was satisfiable, and
+	// a deployment that cannot satisfy it does not start — which is the same
+	// fail-closed rule --task-queue-prefix follows a hundred lines above.
+	receiver, err := webhookReceiver(cmd, flowServer, logger)
+	if err != nil {
+		return err
+	}
+
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(
 		flowstatev1connect.NewWorkflowServiceHandler(
-			server.New(c, serverOpts...),
+			flowServer,
 			connect.WithInterceptors(
 				interceptor,
 				otelInterceptor,
@@ -743,7 +757,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// --address flag, so the variable it shared could only ever hold the
 		// environment's value anyway. Read directly, which is what it meant.
 		Addr:    cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
-		Handler: serverHandler(logger, verifier, broker, rpcMux),
+		Handler: serverHandler(logger, verifier, broker, rpcMux, receiver),
 
 		// Without these a client that opens a connection and sends bytes
 		// slowly, or never, occupies a connection indefinitely. Go's zero
@@ -1483,6 +1497,8 @@ flow server --verbose`,
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
+	addSecretFlags(serverCmd)
+	addWebhookFlags(serverCmd)
 
 	// And the local rehearsal, which for a long time was the one execution verb
 	// without them: a Flowfile using a plugin task could be validated, run
