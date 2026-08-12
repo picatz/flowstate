@@ -80,6 +80,24 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_DST_SCHEDULES",
+			value:   "24",
+			purpose: "How many seeded schedules the deterministic simulation tier explores per case (`pkg/flowstate/v1/dst`). Read by that test harness rather than by any command; the weekly deep tier raises it. Capped, because a schedule is a whole workflow run and the cost is linear.",
+			read:    "pkg/flowstate/v1/dst/dst.go",
+		},
+		{
+			name:    "FLOWSTATE_DST_SEED",
+			value:   "unset",
+			purpose: "Replay exactly one schedule in the deterministic simulation tier, replacing the search. The number a diverging run prints, which is the whole of what reproduces its interleaving.",
+			read:    "pkg/flowstate/v1/dst/dst.go",
+		},
+		{
+			name:    "FLOWSTATE_DST_SEED0",
+			value:   "1",
+			purpose: "The first seed of the deterministic simulation tier's search, which walks upward from it. Moving it explores a different part of the schedule space; fixed by default so a defect is not intermittent.",
+			read:    "pkg/flowstate/v1/dst/dst.go",
+		},
+		{
 			name:    "FLOWSTATE_EGRESS_POLICY",
 			value:   "unset",
 			purpose: "Default for `--egress-policy`: a YAML policy governing the `http` task. When set it replaces the built-in policy entirely rather than merging with it.",
