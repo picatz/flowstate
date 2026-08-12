@@ -130,6 +130,14 @@ var futureStepKeys = []string{
 	// `value:` sat here beside it and is now grammar; the move is what the
 	// reservation was for.
 	"assert",
+
+	// Structured concurrency's opt-in marker (issue #418): a step property that
+	// lets execution depart from written order, with every reference a join and
+	// every scope end joining what it started. A step key in a design that named
+	// it as one — the owner greenlit reserving it while the rest is built —
+	// held so no plugin takes the word in the meantime, the same promise
+	// `value:` and `assert:` kept.
+	"async",
 }
 
 // reservedStepKeys is every word a task name may not take.

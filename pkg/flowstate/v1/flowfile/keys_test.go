@@ -238,16 +238,26 @@ func TestAFutureKeyIsNotAlsoGrammar(t *testing.T) {
 func TestAFutureKeyIsReportedAsUnbuiltRatherThanUnknown(t *testing.T) {
 	t.Parallel()
 
-	_, err := Unmarshal([]byte("edition: v2026.2\nname: t\nsteps:\n  - id: a\n    needs:\n      x: 1\n    log:\n      message: hi\n"))
-	require.Error(t, err, "`needs:` is not a step key in this build and was accepted")
+	// Every held word, not one exemplar: `async` (issue #418) joined `needs`
+	// here, and a word reserved in stepkeys.go but never written into a file by
+	// a test is a reservation nothing would notice losing.
+	for _, word := range []string{"needs", "async"} {
+		t.Run(word, func(t *testing.T) {
+			t.Parallel()
 
-	message := err.Error()
-	assert.Contains(t, message, "reserved for a later version of the grammar",
-		"a reserved word is reported without saying it is reserved")
-	assert.NotContains(t, message, "unknown key",
-		"a reserved word is reported as unknown, which reads as a misspelling")
-	assert.NotContains(t, message, "did you mean",
-		"a reserved word is offered a spelling correction it does not need")
+			src := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    " + word + ":\n      x: 1\n    log:\n      message: hi\n"
+			_, err := Unmarshal([]byte(src))
+			require.Error(t, err, "`%s:` is not a step key in this build and was accepted", word)
+
+			message := err.Error()
+			assert.Contains(t, message, "reserved for a later version of the grammar",
+				"a reserved word is reported without saying it is reserved")
+			assert.NotContains(t, message, "unknown key",
+				"a reserved word is reported as unknown, which reads as a misspelling")
+			assert.NotContains(t, message, "did you mean",
+				"a reserved word is offered a spelling correction it does not need")
+		})
+	}
 }
 
 // TestAMisspelledKeyStillGetsItsSuggestion is the other direction, and the reason

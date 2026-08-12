@@ -1,3 +1,7 @@
+// Command flow is the Flowstate CLI: it validates, fixes, tests, and runs
+// Flowfiles locally, and serves as the control plane, worker, and operator
+// tooling for durable execution against Temporal. Run `flow --help` for the
+// command tree; docs/reference/ is generated from it.
 package main
 
 import (
