@@ -134,7 +134,7 @@ jobs:
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
           already_open() {
-            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qF "$1"
+            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
           }
           crashers=$(git ls-files --others --exclude-standard | grep '/testdata/fuzz/' || true)
           for entry in $crashers; do
@@ -261,7 +261,7 @@ jobs:
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
           already_open() {
-            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qF "$1"
+            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
           }
           file_failure() {
             title=$1; outcome=$2; log=$3; cmd=$4
@@ -361,7 +361,7 @@ jobs:
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
           already_open() {
-            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qF "$1"
+            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
           }
           file_failure() {
             title=$1; outcome=$2; log=$3; cmd=$4
@@ -443,7 +443,7 @@ jobs:
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
           title="deep-tier: govulncheck reports reachable vulnerabilities"
-          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qF "$title"; then
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
             echo "an open issue already covers the govulncheck findings; not filing another"
             exit 0
           fi
