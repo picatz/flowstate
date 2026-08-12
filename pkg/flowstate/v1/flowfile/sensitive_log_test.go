@@ -233,6 +233,60 @@ steps:
 	assert.Positive(t, found[0].Line, "the diagnostic must carry a source position")
 }
 
+// TestSensitiveLogInCompensationExactLineWithCollidingPrimaryInput is the
+// adversarial case discussion #509 asks for: the step's primary task carries
+// an input literally named `undo`, so [Positions.Locate]'s candidate search
+// finds `steps[0].log.undo` — that unrelated input's span — before it ever
+// tries `steps[0].undo`, the compensation's own key. A plugin task's input
+// names come from its own descriptor and registration reserves none of them,
+// so this is not a hypothetical: any task, plugin or built-in, can carry an
+// input spelled `undo`, and the compiler records its span at exactly the path
+// the candidate search checks first.
+//
+// The fix routes this diagnostic's position through [Positions.LocateKind]
+// instead, which addresses `steps[0].undo` exactly and has no candidate
+// search to collide. This test pins the diagnostic's line to the
+// compensation's `undo:` key (line 12 below) rather than to the primary
+// task's colliding `undo` input (line 11) — an assertion only positive-line
+// checks like TestSensitiveLogInCompensation's cannot make, and the one that
+// distinguishes "positioned" from "positioned correctly".
+func TestSensitiveLogInCompensationExactLineWithCollidingPrimaryInput(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: compensated
+inputs:
+  token:
+    type: string
+    sensitive: true
+steps:
+  - id: grant
+    log:
+      message: granting access
+      undo: placeholder
+    undo:
+      log:
+        message: ${inputs.token}
+`
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	var found []flowfile.Diagnostic
+	for _, d := range ds {
+		if d.Code == v1.DiagnosticCodeSensitiveInLog {
+			found = append(found, d)
+		}
+	}
+
+	require.Len(t, found, 1, "a sensitive log in a compensation must be caught even when the "+
+		"primary task has a same-named input")
+	assert.Equal(t, "grant", found[0].Step)
+	assert.Equal(t, "undo", found[0].Field)
+	assert.Equal(t, 12, found[0].Line,
+		"the diagnostic must land on the compensation's undo: key (line 12), not on the "+
+			"primary task's colliding undo input (line 11)")
+}
+
 // TestOrdinaryCompensationLogIsQuiet is the negative direction: the new
 // traversal must not make every compensation that logs anything a diagnostic.
 func TestOrdinaryCompensationLogIsQuiet(t *testing.T) {

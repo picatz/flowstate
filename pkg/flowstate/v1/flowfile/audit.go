@@ -405,6 +405,23 @@ func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
 		// than against the expression under it, an `undo:` input being the one
 		// this corpus has, so the key's line is the answer there and the header
 		// adjustment below does not apply to it.
+		//
+		// `undo` is addressed exactly, the same way [validateParsed] routes a
+		// `Kind` through [Positions.LocateKind]: `<step>.undo` is a key of the
+		// step itself, and the step's own primary task may separately declare an
+		// input literally named `undo` — a plugin task's input names come from
+		// its own descriptor, so `undo` is not a reserved word there. The
+		// candidate search [Positions.Locate] does tries every registered task's
+		// `.undo` input before the step's own `<step>.undo`, so on a step whose
+		// task has such an input, Locate would resolve to that unrelated input
+		// instead of the compensation. LocateKind has no candidate search to go
+		// wrong.
+		if field == "undo" {
+			if span, ok := c.pos.LocateKind(step, "undo"); ok {
+				return span.Start.Line
+			}
+			return 0
+		}
 		if span, ok := c.pos.Locate(step, field); ok {
 			return span.Start.Line
 		}

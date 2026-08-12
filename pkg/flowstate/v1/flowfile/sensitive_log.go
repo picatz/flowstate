@@ -102,8 +102,19 @@ func sensitiveLogInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostic
 		// the reason validateUndoInputs documents — a field naming the inner
 		// input would be looked up against the step's own task — so the inner
 		// field moves into the sentence instead.
+		//
+		// Kind is set alongside Field so [validateParsed] routes the position
+		// through [Positions.LocateKind] rather than [Positions.Locate]: the
+		// step's own primary task may declare an input literally named `undo`
+		// (a plugin task's input names come from its own descriptor, so `undo`
+		// is not reserved), and Locate's candidate search tries every
+		// registered task's `.undo` input before the step's own `<step>.undo`.
+		// On such a step, Field alone would underline that unrelated primary-
+		// task input instead of the compensation. LocateKind addresses
+		// `<step>.undo` exactly, with no candidate search to go wrong.
 		if d, ok := sensitiveLogInTask(node.GetId(), node.GetUndo().GetTask(), sensitive); ok {
 			d.Field = "undo"
+			d.Kind = "undo"
 			d.Message = "in this step's compensation: " + d.Message
 			ds = append(ds, d)
 		}
