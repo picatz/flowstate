@@ -231,6 +231,15 @@ func stepTasks(spec *v1.Workflow) (taskOfStep map[string]string, kindOfStep map[
 			case *v1.Node_Loop:
 				kindOfStep[node.GetId()] = "loop"
 				walk(kind.Loop.GetBody())
+			case *v1.Node_Switch:
+				// Like a value:, there is nothing to stub on the switch itself —
+				// the discriminant is the expression — but its body steps are
+				// stubbable like any others, whichever branch a test drives the
+				// run down.
+				kindOfStep[node.GetId()] = "switch"
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					walk(body)
+				}
 			}
 		}
 	}

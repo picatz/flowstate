@@ -144,6 +144,20 @@ func TestDSLKeysMatchTheDSL(t *testing.T) {
 				Kind: &v1.Node_Value{Value: v1.NewExpr("1 + 1")},
 			},
 			{
+				// A `switch:`, so this fixture reaches its keys — `value`, `cases`,
+				// `case`, its own `steps`, and `default`. The discriminant reads a
+				// workflow var, an open domain, so no domain diagnostic fires.
+				Id: "route",
+				Kind: &v1.Node_Switch{Switch: &v1.Switch{
+					Value: v1.NewExpr("vars.region"),
+					Cases: []*v1.Switch_Case{{
+						Values: []*v1.Value{v1.NewLiteral("eu-west-1")},
+						Steps:  []*v1.Node{{Id: "on_eu", Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}},
+					}},
+					Default: &v1.Switch_Default{},
+				}},
+			},
+			{
 				Id: "branches",
 				Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
 					Branches: []*v1.Parallel_Branch{
@@ -1347,6 +1361,17 @@ steps:
     call: ./callee.yaml
     with:
       tenant: acme
+  - id: route
+    switch:
+      value: ${vars.region}
+      cases:
+        - case: eu-west-1
+          steps:
+            - id: on_eu
+              log:
+                message: hi
+      default:
+        steps: []
 `
 	c := newClient(t)
 	c.initialize()
@@ -1369,6 +1394,7 @@ steps:
 				// from the line that opens the block.
 				minIndent := map[string]int{
 					"steps": 4, "retry": 6, "for_each": 6, "wait_for_signal": 6,
+					"switch": 6, "cases": 10, "default": 8,
 				}[level]
 				// The document's own keys sit under no key at all, so there is
 				// nothing to search past for them — and asking to start after a

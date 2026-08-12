@@ -354,6 +354,21 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 			}
 		}
 
+	case *Node_Switch:
+		// The discriminant is the switch's one expression, and it can name an
+		// outer step's output — the approval gate's `${steps.approval.outcome}`
+		// is the motivating spelling — so a run suspended before the switch
+		// needs that output to survive compaction. Case literals hold no
+		// references by construction; every body recurses, because which one
+		// runs is decided at execution and compaction has to keep them all
+		// honest.
+		CollectValueRefs(kind.Switch.GetValue(), prev, refs)
+		for _, body := range SwitchBodies(kind.Switch) {
+			for _, inner := range body {
+				CollectNodeRefs(inner, prev, refs)
+			}
+		}
+
 	case *Node_Wait:
 		// A `wait_until` expression can name a step's output — "wait until the
 		// deadline the previous step computed" — and a run that suspended

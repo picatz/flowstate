@@ -257,6 +257,12 @@ func countBounded(nodes []*v1.Node, budget *int) bool {
 					return false
 				}
 			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				if !countBounded(body, budget) {
+					return false
+				}
+			}
 		case *v1.Node_Call:
 			if !countBounded(kind.Call.GetWorkflow().GetSteps(), budget) {
 				return false

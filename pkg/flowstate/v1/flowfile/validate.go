@@ -448,6 +448,17 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, i, wf)...)
 
+			case *v1.Node_Switch:
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, i, wf, depth, placement)...)
+				// Exactly one body runs and its outputs merge into the enclosing
+				// scope, the way a parallel branch's do, so a later step may
+				// reference a case-body step by id — and simply not resolve at
+				// run time when a different case took the value, the same honest
+				// outcome referencing an `if:`-skipped step already has.
+				for _, bodyID := range switchStepIDs(kind.Switch) {
+					scope.steps[bodyID] = true
+				}
+
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -713,6 +724,9 @@ func mergedStepIDs(nodes []*v1.Node) []string {
 		ids = append(ids, node.GetId())
 		if p, ok := node.GetKind().(*v1.Node_Parallel); ok {
 			ids = append(ids, branchStepIDs(p.Parallel)...)
+		}
+		if s, ok := node.GetKind().(*v1.Node_Switch); ok {
+			ids = append(ids, switchStepIDs(s.Switch)...)
 		}
 	}
 	return ids
@@ -1030,6 +1044,14 @@ func bodyHasNestedLoop(nodes []*v1.Node) bool {
 					return true
 				}
 			}
+		case *v1.Node_Switch:
+			// A switch body shares its enclosing suspend scope — a `loop:` in a
+			// case body inside a loop body is the same unexercised nesting.
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				if bodyHasNestedLoop(body) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -1191,6 +1213,8 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 				ds = append(ds, validateCallAtDepth(id, kind.Call, inner, index, wf, depth+1, placement)...)
 			case *v1.Node_Value:
 				ds = append(ds, validateValue(id, kind.Value, inner, index, wf)...)
+			case *v1.Node_Switch:
+				ds = append(ds, validateSwitch(id, kind.Switch, inner, index, wf, depth, placement)...)
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
@@ -2171,6 +2195,12 @@ func declaredAnywhere(id string, wf *v1.Workflow) bool {
 						return true
 					}
 				}
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					if walk(body) {
+						return true
+					}
+				}
 			}
 		}
 		return false
@@ -2499,6 +2529,12 @@ func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 			case *v1.Node_Parallel:
 				for _, branch := range kind.Parallel.GetBranches() {
 					if found := walk(branch.GetSteps()); found != nil {
+						return found
+					}
+				}
+			case *v1.Node_Switch:
+				for _, body := range v1.SwitchBodies(kind.Switch) {
+					if found := walk(body); found != nil {
 						return found
 					}
 				}

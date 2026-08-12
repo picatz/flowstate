@@ -142,6 +142,11 @@ var dslKeys = map[string][]dslKey{
 			"It is not a task and schedules nothing, so `retry:`, `timeout:` and `undo:` are refused on it: a pure expression has nothing to attempt again, nothing to bound beyond the cost limit every expression shares, and no effect to take back. " +
 			"An `if:` composes as it does anywhere; a value that is skipped produces no outputs, and a later reference to it does not resolve.\n\n" +
 			"A `${secret(...)}` reference may not be written here, for the reason it may not go in `vars:`: the workflow evaluates this, and what the workflow evaluates is written to durable history."},
+		{name: "switch", detail: "map", docs: "Dispatch on one value: literal cases tried in written order, first match wins, no fallthrough. " + oneStepKind + "\n\n" +
+			"```yaml\n- id: route\n  switch:\n    value: ${" + v1.StepsRoot + ".approval.outcome}\n    cases:\n      - case: deployed\n        steps: [...]\n      - case: [rejected, withdrawn]\n        steps: [...]\n    default:\n      steps: [...]\n```\n\n" +
+			"Cases are literals; a computed comparison is what `if:` is for. `default:` runs when no case matches and means \"a value arrived I didn't enumerate\", never \"the value couldn't be computed\" — an unresolvable `value:` fails the step. " +
+			"The step records what it observed: `" + v1.SwitchValueOutput + "` (the evaluated discriminant) and `" + v1.SwitchCaseOutput + "` (the case literal that matched, `null` when none did), so an unmatched value with no `default:` runs nothing and says so. " +
+			"An empty body (`steps: []`) is written-down ignoring. Exactly one body runs; its step outputs merge into the enclosing scope like a parallel branch's."},
 		{name: "if", detail: "expression", docs: "A condition deciding whether the step runs, written as `${...}`. A step that is skipped produces no outputs."},
 		{name: "vars", detail: "map", docs: "Names values for this step, read *bare*: `${modified}`.\n\n" +
 			"Bare rather than rooted because these are author-chosen and lexically local (the same standing as the name a loop binds), where the workflow's `vars:` are ambient and so are rooted. " +
@@ -210,6 +215,21 @@ var dslKeys = map[string][]dslKey{
 	},
 	"parallel": {
 		{name: "steps", detail: "list", docs: "One branch's steps. Each `- steps:` entry is a branch that runs concurrently with the others."},
+	},
+	"switch": {
+		{name: "value", detail: "expression", docs: "The discriminant: evaluated exactly once, then matched against the cases in written order. " +
+			"A value that cannot be evaluated — a skipped step's output, say — fails the step rather than flowing into `default:`."},
+		{name: "cases", detail: "list", docs: "The dispatch arms. Each entry is `case:` (a literal, or a list of literals sharing one body — `case: [rejected, withdrawn]`) and `steps:`. " +
+			"First match wins, no fallthrough. Cases are literals; a computed comparison is what `if:` is for."},
+		{name: "default", detail: "map", docs: "The body that runs when no case matches: `steps:` alone. Optional — without it, an unmatched value runs nothing and the step's outputs record that none matched. " +
+			"Where the value's domain is checkable, no `default:` claims the cases are exhaustive and `flow validate` verifies the claim; `default: {steps: []}` is how deliberately handling nothing else is written down."},
+	},
+	"cases": {
+		{name: "case", detail: "literal or list", docs: "The literal (or list of literals) this body handles, matched by equality. Static values only: cases are literals; a computed comparison is what `if:` is for."},
+		{name: "steps", detail: "list", docs: "The body to run when this case matches. `steps: []` is legal: ignoring a value, written down where a reviewer can see it."},
+	},
+	"default": {
+		{name: "steps", detail: "list", docs: "The body to run when no case matches. `steps: []` is legal: deliberately handling nothing else, written down."},
 	},
 	"retry": {
 		{name: "attempts", detail: "int", docs: "Total attempts including the first, so `1` disables retrying."},
@@ -288,6 +308,12 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		return list(dslCandidates("loop", word, replace))
 	case endsWith(path, "parallel"):
 		return list(dslCandidates("parallel", word, replace))
+	case endsWith(path, "switch", "cases"):
+		return list(dslCandidates("cases", word, replace))
+	case endsWith(path, "switch", "default"):
+		return list(dslCandidates("default", word, replace))
+	case endsWith(path, "switch"):
+		return list(dslCandidates("switch", word, replace))
 	case endsWith(path, "wait_for_signal"):
 		return list(dslCandidates("wait_for_signal", word, replace))
 	case endsWith(path, "steps"):
@@ -809,6 +835,24 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 			detail: "the computed value",
 			docs: "What the step's expression evaluated to. A `value:` step produces exactly this one output, " +
 				"so this is the whole of what it contributes.",
+		}}
+
+	case s.switchEntry != nil:
+		// Like a `value:`, the output set is the grammar's own: the observed
+		// discriminant and the case that took it. Body step outputs are read
+		// under their own ids, not this one.
+		c.detail = "switch"
+		c.docs = fmt.Sprintf(
+			"A dispatch on one value. Records what it observed as %s and which case took it as %s; the taken body's step outputs merge into this scope under their own ids.",
+			rootedRef(s.id, v1.SwitchValueOutput), rootedRef(s.id, v1.SwitchCaseOutput))
+		c.outputs = []refOutput{{
+			name:   v1.SwitchValueOutput,
+			detail: "the observed value",
+			docs:   "What the switch's `value:` evaluated to, recorded whether or not any case matched.",
+		}, {
+			name:   v1.SwitchCaseOutput,
+			detail: "the matching case literal, or null",
+			docs:   "The case literal that took the value, and `null` when none did — whether the `default:` body ran or nothing did.",
 		}}
 
 	default:

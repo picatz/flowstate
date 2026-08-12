@@ -1286,6 +1286,14 @@ func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, place
 		// waiting to differ.
 		return EvalValueNode(ctx, n.Value, scope)
 
+	case *Node_Switch:
+		// Sequential, exactly-one-body work, so a wait inside the taken body
+		// reports this step as its nearest enclosing one, the way a sequential
+		// loop's does. placement passes through unchanged: the body runs once,
+		// in order, in the run's own scope, so an `undo:` there means exactly
+		// what it would mean on the same step written under an `if:`.
+		return runSwitch(pushWaitAncestor(ctx, node.GetId()), n.Switch, scope, undo, placement, depth)
+
 	case *Node_Call:
 		// The callee's own placement composes with the scope this call itself
 		// sits in — see [UndoScope.IntoCall] — rather than always being
@@ -1370,6 +1378,29 @@ func runCall(ctx context.Context, call *Call, scope *Scope, undo *UndoLog, place
 	}
 
 	return CallOutputs(ctx, callee, inner)
+}
+
+// runSwitch dispatches on one value and runs the body [SelectSwitchCase] picks.
+//
+// The selection — one evaluation of the discriminant, first literal match in
+// written order, default when none, an error when the discriminant cannot be
+// computed — is entirely [SelectSwitchCase]'s, shared with the durable driver,
+// so the two cannot disagree about which branch a value takes or what the
+// record says. What is local here is only how the chosen body runs: a plain
+// recursion into [runNodes] against the same scope, which is what merges the
+// body's step outputs into the enclosing namespace the way a parallel branch's
+// merge — exactly one body ran, so there is nothing to collide with.
+func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, placement UndoScope, depth int) (*Node_Outputs, error) {
+	body, outputs, err := SelectSwitchCase(ctx, sw, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := runNodes(ctx, body, scope, undo, placement, depth); err != nil {
+		return nil, err
+	}
+
+	return outputs, nil
 }
 
 // runForEach runs a loop body once per item.

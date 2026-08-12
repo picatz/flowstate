@@ -103,6 +103,10 @@ func sensitiveLogInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostic
 			for _, branch := range kind.Parallel.GetBranches() {
 				ds = append(ds, sensitiveLogInNodes(branch.GetSteps(), sensitive)...)
 			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				ds = append(ds, sensitiveLogInNodes(body, sensitive)...)
+			}
 		}
 	}
 

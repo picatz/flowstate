@@ -182,9 +182,30 @@ func dslKeyAt(step *parsedStep, pos lsp.Position) (dslKey, lsp.Range, bool) {
 		{"for_each", step.forEachEntry},
 		{"loop", step.loopEntry},
 		{"wait_for_signal", step.waitForSignalEntry},
+		{"switch", step.switchEntry},
 	} {
 		if block.entry != nil && block.entry.value != nil {
 			levels = append(levels, level{block.name, block.entry.value.entries})
+		}
+	}
+
+	// A switch's case entries sit one level deeper than the block loop above
+	// reaches — each element of `cases:` is a mapping of its own — and the
+	// `default:` mapping's key is documented at its own level for the same
+	// reason a case's `steps:` is: the sentence differs from the top-level one
+	// precisely where `steps: []` is load-bearing.
+	if step.switchEntry != nil && step.switchEntry.value != nil {
+		for _, se := range step.switchEntry.value.entries {
+			switch se.key {
+			case "cases":
+				if se.value != nil {
+					for _, item := range se.value.items {
+						levels = append(levels, level{"cases", item.entries})
+					}
+				}
+			case "default":
+				levels = append(levels, level{"default", nestedEntries(se)})
+			}
 		}
 	}
 
@@ -711,6 +732,35 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 		default:
 			fmt.Fprintf(&b, "\n\nStep `%s` is a `value:`, which produces exactly one output, `%s`; it does not produce `%s`.",
 				target.id, v1.ValueOutput, ref.output)
+		}
+
+		return markdownHover(b.String(), rng)
+	}
+	// A `switch:` answers for itself too, for the reason a `value:` does: it
+	// runs no task, and its output set is the grammar's own — the observed
+	// discriminant and the case that took it.
+	if target.switchEntry != nil {
+		if ref.output == "" {
+			fmt.Fprintf(&b, "**`%s`** · step %d, a dispatch on one value\n\nOutputs: `%s` (the observed value) and `%s` (the case literal that matched, `null` when none did). The taken body's step outputs merge into this scope under their own ids.",
+				rootedRef(target.id, ""), target.index+1, v1.SwitchValueOutput, v1.SwitchCaseOutput)
+
+			return markdownHover(b.String(), rng)
+		}
+
+		fmt.Fprintf(&b, "**`%s`**", rootedRef(target.id, ref.output))
+		switch ref.output {
+		case v1.SwitchValueOutput:
+			fmt.Fprintf(&b, "\n\nWhat step `%s`'s `value:` evaluated to, recorded whether or not any case matched — the observed half of the dispatch record.",
+				target.id)
+		case v1.SwitchCaseOutput:
+			fmt.Fprintf(&b, "\n\nWhich case took the value step `%s` observed: the matching case literal, or `null` when none matched — whether the `default:` body ran or nothing did. `${%s != null}` is how a later step branches on it.",
+				target.id, rootedRef(target.id, v1.SwitchCaseOutput))
+		case v1.StepErrorOutput:
+			fmt.Fprintf(&b, "\n\nWhy step `%s` failed, recorded because the step carries `continue_on_error:`.",
+				target.id)
+		default:
+			fmt.Fprintf(&b, "\n\nStep `%s` is a `switch:`, which produces `%s` and `%s`; it does not produce `%s`. A case body's own steps record their outputs under their own ids.",
+				target.id, v1.SwitchValueOutput, v1.SwitchCaseOutput, ref.output)
 		}
 
 		return markdownHover(b.String(), rng)

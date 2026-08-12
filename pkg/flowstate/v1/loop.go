@@ -352,6 +352,10 @@ func collectStepIDs(nodes []*Node, into map[string]*Node_Outputs) {
 			for _, branch := range k.Parallel.GetBranches() {
 				collectStepIDs(branch.GetSteps(), into)
 			}
+		case *Node_Switch:
+			for _, body := range SwitchBodies(k.Switch) {
+				collectStepIDs(body, into)
+			}
 		}
 	}
 }
