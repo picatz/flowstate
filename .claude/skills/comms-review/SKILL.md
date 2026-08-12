@@ -98,16 +98,23 @@ this section exists to prevent.
    down on every finding it files. A reaction costs one call and adds no
    visual noise, and `add_reply_to_pull_request_comment` accepts a
    reaction with no body, so it never creates a comment of its own. Thumbs
-   up on a real finding that got a fix, thumbs down on a false positive
-   that was declined, nothing on duplicates and stale threads where there
-   is no judgment to send.
+   up on a real finding that got a fix, thumbs down on a finding you
+   determined is wrong, nothing on duplicates and stale threads where
+   there is no judgment to send.
 7. **Write a line only when a human reading later would otherwise be
    lost.** A resolved thread is collapsed, so one line inside it costs no
    visual noise on the PR, but it still costs tokens and attention, so it
    is not automatic. Less is more for agent-to-agent traffic:
-   - A declined finding always gets a line, and is never silently
-     resolved. File it as an issue first, then point the thread at it:
-     "Not doing this: `<one clause>`. Filed as #NNN."
+   - A finding you agree is real but are not fixing here always gets a
+     line, and is never silently resolved. File it as an issue first,
+     then point the thread at it: "Real, not fixing here: `<one clause>`.
+     Filed as #NNN."
+   - A finding you determined is **wrong** is the opposite case, and the
+     distinction matters: never file an issue for a defect you have
+     established does not exist, because that is tracker noise about
+     nothing. It gets a thumbs down and a resolve, and the evidence goes
+     where evidence belongs, in the commit message or the session report.
+     A refuted P1 on #492 was handled exactly this way.
    - A non-obvious stale thread gets one line: "Stale: `<what superseded
      it>`."
    - A fix that is obvious from the diff gets a reaction and no line; the
@@ -123,10 +130,13 @@ this section exists to prevent.
    unresolved thread costs no extra API call. What it costs is triage and
    human attention, and, on the PR page, visual noise. Resolve for that
    reason, not to save a fetch.
-9. **Respect the API budget.** The GitHub REST and GraphQL limit is shared
-   across everything the account does, and polling PR state exhausted it
-   in one wave. Prefer webhook events over polling, batch reads, and back
-   off when the limit is hit rather than retrying.
+9. **Respect the API budget.** REST and GraphQL each have their own pool.
+   A pool is shared across everything the account does, so polling PR
+   state exhausted one of them in a single wave, but the two are not
+   shared with each other and go down independently. Prefer webhook
+   events over polling, batch reads, and when a pool is exhausted back
+   off from *that* pool rather than stopping altogether: see the budget
+   section below for what still works when one of them is gone.
 10. **Know what the API can and cannot do.** GitHub exposes resolve and
     unresolve for review threads through the API we use. Dismissing a
     review also exists, in both REST and GraphQL: it invalidates that
