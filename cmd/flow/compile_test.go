@@ -100,7 +100,7 @@ func TestCompileRefusesAFileWithProblems(t *testing.T) {
 // parse failure rather than as a list of checks — and it has to be refused the same
 // way, rather than falling through to an empty specification.
 func TestCompileRefusesAFileThatDoesNotParse(t *testing.T) {
-	path := writeWorkflow(t, "notyaml.yaml", "edition: v2026.2\nname: t\nsteps:\n  - id: a\n   bad indent\n")
+	path := writeWorkflow(t, "notyaml.yaml", "edition: v2026.3\nname: t\nsteps:\n  - id: a\n   bad indent\n")
 
 	out, errOut, err := compileOutput(t, path)
 	require.Error(t, err, "a file that does not parse compiled anyway")

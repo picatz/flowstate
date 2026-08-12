@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: computed-durations
 description: >-
   Sizes a grace period and an approval deadline from its inputs, so one
@@ -106,10 +106,11 @@ steps:
         # `lapsed`'s. Two copies of one predicate are one review away from
         # disagreeing, so both branches read this recorded name instead.
         #
-        # `has(payload.approved)` guards the read: a lapsed gate carries no
-        # payload, and a signal is free to arrive without the field.
+        # `.?` reads a field the payload may not carry — a lapsed gate has no
+        # payload, and a signal is free to arrive without the field — with the
+        # default sitting beside the read instead of a guard in front of it.
         outcome: >-
-          ${has(payload.approved) && payload.approved ? "signed_off" : "unsigned"}
+          ${payload.?approved.orValue(false) ? "signed_off" : "unsigned"}
         # Re-exposed because `outputs:` replaces what the wait produced: the
         # `outcome` output below still reads `timed_out` to tell a lapsed
         # deadline apart from a plain answer.

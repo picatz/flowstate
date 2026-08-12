@@ -24,7 +24,7 @@ func TestLoadAcceptsAnEditionMarker(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.test.yaml")
-	writeFile(t, path, `edition: v2026.2
+	writeFile(t, path, `edition: v2026.3
 tests:
   - name: a case
     workflow: ./workflow.yaml
@@ -34,5 +34,5 @@ tests:
 	file, err := flowtest.Load(path)
 	require.NoError(t, err, "a *.test.yaml carrying the edition flow fix stamps must still load")
 	require.Len(t, file.Tests, 1)
-	require.Equal(t, "v2026.2", file.Edition)
+	require.Equal(t, "v2026.3", file.Edition)
 }

@@ -34,7 +34,7 @@
 #
 # (needs `flow server` and `flow worker` running; see the main README's
 # Quickstart)
-edition: v2026.2
+edition: v2026.3
 name: fan-out-calls
 description: >-
   Fans a worklist out over a reusable called workflow, two at a time, and names

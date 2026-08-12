@@ -12,7 +12,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-const navigationSource = `edition: v2026.2
+const navigationSource = `edition: v2026.3
 name: navigation
 steps:
   - id: web
@@ -95,7 +95,7 @@ steps:
   - id: b
     log:
       message: ${earlier.status_code}
-edition: v2026.2
+edition: v2026.3
 `
 		params := c.open("file:///bare-nav.yaml", src)
 		require.Len(t, params.Diagnostics, 1, "premise: the compiler refuses the bare spelling")
@@ -244,7 +244,7 @@ func TestSymbolsAndDefinitionOnUnparseableDocument(t *testing.T) {
 
 // callerSource is a one-step Flowfile whose step calls target.
 func callerSource(target string) string {
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -258,7 +258,7 @@ steps:
 // a call to it is a *valid* one and nothing under test is deciding on the
 // strength of a diagnostic somewhere else.
 func calleeSource(name string) string {
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: ` + name + `
 inputs:
   tenant:

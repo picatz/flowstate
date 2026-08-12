@@ -13,7 +13,7 @@ import (
 
 // A workflow with a step (`rare`) reachable only through an `if:` no test case
 // takes, so `flow test` can report it as a branch no test reaches (#420).
-const coverageWorkflow = `edition: v2026.2
+const coverageWorkflow = `edition: v2026.3
 name: branchy
 inputs:
   mode:

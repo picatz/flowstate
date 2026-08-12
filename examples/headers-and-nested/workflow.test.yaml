@@ -9,7 +9,7 @@
 #
 # The status echo is pinned to 204 rather than 200 so the message is one the
 # default could not have produced by accident.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: both headers reach the task, and a nested var indexes twice
     workflow: ./workflow.yaml

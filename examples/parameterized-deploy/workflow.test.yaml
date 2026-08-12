@@ -11,7 +11,7 @@
 # The two that do run pin the other half: `dry_run` deciding which of two steps
 # happens at all, which is the case the file says used to need two nearly
 # identical workflows.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

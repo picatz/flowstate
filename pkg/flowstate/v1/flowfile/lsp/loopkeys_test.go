@@ -31,7 +31,7 @@ import (
 // loopKeysFile is a legal Flowfile whose loop carries state and whose `until:`
 // and `update:` read both the state and a body step — the whole after-body
 // scope, exercised from a file `flow validate` accepts.
-const loopKeysFile = `edition: v2026.2
+const loopKeysFile = `edition: v2026.3
 name: loop-keys
 steps:
   - id: paginate
@@ -186,7 +186,7 @@ func TestCompletionInLoopUntilOffersTheAfterBodyScope(t *testing.T) {
 // carried state and a body step read from `init:`, and a body step read from a
 // step after the loop. It does not validate — that is the point — but it
 // parses, which is the level hover and definition answer at.
-const loopKeysNegativeFile = `edition: v2026.2
+const loopKeysNegativeFile = `edition: v2026.3
 name: loop-keys-negative
 steps:
   - id: paginate
@@ -260,7 +260,7 @@ func TestAStepAfterTheLoopStillCannotSeeBodySteps(t *testing.T) {
 // nothing at all, unlike a `for_each`, whose missing `as:` falls back to
 // `item`. The file does not validate, deliberately; parsing is the level these
 // surfaces answer at.
-const loopNoAsFile = `edition: v2026.2
+const loopNoAsFile = `edition: v2026.3
 name: loop-no-as
 steps:
   - id: poll
@@ -314,7 +314,7 @@ func TestALoopWithoutAsBindsNoStateInUntil(t *testing.T) {
 // function — the exact collision the old comment in parse.go warned would be
 // answered confidently and wrongly if the loop's keys were walked with the
 // step's own scope. A later step calls the real `join`.
-const loopCollisionFile = `edition: v2026.2
+const loopCollisionFile = `edition: v2026.3
 name: loop-collision
 steps:
   - id: gather

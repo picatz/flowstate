@@ -15,7 +15,7 @@ import (
 //
 // It is the file from docs/DSL.md's design note, which is what makes this a test of
 // the contract rather than of whatever the parser happens to accept.
-const declaringSource = `edition: v2026.2
+const declaringSource = `edition: v2026.3
 name: deploy
 inputs:
   region:

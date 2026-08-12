@@ -3,7 +3,7 @@
 # the stub's `where:` is the assertion — a `log` invocation whose `message` is
 # anything other than the literal `hello world` matches no stub and fails the
 # case, which `ran: [hello]` on its own could never notice.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the one step logs the literal it was given
     workflow: ./workflow.yaml

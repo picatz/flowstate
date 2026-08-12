@@ -7,7 +7,7 @@
 #
 # A `json_parse` that returned the text unchanged, or a `vars:` binding that was
 # re-evaluated to something else on the second read, reaches no stub.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a body is text until json_parse indexes it, and the binding is read twice
     workflow: ./workflow.yaml

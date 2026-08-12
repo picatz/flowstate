@@ -29,7 +29,7 @@
 # The scripted `sender:` is the same kind of assertion - it stands in for an
 # approver, and the gate's `sender.local` output reads true to say so, which
 # is why `deploy`'s `if:` may never gate on attestation itself.
-edition: v2026.2
+edition: v2026.3
 defaults:
   # Every case ships the same build to the same environment and expects the
   # same approver; only two failure cases override a single field. Stated once

@@ -14,7 +14,7 @@
 # never reaching a remediation gate it has no business reaching, and even a
 # genuinely attested, correctly-claimed remediation signer still being
 # refused by a run that cannot attest itself.
-edition: v2026.2
+edition: v2026.3
 defaults:
   stubs:
     - task: log

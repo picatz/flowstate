@@ -31,7 +31,7 @@ func TestCoverageReportsTheBranchNoCaseReaches(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: branchy
 inputs:
   mode:
@@ -114,7 +114,7 @@ func TestCoverageReachesForEachAndLoopBodies(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: bodies
 inputs:
   regions:
@@ -171,7 +171,7 @@ func TestCoverageAcceptsARecordedResidualAndRefusesAStaleOne(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: recorded
 inputs:
   mode:
@@ -284,7 +284,7 @@ func TestCoverageDoesNotBleedAcrossWorkflows(t *testing.T) {
 
 	// Workflow A reaches `shared`: it runs unconditionally.
 	writeFile(t, dir+"/a.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: a
 steps:
   - id: shared
@@ -294,7 +294,7 @@ steps:
 	// Workflow B also has a `shared` step, but gated behind an `if:` no case
 	// satisfies, so B never reaches it. `anchor` gives B a step that does run.
 	writeFile(t, dir+"/b.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: b
 inputs:
   mode:
@@ -371,7 +371,7 @@ func TestCoverageAllowUnreachedRequiresAReason(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: reasonless
 steps:
   - id: only
@@ -423,7 +423,7 @@ func TestCoverageCreditsWhatRanBeforeAnExpectedFailure(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: fails-partway
 steps:
   - id: first

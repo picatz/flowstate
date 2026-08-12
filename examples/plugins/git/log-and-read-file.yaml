@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: git-log-and-read-file
 description: Audits one file in a public repository - who last changed it, what every commit that touched it said, and what it contained at that exact commit - using the "git" plugin's read tier (git.log, git.read_file). Runs with no arguments.
 

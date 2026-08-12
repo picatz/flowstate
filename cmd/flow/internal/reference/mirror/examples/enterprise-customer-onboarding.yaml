@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: enterprise-customer-onboarding
 description: >-
   Checks quota, provisions a tenant's database, billing, and access grant as
@@ -162,7 +162,7 @@ steps:
         # - a De Morgan slip in the negated copy is exactly the corruption
         # this shaping exists to stop. Every reader now compares this one
         # recorded name.
-        confirmed: ${has(payload.confirmed) && payload.confirmed}
+        confirmed: ${payload.?confirmed.orValue(false)}
         # Re-exposed because `outputs:` replaces what the wait produced:
         # `activation_deferred`'s log line still distinguishes a lapsed
         # window from an explicit non-confirmation.

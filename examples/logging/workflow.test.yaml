@@ -10,7 +10,7 @@
 #
 # The second case is the negative direction the level vocabulary needs: a fourth
 # level is refused when the file compiles, not ignored at run time.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: level defaults, fields carry composed values, and the body sees the iterator
     workflow: ./workflow.yaml

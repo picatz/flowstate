@@ -37,7 +37,7 @@ func TestFixRewritesTheRetiredTaskBlock(t *testing.T) {
 	}{
 		{
 			name: "a task becomes its own key",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -46,7 +46,7 @@ steps:
       inputs:
         message: hello
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -59,7 +59,7 @@ steps:
 			// written. A rewriter that reorders keys produces a diff about
 			// everything, and this one is about one thing.
 			name: "step properties are left alone and keep their order",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -71,7 +71,7 @@ steps:
         message: hello
     continue_on_error: true
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -87,7 +87,7 @@ steps:
 			// put. Moved rather than dropped: a rewriter that silently discards prose
 			// is a rewriter that loses work.
 			name: "a task description moves to the step",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -97,7 +97,7 @@ steps:
       inputs:
         message: hello
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -108,7 +108,7 @@ steps:
 		},
 		{
 			name: "nested inputs keep their shape",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -120,7 +120,7 @@ steps:
           X-A: one
           X-B: two
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -136,14 +136,14 @@ steps:
 			// no inputs is written as an empty mapping — and on the same line, since a
 			// lone `{}` beneath the key reads as unfinished too.
 			name: "a task with no inputs becomes an empty mapping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
     task:
       name: log
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -152,7 +152,7 @@ steps:
 		},
 		{
 			name: "steps inside a loop are rewritten too",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: loop
@@ -165,7 +165,7 @@ steps:
             inputs:
               message: hi
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: loop
@@ -179,7 +179,7 @@ steps:
 		},
 		{
 			name: "steps inside every parallel branch are rewritten",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: fan
@@ -197,7 +197,7 @@ steps:
               inputs:
                 message: b
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: fan
@@ -217,7 +217,7 @@ steps:
 			// renders a workflow, and a workflow does not carry the sentence someone
 			// wrote to explain a step.
 			name: "comments survive, wherever they sit",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   # why this step is here
@@ -227,7 +227,7 @@ steps:
       inputs:
         message: hello # and a trailing one
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   # why this step is here
@@ -246,7 +246,7 @@ steps:
 			// here — it moves up to sit above the key that now names it, rather than
 			// being deleted along with the line it was on.
 			name: "comments inside the block travel with it",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -258,7 +258,7 @@ steps:
         message: hello
         # and a note after it
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -282,7 +282,7 @@ steps:
 			// comment about the step, written after its work, and it stays exactly
 			// where the author put it.
 			name: "a comment's level decides whether it moves",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -293,7 +293,7 @@ steps:
       # a note beside the inputs key
     # a note beside the task key
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -311,7 +311,7 @@ steps:
 			// which is worse than no diagnostic, because it teaches people to stop
 			// reading them.
 			name: "a blank line under inputs is not an indentation problem",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -321,7 +321,7 @@ steps:
 
         message: hi
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -338,7 +338,7 @@ steps:
 			// `name:` and `inputs:` where they were, and reported success on a
 			// document it had just mangled.
 			name: "a dedented comment does not end the block",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -348,7 +348,7 @@ steps:
       inputs:
         message: hi
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -362,7 +362,7 @@ steps:
 			// the block and has to extend it, or a note under the last input stops
 			// travelling with the inputs and is left behind at its old indentation.
 			name: "a comment under the last input still belongs to it",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -375,7 +375,7 @@ steps:
     log:
       message: bye
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -393,7 +393,7 @@ steps:
 			// have no value at all and a task name cannot contain a `#`, so on these
 			// three lines a `#` is unambiguously a comment.
 			name: "comments at the end of a retired key are carried up",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -402,7 +402,7 @@ steps:
       inputs: # what it says
         message: hi
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -420,7 +420,7 @@ steps:
 			// "already current" and exited zero on a file `flow validate` refuses,
 			// which is the one property the command's own comment says it holds.
 			name: "a step carrying an anchor is not skipped",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - &first
@@ -434,7 +434,7 @@ steps:
     log:
       message: bye
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - &first
@@ -452,7 +452,7 @@ steps:
 			// moved. Copying source lines and shifting them all by the same amount is
 			// what keeps this true without understanding block scalars at all.
 			name: "a block scalar keeps its shape",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -464,7 +464,7 @@ steps:
             indented
           last
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -502,33 +502,33 @@ func TestFixLeavesACurrentFileByteForByte(t *testing.T) {
 	t.Parallel()
 
 	srcs := []string{
-		"edition: v2026.2\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+		"edition: v2026.3\nname: t\nsteps:\n  - id: a\n    log:\n      message: hi\n",
 		// Odd but legal spacing, blank lines, comments, and a trailing newline that
 		// a naive round trip would normalise away.
-		"# leading comment\nedition: v2026.2\nname:    t\n\nsteps:\n\n  - id: a\n\n    log:\n      message:   hi\n\n",
+		"# leading comment\nedition: v2026.3\nname:    t\n\nsteps:\n\n  - id: a\n\n    log:\n      message:   hi\n\n",
 		// Flow style that is already current, which the refusal path must not catch:
 		// there is no `task:` here to refuse.
-		"edition: v2026.2\nname: t\nsteps: [{id: a, log: {message: hi}}]\n",
+		"edition: v2026.3\nname: t\nsteps: [{id: a, log: {message: hi}}]\n",
 		// A document with no steps at all.
-		"edition: v2026.2\nname: t\n",
+		"edition: v2026.3\nname: t\n",
 		// A `signals:` block — #206 gap 1's grammar. Nothing in it binds a
 		// name into any expression's scope (unlike `as:`, a step's own
 		// `vars:`, or `now`), so there is no scope rule for a rewriter to get
 		// wrong here the way it did for those; this pins that `flow fix`
 		// leaves the block alone rather than assuming that from the absence
 		// of a bug report.
-		"edition: v2026.2\nname: t\nsteps:\n  - id: approval\n    wait_for_signal:\n      name: deploy-approved\n      timeout: 24h\nsignals:\n  deploy-approved:\n    allow:\n      - subject: \"https://issuer.example.com#release-manager@example.com\"\n      - claims:\n          team: release-managers\n",
+		"edition: v2026.3\nname: t\nsteps:\n  - id: approval\n    wait_for_signal:\n      name: deploy-approved\n      timeout: 24h\nsignals:\n  deploy-approved:\n    allow:\n      - subject: \"https://issuer.example.com#release-manager@example.com\"\n      - claims:\n          team: release-managers\n",
 		// A `switch:` with comments, odd spacing, a single-element list case and
 		// an empty default body. `flow fix` is the byte-for-byte surface, so
 		// none of it moves: fmt may canonicalize `case: [x]` to `case: x` under
 		// its semantic contract, and fix must not.
-		"edition: v2026.2\nname: t\ninputs:\n  action:\n    type: string\n    required: true\nsteps:\n  - id: route\n    switch:\n      value: ${inputs.action}\n      cases:\n        # the ordinary path\n        - case: opened\n          steps:\n            - id: triage\n              log:\n                message:   hi\n        - case: [closed]\n          steps: []\n      default:\n        steps: []\n",
+		"edition: v2026.3\nname: t\ninputs:\n  action:\n    type: string\n    required: true\nsteps:\n  - id: route\n    switch:\n      value: ${inputs.action}\n      cases:\n        # the ordinary path\n        - case: opened\n          steps:\n            - id: triage\n              log:\n                message:   hi\n        - case: [closed]\n          steps: []\n      default:\n        steps: []\n",
 		// A switch inside a for_each body, dispatching on the loop's own
 		// binding — the composition that has bitten the rewriter before. The
 		// binding (`resource`) is bare in the discriminant and in a body
 		// step's input, beside a body step whose id could shadow it; nothing
 		// here may be rewritten into a `steps.` reference.
-		"edition: v2026.2\nname: t\nsteps:\n  - id: resource\n    log:\n      message: a step sharing the binding's name\n  - id: process\n    for_each:\n      items: ${['bucket', 'instance']}\n      as: resource\n      steps:\n        - id: dispatch\n          switch:\n            value: ${resource}\n            cases:\n              - case: bucket\n                steps:\n                  - id: check_bucket\n                    log:\n                      message: ${resource}\n              - case: instance\n                steps: []\n",
+		"edition: v2026.3\nname: t\nsteps:\n  - id: resource\n    log:\n      message: a step sharing the binding's name\n  - id: process\n    for_each:\n      items: ${['bucket', 'instance']}\n      as: resource\n      steps:\n        - id: dispatch\n          switch:\n            value: ${resource}\n            cases:\n              - case: bucket\n                steps:\n                  - id: check_bucket\n                    log:\n                      message: ${resource}\n              - case: instance\n                steps: []\n",
 	}
 
 	for _, src := range srcs {
@@ -558,29 +558,29 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 	}{
 		{
 			name: "a task written in flow style",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task: {name: log, inputs: {message: hi}}\n",
+			src:  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task: {name: log, inputs: {message: hi}}\n",
 			says: "flow style",
 		},
 		{
 			name: "inputs written in flow style",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs: {message: hi}\n",
+			src:  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs: {message: hi}\n",
 			says: "flow style",
 		},
 		{
 			// There is no way to know what the alias will contain, and guessing
 			// produces a file that looks right and names the wrong task.
 			name: "a task standing behind an alias",
-			src:  "edition: v2026.2\nname: t\nbase: &b\n  name: log\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
+			src:  "edition: v2026.3\nname: t\nbase: &b\n  name: log\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
 			says: "alias",
 		},
 		{
 			name: "a task with no name to rewrite to",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      inputs:\n        message: hi\n",
+			src:  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task:\n      inputs:\n        message: hi\n",
 			says: "no `name:`",
 		},
 		{
 			name: "a task whose name is not a plain value",
-			src:  "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: [log]\n      inputs:\n        message: hi\n",
+			src:  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task:\n      name: [log]\n      inputs:\n        message: hi\n",
 			says: "no `name:`",
 		},
 	}
@@ -617,7 +617,7 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 func TestFixWalksPastWhatItCannotDoAndWritesNoneOfIt(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: fine
@@ -665,7 +665,7 @@ steps:
 func TestFixIsIdempotent(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -701,7 +701,7 @@ steps:
 func TestFixReportsWhereAndWhat(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -725,7 +725,7 @@ steps:
 func TestFixRefusesADocumentThatIsNotYAML(t *testing.T) {
 	t.Parallel()
 
-	_, err := flowfile.Fix([]byte("edition: v2026.2\nname: t\n\tsteps:\n"))
+	_, err := flowfile.Fix([]byte("edition: v2026.3\nname: t\n\tsteps:\n"))
 	require.Error(t, err)
 }
 
@@ -736,7 +736,7 @@ func TestFixRefusesADocumentThatIsNotYAML(t *testing.T) {
 func TestFixBoundsItsInput(t *testing.T) {
 	t.Parallel()
 
-	huge := "edition: v2026.2\nname: t\nsteps:\n" + strings.Repeat("  - id: a\n    log: {}\n", 200_000)
+	huge := "edition: v2026.3\nname: t\nsteps:\n" + strings.Repeat("  - id: a\n    log: {}\n", 200_000)
 	require.Greater(t, len(huge), 1<<20, "premise: the input is over the limit")
 
 	_, err := flowfile.Fix([]byte(huge))
@@ -1007,14 +1007,14 @@ func unflatten(t *testing.T, src string) string {
 func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 	t.Parallel()
 
-	crlf := "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: log\r\n      inputs:\r\n        message: hi\r\n"
+	crlf := "edition: v2026.3\r\nname: t\r\nsteps:\r\n  - id: a\r\n    task:\r\n      name: log\r\n      inputs:\r\n        message: hi\r\n"
 
 	result, err := flowfile.Fix([]byte(crlf))
 	require.NoError(t, err)
 	require.True(t, result.Changed())
 
 	out := string(result.Source)
-	assert.Equal(t, "edition: v2026.2\r\nname: t\r\nsteps:\r\n  - id: a\r\n    log:\r\n      message: hi\r\n", out)
+	assert.Equal(t, "edition: v2026.3\r\nname: t\r\nsteps:\r\n  - id: a\r\n    log:\r\n      message: hi\r\n", out)
 
 	// Stated separately, because "every line ends the same way" is the property and
 	// the exact bytes above are only one instance of it.
@@ -1023,7 +1023,7 @@ func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 
 	// And the other direction: a plain LF document does not acquire carriage
 	// returns from anywhere.
-	lf := "edition: v2026.2\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs:\n        message: hi\n"
+	lf := "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs:\n        message: hi\n"
 	plain, err := flowfile.Fix([]byte(lf))
 	require.NoError(t, err)
 	assert.NotContains(t, string(plain.Source), "\r")
@@ -1038,7 +1038,7 @@ func TestFixKeepsTheLineEndingsItFound(t *testing.T) {
 func TestFixDoesNotMistakeAHashInAValueForAComment(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -1070,7 +1070,7 @@ func TestFixLeavesNothingThatDoesNotCompile(t *testing.T) {
 	t.Parallel()
 
 	srcs := map[string]string{
-		"an anchored step": `edition: v2026.2
+		"an anchored step": `edition: v2026.3
 name: t
 steps:
   - &first
@@ -1080,7 +1080,7 @@ steps:
       inputs:
         message: hi
 `,
-		"an anchored steps sequence": `edition: v2026.2
+		"an anchored steps sequence": `edition: v2026.3
 name: t
 steps: &all
   - id: a
@@ -1089,7 +1089,7 @@ steps: &all
       inputs:
         message: hi
 `,
-		"an anchored loop body": `edition: v2026.2
+		"an anchored loop body": `edition: v2026.3
 name: t
 steps:
   - id: loop
@@ -1102,7 +1102,7 @@ steps:
             inputs:
               message: hi
 `,
-		"an anchored parallel branch": `edition: v2026.2
+		"an anchored parallel branch": `edition: v2026.3
 name: t
 steps:
   - id: fan
@@ -1165,7 +1165,7 @@ steps:
 func TestFixLeavesDeferredInputsAlone(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: status_code
@@ -1180,7 +1180,7 @@ steps:
     log:
       message: ${status_code.body}
 `
-	want := `edition: v2026.2
+	want := `edition: v2026.3
 name: t
 steps:
   - id: status_code
@@ -1221,7 +1221,7 @@ steps:
 func TestFixNotesADeferredInputThatNamesAStep(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: threshold
@@ -1255,7 +1255,7 @@ steps:
 func TestFixDoesNotSuggestAStepForARootedResponseName(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: status_code
@@ -1283,7 +1283,7 @@ steps:
 func TestFixSaysNothingAboutADeferredInputWithNoStepInIt(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: fetch
@@ -1309,7 +1309,7 @@ steps:
 func TestFixRewritesAStepsVarsLikeAnyOtherValue(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 steps:
   - id: greeting
@@ -1369,7 +1369,7 @@ func TestFixKnowsWhichLoopExpressionsSeeTheCarriedState(t *testing.T) {
 			// distinguishes the two scopes produces this output; one that treated them alike
 			// would rewrite all four or none.
 			name: "iterator name is also a step id",
-			src: "edition: v2026.2\nname: t\n" +
+			src: "edition: v2026.3\nname: t\n" +
 				"steps:\n" +
 				"  - id: cursor\n    log:\n      message: standalone\n" +
 				"  - id: pager\n    loop:\n" +
@@ -1379,7 +1379,7 @@ func TestFixKnowsWhichLoopExpressionsSeeTheCarriedState(t *testing.T) {
 				"      until: ${cursor.done}\n" +
 				"      max_iterations: 10\n" +
 				"      steps:\n        - id: body\n          log:\n            message: ${cursor.page}\n",
-			want: "edition: v2026.2\nname: t\n" +
+			want: "edition: v2026.3\nname: t\n" +
 				"steps:\n" +
 				"  - id: cursor\n    log:\n      message: standalone\n" +
 				"  - id: pager\n    loop:\n" +
@@ -1395,7 +1395,7 @@ func TestFixKnowsWhichLoopExpressionsSeeTheCarriedState(t *testing.T) {
 			// (`seed`) roots it, because `init:` is an ordinary reference site; the carried
 			// name `cursor` in `until:`/`update:` stays bare.
 			name: "init names a distinct step, iterator stays bare",
-			src: "edition: v2026.2\nname: t\n" +
+			src: "edition: v2026.3\nname: t\n" +
 				"steps:\n" +
 				"  - id: seed\n    log:\n      message: hi\n" +
 				"  - id: pager\n    loop:\n" +
@@ -1405,7 +1405,7 @@ func TestFixKnowsWhichLoopExpressionsSeeTheCarriedState(t *testing.T) {
 				"      until: ${cursor.done}\n" +
 				"      max_iterations: 10\n" +
 				"      steps:\n        - id: body\n          log:\n            message: ${cursor.page}\n",
-			want: "edition: v2026.2\nname: t\n" +
+			want: "edition: v2026.3\nname: t\n" +
 				"steps:\n" +
 				"  - id: seed\n    log:\n      message: hi\n" +
 				"  - id: pager\n    loop:\n" +
@@ -1482,7 +1482,7 @@ steps:
     log:
       message: "${'héllo ' + source.said}"
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: unicode
 steps:
   - id: source
@@ -1508,7 +1508,7 @@ steps:
     log:
       message: "${'日本a' +a.said}"
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: mixed
 steps:
   - id: a
@@ -1578,7 +1578,7 @@ steps:
   - id: post
     http: {url: "https://example.com", outputs: {n🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${a.said}"}, headers: {H: "${a.said}"}}
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -1599,7 +1599,7 @@ steps:
   - id: post
     http: {url: "https://example.com", outputs: {n: "${a.said}"}, headers: {H: "${a.said}"}}
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -1622,7 +1622,7 @@ steps:
   - id: post
     http: {url: "https://example.com", headers: {H🎵🎵🎵🎵🎵🎵🎵🎵🎵🎵: "${body}"}, outputs: {n: "${body}"}}
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: post
@@ -1637,7 +1637,7 @@ steps:
   - id: post
     http: {url: "https://example.com", headers: {H: "${body}"}, outputs: {n: "${body}"}}
 `,
-			want: `edition: v2026.2
+			want: `edition: v2026.3
 name: t
 steps:
   - id: post

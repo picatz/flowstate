@@ -846,6 +846,51 @@ It writes the current edition, which is not a guess: this build compiles one gra
 Omitting it would leave whoever writes `flow fmt` with a formatter that quietly
 invalidates every file it touches.
 
+### Edition v2026.3: optional traversal, and the guarded-read rewrite *(landed)*
+
+The single most repeated expression shape in the corpus was the optional-read
+pleonasm — `has(x.y) && x.y` for a guarded read, its hand-negated twin, and
+`has(p) ? p : d` spelling one path three times for a default (issue #412, 68
+sites at counting time). CEL's optional types already carry the fix, so edition
+v2026.3 makes the read-side surface — `.?` traversal and `orValue()` — a
+documented part of the dialect:
+
+```yaml
+if: ${steps.approval.payload.?approved.orValue(false)}     # was has(...) && ...
+if: ${!steps.approval.payload.?approved.orValue(false)}    # negation is one !
+value: ${r.last_used.?days.orValue(-1)}                    # path once, default beside it
+```
+
+Three decisions, recorded on the issue and worth restating here:
+
+- **The edition carries it, not a second "profile version" axis.** A file states
+  its dialect once; an engine that predates v2026.3 refuses the file with the
+  unknown-edition diagnostic instead of misreading it. This is the precedent
+  every future CEL-surface upgrade rides.
+- **`flow fix` is the rewrite's home.** There is no warning tier, and a style
+  refusal would be wrong — so the idiom is modernised by the migrator, in the
+  same run that stamps the edition, exact-match only: byte-identical paths,
+  negation preserved, and anything that does not match exactly is left alone.
+  A current-edition file keeps its author's spelling; the idiom stays legal.
+- **`has()` stays.** It answers presence — `filter(r, has(r.probe.name))`,
+  "answered no" (`has(p) && !p`), the three-state gates — which is a different
+  question from presence-with-default. The two coexist upstream for the same
+  reason.
+
+Optional *construction* (`optional.of` and friends) is deliberately not part of
+this edition's documented surface; it waits on corpus evidence in issue #476.
+One honesty note belongs here: cel-go's `OptionalTypes` option cannot be subset,
+and the `optional` library has been in the profile since profiles existed — so
+the rest of its surface (`optional.of`, `optional.ofNonZeroValue`,
+`optional.none`, `hasValue()`, `value()`, `or()`, `optMap`, `optFlatMap`, and
+the `[?key]` / `{?key: v}` syntax) *parses and evaluates* today and always has.
+v2026.3 documents the read side; the rest stays reachable-but-undocumented
+rather than refused, because a validate-level refusal would break the profile's
+own append-only promise for any file that already used it, and #476 is where
+that surface gets its documented landing. Traversal is metered by the CEL cost
+accounting like an ordinary select, and `TestOptionalTraversalCostMetered`
+holds that claim rather than assuming it.
+
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 
 `vars` lands in the positions already planned, and the scope rules land in the same
@@ -1609,7 +1654,7 @@ target for the retirement edition — which it now meets: `flow validate` accept
 exactly as written below.
 
 ```yaml
-edition: v2026.2
+edition: v2026.3
 name: deploy
 description: Ship a build, gate production behind a human, then page in order.
 
@@ -1748,7 +1793,7 @@ moment:
 The coherence rules, and what each refuses:
 
 **Versions are explicit, and spelled the Go way.** Every version in a Flowfile is
-written, never inferred, and every one carries the `v` prefix: `edition: v2026.2`,
+written, never inferred, and every one carries the `v` prefix: `edition: v2026.3`,
 `slack: v2.1.0`. This reverses the earlier decision that an absent `edition:` means
 the current one. That decision optimized a line of ceremony away and bought a
 latent ambiguity with it: a file without an edition means whatever the build

@@ -4,7 +4,7 @@
 # works exactly as any other workflow's does — a call resolves this file's
 # `inputs:` and `outputs:` the same way a run started directly does, through the
 # same functions, which is what makes a workflow's answer identical either way.
-edition: v2026.2
+edition: v2026.3
 name: provision-tenant
 
 inputs:

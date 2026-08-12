@@ -33,7 +33,7 @@ import (
 // validator refuses never starts, and a run that never started has no outcome to
 // report. This one compiles, starts, and is stopped by the egress policy — which
 // makes it hermetic as well, since nothing is dialled.
-const deniedWorkflow = `edition: v2026.2
+const deniedWorkflow = `edition: v2026.3
 name: denied
 steps:
   - id: fetch
@@ -303,7 +303,7 @@ func TestAFailureIsClassifiedByWhoStoppedTheRun(t *testing.T) {
 }
 
 // nappingWorkflow runs long enough to be interrupted and does nothing else.
-const nappingWorkflow = `edition: v2026.2
+const nappingWorkflow = `edition: v2026.3
 name: naps
 steps:
   - id: nap

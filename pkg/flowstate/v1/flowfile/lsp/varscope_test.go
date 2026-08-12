@@ -34,7 +34,7 @@ import (
 //
 // `join` deliberately: it is also a function the `strings` library declares, which
 // is the collision hover was answering wrongly. PLACEHOLDER is where a cursor goes.
-const varScopeFile = `edition: v2026.2
+const varScopeFile = `edition: v2026.3
 name: var-scope
 vars:
   region: eu-west-1
@@ -129,7 +129,7 @@ func TestTheRootDoesNotOfferAVarsBlockThatIsNotThere(t *testing.T) {
 	c := newClient(t)
 	c.initialize()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: no-vars
 steps:
   - id: only

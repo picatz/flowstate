@@ -40,7 +40,7 @@
 #
 #   flow run examples/order-fulfillment/workflow.yaml --input order_id=ORD-48213
 #   flow run examples/order-fulfillment/workflow.yaml --input order_id=ORD-48213 --input carrier_outage=true
-edition: v2026.2
+edition: v2026.3
 name: order-fulfillment
 description: Reserve stock, charge a card, arrange shipping — and undo the first two if the third can't happen.
 

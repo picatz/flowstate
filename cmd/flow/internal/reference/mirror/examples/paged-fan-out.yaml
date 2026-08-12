@@ -56,7 +56,7 @@
 #
 # (needs `flow server` and `flow worker` running; see the main README's
 # Quickstart)
-edition: v2026.2
+edition: v2026.3
 name: paged-fan-out
 description: >-
   Walks a cursor API to exhaustion and fans out over each page with bounded

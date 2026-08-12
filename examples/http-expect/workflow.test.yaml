@@ -11,7 +11,7 @@
 # So both cases pin the reported statuses through `where:` on `log`, and the
 # second pins the shape `expect:` was written to inspect — a 200 whose parsed
 # body is present — reaching `checked` as a value.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: a 404 this workflow accepts is carried forward as an ordinary output
     workflow: ./workflow.yaml

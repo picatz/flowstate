@@ -11,9 +11,14 @@
 #   * a macro is expanded by the parser, so `sortBy(...)[0]` over an unsorted
 #     list yields `alpha` and not `zeta`.
 #
+# The optional-traversal steps add two more claims (edition v2026.3): `.?` on a
+# field the value carries reads it, and `.?` on one it does not carry resolves
+# to `orValue`'s default — in `vars:`, in `if:`, in `items:`, and in the
+# declared `volume` output the `expect:` below reads back.
+#
 # Every `log` stub carries a `where:`, so an expression that produced something
 # else reaches no stub and fails the case.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: each of the three expressions produces the value it claims to
     workflow: ./workflow.yaml
@@ -30,5 +35,16 @@ tests:
       - task: log
         where: inputs.message == 'alpha'
         returns: {}
+      # `.?` on a field the value carries reads it — 7, through the step's
+      # `vars:` — and `.?muted` on one it does not carry let the `if:` pass.
+      - task: log
+        where: inputs.message == '7'
+        returns: {}
+      # `.?stations` found nothing, so `items:` iterated `orValue`'s fallback.
+      - task: log
+        where: inputs.message == 'default'
+        returns: {}
     expect:
-      ran: [shout, confirm, order]
+      ran: [shout, confirm, order, prefs, tuned, announce]
+      outputs:
+        volume: 7

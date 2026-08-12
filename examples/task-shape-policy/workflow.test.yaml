@@ -16,7 +16,7 @@
 # left. `if: true` is not a bug in the example, it is the thing the policy has to
 # refuse without help — so this case proves the step is genuinely unguarded, by
 # running it with no policy at all and finding it present rather than skipped.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: with no deployment policy loaded, the ungated step runs — the zero case the policy exists to change
     workflow: ./workflow.yaml

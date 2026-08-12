@@ -20,7 +20,7 @@
 # says something different when given some:
 #
 #   flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0
-edition: v2026.2
+edition: v2026.3
 name: computed-outputs
 
 inputs:

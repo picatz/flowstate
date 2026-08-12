@@ -8,7 +8,7 @@
 # The half `flow test` genuinely owns is the argument-driven branch, which is
 # what makes one file serve a terse schedule and a verbose one: `detailed:`
 # decides whether `breakdown` runs at all, and both directions are asserted.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the defaults report the declared region tersely, and the breakdown never runs
     workflow: ./workflow.yaml

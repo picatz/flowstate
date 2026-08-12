@@ -23,7 +23,7 @@ import (
 // has to describe: required with a constraint, optional with a default, and
 // optional with neither.
 func withCalleeSource() string {
-	return `edition: v2026.2
+	return `edition: v2026.3
 name: provision-tenant
 inputs:
   tenant:
@@ -50,7 +50,7 @@ steps:
 // on a fresh line inside the `with:` block.
 func withCallerSource(target string, bound ...string) string {
 	var b strings.Builder
-	b.WriteString("edition: v2026.2\nname: caller\nsteps:\n  - id: provision\n    call: " + target + "\n    with:\n")
+	b.WriteString("edition: v2026.3\nname: caller\nsteps:\n  - id: provision\n    call: " + target + "\n    with:\n")
 	for _, name := range bound {
 		b.WriteString("      " + name + ": value-for-" + name + "\n")
 	}
@@ -278,7 +278,7 @@ func TestCompletionOffersNothingForAnUnreadableCallee(t *testing.T) {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"), []byte(withCalleeSource()), 0o644))
 
-		src, pos := splitCursor(t, `edition: v2026.2
+		src, pos := splitCursor(t, `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -307,7 +307,7 @@ func TestHoverDescribesACallArgument(t *testing.T) {
 	callee := filepath.Join(dir, "callee.yaml")
 	require.NoError(t, os.WriteFile(callee, []byte(withCalleeSource()), 0o644))
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: caller
 steps:
   - id: provision
@@ -373,7 +373,7 @@ func TestHoverAndCompletionAnswerThroughADigestMismatch(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"), []byte(withCalleeSource()), 0o644))
 
 	const stalePin = "sha256:" + "0000000000000000000000000000000000000000000000000000000000000000"
-	src, completeAt := splitCursor(t, `edition: v2026.2
+	src, completeAt := splitCursor(t, `edition: v2026.3
 name: caller
 steps:
   - id: provision

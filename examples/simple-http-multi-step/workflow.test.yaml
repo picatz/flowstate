@@ -5,7 +5,7 @@
 # requiring the log message to be exactly those three characters: a task that
 # quietly stringified whatever it was handed, or one that dropped the value,
 # reaches no stub.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the status code arrives in the message as text the author converted
     workflow: ./workflow.yaml

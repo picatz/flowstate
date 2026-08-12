@@ -12,7 +12,7 @@
 # the corpus against the built-in registry alone. `flow fix --check
 # examples/` and `flow test examples/` both walk the whole tree recursively
 # and still reach it.
-edition: v2026.2
+edition: v2026.3
 name: embedding-example
 
 steps:

@@ -12,7 +12,7 @@
 # `region` binding — a callee's only view in is its declared `inputs:`. That
 # isolation is what makes the composition safe to run with `max_parallel:`
 # above one: two concurrent calls share no scope to race over.
-edition: v2026.2
+edition: v2026.3
 name: publish-to-region
 description: Publish one build to one region's edge, and report the URL it is served from.
 

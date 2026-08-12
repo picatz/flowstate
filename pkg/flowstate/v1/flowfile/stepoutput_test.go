@@ -28,7 +28,7 @@ func TestAnUnknownStepOutputIsReported(t *testing.T) {
 		{
 			name: "a name the task does not produce",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: a
@@ -43,7 +43,7 @@ steps:
 		{
 			name: "a near miss gets a suggestion rather than a list",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: a
@@ -61,7 +61,7 @@ steps:
 			// listing an empty set — "it produces: " teaches nothing.
 			name: "a task that produces nothing says why",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: say
@@ -78,7 +78,7 @@ steps:
 			// which this cannot and should not check.
 			name: "selecting into a real output is fine",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: a
@@ -94,7 +94,7 @@ steps:
 			// nothing in it.
 			name: "the mapping itself is fine",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: say
@@ -135,7 +135,7 @@ func TestAStepNamingItsOwnOutputsIsNotSecondGuessed(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: fetch
@@ -162,7 +162,7 @@ func TestABlockStepsOutputsAreNotSecondGuessed(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: each
@@ -202,7 +202,7 @@ func TestAToleratedStepsErrorOutputIsAllowed(t *testing.T) {
 	t.Parallel()
 
 	tolerated := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: risky
@@ -220,7 +220,7 @@ steps:
 	// And without the policy it is still an unknown output, because then nothing
 	// produces it. The exemption is the policy's, not the name's.
 	untolerated := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: risky
@@ -244,7 +244,7 @@ func TestAToleratedStepListsTheErrorOutput(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: risky

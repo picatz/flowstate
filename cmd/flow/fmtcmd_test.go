@@ -203,7 +203,7 @@ func walkCallNodes(nodes []*v1.Node, dir string, into map[string]bool) {
 // function it wraps, so a bug in the command's plumbing cannot hide behind a
 // bug in Format, or the reverse.
 func TestFmtProducesFormatsOutput(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: greeter
 steps:
   # a comment flow fmt carries through
@@ -241,7 +241,7 @@ steps:
 // makes it usable there: a --check that mutates is a --check nobody can put in
 // a pipeline.
 func TestFmtCheckReportsWithoutWriting(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: greeter
 steps:
   - id: greet
@@ -266,7 +266,7 @@ steps:
 // TestFmtCheckOnFormattedFilesExitsZero is the other direction: a --check that
 // always failed would satisfy the test above perfectly.
 func TestFmtCheckOnFormattedFilesExitsZero(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: greeter
 steps:
   - id: greet
@@ -298,7 +298,7 @@ steps:
 // trustworthy: a file `flow fmt` cannot read into a workflow is left exactly as
 // it was, byte for byte, rather than guessed at.
 func TestFmtLeavesAParseFailureUntouched(t *testing.T) {
-	const broken = "edition: v2026.2\nname: x\n  steps: [\n"
+	const broken = "edition: v2026.3\nname: x\n  steps: [\n"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", broken)
@@ -318,7 +318,7 @@ func TestFmtLeavesAParseFailureUntouched(t *testing.T) {
 // TestFmtStdoutWritesTheResultAndLeavesTheFile covers piping the result
 // somewhere else, which is only useful if the original stays put.
 func TestFmtStdoutWritesTheResultAndLeavesTheFile(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: greeter
 steps:
   - id: greet
@@ -353,7 +353,7 @@ steps:
 // --stdout writes nothing to stdout, so a pipeline never receives a diagnostic
 // where it expects a document.
 func TestFmtStdoutKeepsReportsOffTheDocument(t *testing.T) {
-	const broken = "edition: v2026.2\nname: x\n  steps: [\n"
+	const broken = "edition: v2026.3\nname: x\n  steps: [\n"
 
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", broken)
@@ -404,7 +404,7 @@ func TestFmtStdoutAndCheckAreRefused(t *testing.T) {
 // TestFmtDoesNotPrintUsageWhenAFileNeedsWork keeps the report readable: a file
 // needing formatting is not a command someone typed wrong.
 func TestFmtDoesNotPrintUsageWhenAFileNeedsWork(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: greeter
 steps:
   - id: greet
@@ -428,7 +428,7 @@ steps:
 // currentStyleSingle is a small current-edition Flowfile with a comment and an
 // indented list, so a directory walk over it has something to reformat and
 // something to carry through.
-const currentStyleSingle = `edition: v2026.2
+const currentStyleSingle = `edition: v2026.3
 name: single
 steps:
   # a comment flow fmt carries through
@@ -563,7 +563,7 @@ func TestFmtOnTheScaffoldIsANoOp(t *testing.T) {
 // as it was rather than rewritten without the comment: a formatter choosing
 // between wrong output and no output chooses no output.
 func TestFmtRefusesAFileWhoseCommentItCannotKeep(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: report
 steps:
   - id: report

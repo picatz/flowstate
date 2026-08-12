@@ -3,7 +3,7 @@
 # list in order and the result is the exact sentence below. `ran: [greeting]`
 # would pass just as well against a `format` that rendered nothing — which is
 # precisely the regression a profile change could cause.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: format fills both verbs from the argument list
     workflow: ./workflow.yaml

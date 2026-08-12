@@ -11,7 +11,7 @@ import (
 // loopbackWorkflow dials a port nothing listens on, on loopback, so the http
 // task always fails with the same denial regardless of what else is running
 // on the machine running the test.
-const loopbackWorkflow = `edition: v2026.2
+const loopbackWorkflow = `edition: v2026.3
 name: loopback-probe
 steps:
   - id: fetch

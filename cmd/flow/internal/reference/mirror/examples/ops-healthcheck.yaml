@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: ops-healthcheck
 description: >-
   Probes a list of services with bounded fan-out, tolerates the ones that are

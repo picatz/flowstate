@@ -39,7 +39,7 @@
 # whatever traffic this rollout has already moved has to move back regardless of
 # why it is stopping. `flow terminate` runs none of it, which is the difference
 # the two verbs have always meant.
-edition: v2026.2
+edition: v2026.3
 name: progressive-rollout
 description: Shift traffic to a new version in stages, and unwind every stage in reverse if the canary fails.
 

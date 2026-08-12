@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: github-issue-comment
 description: Posts a real comment on a real issue or pull request using the "github" plugin's one non-idempotent task. Requires inputs; never runs by accident.
 

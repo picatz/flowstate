@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 
 # Two cases: the loop reaching its `until:` condition normally, and the loop
 # running its whole `max_iterations:` budget without reaching it — which is a

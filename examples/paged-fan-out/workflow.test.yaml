@@ -17,7 +17,7 @@
 # A walk that ignored `next_cursor` and asked again from the beginning would
 # match the first stub twice and never terminate, failing on the loop's own
 # `max_iterations:` rather than passing with a plausible-looking list.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: two pages are walked to exhaustion and every record is indexed exactly once
     workflow: ./workflow.yaml

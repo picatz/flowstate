@@ -5,7 +5,7 @@
 # that an assertion rather than a description — swap the two expressions in
 # workflow.yaml and neither invocation matches its stub, where `ran: [greet,
 # shout]` would stay green.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: both steps read the one binding, each through its own expression
     workflow: ./workflow.yaml

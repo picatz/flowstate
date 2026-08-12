@@ -13,7 +13,7 @@
 # `with:`, resolved here in *this* file's scope and bound to its declared
 # `inputs:` — the same isolation a function call gives a callee over reading
 # its caller's locals.
-edition: v2026.2
+edition: v2026.3
 name: call-a-workflow
 
 steps:

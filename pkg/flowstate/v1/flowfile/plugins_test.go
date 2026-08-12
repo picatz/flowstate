@@ -30,7 +30,7 @@ func TestValidatePluginsBlock(t *testing.T) {
 		{
 			name: "a requirement is declared and the file validates",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: needs-a-plugin
 plugins:
   git: v0.1.0
@@ -45,7 +45,7 @@ steps:
 			// a compiler that kept only the last.
 			name: "several requirements are declared together",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: needs-three
 plugins:
   git: v0.1.0
@@ -62,7 +62,7 @@ steps:
 			// v is the mistake somebody makes on their first try.
 			name: "a version with no v prefix is refused",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: bare-version
 plugins:
   git: "0.1.0"
@@ -76,7 +76,7 @@ steps:
 		{
 			name: "a two-part version is refused",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: short-version
 plugins:
   git: "v1.2"
@@ -90,7 +90,7 @@ steps:
 		{
 			name: "a range is refused, because the grammar has no ranges",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: range-version
 plugins:
   git: ">=1.0.0"
@@ -107,7 +107,7 @@ steps:
 			// pinned to a plugin when nothing about it was ever recorded.
 			name: "a misspelled plugins key is reported with the spelling that works",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: misspelled
 plugin:
   git: v0.1.0
@@ -124,7 +124,7 @@ steps:
 			// version the author never wrote.
 			name: "an unquoted numeric version is reported as the type mistake it is",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: numeric
 plugins:
   git: 0.1
@@ -163,7 +163,7 @@ steps:
 // them needs to be told which one to edit. The position is the whole difference
 // between that and reading all six.
 func TestValidatePluginsBlockReportsPosition(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: positions
 plugins:
   git: v0.1.0
@@ -193,7 +193,7 @@ steps:
 // grammar that is checked and then dropped on the floor passes every diagnostic
 // test there is.
 func TestParsePluginsBlockCompilesRequirements(t *testing.T) {
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: compiles
 plugins:
   git: v0.1.0
@@ -231,7 +231,7 @@ steps:
 func TestPluginsSurviveARoundTrip(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: needs-a-plugin
 description: uses a plugin task
 plugins:
@@ -275,7 +275,7 @@ steps:
 func TestMarshalRefusesAnUnparseableVersion(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: needs-a-plugin
 plugins:
   git: v0.1.0

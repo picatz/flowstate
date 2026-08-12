@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: git-log-paginate
 description: Pages a repository's entire commit history to exhaustion with a bounded loop, carrying git.log's cursor as state until git.log reports the history is no longer truncated. The layer-2 half of #216 that git-log-resume could only describe.
 

@@ -188,7 +188,7 @@ func TestAuditReproducesTheManualAudit(t *testing.T) {
 func TestAuditReadsAValuesExpression(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "workflow.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.2
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
 name: repeated-in-values
 inputs:
   amount:
@@ -276,7 +276,7 @@ func TestAuditIsNotALinter(t *testing.T) {
 // A corpus repeating a name or a literal is a language working; only a repeated
 // computation is the friction #411 is about.
 func TestAuditSkipsTrivialRepetition(t *testing.T) {
-	path := writeWorkflow(t, "workflow.yaml", `edition: v2026.2
+	path := writeWorkflow(t, "workflow.yaml", `edition: v2026.3
 name: trivial
 vars:
   a: ${true}
@@ -302,7 +302,7 @@ steps:
 // sub-expression that never occurs outside a larger repeated one, and exactly as
 // often, is the same friction counted twice.
 func TestAuditCountsTheLargerExpressionOnce(t *testing.T) {
-	path := writeWorkflow(t, "workflow.yaml", `edition: v2026.2
+	path := writeWorkflow(t, "workflow.yaml", `edition: v2026.3
 name: nested
 steps:
   - id: one

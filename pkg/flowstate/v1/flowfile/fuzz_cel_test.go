@@ -30,7 +30,7 @@ import (
 func FuzzCELCompile(f *testing.F) {
 	for _, seed := range []string{
 		// A file with nothing for the checker to catch.
-		`edition: v2026.2
+		`edition: v2026.3
 name: ok
 steps:
 - id: a
@@ -48,7 +48,7 @@ steps:
 		// The four shapes documented as what this catches: a function that does
 		// not exist, an addition with no overload, a call with the wrong argument
 		// type, and string() applied to a structure.
-		`edition: v2026.2
+		`edition: v2026.3
 name: nofunc
 steps:
 - id: a
@@ -56,7 +56,7 @@ steps:
   log:
     message: hi
 `,
-		`edition: v2026.2
+		`edition: v2026.3
 name: badadd
 steps:
 - id: a
@@ -65,14 +65,14 @@ steps:
   log:
     message: ${x}
 `,
-		`edition: v2026.2
+		`edition: v2026.3
 name: badsize
 steps:
 - id: a
   log:
     message: ${string(size(1))}
 `,
-		`edition: v2026.2
+		`edition: v2026.3
 name: badstring
 steps:
 - id: a
@@ -82,7 +82,7 @@ steps:
 		// A qualified function next to a variable of the same name, which is the
 		// bug referencedNames documents: only a call target that resolves to a
 		// real qualified function is skipped, everything else stays a variable.
-		`edition: v2026.2
+		`edition: v2026.3
 name: qualified
 steps:
 - id: a
@@ -94,7 +94,7 @@ steps:
 `,
 		// Every position checkNodeExpressions walks: a loop's items, a branch
 		// inside a parallel, and a wait's until.
-		`edition: v2026.2
+		`edition: v2026.3
 name: positions
 steps:
 - id: loop
@@ -117,11 +117,11 @@ steps:
 		// the shape a document-level depth bound (maxDepth in parse.go) cannot
 		// see, because the expression is one YAML scalar — the recursion is
 		// inside the CEL source cel-go parses, not the YAML tree.
-		"edition: v2026.2\nname: deep\nsteps:\n- id: a\n  if: ${" +
+		"edition: v2026.3\nname: deep\nsteps:\n- id: a\n  if: ${" +
 			strings.Repeat("(", 600) + "1" + strings.Repeat(")", 600) + "}\n  log:\n    message: hi\n",
 		// The bare (unfenced) condition spelling alongside the fenced one, since
 		// both reach the same checker.
-		`edition: v2026.2
+		`edition: v2026.3
 name: bare
 steps:
 - id: a

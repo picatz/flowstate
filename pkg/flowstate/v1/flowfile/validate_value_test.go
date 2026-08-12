@@ -27,7 +27,7 @@ import (
 func TestValidateReportsATypeErrorInAValue(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -49,7 +49,7 @@ steps:
 func TestValidateReportsAnUnknownOutputOnAValue(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -71,7 +71,7 @@ steps:
 func TestValidateAcceptsAValuesOwnOutput(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -97,7 +97,7 @@ steps:
 func TestValidateAcceptsErrorOnAToleratedValue(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v
@@ -119,7 +119,7 @@ steps:
 func TestValidateReportsErrorOnAnUntoleratedValue(t *testing.T) {
 	t.Parallel()
 
-	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.2
+	ds, err := flowfile.ValidateSource([]byte(`edition: v2026.3
 name: w
 steps:
   - id: v

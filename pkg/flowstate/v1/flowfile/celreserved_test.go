@@ -163,7 +163,7 @@ func TestMostReservedWordsBecameLegalStepIDs(t *testing.T) {
 	// compiles under a reserved id and whose every `${steps.<id>....}` then fails to
 	// parse, which only a reference can see.
 	ds, err := ValidateSource([]byte(
-		"edition: v2026.2\nname: t\nsteps:\n  - id: loop\n    http:\n      url: https://example.com\n" +
+		"edition: v2026.3\nname: t\nsteps:\n  - id: loop\n    http:\n      url: https://example.com\n" +
 			"  - id: after\n    log:\n      message: ${steps.loop.body}\n"))
 	require.NoError(t, err)
 	assert.Empty(t, ds, "a step called `loop` must be usable now")
@@ -175,7 +175,7 @@ func TestUnusableStepIDIsReportedOnTheID(t *testing.T) {
 
 	for _, word := range celUnusableStepIDs {
 		ds, err := ValidateSource([]byte(
-			"edition: v2026.2\nname: t\nsteps:\n  - id: \"" + word + "\"\n    log:\n      message: hi\n"))
+			"edition: v2026.3\nname: t\nsteps:\n  - id: \"" + word + "\"\n    log:\n      message: hi\n"))
 		require.NoError(t, err)
 		require.NotEmpty(t, ds, "a step called %q must be refused", word)
 

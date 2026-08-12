@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: github-list-resume
 description: Reads a repository's open issues in two bounded pages using github.issue_list's cursor input - the resume shape issue #216 asks every bounded list task to grow, closed for this plugin's read/audit-tier listings. Runs with no arguments.
 

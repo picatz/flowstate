@@ -61,7 +61,7 @@ func TestWorkflowVarsMayReferenceNothing(t *testing.T) {
 		{
 			name: "a var reading another var",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 vars:
   a: ${vars.b}
@@ -76,7 +76,7 @@ steps:
 		{
 			name: "a var reading a step",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 vars:
   a: ${steps.s.result}
@@ -90,7 +90,7 @@ steps:
 		{
 			name: "a var reading a root as an operand",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 vars:
   a: ${size(vars)}
@@ -104,7 +104,7 @@ steps:
 		{
 			name: "a var reading a name that means nothing",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 vars:
   a: ${nope}
@@ -118,7 +118,7 @@ steps:
 		{
 			name: "a var of literals and functions is fine",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 vars:
   a: ${"x".upperAscii() + string(1 + 1)}
@@ -157,7 +157,7 @@ steps:
 func TestWorkflowVarDiagnosticsCarryAPosition(t *testing.T) {
 	t.Parallel()
 
-	src := "edition: v2026.2\nname: t\nvars:\n  a: ${nope}\nsteps:\n  - id: s\n    log:\n      message: hi\n"
+	src := "edition: v2026.3\nname: t\nvars:\n  a: ${nope}\nsteps:\n  - id: s\n    log:\n      message: hi\n"
 
 	reported := diagnose(t, src)
 	require.NotEmpty(t, reported)
@@ -176,7 +176,7 @@ func TestAStepVarIsPrivateToItsStep(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: first
@@ -216,7 +216,7 @@ func TestAStepVarIsRefusedRatherThanShadowing(t *testing.T) {
 		{
 			name: "shadowing a loop's iterator",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: each
@@ -235,7 +235,7 @@ steps:
 		{
 			name: "shadowing an enclosing step's var",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: outer
@@ -256,7 +256,7 @@ steps:
 		{
 			name: "taking the name now",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -273,7 +273,7 @@ steps:
 		{
 			name: "a name of its own is fine",
 			src: `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: each
@@ -316,7 +316,7 @@ func TestAStepVarMayNotReadItsSiblings(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -343,7 +343,7 @@ func TestAVarsRootIsUsableAsAnOperand(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 vars:
   region: eu-west-1
@@ -367,7 +367,7 @@ steps:
 func TestStepVarsSurviveARoundTrip(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: t
 vars:
   region: eu-west-1
@@ -407,7 +407,7 @@ func TestAStepVarNamesItselfInADiagnostic(t *testing.T) {
 	t.Parallel()
 
 	src := `
-edition: v2026.2
+edition: v2026.3
 name: t
 steps:
   - id: s
@@ -454,7 +454,7 @@ func TestVarsRefuseSecretReference(t *testing.T) {
 	}{
 		{
 			name: "a bare reference in a workflow var",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret
 vars:
   token: ${secret('env:TOKEN')}
@@ -467,7 +467,7 @@ steps:
 		},
 		{
 			name: "a bare reference in a step var",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: stepvar-secret
 steps:
   - id: noop
@@ -482,7 +482,7 @@ steps:
 			// Nested in a larger expression. The refusal has to land on the
 			// `secret`, not on the quote the expression opens with.
 			name: "a reference inside a larger expression",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret-nested-expr
 vars:
   token: ${'Bearer ' + secret('env:TOKEN')}
@@ -495,7 +495,7 @@ steps:
 		},
 		{
 			name: "a reference inside a list",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret-list
 vars:
   tokens:
@@ -509,7 +509,7 @@ steps:
 		},
 		{
 			name: "a reference inside a mapping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret-map
 vars:
   headers:
@@ -523,7 +523,7 @@ steps:
 		},
 		{
 			name: "a reference inside a step var's mapping",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: stepvar-secret-map
 steps:
   - id: noop
@@ -540,7 +540,7 @@ steps:
 			// refusals. An alias is resolved before the check, so the rule cannot
 			// be stepped around by naming the value somewhere else.
 			name: "a reference behind a YAML anchor and its alias",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret-anchor
 vars:
   a: &tok ${secret('env:TOKEN')}
@@ -554,7 +554,7 @@ steps:
 		},
 		{
 			name: "a reference in a block scalar",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret-block
 vars:
   token: |-
@@ -571,7 +571,7 @@ steps:
 			// comprehension rather than to a call the root can be compared
 			// against.
 			name: "a reference inside a comprehension",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-secret-comprehension
 vars:
   token: ${[1].map(x, secret('env:TOKEN'))}
@@ -587,7 +587,7 @@ steps:
 			// fence rule is what separates them, and `vars:` is the position
 			// whose own doc uses this exact example.
 			name: "unfenced text spelling a reference is a literal",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-not-a-secret-literal
 vars:
   a: "secret('env:TOKEN')"
@@ -603,7 +603,7 @@ steps:
 			// check asks CEL for a global call to the marker, not for the
 			// characters.
 			name: "an expression mentioning the word is not a reference",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: wfvar-not-a-secret-expr
 vars:
   a: ${'not a ' + 'secret'}
@@ -640,7 +640,7 @@ steps:
 func TestVarsSecretRefusalNamesTheAlternative(t *testing.T) {
 	t.Parallel()
 
-	got := diagnose(t, `edition: v2026.2
+	got := diagnose(t, `edition: v2026.3
 name: wfvar-secret-help
 vars:
   token: ${secret('env:TOKEN')}

@@ -2,7 +2,7 @@
 #   flow run local examples/enterprise-customer-onboarding/workflows/provision-database.yaml --input tenant=acme
 # resolves its own `inputs:`/`outputs:` exactly as a call from the parent
 # does, the same property call-a-workflow's own callee demonstrates.
-edition: v2026.2
+edition: v2026.3
 name: provision-database
 
 inputs:

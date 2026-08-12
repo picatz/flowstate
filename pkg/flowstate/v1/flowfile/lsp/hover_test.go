@@ -28,7 +28,7 @@ steps:
   - id: shout
     log:
       message: ${steps.web.body}
-edition: v2026.2
+edition: v2026.3
 `
 
 func TestHover(t *testing.T) {
@@ -183,7 +183,7 @@ steps:
   - id: quiet
     log:
       message: hi
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -237,7 +237,7 @@ steps:
   - id: b
     log:
       message: ${string(size(steps))}
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -272,7 +272,7 @@ steps:
   - id: later
     http:
       url: https://example.com
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -300,7 +300,7 @@ steps:
   - id: out
     log:
       message: ${web.body}
-edition: v2026.2
+edition: v2026.3
 `
 	c := newClient(t)
 	c.initialize()
@@ -336,7 +336,7 @@ steps:
   - id: out
     log:
       message: ${steps.web.stdout}
-edition: v2026.2
+edition: v2026.3
 `
 		c.open("file:///wrong-output.yaml", src)
 		pos := positionOf(t, src, "${steps.web.stdout}", len("${steps.web."))
@@ -357,7 +357,7 @@ steps:
   - id: out
     log:
       message: ${steps.mystery.stdout}
-edition: v2026.2
+edition: v2026.3
 `
 		c.open("file:///unknown-producer.yaml", src)
 		pos := positionOf(t, src, "${steps.mystery.stdout}", len("${steps."))
@@ -380,7 +380,7 @@ steps:
       url: https://example.com
       outputs:
         v: ${steps.web}
-edition: v2026.2
+edition: v2026.3
 `
 		c.open("file:///bare.yaml", src)
 		pos := positionOf(t, src, "${steps.web}", len("${steps."))
@@ -471,7 +471,7 @@ steps:
   - id: a
     log:
       message: ${secret('env:API_KEY')}
-edition: v2026.2
+edition: v2026.3
 `
 		const uri = "file:///secret-ok.yaml"
 		require.Empty(t, messages(c.open(uri, src).Diagnostics))
@@ -497,7 +497,7 @@ steps:
   - id: a
     log:
       message: ${secret('API_KEY')}
-edition: v2026.2
+edition: v2026.3
 `
 		const uri = "file:///secret-bad.yaml"
 		// The compiler reports it too; hover must agree rather than describe it as
@@ -517,7 +517,7 @@ steps:
   - id: a
     log:
       message: ${secret('vault:prod/api#token')}
-edition: v2026.2
+edition: v2026.3
 `
 		const uri = "file:///secret-vault.yaml"
 		c.open(uri, src)
@@ -892,7 +892,7 @@ func TestHoverDoesNotClaimEveryDeferredInputIsAnExpression(t *testing.T) {
 // name and then having nothing to say about it is the worse of the two halves to
 // have alone.
 func TestHoverDescribesAProfileFunction(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: c
 vars:
   greeting: hello
@@ -1045,7 +1045,7 @@ func findWord(t *testing.T, text, expr, word string) (int, int) {
 // the same mistake: a lexical lookup answering confidently about a position it had
 // not actually checked.
 func TestHoverKnowsWhereAFunctionIsNot(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: c
 vars:
   greeting: ${PLACEHOLDER_VARS}
@@ -1154,7 +1154,7 @@ steps:
 // that position, and the profile is the same everywhere, so hover saying nothing was
 // two surfaces disagreeing about whether a `vars:` value is an ordinary expression.
 func TestHoverDescribesAFunctionInAWorkflowVar(t *testing.T) {
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: c
 vars:
   shout: ${PLACEHOLDER}

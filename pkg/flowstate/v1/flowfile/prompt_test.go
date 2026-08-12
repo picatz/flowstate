@@ -24,7 +24,7 @@ import (
 // prompt line the case supplies.
 func promptSource(promptLine string) string {
 	return strings.Join([]string{
-		"edition: v2026.2",
+		"edition: v2026.3",
 		"name: asking",
 		"inputs:",
 		"  version:",
@@ -153,7 +153,7 @@ func TestAPromptReachingASensitiveInputIsRefusedAtItsOwnLine(t *testing.T) {
 	t.Parallel()
 
 	src := strings.Join([]string{
-		"edition: v2026.2",
+		"edition: v2026.3",
 		"name: asking",
 		"inputs:",
 		"  salary:",

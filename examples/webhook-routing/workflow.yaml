@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: webhook-routing
 description: >-
   A webhook's event type is dispatched through one switch, with a default that

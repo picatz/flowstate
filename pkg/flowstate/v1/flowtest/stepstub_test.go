@@ -86,7 +86,7 @@ func TestStubByStepIdRejectsNonTaskStep(t *testing.T) {
 
 	dir := t.TempDir()
 	writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.2
+edition: v2026.3
 name: wait-fixture
 steps:
   - id: gate

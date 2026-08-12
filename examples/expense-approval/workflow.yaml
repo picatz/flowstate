@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: expense-approval
 description: >-
   An expense report waits for a manager's sign-off, and escalates to finance
@@ -143,11 +143,6 @@ steps:
         # Re-exposed for `reimburse`'s log line and `approved_by`.
         sender: ${sender}
 
-  # `has()` guards every read of a payload that might not exist — a lapsed
-  # gate carries no payload, and the manager gate not having timed out means
-  # `finance_review` was skipped and produced no outputs at all. The `&&`
-  # chain is ordered so a false left side is what stops CEL from evaluating a
-  # right side that would otherwise reach a step that never ran.
   - id: reimburse
     if: >-
       ${steps.manager_review.outcome == "approved" ||

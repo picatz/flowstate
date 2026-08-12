@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 
 # The stateless loop, from a file, both ways it can end: the endpoint reports
 # ready and the loop stops, or it never does and the loop gives up at its bound —

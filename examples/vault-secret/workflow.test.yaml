@@ -12,7 +12,7 @@
 # genuine: the workflow asks for that reference and receives whatever this
 # case bound it to, and a case that forgets to bind it is refused rather than
 # silently handed an empty bearer token.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the bearer resolves from this file's own secrets, never a real vault
     workflow: ./workflow.yaml

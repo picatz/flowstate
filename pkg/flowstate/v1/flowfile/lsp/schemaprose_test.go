@@ -111,7 +111,7 @@ steps:
   - id: shout
     log:
       message: ${steps.web.status_code}
-edition: v2026.2
+edition: v2026.3
 `
 	comment, ok := protodoc.Comment("flowstate.v1.Task.HTTP.Outputs.status_code")
 	require.True(t, ok)

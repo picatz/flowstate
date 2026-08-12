@@ -24,7 +24,7 @@ import (
 // a CEL map literal — the paged-fan-out example's shape, single-quoted so the
 // `: ` inside the literal stays inside the scalar. It is a file `flow
 // validate` accepts, which the premise test below proves.
-const shapedOutputsFile = `edition: v2026.2
+const shapedOutputsFile = `edition: v2026.3
 name: shaped-outputs
 steps:
   - id: pages
@@ -42,7 +42,7 @@ steps:
 // reference to a name the task genuinely does not declare. It does not
 // validate — the bogus reference is the point — but it parses, which is the
 // level hover and completion answer at.
-const unshapedOutputsFile = `edition: v2026.2
+const unshapedOutputsFile = `edition: v2026.3
 name: unshaped-outputs
 steps:
   - id: web
@@ -56,7 +56,7 @@ steps:
 
 // opaqueShapingFile shapes through an expression whose top level is not a map
 // literal, so the output names are knowable only at run time.
-const opaqueShapingFile = `edition: v2026.2
+const opaqueShapingFile = `edition: v2026.3
 name: opaque-shaping
 steps:
   - id: pages

@@ -21,7 +21,7 @@ func validateServer(t *testing.T) *server.FlowstateServer {
 	return server.New(nil)
 }
 
-const aValidFile = `edition: v2026.2
+const aValidFile = `edition: v2026.3
 name: remote-check
 steps:
   - id: only
@@ -223,7 +223,7 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 
 func TestCompileRejectsUnknownDeploymentCredentialTarget(t *testing.T) {
 	s := server.New(nil, server.WithCredentialTargets("partner-api"))
-	source := []byte(`edition: v2026.2
+	source := []byte(`edition: v2026.3
 name: federated
 steps:
   - id: call

@@ -40,7 +40,7 @@ func TestMergeExpansionIsBounded(t *testing.T) {
 	const keys, steps = 800, 800
 
 	var b strings.Builder
-	b.WriteString("edition: v2026.2\nname: bomb\nsteps:\n")
+	b.WriteString("edition: v2026.3\nname: bomb\nsteps:\n")
 	for d := range steps {
 		b.WriteString("  - id: s" + strconv.Itoa(d) + "\n")
 		b.WriteString("    <<: *base\n")
@@ -95,7 +95,7 @@ func TestMergeExpansionWithinTheBoundStillWorks(t *testing.T) {
 	// The anchor is on a step, because a Flowfile has nowhere else to put one: a
 	// top-level key added purely to hold an anchor is an unknown key, and reported
 	// as one. So boilerplate is shared by anchoring the first step that carries it.
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: shared
 steps:
   - &policy
@@ -135,7 +135,7 @@ steps:
 func TestWrittenKeysWinOverMergedOnes(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: shared
 steps:
   - &policy
@@ -183,14 +183,14 @@ func TestNothingMayBeCalledSteps(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"a top-level step": `edition: v2026.2
+		"a top-level step": `edition: v2026.3
 name: t
 steps:
   - id: steps
     log:
       message: hi
 `,
-		"a step inside a loop body": `edition: v2026.2
+		"a step inside a loop body": `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -201,7 +201,7 @@ steps:
           log:
             message: hi
 `,
-		"a step inside a parallel branch": `edition: v2026.2
+		"a step inside a parallel branch": `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -214,7 +214,7 @@ steps:
 		// The other route into a body's scope. A bound name wins over the scope it
 		// is bound into, so this hides every step from exactly the place rooted
 		// references are written.
-		"a loop iterator": `edition: v2026.2
+		"a loop iterator": `edition: v2026.3
 name: t
 steps:
   - id: a
@@ -250,7 +250,7 @@ steps:
 func TestAStepCalledStepsWouldHaveFailedAtRunTime(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.2
+	src := `edition: v2026.3
 name: shadowed-root
 steps:
   - id: steps

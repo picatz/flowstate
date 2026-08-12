@@ -14,7 +14,7 @@
 # What this case cannot see is a `description:` being present, correct, or
 # attached to the right step. That is a property of the file, so it belongs to
 # `flow validate` and to the LSP rather than to a run of it.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the roster is paged in order and counted, whatever the descriptions say about it
     workflow: ./workflow.yaml

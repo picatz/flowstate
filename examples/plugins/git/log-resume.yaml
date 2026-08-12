@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: git-log-resume
 description: Reads a repository's commit history in two bounded pages using git.log's cursor input - the resume shape issue #216 asks every bounded list task to grow. Runs with no arguments.
 

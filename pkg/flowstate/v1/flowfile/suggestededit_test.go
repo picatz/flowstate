@@ -154,7 +154,7 @@ func TestSuggestedEditsApplyBlind(t *testing.T) {
 	}{
 		{
 			name: "a step's own key",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: blind
 steps:
   - id: a
@@ -166,7 +166,7 @@ steps:
 		},
 		{
 			name: "a key of the document itself",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 nam: blind
 steps:
   - id: a
@@ -177,7 +177,7 @@ steps:
 		},
 		{
 			name: "a key nested inside a step's retry block",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: blind
 steps:
   - id: a
@@ -190,7 +190,7 @@ steps:
 		},
 		{
 			name: "a key inside a loop",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: blind
 vars:
   things: ["a", "b"]
@@ -207,7 +207,7 @@ steps:
 		},
 		{
 			name: "a mapping that already has the suggestion offers nothing",
-			src: `edition: v2026.2
+			src: `edition: v2026.3
 name: blind
 steps:
   - id: a
@@ -281,7 +281,7 @@ func TestSuggestedEditsConvergeToValid(t *testing.T) {
 	// step, and a loop's own mapping. Depth is the variable because the ranges
 	// come from different levels of the parser's recursion, and a level that
 	// measured its columns against the wrong node would only show up here.
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 nam: converge
 vars:
   things: ["a", "b"]
@@ -346,7 +346,7 @@ steps:
 func TestNoSuggestedEditThroughAMergeKey(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: merged
 steps:
   - <<: &base
@@ -389,7 +389,7 @@ steps:
 func TestNoSuggestedEditInsideAnAnchoredOrAliasedMapping(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: anchored
 steps:
   - &tpl
@@ -427,7 +427,7 @@ steps:
 func TestNoSuggestedEditWhenTheSuggestionIsAlreadyWritten(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: already
 steps:
   - id: a
@@ -464,7 +464,7 @@ steps:
 func TestNoSuggestedEditForAQuotedKey(t *testing.T) {
 	t.Parallel()
 
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: quoted
 steps:
   - id: a

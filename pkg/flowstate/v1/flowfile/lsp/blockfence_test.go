@@ -40,7 +40,7 @@ steps:
     log:
       message: |-
         ${greeting}
-edition: v2026.2
+edition: v2026.3
 `)
 	diags, err := flowfile.ValidateSource(valid)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ steps:
     log:
       message: |-
         ${ "a" + }
-edition: v2026.2
+edition: v2026.3
 `)
 	diags, err = flowfile.ValidateSource(broken)
 	if err != nil {
@@ -87,7 +87,7 @@ steps:
     log:
       message: |-
         ${ 1 + + 2 }
-edition: v2026.2
+edition: v2026.3
 `
 		got := c.open("file:///block-broken.yaml", src).Diagnostics
 		require.Len(t, got, 1, "expected exactly one diagnostic, got %v", messages(got))
@@ -117,7 +117,7 @@ steps:
       message: |-
         ${ 1 +
            2 + + 3 }
-edition: v2026.2
+edition: v2026.3
 `
 		got := c.open("file:///block-broken-second.yaml", src).Diagnostics
 		require.Len(t, got, 1, "expected exactly one diagnostic, got %v", messages(got))
@@ -140,7 +140,7 @@ steps:
       message: >-
         ${ 1 + +
            2 }
-edition: v2026.2
+edition: v2026.3
 `
 		got := c.open("file:///fold-broken.yaml", src).Diagnostics
 		require.Len(t, got, 1, "expected exactly one diagnostic, got %v", messages(got))
@@ -157,7 +157,7 @@ steps:
     log:
       message: |-
         ${greeting}
-edition: v2026.2
+edition: v2026.3
 `
 		assert.Empty(t, messages(c.open("file:///block-ok.yaml", src).Diagnostics))
 	})
@@ -191,7 +191,7 @@ steps:
       outputs: >-
         ${ {"records": response.json.records,
             "next_cursor": response.json.next_cursor} }
-edition: v2026.2
+edition: v2026.3
 `
 	assert.Empty(t, messages(c.open("file:///deferred-block.yaml", src).Diagnostics),
 		"a deferred input written as a block-scalar fence must not be squiggled")
@@ -233,7 +233,7 @@ steps:
   - id: inline
     log:
       message: ${ steps.fetch.records }
-edition: v2026.2
+edition: v2026.3
 `
 	const uri = "file:///block-hover.yaml"
 	require.Empty(t, messages(c.open(uri, src).Diagnostics), "the fixture must be a working file")
@@ -285,7 +285,7 @@ steps:
       message: |-
         ${ "count=" +
            string(size(steps.fetch.records)) }
-edition: v2026.2
+edition: v2026.3
 `
 	const uri = "file:///literal-positions.yaml"
 	require.Empty(t, messages(c.open(uri, src).Diagnostics), "the fixture must be a working file")
@@ -334,7 +334,7 @@ steps:
       message: |-
         ${ size(steps.fetch.records) > 0
            ? "some" : "none" }
-edition: v2026.2
+edition: v2026.3
 `
 	const uri = "file:///literal-first-line.yaml"
 	require.Empty(t, messages(c.open(uri, src).Diagnostics), "the fixture must be a working file")
@@ -379,7 +379,7 @@ steps:
       message: |-
         ${ "count=" +
                string(size(steps.fetch.records)) }
-edition: v2026.2
+edition: v2026.3
 `
 		const uri = "file:///literal-deep-indent.yaml"
 		require.Empty(t, messages(c.open(uri, src).Diagnostics), "the fixture must be a working file")
@@ -406,7 +406,7 @@ steps:
         ${ "count=" +
 
            string(size(steps.fetch.records)) }
-edition: v2026.2
+edition: v2026.3
 `
 		const uri = "file:///literal-blank-line.yaml"
 		require.Empty(t, messages(c.open(uri, src).Diagnostics), "the fixture must be a working file")
@@ -447,7 +447,7 @@ steps:
       message: |-
         ${ "count=" +
            string(size(steps.fetch.records)) }
-edition: v2026.2
+edition: v2026.3
 `
 	const uri = "file:///literal-edges.yaml"
 	require.Empty(t, messages(c.open(uri, src).Diagnostics), "the fixture must be a working file")

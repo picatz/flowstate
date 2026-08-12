@@ -1,4 +1,4 @@
-edition: v2026.2
+edition: v2026.3
 name: wait-timeout
 description: Lets an approval lapse, and carries on down the other branch.
 
@@ -51,12 +51,12 @@ steps:
       message: nobody approved in time, so the release stays queued
       level: warn
 
-  # The arm that would have run had anyone answered. `has()` asks whether the sender
-  # supplied a key without asserting that they did, which is what makes it safe on a
-  # wait that lapsed: the payload is then an empty mapping rather than nothing, so
-  # there is still something to look inside.
+  # The arm that would have run had anyone answered. `.?` reads a key the sender may
+  # not have supplied, with the default beside it: a lapsed wait leaves the payload an
+  # empty mapping rather than nothing, so the read resolves to `orValue`'s false
+  # instead of failing.
   - id: publish
-    if: ${has(steps.approval.payload.approved) && steps.approval.payload.approved}
+    if: ${steps.approval.payload.?approved.orValue(false)}
     log:
       message: approved, publishing the release
 

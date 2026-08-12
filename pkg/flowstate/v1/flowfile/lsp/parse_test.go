@@ -20,7 +20,7 @@ func TestParseRecordsExactRanges(t *testing.T) {
 	// `outputs:` is written as a scalar on purpose. The `${steps.first.result}`
 	// below is read for its span and never resolved — `log:` declares no outputs,
 	// so it names nothing, which is exactly why it is safe to measure against.
-	const src = `edition: v2026.2
+	const src = `edition: v2026.3
 name: model
 steps:
   - id: first
@@ -128,7 +128,7 @@ steps:
     log:
       message: |
         1 + 1
-edition: v2026.2
+edition: v2026.3
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -160,7 +160,7 @@ steps:
   - id: a
     log:
       message: only
-edition: v2026.2
+edition: v2026.3
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -174,7 +174,7 @@ edition: v2026.2
 steps:
   - id: a
     log:
-edition: v2026.2
+edition: v2026.3
 `,
 			// `log:` on a line by itself names the task and gives it no inputs,
 			// which is a complete step as far as the grammar is concerned — whether
@@ -205,7 +205,7 @@ base: &b
 steps:
   - id: a
     log: *b
-edition: v2026.2
+edition: v2026.3
 `,
 			check: func(t *testing.T, doc *document) {
 				require.Len(t, doc.parsed.steps, 1)
@@ -274,7 +274,7 @@ steps:
   - id: a
     http:
       url: https://example.com
-edition: v2026.2
+edition: v2026.3
 `, nil)
 	require.NoError(t, doc.parseErr)
 	step := doc.parsed.step("a")
@@ -298,7 +298,7 @@ steps:
   - id: first
     log:
       mes
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []outlineStep{{id: "first", taskName: "log"}},
 		},
@@ -312,7 +312,7 @@ steps:
       headers:
         X-One: a
         X-Two: b
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []outlineStep{{
 				id:        "a",
@@ -332,7 +332,7 @@ steps:
     # which task to run
     log:
       message: hi
-edition: v2026.2
+edition: v2026.3
 `,
 			want: []outlineStep{{id: "a", taskName: "log", inputKeys: []string{"message"}}},
 		},
@@ -370,7 +370,7 @@ steps:
         X: y
     retry:
       attempts: 3
-edition: v2026.2
+edition: v2026.3
 `
 	ix := newLineIndex(src)
 	// The path a task's inputs sit under is the task's own name now, because that

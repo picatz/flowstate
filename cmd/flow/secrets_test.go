@@ -38,7 +38,7 @@ secrets:
 	egress := filepath.Join(t.TempDir(), "egress.yaml")
 	require.NoError(t, os.WriteFile(egress, []byte("egress:\n  allow_loopback: true\n"), 0o600))
 
-	workflow := fmt.Sprintf(`edition: v2026.2
+	workflow := fmt.Sprintf(`edition: v2026.3
 name: secret-http
 steps:
   - id: fetch

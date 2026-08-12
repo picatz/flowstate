@@ -18,7 +18,7 @@
 #   * a step carrying a value into a later one, so the spans have a reason to be
 #     in the order they are — `vars.release` reaching the announce line, all
 #     three rollout lines, and the count in the report.
-edition: v2026.2
+edition: v2026.3
 tests:
   - name: the wait, the fan-out and the carried release are all present in one run
     workflow: ./workflow.yaml
