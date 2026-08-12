@@ -1,20 +1,22 @@
-// Package hook reads and writes the Claude Code hook contract for the three
-// guards under tools/hooks (#482).
+// Package hook reads and writes the Claude Code hook contract for the
+// guards under tools/hooks (#482, #498).
 //
 // A hook receives one JSON document on stdin. The fields these guards read,
 // per https://code.claude.com/docs/en/hooks:
 //
 //	hook_event_name  "PreToolUse" or "PostToolUse"
-//	tool_name        "Edit", "Write", "Bash", ...
+//	tool_name        "Edit", "Write", "Bash", "mcp__github__...", ...
 //	cwd              the session's working directory
 //	tool_input       the tool's arguments: file_path for Edit/Write,
-//	                 command for Bash
+//	                 command for Bash, tool-specific fields for MCP calls
 //
 // A PreToolUse hook refuses a call by printing a permissionDecision of
-// "deny" (Deny); a PostToolUse hook informs without blocking by printing
-// additionalContext (Advise). Both exit 0; exit codes are left out of the
-// contract on purpose, because exit 2 blocks unconditionally and these
-// guards want their reasons read as structured output.
+// "deny" (Deny); allows one while surfacing why by printing a
+// permissionDecision of "allow" with a reason, also echoed to stderr (Warn);
+// a PostToolUse hook informs without blocking by printing additionalContext
+// (Advise). All exit 0; exit codes are left out of the contract on purpose,
+// because exit 2 blocks unconditionally and these guards want their reasons
+// read as structured output.
 //
 // Parsing is deliberately lenient, and lenient means silent: these guards
 // are advisory, so an input the parser does not recognize allows rather
@@ -25,6 +27,7 @@ package hook
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 )
@@ -105,6 +108,25 @@ func Advise(context string) {
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "PostToolUse",
 			"additionalContext": context,
+		},
+	})
+}
+
+// Warn prints the PreToolUse JSON that allows the tool call while carrying
+// reason as the visible permission-decision explanation, and also writes
+// reason to stderr so it is visible even where the decision reason is not
+// rendered. It exists for a guard whose check could not run at all (a
+// dependency down, an API unreachable) and that must fail open rather than
+// block on a check it never performed — see mergeguard (#498), whose
+// posture is fail open, loudly: never claim a check passed when it did not
+// run, and say plainly what was skipped.
+func Warn(reason string) {
+	fmt.Fprintln(os.Stderr, reason)
+	writeJSON(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "allow",
+			"permissionDecisionReason": reason,
 		},
 	})
 }
