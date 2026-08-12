@@ -97,6 +97,47 @@ func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 		ds = append(ds, typeErrors("", "outputs."+declaration.GetName(), declaration.GetValue())...)
 	}
 
+	ds = append(ds, checkTriggerExpressions(wf)...)
+
+	return ds
+}
+
+// checkTriggerExpressions type-checks the expressions a trigger carries.
+//
+// The gap this closes is exactly the one the "position the language grows" note
+// above predicts. #491 added two expression positions — a webhook's `with:`
+// arguments and its `idempotency_key` — and taught [validateWebhookTriggers] to
+// check what *names* they may read, which is a scope question. Nothing taught this
+// traversal about them, so `${nosuchfunc(event.body)}` and `${1 + true}` in a
+// trigger validated clean and then failed, deterministically and identically every
+// time, when [v1.BindWebhookTriggerInputs] evaluated a delivery. That is the
+// definition celcheck.go opens with of something knowable from the document alone.
+//
+// A trigger fires without an author present — a delivery arrives at three in the
+// morning — so the position it costs most to be silent about is this one.
+//
+// Still no scope and still no I/O: every name is declared as `dyn` exactly as it is
+// for a step, so `event` and a reference a trigger may not make are equally
+// unremarkable here and the second is [validateTriggerExpr]'s to report. A
+// `verify:` entry is not walked at all, because a secret reference is not an
+// expression and resolving one is not something a validator does.
+//
+// Paths match [validateWebhookTriggers]'s, so a diagnostic lands on the same token
+// its scope-checking sibling would have used.
+func checkTriggerExpressions(wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+
+	for i, webhook := range wf.GetTriggers().GetWebhooks() {
+		at := indexPath("triggers", i)
+
+		ds = append(ds, typeErrors("", fieldPath(at, "idempotency_key"), webhook.GetIdempotencyKey())...)
+
+		for _, argument := range slices.Sorted(maps.Keys(webhook.GetArguments())) {
+			ds = append(ds, typeErrors("",
+				fieldPath(fieldPath(at, "with"), argument), webhook.GetArguments()[argument])...)
+		}
+	}
+
 	return ds
 }
 

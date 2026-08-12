@@ -1258,6 +1258,113 @@ excludes it, and the fix is to write the start a moment earlier. Each range may 
 its own `overlap` to say what recovered work does when it meets a run already going;
 without one the schedule's own policy applies.
 
+### `triggers:` as a list of call sites — `webhook:` *(landed)*
+
+A trigger has to get an outside payload into the workflow's declared `inputs:`, and
+the DSL already had the construct for that. `inputs:` is a signature; `with:` on a
+`call:` step is a call site. A trigger is not a second declaration of an input, it is
+another caller — no different from `flow run --input` or an MCP invocation — so
+`triggers:` may also be written as a **list**, one entry per source, each naming its
+kind first:
+
+```yaml
+inputs:
+  order_id: { type: string, required: true }
+  amount:   { type: int, required: true }
+
+triggers:
+  - webhook: stripe
+    verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with:
+      order_id: ${event.body.data.object.metadata.order_id}
+      amount:   ${event.body.data.object.amount}
+
+  - webhook: shopify
+    verify: { hmac_sha256: ${secret('env:SHOPIFY_WEBHOOK_SECRET')} }
+    idempotency_key: ${event.headers["x-shopify-webhook-id"]}
+    with:
+      order_id: ${event.body.order.id}
+      amount:   ${event.body.order.total_cents}
+
+  - schedule:
+      cron: "0 2 * * *"
+```
+
+Nothing is written twice, several webhooks coexist with a schedule, and the CLI needs
+no entry because it passes arguments directly. The mapping spelling
+(`triggers: {schedule: ...}`) still means exactly what it meant, and a file that only
+declares a cadence keeps it — `flow fmt` does not migrate one for no reason its author
+can see.
+
+**The payoff is a diagnostic.** Because a trigger is a call site, `flow validate`
+checks every `with:` against the signature *statically*, in both directions, and says
+so with a line and a column:
+
+```
+webhook "shopify" does not supply required input "amount"
+webhook "stripe" binds "amount_cents", which this workflow declares no input named
+```
+
+That is the whole reason `with:` was chosen over a per-trigger mapping block or a
+per-input `from:` expression. A mapping block states what an input is a second time,
+next to `inputs:` which already states it, with nothing forcing the two to agree —
+add an input, forget the mapping, get a silent absent value. A `from:` reads well for
+one source and cannot express several coexisting origins without growing a keyed
+sub-language.
+
+**`event` is the delivery, and it is bound in a trigger only.** `event.headers` (whose
+names are matched without regard to case) and `event.body` (the decoded payload) are
+in scope in `with:` and `idempotency_key:` and nowhere else in the language. A step
+naming it is a positioned diagnostic, not a silent nil: everything a workflow operates
+on arrives through `with:` into `inputs:` and is read as `inputs.<name>`, because a
+second input path is one `flow validate` could not check. A step *called* `event` is
+still legal — the name is not reserved, since inside a trigger there is no step scope
+for it to shadow — and `flow fix` knows the binding, so it will not root it.
+
+**Two keys are required, and fail closed.** `verify:` names at least one signing
+scheme (`hmac_sha256` or `stripe`) bound to a `${secret(...)}` reference: there is
+deliberately no spelling that means "accept anything", so an unverifiable delivery is
+refused rather than allowed on the grounds that it could not be checked, and a webhook
+with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
+and is required because webhook delivery is at-least-once by nature — without it every
+retried delivery is a second run. What the validator does *not* do is resolve
+anything: whether the secret exists and whether this deployment has that scheme
+configured are a deployment's answers.
+
+**Declaring is not receiving.** There is no HTTP endpoint yet: this block compiles into
+the specification, both drivers ignore it, and `flow run local` runs a file with a
+webhook on it once, now. What exists today is the declaration, its checks, and the
+mapping — which is the part a file controls, and the part `flow test` replays offline
+from a stored delivery:
+
+```yaml
+tests:
+  - name: a stripe delivery starts a run with the mapped inputs
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./testdata/stripe-charge.json   # one JSON document: headers and body
+    expect:
+      inputs: { order_id: ord_H1x9, amount: 4200 }
+      idempotency_key: t=1755043200,v1=6f0b…
+
+  - name: an unverifiable delivery is refused, and no run happens
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./testdata/stripe-charge.json
+      signature: invalid
+    expect:
+      refused: true
+```
+
+No network, deterministic, and it turns the argument mapping into a unit test — the
+one part of a workflow that would otherwise be debuggable only in production. The
+mapping is real; the verification *outcome* is declared, because there is no receiver
+to compute it yet. `examples/webhook-trigger` is the worked example, and it runs in
+CI like the rest.
+
 ### `${...}` stays; `!expr` is refused
 
 The fence survives two challenges on its merits.

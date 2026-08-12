@@ -905,6 +905,135 @@ message Triggers {
   // Optional and, when present, still inert until somebody creates it. See
   // [Workflow.triggers] for why the declaration and the act are separate.
   ScheduleTrigger schedule = 1 [(google.api.field_behavior) = OPTIONAL];
+
+  // Webhooks are the deliveries this workload is meant to start on, one entry
+  // per source.
+  //
+  // Repeated rather than singular because several sources starting one workload
+  // is the ordinary case rather than the exotic one — a payments provider and a
+  // storefront both reporting the same order — and each brings its own payload
+  // shape, its own signing scheme, and therefore its own mapping into
+  // [Workflow.declared_inputs]. That is what makes a webhook a *call site*
+  // rather than a second declaration of the inputs: `arguments` here is the same
+  // construct as [Call.arguments], checked against the same signature, so N
+  // sources are N callers instead of a keyed sub-language nobody asked for.
+  //
+  // Inert exactly as `schedule` is. Nothing in `Run` reads this, both execution
+  // drivers ignore it, and no HTTP endpoint in this repository serves a
+  // delivery yet: what a file declares here is checked by `flow validate` and
+  // replayed offline by `flow test`. See [WebhookTrigger] for what the receiver
+  // will be handed when it lands.
+  repeated WebhookTrigger webhooks = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 32}
+  ];
+}
+
+// WebhookTrigger is one source that may start this workload by delivering to it.
+//
+// # A call site, not a second declaration of the inputs
+//
+// `arguments` is the same construct a `call:` step writes as `with:`: the
+// workflow's `inputs:` is the signature, and a trigger is another caller of it,
+// exactly as `flow run --input` and an MCP invocation are. That choice is the
+// whole reason `flow validate` can say `webhook "stripe" does not supply
+// required input "amount"` with a line and a column, which a per-input `from:`
+// or a per-trigger mapping block could never say: with a mapping block the same
+// fact is written twice, in `inputs:` and beside it, with nothing forcing the
+// two to agree.
+//
+// The expressions in `arguments` and in `idempotency_key` are evaluated against
+// one bound name, `event`, holding the delivery — its headers and its decoded
+// body. That name is bound here and nowhere else in the language: a step body
+// that wants to know how the run started is a later slice (`trigger.kind` and
+// friends), and payload data must arrive through `arguments` into `inputs:` or
+// the file has grown a second input path with no contract.
+//
+// # Fail closed, declared rather than assumed
+//
+// Two fields are required by the shape of the problem rather than by taste, and
+// both are refused when the file is compiled rather than when a delivery
+// arrives:
+//
+//   - `verify` names at least one signing scheme. There is deliberately no
+//     spelling that means "accept anything": an unverifiable delivery is
+//     refused, never allowed because it could not be checked.
+//   - `idempotency_key` is required. Webhook delivery is at-least-once by
+//     nature, so a trigger with no dedupe key turns every retried delivery into
+//     a second run — a fact about the transport, not about this integration's
+//     luck.
+//
+// The remaining bound belongs to the receiver that does not exist yet: a
+// request body is attacker-chosen input and gets a byte bound *before* it is
+// read into memory. `v1.MaxWebhookPayloadBytes` is that number, and it is
+// already enforced by the one reader there is today — `flow test` reading a
+// stored delivery off disk — so the receiver inherits a bound rather than
+// introducing one.
+message WebhookTrigger {
+  // Name identifies this source, both in a diagnostic (`webhook "stripe" …`)
+  // and in a `flow test` case that replays a stored delivery against it. Unique
+  // within a file: two sources sharing a name are two mappings a reader cannot
+  // tell apart, and a test naming one of them addresses whichever came first.
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[A-Za-z][A-Za-z0-9_-]*$"
+    }
+  ];
+
+  // Verify names the signing schemes a delivery must satisfy, each bound to the
+  // key it is checked with — written in a Flowfile as `${secret('...')}`, so the
+  // material is a reference the receiver resolves rather than a value in a
+  // repository.
+  //
+  // At least one entry, and the schemes are a closed set
+  // ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme
+  // nobody implements is a delivery nobody can verify, which under the rule
+  // above means a delivery that is always refused — better said with a line and
+  // a column than discovered in production.
+  map<string, Value> verify = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).map = {
+      min_pairs: 1
+      max_pairs: 8
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 64
+        }
+      }
+    }
+  ];
+
+  // IdempotencyKey is the expression that names a delivery, so a redelivery of
+  // the same event is recognized as one rather than started again.
+  //
+  // Evaluated against `event`, like `arguments`. Required — see the message doc
+  // for why "this integration has no stable key" has to be something somebody
+  // writes down rather than something a default quietly assumes.
+  Value idempotency_key = 3 [(google.api.field_behavior) = REQUIRED];
+
+  // Arguments bind this source's payload to the workflow's declared inputs, one
+  // expression per input, over `event`.
+  //
+  // Named `arguments` rather than `with` for the reason [Call.arguments] is: the
+  // schema says what the field holds and the DSL says how it is spelled, and the
+  // two constructs are deliberately the same construct — checked against
+  // [Workflow.declared_inputs] by the same rules, in both directions.
+  map<string, Value> arguments = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      max_pairs: 64
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 64
+        }
+      }
+    }
+  ];
 }
 
 // ScheduleTrigger says when a workload should run.
