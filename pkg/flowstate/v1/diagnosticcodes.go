@@ -34,7 +34,8 @@ package flowstatev1
 // be a second, schema-owned definition of the same handful of names. What must
 // not drift is which strings this build actually assigns, which is why the set
 // is generated into docs/reference/diagnostics.md from [DiagnosticCodes] rather
-// than written by hand there — see cmd/flow/docsgen.go's renderDiagnosticCodeReference,
+// than written by hand there — see cmd/flow/internal/docsgen's
+// renderDiagnosticCodeReference,
 // which follows the same pattern [documentedEnvironmentVariables] does: a live
 // Go value read directly rather than a parallel listing kept beside it.
 type DiagnosticCode string
@@ -111,7 +112,7 @@ type DiagnosticCodeInfo struct {
 // document renders them — general first, since it is the default every other
 // code is carved out of, then the rest in the order #241 introduced them.
 //
-// This is the one place the set is declared. cmd/flow/docsgen.go's
+// This is the one place the set is declared. cmd/flow/internal/docsgen's
 // renderDiagnosticCodeReference reads it directly to generate
 // docs/reference/diagnostics.md, and TestDiagnosticCodesAreAssigned (in the
 // flowfile package, which is where every code in this list is actually used)

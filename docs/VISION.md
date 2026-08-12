@@ -178,7 +178,7 @@ and the cobra tree landed under `docs/reference/`, pinned in CI with
 `git diff --exit-code`; `flow mcp` derives its tools from the service schema
 with no hand-kept list (a test holds the two together in both directions); and
 the catalog RPC is the one answer every consumer reads. See
-[CLI.md](CLI.md) for the surface and `cmd/flow/docsgen.go` for the mechanism.
+[CLI.md](CLI.md) for the surface and `cmd/flow/internal/docsgen` for the mechanism.
 One piece of guidance survives because it is not yet needed rather than done:
 custom protoc options are available if plain leading comments stop being enough
 — but check first whether SourceCodeInfo survives to where the generator runs,
