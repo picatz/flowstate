@@ -9,6 +9,10 @@ and the owner, who reads threads to judge whether review is finding signal.
 The governing rule: minimum receiver effort at the required fidelity; think
 as much as the task deserves, publish what the recipient needs.
 
+Every comment or reply a Claude agent posts ends with the attribution
+footer; see comms-pr for the exact form and why a compact variant does not
+substitute for it there.
+
 ## Authoring a comment
 
 Shape: severity, concern, consequence, expected action. Attach evidence
@@ -66,13 +70,23 @@ fixed, and it is a token and API budget as much as a writing one:
    argue with one: two AIs debating through a human's GitHub account is
    noise the owner has to read.
 5. **Resolve the thread once the fix has landed**, with
-   `resolve_review_thread` and the node ID from step 1. Resolve stale and
-   duplicate threads too; an unresolved thread that needed no action still
-   costs a human a read. Resolution is the acknowledgment.
+   `resolve_review_thread` and the node ID from step 1. Resolve stale,
+   outdated, and duplicate threads too, not only the one you acted on;
+   multiple reviewers frequently file the same finding, and every copy of
+   it needs closing. Resolution is the acknowledgment, and it is also what
+   keeps the next review round cheap to read: an unresolved thread that
+   needed no action still costs a fetch.
 6. **Respect the API budget.** The GitHub REST and GraphQL limit is shared
    across everything the account does, and polling PR state exhausted it
    in one wave. Prefer webhook events over polling, batch reads, and back
    off when the limit is hit rather than retrying.
+7. **Know what the API cannot do.** GitHub exposes resolve and unresolve
+   for review threads only. There is no dismiss and no minimize for a
+   review's top-level summary body, so that block cannot be collapsed after
+   the fact once posted. The way to reduce those is reviewer configuration,
+   automatic review set to request-only rather than on every push, which is
+   a repository setting and therefore an owner decision, not something an
+   agent changes.
 
 ## Failure modes
 

@@ -10,6 +10,10 @@ is paid for here. Restatement is not.
 The governing rule: minimum receiver effort at the required fidelity; think
 as much as the task deserves, publish what the recipient needs.
 
+Every issue body and comment a Claude agent posts ends with the attribution
+footer; see comms-pr for the exact form and why a compact variant does not
+substitute for it there.
+
 ## Issue body
 
 Problem, desired outcome, constraints, acceptance criteria, evidence.
