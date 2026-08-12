@@ -53,10 +53,52 @@ Seven waste sources measured in wave 1, each with the rule it produced:
 7. **Re-derivation.** Rule: the brief carries the settled decisions, file
    paths, and constraints the agent would otherwise rediscover. A brief
    that costs 500 tokens to write saves tens of thousands.
+8. **API polling.** The account's GitHub API budget is shared, hourly, and
+   bounded, and it was exhausted twice in one session by PR status
+   polling, both times blocking real work. Prefer webhook events over
+   polling, never spread the same polling calls across subagents, and
+   back off on exhaustion rather than retrying in a loop; see
+   comms-review for the full mechanics, including that REST and GraphQL
+   meter separately and one can be down while the other still works.
 
 Pace against the weekly window: heavy design work early in the cycle,
 mechanical and review-fix work late. When the top-tier budget is spent,
 design pauses and building continues, not the reverse.
+
+Route mechanical work to Sonnet rather than the session model. A golden
+re-record on 2026-08-12 cost 66k tokens on Sonnet; the identical result on
+the session's larger model would have cost several times that for no
+difference in output. Run one agent at a time unless the owner explicitly
+asks for a wave: subagents share the account's token and API budgets, they
+do not get their own, so a wave multiplies the spend against the same
+ceiling rather than dividing it.
+
+## Pausing and standing down
+
+Stopping an agent preserves its worktree, so a paused agent resumes from
+where it stopped rather than restarting from scratch. Record the worktree
+path when you pause one; it is the only thing a resume needs.
+
+Never resume a large-context agent merely to confirm it has stood down. A
+completed agent cannot write unless messaged, so it is already silent, and
+waking one to ask costs its entire transcript to produce one sentence.
+Confirm an agent has stopped by observing that it is not writing, not by
+asking it.
+
+## Monitors
+
+Do not arm a monitor for something you will observe directly anyway. A
+command you run yourself reports its own exit status; watch it by running
+it, not by arming a watcher on it. Monitors exist for events that arrive
+from outside the agent, on somebody else's schedule: a webhook, a sibling
+session, a scheduled trigger.
+
+One agent on 2026-08-12 armed monitors on its own gate runs and produced
+three spurious wake-ups when they timed out after the work had already
+finished by other means. If a monitor is armed and its work finishes
+another way, cancel it. For the parent: a notification saying a monitor
+timed out but the work finished anyway is noise, not a signal, so do not
+re-verify state on the strength of one.
 
 ## Dispatch-prompt checklist
 

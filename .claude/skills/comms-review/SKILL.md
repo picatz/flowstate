@@ -51,42 +51,138 @@ the evidence, done.
 > turns a missing principal into an identity with no subject ... Say both,
 > instead of an absolute claim the code does not make.
 
+## Merging
+
+Never merge pull requests back to back. Each PR's CI proves exactly one
+tree: that branch merged with whatever main existed when the run started.
+It says nothing about a tree that includes a second PR merged a minute
+later, because no check re-runs against the new main. On 2026-08-12, four
+PRs merged inside ninety seconds broke main this way: one PR added a call
+to `runNodes` with six arguments while another, merged seconds after, gave
+`runNodes` a seventh parameter. Neither diff touched a line the other
+touched, so git merged both without a textual conflict, and every CI run
+that had passed was proving a tree that no longer existed. The breakage
+surfaced later on an unrelated docs PR, whose five red jobs had nothing to
+do with its own diff. Merge one PR, confirm main still builds, then merge
+the next. Issue #489 carries the full account and the branch-protection
+fix that came out of it.
+
 ## The bot-review loop
 
 Automated review (Codex, Copilot) lands on every PR. The procedure is
-fixed, and it is a token and API budget as much as a writing one:
+fixed, and it is a token and API budget as much as a writing one. Handle
+every thread before merge, never after: a PR merged once with its review
+still unread and its threads still unresolved is the failure the rest of
+this section exists to prevent.
 
-1. **Fetch once per PR, not once per finding.** `get_review_comments`
+1. **Read reviewer state cheaply before fetching threads.** Codex signals
+   on the PR description itself: an eyes reaction while it is still
+   reviewing, a thumbs up once it has finished and agrees. One read of the
+   description's reactions tells you whether a review is in flight, for a
+   fraction of the cost of fetching threads. Do not merge while one is in
+   flight.
+2. **Fetch once per PR, not once per finding.** `get_review_comments`
    returns the threads with their `isResolved`/`isOutdated` metadata.
    Never fetch the full PR object just to check state; its body is large
    and you already know the PR. Use `get_check_runs` for CI status.
-2. **Triage the whole set in one pass.** Classify each finding: real (fix
+3. **Triage the whole set in one pass.** Classify each finding: real (fix
    it), stale (a later commit already fixed it; no action), or wrong
    (skip, and say why in the session report, not on GitHub).
-3. **One agent per PR carrying all real findings**, never one agent per
+4. **One agent per PR carrying all real findings**, never one agent per
    finding. Route to the branch owner if it has context left, otherwise a
    fresh cheaper agent with the branch as the handoff.
-4. **The pushed fix is the reply.** No prose replies to bots, and never
+5. **The pushed fix is the reply.** No prose replies to bots, and never
    argue with one: two AIs debating through a human's GitHub account is
    noise the owner has to read.
-5. **Resolve the thread once the fix has landed**, with
-   `resolve_review_thread` and the node ID from step 1. Resolve stale,
-   outdated, and duplicate threads too, not only the one you acted on;
-   multiple reviewers frequently file the same finding, and every copy of
-   it needs closing. Resolution is the acknowledgment, and it is also what
-   keeps the next review round cheap to read: an unresolved thread that
-   needed no action still costs a fetch.
-6. **Respect the API budget.** The GitHub REST and GraphQL limit is shared
-   across everything the account does, and polling PR state exhausted it
-   in one wave. Prefer webhook events over polling, batch reads, and back
-   off when the limit is hit rather than retrying.
-7. **Know what the API cannot do.** GitHub exposes resolve and unresolve
-   for review threads only. There is no dismiss and no minimize for a
-   review's top-level summary body, so that block cannot be collapsed after
-   the fact once posted. The way to reduce those is reviewer configuration,
-   automatic review set to request-only rather than on every push, which is
-   a repository setting and therefore an owner decision, not something an
-   agent changes.
+6. **Prefer a reaction over a comment.** Codex asks for a thumbs up or
+   down on every finding it files. A reaction costs one call and adds no
+   visual noise, and `add_reply_to_pull_request_comment` accepts a
+   reaction with no body, so it never creates a comment of its own. Thumbs
+   up on a real finding that got a fix, thumbs down on a finding you
+   determined is wrong, nothing on duplicates and stale threads where
+   there is no judgment to send.
+7. **Write a line only when a human reading later would otherwise be
+   lost.** A resolved thread is collapsed, so one line inside it costs no
+   visual noise on the PR, but it still costs tokens and attention, so it
+   is not automatic. Less is more for agent-to-agent traffic:
+   - A finding you agree is real but are not fixing here always gets a
+     line, and is never silently resolved. File it as an issue first,
+     then point the thread at it: "Real, not fixing here: `<one clause>`.
+     Filed as #NNN."
+   - A finding you determined is **wrong** is the opposite case, and the
+     distinction matters: never file an issue for a defect you have
+     established does not exist, because that is tracker noise about
+     nothing. It gets a thumbs down and a resolve, and the evidence goes
+     where evidence belongs, in the commit message or the session report.
+     A refuted P1 on #492 was handled exactly this way.
+   - A non-obvious stale thread gets one line: "Stale: `<what superseded
+     it>`."
+   - A fix that is obvious from the diff gets a reaction and no line; the
+     commit is the argument.
+   - A duplicate gets neither reaction nor line.
+8. **Resolve every thread**, with `resolve_review_thread` and the node ID
+   from step 2, including stale, outdated, and duplicate ones, not only
+   the one you acted on. Multiple reviewers frequently file the same
+   finding, and every copy needs closing. Resolution is the
+   acknowledgment, and it is what keeps the next review round cheap to
+   *read*, not cheap to fetch: `get_review_comments` returns resolved and
+   unresolved threads alike, exposing `isResolved` only as metadata, so an
+   unresolved thread costs no extra API call. What it costs is triage and
+   human attention, and, on the PR page, visual noise. Resolve for that
+   reason, not to save a fetch.
+9. **Respect the API budget.** REST and GraphQL each have their own pool.
+   A pool is shared across everything the account does, so polling PR
+   state exhausted one of them in a single wave, but the two are not
+   shared with each other and go down independently. Prefer webhook
+   events over polling, batch reads, and when a pool is exhausted back
+   off from *that* pool rather than stopping altogether: see the budget
+   section below for what still works when one of them is gone.
+10. **Know what the API can and cannot do.** GitHub exposes resolve and
+    unresolve for review threads through the API we use. Dismissing a
+    review also exists, in both REST and GraphQL: it invalidates that
+    review's state, so a `REQUEST_CHANGES` no longer blocks, but it does
+    not hide or collapse the review's top-level body. Minimizing or
+    hiding that body is the operation the API genuinely does not offer.
+    Our MCP tool surface currently exposes resolve and unresolve for
+    threads but not dismissal, so treat dismissal as unavailable in
+    practice until that changes. The way to reduce noisy review bodies at
+    the source is reviewer configuration, automatic review set to
+    request-only rather than on every push, which is a repository setting
+    and therefore an owner decision, not something an agent changes.
+
+## The API budget is bounded
+
+The account's GitHub API budget is a shared, hourly, bounded resource, so
+the repo's own doctrine applies here too: bound the resource the consumer
+controls. It was exhausted twice in one session, both times by PR status
+polling, and both times it blocked real work.
+
+- **Events beat polling.** Webhook activity already wakes a session on CI
+  failures, review comments, and merges. The only legitimate polls are for
+  state webhooks do not cover, and those get one deliberate check rather
+  than a loop.
+- **Cheapest read first.** A reaction on the PR description beats
+  fetching threads. `list_pull_requests` with an explicit fields subset
+  that omits `body` gets every open PR's head and state in one call,
+  instead of a get per PR. Fetch threads once per PR, never per finding.
+  Never re-read something to confirm what you already know, and never
+  verify a merge you just performed: the merge response is the
+  confirmation.
+- **REST and GraphQL are metered separately, and exhaust independently.**
+  Observed directly: with GraphQL gone, review-thread reads failed on
+  every attempt while check runs, PR creation, and merges all succeeded in
+  the same minute. Exhaustion is not a full stop; check whether the work
+  you need lives on the other budget. Pushing a branch is neither REST nor
+  GraphQL, it is git over the proxy, so pushing work and deferring PR
+  creation beats stalling.
+- **Do not let the working budget paper over the missing one.** With
+  GraphQL down you can still merge, which is exactly the temptation that
+  produces a merge with unread review state. If review state cannot be
+  read, the merge waits. A rule that only holds when it is convenient is
+  not a rule.
+- **On exhaustion:** stop cleanly, do not retry in a loop, do not spread
+  the same calls across subagents, report what is blocked, schedule one
+  retry past the reset, and switch to work that needs no API.
 
 ## Failure modes
 
