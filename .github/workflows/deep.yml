@@ -409,6 +409,96 @@ jobs:
           echo "::error::at least one examples leg failed; see the deep-tier issue(s) filed by this run"
           exit 1
 
+  # The deterministic simulation tier at eighty times the PR lane's width, and
+  # in a different part of the seed space every week (#477 slice 0).
+  #
+  # The PR lane already runs this package -- the property is ordinary Go tests in
+  # pkg/flowstate/v1/dst, inside the existing test job -- at 24 schedules per
+  # case, which is seconds and catches an order dependence a diff introduces. It
+  # is not a search. This job is: a schedule explorer's signal accumulates with
+  # how much of the space it has seen, which is clock time rather than any diff,
+  # and that is exactly the cut this workflow exists to make.
+  #
+  # FLOWSTATE_DST_SEED0 moves the window by run number so consecutive weeks
+  # explore different seeds rather than re-proving the same ones. That does not
+  # cost reproducibility, which is the whole design of the tier: a divergence
+  # prints the one seed that produced it, and FLOWSTATE_DST_SEED replays exactly
+  # that schedule at any width, on any machine.
+  #
+  # Without -race deliberately. The local driver runs one goroutine here and the
+  # schedule is a value rather than a thread interleaving, so the detector has
+  # nothing to find and costs the run most of its width; the race-detected pass
+  # over this same package is the PR lane's, every time.
+  simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Schedule equivalence over 2000 schedules per case
+        id: dst
+        continue-on-error: true
+        env:
+          FLOWSTATE_DST_SCHEDULES: '2000'
+        run: |
+          set -o pipefail
+          export FLOWSTATE_DST_SEED0=$(( 1 + GITHUB_RUN_NUMBER * 1000000 ))
+          echo "exploring seeds from ${FLOWSTATE_DST_SEED0}"
+          GOMEMLIMIT=2GiB go test -count=1 -v -timeout 3000s ./pkg/flowstate/v1/dst/ 2>&1 | tee dst.log
+
+      - name: File an issue for a diverging schedule
+        if: steps.dst.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          title="deep-tier: a schedule diverged in the deterministic simulation tier"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already covers a diverging schedule; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "The weekly deep tier's schedule search found a seed whose observables differ from the written-order baseline's."
+            echo
+            echo "The execution model promises completion order is never observable (#418), so this is a real finding: either the engine leaks the schedule into something an author can see, or the case counts something as an observable that the model never promised. It is not flake -- the seed reproduces the interleaving exactly."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            echo "Failing cases:"
+            echo
+            echo '```'
+            grep -E '^ *--- FAIL' dst.log | sort -u || true
+            echo '```'
+            echo
+            echo "The seed and the command that replays it are in the failure output:"
+            echo
+            echo '```'
+            grep -A 4 'REPRODUCE THIS EXACT SCHEDULE' dst.log | head -n 40 || true
+            echo '```'
+            echo
+            echo "Log tail:"
+            echo
+            echo '```'
+            tail -n 80 dst.log
+            echo '```'
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"
+
+      - name: A diverging schedule fails the job
+        if: steps.dst.outcome == 'failure'
+        run: |
+          echo "::error::a schedule diverged from the written-order baseline; see the deep-tier issue filed by this run"
+          exit 1
+
   # A leaked coroutine, which is invisible to every other tier: the race
   # detector proves two goroutines never corrupt shared state and says
   # nothing about one of them existing forever, and a workflow test's
