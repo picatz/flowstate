@@ -921,7 +921,19 @@ func TestRunWorkflowWebhookDelivery(t *testing.T) {
 	runTriggerCases(t, tests.WebhookDeliveryCases())
 }
 
-// runTriggerCases runs one trigger corpus, so the two above cannot drift in how
+// TestRunWorkflowTriggerContext covers reading `trigger` against the durable
+// driver, pairing the local run of the identical [tests.TriggerContextCases].
+//
+// The route is what makes the pairing worth having. Here the context is a field
+// of [v1.RunState]: it crosses the wire, is written to history, is handed to an
+// activity inside the compacted [v1.Scope], and is carried across every
+// Continue-As-New. Locally it is a value on a context. A field dropped anywhere
+// along that path shows up here and nowhere else.
+func TestRunWorkflowTriggerContext(t *testing.T) {
+	runTriggerCases(t, tests.TriggerContextCases())
+}
+
+// runTriggerCases runs one trigger corpus, so the three above cannot drift in how
 // they run what they were given.
 func runTriggerCases(t *testing.T, cases []tests.Case) {
 	t.Helper()
@@ -938,7 +950,15 @@ func runTriggerCases(t *testing.T, cases []tests.Case) {
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{
+				Workflow: test.Workflow,
+				Inputs:   inputs,
+
+				// Where the durable driver's half of a trigger context lives: in
+				// the state message, not on a context value, which is the
+				// difference the shared set exists to prove does not matter.
+				Trigger: test.Trigger,
+			})
 			require.True(t, env.IsWorkflowCompleted())
 
 			if test.ExpectFailure {
@@ -1215,7 +1235,7 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Trigger: test.Trigger})
 			require.True(t, env.IsWorkflowCompleted())
 			require.NoError(t, env.GetWorkflowError())
 

@@ -106,6 +106,12 @@ type StepsOutputActivation struct {
 	// is correct only for a run that predates them; see [runRootValue].
 	RunAddress *RunAddress
 
+	// Trigger is how the run started, answered whole under [TriggerRoot] exactly
+	// as [StepsOutputActivation.RunIdentity] is: nil reads as every field empty,
+	// which is correct both for a run that predates the field and for a path that
+	// records no trigger. See [TriggerContextValue].
+	Trigger *TriggerContext
+
 	// Ctx bounds evaluation of any stored expression encountered while
 	// resolving a name. A context is held here, rather than passed in,
 	// because ResolveName implements a fixed third-party interface that has
@@ -337,6 +343,15 @@ func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
 
 	case RunRoot:
 		return runRootValue(e.RunIdentity, e.RunLocal, e.RunAddress), true
+
+	case TriggerRoot:
+		// The fifth root, answered whole for the reason the four above are, and
+		// answered *after* the step lookup for the reason they are: a
+		// specification compiled before this root existed may hold a step of that
+		// name, and a worker evaluates the stored AST out of `RunState` rather
+		// than re-parsing the file, so a run started on an older build keeps
+		// resolving the way it always did (invariant 10).
+		return TriggerContextValue(e.Trigger), true
 
 	default:
 		return nil, false
@@ -1013,6 +1028,12 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// answer is one that says so rather than one that looks like a field nobody
 	// filled in. See [LocalRunAddress].
 	scope.Address = NewLocalRunAddress()
+
+	// And how this run started, which is a manual start unless a caller said
+	// otherwise: `flow run local` is a person at a keyboard, and `flow test` sets
+	// a case's own so that a branch guarded on the trigger is exercisable without
+	// one. See [TriggerFromContext].
+	scope.Trigger = TriggerFromContext(ctx)
 
 	// The declarations a wait reports itself policed against, recorded once for
 	// the run and from the top-level workflow only: a delivery is authorized

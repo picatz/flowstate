@@ -33,12 +33,14 @@ import (
 // triggerKeys are the kinds of trigger a file may declare in the mapping
 // spelling.
 //
-// One, and it stays one. `triggers:` written as a mapping is the spelling every
-// scheduled file in this repository already uses, and it keeps meaning exactly what
-// it meant. A second kind arrives through the *list* spelling below rather than as
-// a second key here, because a webhook is a call site — it carries arguments — and
-// a mapping keyed by kind has nowhere to put two of the same kind.
-var triggerKeys = []string{"schedule"}
+// Two, and both are kinds a workflow has at most one of. `triggers:` written as a
+// mapping is the spelling every scheduled file in this repository already uses, and
+// it keeps meaning exactly what it meant; `manual:` joins it because a workflow says
+// one thing about being started by a person, so the mapping's one-of-each shape is
+// the right shape for it. A *webhook* arrives only through the list spelling below,
+// because it is a call site — it carries arguments — and a mapping keyed by kind has
+// nowhere to put two of the same kind.
+var triggerKeys = []string{"schedule", "manual"}
 
 // triggerKindKeys are the words that make one entry of the list spelling a
 // trigger of a particular kind.
@@ -47,8 +49,25 @@ var triggerKeys = []string{"schedule"}
 // rest of the entry belongs to that kind. `webhook:` names a source; `schedule:`
 // carries the same cadence mapping the top-level spelling does, so a file that
 // wants a nightly sweep *and* a webhook can write both without the mapping
-// spelling's one-of-each limit.
-var triggerKindKeys = []string{"webhook", "schedule"}
+// spelling's one-of-each limit. `manual:` is the one that narrows rather than
+// declares a source — see [manualKeys].
+var triggerKindKeys = []string{"webhook", "schedule", "manual"}
+
+// manualKeys are what a `manual:` block says when it is written as a mapping.
+//
+// Deliberately short, and deliberately without a `denied:` key. Refusal has one
+// spelling — `manual: denied`, a scalar on one line — because the whole argument for
+// declaring it at all is that a lock nobody can grep for is a lock nobody knows
+// about. Two spellings of one refusal would mean a search for the greppable one
+// misses half the files that have it.
+var manualKeys = []string{"require_reason", "allowed_principals"}
+
+// manualDenied is the scalar that refuses manual starts.
+//
+// A word rather than `denied: true`, for the reason [webhookKeys] gives its own
+// order: the line is read by whoever is looking for it, and `manual: denied` is a
+// sentence where `manual: {denied: true}` is a configuration.
+const manualDenied = "denied"
 
 // webhookKeys are what one webhook entry says.
 //
@@ -65,6 +84,14 @@ var webhookKeys = []string{"webhook", "verify", "idempotency_key", "with"}
 // giving the list spelling a second place to write them would make one value
 // expressible twice with a precedence rule nobody benefits from learning.
 var scheduleItemKeys = []string{"schedule"}
+
+// manualItemKeys are what one `- manual:` entry of the list spelling says: what a
+// person may do, under its own key, and nothing else.
+//
+// The narrowing itself is written *under* `manual:` rather than beside it, so the
+// list spelling and the mapping spelling hold the identical block and there is one
+// grammar for it rather than two.
+var manualItemKeys = []string{"manual"}
 
 // notInTriggerHelp is why a `${secret(...)}` cannot appear in a webhook's `with:`.
 //
@@ -120,30 +147,42 @@ func (c *compiler) triggers(key, n ast.Node, path string, r ref) *v1.Triggers {
 	fields, ok := c.fields(n, path, r, triggerKeys)
 	if !ok {
 		c.report(spanOfNode(n), r,
-			"is a mapping of the ways this workflow starts on its own; the one kind today is `schedule:`")
+			"is a mapping of what this workflow says about starting: `schedule:` for a cadence, "+
+				"`manual:` for what a person may do")
 
 		return nil
 	}
 
 	triggers := &v1.Triggers{}
 
-	f, found := fields.get("schedule")
-	if !found {
+	if f, found := fields.get("schedule"); found {
+		schedulePath := fieldPath(path, "schedule")
+		triggers.Schedule = c.scheduleTrigger(f.value, schedulePath, ref{path: schedulePath, label: "schedule"})
+	}
+
+	if f, found := fields.get("manual"); found {
+		manualPath := fieldPath(path, "manual")
+		triggers.Manual = c.manualTrigger(f.key, f.value, manualPath, ref{path: manualPath, label: "manual"})
+	}
+
+	if triggers.GetSchedule() == nil && triggers.GetManual() == nil {
 		// Reported rather than dropped. `triggers: {}` is a block that reads as if
 		// this workflow starts on its own, and silently compiling it to nothing gives
 		// the author no reason to doubt the file — which is the outcome this
 		// repository ranks worst.
-		c.report(spanOrKey(n, key), r,
-			"declares no trigger; the one kind today is `schedule:`, or remove the block. "+
-				"An empty `triggers:` reads as if this workflow starts on its own, and it does not")
+		//
+		// Reported only when *neither* key produced anything, so a `schedule:` whose
+		// own cadence was refused says one thing rather than two: the cadence
+		// diagnostic already has the position and the remedy.
+		if _, hasSchedule := fields.get("schedule"); !hasSchedule {
+			if _, hasManual := fields.get("manual"); !hasManual {
+				c.report(spanOrKey(n, key), r,
+					"declares no trigger; the kinds are `schedule:`, `webhook:` (in the list spelling) and "+
+						"`manual:`, or remove the block. An empty `triggers:` reads as if this workflow "+
+						"starts on its own, and it does not")
+			}
+		}
 
-		return nil
-	}
-
-	schedulePath := fieldPath(path, "schedule")
-	triggers.Schedule = c.scheduleTrigger(f.value, schedulePath, ref{path: schedulePath, label: "schedule"})
-
-	if triggers.GetSchedule() == nil {
 		// Nil rather than an empty message, so `triggers:` written with nothing under
 		// it is indistinguishable from `triggers:` absent — the rule `inputs:` and
 		// `vars:` follow, and what keeps Marshal an exact inverse.
@@ -151,6 +190,156 @@ func (c *compiler) triggers(key, n ast.Node, path string, r ref) *v1.Triggers {
 	}
 
 	return triggers
+}
+
+// manualTrigger compiles a `manual:` block, in either of its two spellings: the
+// scalar `denied`, and a mapping that narrows.
+//
+// The asymmetry between them is the design and not an accident of parsing. A
+// refusal is one word on one line, so that `grep -r 'manual: denied'` finds every
+// workflow a person may not start; a narrowing is a mapping, because it has parts.
+// Anything else under `manual:` is reported rather than guessed at, including the
+// `denied: true` somebody will reach for — see [manualKeys].
+// key is the `manual:` key itself, used only where the value has no span of its
+// own: `manual: {}` is an empty flow mapping, and a diagnostic about a block with
+// nothing in it would otherwise have no line at all. The same fallback
+// [compiler.triggers] makes for `triggers: {}`, and for the same reason.
+func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.ManualTrigger {
+	resolved := c.resolve(n, path, r)
+	if resolved == nil {
+		return nil
+	}
+	c.pos.record(path, spanOfNode(resolved))
+
+	// The scalar spelling first, so `manual: denied` is never read as a mapping
+	// that failed to parse.
+	switch resolved.(type) {
+	case *ast.MappingNode, *ast.MappingValueNode:
+	default:
+		word, ok := c.text(resolved, path, r)
+		if !ok {
+			return nil
+		}
+		if word != manualDenied {
+			c.report(spanOfNode(resolved), r,
+				"is %q, which is not something a `manual:` says. Write `manual: %s` to refuse manual "+
+					"starts outright, or a mapping with `require_reason:` and `allowed_principals:` to "+
+					"narrow them. Declaring nothing at all leaves manual starts as they are, which is "+
+					"what every workflow without this block does",
+				word, manualDenied)
+
+			return nil
+		}
+
+		return &v1.ManualTrigger{Denied: true}
+	}
+
+	fields, ok := c.fields(resolved, path, r, manualKeys)
+	if !ok {
+		return nil
+	}
+
+	manual := &v1.ManualTrigger{}
+
+	if f, found := fields.get("require_reason"); found {
+		p := fieldPath(path, "require_reason")
+		if b, ok := c.boolean(f.value, p, ref{path: p, label: "manual require_reason"}); ok {
+			manual.RequireReason = b
+		}
+	}
+
+	if f, found := fields.get("allowed_principals"); found {
+		p := fieldPath(path, "allowed_principals")
+		manual.AllowedPrincipals = c.manualPrincipals(f.value, p)
+	}
+
+	if !manual.GetRequireReason() && len(manual.GetAllowedPrincipals()) == 0 {
+		// A block that narrows nothing reads as if it did, which is the one thing a
+		// diagnostic here must not allow: `manual:` written with nothing under it is
+		// how somebody believes they have restricted a workflow they have not.
+		c.report(spanOrKey(resolved, key), r,
+			"narrows nothing, so it says exactly what writing no `manual:` at all says. Write "+
+				"`manual: %s` to refuse manual starts, `require_reason: true` to require a reason for "+
+				"one, or `allowed_principals:` to say who may make one",
+			manualDenied)
+
+		return nil
+	}
+
+	return manual
+}
+
+// manualPrincipals reads `allowed_principals:`, written as one subject or as a
+// list of them.
+//
+// One or many, the spelling `cron:` and `calendars:` already use for the same
+// schema shape and for the same reason: a file naming a single principal should not
+// have to write a one-element list to say so.
+//
+// Every entry is a subject a caller authenticates as, so an empty one is refused
+// where it is written. It would otherwise become a set member matching the empty
+// subject a deployment with no identity provider attests — a policy admitting
+// nobody in particular, which is a policy admitting everyone. [v1.CheckManualStart]
+// refuses that at the boundary too; this is the same rule with a line to point at.
+func (c *compiler) manualPrincipals(n ast.Node, path string) []string {
+	r := ref{path: path, label: "manual allowed_principals"}
+
+	resolved := c.resolve(n, path, r)
+	if resolved == nil {
+		return nil
+	}
+	c.pos.record(path, spanOfNode(resolved))
+
+	nodes, listed := []ast.Node{resolved}, false
+	if seq, ok := resolved.(*ast.SequenceNode); ok {
+		nodes, listed = seq.Values, true
+	}
+
+	if listed && len(nodes) == 0 {
+		c.report(spanOfNode(resolved), r,
+			"is an empty list, which allows nobody at all rather than everybody; remove the key to "+
+				"leave manual starts open, or write `manual: %s` to refuse them", manualDenied)
+
+		return nil
+	}
+
+	out := make([]string, 0, len(nodes))
+	seen := make(map[string]struct{}, len(nodes))
+	for i, node := range nodes {
+		p := path
+		if listed {
+			p = indexPath(path, i)
+		}
+
+		subject, ok := c.text(node, p, ref{path: p, label: r.label})
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(subject) == "" {
+			c.report(spanOfNode(node), ref{path: p, label: r.label},
+				"is empty, which names nobody; write the subject a caller authenticates as, or remove "+
+					"the entry — an empty principal would match a caller a deployment with no identity "+
+					"provider attests, which is every caller")
+
+			continue
+		}
+		if _, duplicate := seen[subject]; duplicate {
+			c.report(spanOfNode(node), ref{path: p, label: r.label},
+				"lists %q twice; a principal is either allowed or not, so the second entry does nothing",
+				subject)
+
+			continue
+		}
+		seen[subject] = struct{}{}
+
+		out = append(out, subject)
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+
+	return out
 }
 
 // triggerList compiles the call-site spelling: `triggers:` written as a list, one
@@ -230,10 +419,29 @@ func (c *compiler) triggerList(sequence *ast.SequenceNode, path string, r ref) *
 			// all.
 			schedulePath := fieldPath("triggers", "schedule")
 			triggers.Schedule = c.scheduleTrigger(f.value, schedulePath, ref{path: schedulePath, label: "schedule"})
+
+		case "manual":
+			fields := c.check(entries, entryRef, manualItemKeys)
+			f, _ := fields.get("manual")
+			if triggers.GetManual() != nil {
+				c.report(spanOfNode(f.key), entryRef,
+					"is a second `- manual:`, and a workflow says one thing about being started by a "+
+						"person: write the whole rule in the first entry")
+
+				continue
+			}
+
+			// Recorded under the canonical `triggers.manual` path rather than under
+			// this entry's index, for the reason a schedule is: [validateTriggers]
+			// addresses the contradiction diagnostics there, and a position keyed by
+			// which list entry the author happened to write it in would be a span
+			// nothing looks up.
+			manualPath := fieldPath("triggers", "manual")
+			triggers.Manual = c.manualTrigger(f.key, f.value, manualPath, ref{path: manualPath, label: "manual"})
 		}
 	}
 
-	if triggers.GetSchedule() == nil && len(triggers.GetWebhooks()) == 0 {
+	if triggers.GetSchedule() == nil && len(triggers.GetWebhooks()) == 0 && triggers.GetManual() == nil {
 		// Nil rather than an empty message, exactly as the mapping spelling returns
 		// nil for a block with nothing usable in it: what keeps [Marshal] an exact
 		// inverse is that `triggers:` absent and `triggers:` empty compile alike.
@@ -738,6 +946,58 @@ func triggersToYAML(triggers *v1.Triggers) (any, error) {
 		doc = append(doc, yaml.MapItem{Key: "schedule", Value: written})
 	}
 
+	if manual := triggers.GetManual(); manual != nil {
+		written, err := manualTriggerToYAML(manual)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "manual", Value: written})
+	}
+
+	return doc, nil
+}
+
+// manualTriggerToYAML writes a `manual:` block in the spelling that can carry what
+// it holds: the scalar for a refusal, a mapping for a narrowing.
+//
+// The two are not interchangeable and choosing between them here is the same choice
+// [manualTrigger] reads. Writing a refusal as `{denied: true}` would be `flow fmt`
+// turning the one greppable spelling into one nobody searches for.
+func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
+	if manual.GetDenied() {
+		if manual.GetRequireReason() || len(manual.GetAllowedPrincipals()) > 0 {
+			// Refused rather than written, for the reason [scheduleTriggerToYAML]
+			// refuses a cadence-less schedule: the contradiction is what
+			// [v1.CheckManualTrigger] reports, so writing it would produce a file
+			// this package's own validator rejects.
+			return nil, fmt.Errorf("triggers manual: refuses manual starts and also narrows them, which " +
+				"cannot both hold; write `manual: denied`, or the narrowing without it")
+		}
+
+		return manualDenied, nil
+	}
+
+	doc := yaml.MapSlice{}
+
+	if manual.GetRequireReason() {
+		doc = append(doc, yaml.MapItem{Key: "require_reason", Value: true})
+	}
+
+	if principals := manual.GetAllowedPrincipals(); len(principals) > 0 {
+		// A single principal is written bare rather than as a one-element list, the
+		// spelling `cron:` uses and the one [manualPrincipals] reads back.
+		var value any = principals
+		if len(principals) == 1 {
+			value = principals[0]
+		}
+		doc = append(doc, yaml.MapItem{Key: "allowed_principals", Value: value})
+	}
+
+	if len(doc) == 0 {
+		return nil, fmt.Errorf("triggers manual: narrows nothing, so there is nothing to write; give it " +
+			"`require_reason: true`, an `allowed_principals:`, or write `manual: denied`")
+	}
+
 	return doc, nil
 }
 
@@ -763,6 +1023,18 @@ func triggerListToYAML(triggers *v1.Triggers) ([]any, error) {
 			return nil, err
 		}
 		out = append(out, yaml.MapSlice{{Key: "schedule", Value: written}})
+	}
+
+	// Last of all, because it is the entry that says what the others do *not*
+	// cover: a reader meets the sources first and then what a person may do
+	// alongside them. `- manual: denied` under a list of webhooks is the shape the
+	// design is written around, and it reads as the sentence it is.
+	if manual := triggers.GetManual(); manual != nil {
+		written, err := manualTriggerToYAML(manual)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, yaml.MapSlice{{Key: "manual", Value: written}})
 	}
 
 	return out, nil
@@ -974,20 +1246,21 @@ func validateTriggers(wf *v1.Workflow) Diagnostics {
 		return nil
 	}
 
-	ds := validateWebhookTriggers(wf)
+	ds := append(validateWebhookTriggers(wf), validateManualTrigger(wf)...)
 
 	schedule := triggers.GetSchedule()
 	if schedule == nil {
-		if len(triggers.GetWebhooks()) > 0 {
-			// A block holding webhooks and no schedule is complete as it stands.
+		if len(triggers.GetWebhooks()) > 0 || triggers.GetManual() != nil {
+			// A block holding webhooks, or saying what a person may do, is complete
+			// as it stands.
 			return ds
 		}
 
-		return Diagnostics{{
+		return append(ds, Diagnostic{
 			Field: "triggers",
-			Message: "declares no trigger; the kinds are `schedule:` and `webhook:`, or remove the block. " +
-				"An empty `triggers:` reads as if this workflow starts on its own, and it does not",
-		}}
+			Message: "declares no trigger; the kinds are `schedule:`, `webhook:` and `manual:`, or remove " +
+				"the block. An empty `triggers:` reads as if this workflow starts on its own, and it does not",
+		})
 	}
 
 	// Reported against the cadence key that is present, so the squiggle lands on the
@@ -1022,6 +1295,43 @@ func validateTriggers(wf *v1.Workflow) Diagnostics {
 	}
 
 	return ds
+}
+
+// validateManualTrigger reports what is wrong with a `manual:` block.
+//
+// Two things, and they are different in kind. [v1.CheckManualTrigger] is the
+// contradiction — a refusal that also narrows — asked here where there is a line to
+// point at, the shape [validateInputDefault] uses and for the same reason: one
+// rule, two moments, and the author gets the one with a position.
+//
+// The second is a fact about the *set*: refusing manual starts in a file that
+// declares no other way in leaves a workflow nothing can start. That is not a
+// contradiction inside the block, so [v1.CheckManualTrigger] cannot see it — it is
+// only visible from the whole `triggers:` block, which is why it is reported here.
+// It is a property of the file rather than of a deployment, so it is fair game for
+// a validator: whether a webhook's secret exists is a deployment's answer, but
+// whether a webhook is *declared* is written on the page.
+func validateManualTrigger(wf *v1.Workflow) Diagnostics {
+	manual := wf.GetTriggers().GetManual()
+	if manual == nil {
+		return nil
+	}
+
+	if err := v1.CheckManualTrigger(manual); err != nil {
+		return Diagnostics{{Field: "triggers.manual", Message: err.Error()}}
+	}
+
+	if manual.GetDenied() && len(wf.GetTriggers().GetWebhooks()) == 0 && wf.GetTriggers().GetSchedule() == nil {
+		return Diagnostics{{
+			Field: "triggers.manual",
+			Message: "refuses manual starts, and this workflow declares no other trigger, so nothing " +
+				"can start it at all. Declare the source that is meant to — a `- webhook:` or a " +
+				"`schedule:` — or remove the refusal. `flow run local` is unaffected either way, because " +
+				"a workflow that cannot be developed locally is not one anybody will maintain",
+		}}
+	}
+
+	return nil
 }
 
 // validateWebhookTriggers reports what is wrong with a file's declared webhooks.
@@ -1164,9 +1474,9 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 		return nil
 	}
 
-	rooted, vars, inputs, run, bare := referencedIdentifiers(parsed)
+	rooted, vars, inputs, run, trigger, bare := referencedIdentifiers(parsed)
 
-	unresolvable := make([]string, 0, len(rooted)+len(vars)+len(inputs)+len(run)+len(bare))
+	unresolvable := make([]string, 0, len(rooted)+len(vars)+len(inputs)+len(run)+len(trigger)+len(bare))
 	for _, ref := range rooted {
 		unresolvable = append(unresolvable, v1.StepsRoot+"."+ref.ID)
 	}
@@ -1178,6 +1488,15 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 	}
 	for _, ref := range run {
 		unresolvable = append(unresolvable, v1.RunRoot+"."+ref.Field)
+	}
+	// `trigger` is unresolvable here for a reason worth being precise about: it is
+	// not that a trigger has no context, it is that this expression *is* the
+	// trigger. The context is fixed at the moment this mapping produces a run, so
+	// reading it while computing that run's arguments would be a value asking about
+	// itself — and every field of it is already known to whoever wrote this entry,
+	// because they are looking at the trigger it describes.
+	for _, ref := range trigger {
+		unresolvable = append(unresolvable, v1.TriggerRoot+"."+ref)
 	}
 	for _, ref := range bare {
 		if ref == v1.EventRoot || functionNamespaces[ref] {

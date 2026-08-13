@@ -1,0 +1,105 @@
+# A workflow that behaves differently depending on how it was started — and says,
+# separately, who is allowed to start it by hand.
+#
+# Those are two different things, and keeping them apart is the whole point of this
+# example. The body reads `trigger.*` for *behaviour*: a nightly sweep does not page
+# anyone, a delivery records which arrival it came from. The `manual:` block below
+# decides *authorization*: who may start this, and whether they have to say why.
+#
+# # The line, stated once so it is not learned the hard way
+#
+# This is the right shape:
+#
+#     if: ${trigger.kind != "schedule"}          # behaviour
+#
+# and this is the wrong one:
+#
+#     if: ${trigger.principal == "admin"}        # NOT authorization
+#
+# In the body, that second line is an expression a test can fake, one `flow
+# validate` cannot reason about, and one a later refactor can reorder past the step
+# it was guarding. Authorization belongs on the trigger, where a deployment owns it
+# and a server enforces it against an identity it attested — which is the
+# `allowed_principals:` a few lines down. Same rule that keeps egress policy out of
+# the validator: each decision lives where the thing that owns it lives.
+#
+# # `trigger` is metadata, never data
+#
+# It says *how* the run started and nothing about what it carries. Everything this
+# workflow operates on arrives through a trigger's `with:` into `inputs:`, checked
+# against the declarations below. There is no `trigger.body` and there will not be:
+# a payload field reachable that way would be a second input path with no contract,
+# and `flow validate` would be blind to it.
+#
+# # Runnable as written
+#
+#     flow run local examples/trigger-context/workflow.yaml
+#
+# reports a manual start, because that is what it is: a person ran it. `flow run
+# local` is never gated by the `manual:` block — the author's machine is not a
+# deployment — which is what keeps a narrowed workflow developable at all.
+edition: v2026.3
+name: trigger-context
+
+inputs:
+  order_id:
+    type: string
+    default: ord_local
+    description: the order this run is about
+
+triggers:
+  # One source, so the file has something other than a person that starts it.
+  - webhook: payments
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with:
+      order_id: ${event.body.data.object.metadata.order_id}
+
+  # And what a person may do. This *narrows*; it does not enable. Every workflow
+  # is startable by hand with no block at all, and that stays true — adding the
+  # webhook above did not take `flow run` away. What this says is that a manual
+  # start now costs a recorded reason, and is refused for anyone who is not one of
+  # these attested subjects.
+  #
+  # `manual: denied` is the other thing this block can say, on one line, refusing
+  # manual starts outright: explicit and greppable, so nobody discovers the lock
+  # by surprise. Both are enforced by the server against the caller it
+  # authenticated, never by an expression this workflow evaluates about itself.
+  - manual:
+      require_reason: true
+      allowed_principals:
+        - oncall@example.com
+        - release-bot@example.com
+
+steps:
+  # The branch every author writes first. A scheduled sweep does not page anyone;
+  # everything else does. This is behaviour, and `trigger.kind` is the right thing
+  # to read for it.
+  - id: notify
+    if: ${trigger.kind != "schedule"}
+    log:
+      message: ${'paging about order ' + inputs.order_id + ' (started by ' + trigger.kind + ')'}
+      level: info
+
+  # Provenance, written into the log where an operator reading an incident will
+  # find it. `trigger.name` is the webhook or schedule that started the run — empty
+  # for a manual start, because a person is not a declared source — and
+  # `trigger.delivery_id` names the one arrival, so a run can be matched against
+  # the provider's own record of what it sent.
+  #
+  # It is a digest rather than the idempotency key itself: the usual key is a
+  # signature header, and this value is written to durable history.
+  - id: correlate
+    log:
+      message: ${'source=' + trigger.name + ' delivery=' + trigger.delivery_id + ' principal=' + trigger.principal}
+      level: info
+
+outputs:
+  started_by:
+    value: ${trigger.kind}
+    description: how this run was started — manual, webhook, or schedule
+
+  source:
+    value: ${trigger.name}
+    description: which declared trigger started it, empty for a manual start

@@ -102,17 +102,27 @@ const DefaultWebhookConcurrency = 64
 // started this" for a human, a schedule and a delivery alike.
 const webhookIssuer = "flowstate://webhook"
 
-// triggerMemoKey records which trigger started a run, and deliveryMemoKey which
-// delivery.
+// triggerMemoKey records which trigger started a run, deliveryMemoKey which
+// delivery, and reasonMemoKey why a person asked for one.
 //
 // Memos rather than search attributes, for [namespaceMemoKey]'s reason: no
 // cluster-side registration, so provenance is present on a deployment that
-// registered nothing. Written only by this receiver — absent on every run started
-// any other way, which is itself the answer to "was this run started by a
-// delivery".
+// registered nothing.
+//
+// triggerMemoKey is written by every entry path that creates a run — this
+// receiver writes `webhook:<name>`, [FlowstateServer.Run] writes `manual` — so
+// "how did this run start" has one answer read from one place rather than being
+// inferred from which keys happen to be absent. The other two are written only
+// where they mean something: a delivery id by this receiver, a reason by a manual
+// start that gave one.
+//
+// A run started before these keys existed carries none of them, which reads as
+// "no trigger recorded" — the same absence [v1.RunState.trigger] carries, and the
+// honest answer for a run nothing recorded.
 const (
 	triggerMemoKey  = "flowstate.trigger"
 	deliveryMemoKey = "flowstate.delivery"
+	reasonMemoKey   = "flowstate.reason"
 )
 
 // errDeliveryNotStarted marks the one failure past verification that is the
@@ -708,7 +718,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 		return AcceptedDelivery{}, err
 	}
 
-	deliveryID := webhookDeliveryID(key)
+	deliveryID := v1.WebhookDeliveryID(key)
 	memo[triggerMemoKey] = "webhook:" + route.trigger.GetName()
 	memo[deliveryMemoKey] = deliveryID
 	options.Memo = memo
@@ -734,6 +744,15 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 		StepsBudget: int32(r.server.maxStepsPerRun),
 		Identity:    identity,
 		Inputs:      bound,
+
+		// How this run started, for the workflow's own steps to read: which
+		// webhook, admitted as which principal, by which delivery. The delivery id
+		// is the digest [webhookDeliveryID] already computed and never the
+		// idempotency key it names — the usual key is a signature header, and this
+		// value is written to history, which invariant 8 calls durable and broadly
+		// readable.
+		Trigger: v1.NewWebhookTriggerContext(
+			route.trigger.GetName(), identity.GetSubject(), deliveryID),
 	})
 	if err != nil {
 		var already *serviceerror.WorkflowExecutionAlreadyStarted
@@ -777,19 +796,6 @@ func webhookWorkflowID(namespace, workflow, trigger, key string) string {
 	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%s", namespace, workflow, trigger, key))
 
 	return "flowstate-webhook-" + hex.EncodeToString(digest[:])
-}
-
-// webhookDeliveryID names a delivery for provenance and for a log line.
-//
-// A digest of the idempotency key rather than the key, for the second reason
-// above: the usual key *is* a signature, and provenance is written into a memo,
-// which is durable and broadly readable. Truncated to sixteen bytes because this
-// is an identifier a human correlates across a log line and a memo, not a
-// security boundary — the full digest is in the workflow id for whoever needs it.
-func webhookDeliveryID(key string) string {
-	digest := sha256.Sum256([]byte(key))
-
-	return hex.EncodeToString(digest[:16])
 }
 
 // decodeDeliveryBody reads the payload the way `flow test` reads a stored one.

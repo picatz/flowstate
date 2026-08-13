@@ -742,6 +742,12 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// is evaluated here and nowhere else.
 			Address: e.scope.GetAddress(),
 
+			// And how the run started, whole, for the identical reason again: a
+			// `${trigger.kind}` written in an http task's `outputs:` or `expect:`
+			// is evaluated here and nowhere else, so a copy that forgets it makes
+			// one root resolve in a step's `if:` and not two lines below it.
+			Trigger: e.scope.GetTrigger(),
+
 			// Carried across the wire. This scope is what an activity on some other
 			// worker evaluates a task's own expressions against, and that worker's
 			// build may know a different set of profiles than the one that compiled

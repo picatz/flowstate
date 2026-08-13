@@ -78,7 +78,13 @@ func loadDelivery(path string) (v1.WebhookDelivery, error) {
 //   - inputs are what the run starts with, non-nil only when the delivery was
 //     accepted and every assertion about it held. Nil with no failures is the
 //     `refused: true` case passing: no run happens, and none should.
-func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map[string]*v1.Value, []*v1.Diagnostic, error) {
+//
+// The delivery id returned beside the inputs is what the run then reports as
+// `${trigger.delivery_id}`: [v1.WebhookDeliveryID] over the same evaluated key,
+// which is the function the live receiver calls, so a case asserting on it is
+// asserting against production's answer and not against a value this harness
+// invented.
+func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map[string]*v1.Value, string, []*v1.Diagnostic, error) {
 	trigger, declared := v1.FindWebhookTrigger(workflow, test.Trigger.Webhook)
 	if !declared {
 		names := v1.WebhookTriggerNames(workflow)
@@ -87,13 +93,13 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 			declares = "declares " + strings.Join(names, ", ")
 		}
 
-		return nil, nil, fmt.Errorf("trigger %q: workflow %q %s",
+		return nil, "", nil, fmt.Errorf("trigger %q: workflow %q %s",
 			test.Trigger.Webhook, workflow.GetName(), declares)
 	}
 
 	delivery, err := loadDelivery(deliveryPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("trigger %q: %w", test.Trigger.Webhook, err)
+		return nil, "", nil, fmt.Errorf("trigger %q: %w", test.Trigger.Webhook, err)
 	}
 	delivery.Verified = test.Trigger.Verified()
 
@@ -105,10 +111,10 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 	bound, key, bindErr := v1.BindWebhookTriggerInputs(context.Background(), workflow, trigger, delivery)
 	if bindErr != nil {
 		if wantRefused {
-			return nil, nil, nil
+			return nil, "", nil, nil
 		}
 
-		return nil, []*v1.Diagnostic{{
+		return nil, "", []*v1.Diagnostic{{
 			Field:   "trigger",
 			Value:   test.Trigger.Webhook,
 			Message: fmt.Sprintf("the delivery did not start a run: %v", bindErr),
@@ -116,7 +122,7 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 	}
 
 	if wantRefused {
-		return nil, []*v1.Diagnostic{{
+		return nil, "", []*v1.Diagnostic{{
 			Field: "expect.refused",
 			Value: test.Trigger.Webhook,
 			Message: "expected the delivery to be refused, but it was accepted and mapped to inputs; " +
@@ -138,10 +144,10 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 		// The mapping is what a trigger case is about, so a case whose mapping is
 		// wrong stops here rather than running the workflow on values it has
 		// already reported as the wrong ones.
-		return nil, failures, nil
+		return nil, "", failures, nil
 	}
 
-	return bound, nil, nil
+	return bound, v1.WebhookDeliveryID(key), nil, nil
 }
 
 // compareInputs checks the inputs a delivery produced against what a case

@@ -230,7 +230,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		scheduleMemo[k] = v
 	}
 
-	actionMemo := map[string]any{namespaceMemoKey: namespace}
+	actionMemo := map[string]any{namespaceMemoKey: namespace, triggerMemoKey: v1.TriggerKindSchedule + ":" + name}
 	for k, v := range starterMemoEntry(identity) {
 		actionMemo[k] = v
 	}
@@ -305,6 +305,15 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 				StepsBudget: int32(s.maxStepsPerRun),
 				Identity:    identity,
 				Inputs:      inputs,
+
+				// How every firing of this schedule started, frozen here for the
+				// reason Identity above is frozen here: there is no caller left to
+				// derive anything from when a schedule fires at 03:00, so the answer
+				// is captured once, while somebody is present, and carried into every
+				// execution. That is also what makes `if: ${trigger.kind !=
+				// "schedule"}` mean the same thing on the first firing and the
+				// thousandth.
+				Trigger: v1.NewScheduleTriggerContext(name, identity.GetSubject()),
 			}},
 		},
 	})

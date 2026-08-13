@@ -535,11 +535,30 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	_, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	// This RPC can bring a run into existence, so it is a manual start and is
+	// held to the workflow's `manual:` block exactly as [FlowstateServer.Run] is.
+	// Unconditionally, on the same reasoning [FlowstateServer.validateSubmission]
+	// is run unconditionally here: which branch Temporal's own
+	// SignalWithStartWorkflow takes is not knowable at the moment this handler
+	// commits to it, so "may create" is the floor for every call through this
+	// RPC. A laxer answer here than at `Run` would make `manual: denied` a lock
+	// with a second door beside it.
+	//
+	// No reason travels on this request, so a workflow requiring one is startable
+	// through `Run` and not through here — which is the fail-closed direction:
+	// a requirement nothing can satisfy refuses, rather than being waived by the
+	// path that has nowhere to put it.
+	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), ""); err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	}
+
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
 	if err != nil {
 		return nil, err
 	}
 	options.ID = workflowID
+	memo[triggerMemoKey] = v1.TriggerKindManual
+	options.Memo = memo
 
 	run, err := temporal.SignalWithStartWorkflow(
 		ctx, workflowID, req.Msg.GetName(),
@@ -549,6 +568,12 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 			StepsBudget: int32(s.maxStepsPerRun),
 			Identity:    identity,
 			Inputs:      inputs,
+
+			// A caller with a credential asked for this run, so it started the
+			// same way `flow run` starts one. Recorded here for the reason
+			// [FlowstateServer.Run] records it: the fact is known once, at the
+			// boundary, and carried rather than re-derived.
+			Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 		},
 	)
 	if err != nil {

@@ -2,6 +2,8 @@ package flowstatev1
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -513,4 +515,28 @@ func eventRefValue(event *Value) ref.Val {
 	}
 
 	return converted
+}
+
+// WebhookDeliveryID names one delivery, for provenance and for a log line.
+//
+// A digest of the evaluated idempotency key rather than the key itself, and that
+// is the whole substance of the function: the usual key *is* a signature header,
+// and this value is written into a memo and into the run's own
+// [TriggerContext.delivery_id], both of which are durable and broadly readable
+// (invariant 8). A digest reveals nothing about the key it names.
+//
+// Truncated to sixteen bytes because this is an identifier a human correlates
+// across a log line, a memo and a `${trigger.delivery_id}` in a workflow — not a
+// security boundary. The receiver puts the full digest in the run's workflow id
+// for whoever needs collision resistance.
+//
+// Here rather than in the receiver, because it is not only the receiver's: `flow
+// test` replaying a stored delivery has to produce the identical value, or a
+// rehearsal asserting on `${trigger.delivery_id}` would assert against something
+// production never answers with — one meaning, one definition, which is the rule
+// CLAUDE.md states for every value both drivers read.
+func WebhookDeliveryID(key string) string {
+	digest := sha256.Sum256([]byte(key))
+
+	return hex.EncodeToString(digest[:16])
 }

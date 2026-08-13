@@ -109,6 +109,19 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		return nil, err
 	}
 
+	// And the fourth, for the fourth time the same reason applies. A `manual:`
+	// block that both refuses manual starts and narrows them satisfies the
+	// schema perfectly — protovalidate has nothing to say about two booleans
+	// that contradict — and it is a specification an author cannot write,
+	// because the compiler refuses it against a line and a column. Refused here
+	// so that a hand-built `RunRequest` cannot carry a contradiction into
+	// durable history, where [CheckManualStart] would then have to decide which
+	// half of it to believe. Fail closed at the boundary, once, rather than
+	// twice with a precedence rule.
+	if err := CheckManualTrigger(wf.GetTriggers().GetManual()); err != nil {
+		return nil, err
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration

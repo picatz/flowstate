@@ -504,6 +504,32 @@ func TestRunWorkflowWebhookTrigger(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTriggerContext covers reading `trigger` in the local driver.
+//
+// The engine package runs the identical [tests.TriggerContextCases] against the
+// durable driver, and the pairing is the substance of this feature rather than a
+// formality: here the context arrives on a context value and there it arrives in
+// [v1.RunState], crosses the wire and survives Continue-As-New. Two routes, one
+// answer, or `flow run local` is rehearsing a different file.
+func TestRunWorkflowTriggerContext(t *testing.T) {
+	for _, test := range tests.TriggerContextCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			ctx := t.Context()
+			if test.Trigger != nil {
+				ctx = v1.NewContextWithTrigger(ctx, test.Trigger)
+			}
+
+			out, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowWebhookDelivery covers a run started by a delivery in the local
 // driver.
 //
@@ -611,7 +637,12 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 	baseURL := tests.NewHTTPServer(t)
 	for _, test := range tests.ResponseScopeCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
-			out, err := v1.Run(t.Context(), test.Workflow)
+			ctx := t.Context()
+			if test.Trigger != nil {
+				ctx = v1.NewContextWithTrigger(ctx, test.Trigger)
+			}
+
+			out, err := v1.Run(ctx, test.Workflow)
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})
