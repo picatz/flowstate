@@ -790,7 +790,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 			// candidates here rather than the declared names its shaping
 			// removed. Offering too little is the scan's stated posture;
 			// offering a name nothing produces is the failure.
-			if !s.shapes() {
+			if !s.shapes(tasks) {
 				c.outputs = taskOutputs(def)
 			}
 		}
@@ -860,14 +860,14 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
-			if shaping := s.shapingEntry(); shaping != nil {
+			if shaping := s.shapingEntry(tasks); shaping != nil {
 				// The declared outputs are exactly what shaping removed, so they
 				// are not candidates: accepting one would write a reference
 				// nothing produces. The shaping's own names are offered when
 				// they are statically knowable, and nothing is offered when they
 				// are not — a fabricated name is worse than an empty menu.
 				c.docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
-				c.outputs = shapedOutputCandidates(s, def)
+				c.outputs = shapedOutputCandidates(s, def, tasks)
 			} else {
 				c.outputs = taskOutputs(def)
 			}
@@ -878,8 +878,8 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 
 // shapedOutputCandidates renders a shaped step's own output names, or nothing
 // when the shaping expression keeps them to itself.
-func shapedOutputCandidates(s *parsedStep, def v1.TaskDef) []refOutput {
-	names, ok := shapedOutputNames(s.shapingEntry())
+func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) []refOutput {
+	names, ok := shapedOutputNames(s.shapingEntry(tasks))
 	if !ok {
 		return nil
 	}

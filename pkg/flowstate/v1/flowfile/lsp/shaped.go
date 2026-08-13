@@ -32,8 +32,8 @@ const taskShapingKey = v1.ShapingInput
 // workflow's declared `outputs:` (held on the file) cannot reach here. And only
 // a task that *declares* shaping, so an ordinary input by that name on any
 // other task is an ordinary input, completed and hovered as one.
-func (s *parsedStep) shapingEntry() *entry {
-	if s.taskEntry == nil || !v1.TaskShapesOutputs(s.taskName) {
+func (s *parsedStep) shapingEntry(tasks *v1.Registry) *entry {
+	if s.taskEntry == nil || !registryShapesOutputs(tasks, s.taskName) {
 		return nil
 	}
 	return s.input(taskShapingKey)
@@ -44,8 +44,30 @@ func (s *parsedStep) shapingEntry() *entry {
 // Written for the line scan, which sees an input's key without its value and so
 // cannot ask [shapedOutputNames] anything: what it needs is only whether the
 // declared names still describe the step.
-func (s *outlineStep) shapes() bool {
-	return v1.TaskShapesOutputs(s.taskName) && containsKey(s.inputKeys, taskShapingKey)
+func (s *outlineStep) shapes(tasks *v1.Registry) bool {
+	return registryShapesOutputs(tasks, s.taskName) && containsKey(s.inputKeys, taskShapingKey)
+}
+
+// registryShapesOutputs asks *this server's* registry whether a task shapes.
+//
+// [v1.TaskShapesOutputs] asks the default registry, which is the right question
+// for the compiler and the validator — both build from the built-ins alone — and
+// the wrong one here. The registry is a property of the server ([doc.Tasks]):
+// `flow lsp` opens a plugin host, registers what it found, and hands that
+// registry in, so a shaping plugin task is registered *there* and unknown to the
+// default one. Asked the wrong registry, a plugin that declares shaping reads as
+// a task that does not, and the editor offers the outputs its descriptor
+// declares — the exact names the author's `outputs:` replaced, which is the
+// failure #324 is the record of, arrived at from the other side.
+//
+// Nil is the default registry, which is what every other lookup in this package
+// already means by it (see [newDocument]).
+func registryShapesOutputs(tasks *v1.Registry, taskName string) bool {
+	if tasks == nil {
+		return v1.TaskShapesOutputs(taskName)
+	}
+	def, found := tasks.Lookup(taskName)
+	return found && def.ShapesOutputs
 }
 
 // shapedOutputNames returns the names a shaping entry defines, when they are

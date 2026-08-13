@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -184,6 +185,17 @@ func mapLiteralEntries(source string) ([]mapEntry, bool) {
 	written := make([]mapEntry, 0, len(structure.GetEntries()))
 	seen := make(map[string]bool, len(structure.GetEntries()))
 	for _, entry := range structure.GetEntries() {
+		if entry.GetOptionalEntry() {
+			// `{?'id': response.json.?id}` writes the entry only when the value
+			// is there, and the mapping form has no spelling for that: an
+			// `id: ${response.json.?id}` written unconditionally produces the
+			// name in every run, holding an optional where the author's map held
+			// nothing at all. The flag is on the entry rather than in its key or
+			// its value, which is why a rewriter reading only those two saw an
+			// ordinary entry.
+			return nil, false
+		}
+
 		key, ok := entry.GetMapKey().GetExprKind().(*expr.Expr_ConstExpr)
 		if !ok {
 			return nil, false
@@ -269,8 +281,8 @@ func fencedScalar(source string) (string, bool) {
 // the same way. Each of those keeps the fence, which was never wrong — only
 // noisy.
 //
-// [quoteScalar] decides the quoting, so a string that spells `yes` comes back
-// quoted rather than as a boolean.
+// [yamlStringScalar] decides how a string is written, which is more than a
+// quoting question — see its own note.
 func literalScalar(e *expr.Expr) (string, bool) {
 	constant := e.GetConstExpr()
 	if constant == nil {
@@ -285,10 +297,80 @@ func literalScalar(e *expr.Expr) (string, bool) {
 	case *expr.Constant_BoolValue:
 		return strconv.FormatBool(kind.BoolValue), true
 	case *expr.Constant_StringValue:
-		return quoteScalar(kind.StringValue), true
+		return yamlStringScalar(kind.StringValue)
 	}
 
 	return "", false
+}
+
+// yamlStringScalar renders a CEL string constant as the YAML scalar that holds
+// it, or declines.
+//
+// Two things stand between a string and its spelling here, and each one has
+// rewritten a file into meaning something else.
+//
+// The constant is a literal moving into an *interpolated* position, so a `${` in
+// it is read back as the start of an expression rather than as the two
+// characters it was: `outputs: '${ {"t": "${TOKEN}"} }'` shaped `t` to the eight
+// characters `${TOKEN}` and was promoted to `t: "${TOKEN}"`, which evaluates
+// one. [escapeFences] is the language's answer to writing a literal `${` (#513)
+// and this is another caller of it rather than another spelling of it.
+//
+// And the result has to read back through YAML as itself. [quoteScalar] decides
+// that from a set of characters, and a set maintained by hand does not know
+// everything YAML does: `-` and `?` are block indicators, so `{"a": "-"}` was
+// promoted to `a: -` and the file stopped parsing at all, and `0x1` came back an
+// integer. So the rendering is *checked* rather than trusted — the scalar is
+// read back and the entry declined unless it is the same string. A character
+// class is a claim about YAML; the parser is YAML.
+func yamlStringScalar(s string) (string, bool) {
+	escaped := escapeFences(s)
+
+	// quoteScalar first, because its whole job is to leave alone what needs no
+	// quoting: a rewriter that quotes every string produces a diff of changes
+	// nobody asked for.
+	if rendered := quoteScalar(escaped); readsBackAs(rendered, escaped) {
+		return rendered, true
+	}
+
+	// Double quoting is what quoteScalar itself reaches for once it decides
+	// quoting is needed, so where its character set said otherwise and YAML
+	// disagreed, this is the same answer arrived at the other way.
+	if quoted := strconv.Quote(escaped); readsBackAs(quoted, escaped) {
+		return quoted, true
+	}
+
+	return "", false
+}
+
+// readsBackAs reports whether a rendered YAML scalar is read back as the string
+// it was rendered from.
+//
+// A whole mapping rather than a bare scalar, because the position this renders
+// for is a mapping's value, and half of what can go wrong is about that position
+// — a leading `-` is a block sequence entry there and an ordinary character in a
+// document that is only a scalar.
+func readsBackAs(rendered, want string) bool {
+	file, err := parser.ParseBytes([]byte("v: "+rendered+"\n"), 0)
+	if err != nil || len(file.Docs) != 1 {
+		return false
+	}
+
+	var value ast.Node
+	switch body := file.Docs[0].Body.(type) {
+	case *ast.MappingNode:
+		if len(body.Values) != 1 {
+			return false
+		}
+		value = body.Values[0].Value
+	case *ast.MappingValueNode:
+		value = body.Value
+	default:
+		return false
+	}
+
+	text, isScalar := scalarText(value)
+	return isScalar && text == want
 }
 
 // plainYAMLName reports whether a name can be written as a mapping key with no

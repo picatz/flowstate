@@ -672,6 +672,7 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 		ExpressionInputs: []string{"expr"},
 		SecretInputs:     []string{"token"},
 		NeedsScope:       true,
+		ShapesOutputs:    true,
 		Fn: func(context.Context, map[string]*flowstatev1.Value, *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 			return nil, nil
 		},
@@ -701,6 +702,16 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 	}
 	if got := manifest.GetSecretInputs(); len(got) != 1 || got[0] != "token" {
 		t.Errorf("secret_inputs = %v, want [token]", got)
+	}
+
+	// The declaration three host surfaces read: the compiler keeps a shaping
+	// mapping's entries, the validator checks references against those names,
+	// and the language server offers them. The wire field existed before the SDK
+	// had a way to set it, which meant every plugin built with this SDK
+	// advertised false and could not opt in at all — a capability complete
+	// everywhere except where a third party reaches it.
+	if !manifest.GetShapesOutputs() {
+		t.Error("shapes_outputs was not carried, so a plugin that shapes cannot say so")
 	}
 	if manifest.GetInputMessage() != "flowstate.v1.Task.Log.Inputs" {
 		t.Errorf("input_message = %q", manifest.GetInputMessage())

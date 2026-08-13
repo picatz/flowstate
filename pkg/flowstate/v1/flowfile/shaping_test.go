@@ -1,6 +1,8 @@
 package flowfile_test
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -357,6 +359,27 @@ func TestFixLeavesShapingItCannotPromoteAlone(t *testing.T) {
 			name: "an expression that is not a map literal",
 			src:  "      outputs: ${vars.shape}\n",
 		},
+		{
+			// An optional entry, whose key exists only when its value does. The
+			// mapping form writes every name it holds unconditionally, so there
+			// is no spelling of this to promote it into: an `id:` written here
+			// would produce the name in every run, holding an optional where the
+			// author's map held no entry at all.
+			//
+			// The flag is on the entry rather than in its key or its value,
+			// which is exactly why a rewriter reading only those two saw an
+			// ordinary entry and flattened it.
+			name: "an optional entry",
+			src:  "      outputs: '${ {?\"id\": response.json.?id} }'\n",
+		},
+		{
+			// One optional entry among ordinary ones takes the whole map with
+			// it. Promoting the rest and leaving this one behind is not an
+			// option either: a shaping's entries are its whole output set, and
+			// half of it in each spelling is two shapings.
+			name: "an optional entry beside ordinary ones",
+			src:  "      outputs: '${ {\"code\": response.status_code, ?\"id\": response.json.?id} }'\n",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -365,6 +388,83 @@ func TestFixLeavesShapingItCannotPromoteAlone(t *testing.T) {
 			result, err := flowfile.Fix([]byte(src))
 			require.NoError(t, err)
 			require.Empty(t, result.Refusals)
+			assert.Equal(t, src, string(result.Source), "left byte for byte alone")
+		})
+	}
+}
+
+// TestFixKeepsAStringConstantMeaningWhatItMeant is the promotion asked the only
+// question that matters about it: does the file still compute the same thing?
+//
+// A CEL string constant is the one entry value that stops being an expression on
+// the way across — `${"hello"}` becomes `hello`, which is the readability the
+// mapping form was for. It is therefore also the one that lands in a position
+// that reads its text back through two layers rather than none, and each layer
+// has changed a value here:
+//
+//   - the fence. A literal moving into an interpolated position takes any `${`
+//     in it with it, so a shaping of `${TOKEN}` — eight characters an author
+//     wanted verbatim — was promoted to `a: "${TOKEN}"` and became an
+//     expression. [flowfile.Fix] silently changed what the workflow computes,
+//     which is the failure mode `flow fix` may never have.
+//   - YAML itself. `-` and `?` are block indicators and `0x1` is a number, none
+//     of which the quoting rule's character set knew, so `{"a": "-"}` was
+//     promoted to `a: -` and the file stopped parsing at all.
+//
+// So this asserts the compiled value rather than the bytes: every one of these
+// is a string constant, and the step has to shape it to the same string
+// afterwards. Asserting the output still validates is what let the previous
+// three corruptions through, and the first of the two above validates perfectly.
+func TestFixKeepsAStringConstantMeaningWhatItMeant(t *testing.T) {
+	t.Parallel()
+
+	for _, constant := range []string{
+		// The fence, in each position it can sit in, plus the escape's own
+		// spelling — a string already holding `$${` has to come back holding it.
+		"${TOKEN}", "before ${x} after", "${", "$${lit}", "$",
+
+		// YAML's block indicators, which decide what a line *is* rather than
+		// what it says.
+		"-", "- x", "?", "? x", ",", "---", "...",
+
+		// Scalars that read back as another type.
+		"0x1", "1_000", "+5", ".5", "no", "NULL", "True", "~", "",
+
+		// Characters the quoting rule does handle, here so a regression in it
+		// shows up as this test rather than as somebody's file.
+		"a: b", "|x", ">x", "&x", "*x", "!x", "%x", "@x", "\t", "a\tb", `\`, `"`, "'",
+	} {
+		t.Run(strconv.Quote(constant), func(t *testing.T) {
+			t.Parallel()
+
+			src := shapedPrelude + "      outputs: '${ {\"a\": " +
+				strings.ReplaceAll(strconv.Quote(constant), "'", "''") + "} }'\n"
+
+			result, err := flowfile.Fix([]byte(src))
+			require.NoError(t, err)
+			require.Empty(t, result.Refusals)
+
+			// Whether it promoted or declined is not the claim — declining is a
+			// legal answer for anything this cannot render. What it may not do
+			// is produce a file that means something else, so both answers are
+			// held to the same assertion.
+			wf, _, err := flowfile.Parse(result.Source)
+			require.NoError(t, err, "fix produced a file that does not parse")
+			require.Empty(t, diagnose(t, string(result.Source)))
+
+			shaping := wf.GetSteps()[0].GetTask().GetInputs()[v1.ShapingInput]
+			names, knowable := v1.ShapedOutputNames(shaping)
+			require.True(t, knowable)
+			require.Equal(t, []string{"a"}, names)
+
+			if entries := shaping.GetStructure().GetMap().GetEntries(); entries != nil {
+				assert.Equal(t, constant, entries["a"].GetLiteral().GetStringValue(),
+					"the promoted mapping shapes `a` to a different string than the map literal did")
+				return
+			}
+
+			// Declined: the original expression is still the original
+			// expression, character for character.
 			assert.Equal(t, src, string(result.Source), "left byte for byte alone")
 		})
 	}
