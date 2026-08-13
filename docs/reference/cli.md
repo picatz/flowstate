@@ -430,7 +430,7 @@ flow keys generate --out identity/key.pem --id 2026-08
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `--algorithm <string>` | `string` | `ES256` | — | signing algorithm: es256, rs256, eddsa |
+| `--algorithm <string>` | `string` | `ES256` | — | signing algorithm: es256, rs256, eddsa (also: ed25519) |
 | `--id <string>` | `string` | — | — | key id published in the JWK and the JWT "kid" header (default: --out's file name, without its extension) |
 | `--out <string>` | `string` | — | — | path to write the private key PEM to (required) |
 
@@ -512,10 +512,12 @@ flow lsp [flags]
 
 Start a language server for Flowfile editing in text editors and IDEs, serving the Language Server Protocol over stdin and stdout. It reports Flowfile problems as diagnostics as you type.
 
+This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, point a generic LSP extension (or an extension you write) at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "./plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
+
 Examples:
 
 ```sh
-# Start the LSP server:
+# What an editor runs; typing this yourself waits for one to connect:
 flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
@@ -544,10 +546,12 @@ flowstate_run_local executes a submitted Flowfile here, the way `flow run local`
 
 Beside the tools, the server publishes read-only resources: the whole DSL reference at flowstate://docs/dsl, the task catalog as JSON at flowstate://catalog/tasks, and every example Flowfile under flowstate://docs/examples/, embedded at build time, so an agent can read the language and working references without a checkout nearby. See docs/CLI.md for client configuration.
 
+An agent host launches this and speaks to it over the same stdin and stdout this process already has; typing `flow mcp` yourself waits for a host to connect rather than doing anything. Claude Code: `claude mcp add flowstate -- flow mcp`. A host that reads the JSON config MCP servers conventionally use instead: {"mcpServers":{"flowstate":{"command":"flow","args":["mcp"]}}}
+
 Examples:
 
 ```sh
-# Serve the MCP tools on stdio (an MCP client launches this):
+# What an agent host runs; typing this yourself waits for one to connect:
 flow mcp
 
 # Against a specific server for the run-lifecycle tools:

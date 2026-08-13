@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The lifecycle and schedule-mutation verbs used to be mute to anything that was not
@@ -264,6 +266,45 @@ func TestMutationJSONLIsOneCompactLine(t *testing.T) {
 	require.Equal(t, `{"verb":"schedule pause","workflowId":"","runId":"","scheduleName":"nightly-report","signalName":"","result":"applied"}`,
 		strings.ReplaceAll(lines[0], ", ", ","),
 		"the compact form is not the shape a line-oriented reader was promised")
+}
+
+// TestScheduleListJSONLIsOneSchedulePerLine covers the one machine shape in this
+// file that is not a mutation: `schedule list` renders a listing, and jsonl means
+// one record per line there for the same reason `flow list` and `flow tasks
+// <name>` do — a reader consumes them as they arrive, and each line is a whole
+// document a `jq -c` in a loop can index on its own. Mutation-proven: reverting
+// schedule.go's FormatJSONL case in runScheduleList to a single
+// writeJSON(surface, format, response.Msg) call (the mistake `flow tasks` made,
+// picatz/flowstate#396) makes this fail with one line instead of two.
+func TestScheduleListJSONLIsOneSchedulePerLine(t *testing.T) {
+	serveFake(t, &fakeWorkflowService{
+		listSchedulesResponse: &v1.ListSchedulesResponse{
+			Schedules: []*v1.ScheduleSummary{
+				{Name: "nightly-report"},
+				{Name: "hourly-sync"},
+			},
+		},
+	})
+
+	stdout, stderr, err := runCLI(t, "schedule", "list", "-o", "jsonl")
+	require.NoError(t, err)
+	require.Empty(t, stderr)
+
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	require.Len(t, lines, 2, "jsonl did not write one line per schedule:\n%s", stdout)
+
+	var names []string
+	for _, line := range lines {
+		require.True(t, json.Valid([]byte(line)), "line is not a single JSON value: %q", line)
+
+		var schedule struct {
+			Name string `json:"name"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &schedule))
+		names = append(names, schedule.Name)
+	}
+
+	assert.Equal(t, []string{"nightly-report", "hourly-sync"}, names)
 }
 
 // TestMutationTextOutputIsUnchanged is the other half of "additive".

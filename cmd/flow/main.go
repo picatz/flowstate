@@ -942,6 +942,14 @@ func (stdio) Close() error {
 
 // runLSP serves the Flowfile language server over stdin and stdout.
 func runLSP(cmd *cobra.Command, args []string) error {
+	// A person who follows the root help's own example (`flow lsp`) gets
+	// silence indistinguishable from a hang: this server speaks nothing until
+	// an editor writes to it. The banner is the account of that, gated on
+	// stdin being a terminal and written to stderr, so a real editor's pipe
+	// never sees it and the JSON-RPC stream on stdout is never touched
+	// (picatz/flowstate#398).
+	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), lspBanner)
+
 	// Diagnostics go to stderr; stdout carries the JSON-RPC protocol and must
 	// not be polluted with log output.
 	log.SetFlags(0)
@@ -1804,10 +1812,16 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 			"flowstate://catalog/tasks, and every example Flowfile under " +
 			"flowstate://docs/examples/, embedded at build time, so an agent can read the " +
 			"language and working references without a checkout nearby. See docs/CLI.md " +
-			"for client configuration.",
+			"for client configuration.\n\n" +
+			"An agent host launches this and speaks to it over the same stdin and stdout " +
+			"this process already has; typing `flow mcp` yourself waits for a host to " +
+			"connect rather than doing anything. Claude Code: " +
+			"`claude mcp add flowstate -- flow mcp`. A host that reads the JSON config " +
+			"MCP servers conventionally use instead: " +
+			`{"mcpServers":{"flowstate":{"command":"flow","args":["mcp"]}}}`,
 		Args: cobra.NoArgs,
 		RunE: runMCP,
-		Example: `# Serve the MCP tools on stdio (an MCP client launches this):
+		Example: `# What an agent host runs; typing this yourself waits for one to connect:
 flow mcp
 
 # Against a specific server for the run-lifecycle tools:
@@ -1850,9 +1864,16 @@ flow mcp --plugin-dir ./plugins`,
 		Short: "Start a Flowfile Language Server Protocol (LSP) server",
 		Long: "Start a language server for Flowfile editing in text editors and IDEs, " +
 			"serving the Language Server Protocol over stdin and stdout. It reports " +
-			"Flowfile problems as diagnostics as you type.",
+			"Flowfile problems as diagnostics as you type.\n\n" +
+			"This is not something you run and watch: an editor launches it and talks " +
+			"to it over the same stdin and stdout this process already has, so there is " +
+			"no address or port to configure. In VS Code, point a generic LSP extension " +
+			"(or an extension you write) at the command; in Neovim's built-in client, " +
+			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"./plugins\"` to the table " +
+			"if a plugin's tasks should stop reading as unknown) with `filetypes` set to " +
+			"Flowfile's, typically YAML.",
 		RunE: runLSP,
-		Example: `# Start the LSP server:
+		Example: `# What an editor runs; typing this yourself waits for one to connect:
 flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one

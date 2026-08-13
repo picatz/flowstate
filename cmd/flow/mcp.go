@@ -161,6 +161,13 @@ var mcpToolViews = map[string]string{
 
 // runMCP implements the mcp sub-command.
 func runMCP(cmd *cobra.Command, args []string) error {
+	// See runLSP's identical line: a person who types `flow mcp` at a terminal,
+	// following the root help's own example, is owed an account of why nothing
+	// is happening rather than silence. Gated on stdin being a terminal and
+	// written to stderr, so an agent host's pipe never sees it and the MCP
+	// stream on stdout is never touched (picatz/flowstate#398).
+	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), mcpBanner)
+
 	flags := serverFlagsOf(cmd)
 
 	// The execution posture is decided here, once, before a client can call

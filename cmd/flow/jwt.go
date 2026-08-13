@@ -242,11 +242,22 @@ func runJWTSign(cmd *cobra.Command, _ []string) error {
 // inspectResult is what `flow jwt inspect` prints. A struct with named fields
 // rather than the raw *jwt.Token, so the JSON shape is this command's contract
 // and not incidentally whatever the library's field names happen to be.
+//
+// ExpiresAt and IssuedAt are annotations beside the raw claims rather than a
+// replacement for them (picatz/flowstate#395): this command's whole job is
+// "why won't this token verify", and expiry is the most common answer, so
+// making a reader convert a bare epoch second by hand before they can read it
+// is friction this command can remove for free. `claims.exp`/`claims.iat` stay
+// exactly what the token carries — a machine reading this document still finds
+// the wire value — and these two fields are additive, present only when the
+// token carries the claim they annotate.
 type inspectResult struct {
-	Header  header.Parameters `json:"header"`
-	Claims  jwt.ClaimsSet     `json:"claims"`
-	Expired *bool             `json:"expired,omitempty"`
-	Valid   *bool             `json:"signatureValid,omitempty"`
+	Header    header.Parameters `json:"header"`
+	Claims    jwt.ClaimsSet     `json:"claims"`
+	Expired   *bool             `json:"expired,omitempty"`
+	Valid     *bool             `json:"signatureValid,omitempty"`
+	ExpiresAt string            `json:"expiresAt,omitempty"`
+	IssuedAt  string            `json:"issuedAt,omitempty"`
 }
 
 func runJWTInspect(cmd *cobra.Command, args []string) error {
@@ -271,9 +282,14 @@ func runJWTInspect(cmd *cobra.Command, args []string) error {
 	// through JSON — which every parsed token has been — decodes numbers as
 	// float64, so it would silently fail to report expiry on exactly the
 	// tokens this command exists to inspect.
-	if isExpired, ok := tokenExpired(token.Claims, time.Now()); ok {
+	now := time.Now()
+
+	if isExpired, ok := tokenExpired(token.Claims, now); ok {
 		result.Expired = &isExpired
 	}
+
+	result.ExpiresAt = annotateClaimTime(token.Claims, jwt.ExpirationTime, now)
+	result.IssuedAt = annotateClaimTime(token.Claims, jwt.IssuedAt, now)
 
 	keyPath, _ := cmd.Flags().GetString("key")
 	if keyPath != "" {
@@ -336,20 +352,54 @@ func headerKeyID(params header.Parameters) string {
 // whether it is before now. ok is false when there is no "exp" claim to
 // judge, or when its value is not a number this can interpret.
 func tokenExpired(claims jwt.ClaimsSet, now time.Time) (expired bool, ok bool) {
-	raw, present := claims[jwt.ExpirationTime]
-	if !present {
-		return false, false
-	}
-
-	var exp int64
-	switch typed := raw.(type) {
-	case int64:
-		exp = typed
-	case float64:
-		exp = int64(typed)
-	default:
+	exp, ok := numericClaim(claims, jwt.ExpirationTime)
+	if !ok {
 		return false, false
 	}
 
 	return time.Unix(exp, 0).Before(now), true
+}
+
+// numericClaim reads a claim as a Unix timestamp, and reports whether it was
+// present and of a type this can interpret. Shared between [tokenExpired] and
+// [annotateClaimTime] so both read "exp" the same way: a token parsed from
+// the wire round-trips its numeric claims through JSON, which decodes numbers
+// as float64 rather than the int64 [signJWT] itself writes.
+func numericClaim(claims jwt.ClaimsSet, name jwt.ClaimName) (value int64, ok bool) {
+	raw, present := claims[name]
+	if !present {
+		return 0, false
+	}
+
+	switch typed := raw.(type) {
+	case int64:
+		return typed, true
+	case float64:
+		return int64(typed), true
+	default:
+		return 0, false
+	}
+}
+
+// annotateClaimTime renders a "exp" or "iat" claim as an epoch second beside
+// the moment it names and how far that moment is from now, so a reader is not
+// left to convert the number by hand before they can tell whether a token has
+// expired or how long ago it was issued (picatz/flowstate#395). Empty when the
+// claim is absent or not a number this can interpret, so the field is simply
+// omitted from the document rather than reporting a guess.
+func annotateClaimTime(claims jwt.ClaimsSet, name jwt.ClaimName, now time.Time) string {
+	value, ok := numericClaim(claims, name)
+	if !ok {
+		return ""
+	}
+
+	at := time.Unix(value, 0)
+
+	delta := at.Sub(now)
+	direction := "in " + delta.Round(time.Second).String()
+	if delta < 0 {
+		direction = (-delta).Round(time.Second).String() + " ago"
+	}
+
+	return fmt.Sprintf("%d (%s, %s)", value, at.UTC().Format(time.RFC3339), direction)
 }

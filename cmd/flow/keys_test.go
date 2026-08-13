@@ -124,6 +124,24 @@ func TestKeysGenerateRejectsAnUnknownAlgorithm(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "a rejected algorithm must not leave a file behind")
 }
 
+// TestKeysGenerateErrorTeachesTheAliasItsOwnHelpUsed pins picatz/flowstate#395's
+// first item: `flow keys generate --help`'s own example teaches
+// `--algorithm ed25519`, so the error a caller sees after mistyping something
+// else has to admit that spelling exists rather than listing only "eddsa" — the
+// help page and the rejection must agree on what this flag accepts.
+//
+// Mutation-proven: reverting algorithmNames to plain
+// strings.ToLower(alg) for every entry (dropping the "(also: ed25519)"
+// annotation) makes this fail.
+func TestKeysGenerateErrorTeachesTheAliasItsOwnHelpUsed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key.pem")
+
+	_, _, err := runKeysGenerateInto(t, "algorithm", "rot13", "out", path)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "ed25519",
+		"the rejection message does not name the alias --help's own example teaches")
+}
+
 func TestKeysGenerateIDDefaultsToTheFileNameWithoutExtension(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "team-a-signing.pem")
 
