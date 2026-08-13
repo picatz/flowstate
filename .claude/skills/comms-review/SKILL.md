@@ -13,6 +13,13 @@ Every comment or reply a Claude agent posts ends with the attribution
 footer; see comms-pr for the exact form and why a compact variant does not
 substitute for it there.
 
+Do not hard-wrap a review comment or reply. GitHub renders a single
+newline in one as a line break, so wrapped prose arrives ragged; write
+each paragraph as one line. comms-pr has the rule and the reason it
+differs from a file in the repository. A one-line disposition is short
+enough that this rarely bites, which is exactly why it gets forgotten on
+the longer replies where it shows.
+
 ## Authoring a comment
 
 Shape: severity, concern, consequence, expected action. Attach evidence

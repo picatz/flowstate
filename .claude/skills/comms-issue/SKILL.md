@@ -14,6 +14,11 @@ Every issue body and comment a Claude agent posts ends with the attribution
 footer; see comms-pr for the exact form and why a compact variant does not
 substitute for it there.
 
+Do not hard-wrap an issue body or comment. GitHub renders a single newline
+in one as a line break, so wrapped prose arrives ragged; write each
+paragraph as one line and let the browser wrap it. comms-pr has the rule
+and the reason it differs from a file in the repository.
+
 ## Issue body
 
 Problem, desired outcome, constraints, acceptance criteria, evidence.

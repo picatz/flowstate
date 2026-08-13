@@ -67,6 +67,33 @@ A test bullet that carries its proof:
   ran or what it caught. #479's body names the first-run mirror failure it
   hit and fixed; that sentence saved its reviewer a question.
 
+## Do not hard-wrap a GitHub body
+
+A GitHub issue body, pull request body, or comment renders single
+newlines as line breaks. A `.md` file in the repository does not: it
+follows CommonMark, where consecutive lines join into one paragraph.
+Same markdown, two renderers, and prose wrapped for one looks broken in
+the other.
+
+So the wrapping rule depends on where the text lands:
+
+- **Commit messages** wrap at 72 columns. The reader is `git log` in a
+  terminal, which does no wrapping of its own.
+- **Files in the repository**, including these skills and everything
+  under `docs/`, wrap at the width the file already uses. The renderer
+  joins the lines, and a diff of an unwrapped paragraph is unreadable.
+- **GitHub bodies and comments** are not wrapped at all. Write each
+  paragraph as one long line and let the browser wrap it to the reader's
+  width. A hard-wrapped paragraph shows every break as written, which on
+  a wide screen reads as ragged and truncated.
+
+Code blocks, tables, and lists are exempt everywhere: their line breaks
+are content, not formatting.
+
+The cost of getting this wrong is not aesthetic alone. A body that reads
+as broken invites the reader to skim it, and the parts of a PR body worth
+writing are the parts a diff cannot say.
+
 ## Attribution footer
 
 Every GitHub post authored by a Claude agent (PR body, issue body, issue
