@@ -53,13 +53,32 @@ import (
 // checkNegationDrift reports sibling `if:` conditions that were, or still could
 // be, exact negations of each other but no longer agree on every clause.
 //
-// Walked once per list of sibling steps — the workflow's own top level, and
-// recursively into every `for_each` body, `loop:` body, and `parallel` branch —
-// because a negation pair only makes sense between steps that actually branch
-// on the same run: a step nested three calls deep sits in a different namespace
-// entirely and comparing it against a top-level step would be comparing two
-// things that never both existed at once.
+// Asked once per list of sibling steps, which [v1.WalkNodes] enumerates: the
+// workflow's own top level, and every `for_each` body, `loop:` body, `parallel`
+// branch and `switch` body under it. A sibling group is the unit because a negation
+// pair only makes sense between steps that actually branch on the same run — a step
+// nested three calls deep sits in a different namespace entirely, and comparing it
+// against a top-level step would compare two things that never both existed at
+// once.
+//
+// This is the walk that made [v1.Walk.Steps] a callback of its own rather than
+// something a caller reconstructs from the nodes: the groups are what it asks
+// about, and rebuilding them from a per-node walk is exactly the hand-kept list
+// #508 exists to remove.
 func checkNegationDrift(nodes []*v1.Node) Diagnostics {
+	var ds Diagnostics
+
+	v1.WalkNodes(nodes, v1.Walk{
+		Steps: func(siblings []*v1.Node) {
+			ds = append(ds, negationDriftAmong(siblings)...)
+		},
+	})
+
+	return ds
+}
+
+// negationDriftAmong compares one group of sibling steps, pairwise, in file order.
+func negationDriftAmong(nodes []*v1.Node) Diagnostics {
 	var ds Diagnostics
 
 	type candidate struct {
@@ -84,24 +103,6 @@ func checkNegationDrift(nodes []*v1.Node) Diagnostics {
 			}
 
 			ds = append(ds, negationDriftDiagnostics(a.id, b.id, onlyA, onlyB)...)
-		}
-	}
-
-	// Recurse into every nested list of steps, each its own sibling group.
-	for _, node := range nodes {
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_ForEach:
-			ds = append(ds, checkNegationDrift(kind.ForEach.GetBody())...)
-		case *v1.Node_Loop:
-			ds = append(ds, checkNegationDrift(kind.Loop.GetBody())...)
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				ds = append(ds, checkNegationDrift(branch.GetSteps())...)
-			}
-		case *v1.Node_Switch:
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				ds = append(ds, checkNegationDrift(body)...)
-			}
 		}
 	}
 
