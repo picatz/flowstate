@@ -89,7 +89,8 @@ steps:
             # request was never wrong to make — so `retry` above `never
             # rescues it, the same way a 4xx does not get retried by default.
             expect: ${record != 'flagged' && response.status_code == 200}
-            outputs: '${ {"id": record} }'
+            outputs:
+              id: ${record}
 
   # A vendor lookup this run also depends on, hit once rather than per
   # record — which is what lets it point at an address of its own instead of

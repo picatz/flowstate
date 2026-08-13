@@ -1280,6 +1280,23 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowOutputShaping runs the shared shaping cases against the durable
+// driver.
+//
+// The durable half of the pair, and the half where the encoding matters most: a
+// shaped mapping is a structure inside the specification, so it crosses the
+// payload converter on its way to the activity that evaluates it, and one entry
+// of it reads an earlier step's output — which compaction is free to prune the
+// moment nothing appears to reference it.
+func TestRunWorkflowOutputShaping(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.OutputShapingCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
+		})
+	}
+}
+
 // TestRunWorkflowZeroValues runs the shared zero-value cases against the durable
 // driver, which nothing did.
 //

@@ -123,13 +123,11 @@ steps:
             # shapes its own result. `reviewed_grants` used to rebuild this
             # exact object with its own `.map()`, re-deriving the missing-data
             # fallback a second time; now it reads the shaped record as-is.
-            outputs: >-
-              ${ {"grantee": grant.grantee,
-                  "resource": grant.resource,
-                  "role": grant.role,
-                  "last_used_days_ago": has(response.json.last_used_days_ago)
-                    ? response.json.last_used_days_ago
-                    : -1} }
+            outputs:
+              grantee: ${grant.grantee}
+              resource: ${grant.resource}
+              role: ${grant.role}
+              last_used_days_ago: '${has(response.json.last_used_days_ago) ? response.json.last_used_days_ago : -1}'
 
   # The gate. A compliance review that auto-closes itself is not a review -
   # this is where a person has to have actually looked. Three days is a real

@@ -164,3 +164,84 @@ func TestAThreadedRegistryMakesAPluginTaskCompletableAndHoverable(t *testing.T) 
 			"hover did not read the summary from the registry the server was given")
 	})
 }
+
+// shapingPluginTaskName stands in for a plugin task that declares shaping.
+const shapingPluginTaskName = "example.fetch"
+
+// registryWithAShapingPluginTask is [registryWithAPluginTask] for the capability
+// rather than the name: a task in a *private* registry that declares it replaces
+// its declared outputs with the author's.
+func registryWithAShapingPluginTask(t *testing.T) *v1.Registry {
+	t.Helper()
+
+	// The http task's shape, because it is the built-in that shapes, so its
+	// descriptors are the ones an author's `outputs:` is replacing.
+	shape, ok := v1.LookupTask("http")
+	require.True(t, ok, "the http task is the shape this stands in for and it is not registered")
+
+	registry := v1.NewRegistry()
+	for _, def := range v1.DefaultRegistry().All() {
+		require.NoError(t, registry.Register(def))
+	}
+
+	require.NoError(t, registry.Register(v1.TaskDef{
+		Name:           shapingPluginTaskName,
+		Summary:        "Fetch, shaping its own outputs.",
+		Inputs:         shape.Inputs,
+		Outputs:        shape.Outputs,
+		DeferredInputs: []string{v1.ShapingInput},
+		ShapesOutputs:  true,
+		Fn:             shape.Fn,
+	}))
+
+	require.False(t, v1.TaskShapesOutputs(shapingPluginTaskName),
+		"the default registry answers for %s, so nothing below distinguishes the server's registry from it",
+		shapingPluginTaskName)
+
+	return registry
+}
+
+// TestAShapingPluginTaskIsShapedInTheEditorsAnswers is finding-shaped: the
+// capability is declared in the registry the *server* was handed, and the editor
+// was asking a different one.
+//
+// [v1.TaskShapesOutputs] reads the default registry, which is the right question
+// for `flow validate` and the compiler — both build from the built-ins alone —
+// and the wrong one for a server whose whole reason to hold a registry is that
+// `flow lsp --plugin-dir` put plugin tasks in it. Asked there, a plugin that
+// declares shaping reads as one that does not, and the editor offers the names
+// its descriptor declares: precisely the set the author's `outputs:` replaced.
+//
+// So the assertion is the negative direction. That a shaped name is offered is
+// the pleasant half and would pass on a completely broken lookup, since `code`
+// is not an http output either — what says the registry was consulted is that
+// `status_code`, which the descriptor does declare, is *gone*.
+func TestAShapingPluginTaskIsShapedInTheEditorsAnswers(t *testing.T) {
+	t.Parallel()
+
+	c := newClientFor(t, &FlowfileServer{Logger: discardLogger(), Tasks: registryWithAShapingPluginTask(t)})
+	c.initialize()
+
+	src, pos := splitCursor(t, `name: c
+steps:
+  - id: fetch
+    `+shapingPluginTaskName+`:
+      url: https://example.com
+      outputs:
+        code: ${response.status_code}
+  - id: out
+    log:
+      message: ${steps.fetch.|}
+edition: v2026.3
+`)
+	const uri = "file:///shaping-plugin-task.yaml"
+	c.open(uri, src)
+
+	got := labels(c.complete(uri, pos.Line, pos.Character).Items)
+
+	assert.NotContains(t, got, "status_code",
+		"the step's `outputs:` replaced the declared set, and the editor still offered a name from it — "+
+			"accepting one writes a reference the run never produces")
+	assert.Contains(t, got, "code",
+		"the shaped name the author wrote was not offered")
+}

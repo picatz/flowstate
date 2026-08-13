@@ -151,9 +151,10 @@ bound by the task rather than by the workflow's scope, which is why a step's ord
 inputs cannot see it: there is no response yet when those are resolved. `steps.` is
 reachable alongside it, so a shaping expression can combine the response with an
 earlier step's output. Which inputs are deferred this way comes from the task's own
-definition, so this cannot go stale. Note that `outputs` has to be written as a
-quoted whole-value expression — `outputs: "${ {'status': response.status_code} }"` —
-since an unquoted value would read the colons inside as YAML mapping syntax.
+definition, so this cannot go stale. `outputs` is written as a mapping of name to
+value — one name per line, the same shape a `wait_for_signal:` shapes its result in
+— and because the names are written down, the editor completes them after
+`steps.<id>.` and reports a reference to one the step does not produce.
 
 ## Install the binary
 
