@@ -77,7 +77,7 @@ func attributeSets(t *testing.T, m metricdata.Metrics) []map[string]string {
 	asMap := func(set attribute.Set) map[string]string {
 		out := map[string]string{}
 		for _, kv := range set.ToSlice() {
-			out[string(kv.Key)] = kv.Value.Emit()
+			out[string(kv.Key)] = kv.Value.String()
 		}
 		return out
 	}

@@ -61,7 +61,7 @@ func recordThrough(t *testing.T, attrs ...attribute.KeyValue) []map[string]strin
 			for _, dp := range sum.DataPoints {
 				set := map[string]string{}
 				for _, kv := range dp.Attributes.ToSlice() {
-					set[string(kv.Key)] = kv.Value.Emit()
+					set[string(kv.Key)] = kv.Value.String()
 				}
 				sets = append(sets, set)
 			}
