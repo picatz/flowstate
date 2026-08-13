@@ -106,7 +106,7 @@ func TestAPeerChosenIdentifierCannotReachAMetricLabel(t *testing.T) {
 func TestNoDeniedKeyReachesAnInstrument(t *testing.T) {
 	t.Parallel()
 
-	probes := append([]string{}, metricschema.NeverKeys...)
+	probes := metricschema.NeverKeys()
 	probes = append(probes, "delivery_id", "run_id", "workflow_id", "http.url", "flowstate.secret.name", "")
 
 	for _, key := range probes {
@@ -259,7 +259,30 @@ func TestTheSchemaClassifiesEveryKeyItPermits(t *testing.T) {
 		require.NotContains(t, key, "_", "metric attribute %q must not use the wire-format spelling", key)
 	}
 
-	for _, key := range metricschema.NeverKeys {
+	// One table, every key in it, each carrying its own classification and the
+	// name of whoever chooses its values. This is the shape a generator could
+	// emit verbatim once telemetry attributes are declared on the schema, and
+	// the reason the classification is a field rather than an implication of
+	// which list a key sits in.
+	require.Len(t, metricschema.Table, len(keys)+len(metricschema.NeverKeys()),
+		"the table is the only place a key is declared")
+
+	for _, attr := range metricschema.Table {
+		require.NotEmpty(t, attr.Key)
+		require.NotEmpty(t, attr.Chooser, "%q must say who chooses its values", attr.Key)
+		require.NotEqual(t, "unknown", attr.Class.String(), "%q has no classification", attr.Key)
+		require.True(t, strings.HasPrefix(attr.Key, "flowstate."),
+			"%q must be namespaced, dotted, and prefixed the way OpenTelemetry spells an attribute", attr.Key)
+		require.Equal(t, strings.ToLower(attr.Key), attr.Key,
+			"%q must be lowercase, per OpenTelemetry naming", attr.Key)
+
+		permitted := attr.Class != metricschema.ClassPeerControlled
+		_, allowlisted := metricschema.Classification(attr.Key)
+		require.Equal(t, permitted, allowlisted,
+			"the allowlist must be derived from the table's classification, not maintained beside it")
+	}
+
+	for _, key := range metricschema.NeverKeys() {
 		_, ok := metricschema.Classification(key)
 		require.False(t, ok, "%q is named as never permitted and must not also be allowlisted", key)
 	}

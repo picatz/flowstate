@@ -52,6 +52,22 @@
 //     expressed over strings, and a bound that does not know how to measure
 //     its input is not a bound.
 //
+// # Naming
+//
+// Keys follow OpenTelemetry's convention: lowercase, dot-separated namespaces,
+// most general segment first, no redundant prefix repeated inside a namespace.
+// Every key in [Table] satisfies it, with two observations recorded here rather
+// than acted on, because renaming a key breaks every dashboard already built on
+// it and that migration should be planned once rather than smuggled in:
+//
+//   - flowstate.workflow.run_id and flowstate.run.id are two spellings of one
+//     concept. Both are refused as metric labels either way, so nothing here
+//     depends on the answer, but whichever survives should be the only one.
+//   - flowstate.plugin.outcome describes the outcome of a plugin *operation*,
+//     so flowstate.plugin.operation.outcome would nest it the way
+//     flowstate.plugin.health.status nests under its own subject. It reads as
+//     a plugin-level property today and is not one.
+//
 // Author-chosen and attacker-chosen are different risk classes, and this
 // package treats them differently on purpose. A task name is written by
 // whoever writes the deployment's workflows; getting a bad one requires
@@ -82,6 +98,12 @@ const (
 	// registered task, a provisioned tenant. Its cardinality grows only when
 	// somebody changes the deployment, and never in response to a request.
 	ClassConfiguration
+
+	// ClassPeerControlled is minted per event by somebody other than the
+	// deployment — a webhook sender's delivery id, a generated run id. It is
+	// unbounded by definition and may never reach an instrument; it belongs on
+	// a span and a log line, where a per-event identifier is the point.
+	ClassPeerControlled
 )
 
 // String names the class for diagnostics and generated documentation.
@@ -91,6 +113,8 @@ func (c Class) String() string {
 		return "bounded by construction"
 	case ClassConfiguration:
 		return "bounded by configuration"
+	case ClassPeerControlled:
+		return "unbounded and peer-controlled"
 	default:
 		return "unknown"
 	}
@@ -121,35 +145,68 @@ const (
 	TaskName = "flowstate.task.name"
 )
 
-// allowed is the schema: every key a metric instrument may carry, with the
-// reason its value set is bounded. A key absent from this map is dropped by
-// [Attributes], so adding a label means adding it here, next to the
-// classification that justifies it.
-var allowed = map[string]Class{
-	PluginName:         ClassConfiguration,
-	PluginOperation:    ClassConstruction,
-	PluginOutcome:      ClassConstruction,
-	PluginHealthStatus: ClassConstruction,
-	TaskName:           ClassConfiguration,
+// Attribute is one row of the schema: a key, how its value set is bounded, and
+// who chooses the value.
+//
+// Everything else here is derived from these rows — the allowlist, the refusal
+// list, the documentation, and whatever a dashboard registry eventually wants.
+// The classification is a *field* rather than an implication of which list a
+// key sits in, precisely so this table can be emitted rather than typed: the
+// owner has raised declaring telemetry attributes on the schema with custom
+// options, the way protovalidate declares validation rules, and if that lands
+// [Table] becomes generated output with nothing else in this package changing.
+// A generator can produce a table; it cannot produce a habit of remembering.
+type Attribute struct {
+	// Key is the attribute key as it is spelled on a span, a log field, and a
+	// metric label alike (#522, invariant 1).
+	Key string
+
+	// Class is what bounds the set of values behind Key. Only
+	// [ClassConstruction] and [ClassConfiguration] may reach an instrument.
+	Class Class
+
+	// Chooser names who decides the value, in the terms an operator reading a
+	// cardinality question would use.
+	Chooser string
 }
 
-// NeverKeys are identifiers that exist elsewhere in this system's telemetry
-// and must never become metric attributes. They are listed rather than merely
-// omitted so the refusal is a statement someone can read and test, not an
-// accident of what nobody has added yet.
+// Table is the schema: every attribute key this system's telemetry knows
+// about, including the ones a metric must never carry.
 //
-// Each is minted per event by somebody other than the deployment:
-// flowstate.delivery.id is chosen by an external webhook sender, one per
-// delivery, so a stranger with an HTTP client chooses this system's metric
-// cardinality; the run and execution identifiers are minted per execution, so
-// a busy deployment mints thousands an hour. All of them are useful on a span
-// and a log line, where a per-event identifier is the point.
-var NeverKeys = []string{
-	"flowstate.delivery.id",
-	"flowstate.run.id",
-	"flowstate.execution.id",
-	"flowstate.workflow.run_id",
+// The unbounded rows are listed rather than merely omitted, so the refusal is
+// a statement someone can read and test rather than an accident of what nobody
+// has added yet. Each is minted per event by somebody other than the
+// deployment: flowstate.delivery.id is chosen by an external webhook sender,
+// one per delivery, so a stranger with an HTTP client would be choosing this
+// system's metric cardinality; the run and execution identifiers are minted
+// per execution, so a busy deployment mints thousands an hour. All of them are
+// useful on a span and a log line, where a per-event identifier is the point.
+var Table = []Attribute{
+	{Key: PluginName, Class: ClassConfiguration, Chooser: "the deployment, by which plugins it installs"},
+	{Key: PluginOperation, Class: ClassConstruction, Chooser: "this repository: start, health, execute"},
+	{Key: PluginOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
+	{Key: PluginHealthStatus, Class: ClassConstruction, Chooser: "this repository's plugin health enumeration"},
+	{Key: TaskName, Class: ClassConfiguration, Chooser: "the deployment, by which tasks it registers"},
+
+	{Key: "flowstate.delivery.id", Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
+	{Key: "flowstate.run.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
+	{Key: "flowstate.execution.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
+	{Key: "flowstate.workflow.run_id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
 }
+
+// allowed is [Table] indexed by key, holding only the rows a metric may carry.
+// It is derived rather than written down twice, because a second copy of a
+// list is a thing that disagrees with the first one.
+var allowed = func() map[string]Class {
+	out := map[string]Class{}
+	for _, attr := range Table {
+		if attr.Class == ClassPeerControlled {
+			continue
+		}
+		out[attr.Key] = attr.Class
+	}
+	return out
+}()
 
 // Keys returns the allowlisted attribute keys, sorted. It exists for
 // documentation and for tests that assert the schema's shape.
@@ -157,6 +214,18 @@ func Keys() []string {
 	keys := make([]string, 0, len(allowed))
 	for key := range allowed {
 		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// NeverKeys returns the keys a metric instrument must never carry, sorted.
+func NeverKeys() []string {
+	var keys []string
+	for _, attr := range Table {
+		if attr.Class == ClassPeerControlled {
+			keys = append(keys, attr.Key)
+		}
 	}
 	sort.Strings(keys)
 	return keys
