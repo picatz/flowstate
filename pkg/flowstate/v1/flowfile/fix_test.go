@@ -1190,7 +1190,8 @@ steps:
     http:
       url: https://example.com
       expect: ${response.status_code == 200}
-      outputs: "${ {'code': response.status_code} }"
+      outputs:
+        code: ${response.status_code}
   - id: after
     log:
       message: ${steps.status_code.body}

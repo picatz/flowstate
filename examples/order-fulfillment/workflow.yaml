@@ -74,7 +74,8 @@ steps:
         reserve: inventory
         order: ${inputs.order_id}
       parse_json: true
-      outputs: '${ {"id": "res-" + response.json.args.order} }'
+      outputs:
+        id: ${"res-" + response.json.args.order}
     undo:
       http:
         method: GET
@@ -96,7 +97,8 @@ steps:
         charge: payment
         reservation: ${steps.reserve_inventory.id}
       parse_json: true
-      outputs: '${ {"id": "chg-" + response.json.args.reservation} }'
+      outputs:
+        id: ${"chg-" + response.json.args.reservation}
     undo:
       # The compensation that matters most in this file. A shipment that
       # cannot be arranged must not mean a payment that stays taken — this is

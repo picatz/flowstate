@@ -13,6 +13,13 @@ Every comment or reply a Claude agent posts ends with the attribution
 footer; see comms-pr for the exact form and why a compact variant does not
 substitute for it there.
 
+Do not hard-wrap a review comment or reply. GitHub renders a single
+newline in one as a line break, so wrapped prose arrives ragged; write
+each paragraph as one line. comms-pr has the rule and the reason it
+differs from a file in the repository. A one-line disposition is short
+enough that this rarely bites, which is exactly why it gets forgotten on
+the longer replies where it shows.
+
 ## Authoring a comment
 
 Shape: severity, concern, consequence, expected action. Attach evidence
@@ -101,25 +108,31 @@ this section exists to prevent.
    up on a real finding that got a fix, thumbs down on a finding you
    determined is wrong, nothing on duplicates and stale threads where
    there is no judgment to send.
-7. **Write a line only when a human reading later would otherwise be
-   lost.** A resolved thread is collapsed, so one line inside it costs no
-   visual noise on the PR, but it still costs tokens and attention, so it
-   is not automatic. Less is more for agent-to-agent traffic:
-   - A finding you agree is real but are not fixing here always gets a
-     line, and is never silently resolved. File it as an issue first,
-     then point the thread at it: "Real, not fixing here: `<one clause>`.
-     Filed as #NNN."
-   - A finding you determined is **wrong** is the opposite case, and the
-     distinction matters: never file an issue for a defect you have
-     established does not exist, because that is tracker noise about
-     nothing. It gets a thumbs down and a resolve, and the evidence goes
-     where evidence belongs, in the commit message or the session report.
-     A refuted P1 on #492 was handled exactly this way.
-   - A non-obvious stale thread gets one line: "Stale: `<what superseded
-     it>`."
-   - A fix that is obvious from the diff gets a reaction and no line; the
-     commit is the argument.
-   - A duplicate gets neither reaction nor line.
+7. **React and resolve. Do not reply.** This is the default for roughly
+   nineteen threads in twenty, and it is a rule about cost as much as
+   about noise: every reply is tokens spent writing prose to a bot that
+   does not read it, on a thread a human will see collapsed. The fix is
+   the answer, the commit is the argument, and the reaction is the
+   acknowledgment. Say nothing else.
+
+   Three exceptions, and they are the whole list:
+   - **Refuting.** You determined the finding is wrong. It gets a thumbs
+     down, one sentence of evidence so a human scanning the thread knows
+     it was judged rather than ignored, and a resolve. Never file an
+     issue for a defect you have established does not exist. A refuted P1
+     on #492 was handled exactly this way.
+   - **Deferring.** The finding is real and you are not fixing it here.
+     File the issue first, then one line pointing at it: "Real, not
+     fixing here: `<one clause>`. Filed as #NNN." Never silently resolve
+     a real finding.
+   - **Correcting a wrong premise.** The reviewer's claim rests on
+     something factually untrue about the code, and leaving it unsaid
+     would mislead the next reader of that thread.
+
+   Everything else gets a reaction and a resolve. A fix that landed, a
+   stale thread, a duplicate, a finding that was already handled in
+   another thread: no words. If you find yourself explaining a fix that
+   the diff already shows, stop and delete the reply.
 8. **Resolve every thread**, with `resolve_review_thread` and the node ID
    from step 2, including stale, outdated, and duplicate ones, not only
    the one you acted on. Multiple reviewers frequently file the same
@@ -130,6 +143,34 @@ this section exists to prevent.
    unresolved thread costs no extra API call. What it costs is triage and
    human attention, and, on the PR page, visual noise. Resolve for that
    reason, not to save a fetch.
+
+   **Leave nothing open.** The target is a PR page a human can read with
+   no bot traffic expanded on it. That means every thread from every
+   reviewer, on every PR you touched, resolved before you consider the PR
+   done, and swept again before you stop working: a review that arrives
+   after your last pass is the one that gets forgotten. A merged PR still
+   deserves the sweep, because its page is what someone reads later when
+   they are trying to understand the change.
+
+   **The root review body counts too, and the gap is ours.** A review is
+   one top-level summary plus its threads, and resolving only the threads
+   leaves the summary expanded on the page — which is the noise a human
+   actually lands on. GitHub's API can hide that summary: `PullRequestReview`
+   implements `Minimizable` in the GraphQL schema, exactly as
+   `PullRequestReviewComment` does, so `minimizeComment` accepts a review's
+   node id with a `minimizedReason` of `resolved` or `outdated`. What is
+   missing is on our side — the MCP tool surface exposes
+   `resolve_review_thread` and `unresolve_review_thread` and no minimize —
+   so today the summary survives every sweep, and that is a tooling gap to
+   close rather than an API limit to explain away. Until it closes, say
+   plainly that the root body is still open and why, instead of reporting a
+   PR as swept when its most visible block is not.
+
+   The complementary lever is reviewer configuration: automatic review set
+   to request-only rather than on every push produces fewer summaries at
+   the source. That is a repository setting and therefore an owner
+   decision, and it reduces the inflow — it does not close what is already
+   on the page.
 9. **Respect the API budget.** REST and GraphQL each have their own pool.
    A pool is shared across everything the account does, so polling PR
    state exhausted one of them in a single wave, but the two are not
@@ -137,18 +178,19 @@ this section exists to prevent.
    events over polling, batch reads, and when a pool is exhausted back
    off from *that* pool rather than stopping altogether: see the budget
    section below for what still works when one of them is gone.
-10. **Know what the API can and cannot do.** GitHub exposes resolve and
-    unresolve for review threads through the API we use. Dismissing a
-    review also exists, in both REST and GraphQL: it invalidates that
-    review's state, so a `REQUEST_CHANGES` no longer blocks, but it does
-    not hide or collapse the review's top-level body. Minimizing or
-    hiding that body is the operation the API genuinely does not offer.
-    Our MCP tool surface currently exposes resolve and unresolve for
-    threads but not dismissal, so treat dismissal as unavailable in
-    practice until that changes. The way to reduce noisy review bodies at
-    the source is reviewer configuration, automatic review set to
-    request-only rather than on every push, which is a repository setting
-    and therefore an owner decision, not something an agent changes.
+10. **Know what the API can do, and separately what our tools can do.**
+    These are two different questions and conflating them turns a missing
+    tool into an imagined law of nature. GitHub's API offers all three
+    operations: resolve/unresolve on threads; dismissal of a review, in
+    both REST and GraphQL, which invalidates that review's state so a
+    `REQUEST_CHANGES` stops blocking without hiding anything; and
+    `minimizeComment`, which does hide a body and accepts a
+    `PullRequestReview` node id because that type implements
+    `Minimizable`. Our MCP surface exposes only the first. So dismissal
+    and minimize are unavailable *in practice here*, which is a sentence
+    about our tooling — write it that way, and do not claim the API lacks
+    what it has. Checked against the GraphQL reference on 2026-08-13; the
+    earlier version of this rule asserted the opposite and was wrong.
 
 ## The API budget is bounded
 

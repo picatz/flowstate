@@ -644,6 +644,25 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowOutputShaping covers a shaped `outputs:` mapping in the local
+// driver.
+//
+// Paired with the identically named test in the engine package, per the rule the
+// shared package exists for. The mapping form and the older fenced map literal
+// take different paths inside the http task, so "they are the same shaping" is a
+// claim about execution, and it has to be made on both drivers or it is a claim
+// about whichever one happened to be run.
+func TestRunWorkflowOutputShaping(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.OutputShapingCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowResponseScope covers what an http step's `expect:` and `outputs:`
 // can see, in the local driver.
 //

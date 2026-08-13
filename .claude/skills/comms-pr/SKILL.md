@@ -57,6 +57,47 @@ A test bullet that carries its proof:
 > Mutation-tested: reversing the durable driver's merge loop fails this
 > case.
 
+## Show the surface that changed
+
+A diff shows every line and no shape. What a reader — human or agent —
+needs from a PR body is the shape: which of the surfaces they touch moved,
+and what it looks like now. So a PR that changes a surface shows that
+surface rather than describing the change to it.
+
+The surfaces worth showing are the ones somebody outside this diff
+consumes: the proto message or RPC, the CLI invocation and its output, the
+Flowfile spelling, a metric's name and attributes, an MCP tool's
+signature. Show the *after*, and show the *before* beside it only where
+the change is the difference between them — the paired before/after in
+#540 is what made that issue land, and the same device works here.
+
+    $ flow run local ./workflow.yaml --input tenant=acme
+    step  provision  ok    1.2s
+    outputs:
+      url  https://acme.example
+
+Where the change is control flow or a sequence across components, a
+mermaid diagram carries it in a way prose cannot, and GitHub renders it
+natively. Keep it to the components this diff touches; a diagram of the
+whole system is a diagram of nothing:
+
+```mermaid
+sequenceDiagram
+    participant CLI as flow run
+    participant W as worker
+    participant P as plugin
+    CLI->>W: Run(spec, inputs)
+    W->>P: Task(step, resolved inputs)
+    P-->>W: outputs + declared attributes
+    W-->>CLI: run outputs
+```
+
+Two limits. A diagram is not a substitute for the claim it illustrates —
+state the claim in a sentence, then draw it. And a sketch in a PR body is
+held to a stricter standard than one in an issue: the issue's sketch is a
+proposal and says so, while the PR's must match what actually landed,
+because the merged body is what the next reader trusts over the diff.
+
 ## Failure modes
 
 - **The file tour**: bullets restating the diff per file. Delete them;
@@ -66,6 +107,37 @@ A test bullet that carries its proof:
 - **The bare gate claim**: "all tests pass" without naming the gate that
   ran or what it caught. #479's body names the first-run mirror failure it
   hit and fixed; that sentence saved its reviewer a question.
+
+## Do not hard-wrap a GitHub body
+
+A GitHub issue body, pull request body, or comment renders single
+newlines as line breaks. A `.md` file in the repository does not: it
+follows CommonMark, where consecutive lines join into one paragraph.
+Same markdown, two renderers, and prose wrapped for one looks broken in
+the other.
+
+So the wrapping rule depends on where the text lands:
+
+- **Commit messages** wrap at 72 columns. The reader is `git log` in a
+  terminal, which does no wrapping of its own.
+- **Files in the repository**, including these skills and everything
+  under `docs/`, wrap at the width the file already uses. The renderer
+  joins the lines, and a diff of an unwrapped paragraph is unreadable.
+- **GitHub bodies and comments** are not wrapped at all. Write each
+  paragraph as one long line and let the browser wrap it to the reader's
+  width. A hard-wrapped paragraph shows every break as written, which on
+  a wide screen reads as ragged and truncated.
+
+Code blocks and tables are exempt everywhere: their line breaks are
+content, not formatting. Lists are exempt only in their structure. The
+break between one item and the next is structural and stays; the breaks
+*inside* an item's prose are formatting, and a bullet long enough to
+wrap renders as raggedly as a paragraph does. Keep each item's prose on
+one line, however long.
+
+The cost of getting this wrong is not aesthetic alone. A body that reads
+as broken invites the reader to skim it, and the parts of a PR body worth
+writing are the parts a diff cannot say.
 
 ## Attribution footer
 

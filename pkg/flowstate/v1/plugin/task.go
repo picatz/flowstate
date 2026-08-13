@@ -62,6 +62,14 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// that declared it needs one needs prior step outputs to build it.
 		NeedsPrevOutputs: manifest.GetNeedsScope(),
 
+		// Whether this task replaces its declared outputs with an author's
+		// shaping — declared, never inferred from the fact that an input happens
+		// to be called `outputs`. A plugin that declares an ordinary input by
+		// that name and leaves this false keeps ordinary diagnostics against the
+		// outputs its descriptor promises, which is what its executor actually
+		// returns.
+		ShapesOutputs: manifest.GetShapesOutputs(),
+
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
 		// cross-reference on AuthorityInputs itself — and that is deliberate

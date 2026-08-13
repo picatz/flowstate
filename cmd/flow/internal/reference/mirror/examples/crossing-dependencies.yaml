@@ -49,14 +49,16 @@ steps:
     http:
       url: https://ci.example.com/build
       method: POST
-      outputs: "${ {'tag': json_parse(response.body).tag} }"
+      outputs:
+        tag: ${json_parse(response.body).tag}
 
   - id: provision
     async: true
     http:
       url: https://infra.example.com/machines
       method: POST
-      outputs: "${ {'host': json_parse(response.body).host} }"
+      outputs:
+        host: ${json_parse(response.body).host}
 
   # The crossing dependency, in both directions. `test` names `build` and so waits
   # for the build here — while `provision` is still in flight. `deploy` names

@@ -726,6 +726,14 @@ const (
 	// carrying `until:` and `steps:`, which `for_each` never does.
 	loopUntilKey  = "until"
 	loopUpdateKey = "update"
+
+	// loopInitKey is the state a loop carries into its first iteration. Named
+	// here beside its two siblings because the rewriter that promotes a fenced
+	// map literal into the mapping form reads all three by name.
+	loopInitKey = "init"
+
+	// loopKey opens a loop's own block, which is where those three are written.
+	loopKey = "loop"
 )
 
 // findField returns the field a task declares under the given input name.

@@ -152,6 +152,29 @@ type TaskDef struct {
 	// tasks can compose with the same target catalog.
 	CredentialInputs []string
 
+	// ShapesOutputs declares that this task evaluates its [ShapingInput] as a
+	// replacement for the outputs it declares.
+	//
+	// One rule with three readers: the validator stands down from checking a
+	// step's output references against a set the author replaced, the language
+	// server stops offering the descriptor's names, and the compiler compiles a
+	// mapping written there per entry so the shaped names stay statically
+	// visible. All three used to decide by the *presence of an input called
+	// `outputs`*, which is a rule about a spelling rather than about a
+	// capability: a plugin declaring an ordinary input by that name got all
+	// three surfaces agreeing that its declared outputs had been replaced, while
+	// its executor returned exactly the outputs it declared. Nothing flagged it,
+	// because the disagreement was between the surfaces and execution rather
+	// than among the surfaces.
+	//
+	// False by default, which is the fail-closed direction: a task that has not
+	// said it shapes is checked against what it declares, and an `outputs:`
+	// written at one is an unknown input reported where it is written.
+	//
+	// See plugin/v1's TaskManifest.shapes_outputs for the wire form, and
+	// [TaskShapesOutputs] for the question every reader asks.
+	ShapesOutputs bool
+
 	// CheckLiteral is what the task alone can say about an input written out in
 	// full, before anything runs.
 	//

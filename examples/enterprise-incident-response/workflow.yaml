@@ -133,7 +133,8 @@ steps:
               query:
                 service: ${inputs.service}
               parse_json: true
-              outputs: '${ {"summary": response.json.summary} }'
+              outputs:
+                summary: ${response.json.summary}
       - steps:
           - id: metrics
             continue_on_error: true
@@ -144,7 +145,8 @@ steps:
               query:
                 service: ${inputs.service}
               parse_json: true
-              outputs: '${ {"error_rate": response.json.error_rate} }'
+              outputs:
+                error_rate: ${response.json.error_rate}
       - steps:
           - id: recent_deploys
             continue_on_error: true
@@ -155,7 +157,8 @@ steps:
               query:
                 service: ${inputs.service}
               parse_json: true
-              outputs: '${ {"deployed_version": response.json.deployed_version} }'
+              outputs:
+                deployed_version: ${response.json.deployed_version}
 
   # Nobody claimed it in the first window - a real escalation, paged wider,
   # not a silent timeout somebody has to notice on a dashboard later.

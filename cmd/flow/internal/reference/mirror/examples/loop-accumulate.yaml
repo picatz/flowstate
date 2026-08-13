@@ -36,13 +36,18 @@ steps:
       # `as:` names the carried value, read bare in the body, `until:` and
       # `update:` — the same standing a `for_each` binding has.
       as: acc
-      # The value it holds on the first iteration. Quoted, because the `: ` inside
-      # the map literal is YAML mapping syntax otherwise.
-      init: "${ {'n': 1, 'sum': 0} }"
+      # The value it holds on the first iteration. A mapping of names to values,
+      # the way a shaped `outputs:` is written: these positions hold values, so
+      # the numbers are numbers and need no fence.
+      init:
+        n: 1
+        sum: 0
       # How it changes each iteration: advance the counter, fold the current term
       # into the sum. Evaluated after the body, so it can read the body's outputs
       # as well as the current `acc`.
-      update: "${ {'n': acc.n + 1, 'sum': acc.sum + acc.n} }"
+      update:
+        n: ${acc.n + 1}
+        sum: ${acc.sum + acc.n}
       # Stop once the counter reaches the target. Checked after the body.
       until: ${acc.n >= inputs.target}
       max_iterations: 100

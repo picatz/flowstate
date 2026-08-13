@@ -61,7 +61,8 @@ steps:
         create: network
         tenant: ${inputs.tenant}
       parse_json: true
-      outputs: '${ {"id": "net-" + response.json.args.tenant} }'
+      outputs:
+        id: ${"net-" + response.json.args.tenant}
     undo:
       # `${steps.network.id}` — a step reading its own output. Anywhere else in a
       # Flowfile that is a forward reference and `flow validate` refuses it; inside
@@ -87,7 +88,8 @@ steps:
         create: volume
         network: ${steps.network.id}
       parse_json: true
-      outputs: '${ {"id": "vol-" + response.json.args.network} }'
+      outputs:
+        id: ${"vol-" + response.json.args.network}
     undo:
       http:
         method: GET
