@@ -14,6 +14,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -105,7 +106,7 @@ func telemetryConfigured() bool {
 // for as long as the process lives and distinct from every other copy.
 //
 // Stability within the process is the whole requirement, and it is why this is
-// a [sync.OnceValue] rather than a call per resource. A process builds more than
+// a [sync.OnceValues] rather than a call per resource. A process builds more than
 // one provider — traces, metrics and logs each take a resource — and an id that
 // differed between them would split one process into three services in the
 // backend, which is worse than having no instance id at all.
@@ -114,7 +115,16 @@ func telemetryConfigured() bool {
 // reused, a hostname is shared by every process on the machine, and in a
 // Deployment two pods restarting can present the same name; a restarted process
 // is a new instance and should say so.
-var instanceID = sync.OnceValue(uuid.NewString)
+//
+// Randomness can fail, and this returns the error rather than panicking on it.
+// [uuid.NewString] is `Must(NewRandom())`, so a container whose entropy source
+// is unavailable would take down the command from inside a resource builder —
+// past [telemetryResource]'s error return, past the client path that warns and
+// continues without telemetry. Telemetry describes the work; it must never be
+// the reason the work does not happen. [telemetryResource] therefore drops the
+// attribute and warns, which is the same thing it already does for a detector
+// that comes back partial.
+var instanceID = sync.OnceValues(uuid.NewRandom)
 
 // telemetryResource describes what is emitting, so a collector can group by it.
 //
@@ -160,6 +170,19 @@ var instanceID = sync.OnceValue(uuid.NewString)
 // path can carry a username or a deployment's directory layout, and the
 // executable's name already answers the question anyone is asking.
 func telemetryResource(ctx context.Context) (*resource.Resource, error) {
+	attrs := []attribute.KeyValue{
+		semconv.ServiceName("flowstate"),
+		semconv.ServiceVersion(version),
+	}
+
+	// An instance id this process could not generate is one attribute fewer, not
+	// a command that fails to run. See [instanceID] for why it can fail at all.
+	if id, err := instanceID(); err != nil {
+		log.Printf("WARNING: telemetry cannot identify this instance, so signals from it will not be distinguishable from another copy's: %v", err)
+	} else {
+		attrs = append(attrs, semconv.ServiceInstanceID(id.String()))
+	}
+
 	res, err := resource.New(ctx,
 		resource.WithTelemetrySDK(),
 		resource.WithHost(),
@@ -168,11 +191,7 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 		resource.WithProcessExecutableName(),
 		resource.WithProcessRuntimeName(),
 		resource.WithProcessRuntimeVersion(),
-		resource.WithAttributes(
-			semconv.ServiceName("flowstate"),
-			semconv.ServiceVersion(version),
-			semconv.ServiceInstanceID(instanceID()),
-		),
+		resource.WithAttributes(attrs...),
 		resource.WithFromEnv(),
 	)
 	if err != nil {

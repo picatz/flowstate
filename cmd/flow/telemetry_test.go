@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/assert"
@@ -400,6 +402,33 @@ func TestTheInstanceIDIsStableWithinTheProcess(t *testing.T) {
 	id := resourceAttributes(first.Attributes())["service.instance.id"]
 	require.NotEmpty(t, id)
 	require.Equal(t, id, resourceAttributes(second.Attributes())["service.instance.id"])
+}
+
+// TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand covers the path a
+// container with no usable entropy source takes.
+//
+// uuid.NewString is Must(NewRandom()), so reaching for the convenient spelling
+// would panic from inside a resource builder — past telemetryResource's error
+// return and past the client path that warns and continues without telemetry.
+// Telemetry describes the work and must never be the reason the work does not
+// happen, so the failure costs one attribute and a warning, exactly as a
+// partial detector does.
+func TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	previous := instanceID
+	t.Cleanup(func() { instanceID = previous })
+	instanceID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("no entropy available") }
+
+	res, err := telemetryResource(t.Context())
+	require.NoError(t, err, "an unobtainable instance id must not fail the resource")
+
+	attrs := resourceAttributes(res.Attributes())
+	require.NotContains(t, attrs, "service.instance.id",
+		"a nil UUID reported as an instance id would collide across every copy that hit this path")
+	require.Equal(t, "flowstate", attrs["service.name"],
+		"the rest of the resource is unaffected")
 }
 
 // TestTelemetryResourceLetsTheEnvironmentWin is the direction that is easy to
