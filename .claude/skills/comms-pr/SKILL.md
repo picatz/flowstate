@@ -57,6 +57,47 @@ A test bullet that carries its proof:
 > Mutation-tested: reversing the durable driver's merge loop fails this
 > case.
 
+## Show the surface that changed
+
+A diff shows every line and no shape. What a reader — human or agent —
+needs from a PR body is the shape: which of the surfaces they touch moved,
+and what it looks like now. So a PR that changes a surface shows that
+surface rather than describing the change to it.
+
+The surfaces worth showing are the ones somebody outside this diff
+consumes: the proto message or RPC, the CLI invocation and its output, the
+Flowfile spelling, a metric's name and attributes, an MCP tool's
+signature. Show the *after*, and show the *before* beside it only where
+the change is the difference between them — the paired before/after in
+#540 is what made that issue land, and the same device works here.
+
+    $ flow run local ./workflow.yaml --input tenant=acme
+    step  provision  ok    1.2s
+    outputs:
+      url  https://acme.example
+
+Where the change is control flow or a sequence across components, a
+mermaid diagram carries it in a way prose cannot, and GitHub renders it
+natively. Keep it to the components this diff touches; a diagram of the
+whole system is a diagram of nothing:
+
+```mermaid
+sequenceDiagram
+    participant CLI as flow run
+    participant W as worker
+    participant P as plugin
+    CLI->>W: Run(spec, inputs)
+    W->>P: Task(step, resolved inputs)
+    P-->>W: outputs + declared attributes
+    W-->>CLI: run outputs
+```
+
+Two limits. A diagram is not a substitute for the claim it illustrates —
+state the claim in a sentence, then draw it. And a sketch in a PR body is
+held to a stricter standard than one in an issue: the issue's sketch is a
+proposal and says so, while the PR's must match what actually landed,
+because the merged body is what the next reader trusts over the diff.
+
 ## Failure modes
 
 - **The file tour**: bullets restating the diff per file. Delete them;

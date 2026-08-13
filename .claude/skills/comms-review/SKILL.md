@@ -152,16 +152,25 @@ this section exists to prevent.
    deserves the sweep, because its page is what someone reads later when
    they are trying to understand the change.
 
-   **What cannot be closed, and whose problem it is.** Threads resolve.
-   A review's top-level summary body does not: the API offers no
-   minimize or hide for it, and our MCP surface offers no dismissal
-   either, so those blocks stay on the page however diligent you are.
-   Resolving the threads underneath still collapses the bulk of it, since
-   a review is one summary and many threads. Reducing the summaries
-   themselves is reviewer configuration, automatic review set to
-   request-only rather than on every push, which is a repository setting
-   and therefore an owner decision. Say so once when it matters rather
-   than fighting it per PR.
+   **The root review body counts too, and the gap is ours.** A review is
+   one top-level summary plus its threads, and resolving only the threads
+   leaves the summary expanded on the page — which is the noise a human
+   actually lands on. GitHub's API can hide that summary: `PullRequestReview`
+   implements `Minimizable` in the GraphQL schema, exactly as
+   `PullRequestReviewComment` does, so `minimizeComment` accepts a review's
+   node id with a `minimizedReason` of `resolved` or `outdated`. What is
+   missing is on our side — the MCP tool surface exposes
+   `resolve_review_thread` and `unresolve_review_thread` and no minimize —
+   so today the summary survives every sweep, and that is a tooling gap to
+   close rather than an API limit to explain away. Until it closes, say
+   plainly that the root body is still open and why, instead of reporting a
+   PR as swept when its most visible block is not.
+
+   The complementary lever is reviewer configuration: automatic review set
+   to request-only rather than on every push produces fewer summaries at
+   the source. That is a repository setting and therefore an owner
+   decision, and it reduces the inflow — it does not close what is already
+   on the page.
 9. **Respect the API budget.** REST and GraphQL each have their own pool.
    A pool is shared across everything the account does, so polling PR
    state exhausted one of them in a single wave, but the two are not
@@ -169,18 +178,19 @@ this section exists to prevent.
    events over polling, batch reads, and when a pool is exhausted back
    off from *that* pool rather than stopping altogether: see the budget
    section below for what still works when one of them is gone.
-10. **Know what the API can and cannot do.** GitHub exposes resolve and
-    unresolve for review threads through the API we use. Dismissing a
-    review also exists, in both REST and GraphQL: it invalidates that
-    review's state, so a `REQUEST_CHANGES` no longer blocks, but it does
-    not hide or collapse the review's top-level body. Minimizing or
-    hiding that body is the operation the API genuinely does not offer.
-    Our MCP tool surface currently exposes resolve and unresolve for
-    threads but not dismissal, so treat dismissal as unavailable in
-    practice until that changes. The way to reduce noisy review bodies at
-    the source is reviewer configuration, automatic review set to
-    request-only rather than on every push, which is a repository setting
-    and therefore an owner decision, not something an agent changes.
+10. **Know what the API can do, and separately what our tools can do.**
+    These are two different questions and conflating them turns a missing
+    tool into an imagined law of nature. GitHub's API offers all three
+    operations: resolve/unresolve on threads; dismissal of a review, in
+    both REST and GraphQL, which invalidates that review's state so a
+    `REQUEST_CHANGES` stops blocking without hiding anything; and
+    `minimizeComment`, which does hide a body and accepts a
+    `PullRequestReview` node id because that type implements
+    `Minimizable`. Our MCP surface exposes only the first. So dismissal
+    and minimize are unavailable *in practice here*, which is a sentence
+    about our tooling — write it that way, and do not claim the API lacks
+    what it has. Checked against the GraphQL reference on 2026-08-13; the
+    earlier version of this rule asserted the opposite and was wrong.
 
 ## The API budget is bounded
 
