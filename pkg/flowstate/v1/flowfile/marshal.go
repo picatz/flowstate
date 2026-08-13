@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -665,8 +666,70 @@ func exprToText(parsed *expr.ParsedExpr) (string, error) {
 // by being escaped; a field that quietly gains free text loses a round trip by
 // being left out. [TestMarshalRoundTripsEveryScalarPosition] is what keeps the
 // two sides in step.
-func textToYAML(s string) string {
-	return escapeFences(s)
+// # Quoting is checked, not assumed
+//
+// Escaping the fences is not enough on its own, because the emitter still gets
+// to choose whether the result needs quotes, and it can choose wrong. A
+// description of `? 000` is written plain, and `? ` at the head of a scalar is
+// YAML's explicit-key indicator, so the document that comes back says "mapping
+// value is not allowed in this context" — a valid file formatted into one that
+// does not parse, which is the same failure the escaping above exists to
+// prevent, arriving by a different road. FuzzMarshalRoundTrip found it; the
+// corpus entry is testdata/fuzz/FuzzMarshalRoundTrip/explicit_key_indicator.
+//
+// So the plain form is tried and *verified* rather than trusted, and anything
+// that does not survive is written explicitly quoted. That is deliberately a
+// property of the round trip rather than a list of dangerous prefixes: a list
+// would have said `? ` today and been silent about whatever the next emitter
+// version, or the next field, gets wrong. #533 reached the same conclusion
+// about promoted scalars for the same reason.
+func textToYAML(s string) any {
+	escaped := escapeFences(s)
+	if plainScalarSurvives(escaped) {
+		return escaped
+	}
+
+	return quotedScalar(escaped)
+}
+
+// plainScalarSurvives reports whether the emitter's own rendering of s reads
+// back as s.
+//
+// One scalar in a one-entry mapping, which is the shape every caller of
+// [textToYAML] writes it in: the question is what the emitter does with this
+// value in a value position, and asking it directly is cheaper than modelling
+// its rules.
+func plainScalarSurvives(s string) bool {
+	encoded, err := yaml.Marshal(yaml.MapSlice{{Key: "v", Value: s}})
+	if err != nil {
+		return false
+	}
+
+	var back yaml.MapSlice
+	if err := yaml.Unmarshal(encoded, &back); err != nil {
+		return false
+	}
+
+	return len(back) == 1 && back[0].Value == s
+}
+
+// quotedScalar is a string written in YAML's double-quoted style whatever the
+// emitter would have chosen for it.
+//
+// A [yaml.BytesMarshaler], so the bytes are placed as the value rather than
+// being re-analysed: the whole point is to take the choice away from the
+// emitter for the values it gets wrong.
+type quotedScalar string
+
+// MarshalYAML writes the double-quoted form, escaped by the JSON rules YAML
+// shares for this style.
+func (q quotedScalar) MarshalYAML() ([]byte, error) {
+	encoded, err := json.Marshal(string(q))
+	if err != nil {
+		return nil, fmt.Errorf("quoting %q: %w", string(q), err)
+	}
+
+	return encoded, nil
 }
 
 // literalToYAML writes a literal value, keeping the order of a map's entries so
