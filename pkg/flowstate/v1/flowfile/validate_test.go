@@ -729,11 +729,11 @@ func TestExprRules(t *testing.T) {
 		},
 		{
 			name: "expression with trailing text", in: "${a.result} trailing",
-			wantErr: "must be the whole value",
+			wantErr: "has to be the whole value here",
 		},
 		{
 			name: "expression with leading text", in: "hello ${name}",
-			wantErr: "must be the whole value",
+			wantErr: "has to be the whole value here",
 		},
 		{
 			name: "unterminated expression", in: "${oops",
@@ -774,6 +774,11 @@ func TestExprRules(t *testing.T) {
 
 // TestExprErrorsSurfaceFromCompilation verifies a malformed expression fails
 // compilation rather than becoming literal text.
+//
+// The shape it used to use — text beside a fence — became legal with #413, so
+// the case moved to a fence whose contents are not an expression. That is the
+// claim worth keeping: what is inside a fence is code, and code that does not
+// parse is an error rather than characters.
 func TestExprErrorsSurfaceFromCompilation(t *testing.T) {
 	src := `
 edition: v2026.3
@@ -781,10 +786,10 @@ name: bad-expr
 steps:
   - id: a
     log:
-      message: hello ${name}
+      message: hello ${name +}
 `
 	if _, err := flowfile.Unmarshal([]byte(src)); err == nil {
-		t.Fatal("expected compilation to reject an interpolated string, got no error")
+		t.Fatal("expected compilation to reject a malformed expression, got no error")
 	} else {
 		t.Logf("reported: %v", err)
 	}

@@ -336,6 +336,38 @@ steps:
         - case: [1, 2.5, true]
           steps: []
 `,
+		// The `$${` escape, in the positions where writing it back unescaped
+		// produces a fence that was never there. This target already asserted
+		// exactly the property that fails — the workflow read back equals the one
+		// written — and stayed green through it for one reason: no seed contained
+		// an escape, and the fuzzer will not invent a two-character sequence that
+		// only means something in a field it also has to spell correctly. A
+		// property test is only as good as the corpus it explores outward from,
+		// which is the same lesson as a walk that does not know about a new
+		// branch.
+		//
+		// `description` is here because a compile-time text field is written
+		// verbatim, and the escaped lookalike beside a real fence is here because
+		// that is the arrangement a substring search resolves backwards.
+		`edition: v2026.3
+name: escapes
+description: write $${TOKEN} to interpolate it
+inputs:
+  who:
+    type: string
+    description: names the $${caller}
+outputs:
+  answer:
+    description: the literal $${answer}, not an expression
+    value: ${steps.said.value}
+steps:
+- id: said
+  description: shows $${a} and $$${b}
+  value: "'hello'"
+- id: show
+  log:
+    message: $${who.value} and ${steps.said.value}
+`,
 	} {
 		f.Add(seed)
 	}

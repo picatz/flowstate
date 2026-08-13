@@ -313,11 +313,13 @@ edition: v2026.3
 		// and the hoist retired with it. An undeclared input is an undeclared input,
 		// for every task, which is what the case above this one now asserts.
 		{
-			name: "an expression surrounded by other text is reported",
-			// The compiler refuses a partial fence rather than silently keeping it
-			// as literal text, because an author who wrote ${...} meant an
-			// expression. Its message says how to fix it, so it is used as written
-			// and only positioned onto the value.
+			name: "a broken expression among other text is reported inside its own fence",
+			// Text around a fence is interpolation since #413, so what is wrong
+			// with this value is no longer the text — it is the CEL between the
+			// braces. The diagnostic says so, and underlines the fence's source
+			// rather than the whole scalar: with more than one fence in a value,
+			// pointing at the value would leave an author to find which of them
+			// the parser meant.
 			src: `name: literal
 steps:
   - id: a
@@ -326,11 +328,27 @@ steps:
 edition: v2026.3
 `,
 			want: []want{{
-				code:       codeGeneral,
+				code:       codeCELSyntax,
 				severity:   lsp.Error,
-				contains:   "mixes literal text with an expression",
-				underlines: `"cost is ${ ] not cel} dollars"`,
+				contains:   `"]" is not valid here, where a value was expected`,
+				underlines: `]`,
+			}, {
+				code:       codeCELSyntax,
+				severity:   lsp.Error,
+				contains:   `"cel" is not valid here`,
+				underlines: `cel`,
 			}},
+		},
+		{
+			name: "text around a whole, valid expression is interpolation and is accepted",
+			src: `name: literal
+steps:
+  - id: a
+    log:
+      message: "cost is ${1 + 2} dollars, ${'again'}"
+edition: v2026.3
+`,
+			want: nil,
 		},
 		{
 			name: "a plain string containing no fence is left alone",

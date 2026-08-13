@@ -1388,11 +1388,43 @@ the rest.
 
 The fence survives two challenges on its merits.
 
-**Interpolation stays refused.** `"deployed ${a} to ${b}"` is two languages in one
-scalar — a template language containing CEL fragments — and it is the direct
-mechanism of the injection class that string-splicing CI systems keep shipping.
-A value is one literal or one expression, never a string with holes; `format()` and
-concatenation are the answer, and the diagnostic already teaches them.
+**Interpolation was refused, and now is not** (#413). The refusal read: `"deployed
+${a} to ${b}"` is two languages in one scalar, and it is the direct mechanism of the
+injection class that string-splicing CI systems keep shipping. Both halves of that
+fail on inspection.
+
+The injection argument is void because `${'deployed ' + a + ' to ' + b}` was always
+legal. Interpolation grants a *spelling*, not a capability: whatever a multi-fence
+scalar can say, one fence could already say, less readably. There is no splicing
+step anywhere — each fence is parsed as CEL on its own, and what a run carries is
+one compiled expression, never text assembled and re-read.
+
+The two-languages argument fails at the scope the fence is held to. What Helm and
+Jinja put in strings is *control flow*: conditionals, loops, filters, a second
+evaluation order living inside the document. A fence holds one CEL expression and
+nothing else, and that is not relaxed here — there is no `${if ...}`, no `${for
+...}`, no pipeline, and no plan for one. A value made of text and expressions is
+still a value.
+
+So a scalar may mix literal text with expressions:
+
+```yaml
+message: ${run.identity.subject} requests deploying ${inputs.version} to ${inputs.environment}
+```
+
+Four rules make it additive rather than a reinterpretation. A scalar that is
+*exactly* one fence keeps whole-value typing, so `init: ${0}` is still an integer and
+only a mixed scalar becomes text. Each fence is rendered with CEL's own `string()`,
+which is defined on string, int, uint, double, bool, duration and timestamp; a map,
+a list or a null has no text form, and the diagnostic says to name the rendering you
+want (`json.encode`). `$${` is a literal `${`. And every scalar this now accepts was
+*refused* before, with a position and a message, so no file an older build accepts
+means anything different — which is why it needed no edition boundary.
+
+`format()` keeps the job interpolation does not do: width, precision, and positional
+reuse. `flow fix` does not rewrite one into the other, because proving two spellings
+render identically is per-argument judgment (`%d` on a double truncates where
+`string()` does not) and `flow fix` must not exercise judgment.
 
 **A YAML `!expr` tag is refused.** It looks structurally cleaner — the AST would
 know literal from expression without delimiter scanning — but it fails on the case
@@ -1788,8 +1820,11 @@ sharper knife. And it takes **`argv` as a list, never a shell string**:
 ```
 
 A shell-string form with expressions producing pieces of it is command injection by
-construction — the same reasoning that refused `${...}` interpolation, with higher
-stakes. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
+construction. Note what separates it from the interpolation #413 landed: there, the
+result is a *value* the workflow holds, and the fences are parsed as CEL before
+anything is joined; here, the result would be handed to a shell that parses it
+again, so a value could become syntax. Splicing into a language that will re-parse
+the result is the thing refused, not splicing. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
 owns it visibly. There is no `shell:` task. Outputs are `exit_code` and
 byte-bounded `stdout`/`stderr` (principle 9: the process, not the worker, decides
 what it prints, so the worker bounds what it keeps). The full input surface —

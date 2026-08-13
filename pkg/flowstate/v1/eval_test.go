@@ -483,6 +483,25 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowInterpolation covers a scalar mixing text with ${...} in the
+// local driver.
+//
+// The engine package runs the identical [tests.InterpolationCases] against the
+// durable driver. Interpolation itself is compiled away before either driver
+// sees a workflow, which is the design; what the pairing holds is the part that
+// is not compiled away, the `string()` each driver's own evaluator runs over
+// every fence. See the set's doc for why a rendering that differed between them
+// is invariant 3 broken in the direction an author would notice last.
+func TestRunWorkflowInterpolation(t *testing.T) {
+	for _, test := range tests.InterpolationCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowWebhookTrigger covers a declared `triggers:` webhook in the
 // local driver.
 //

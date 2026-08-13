@@ -38,11 +38,11 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	// invalidates every file it touches.
 	doc := yaml.MapSlice{
 		{Key: "edition", Value: CurrentEdition},
-		{Key: "name", Value: wf.GetName()},
+		{Key: "name", Value: textToYAML(wf.GetName())},
 	}
 
 	if wf.Description != nil {
-		doc = append(doc, yaml.MapItem{Key: "description", Value: wf.GetDescription()})
+		doc = append(doc, yaml.MapItem{Key: "description", Value: textToYAML(wf.GetDescription())})
 	}
 
 	// What the workflow needs from the deployment that runs it, above the inputs the
@@ -161,13 +161,13 @@ func stepsToYAML(nodes []*v1.Node) ([]any, error) {
 
 // stepToYAML writes one step.
 func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
-	step := yaml.MapSlice{{Key: "id", Value: node.GetId()}}
+	step := yaml.MapSlice{{Key: "id", Value: textToYAML(node.GetId())}}
 
 	// Written second, right under the id, because prose about a step is read
 	// before the mechanics of it. Only when set, so an absent description and an
 	// empty one stay distinguishable through a round trip.
 	if node.Description != nil {
-		step = append(step, yaml.MapItem{Key: "description", Value: node.GetDescription()})
+		step = append(step, yaml.MapItem{Key: "description", Value: textToYAML(node.GetDescription())})
 	}
 
 	if condition := node.GetCondition(); condition != nil {
@@ -375,7 +375,7 @@ func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
 
 	out := yaml.MapSlice{{Key: "items", Value: items}}
 	if iterator := loop.GetIterator(); iterator != "" {
-		out = append(out, yaml.MapItem{Key: "as", Value: iterator})
+		out = append(out, yaml.MapItem{Key: "as", Value: textToYAML(iterator)})
 	}
 	if maxParallel := loop.GetMaxParallel(); maxParallel != 0 {
 		out = append(out, yaml.MapItem{Key: "max_parallel", Value: maxParallel})
@@ -399,7 +399,7 @@ func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
 	out := yaml.MapSlice{}
 
 	if state := loop.GetState(); state != "" {
-		out = append(out, yaml.MapItem{Key: "as", Value: state})
+		out = append(out, yaml.MapItem{Key: "as", Value: textToYAML(state)})
 
 		initial, err := inputValueToYAML(loop.GetInitial())
 		if err != nil {
@@ -647,17 +647,39 @@ func exprToText(parsed *expr.ParsedExpr) (string, error) {
 	return text, nil
 }
 
+// textToYAML writes a compile-time text field — anything [compiler.text] reads.
+//
+// It is that function's inverse and exists to be applied at every one of its
+// write sites, which is the whole of the point. `compiler.text` resolves `$${`
+// to a literal `${`, so a `description: show $${TOKEN}` is held in the workflow
+// as `show ${TOKEN}`; writing those bytes back unescaped produces a real fence,
+// and the next compile refuses the file as an expression in a position that
+// cannot hold one. `flow fmt` is [Marshal] plus the source's comments, so that
+// is formatting a valid file into an invalid one — the thing a formatter must
+// never do.
+//
+// Applied to every such field rather than to the ones whose values can plausibly
+// contain a `${` today, because on a string that holds none it is the identity,
+// and because the alternative is a list of exceptions that has to be revisited
+// each time a field is added. A field whose grammar excludes `$` loses nothing
+// by being escaped; a field that quietly gains free text loses a round trip by
+// being left out. [TestMarshalRoundTripsEveryScalarPosition] is what keeps the
+// two sides in step.
+func textToYAML(s string) string {
+	return escapeFences(s)
+}
+
 // literalToYAML writes a literal value, keeping the order of a map's entries so
 // that reading the document back produces the same literal.
 func literalToYAML(literal *expr.Value) (any, error) {
 	switch kind := literal.GetKind().(type) {
 	case *expr.Value_StringValue:
-		if containsFence(kind.StringValue) {
-			return nil, fmt.Errorf(
-				"is the literal string %q, which cannot be written: ${ marks an expression, so it would be read back as one",
-				kind.StringValue)
-		}
-		return kind.StringValue, nil
+		// Written with its fences escaped rather than refused. Until #413 there
+		// was no spelling for a literal `${` in a value, so a workflow built in
+		// Go holding one could not be written out at all and saying so was the
+		// only honest answer. `$${` is that spelling, and reading the result back
+		// produces this string again — which is what Marshal owes.
+		return escapeFences(kind.StringValue), nil
 	case *expr.Value_Int64Value:
 		return kind.Int64Value, nil
 	case *expr.Value_Uint64Value:
@@ -765,7 +787,7 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 		// over them is where a formatter *deletes* one: `flow fix` rewrites
 		// through this function, so a key nothing writes back is a key the
 		// command silently removes. `varsToYAML` records the same lesson.
-		mapping := yaml.MapSlice{{Key: "name", Value: kind.Signal.GetName()}}
+		mapping := yaml.MapSlice{{Key: "name", Value: textToYAML(kind.Signal.GetName())}}
 
 		// Directly after the name, because that is the order the two read in: what
 		// the gate is called, then what it is asking. Written back through
@@ -848,7 +870,7 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 			entry = append(entry, yaml.MapItem{Key: "default", Value: value})
 		}
 		if declaration.Description != nil {
-			entry = append(entry, yaml.MapItem{Key: "description", Value: declaration.GetDescription()})
+			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(declaration.GetDescription())})
 		}
 		if declaration.GetExample() != nil {
 			value, err := inputValueToYAML(declaration.GetExample())
@@ -873,7 +895,7 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 			entry = append(entry, yaml.MapItem{Key: "max_items", Value: declaration.GetMaxItems()})
 		}
 		if declaration.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: declaration.GetMust()})
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(declaration.GetMust())})
 		}
 
 		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
@@ -894,10 +916,10 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 
 		entry := yaml.MapSlice{{Key: "value", Value: value}}
 		if declaration.Description != nil {
-			entry = append(entry, yaml.MapItem{Key: "description", Value: declaration.GetDescription()})
+			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(declaration.GetDescription())})
 		}
 		if declaration.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: declaration.GetMust()})
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(declaration.GetMust())})
 		}
 		if declaration.GetSensitive() {
 			entry = append(entry, yaml.MapItem{Key: "sensitive", Value: true})

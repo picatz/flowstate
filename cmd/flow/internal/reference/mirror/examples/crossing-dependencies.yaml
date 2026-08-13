@@ -37,7 +37,7 @@ name: crossing-dependencies
 
 outputs:
   released:
-    value: ${"%s on %s".format([steps.build.tag, steps.provision.host])}
+    value: ${steps.build.tag} on ${steps.provision.host}
     description: what was built and where it went
 
 steps:
@@ -89,4 +89,4 @@ steps:
   # everything above, because it reads two of them.
   - id: summary
     log:
-      message: ${"%s deployed to %s".format([steps.build.tag, steps.provision.host])}
+      message: ${steps.build.tag} deployed to ${steps.provision.host}

@@ -863,6 +863,40 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 // drivers evaluate it in: workflow code, in written order. Nothing is scheduled,
 // so no activity mock stands between this and the answer, which is the whole
 // reason a value replays rather than being remembered.
+// TestRunWorkflowInterpolation is the durable half of #413's interpolation. See
+// the local driver's TestRunWorkflowInterpolation, which runs the identical
+// [tests.InterpolationCases].
+//
+// What it holds is the `string()` around every fence, since the interpolation
+// itself is gone by the time either driver reads the workflow. A durable run
+// evaluates that conversion in workflow code on replay, so a rendering that
+// depended on anything outside the expression — a local zone, a locale, the
+// moment it ran — would differ from the local driver's and, worse, from its own
+// earlier replay.
+func TestRunWorkflowInterpolation(t *testing.T) {
+	for _, test := range tests.InterpolationCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 func TestRunWorkflowValue(t *testing.T) {
 	for _, test := range tests.ValueCases() {
 		t.Run(test.Name, func(t *testing.T) {

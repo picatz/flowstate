@@ -494,3 +494,41 @@ func spanWithin(n ast.Node, inner string) Span {
 	start := advance(outer.Start, text[:i])
 	return Span{Start: start, End: advance(start, inner)}
 }
+
+// spanOfFence returns the span of one fence's expression source inside node,
+// where value is the scalar's decoded text and sg is one segment [scanInterpolation]
+// found in it.
+//
+// The offsets come from the scanner rather than from a search of the text, and
+// that is the whole of the difference between this and [spanWithin]. A search
+// answers "where does this text first appear", which is a different question from
+// "where is this fence" in two ways a scalar can now be written. Two fences may be
+// written identically — in `${who} and ${who}` a search would underline the first
+// for an error in the second — and, since `$${` is a literal `${`, the bytes of a
+// fence may appear where no fence is: in `$${ ] } then ${ ] }` the scanner reports
+// exactly one fence, and a search for `${ ] }` finds the escaped lookalike four
+// characters in and reports the real fence's CEL error on literal text. A
+// diagnostic pointing at the wrong span is the failure this package ranks worse
+// than a missing one, so the position is taken from the thing that already knows
+// it.
+//
+// The one arithmetic left is anchoring the decoded value in the document, done
+// once for the whole scalar rather than per fence. Where the decoded text is not a
+// slice of the document — a folded block scalar, a quoted scalar carrying a YAML
+// escape — there is no anchor and the node's whole span is the answer. That is the
+// honest one: a computed position would name a character the author did not write.
+func spanOfFence(n ast.Node, value string, sg segment) Span {
+	outer := spanOfNode(n)
+	if !outer.IsValid() {
+		return outer
+	}
+
+	text := tokenText(n.GetToken())
+	base := strings.Index(text, value)
+	if base < 0 || base+sg.end > len(text) {
+		return outer
+	}
+
+	start := advance(outer.Start, text[:base+sg.start])
+	return Span{Start: start, End: advance(start, sg.text)}
+}

@@ -368,15 +368,15 @@ func stepScope(steps []*outlineStep, line0 int) (current *outlineStep, earlier [
 
 // openExpression returns the expression source between the last unclosed `${` and
 // the cursor.
+//
+// The rule is [flowfile.OpenFence], the compiler's own scanner, and not a search
+// for the last `${` — which was wrong twice over. It saw a fence in `$${`, the
+// escape for a literal `${`, so completing `write $${inputs.ver` offered inputs
+// and steps inside text the author means a reader to see. And it decided a fence
+// was closed by looking for any `}`, which CEL puts inside maps, string literals
+// and comments, so `${ {'k': 1}` read as closed and offered nothing.
 func openExpression(before string) (string, bool) {
-	open := strings.LastIndex(before, "${")
-	if open < 0 {
-		return "", false
-	}
-	if strings.Contains(before[open:], "}") {
-		return "", false
-	}
-	return before[open+len("${"):], true
+	return flowfile.OpenFence(before)
 }
 
 // A refCandidate is one name an expression at the cursor may reference, together

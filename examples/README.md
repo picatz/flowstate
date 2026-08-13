@@ -36,6 +36,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
+| [interpolation](interpolation) | Text and expressions in one value: several `${...}` in a message, the `$${` escape, and the whole-value fence that keeps its type | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |

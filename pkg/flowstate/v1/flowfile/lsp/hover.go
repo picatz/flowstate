@@ -56,20 +56,22 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		shaping := step.bindsWaitResult(in)
 		ls := step.loopScopeOf(in)
 		walkValues(in.value, func(v *value) {
-			// Being fenced is not enough: describing what is under the cursor
-			// means finding the cursor *in the expression source*, and whether a
-			// value can answer that depends on how the parser handed its text
-			// over. [value.exprCursor] is the one place that knows, and it
+			// Holding a fence is not enough: describing what is under the
+			// cursor means finding the cursor *in one fence's source*, and
+			// whether a value can answer that depends on how the parser handed
+			// its text over. [value.fenceAt] is the one place that knows, and it
 			// declines rather than compute a position from folded text — which
-			// would describe whatever name happened to sit at that byte.
-			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+			// would describe whatever name happened to sit at that byte. It also
+			// answers *which* fence, which is the question a value holding
+			// several has and a value holding one does not.
+			if found != nil {
 				return
 			}
-			cursor, ok := v.exprCursor(doc.index, pos)
+			f, cursor, ok := v.fenceAt(doc.index, pos)
 			if !ok {
 				return
 			}
-			found = hoverReference(doc, step, v, cursor, clock, shaping, ls)
+			found = hoverReference(doc, step, v, f, cursor, clock, shaping, ls)
 		})
 		if found != nil {
 			return found
@@ -348,24 +350,24 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 //
 // ls names which of a loop's own scopes the expression is evaluated in, and
 // loopScopeNone everywhere else — see [parsedStep.loopScopeOf].
-func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
-	ref := referenceAt(v.expr, cursor)
+func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
+	ref := referenceAt(f.source, cursor)
 	if ref.empty() {
 		// No reference here, which does not mean nothing is here. `referenceAt`
 		// treats a dot as part of a word, so the name in `[3,1,2].sortBy(v, v)`
 		// comes back as `.sortBy` — a first segment that is empty, and no
 		// reference. A function is still the thing under the cursor.
-		return hoverFunction(doc, v, cursor)
+		return hoverFunction(doc, v, f, cursor)
 	}
 
 	// A secret reference resolves to neither a step nor a binding, so it is
 	// described before either lookup.
-	if name, span, err := secretRefAt(v.expr, cursor); err == nil {
-		rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
+	if name, span, err := secretRefAt(f.source, cursor); err == nil {
+		rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 		return markdownHover(secretDoc(name), rng)
 	}
 
-	rng := v.exprSpanOrWhole(doc.index, ref.span[0], ref.span[1])
+	rng := v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[1])
 	if ref.step != "" && cursor <= ref.span[1] {
 		// A rooted reference, and the cursor is inside it. Nothing within one is a
 		// call — `${steps.web.value}` names an output, and `value` is also a function
@@ -387,7 +389,7 @@ func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock
 	// Nothing bound that name, so the cursor may be on a function. Second,
 	// deliberately: a binding is what the author wrote and a function of the same
 	// spelling is a coincidence.
-	return hoverFunction(doc, v, cursor)
+	return hoverFunction(doc, v, f, cursor)
 }
 
 // hoverDocumentExpression describes a reference inside one of the document's own
@@ -409,33 +411,33 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 		var found *lsp.Hover
 		walkValues(in.value, func(v *value) {
 			// No mappable cursor means no answer — see the walk in [hoverAt].
-			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+			if found != nil {
 				return
 			}
-			cursor, ok := v.exprCursor(doc.index, pos)
+			f, cursor, ok := v.fenceAt(doc.index, pos)
 			if !ok {
 				return
 			}
 
 			// A secret is the one reference that resolves here, because it is
 			// resolved by the worker rather than out of the run's state.
-			if name, span, err := secretRefAt(v.expr, cursor); err == nil {
-				rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
+			if name, span, err := secretRefAt(f.source, cursor); err == nil {
+				rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 				found = markdownHover(secretDoc(name), rng)
 
 				return
 			}
 
-			ref := referenceAt(v.expr, cursor)
+			ref := referenceAt(f.source, cursor)
 			if ref.empty() {
 				// No reference, which does not mean nothing is here — see
 				// [hoverReference] for why a receiver-style call on a literal looks
 				// like this.
-				found = hoverFunction(doc, v, cursor)
+				found = hoverFunction(doc, v, f, cursor)
 
 				return
 			}
-			rng := v.exprSpanOrWhole(doc.index, ref.span[0], ref.span[1])
+			rng := v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[1])
 
 			switch {
 			case ref.step != "" || ref.local == v1.StepsRoot:
@@ -463,7 +465,7 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 				// is the same everywhere — and completion offers them, so hover
 				// answering nothing was the two surfaces disagreeing about whether
 				// a `vars:` value is an ordinary expression.
-				found = hoverFunction(doc, v, cursor)
+				found = hoverFunction(doc, v, f, cursor)
 			}
 		})
 		if found != nil {

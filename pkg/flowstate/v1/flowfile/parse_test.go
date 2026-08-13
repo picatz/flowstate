@@ -169,16 +169,23 @@ steps:
 			want: `unknown key "${chosen.task}"`,
 		},
 		{
-			name: "interpolated input",
+			// Text beside a fence is interpolation since #413, so this case
+			// turned from "the value is refused, here" into the thing the refusal
+			// was standing in for: with more than one fence in a value, an error
+			// in one of them is reported at the character it is on, inside the
+			// fence it is in. Pointing at the value would leave an author to work
+			// out which `${...}` the parser meant, which is the whole reason
+			// #413's house gate names this.
+			name: "a broken fence among others is positioned inside its own fence",
 			src: `edition: v2026.3
 name: t
 steps:
   - id: a
     log:
-      message: hello ${who.result}
+      message: hello ${who.result} and ${ ] bad}
 `,
-			line: 6, col: 16,
-			want: "must be the whole value",
+			line: 6, col: 43,
+			want: `"]" is not valid here`,
 		},
 		{
 			name: "expression syntax error points inside the expression",
@@ -276,7 +283,7 @@ steps:
       - steps:
           - id: inner
             log:
-              message: hi ${there}
+              message: hi ${there
 `,
 			line: 9, col: 24,
 			want: `step "inner" input "message"`,
@@ -291,7 +298,7 @@ steps:
       url: https://example.com
       headers:
         X-A: fine
-        X-B: broken ${x}
+        X-B: broken ${x
 `,
 			line: 9, col: 14,
 			want: `step "a" input "headers"`,
@@ -977,6 +984,17 @@ steps:
 		t.Logf("reported: %v", err)
 	})
 
+	// A literal string holding `${` used to be the one value Marshal could not
+	// write: reading it back would have made it an expression, and until #413
+	// there was no way to say "these two characters, literally". `$${` is that
+	// way, so the case turned from a refusal into a round trip.
+	//
+	// Both halves are asserted. That the workflow survives the trip is the claim
+	// that matters; that the output actually contains the escape is what would
+	// catch an escaper that quietly dropped the fence instead of escaping it,
+	// which round-tripping alone would not, since a value read back as an
+	// expression named `a.result` is *also* not equal to this one for reasons
+	// that have nothing to do with escaping.
 	t.Run("literal that would read back as an expression", func(t *testing.T) {
 		workflow := &v1.Workflow{
 			Name: "t",
@@ -988,11 +1006,15 @@ steps:
 				}},
 			}},
 		}
-		if _, err := flowfile.Marshal(workflow); err == nil {
-			t.Error("Marshal() wrote a literal that would be read back as an expression")
-		} else {
-			t.Logf("reported: %v", err)
+
+		data, err := flowfile.Marshal(workflow)
+		if err != nil {
+			t.Fatalf("Marshal() error: %v", err)
 		}
+		if !strings.Contains(string(data), "$${a.result}") {
+			t.Errorf("Marshal() did not escape the literal fence:\n%s", data)
+		}
+		requireRoundTrip(t, workflow)
 	})
 
 	t.Run("literal string as a condition", func(t *testing.T) {
@@ -1246,9 +1268,14 @@ steps:
 			want: "unterminated expression",
 		},
 		{
-			name: "two expressions in one value",
-			src:  taskInput(`message: ${a.result} ${b.result}`),
-			want: "must be the whole value",
+			// Two expressions in one value is interpolation since #413 and no
+			// longer refused; what is still refused is a great many of them. The
+			// bound is on the count, because the count is what an author
+			// multiplies without paying for it in the document size that is the
+			// only thing otherwise bounded here.
+			name: "more expressions in one value than the bound allows",
+			src:  taskInput("message: " + strings.Repeat("${a.result}", 65)),
+			want: "more than 64",
 		},
 		{
 			name: "expression in a workflow name",
