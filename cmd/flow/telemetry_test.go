@@ -342,6 +342,66 @@ func TestTelemetryResourceNamesTheService(t *testing.T) {
 	require.Contains(t, attrs, "telemetry.sdk.name", "the SDK's own attributes are kept")
 }
 
+// TestTelemetryResourceIdentifiesThisCopy covers what service.name cannot: two
+// workers in one Deployment have the same name, and everything downstream groups
+// by resource, so without these a spike on one pod averages into the other.
+func TestTelemetryResourceIdentifiesThisCopy(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	res, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+
+	attrs := resourceAttributes(res.Attributes())
+	require.NotEmpty(t, attrs["service.instance.id"],
+		"which copy of flowstate this is, without an operator wiring the downward API")
+	require.Contains(t, attrs, "host.name")
+	require.Contains(t, attrs, "process.pid")
+	require.Contains(t, attrs, "process.runtime.name")
+}
+
+// TestTheResourceCarriesNoCommandArguments is the negative direction, and it is
+// the reason the process detectors are named one by one instead of through
+// [resource.WithProcess].
+//
+// A resource attribute rides on every span, metric and log the process emits.
+// This binary is invoked as `flow run --input token=…`, so process.command_args
+// would put a credential on all of them at once — the widest reach any single
+// value in this program can have. Asserting the attributes we do want cannot see
+// that: it passes just as happily with the argument vector sitting beside them.
+func TestTheResourceCarriesNoCommandArguments(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	res, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+
+	attrs := resourceAttributes(res.Attributes())
+	require.NotContains(t, attrs, "process.command_args",
+		"an --input flag holding a secret must not become a resource attribute")
+	require.NotContains(t, attrs, "process.command_line")
+	require.NotContains(t, attrs, "process.executable.path",
+		"a path carries a username and a deployment's layout; the name answers the question")
+}
+
+// TestTheInstanceIDIsStableWithinTheProcess pins the property that makes the id
+// worth having. A process builds a provider per signal, each taking its own
+// resource, and an id that differed between them would split one process into
+// three services in the backend.
+func TestTheInstanceIDIsStableWithinTheProcess(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	first, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+	second, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+
+	id := resourceAttributes(first.Attributes())["service.instance.id"]
+	require.NotEmpty(t, id)
+	require.Equal(t, id, resourceAttributes(second.Attributes())["service.instance.id"])
+}
+
 // TestTelemetryResourceLetsTheEnvironmentWin is the direction that is easy to
 // get backwards, and useless backwards: an operator running two deployments from
 // one binary distinguishes them with OTEL_SERVICE_NAME, which can only work if
