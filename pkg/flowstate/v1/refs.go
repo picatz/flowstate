@@ -280,10 +280,51 @@ func CollectRefsFromParsedExpr(pe *expr.ParsedExpr, prev *Workflow_StepOutputs, 
 // CollectValueRefs records the step outputs one value references.
 //
 // Only an expression can reference anything; a literal carries no reference
-// regardless of what it happens to contain.
+// regardless of what it happens to contain — but an expression can be *inside* a
+// structure, so this descends into one.
+//
+// That arm is not defensive. A [Value_Structure] used to hold literals and secret
+// references and nothing else, so reading only the top level answered correctly
+// by accident; output shaping written as a mapping compiles per entry, and each
+// entry is an ordinary expression that may read `${steps.x.y}` or `${vars.n}`.
+// Without the descent, compaction at a Continue-As-New boundary would drop the
+// very output a shaped expression is about to read — a correctness failure, and
+// exactly the walk-misses-a-branch shape this repository keeps paying for.
+// The descent is depth-bounded for [maxStructureDepth]'s reason and not a
+// different one: a specification does not have to have come from a Flowfile, so
+// the depth of a structure is a number an outside party chooses, and this walk
+// is recursive.
+//
+// What lies below the bound is not recorded, and that is worth saying plainly
+// rather than implying it is free: an expression nested deeper than 32 levels of
+// structure could have an output it reads pruned at a Continue-As-New boundary.
+// No Flowfile can express one — a shaped mapping's entries are values, not
+// structures, and the compiler bounds nesting far below this — so the shape that
+// reaches the bound is a specification submitted directly, where the alternative
+// is a stack depth the peer decides.
 func CollectValueRefs(value *Value, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
-	if kind, isExpr := value.GetKind().(*Value_Expr); isExpr {
+	collectValueRefs(value, 0, prev, refs)
+}
+
+func collectValueRefs(value *Value, depth int, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
+	if depth > maxStructureDepth {
+		return
+	}
+
+	switch kind := value.GetKind().(type) {
+	case *Value_Expr:
 		CollectRefsFromParsedExpr(kind.Expr, prev, refs)
+	case *Value_Structure_:
+		switch structure := kind.Structure.GetKind().(type) {
+		case *Value_Structure_List_:
+			for _, element := range structure.List.GetValues() {
+				collectValueRefs(element, depth+1, prev, refs)
+			}
+		case *Value_Structure_Map_:
+			for _, entry := range structure.Map.GetEntries() {
+				collectValueRefs(entry, depth+1, prev, refs)
+			}
+		}
 	}
 }
 

@@ -785,11 +785,12 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			// The line scan sees input keys but not their values, so a step
-			// that shapes — the same presence rule the validator and the model
-			// use — gets no output candidates here rather than the declared
-			// names its shaping removed. Offering too little is the scan's
-			// stated posture; offering a name nothing produces is the failure.
-			if !slices.Contains(s.inputKeys, taskShapingKey) {
+			// that shapes — the same rule the validator and the model use, now
+			// a declared capability rather than a name — gets no output
+			// candidates here rather than the declared names its shaping
+			// removed. Offering too little is the scan's stated posture;
+			// offering a name nothing produces is the failure.
+			if !s.shapes() {
 				c.outputs = taskOutputs(def)
 			}
 		}

@@ -35,10 +35,15 @@ steps:
     http:
       method: GET
       url: https://httpbin.org/json
-      # ${...} marks a CEL expression, as everywhere else in a Flowfile; a bare
-      # string would be a literal. Quote it because YAML would otherwise read
-      # the colons inside as mapping syntax.
-      outputs: "${ {'status': response.status_code, 'title': json_parse(response.body)['slideshow']['title'], 'source': vars.source} }"
+      # One name per line, each value an ordinary expression position: ${...}
+      # marks a CEL expression, as everywhere else in a Flowfile, and a bare
+      # string would be a literal. This is the same shaping a `wait_for_signal:`
+      # writes, spelled the same way — and because the names are written down,
+      # `${steps.web.titel}` below is a diagnostic rather than an empty value.
+      outputs:
+        status: ${response.status_code}
+        title: ${json_parse(response.body)["slideshow"]["title"]}
+        source: ${vars.source}
 
   - id: report
     log:

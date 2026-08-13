@@ -80,7 +80,8 @@ steps:
             # so a failed iteration's result carries no name, only whatever
             # `continue_on_error` recorded as its error. That absence is
             # exactly what `outputs:` below tests for.
-            outputs: '${ {"name": service.name} }'
+            outputs:
+              name: ${service.name}
 
   - id: summary
     log:

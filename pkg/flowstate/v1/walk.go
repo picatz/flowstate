@@ -522,4 +522,61 @@ func (w Walk) value(site ValueSite) {
 		return
 	}
 	w.Value(site)
+	w.nested(site, 0)
+}
+
+// nested delivers the values held *inside* one value.
+//
+// A [Value_Structure] is a value made of values, and its entries are written by
+// the same author in the same file: a shaped `outputs:` mapping is compiled entry
+// by entry precisely so its names survive, and each entry is an ordinary
+// expression. A traversal that stopped at the top of a value would hand every
+// caller a position whose contents it cannot see — the same blindness #508 is
+// about, one level further in, and the one place it costs correctness rather than
+// coverage is compaction: a `${steps.a.b}` inside a shaped entry is a reference
+// that has to keep that output alive across a Continue-As-New.
+//
+// The entry keeps its parent's slot and gains its name, so `outputs` holding
+// `reference` arrives with a field of `outputs.reference` — the spelling a
+// diagnostic and a measurement both already use for a shaped name. A list's
+// elements keep the parent's name outright, because an index is not a name and
+// inventing one would put a spelling in a diagnostic that appears nowhere in the
+// file.
+//
+// Bounded by [maxStructureDepth] for that constant's reason: a specification does
+// not have to have come from a Flowfile, and this recursion's depth would
+// otherwise be a number the sender picks.
+func (w Walk) nested(site ValueSite, depth int) {
+	if depth >= maxStructureDepth {
+		return
+	}
+
+	switch structure := site.Value.GetStructure().GetKind().(type) {
+	case *Value_Structure_Map_:
+		entries := structure.Map.GetEntries()
+		for _, name := range slices.Sorted(maps.Keys(entries)) {
+			entry := site
+			entry.Name = name
+			if site.Name != "" {
+				entry.Name = site.Name + "." + name
+			}
+			entry.Value = entries[name]
+			if entry.Value == nil {
+				continue
+			}
+			w.Value(entry)
+			w.nested(entry, depth+1)
+		}
+
+	case *Value_Structure_List_:
+		for _, element := range structure.List.GetValues() {
+			if element == nil {
+				continue
+			}
+			entry := site
+			entry.Value = element
+			w.Value(entry)
+			w.nested(entry, depth+1)
+		}
+	}
 }
