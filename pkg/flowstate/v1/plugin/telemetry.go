@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
 
 const instrumentationName = "github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
@@ -58,9 +60,12 @@ func newTelemetry(cfg Config) telemetry {
 // only "plugin operation failed", the same fixed string every time, so the
 // fact of failure is visible without the failure's own words riding along.
 func (t telemetry) start(ctx context.Context, operation, plugin, task string) (context.Context, trace.Span, func(error)) {
-	attrs := []attribute.KeyValue{attribute.String("flowstate.plugin.name", plugin), attribute.String("flowstate.plugin.operation", operation)}
+	attrs := []attribute.KeyValue{
+		attribute.String(metricschema.PluginName, plugin),
+		attribute.String(metricschema.PluginOperation, operation),
+	}
 	if task != "" {
-		attrs = append(attrs, attribute.String("flowstate.task.name", task))
+		attrs = append(attrs, attribute.String(metricschema.TaskName, task))
 	}
 	ctx, span := t.tracer.Start(ctx, "flowstate.plugin."+operation, trace.WithAttributes(attrs...))
 	started := time.Now()
@@ -70,9 +75,16 @@ func (t telemetry) start(ctx context.Context, operation, plugin, task string) (c
 			outcome = "error"
 			span.SetStatus(codes.Error, "plugin operation failed")
 		}
-		bounded := append(attrs, attribute.String("flowstate.plugin.outcome", outcome))
-		t.duration.Record(ctx, time.Since(started).Seconds(), metric.WithAttributes(bounded...))
-		t.calls.Add(ctx, 1, metric.WithAttributes(bounded...))
+		// The metric carries the same attributes as the span, filtered
+		// through the schema: the span and the counter must spell a concept
+		// the same way (#522's first invariant), and only the schema decides
+		// what a label may be (see [metricschema]).
+		labelled := make([]attribute.KeyValue, 0, len(attrs)+1)
+		labelled = append(labelled, attrs...)
+		labelled = append(labelled, attribute.String(metricschema.PluginOutcome, outcome))
+		bounded := metricschema.WithAttributes(labelled...)
+		t.duration.Record(ctx, time.Since(started).Seconds(), bounded)
+		t.calls.Add(ctx, 1, bounded)
 		span.End()
 	}
 }
