@@ -152,6 +152,41 @@ edition: v2026.3
 			},
 		},
 		{
+			// `$${` is a literal `${`, so the cursor here is in ordinary text that
+			// the author means a reader to see — not in an expression. Locating the
+			// open fence by searching back for the last `${` finds the escape's own
+			// brace and offers the whole expression scope in the middle of prose,
+			// which is the editor asserting a fence the compiler will not find.
+			name: "no expression scope inside an escape",
+			src: `name: c
+steps:
+  - id: alpha
+    log:
+      message: one
+  - id: beta
+    log:
+      message: write $${steps.|
+edition: v2026.3
+`,
+			notWant: []string{"steps", "inputs", "upperAscii", "alpha"},
+		},
+		{
+			// The other half, so the fix cannot be "never complete after a `$`":
+			// a real fence later in the same value still completes.
+			name: "a real fence after an escape still completes",
+			src: `name: c
+steps:
+  - id: alpha
+    log:
+      message: one
+  - id: beta
+    log:
+      message: shows $${literal} and ${steps.|
+edition: v2026.3
+`,
+			want: []string{"alpha"},
+		},
+		{
 			name: "earlier step ids under the root",
 			src: `name: c
 steps:

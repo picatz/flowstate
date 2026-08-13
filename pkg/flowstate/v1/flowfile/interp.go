@@ -337,6 +337,46 @@ func Fences(s string) []Fence {
 	return out
 }
 
+// OpenFence returns the expression source of the fence a prefix of a value ends
+// inside, and reports whether it ends inside one at all.
+//
+// It is what an editor needs and [Fences] cannot answer: the text before a
+// cursor mid-typing is a value with an unterminated `${`, which is precisely the
+// input [Fences] declines. `${inputs.ver` is not yet a fence and is exactly when
+// completing one is useful.
+//
+// Exported, and reusing the scanner's own walk, for the reason [Fences] is: the
+// rule for where a fence begins has to mean the same thing in the compiler and
+// in the editor. Locating the open fence with a search for the last `${` is
+// wrong wherever `$${` is, and wrong in the direction that gets in an author's
+// way — the cursor in `write $${inputs.ver` is inside literal text a reader is
+// meant to see, and offering step and input completions there is the editor
+// asserting a fence the compiler will not find.
+func OpenFence(before string) (string, bool) {
+	for i := 0; i < len(before); {
+		switch {
+		case strings.HasPrefix(before[i:], escapedFence):
+			i += len(escapedFence)
+
+		case strings.HasPrefix(before[i:], fenceOpen):
+			closeAt, ok := findFenceClose(before, i+len(fenceOpen))
+			if !ok {
+				// Unterminated, and this is a prefix rather than a whole value,
+				// so it is not malformed — it is the fence being typed. Nothing
+				// later can overtake it, because everything after it in the
+				// prefix is its own contents.
+				return before[i+len(fenceOpen):], true
+			}
+			i = closeAt + len(fenceClose)
+
+		default:
+			i++
+		}
+	}
+
+	return "", false
+}
+
 // wholeValueFence reports the source of a scan that is exactly one fence
 // covering the whole scalar — the shape [SplitFence] recognizes, and the shape
 // that keeps its own typing rather than becoming text.

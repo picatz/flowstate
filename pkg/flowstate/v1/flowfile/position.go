@@ -496,42 +496,39 @@ func spanWithin(n ast.Node, inner string) Span {
 }
 
 // spanOfFence returns the span of one fence's expression source inside node,
-// searching from a byte offset in node's own text and answering the offset to
-// search from next.
+// where value is the scalar's decoded text and sg is one segment [scanInterpolation]
+// found in it.
 //
-// The offset is what [spanWithin] cannot do and what a scalar holding more than
-// one fence needs. spanWithin finds the first occurrence of the text it is given,
-// which is the right answer when a value holds one expression and the wrong one
-// as soon as it holds two the same: in `${who} and ${who}` both fences would be
-// underlined at the first, so an error in the second would be reported on the
-// first. Walking a cursor forward gives each fence its own position, in the order
-// they were written.
+// The offsets come from the scanner rather than from a search of the text, and
+// that is the whole of the difference between this and [spanWithin]. A search
+// answers "where does this text first appear", which is a different question from
+// "where is this fence" in two ways a scalar can now be written. Two fences may be
+// written identically — in `${who} and ${who}` a search would underline the first
+// for an error in the second — and, since `$${` is a literal `${`, the bytes of a
+// fence may appear where no fence is: in `$${ ] } then ${ ] }` the scanner reports
+// exactly one fence, and a search for `${ ] }` finds the escaped lookalike four
+// characters in and reports the real fence's CEL error on literal text. A
+// diagnostic pointing at the wrong span is the failure this package ranks worse
+// than a missing one, so the position is taken from the thing that already knows
+// it.
 //
-// The whole fence including its braces is what is searched for, rather than the
-// source alone, so that a fence's source appearing earlier inside a string
-// literal cannot capture it. The returned span still covers the source alone,
-// because that is what a CEL column is relative to.
-//
-// It falls back to the node's whole span, and leaves the cursor where it was,
-// wherever the decoded text is not a slice of the document — a folded block
-// scalar, a quoted scalar carrying an escape. A whole-value span is the honest
-// answer there; a computed one would point at a character the author did not
-// write, which is the wrong-position failure this package treats as worse than no
-// position at all.
-func spanOfFence(n ast.Node, source string, from int) (Span, int) {
+// The one arithmetic left is anchoring the decoded value in the document, done
+// once for the whole scalar rather than per fence. Where the decoded text is not a
+// slice of the document — a folded block scalar, a quoted scalar carrying a YAML
+// escape — there is no anchor and the node's whole span is the answer. That is the
+// honest one: a computed position would name a character the author did not write.
+func spanOfFence(n ast.Node, value string, sg segment) Span {
 	outer := spanOfNode(n)
+	if !outer.IsValid() {
+		return outer
+	}
+
 	text := tokenText(n.GetToken())
-	if !outer.IsValid() || from < 0 || from > len(text) {
-		return outer, from
+	base := strings.Index(text, value)
+	if base < 0 || base+sg.end > len(text) {
+		return outer
 	}
 
-	whole := fenceOpen + source + fenceClose
-	i := strings.Index(text[from:], whole)
-	if i < 0 {
-		return outer, from
-	}
-	i += from
-
-	start := advance(outer.Start, text[:i+len(fenceOpen)])
-	return Span{Start: start, End: advance(start, source)}, i + len(whole)
+	start := advance(outer.Start, text[:base+sg.start])
+	return Span{Start: start, End: advance(start, sg.text)}
 }

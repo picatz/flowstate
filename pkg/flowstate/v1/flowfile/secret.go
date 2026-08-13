@@ -341,7 +341,7 @@ func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Val
 			// the whole value" — describes a rule interpolation removed, so an
 			// author following it would rewrite a value that was never the
 			// problem and land on the same refusal again.
-			c.reportInterpolatedSecret(n, segs, r)
+			c.reportInterpolatedSecret(n, text, segs, r)
 			return nil
 		}
 		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
@@ -373,15 +373,13 @@ func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Val
 // reportInterpolatedSecret reports an interpolated scalar inside a structure
 // that holds a secret reference, naming the fence at fault where one of this
 // value's own fences is the reference.
-func (c *compiler) reportInterpolatedSecret(n ast.Node, segs []segment, r ref) {
-	cursor := 0
+func (c *compiler) reportInterpolatedSecret(n ast.Node, text string, segs []segment, r ref) {
 	for _, sg := range segs {
 		if !sg.fence {
 			continue
 		}
 
-		var span Span
-		span, cursor = spanOfFence(n, sg.text, cursor)
+		span := spanOfFence(n, text, sg)
 
 		parsed := v1.NewExpr(sg.text)
 		if parsed.Error() != nil {

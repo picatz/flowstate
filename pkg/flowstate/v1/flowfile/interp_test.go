@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -375,6 +376,34 @@ func TestFixRootsEveryFenceInAnInterpolatedValue(t *testing.T) {
 			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: ${steps.who.result} and ${steps.who.result}\n",
 		},
 		{
+			// The escape holds the bytes of a fence and is not one, which is the
+			// third way this rewriter can know less than the language does. The
+			// scanner reports one fence here and the rewriter used to find its
+			// text by searching the line, so it rewrote the *escaped* copy: `flow
+			// fix` exiting zero having silently changed what the literal half of
+			// the value prints, on a file that was valid before and after. That
+			// is the corruption CLAUDE.md records, and the reason this table
+			// compares bytes rather than asking whether the output still
+			// validates — it always did.
+			name: "an escaped lookalike before the fence it duplicates",
+			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result} and ${who.result}\"\n",
+			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result} and ${steps.who.result}\"\n",
+		},
+		{
+			// The mirror image, so the fix cannot be "skip the first match": here
+			// the real fence comes first and the escape second.
+			name: "an escaped lookalike after the fence it duplicates",
+			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"${who.result} and $${who.result}\"\n",
+			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"${steps.who.result} and $${who.result}\"\n",
+		},
+		{
+			// A value that is nothing but escapes has no fence at all, so the
+			// rewriter has nothing to do and must leave every byte alone.
+			name: "escapes only",
+			src:  "name: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result}$${who.result}\"\n",
+			want: "edition: v2026.3\nname: t\nsteps:\n  - id: who\n    log:\n      message: hi\n  - id: b\n    log:\n      message: \"$${who.result}$${who.result}\"\n",
+		},
+		{
 			// The names the grammar binds are not step references, wherever they
 			// are written — and interpolation is a new "wherever". A loop's
 			// `item` beside a step of the same id is deliberately legal, and
@@ -405,6 +434,144 @@ func TestFixRootsEveryFenceInAnInterpolatedValue(t *testing.T) {
 			// wrong expectation, and cannot satisfy this.
 			if _, err := flowfile.Unmarshal(result.Source); err != nil {
 				t.Errorf("Fix() produced a file that does not compile: %v", err)
+			}
+		})
+	}
+}
+
+// TestFenceDiagnosticSkipsAnEscapedLookalike pins the position a CEL error in a
+// multi-fence value is reported at, when an earlier escape holds the same bytes.
+//
+// The span used to be found by searching the scalar for `${` + the fence's own
+// source + `}`, which finds the escaped copy first: the diagnostic named a
+// column inside literal text the author wrote on purpose, and said the CEL
+// parser had failed there. A diagnostic pointing at the wrong span is the false
+// diagnostic this repository ranks as worse than a missing one, so the column is
+// asserted here rather than only the message.
+func TestFenceDiagnosticSkipsAnEscapedLookalike(t *testing.T) {
+	t.Parallel()
+
+	// `    value: "$${ ] } then ${ ] }"` — the escaped `]` is at column 17 and
+	// the real fence's at 29. Both are broken CEL; only the second is CEL at all.
+	const src = `edition: v2026.3
+name: t
+steps:
+  - id: say
+    value: "$${ ] } then ${ ] }"
+`
+
+	// The compile diagnostics come back as the error rather than in the list,
+	// because a value that does not compile stops the parse.
+	_, err := flowfile.ValidateSource([]byte(src))
+	if err == nil {
+		t.Fatal("ValidateSource() accepted a value whose fence is broken CEL")
+	}
+
+	var diags flowfile.Diagnostics
+	if !errors.As(err, &diags) {
+		t.Fatalf("ValidateSource() error is not a Diagnostics: %#v", err)
+	}
+	if len(diags) != 1 {
+		t.Fatalf("ValidateSource() gave %d diagnostics, want 1: %v", len(diags), diags)
+	}
+	if got := diags[0].Column; got != 29 {
+		t.Errorf("the CEL error is reported at column %d, want 29 — column 17 is the `]` inside the $${ escape: %v",
+			got, err)
+	}
+}
+
+// TestFormattingNeverInvalidatesAnEscapedTextField is `flow fmt`'s promise, on
+// the fields that are read when the workflow is compiled.
+//
+// [flowfile.compiler.text] resolves `$${` to a literal `${`, so
+// `description: show $${TOKEN}` is held as `show ${TOKEN}`. Writing those bytes
+// back unescaped produces a real fence in a position that cannot hold one, and
+// the next compile refuses the file the formatter just wrote. Bytes are compared
+// rather than validity alone, because the first half of that failure is a
+// document that still parses and means something else.
+func TestFormattingNeverInvalidatesAnEscapedTextField(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: t
+description: show $${TOKEN} to interpolate
+steps:
+  - id: a
+    description: and $${here} too
+    log:
+      message: hi
+`
+
+	wf, err := flowfile.Unmarshal([]byte(src))
+	if err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	if want := "show ${TOKEN} to interpolate"; wf.GetDescription() != want {
+		t.Fatalf("description read as %q, want %q", wf.GetDescription(), want)
+	}
+
+	written, err := flowfile.Format([]byte(src), wf)
+	if err != nil {
+		t.Fatalf("Format() error: %v", err)
+	}
+
+	if !strings.Contains(string(written), "description: show $${TOKEN} to interpolate") {
+		t.Errorf("Format() wrote the description unescaped:\n%s", written)
+	}
+
+	// The half that says the round trip is a round trip rather than merely legal.
+	again, err := flowfile.Unmarshal(written)
+	if err != nil {
+		t.Fatalf("Format() produced a file that does not compile: %v\n%s", err, written)
+	}
+	if again.GetDescription() != wf.GetDescription() {
+		t.Errorf("description became %q across a format, was %q", again.GetDescription(), wf.GetDescription())
+	}
+	if again.GetSteps()[0].GetDescription() != wf.GetSteps()[0].GetDescription() {
+		t.Errorf("step description became %q, was %q",
+			again.GetSteps()[0].GetDescription(), wf.GetSteps()[0].GetDescription())
+	}
+}
+
+// TestOpenFenceIgnoresAnEscape is the editor half of the same rule.
+//
+// A completion request carries the text before the cursor, so the question is
+// which fence — if any — the cursor is inside. Searching back for the last `${`
+// finds the escape's, and the editor then offers step and input completions in
+// the middle of literal text.
+func TestOpenFenceIgnoresAnEscape(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		before string
+		want   string
+		open   bool
+	}{
+		{name: "inside a real fence", before: "hello ${inputs.ver", want: "inputs.ver", open: true},
+		{name: "inside an escape", before: "write $${inputs.ver", open: false},
+		{name: "after a closed fence", before: "${inputs.a} then ", open: false},
+		{name: "a real fence after an escape", before: "$${lit} and ${inputs.v", want: "inputs.v", open: true},
+		{name: "an escape after a closed fence", before: "${inputs.a} $${lit", open: false},
+		{name: "no fence at all", before: "just words", open: false},
+		{
+			// A brace inside a CEL map does not close the fence, which the old
+			// search for any `}` got wrong in the other direction.
+			name:   "a map literal is not a close",
+			before: "${ {'k': 1} , inputs.v",
+			want:   " {'k': 1} , inputs.v",
+			open:   true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, open := flowfile.OpenFence(test.before)
+			if open != test.open {
+				t.Fatalf("OpenFence(%q) open = %v, want %v", test.before, open, test.open)
+			}
+			if open && got != test.want {
+				t.Errorf("OpenFence(%q) = %q, want %q", test.before, got, test.want)
 			}
 		})
 	}

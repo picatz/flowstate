@@ -852,7 +852,7 @@ func scheduleTriggerToYAML(schedule *v1.ScheduleTrigger) (yaml.MapSlice, error) 
 	}
 
 	if zone := schedule.GetTimeZone(); zone != "" {
-		doc = append(doc, yaml.MapItem{Key: "time_zone", Value: zone})
+		doc = append(doc, yaml.MapItem{Key: "time_zone", Value: textToYAML(zone)})
 	}
 
 	if jitter := schedule.GetJitter(); jitter != nil {
@@ -926,7 +926,7 @@ func calendarsToYAML(calendars []*v1.ScheduleTrigger_Calendar) []yaml.MapSlice {
 		}
 
 		if comment := calendar.GetComment(); comment != "" {
-			written = append(written, yaml.MapItem{Key: "comment", Value: comment})
+			written = append(written, yaml.MapItem{Key: "comment", Value: textToYAML(comment)})
 		}
 
 		out = append(out, written)

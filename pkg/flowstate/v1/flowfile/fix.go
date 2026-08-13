@@ -2322,17 +2322,35 @@ func (f *fixer) rootResponseScalar(node *ast.StringNode) {
 // rewriter has to know what the grammar holds, and the grammar now holds more
 // than one expression per value.
 //
-// The splice walks left to right behind a cursor rather than searching the whole
-// line for each fence, because two fences in a value may be written identically:
-// in `${who.result} then ${who.result}` a search from the value's start would
-// rewrite the first one twice and the second never.
+// The splice is located by the scanner's own offsets and not by searching the
+// line for each fence's text, because the text of a fence is not the same thing
+// as a fence. Two fences in a value may be written identically — in
+// `${who.result} then ${who.result}` a search from the value's start would
+// rewrite the first one twice and the second never — and, since `$${` is a
+// literal `${`, the bytes of a fence appear in text that is not one. In
+// `$${who.result} and ${who.result}` [Fences] correctly reports a single fence,
+// and a search for `${who.result}` finds the escaped lookalike first: `flow fix`
+// then exits zero having quietly changed what the value's *literal* half prints.
+// That is `flow fix` corrupting a valid file, which is the failure CLAUDE.md
+// records twice, in its third shape — the rewriter knowing less than the scanner
+// about where the language says a thing begins.
+//
+// So the value is anchored in its line once and every fence is spliced at
+// [Fence.Open], carrying the length change of the edits already made. Anchoring
+// is what the search was really doing right — a value's own column rules out a
+// fence written earlier on the same line, in a comment or in another value in
+// flow style — and it is done once rather than per fence.
 func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 	fences := Fences(node.Value)
 	if len(fences) == 0 {
 		return
 	}
 
-	type rewrite struct{ want, replacement string }
+	type rewrite struct {
+		open, end   int
+		want        string
+		replacement string
+	}
 	var rewrites []rewrite
 	for _, fence := range fences {
 		rooted, changed, err := rootedExpr(fence.Source, steps)
@@ -2344,6 +2362,11 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 			continue
 		}
 		rewrites = append(rewrites, rewrite{
+			open: fence.Open,
+			end:  fence.End,
+			// The fence as the scanner delimited it, kept only to check that the
+			// line really holds it where the offsets say. It is the same bytes as
+			// node.Value[Open:End] by construction.
 			want:        fenceOpen + fence.Source + fenceClose,
 			replacement: fenceOpen + rooted + fenceClose,
 		})
@@ -2359,29 +2382,36 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 		return
 	}
 
-	// Located from the value's own column rather than by searching the line, so a
-	// fence written earlier on the same line — in a comment, or in another value in
-	// flow style — cannot be the one rewritten.
+	// Anchored from the value's own column rather than by searching the whole
+	// line, so a value written earlier on the same line cannot be the one
+	// rewritten.
 	line := f.line(span.Start.Line)
-	cursor, located := byteOffsetOfColumn(line, span.Start.Column)
+	from, located := byteOffsetOfColumn(line, span.Start.Column)
 	if !located {
 		return
 	}
+	base := strings.Index(line[from:], node.Value)
+	if base < 0 {
+		f.refuse(node,
+			"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
+		return
+	}
+	base += from
 
-	// Built whole and assigned once, so a value whose fences cannot all be found
+	// Built whole and assigned once, so a value whose fences cannot all be placed
 	// leaves the line exactly as it was. A half-rewritten line is the one outcome
 	// worse than an unrewritten one.
 	rewritten := line
+	delta := 0
 	for _, rw := range rewrites {
-		at := strings.Index(rewritten[cursor:], rw.want)
-		if at < 0 {
+		at, to := base+rw.open+delta, base+rw.end+delta
+		if to > len(rewritten) || rewritten[at:to] != rw.want {
 			f.refuse(node,
 				"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
 			return
 		}
-		at += cursor
-		rewritten = rewritten[:at] + rw.replacement + rewritten[at+len(rw.want):]
-		cursor = at + len(rw.replacement)
+		rewritten = rewritten[:at] + rw.replacement + rewritten[to:]
+		delta += len(rw.replacement) - (to - at)
 	}
 
 	f.lines[span.Start.Line-1] = rewritten

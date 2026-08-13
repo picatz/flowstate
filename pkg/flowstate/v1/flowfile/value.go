@@ -257,7 +257,7 @@ func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bo
 		if exprCtx {
 			misplaced = secretNotEvaluable
 		}
-		return c.interpolation(n, segs, path, r, misplaced)
+		return c.interpolation(n, text, segs, path, r, misplaced)
 	}
 
 	if exprCtx {
@@ -283,15 +283,13 @@ func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bo
 // And a `${secret(...)}` in mixed position has to be refused rather than
 // desugared: the desugaring would evaluate it, which is the one thing a secret
 // reference must never be.
-func (c *compiler) interpolation(n ast.Node, segs []segment, path string, r ref, misplaced secretPlacement) *v1.Value {
-	cursor := 0
+func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path string, r ref, misplaced secretPlacement) *v1.Value {
 	for _, sg := range segs {
 		if !sg.fence {
 			continue
 		}
 
-		var span Span
-		span, cursor = spanOfFence(n, sg.text, cursor)
+		span := spanOfFence(n, text, sg)
 		val := v1.NewExpr(sg.text)
 		if err := val.Error(); err != nil {
 			at, msg := celFailure(err, span, sg.text)
@@ -659,13 +657,11 @@ func (c *compiler) celTextString(n ast.Node, text string, r ref) (string, bool) 
 	}
 
 	if hasFence(segs) {
-		cursor := 0
 		for _, sg := range segs {
 			if !sg.fence {
 				continue
 			}
-			var span Span
-			span, cursor = spanOfFence(n, sg.text, cursor)
+			span := spanOfFence(n, text, sg)
 			if val := v1.NewExpr(sg.text); val.Error() != nil {
 				at, msg := celFailure(val.Error(), span, sg.text)
 				c.report(at, r, "is not a valid expression: %s", msg)
