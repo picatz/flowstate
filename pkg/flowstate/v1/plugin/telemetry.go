@@ -46,6 +46,17 @@ func newTelemetry(cfg Config) telemetry {
 	return telemetry{tp.Tracer(instrumentationName), m, d, c, h, r, lf, pe}
 }
 
+// start opens the span covering one plugin operation.
+//
+// Same two rules as [engine.startTaskSpan] two directories over, which this
+// mirrors on purpose: no value ever becomes an attribute, and a failure marks
+// the span's status with a fixed classification, never [trace.Span.RecordError].
+// A plugin process is a separate binary returning arbitrary text — its launch
+// failures, protocol errors, and health-check failures can all quote paths,
+// arguments, or a peer's own error text — and RecordError would write that
+// text into an exported exception event verbatim. The status therefore says
+// only "plugin operation failed", the same fixed string every time, so the
+// fact of failure is visible without the failure's own words riding along.
 func (t telemetry) start(ctx context.Context, operation, plugin, task string) (context.Context, trace.Span, func(error)) {
 	attrs := []attribute.KeyValue{attribute.String("flowstate.plugin.name", plugin), attribute.String("flowstate.plugin.operation", operation)}
 	if task != "" {
@@ -57,7 +68,6 @@ func (t telemetry) start(ctx context.Context, operation, plugin, task string) (c
 		outcome := "success"
 		if err != nil {
 			outcome = "error"
-			span.RecordError(err)
 			span.SetStatus(codes.Error, "plugin operation failed")
 		}
 		bounded := append(attrs, attribute.String("flowstate.plugin.outcome", outcome))
