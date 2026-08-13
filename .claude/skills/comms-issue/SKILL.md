@@ -14,6 +14,11 @@ Every issue body and comment a Claude agent posts ends with the attribution
 footer; see comms-pr for the exact form and why a compact variant does not
 substitute for it there.
 
+Do not hard-wrap an issue body or comment. GitHub renders a single newline
+in one as a line break, so wrapped prose arrives ragged; write each
+paragraph as one line and let the browser wrap it. comms-pr has the rule
+and the reason it differs from a file in the repository.
+
 ## Issue body
 
 Problem, desired outcome, constraints, acceptance criteria, evidence.
@@ -28,6 +33,52 @@ its consequence:
 > Five agents each ran the full `make check` serially on one contended
 > machine; wall-clock per gate ran 30-60+ minutes under contention. The
 > same list runs on PR CI as seven parallel jobs in about six minutes.
+
+## Sketch the thing, do not only describe it
+
+Prose about a schema is a description of something nobody can see. A
+sketch is the thing itself, small enough to read in one screen and
+concrete enough to argue with — and arguing with it is the point, since
+an issue exists to be critiqued and designed against before anyone
+builds. Every issue proposing a capability carries at least one, and
+usually the set: the proto message, the Go it generates or the Go that
+consumes it, the Flowfile spelling an author would write, and the CLI
+session an operator would see.
+
+The sketches must match this project's real semantics even though they
+are not real code. Field numbers, `buf` naming, protovalidate rules on
+required fields, the `${...}` fence, the actual command names and flag
+spellings — a sketch that invents a convention teaches the wrong one, and
+someone will implement what it showed. Say once, in a line above the
+block, that it is illustrative and not the landed shape. Do not paste a
+sketch large enough that the reader skims it; three tight blocks beat one
+exhaustive one.
+
+An attribute-schema issue, in the shape #537 wants:
+
+    // Illustrative, not the landed shape.
+    message MetricAttribute {
+      string key = 1 [(buf.validate.field).string.min_len = 1];
+      Cardinality cardinality = 2 [(buf.validate.field).enum.defined_only = true];
+      uint32 max_len = 3;
+    }
+
+with the Go the consumer actually calls:
+
+    // Recorder drops an attribute the schema does not declare, never the
+    // measurement carrying it: a plugin cannot erase an operator's signal.
+    func (r *Recorder) Record(ctx context.Context, name string, attrs ...Attribute)
+
+and what the operator types:
+
+    $ flow plugin describe ./bin/deploy --telemetry
+    ATTRIBUTE        CARDINALITY   MAX LEN
+    deploy.target    bounded       64
+    deploy.attempt   bounded       8
+
+Three blocks, three audiences: the schema owner, the caller, the
+operator. Whoever reads the issue cold now knows what "declare
+attributes in the manifest" means concretely enough to say it is wrong.
 
 ## Design pass
 
