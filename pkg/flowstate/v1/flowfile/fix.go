@@ -1929,10 +1929,25 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 
 				return
 			}
+			if named && name == loopKey {
+				// A loop's carried state, written as a fenced map literal, is the
+				// same value one entry per line. Reached from the loop's own key
+				// rather than from `init:`/`update:` anywhere they appear, because
+				// those are ordinary words and a task may take an input called
+				// either.
+				f.mappingForm(node.Value, loopStateKeys)
+			}
 			// A task's key opens its inputs, so the names its own scope binds are
 			// known from here down and nowhere else.
 			if named {
 				if def, known := v1.LookupTask(name); known {
+					if def.ShapesOutputs {
+						// Promoted to the spelling that keeps its keys — the
+						// declared capability decides, so a task with an ordinary
+						// input called `outputs` is not rewritten into a shaping
+						// it does not perform.
+						f.mappingForm(node.Value, shapingOutputs)
+					}
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),

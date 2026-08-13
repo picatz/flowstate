@@ -35,7 +35,8 @@ steps:
       url: https://provisioning.internal.example.com/databases
       json: '${ {"tenant": inputs.tenant} }'
       parse_json: true
-      outputs: '${ {"resource_id": response.json.resource_id} }'
+      outputs:
+        resource_id: ${response.json.resource_id}
     undo:
       # A literal URL with the resource id in the body, not spliced into the
       # path - see the parent workflow's own `undo:` comment and

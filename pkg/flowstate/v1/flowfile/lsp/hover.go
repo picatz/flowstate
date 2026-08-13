@@ -702,7 +702,7 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	}
 	def, known := doc.tasks.Lookup(target.taskName)
 
-	shaping := target.shapingEntry()
+	shaping := target.shapingEntry(doc.tasks)
 
 	var b strings.Builder
 

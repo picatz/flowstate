@@ -187,7 +187,8 @@ steps:
         Idempotency-Key: ${inputs.idempotency_key}
       json: '${ {"account_id": inputs.from_account_id, "amount_cents": inputs.amount_cents} }'
       parse_json: true
-      outputs: '${ {"reference": response.json.reference} }'
+      outputs:
+        reference: ${response.json.reference}
     undo:
       # The reversal carries its own key, derived from the original, so a
       # compensation that itself gets retried is exactly as idempotent as the
@@ -210,7 +211,8 @@ steps:
         Idempotency-Key: ${inputs.idempotency_key}
       json: '${ {"account_id": inputs.to_account_id, "amount_cents": inputs.amount_cents} }'
       parse_json: true
-      outputs: '${ {"reference": response.json.reference} }'
+      outputs:
+        reference: ${response.json.reference}
     undo:
       http:
         method: POST

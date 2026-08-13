@@ -2759,14 +2759,29 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	}
 
 	def, known := v1.LookupTask(task.GetName())
-	if !known || def.Outputs == nil {
+	if !known {
 		return Diagnostic{}, false
 	}
 
-	// A task that names its own outputs answers for them. Checked by presence of the
-	// input rather than by task name, so a plugin adopting the same shape inherits the
-	// exemption rather than being reported against a set it replaced.
-	if _, replaced := task.GetInputs()["outputs"]; replaced {
+	// A task that shapes its outputs answers for them, and answers exactly when
+	// the names it shaped are knowable — which is the same standing a shaping wait
+	// has, reached by the same route, and the reason the mapping form is the
+	// documented spelling.
+	//
+	// Whether this task shapes at all is *declared* (see [v1.TaskDef.ShapesOutputs]).
+	// It used to be decided by the presence of an input called `outputs`, which
+	// stood this check down for any plugin that happened to name an input that —
+	// while its executor returned exactly the outputs its descriptor declared. The
+	// validator, the editor and the runtime disagreed, and nothing could flag it
+	// because the two that agreed were the two doing the reporting (#324).
+	if shaping, replaced := shapedTaskOutputs(task); replaced {
+		if d, report := unknownShapedOutput(stepID, inputName, ref, shaping, def); report {
+			return d, true
+		}
+		return Diagnostic{}, false
+	}
+
+	if def.Outputs == nil {
 		return Diagnostic{}, false
 	}
 
@@ -2807,6 +2822,76 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	return Diagnostic{
 		Step: stepID, Field: inputName, Value: ref.Output, Message: message,
 		Code: v1.DiagnosticCodeUnresolvedReference,
+	}, true
+}
+
+// shapedTaskOutputs returns a task step's shaping value, and reports whether the
+// step shapes its outputs at all.
+//
+// Two questions, both of which have to be yes: the task declares that it reads
+// [v1.ShapingInput] as a replacement, and this invocation writes one. A task that
+// shapes and a step that did not ask it to is an ordinary step producing what the
+// task declares.
+func shapedTaskOutputs(task *v1.Task) (*v1.Value, bool) {
+	if !v1.TaskShapesOutputs(task.GetName()) {
+		return nil, false
+	}
+	value, written := task.GetInputs()[v1.ShapingInput]
+	return value, written
+}
+
+// unknownShapedOutput reports a reference to a name a shaping step does not
+// produce.
+//
+// The wait's diagnostic, word for word where the words are still true, because it
+// is the same mistake: `outputs:` *replaces*, so a reference to a name that was
+// dropped reads nothing at all and every branch built on it quietly takes the
+// other arm. What makes it safe to report is that the shaped set is written in
+// the file — so this is silent, and has to be, wherever it is not.
+//
+// The one sentence that is not the wait's is the re-exposure suggestion. A wait
+// can offer the exact line to write (`payload: ${payload}`) because it binds its
+// own result bare and the validator knows those three names. A shaping task's
+// expressions are evaluated by the task, in a scope no validator has, so the
+// honest offer is the name and the place to put it rather than an expression that
+// might not resolve there.
+func unknownShapedOutput(stepID, inputName string, ref stepRef, shaping *v1.Value, def v1.TaskDef) (Diagnostic, bool) {
+	names, knowable := v1.ShapedOutputNames(shaping)
+	if !knowable {
+		// A map built by an expression has no keys until it has run. Deliberately
+		// unchecked rather than guessed at: this is what the string-fenced spelling
+		// costs, and it is the trade the docs state.
+		return Diagnostic{}, false
+	}
+	if slices.Contains(names, ref.Output) {
+		return Diagnostic{}, false
+	}
+
+	message := fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the %s task produces, and it produces %s",
+		ref.ID, ref.Output, def.Name, strings.Join(names, ", "))
+
+	// A name the task itself declares is answered first, and not by a
+	// did-you-mean. It is the one case where what happened is *known* rather than
+	// guessed — the author is reading a real output of this task that shaping
+	// dropped — and the nearest-name search will happily offer a shaped name in
+	// its place, which sends them to rewrite the reference instead of the
+	// shaping. `body` against a shaping that produced `code` is exactly that
+	// mistake, and it is close enough to match.
+	switch {
+	case def.Outputs != nil && def.Outputs.Fields().ByName(protoreflect.Name(ref.Output)) != nil:
+		message += fmt.Sprintf("; `%s` is one of the %s task's own outputs, which shaping dropped; re-expose it by naming it in `outputs:`",
+			ref.Output, def.Name)
+	default:
+		if suggestion, ok := nearest.Name(ref.Output, names); ok {
+			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the %s task produces; did you mean %q?",
+				ref.ID, ref.Output, def.Name, suggestion)
+		}
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: ref.Output,
+		Message: message,
+		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}, true
 }
 

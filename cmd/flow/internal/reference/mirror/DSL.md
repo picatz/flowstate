@@ -2800,7 +2800,8 @@ reference an undo almost always wants:
   http:
     method: POST
     url: https://api.example.com/networks
-    outputs: '${ {"id": response.json.id} }'
+    outputs:
+      id: ${response.json.id}
   undo:
     http:
       method: DELETE
@@ -4335,6 +4336,61 @@ A condition derived from *several* steps' outputs still has no single home. This
 the name on the step that owns the data, which covers the approval-gate class — one
 gate, one source — and nothing here forecloses a broader answer if the corpus grows
 one.
+
+### *Since written:* the wait's spelling is now the only one *(landed)*
+
+This section says the wait borrows the http task's key "meaning the same thing", and
+that was true of the meaning and false of the spelling. A task's shaping was written
+as a CEL map literal smuggled through a quoted string, because a `: ` in a plain YAML
+scalar is mapping syntax:
+
+```yaml
+outputs: '${ {"reference": response.json.reference} }'
+```
+
+Twenty sites in thirteen files, and four of them stopped to apologise for the quoting
+in a comment. Four independent apologies for one syntax collision is a corpus saying
+the spelling is wrong. So a shaping task's `outputs:` takes the mapping form the wait
+already had, one name per line, each value an ordinary value position where the fence
+decides:
+
+```yaml
+outputs:
+  reference: ${response.json.reference}
+```
+
+**Ergonomics is the smaller half.** The mapping form is what makes shaping
+*checkable*: the compiler keeps its entries rather than composing them into one
+expression that builds a map, so the shaped names survive into the specification and
+`${steps.pay.referance}` is the diagnostic quoted above rather than an empty value
+that branches the wrong way. A map built by an expression has no keys until it has
+run, which is why that spelling stays legal, stays compiling, and stays deliberately
+unchecked — it is the escape hatch for a genuinely dynamic shape, and a computed key
+inside the *mapping* form is refused with a position that names it.
+
+A loop's `init:` and `update:` take the mapping form for the readability half alone,
+and with it the promise `!expr`'s refusal made: these positions hold values by
+declaration, so a constant needs no fence. `init: "${ {'n': 1, 'sum': 0} }"` is now
+`init:` with `n: 1` and `sum: 0` under it.
+
+**No edition boundary.** Nothing retires and nothing is reinterpreted: both spellings
+were legal before and are legal after, and a file written at any edition means today
+what it meant yesterday. `flow fix` still does the sweep, because the transformation
+is exact where the keys are written down — it promotes a literal-keyed map literal,
+leaves a computed-key one alone silently, and leaves alone anything it cannot render
+back without guessing (a key needing quotes, a comment inside the value it would have
+to delete). The fix-and-stamp precedent stays reserved for meaning changes; spending
+an edition on a style preference would teach the boundary to mean less.
+
+**And shaping became a declared capability rather than a name** (#324). The exemption
+used to key on an input called `outputs` being present, in the validator and mirrored
+in the language server — so a plugin declaring an ordinary input by that name had two
+authoring surfaces agreeing that its declared outputs were replaced while its executor
+returned exactly those declared outputs. Three surfaces, two of them the reporting
+ones, agreeing with each other and disagreeing with the run. `TaskDef.ShapesOutputs`
+and `TaskManifest.shapes_outputs` say it instead; the built-in http task sets it, a
+plugin sets it when its executor really does read `outputs:` as a replacement, and
+absence is ordinary diagnostics against the outputs a task declares.
 
 ## The ninth round: a gate says what it is asking for
 

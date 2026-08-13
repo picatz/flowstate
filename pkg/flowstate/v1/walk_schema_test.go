@@ -37,9 +37,13 @@ import (
 // question, and the walker guards in walkers_guard_test.go check the descent
 // itself.
 //
-// A [Value]'s own interior — a structure literal's entries, a list's elements — is
-// not a document position and is where the walk stops, so the search never
-// descends into one.
+// A [Value]'s own interior — a structure's entries, a list's elements — is not a
+// *schema* position, so this search does not descend into one and these three
+// tests say nothing about it. The traversal does descend (see [Walk.nested] and
+// [TestWalkDeliversTheValuesInsideAStructure]), which is the one thing these
+// guards cannot notice: a value nested inside a value has no field in the
+// descriptor graph to be found missing, so a walk that stopped at the top of one
+// would pass every test in this file.
 func valuePositionsInSchema(t *testing.T) []string {
 	t.Helper()
 
@@ -352,4 +356,52 @@ func TestEverySlotHasAFieldName(t *testing.T) {
 			"the slot for %q has no arm in ValueSite.Field, so a diagnostic reported at that "+
 				"position would name no key and read as one about the whole step", path)
 	}
+}
+
+// TestWalkDeliversTheValuesInsideAStructure covers the one thing the three
+// completeness guards above structurally cannot: a value nested inside a value.
+//
+// The schema search finds fields of type [Value] in the descriptor graph, and a
+// structure's entries are not fields — they are the interior of one value. So a
+// traversal that stopped at the top of a value would pass every guard in this file
+// while handing each caller a position whose contents it never sees.
+//
+// It costs correctness rather than coverage, which is why it is pinned here: a
+// shaped `outputs:` mapping is compiled entry by entry, an entry may read
+// `${steps.a.b}`, and compaction prunes a step output nothing appears to
+// reference.
+func TestWalkDeliversTheValuesInsideAStructure(t *testing.T) {
+	wf := &Workflow{
+		Name: "shaped",
+		Steps: []*Node{{
+			Id: "fetch",
+			Kind: &Node_Task{Task: &Task{
+				Name: "http",
+				Inputs: map[string]*Value{
+					ShapingInput: NewStructureMap(map[string]*Value{
+						"said": NewExpr("steps.first.value"),
+						"deep": NewStructureMap(map[string]*Value{"inner": NewExpr("vars.x")}),
+					}),
+				},
+			}},
+		}},
+	}
+
+	fields := map[string]*Value{}
+	WalkWorkflow(wf, Walk{Value: func(site ValueSite) { fields[site.Field()] = site.Value }})
+
+	require.Contains(t, fields, ShapingInput, "the input itself is still delivered whole")
+	require.Contains(t, fields, ShapingInput+".said",
+		"a shaped entry is a value an author wrote, and every walk needs to see it")
+	require.Contains(t, fields, ShapingInput+".deep.inner",
+		"and nesting is followed, bounded, rather than read one level down")
+	require.NotNil(t, fields[ShapingInput+".said"].GetExpr(),
+		"the entry arrives as the expression it is, not as the structure holding it")
+
+	// And the reference inside it is collected, which is what compaction reads.
+	refs := map[string]map[string]struct{}{}
+	prev := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{"first": {}}}
+	CollectNodeRefs(wf.GetSteps()[0], prev, refs)
+	require.Contains(t, refs, "first",
+		"a step referenced only from inside a shaped entry would be pruned at a Continue-As-New")
 }

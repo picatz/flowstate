@@ -348,7 +348,28 @@ type TaskManifest struct {
 	// that still holds an unresolved reference when the request would otherwise
 	// cross into the plugin is refused rather than forwarded: the plugin
 	// process must never see a [flowstate.v1.SecretRef], only the value.
-	SecretInputs  []string `protobuf:"bytes,10,rep,name=secret_inputs,json=secretInputs,proto3" json:"secret_inputs,omitempty"`
+	SecretInputs []string `protobuf:"bytes,10,rep,name=secret_inputs,json=secretInputs,proto3" json:"secret_inputs,omitempty"`
+	// ShapesOutputs declares that this task evaluates an `outputs:` input as a
+	// *replacement* for the outputs it declares above — the contract the built-in
+	// http task has, and the one a wait's `outputs:` has.
+	//
+	// Declared rather than inferred from the name, and that is the whole of why
+	// this field exists. The exemption used to key on the presence of an input
+	// called `outputs`, in the validator and mirrored in the language server, so
+	// a plugin declaring an ordinary input by that name had three authoring
+	// surfaces agree that its declared outputs were replaced while plugin
+	// execution returned exactly those declared outputs. Three surfaces agreeing
+	// with each other and disagreeing with execution is the worst arrangement,
+	// because nothing flags it.
+	//
+	// A plugin sets this only if its executor genuinely implements shaping:
+	// reading the input's mapping of name to expression, evaluating each against
+	// whatever scope the task provides, and returning those names as the step's
+	// outputs. Absent by default, which is the fail-closed direction: a task that
+	// does not say it shapes gets ordinary diagnostics against the outputs it
+	// declared, and an author who writes `outputs:` at one is told it is an
+	// unknown input rather than being quietly stood down from.
+	ShapesOutputs bool `protobuf:"varint,11,opt,name=shapes_outputs,json=shapesOutputs,proto3" json:"shapes_outputs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -451,6 +472,13 @@ func (x *TaskManifest) GetSecretInputs() []string {
 		return x.SecretInputs
 	}
 	return nil
+}
+
+func (x *TaskManifest) GetShapesOutputs() bool {
+	if x != nil {
+		return x.ShapesOutputs
+	}
+	return false
 }
 
 type DescribeRequest struct {
@@ -930,7 +958,7 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x03(\x0e2\x1f.flowstate.plugin.v1.CapabilityB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10\x10R\fcapabilities\x128\n" +
 	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12A\n" +
-	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xdd\x03\n" +
+	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\x84\x04\n" +
 	"\fTaskManifest\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x04name\x12\"\n" +
 	"\asummary\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\asummary\x12)\n" +
@@ -943,7 +971,8 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"needsScope\x125\n" +
 	"\x11expression_inputs\x18\t \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\x10expressionInputs\x12-\n" +
 	"\rsecret_inputs\x18\n" +
-	" \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\fsecretInputs\"=\n" +
+	" \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\fsecretInputs\x12%\n" +
+	"\x0eshapes_outputs\x18\v \x01(\bR\rshapesOutputs\"=\n" +
 	"\x0fDescribeRequest\x12*\n" +
 	"\fhost_version\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18@R\vhostVersion\"_\n" +
 	"\x10DescribeResponse\x12K\n" +

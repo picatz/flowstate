@@ -21,7 +21,8 @@ steps:
       url: https://provisioning.internal.example.com/access-grants
       json: '${ {"tenant": inputs.tenant} }'
       parse_json: true
-      outputs: '${ {"resource_id": response.json.resource_id} }'
+      outputs:
+        resource_id: ${response.json.resource_id}
     undo:
       http:
         method: DELETE
