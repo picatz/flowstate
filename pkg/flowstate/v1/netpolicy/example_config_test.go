@@ -125,10 +125,17 @@ func TestShippedEgressPolicyExampleHoldsItsOtherPromises(t *testing.T) {
 		ReasonPort, "")
 
 	// "Nothing reaches link-local space, over and above the categorical denial —
-	// a deny here wins against every allowance." This one is checked at the
-	// address rather than the request, because that is where a name resolving to
-	// the metadata endpoint would be caught.
+	// a deny here wins against every allowance." Checked at the address rather
+	// than the request, because that is where a name resolving to the metadata
+	// endpoint would be caught.
+	//
+	// The detail is asserted, not merely the reason, and that is the whole value
+	// of this line. Link-local is refused categorically by the default policy, so
+	// deleting `deny_networks:` from the example would leave a reason-only
+	// assertion passing while the configuration it exists to check was gone. The
+	// message naming the configured network is what distinguishes the explicit
+	// denial from the categorical one underneath it.
 	requireDenied(t,
 		policy.CheckAddr(netip.MustParseAddrPort("169.254.169.254:443")),
-		ReasonAddress, "")
+		ReasonAddress, "within denied network 169.254.0.0/16")
 }
