@@ -118,7 +118,16 @@ flow keys public --in identity/2026-08.pem`,
 func algorithmNames() string {
 	names := make([]string, 0, len(signingAlgorithms))
 	for _, alg := range signingAlgorithms {
-		names = append(names, strings.ToLower(alg))
+		name := strings.ToLower(alg)
+		if alg == jwa.EdDSA {
+			// The help text's own example teaches "ed25519", which
+			// [resolveSigningAlgorithm] has always accepted as an alias of
+			// "eddsa" — so the list a caller is told to pick from has to say so
+			// too, or a caller typing back what the example taught them reads an
+			// error claiming the spelling does not exist (picatz/flowstate#395).
+			name += " (also: ed25519)"
+		}
+		names = append(names, name)
 	}
 	return strings.Join(names, ", ")
 }

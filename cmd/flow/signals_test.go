@@ -278,6 +278,11 @@ type fakeWorkflowService struct {
 	gotSchedulePause   *v1.PauseScheduleRequest
 	gotScheduleResume  *v1.ResumeScheduleRequest
 	gotScheduleTrigger *v1.TriggerScheduleRequest
+
+	// listSchedulesResponse is answered as-is, for the one test that needs more
+	// than one schedule back: whether `-o jsonl` writes one line per schedule
+	// rather than the whole listing on one line.
+	listSchedulesResponse *v1.ListSchedulesResponse
 }
 
 // DeleteSchedule implements [flowstatev1connect.WorkflowServiceHandler].
@@ -302,6 +307,14 @@ func (f *fakeWorkflowService) ResumeSchedule(_ context.Context, req *connect.Req
 func (f *fakeWorkflowService) TriggerSchedule(_ context.Context, req *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
 	f.gotScheduleTrigger = req.Msg
 	return connect.NewResponse(&v1.TriggerScheduleResponse{}), nil
+}
+
+// ListSchedules implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) ListSchedules(_ context.Context, _ *connect.Request[v1.ListSchedulesRequest]) (*connect.Response[v1.ListSchedulesResponse], error) {
+	if f.listSchedulesResponse != nil {
+		return connect.NewResponse(f.listSchedulesResponse), nil
+	}
+	return connect.NewResponse(&v1.ListSchedulesResponse{}), nil
 }
 
 // Cancel implements [flowstatev1connect.WorkflowServiceHandler].

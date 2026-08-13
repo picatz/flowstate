@@ -173,3 +173,33 @@ func TestFlowTestJSONCarriesCoverage(t *testing.T) {
 	assert.Equal(t, []string{"rare"}, cov.Unreached)
 	assert.Equal(t, []string{"rare"}, cov.Gaps)
 }
+
+// TestFlowTestJSONLIsOneReportPerFile pins the picatz/flowstate#396 contract:
+// jsonl is the line-per-record shape, one report per *.test.yaml file, while
+// json wraps every file's report in one envelope. Two fixtures in separate
+// directories are run in one invocation so the jsonl form has more than one
+// line to get wrong.
+//
+// Mutation-proven: reverting test.go's writeTestResults to always take the
+// FormatJSON branch (one enveloped document regardless of format) makes this
+// fail on line count.
+func TestFlowTestJSONLIsOneReportPerFile(t *testing.T) {
+	first := writeCoverageFixture(t, "")
+	second := writeCoverageFixture(t, "")
+
+	out, err := runFlowTest(t, "-o", "jsonl", first, second)
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	require.Len(t, lines, 2, "jsonl did not write one report per file:\n%s", out)
+
+	for _, line := range lines {
+		require.True(t, json.Valid([]byte(line)), "line is not a single JSON value: %q", line)
+
+		var report struct {
+			File string `json:"file"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &report))
+		assert.Contains(t, report.File, "workflow.test.yaml")
+	}
+}

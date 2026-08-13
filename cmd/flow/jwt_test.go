@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,6 +94,57 @@ func TestJWTSignThenInspectRoundTripsTheClaims(t *testing.T) {
 	require.Equal(t, "flowstate-worker", claims["aud"])
 	require.Equal(t, "team-a", claims["namespace"])
 	require.Equal(t, false, result["expired"])
+}
+
+// TestJWTInspectAnnotatesExpiryAndIssuedAtWithReadableTime pins
+// picatz/flowstate#395's second item: `exp`/`iat` are read by a person
+// debugging "why won't this verify", and the most common answer, expiry, comes
+// back as bare epoch seconds. The claims themselves stay the raw wire values
+// (a machine reading `.claims.exp` sees exactly what the token carries); the
+// annotation is additive, beside them.
+//
+// Mutation-proven: removing the ExpiresAt/IssuedAt assignments in
+// runJWTInspect, or reverting annotateClaimTime to return "", makes this fail.
+func TestJWTInspectAnnotatesExpiryAndIssuedAtWithReadableTime(t *testing.T) {
+	keyPath := generateTestKey(t, t.TempDir(), "2026-08")
+
+	token, _, err := runJWTSignInto(t,
+		"key", keyPath, "issuer", "i", "subject", "s", "audience", "a", "ttl", "5m",
+	)
+	require.NoError(t, err)
+	token = strings.TrimSpace(token)
+
+	stdout, _, err := runJWTInspectInto(t, token)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
+
+	claims := result["claims"].(map[string]any)
+	expEpoch, ok := claims["exp"].(float64)
+	require.True(t, ok, "the raw exp claim must stay a bare number, verbatim")
+
+	expiresAt, ok := result["expiresAt"].(string)
+	require.True(t, ok, "expected an expiresAt annotation beside the raw claim")
+	require.Contains(t, expiresAt, fmt.Sprintf("%d", int64(expEpoch)),
+		"the annotation must still carry the epoch value, not replace it")
+	require.Contains(t, expiresAt, "in ", "a token minted just now should read as expiring in the future")
+
+	issuedAt, ok := result["issuedAt"].(string)
+	require.True(t, ok, "expected an issuedAt annotation beside the raw claim")
+	require.Contains(t, issuedAt, "ago", "a token minted just now should read as issued in the past")
+}
+
+// TestJWTInspectOmitsTimeAnnotationsWhenAbsent covers a token minted outside
+// `flow jwt sign` (or hand-built for a test) that carries no exp/iat: the
+// annotation fields must not appear at all, rather than reporting a guess about
+// a claim the token never made.
+func TestJWTInspectOmitsTimeAnnotationsWhenAbsent(t *testing.T) {
+	claims := jwt.ClaimsSet{jwt.Subject: "s"}
+	now := time.Now()
+
+	require.Empty(t, annotateClaimTime(claims, jwt.ExpirationTime, now))
+	require.Empty(t, annotateClaimTime(claims, jwt.IssuedAt, now))
 }
 
 func TestJWTInspectWithTheSigningKeyVerifiesTheSignature(t *testing.T) {

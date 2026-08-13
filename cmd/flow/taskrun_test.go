@@ -129,6 +129,28 @@ func TestTheMachineShapeIsTheDocumentTheLocalDriverWrites(t *testing.T) {
 		"the transcript is not keyed by the step id a Flowfile would have written")
 }
 
+// TestTheMachineShapeIsOneCompactLineForJSONL pins the picatz/flowstate#396
+// contract for this verb: `-o jsonl` is the same document `-o json` writes,
+// compacted to the one line a single invocation's answer has.
+//
+// Mutation-proven: reverting writeTaskOutputs's format.Machine() branch to a
+// hardcoded writeJSON(surface, FormatJSON, response) makes this fail on line
+// count.
+func TestTheMachineShapeIsOneCompactLineForJSONL(t *testing.T) {
+	stdout, stderr, err := taskRun(t, "log", "--input", "message=hi", "-o", "jsonl")
+	require.NoError(t, err, stderr)
+
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	require.Len(t, lines, 1, "jsonl wrote more than the one document a task invocation answers with:\n%s", stdout)
+	require.True(t, json.Valid([]byte(lines[0])), "the line is not a single JSON value: %q", lines[0])
+
+	var document struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &document))
+	assert.Equal(t, "STATUS_COMPLETED", document.Status)
+}
+
 // TestAnInvocationTheEgressPolicyRefusesIsRefusedExactlyAsALocalRunIs is the
 // negative direction that decides whether this is the local driver's executor or a
 // second one wearing its name.
