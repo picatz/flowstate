@@ -143,6 +143,25 @@ this section exists to prevent.
    unresolved thread costs no extra API call. What it costs is triage and
    human attention, and, on the PR page, visual noise. Resolve for that
    reason, not to save a fetch.
+
+   **Leave nothing open.** The target is a PR page a human can read with
+   no bot traffic expanded on it. That means every thread from every
+   reviewer, on every PR you touched, resolved before you consider the PR
+   done, and swept again before you stop working: a review that arrives
+   after your last pass is the one that gets forgotten. A merged PR still
+   deserves the sweep, because its page is what someone reads later when
+   they are trying to understand the change.
+
+   **What cannot be closed, and whose problem it is.** Threads resolve.
+   A review's top-level summary body does not: the API offers no
+   minimize or hide for it, and our MCP surface offers no dismissal
+   either, so those blocks stay on the page however diligent you are.
+   Resolving the threads underneath still collapses the bulk of it, since
+   a review is one summary and many threads. Reducing the summaries
+   themselves is reviewer configuration, automatic review set to
+   request-only rather than on every push, which is a repository setting
+   and therefore an owner decision. Say so once when it matters rather
+   than fighting it per PR.
 9. **Respect the API budget.** REST and GraphQL each have their own pool.
    A pool is shared across everything the account does, so polling PR
    state exhausted one of them in a single wave, but the two are not
