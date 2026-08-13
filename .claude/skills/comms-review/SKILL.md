@@ -108,25 +108,31 @@ this section exists to prevent.
    up on a real finding that got a fix, thumbs down on a finding you
    determined is wrong, nothing on duplicates and stale threads where
    there is no judgment to send.
-7. **Write a line only when a human reading later would otherwise be
-   lost.** A resolved thread is collapsed, so one line inside it costs no
-   visual noise on the PR, but it still costs tokens and attention, so it
-   is not automatic. Less is more for agent-to-agent traffic:
-   - A finding you agree is real but are not fixing here always gets a
-     line, and is never silently resolved. File it as an issue first,
-     then point the thread at it: "Real, not fixing here: `<one clause>`.
-     Filed as #NNN."
-   - A finding you determined is **wrong** is the opposite case, and the
-     distinction matters: never file an issue for a defect you have
-     established does not exist, because that is tracker noise about
-     nothing. It gets a thumbs down and a resolve, and the evidence goes
-     where evidence belongs, in the commit message or the session report.
-     A refuted P1 on #492 was handled exactly this way.
-   - A non-obvious stale thread gets one line: "Stale: `<what superseded
-     it>`."
-   - A fix that is obvious from the diff gets a reaction and no line; the
-     commit is the argument.
-   - A duplicate gets neither reaction nor line.
+7. **React and resolve. Do not reply.** This is the default for roughly
+   nineteen threads in twenty, and it is a rule about cost as much as
+   about noise: every reply is tokens spent writing prose to a bot that
+   does not read it, on a thread a human will see collapsed. The fix is
+   the answer, the commit is the argument, and the reaction is the
+   acknowledgment. Say nothing else.
+
+   Three exceptions, and they are the whole list:
+   - **Refuting.** You determined the finding is wrong. It gets a thumbs
+     down, one sentence of evidence so a human scanning the thread knows
+     it was judged rather than ignored, and a resolve. Never file an
+     issue for a defect you have established does not exist. A refuted P1
+     on #492 was handled exactly this way.
+   - **Deferring.** The finding is real and you are not fixing it here.
+     File the issue first, then one line pointing at it: "Real, not
+     fixing here: `<one clause>`. Filed as #NNN." Never silently resolve
+     a real finding.
+   - **Correcting a wrong premise.** The reviewer's claim rests on
+     something factually untrue about the code, and leaving it unsaid
+     would mislead the next reader of that thread.
+
+   Everything else gets a reaction and a resolve. A fix that landed, a
+   stale thread, a duplicate, a finding that was already handled in
+   another thread: no words. If you find yourself explaining a fix that
+   the diff already shows, stop and delete the reply.
 8. **Resolve every thread**, with `resolve_review_thread` and the node ID
    from step 2, including stale, outdated, and duplicate ones, not only
    the one you acted on. Multiple reviewers frequently file the same
