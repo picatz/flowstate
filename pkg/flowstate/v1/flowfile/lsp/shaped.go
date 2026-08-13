@@ -52,7 +52,8 @@ func (s *outlineStep) shapes(tasks *v1.Registry) bool {
 //
 // [v1.TaskShapesOutputs] asks the default registry, which is the right question
 // for the compiler and the validator — both build from the built-ins alone — and
-// the wrong one here. The registry is a property of the server ([doc.Tasks]):
+// the wrong one here. The registry is a property of the server
+// ([FlowfileServer.Tasks]):
 // `flow lsp` opens a plugin host, registers what it found, and hands that
 // registry in, so a shaping plugin task is registered *there* and unknown to the
 // default one. Asked the wrong registry, a plugin that declares shaping reads as
