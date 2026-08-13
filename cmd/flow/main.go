@@ -500,8 +500,10 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	reason, _ := cmd.Flags().GetString("reason")
+
 	started, err := newWorkflowServiceClient(serverFlagsOf(cmd)).Run(cmd.Context(),
-		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs}))
+		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
 	if err != nil {
 		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), serverFlagsOf(cmd), err)
 	}
@@ -1311,6 +1313,19 @@ flow validate examples/hello-world/workflow.yaml`,
 	addOutputFlag(runCmd)
 	addFollowFlags(runCmd)
 	addInputFlags(runCmd)
+
+	// Why a person is starting this run, recorded on it. Optional here and
+	// required by the *workflow*: a file declaring `manual: {require_reason:
+	// true}` is refused a start without one, by the server, where the rule lives.
+	// Offered on every run rather than only where a file asks for one, because a
+	// flag that appears and disappears with the file is a flag nobody learns —
+	// and provenance is worth recording whether or not it was demanded.
+	//
+	// Not offered on `flow run local`: a rehearsal is never gated, so a reason
+	// there would be a value recorded nowhere, for a check that does not run.
+	runCmd.Flags().String("reason", "",
+		"why this run is being started, recorded on it; required by a workflow whose "+
+			"`manual:` block asks for one")
 
 	// Run local command, which executes a workflow locally without using Temporal or the Flowstate service.
 	runLocalCmd := &cobra.Command{

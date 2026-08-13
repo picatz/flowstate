@@ -639,11 +639,37 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		workflowID = entityID
 	}
 
-	_, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	// This is a manual start — the `Run` RPC is what `flow run`, an agent over
+	// MCP and any other caller reach — so the workflow's own `manual:` block
+	// decides whether it may happen, against the identity this server attested
+	// and the reason the caller gave. Refused here, at the boundary, while the
+	// caller is still present to be told: authorization belongs on the trigger
+	// and not in a step's `if:`, where it would be an expression the workflow
+	// evaluates about itself. See [v1.CheckManualStart].
+	//
+	// A workflow with no `manual:` block passes unchanged, which is every
+	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
+	// must never silently stop `flow run` from working.
+	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), req.Msg.GetReason()); err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	}
+
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
 	if err != nil {
 		return nil, err
 	}
 	options.ID = workflowID
+
+	// Provenance, in the same memo the tenant and the starter are recorded in and
+	// for the same reason: it is read afterwards, by whoever asks how this run
+	// came to happen. The reason is recorded only when there is one, because an
+	// entry that is always present says nothing, and this one is the answer to a
+	// question somebody asks after the fact.
+	memo[triggerMemoKey] = v1.TriggerKindManual
+	if reason := req.Msg.GetReason(); reason != "" {
+		memo[reasonMemoKey] = reason
+	}
+	options.Memo = memo
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    req.Msg.GetWorkflow(),
@@ -654,6 +680,12 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// re-derives them, so every segment of the run sees what this submission
 		// established.
 		Inputs: inputs,
+
+		// And how this run started, established here because here is the only
+		// place that knows: a person asked, and this server attested who they
+		// are. Carried in state rather than derived, which is what makes
+		// `${trigger.kind}` the same value on every replay.
+		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))

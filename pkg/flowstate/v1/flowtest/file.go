@@ -301,6 +301,51 @@ type TriggerDelivery struct {
 	// a request body.
 	Payload string `yaml:"payload"`
 
+	// Kind sets the run's trigger context directly, with no delivery involved:
+	// `trigger: {kind: schedule, name: nightly}`.
+	//
+	// This is the other half of what a `trigger:` stanza can be, and it exists
+	// because without it a branch guarded by `if: ${trigger.kind == "manual"}` is
+	// conditional behaviour that only manifests in production — the thing
+	// everybody hates about trigger-aware workflows elsewhere. A case says how the
+	// run started and the workflow behaves accordingly, with no webhook, no
+	// payload and no signature arithmetic anywhere near it.
+	//
+	// Mutually exclusive with [TriggerDelivery.Webhook], which sets the same
+	// context from a *real* replay: kind `webhook`, the webhook's own name, and
+	// the delivery id the receiver would have computed from the same key. A case
+	// naming both would be stating a context while replaying one, and the two
+	// could disagree.
+	//
+	// One of the kinds `v1.TriggerKinds` names, refused by name when the file
+	// loads if it is not: a case guarding on `"schedual"` would otherwise assert
+	// that a branch is never taken, and pass, forever.
+	Kind string `yaml:"kind"`
+
+	// Name is the trigger's own name for a context set directly — the schedule's,
+	// or the webhook's where a case states one rather than replaying it. Empty is
+	// legal and is what a manual start carries: a person is not a declared source.
+	Name string `yaml:"name"`
+
+	// Principal is who the context says started the run, read as
+	// `${trigger.principal}`.
+	//
+	// Settable here and attested nowhere, which is the point and is also the
+	// reason this must never be the shape a workflow authorizes on: a value a test
+	// file can write is a value a test file can write. `flow test` says so by
+	// letting a case set it freely — if a step's `if:` gates a destructive action
+	// on this string, the case that fakes it passes, and the diff that made it
+	// possible read as a security control. Authorization belongs on the trigger:
+	// `manual: {allowed_principals: [...]}`, enforced by the server against an
+	// identity it attested.
+	Principal string `yaml:"principal"`
+
+	// DeliveryID is the delivery a directly-set context names, read as
+	// `${trigger.delivery_id}`. A replayed delivery computes its own through
+	// [v1.WebhookDeliveryID], the same function the receiver uses, so a case that
+	// replays never has to state one.
+	DeliveryID string `yaml:"delivery_id"`
+
 	// Signature says whether this delivery verified: "valid" (the default, and
 	// what an omitted key means) or "invalid".
 	//
@@ -320,6 +365,28 @@ const (
 
 // Verified reports whether this delivery is to be treated as having verified.
 func (d *TriggerDelivery) Verified() bool { return d.Signature != SignatureInvalid }
+
+// Replays reports whether this stanza replays a stored delivery, rather than
+// stating a trigger context outright.
+//
+// Keyed on the webhook's name rather than on the payload path, because that is
+// the field that says which of the two things the stanza is: a delivery is
+// addressed to a declared source, and a stated context is addressed to nobody.
+func (d *TriggerDelivery) Replays() bool { return d.Webhook != "" }
+
+// Context is the trigger context a directly-stated stanza sets on the run.
+//
+// Only meaningful when [TriggerDelivery.Replays] is false; a replay derives its
+// own from the trigger it replayed against, so that a case asserting on
+// `${trigger.name}` asserts against what the receiver would really have recorded.
+func (d *TriggerDelivery) Context() *v1.TriggerContext {
+	return &v1.TriggerContext{
+		Kind:       d.Kind,
+		Name:       d.Name,
+		Principal:  d.Principal,
+		DeliveryId: d.DeliveryID,
+	}
+}
 
 // Defaults is what a file states once for every case (issue #416): the base
 // inputs, the stubs, and the signal sender each case would otherwise repeat.
@@ -951,10 +1018,17 @@ func checkTrigger(test *Test, requireWorkflow bool) error {
 		return nil
 	}
 
-	if trigger.Webhook == "" {
-		return fmt.Errorf("test %q trigger: names no webhook; write `webhook: <name>`, the name one of "+
-			"the workflow's `- webhook:` entries declares", test.Name)
+	if trigger.Webhook != "" && trigger.Kind != "" {
+		return fmt.Errorf("test %q trigger: names both a webhook (%q) and a kind (%q); a stanza either "+
+			"replays a delivery, which decides the context, or states the context outright, which "+
+			"needs no delivery — never both, because the two could disagree about the same run",
+			test.Name, trigger.Webhook, trigger.Kind)
 	}
+
+	if !trigger.Replays() {
+		return checkTriggerContext(test, trigger)
+	}
+
 	if trigger.Payload == "" {
 		return fmt.Errorf("test %q trigger %q: names no payload; write `payload: ./testdata/<file>.json`, "+
 			"a stored delivery with `headers` and `body`", test.Name, trigger.Webhook)
@@ -976,6 +1050,59 @@ func checkTrigger(test *Test, requireWorkflow bool) error {
 		return fmt.Errorf("test %q trigger %q: the case also states `inputs:`; a trigger case's inputs "+
 			"come from the delivery, so stating them here would override the mapping the case exists "+
 			"to check", test.Name, trigger.Webhook)
+	}
+
+	return nil
+}
+
+// checkTriggerContext refuses a directly-stated trigger context that cannot mean
+// what it says.
+//
+// The kind is the whole of it, and it is checked against the closed set rather
+// than accepted as free text for a reason worth being explicit about: a case
+// exercising `if: ${trigger.kind == "schedule"}` by stating `kind: schedual`
+// would assert that the branch is *not* taken, and it would pass — a green test
+// certifying behaviour nobody wrote. A closed set turns that into a refusal
+// naming the kinds, which is the difference between a harness that checks a
+// belief and one that confirms it.
+//
+// The other three fields are free strings, because they are: a name, a subject
+// and a delivery id are whatever the trigger that produced them said.
+func checkTriggerContext(test *Test, trigger *TriggerDelivery) error {
+	if trigger.Kind == "" {
+		return fmt.Errorf("test %q trigger: says neither how the run started nor what delivery started "+
+			"it; write `kind: <%s>` to state the context a run reads as `${%s.kind}`, or `webhook: "+
+			"<name>` with a `payload:` to replay a stored delivery",
+			test.Name, strings.Join(v1.TriggerKinds(), "|"), v1.TriggerRoot)
+	}
+
+	if !v1.KnownTriggerKind(trigger.Kind) {
+		return fmt.Errorf("test %q trigger: kind: %q is not a kind Flowstate starts runs with; the kinds "+
+			"are %s. A case stating one that cannot occur asserts a branch is never taken, and passes",
+			test.Name, trigger.Kind, strings.Join(v1.TriggerKinds(), ", "))
+	}
+
+	if test.Expect.Inputs != nil {
+		// `expect.inputs:` asserts what a *mapping* produced, and a stated context
+		// maps nothing: the case's own `inputs:` are the inputs. Refused rather
+		// than ignored, because an assertion nothing evaluates is a test that
+		// reports success for a claim it never checked — the one outcome a harness
+		// must not have.
+		return fmt.Errorf("test %q trigger: states a context and expects mapped inputs; `expect.inputs:` "+
+			"asserts what replaying a delivery produced, and a case that states its own `inputs:` "+
+			"already knows them", test.Name)
+	}
+
+	if trigger.Payload != "" || trigger.Signature != "" {
+		return fmt.Errorf("test %q trigger: states a context (`kind: %s`) and also a delivery; a payload "+
+			"and a signature belong to a replay, which is written `webhook: <name>` and derives its own "+
+			"context", test.Name, trigger.Kind)
+	}
+
+	if test.Expect.Refused != nil {
+		return fmt.Errorf("test %q trigger: states a context and expects a refusal; a refusal is what "+
+			"replaying an unverifiable *delivery* produces, and a stated context starts the run it "+
+			"describes", test.Name)
 	}
 
 	return nil

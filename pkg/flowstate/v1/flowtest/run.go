@@ -223,8 +223,21 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 	// same function a live receiver will call. Done here, before the clock, the
 	// registry and the signal machinery are built, because a refused delivery
 	// produces no run at all and none of that would be used.
-	if test.Trigger != nil {
-		mapped, failures, err := replayDelivery(test, deliveryPath, workflow)
+	// How this case's run started, which every case has: a manual start unless
+	// the case says otherwise, exactly as `flow run local` reports one. That
+	// default is what makes `if: ${trigger.kind == "manual"}` a branch a case can
+	// reach without arranging anything, and its opposite reachable by stating one
+	// line — the whole point of this being settable at all.
+	trigger := v1.NewManualTriggerContext("")
+
+	if test.Trigger != nil && !test.Trigger.Replays() {
+		// Stated outright, with no delivery involved. Checked against the closed
+		// set of kinds when the file loaded ([checkTriggerContext]).
+		trigger = test.Trigger.Context()
+	}
+
+	if test.Trigger != nil && test.Trigger.Replays() {
+		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
 		if err != nil {
 			result.Error = err.Error()
 			return
@@ -238,7 +251,19 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 			return
 		}
 		inputs = mapped
+
+		// Derived from the replay rather than stated by the case, so a case
+		// asserting on `${trigger.delivery_id}` asserts against the value the
+		// receiver would really have recorded — [v1.WebhookDeliveryID] over the
+		// same evaluated key, which is the function the receiver itself calls.
+		//
+		// The principal is left empty, honestly: a live receiver records the tenant
+		// the delivery was admitted under, and `flow test` has no tenant. Filling
+		// it with something invented is what would make a rehearsal lie.
+		trigger = v1.NewWebhookTriggerContext(test.Trigger.Webhook, "", deliveryID)
 	}
+
+	ctx = v1.NewContextWithTrigger(ctx, trigger)
 
 	// Resolved here, against the case's own inputs, the same way submit
 	// resolves a `subject: ${inputs.x}` rule to a literal before anything is

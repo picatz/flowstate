@@ -89,6 +89,15 @@ name, and `now` is bound only inside a wait precisely so that a task cannot read
 (see [ARCHITECTURE.md](ARCHITECTURE.md)'s execution model); an attempt count is a fact
 about the substrate's scheduling that changes underneath a run.
 
+*Since written:* `trigger.*` joined them, and it is a fifth root rather than a field of
+`run` because it answers a different question with a different lifetime: `run` is which
+run this is (an address the substrate mints, an identity the server attested), and
+`trigger` is why the run is happening (established by whichever entry path admitted the
+submission). `trigger.kind`, `trigger.name`, `trigger.principal` and
+`trigger.delivery_id`, closed exactly as `run` is, and readable everywhere an ordinary
+expression is — see [`manual:` narrows, and the body can read how a run
+started](#manual-narrows-and-the-body-can-read-how-a-run-started).
+
 *Since written:* the reason this section gave for accepting it was checked against the
 code and was half wrong, so it is replaced here rather than left to be rediscovered.
 
@@ -1383,6 +1392,120 @@ mapping is real; the verification *outcome* is declared rather than computed, so
 case can assert what happens to a delivery that does not verify without holding a
 signing key. `examples/webhook-trigger` is the worked example, and it runs in CI like
 the rest.
+
+### `manual:` narrows, and the body can read how a run started
+
+Two halves of one decision, and the line between them is the most important sentence in
+this section: **trigger context is for behaviour, never authorization.**
+
+**`manual:` narrows; it does not enable.** `flow run`, `flow run local`, the `Run` RPC
+and MCP all start a workflow today with no declaration at all, so `triggers:` is
+deliberately *not* exhaustive. If declaring a webhook silently meant "and nothing else
+may start this", adding an integration would take `flow run` away from the author who
+added it, and testability would go with it. Declaring `manual:` therefore *constrains* a
+start that already works:
+
+```yaml
+triggers:
+  - webhook: payments
+    verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with: { order_id: ${event.body.id} }
+
+  - manual:
+      require_reason: true                    # a start must say why, recorded on the run
+      allowed_principals: [oncall@example.com] # and be made by one of these attested subjects
+```
+
+and refusal is something you write down, on one line:
+
+```yaml
+  - manual: denied      # explicit, greppable; nobody discovers this by surprise
+```
+
+`denied` is a scalar rather than a `denied: true` key, and that is the whole reason it is
+spelled that way: a lock nobody can `grep` for is a lock nobody knows about, and two
+spellings of one refusal would mean a search for the greppable one misses half the files
+that have it. The two cannot be combined — a block that refuses manual starts *and* names
+who may make one is two sentences that cannot both be true, so it is refused with a
+position rather than resolved by precedence. A refusal in a file that declares no other
+trigger is refused too: nothing could start that workload at all.
+
+**`flow run local` is never gated**, whatever this block says. The author's machine is
+not a deployment, it has nothing to attest a principal with, and a workflow that cannot
+be developed locally is not one anybody will maintain. Enforcement is the server's, at
+the boundary, against an identity it authenticated and the `--reason` the caller gave —
+the same placement `signals:` policy already has, and the same rule that keeps egress
+policy out of the validator.
+
+**Trigger context is readable for behaviour.** A run reads how it started under a root of
+its own:
+
+```yaml
+steps:
+  - id: notify
+    if: ${trigger.kind != "schedule"}        # nightly sweeps do not page anyone
+    http: { ... }
+
+  - id: extra_approval
+    if: ${trigger.kind == "manual"}          # a human start gets a second pair of eyes
+    wait_for_signal: { ... }
+```
+
+`trigger.kind` is `manual`, `webhook` or `schedule`; `trigger.name` is the declared
+trigger that started the run (empty for a manual start, since a person is not a declared
+source); `trigger.principal` is the subject the server attested; `trigger.delivery_id`
+names one arrival, as a digest rather than the idempotency key itself, because the usual
+key is a signature header and this value is written to durable history. The set is closed
+and `flow validate` reports an unknown field under it, exactly as it does for `run`.
+
+This is safe to read anywhere, and the reason is worth stating: every field is fixed when
+the run starts and carried in the run's own state, so it reads identically on every
+replay and after every Continue-As-New. That is precisely what a clock and a random
+number are not, and it is why `now` is bound only inside a wait while this is not bound
+anywhere in particular — a value that cannot drift can be read everywhere.
+
+**The line: behaviour, never authorization.** This is tempting and wrong:
+
+```yaml
+  - id: delete_everything
+    if: ${trigger.principal == "admin"}      # NO
+```
+
+In the body that is an expression a test can fake, one `flow validate` cannot reason
+about, and one a later refactor can reorder past the step it was guarding. Authorization
+belongs on the trigger — `manual: {allowed_principals: [...]}`, or `manual: denied` —
+where a deployment owns it, the validator can see it, and a server enforces it before the
+run exists. Each decision lives where the thing that owns it lives.
+
+**`trigger` is metadata, never data.** Everything a workflow operates on arrives through
+a trigger's `with:` into `inputs:`, where declarations exist for `flow validate` to check
+it against. There is no `trigger.body` and there will not be: a payload field reachable
+that way would be a second input path with no contract, which the validator would be
+blind to. `${trigger.body}` is therefore a positioned diagnostic that names where the
+value actually comes from, rather than a silent blank.
+
+**And it is settable in a test**, which is what stops this shipping conditional behaviour
+that only manifests in production:
+
+```yaml
+tests:
+  - name: a scheduled run does not page
+    workflow: ./workflow.yaml
+    trigger: { kind: schedule, name: nightly-sweep }
+    expect:
+      ran: [correlate]
+      skipped: [notify]
+```
+
+No webhook, no payload, no cluster: the case says how the run started and the run reads
+it exactly as a real one would. A `trigger:` stanza either states a context this way or
+replays a stored delivery (`webhook:` with a `payload:`), never both — a replay *derives*
+its context, from the trigger it arrived at and the delivery id the receiver itself would
+have computed, so the two could otherwise disagree about one run. What a case cannot do
+is make `principal:` mean anything: it is settable, freely, which is exactly why
+authorization must not be written where a test file can switch it off in one line.
+`examples/trigger-context` is the worked example, and it runs in CI like the rest.
 
 ### `${...}` stays; `!expr` is refused
 

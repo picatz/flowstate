@@ -641,6 +641,20 @@ func runExampleDurably(
 			Identity: (&tests.Authority{
 				Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
 			}).ProtoIdentity(),
+
+			// How the run started, which a real deployment's server fills in and
+			// this harness therefore has to: `Run` records a manual start for
+			// every caller that reaches it, so a harness leaving it empty would
+			// rehearse a path no caller can take — a run whose `${trigger.kind}`
+			// is blank, which happens only for a run started before the field
+			// existed.
+			//
+			// The principal is left empty rather than taken from the identity
+			// above, because these runs are compared against a *local* run of the
+			// same file and a local run attests nobody. Which caller a deployment
+			// attests is a fact about the deployment, exactly as `run.identity`
+			// already is, and the drivers differ there for the same reason.
+			Trigger: v1.NewManualTriggerContext(""),
 		})
 	require.NoError(t, err)
 
@@ -1093,6 +1107,20 @@ func assertFailingExampleAgrees(
 			Identity: (&tests.Authority{
 				Identity: auth.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
 			}).ProtoIdentity(),
+
+			// How the run started, which a real deployment's server fills in and
+			// this harness therefore has to: `Run` records a manual start for
+			// every caller that reaches it, so a harness leaving it empty would
+			// rehearse a path no caller can take — a run whose `${trigger.kind}`
+			// is blank, which happens only for a run started before the field
+			// existed.
+			//
+			// The principal is left empty rather than taken from the identity
+			// above, because these runs are compared against a *local* run of the
+			// same file and a local run attests nobody. Which caller a deployment
+			// attests is a fact about the deployment, exactly as `run.identity`
+			// already is, and the drivers differ there for the same reason.
+			Trigger: v1.NewManualTriggerContext(""),
 		})
 	require.NoError(t, err)
 

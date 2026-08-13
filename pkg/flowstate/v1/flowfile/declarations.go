@@ -34,7 +34,7 @@ import (
 // was refused as a step id when rooting landed and the rule stopped there, which is
 // how `vars` — a root since — could be taken by a loop's `as:` and hide the
 // workflow's whole var namespace inside the body with nothing said.
-var declarationRoots = []string{v1.StepsRoot, v1.VarsRoot, v1.InputsRoot, v1.RunRoot}
+var declarationRoots = []string{v1.StepsRoot, v1.VarsRoot, v1.InputsRoot, v1.RunRoot, v1.TriggerRoot}
 
 // isDeclarationRoot reports whether a name is one of the rooted namespaces.
 func isDeclarationRoot(name string) bool { return slices.Contains(declarationRoots, name) }
@@ -57,6 +57,8 @@ func rootHolds(root string) string {
 		return "the run's inputs"
 	case v1.RunRoot:
 		return "the run's own address and starter identity"
+	case v1.TriggerRoot:
+		return "how the run started"
 	default:
 		return "those values"
 	}
