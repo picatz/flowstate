@@ -3,6 +3,7 @@ package metricschema_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -195,6 +196,78 @@ func TestTheOverflowSentinelReplacesValuesBeyondTheBound(t *testing.T) {
 	// another's.
 	bounded = limiter.Attributes(attribute.String(metricschema.PluginName, "some-plugin"))
 	require.Equal(t, "some-plugin", bounded[0].Value.AsString())
+}
+
+// TestASameNamedValueDoesNotMergeWithTheOverflowBucket is the negative
+// direction the sentinel exists for. A plugin actually named "other" — the
+// old sentinel's own spelling — is a legal [PluginName] under discover.go's
+// grammar, so it has to keep its own series rather than being merged with
+// whatever else has overflowed onto the bucket. Restore
+// OverflowValue = "other" and this fails: the two values below collapse into
+// one bucket instead of staying distinct.
+func TestASameNamedValueDoesNotMergeWithTheOverflowBucket(t *testing.T) {
+	t.Parallel()
+
+	limiter := metricschema.NewLimiter(1)
+
+	// "other" is admitted first and takes the key's one-value budget.
+	bounded := limiter.Attributes(attribute.String(metricschema.PluginName, "other"))
+	require.Len(t, bounded, 1)
+	require.Equal(t, "other", bounded[0].Value.AsString(),
+		"a plugin legitimately named \"other\" must keep its own series")
+
+	// A second, distinct plugin name now overflows the budget and collapses
+	// to the sentinel.
+	bounded = limiter.Attributes(attribute.String(metricschema.PluginName, "some-other-plugin"))
+	require.Len(t, bounded, 1)
+	require.Equal(t, metricschema.OverflowValue, bounded[0].Value.AsString(),
+		"overflow still collapses once the budget is spent")
+
+	// The two must not be the same string, or the plugin named "other" and
+	// the bucket of everything that overflowed would be one indistinguishable
+	// series.
+	require.NotEqual(t, "other", metricschema.OverflowValue,
+		"the sentinel must not equal a value the grammar can legitimately produce")
+}
+
+// TestTheOverflowSentinelCannotBeARealValue asserts the sentinel is
+// unproducible by construction rather than merely unlikely, for every grammar
+// an allowlisted key's value must satisfy: a plugin name (discover.go's
+// pluginName), a task name (the TaskDescription.name field pattern and the
+// registry's sharper per-segment rules), and the fixed-enumeration words this
+// repository writes for PluginOperation, PluginOutcome, and
+// PluginHealthStatus. Restore OverflowValue = "other" and this fails, because
+// "other" satisfies every one of these grammars.
+func TestTheOverflowSentinelCannotBeARealValue(t *testing.T) {
+	t.Parallel()
+
+	pluginNamePattern := regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+	// TaskDescription.name field pattern (flowstate.proto): the permissive
+	// union of the built-in and plugin-task shapes.
+	taskNameFieldPattern := regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?$`)
+	// The registry's sharper per-segment rules.
+	taskSegmentPattern := regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+	require.False(t, pluginNamePattern.MatchString(metricschema.OverflowValue),
+		"the sentinel must not be a syntactically legal plugin name")
+	require.False(t, taskNameFieldPattern.MatchString(metricschema.OverflowValue),
+		"the sentinel must not be a syntactically legal task name")
+	require.False(t, taskSegmentPattern.MatchString(metricschema.OverflowValue),
+		"the sentinel must not be a syntactically legal task-name segment")
+
+	// The fixed enumerations: values this repository, not a deployment or a
+	// peer, writes down for PluginOperation, PluginOutcome, and
+	// PluginHealthStatus. None of these ever grows without a code change, so
+	// listing them here is exhaustive as of this schema.
+	fixedEnumValues := []string{
+		"execute", "health", "start", // PluginOperation
+		"success", "error", // PluginOutcome
+		"serving", "not serving", "unreachable", "unknown", // PluginHealthStatus
+	}
+	for _, value := range fixedEnumValues {
+		require.NotEqual(t, metricschema.OverflowValue, value,
+			"the sentinel must not equal the fixed enumeration value %q", value)
+	}
 }
 
 // TestValuesThatCannotBeBoundedAreDropped covers the shapes the bounds are not

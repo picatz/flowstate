@@ -47,7 +47,8 @@
 //     [MaxValuesPerKey] for its key: the value is replaced by the
 //     [OverflowValue] sentinel and counting continues under it. The series
 //     stops splitting; the measurement is not lost. An operator reading
-//     "other" learns that a bound was reached, which is a fact worth seeing.
+//     [OverflowValue] learns that a bound was reached, which is a fact worth
+//     seeing.
 //   - A non-string or empty value: dropped, as above. The bounds here are
 //     expressed over strings, and a bound that does not know how to measure
 //     its input is not a bound.
@@ -253,7 +254,25 @@ const (
 	// OverflowValue is the sentinel a value collapses to when it exceeds a
 	// bound. Counting continues under it, so the measurement survives and the
 	// series stops splitting.
-	OverflowValue = "other"
+	//
+	// Wrapped in tildes rather than spelled as a bare word like "other",
+	// because a bare word is a legal value under every grammar this schema
+	// bounds and would silently merge with a real one — a plugin actually
+	// named "other" would already share this series with every overflowed
+	// key before a single value had overflowed. Same shape as
+	// auth/namespace.go's "_default": pick a character the value's own
+	// grammar refuses, so the collision is impossible rather than unlikely.
+	// A tilde is outside every grammar an allowlisted key's value must
+	// satisfy: pluginName (discover.go) admits only [a-z0-9-], the
+	// TaskDescription.name field pattern and its sharper per-segment
+	// registry rules admit only [A-Za-z0-9_-] plus a single separating dot,
+	// and the fixed-enumeration values recorded for
+	// PluginOperation/PluginOutcome/PluginHealthStatus are plain lowercase
+	// words (with "not serving" the only one containing a space) written in
+	// this repository. None of them can ever produce a tilde, so this
+	// sentinel cannot collide with a legitimate value under any key the
+	// schema allows.
+	OverflowValue = "~other~"
 )
 
 // Limiter enforces the schema and remembers which values it has already let
