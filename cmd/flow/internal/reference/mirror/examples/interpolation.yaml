@@ -48,7 +48,14 @@ steps:
   # `$${` is a literal `${`. It is needed only by a file that wants to *show*
   # the syntax, since a value holding a literal `${` was refused before
   # interpolation existed, so nothing older can contain one.
+  #
+  # The escape works in a field read when the workflow is compiled as readily as
+  # in one the engine evaluates — a `description:` is prose, and prose about this
+  # feature has to be able to spell it. That is a round trip as much as a parse:
+  # `flow fmt` writes the description back out, so the bytes it writes have to be
+  # the escaped ones or the file it just formatted would no longer compile.
   - id: teach
+    description: shows how $${...} is written when you mean the characters
     log:
       message: write $${inputs.version} to interpolate it
 
