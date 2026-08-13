@@ -87,8 +87,12 @@ So the wrapping rule depends on where the text lands:
   width. A hard-wrapped paragraph shows every break as written, which on
   a wide screen reads as ragged and truncated.
 
-Code blocks, tables, and lists are exempt everywhere: their line breaks
-are content, not formatting.
+Code blocks and tables are exempt everywhere: their line breaks are
+content, not formatting. Lists are exempt only in their structure. The
+break between one item and the next is structural and stays; the breaks
+*inside* an item's prose are formatting, and a bullet long enough to
+wrap renders as raggedly as a paragraph does. Keep each item's prose on
+one line, however long.
 
 The cost of getting this wrong is not aesthetic alone. A body that reads
 as broken invites the reader to skim it, and the parts of a PR body worth
