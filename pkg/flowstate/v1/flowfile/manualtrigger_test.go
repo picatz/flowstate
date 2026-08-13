@@ -306,6 +306,139 @@ steps:
 	require.True(t, found, "no diagnostic named the unknown field: %v", diagnostics)
 }
 
+// TestTriggerKindTypoLiteralIsCaught is the PR #514 finding: `flow validate`
+// accepted `${trigger.kind == "schedual"}` because the field name resolves —
+// `kind` is real, so the loop above never sees a problem — and nothing looked
+// at what it was compared to. Both drivers then evaluate the comparison as
+// false forever and silently skip whatever the branch guards.
+// [v1.KnownTriggerKind] already knows the closed set of three; this pins that
+// the validator now asks it.
+func TestTriggerKindTypoLiteralIsCaught(t *testing.T) {
+	t.Parallel()
+
+	diagnostics := validateTriggerSource(t, `edition: v2026.3
+name: trigger-kind-typo
+steps:
+  - id: notify
+    if: ${trigger.kind == "schedual"}
+    log:
+      message: hi
+`)
+
+	require.NotEmpty(t, diagnostics, "a comparison against an unknown trigger kind was accepted")
+
+	var found bool
+	for _, d := range diagnostics {
+		if strings.Contains(d.Message, `"schedual"`) {
+			found = true
+			assert.Contains(t, d.Message, "schedule",
+				"the diagnostic should name the kind the typo likely meant")
+		}
+	}
+	require.True(t, found, "no diagnostic named the unknown trigger kind literal: %v", diagnostics)
+}
+
+// TestTriggerKindLiteralInequalityIsCaught pins the two variations the finding
+// calls out explicitly: `!=` rather than `==`, and the literal written on the
+// left of the operator rather than the right.
+func TestTriggerKindLiteralInequalityIsCaught(t *testing.T) {
+	t.Parallel()
+
+	diagnostics := validateTriggerSource(t, `edition: v2026.3
+name: trigger-kind-typo-ne
+steps:
+  - id: notify
+    if: ${"webhok" != trigger.kind}
+    log:
+      message: hi
+`)
+
+	var found bool
+	for _, d := range diagnostics {
+		if strings.Contains(d.Message, `"webhok"`) {
+			found = true
+		}
+	}
+	require.True(t, found, "no diagnostic named the unknown trigger kind literal: %v", diagnostics)
+}
+
+// TestTriggerKindComparedToNonLiteralStaysSilent is one of the three negative
+// directions the fix has to hold: `trigger.kind` compared against a variable,
+// an input, or another field is a value this validator cannot know at
+// authoring time, and reporting one would be exactly the false diagnostic
+// CLAUDE.md ranks worse than a missing one. The file below compiles clean —
+// [mustCompile] fails the test the moment any diagnostic appears.
+func TestTriggerKindComparedToNonLiteralStaysSilent(t *testing.T) {
+	t.Parallel()
+
+	mustCompile(t, `edition: v2026.3
+name: trigger-kind-dynamic
+inputs:
+  expected_kind: { type: string, required: true }
+vars:
+  wanted: ${"webhook"}
+steps:
+  - id: against_input
+    if: ${trigger.kind == inputs.expected_kind}
+    log:
+      message: hi
+  - id: against_var
+    if: ${trigger.kind == vars.wanted}
+    log:
+      message: hi
+  - id: against_another_field
+    if: ${trigger.kind == trigger.name}
+    log:
+      message: hi
+`)
+}
+
+// TestTriggerKindOutsideComparisonStaysSilent is the second negative
+// direction: a use of `trigger.kind` that is not an `==`/`!=` comparison at
+// all — interpolated into a message, or passed to a function — must not be
+// reported. There is no literal to judge it against, so nothing here should
+// look like the check added for the PR #514 finding.
+func TestTriggerKindOutsideComparisonStaysSilent(t *testing.T) {
+	t.Parallel()
+
+	mustCompile(t, `edition: v2026.3
+name: trigger-kind-outside-comparison
+steps:
+  - id: interpolated
+    log:
+      message: ${"started as " + trigger.kind}
+  - id: passed_to_function
+    if: ${size(trigger.kind) > 0}
+    log:
+      message: hi
+`)
+}
+
+// TestNonTriggerKindComparisonsAreUnaffected is the third negative direction:
+// anything that is not `trigger.kind` must be untouched by this check, even
+// when it is compared to the exact literal a typo test above uses. A
+// `trigger.name` comparison is deliberately not checked (see the PR body for
+// why), and an ordinary `vars:` comparison against the same string must not
+// be caught by an over-broad match on the literal rather than on the field.
+func TestNonTriggerKindComparisonsAreUnaffected(t *testing.T) {
+	t.Parallel()
+
+	mustCompile(t, `edition: v2026.3
+name: trigger-kind-scope
+vars:
+  status: ${"schedual"}
+steps:
+  - id: by_name
+    if: ${trigger.name == "schedual"}
+    log:
+      message: hi
+  - id: by_var
+    if: ${vars.status == "schedual"}
+    log:
+      message: hi
+`)
+}
+
 // TestATriggerCannotReadItsOwnContext pins the reverse scope: `trigger` is not
 // bound where a trigger's own arguments are evaluated.
 //

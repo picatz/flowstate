@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/cel-go/common/operators"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -1491,6 +1492,20 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		}
 	}
 
+	// `trigger.kind` is a field this walk already resolves, above — the check
+	// there is that the *name* is one of the four the engine renders. It says
+	// nothing about a comparison's other side: `${trigger.kind == "schedual"}`
+	// names a real field and is therefore invisible to that loop, compiles,
+	// evaluates false on both drivers forever, and silently takes whichever
+	// branch the author did not intend. The kinds are as closed as the fields
+	// are ([v1.KnownTriggerKind]), so this is checked the same way and with the
+	// same one-sided caution: only a string literal on the other side of `==`
+	// or `!=` is judged, never a variable, an input, or another field, because
+	// those are values this validator cannot know.
+	for _, literal := range unknownTriggerKindLiterals(parsed.GetExpr(), map[string]struct{}{}) {
+		ds = append(ds, unknownTriggerKindLiteral(stepID, inputName, literal))
+	}
+
 	// An input can only fail one way — nothing declared it — for the reason a var
 	// can: every declaration exists before the run starts, so there is no forward
 	// reference to distinguish and no scope to explain.
@@ -2464,6 +2479,142 @@ func unknownTriggerField(stepID, inputName, field string) (Diagnostic, bool) {
 		Step: stepID, Field: inputName, Value: v1.TriggerRoot + "." + field, Message: message,
 		Code: v1.DiagnosticCodeUnresolvedReference,
 	}, true
+}
+
+// unknownTriggerKindLiterals returns, in first-reached order and with
+// duplicates removed, every string literal `e` compares `trigger.kind` to
+// with `==` or `!=` that is not one of [v1.KnownTriggerKind]'s kinds.
+//
+// A comparison is judged only when the other side is a string constant.
+// `${trigger.kind == vars.expected}` or `${trigger.kind == inputs.want}`
+// compares against a value this validator cannot see at authoring time, and
+// reporting one would be exactly the false diagnostic CLAUDE.md ranks worse
+// than a missing one — the same restraint [unknownTriggerField] already
+// applies to a field name it cannot resolve. A use of `trigger.kind` that is
+// not a comparison at all — bare, interpolated into a message, passed to a
+// function — is not visited by the walk below in any way that reports it,
+// for the same reason.
+//
+// bound tracks names a comprehension has rebound, exactly as
+// [collectReferences] tracks it, so that `["schedual"].exists(trigger,
+// trigger.kind == "schedual")` — vanishingly unlikely, but the language
+// allows it — does not misread the macro's own iteration variable as the
+// root.
+func unknownTriggerKindLiterals(e *expr.Expr, bound map[string]struct{}) []string {
+	seen := map[string]struct{}{}
+	var literals []string
+
+	report := func(literal string) {
+		if v1.KnownTriggerKind(literal) {
+			return
+		}
+		if _, dup := seen[literal]; dup {
+			return
+		}
+		seen[literal] = struct{}{}
+		literals = append(literals, literal)
+	}
+
+	var walk func(e *expr.Expr, bound map[string]struct{})
+	walk = func(e *expr.Expr, bound map[string]struct{}) {
+		if e == nil {
+			return
+		}
+		switch kind := e.GetExprKind().(type) {
+		case *expr.Expr_SelectExpr:
+			walk(kind.SelectExpr.GetOperand(), bound)
+		case *expr.Expr_CallExpr:
+			call := kind.CallExpr
+			if args := call.GetArgs(); len(args) == 2 {
+				switch call.GetFunction() {
+				case operators.Equals, operators.NotEquals:
+					checkTriggerKindComparand(args[0], args[1], bound, report)
+					checkTriggerKindComparand(args[1], args[0], bound, report)
+				}
+			}
+			walk(call.GetTarget(), bound)
+			for _, arg := range call.GetArgs() {
+				walk(arg, bound)
+			}
+		case *expr.Expr_ListExpr:
+			for _, el := range kind.ListExpr.GetElements() {
+				walk(el, bound)
+			}
+		case *expr.Expr_StructExpr:
+			for _, entry := range kind.StructExpr.GetEntries() {
+				walk(entry.GetMapKey(), bound)
+				walk(entry.GetValue(), bound)
+			}
+		case *expr.Expr_ComprehensionExpr:
+			c := kind.ComprehensionExpr
+
+			walk(c.GetIterRange(), bound)
+			walk(c.GetAccuInit(), bound)
+
+			inner := make(map[string]struct{}, len(bound)+3)
+			for name := range bound {
+				inner[name] = struct{}{}
+			}
+			for _, name := range []string{c.GetIterVar(), c.GetIterVar2(), c.GetAccuVar()} {
+				if name != "" {
+					inner[name] = struct{}{}
+				}
+			}
+			walk(c.GetLoopCondition(), inner)
+			walk(c.GetLoopStep(), inner)
+			walk(c.GetResult(), inner)
+		}
+	}
+
+	walk(e, bound)
+
+	return literals
+}
+
+// checkTriggerKindComparand reports the literal other is compared against
+// when field is a reference to `trigger.kind` and other is a string
+// constant — one side of one `==`/`!=` call, checked by
+// [unknownTriggerKindLiterals] in both orders so the literal may sit on
+// either side of the operator.
+func checkTriggerKindComparand(field, other *expr.Expr, bound map[string]struct{}, report func(string)) {
+	sel := field.GetSelectExpr()
+	if sel == nil {
+		return
+	}
+	root, name, _, ok := rootedName(sel, bound)
+	if !ok || root != v1.TriggerRoot || name != "kind" {
+		return
+	}
+	sv, ok := other.GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
+	if !ok {
+		return
+	}
+	report(sv.StringValue)
+}
+
+// unknownTriggerKindLiteral reports a `trigger.kind` comparison against a
+// string literal that names no kind this build can start a run with.
+//
+// The wording echoes [v1.CheckTriggerContext]'s runtime refusal on purpose:
+// the same fact — this string is not a trigger kind — is worth saying
+// identically whether it is caught while authoring or, absent this check,
+// discovered in a run's history after both drivers evaluated the comparison
+// as false and skipped the branch it guarded.
+func unknownTriggerKindLiteral(stepID, inputName, literal string) Diagnostic {
+	kinds := v1.TriggerKinds()
+
+	message := fmt.Sprintf("compares `%s.kind` to %q, which is not a kind Flowstate starts runs with",
+		v1.TriggerRoot, literal)
+	if suggestion, ok := nearest.Name(literal, kinds); ok {
+		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	} else {
+		message += fmt.Sprintf("; the kinds are %s", strings.Join(kinds, ", "))
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: v1.TriggerRoot + ".kind", Message: message,
+		Code: v1.DiagnosticCodeUnresolvedReference,
+	}
 }
 
 // unknownStepOutput reports a reference to an output a step does not produce.
