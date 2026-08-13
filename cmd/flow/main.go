@@ -942,14 +942,6 @@ func (stdio) Close() error {
 
 // runLSP serves the Flowfile language server over stdin and stdout.
 func runLSP(cmd *cobra.Command, args []string) error {
-	// A person who follows the root help's own example (`flow lsp`) gets
-	// silence indistinguishable from a hang: this server speaks nothing until
-	// an editor writes to it. The banner is the account of that, gated on
-	// stdin being a terminal and written to stderr, so a real editor's pipe
-	// never sees it and the JSON-RPC stream on stdout is never touched
-	// (picatz/flowstate#398).
-	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), lspBanner)
-
 	// Diagnostics go to stderr; stdout carries the JSON-RPC protocol and must
 	// not be polluted with log output.
 	log.SetFlags(0)
@@ -975,6 +967,18 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// and an editor restarting its server would otherwise leave one behind per
 	// restart.
 	defer closePlugins()
+
+	// A person who follows the root help's own example (`flow lsp`) gets
+	// silence indistinguishable from a hang: this server speaks nothing until
+	// an editor writes to it. The banner is the account of that, gated on
+	// stdin being a terminal and written to stderr, so a real editor's pipe
+	// never sees it and the JSON-RPC stream on stdout is never touched
+	// (picatz/flowstate#398).
+	//
+	// It comes after startPlugins, not before: printed earlier it announces
+	// readiness this command may be about to refuse, and a plugin that will
+	// not come up exits here. Say "waiting" only once waiting is the truth.
+	writeStdioBanner(cmd.ErrOrStderr(), stdinIsInteractive(cmd), lspBanner)
 
 	conn := jsonrpc2.NewConn(
 		cmd.Context(),
