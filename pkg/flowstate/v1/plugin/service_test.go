@@ -153,7 +153,8 @@ func TestServiceSurvivesARestart(t *testing.T) {
 		t.Fatalf("plugin was not relaunched: state=%v restarts=%d: %v", p.State(), p.Restarts(), p.LastError())
 	}
 
-	// The plugin dies every 150ms, so a call may land during a restart. What
+	// The plugin dies a second after each launch, so a call may land during a
+	// restart. What
 	// matters is that the same service eventually reaches the new process rather
 	// than being permanently attached to the old one.
 	var lastErr error
