@@ -80,60 +80,53 @@ func checkSensitiveLog(wf *v1.Workflow) Diagnostics {
 	return sensitiveLogInNodes(wf.GetSteps(), sensitive)
 }
 
-// sensitiveLogInNodes walks a list of sibling steps and, on its own, every
-// for_each/loop body and parallel branch — the same recursion negation.go uses,
-// and for the same reason: `inputs.<name>` means the same workflow input at any
-// nesting depth, so one walk from the top covers the whole tree. A call is not
-// followed: a callee is a different workflow with its own declared inputs and is
-// validated in its own right.
+// sensitiveLogInNodes reports every `log:` in a tree of steps that surfaces a
+// sensitive input, its own and its compensations'.
+//
+// The tree comes from [v1.WalkNodes], the one traversal (#508). This lint is one
+// of the five walks that motivated it, and the one whose omission had the sharpest
+// consequence: `Node.undo` landed after this was written, nothing added it here,
+// and a compensation's `log:` could print a value the declaration exists to keep
+// out of the clear — in the position where it matters most, since compensation
+// runs when something has already gone wrong, which is when logs get read closely
+// (#509).
+//
+// `inputs.<name>` means the same workflow input at any nesting depth, so one walk
+// from the top covers the whole tree. A callee is not followed: it is a different
+// workflow with its own declared inputs, validated in its own right.
 func sensitiveLogInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostics {
 	var ds Diagnostics
 
-	for _, node := range nodes {
-		if d, ok := sensitiveLogInTask(node.GetId(), node.GetTask(), sensitive); ok {
-			ds = append(ds, d)
-		}
-
-		// A compensation runs the same tasks a step runs, so a `log:` that
-		// surfaces a sensitive input is the same mistake written in the `undo:`
-		// position, and it is the position where it matters most: compensation
-		// runs when something has already gone wrong, which is when logs get
-		// read closely. The field is the `undo:` key rather than `message` for
-		// the reason validateUndoInputs documents — a field naming the inner
-		// input would be looked up against the step's own task — so the inner
-		// field moves into the sentence instead.
-		//
-		// Kind is set alongside Field so [validateParsed] routes the position
-		// through [Positions.LocateKind] rather than [Positions.Locate]: the
-		// step's own primary task may declare an input literally named `undo`
-		// (a plugin task's input names come from its own descriptor, so `undo`
-		// is not reserved), and Locate's candidate search tries every
-		// registered task's `.undo` input before the step's own `<step>.undo`.
-		// On such a step, Field alone would underline that unrelated primary-
-		// task input instead of the compensation. LocateKind addresses
-		// `<step>.undo` exactly, with no candidate search to go wrong.
-		if d, ok := sensitiveLogInTask(node.GetId(), node.GetUndo().GetTask(), sensitive); ok {
-			d.Field = "undo"
-			d.Kind = "undo"
-			d.Message = "in this step's compensation: " + d.Message
-			ds = append(ds, d)
-		}
-
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_ForEach:
-			ds = append(ds, sensitiveLogInNodes(kind.ForEach.GetBody(), sensitive)...)
-		case *v1.Node_Loop:
-			ds = append(ds, sensitiveLogInNodes(kind.Loop.GetBody(), sensitive)...)
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				ds = append(ds, sensitiveLogInNodes(branch.GetSteps(), sensitive)...)
+	v1.WalkNodes(nodes, v1.Walk{
+		Node: func(node *v1.Node) {
+			if d, ok := sensitiveLogInTask(node.GetId(), node.GetTask(), sensitive); ok {
+				ds = append(ds, d)
 			}
-		case *v1.Node_Switch:
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				ds = append(ds, sensitiveLogInNodes(body, sensitive)...)
+
+			// A compensation runs the same tasks a step runs, so a `log:` that
+			// surfaces a sensitive input is the same mistake written in the `undo:`
+			// position. The field is the `undo:` key rather than `message` for the
+			// reason validateUndoInputs documents — a field naming the inner input
+			// would be looked up against the step's own task — so the inner field
+			// moves into the sentence instead.
+			//
+			// Kind is set alongside Field so [validateParsed] routes the position
+			// through [Positions.LocateKind] rather than [Positions.Locate]: the
+			// step's own primary task may declare an input literally named `undo`
+			// (a plugin task's input names come from its own descriptor, so `undo`
+			// is not reserved), and Locate's candidate search tries every registered
+			// task's `.undo` input before the step's own `<step>.undo`. On such a
+			// step, Field alone would underline that unrelated primary-task input
+			// instead of the compensation. LocateKind addresses `<step>.undo`
+			// exactly, with no candidate search to go wrong.
+			if d, ok := sensitiveLogInTask(node.GetId(), node.GetUndo().GetTask(), sensitive); ok {
+				d.Field = "undo"
+				d.Kind = "undo"
+				d.Message = "in this step's compensation: " + d.Message
+				ds = append(ds, d)
 			}
-		}
-	}
+		},
+	})
 
 	return ds
 }
