@@ -633,7 +633,7 @@ jobs:
             echo "Reproduce locally (toolchain pinned to match go.mod, per CLAUDE.md):"
             echo
             echo '```'
-            echo "GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."
+            echo "GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."
             echo '```'
           } > "$body"
           gh issue create --title "$title" --label deep-tier --body-file "$body"

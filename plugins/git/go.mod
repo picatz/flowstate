@@ -2,7 +2,7 @@ module github.com/picatz/flowstate/plugins/git
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/bluekeyes/go-gitdiff v0.9.0

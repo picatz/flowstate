@@ -218,17 +218,17 @@ your file makes it look like yours.
 It also has a failure that is not a finding at all. `go run …/govulncheck@v1.6.0`
 builds govulncheck using *its* `go` directive, then type-checks your tree against
 whatever toolchain `go.mod` selected — so on a machine honouring `toolchain
-go1.26.5` it reports `file requires newer Go version go1.26 (application built with
+go1.26.6` it reports `file requires newer Go version go1.26 (application built with
 go1.25)` on files in the module cache and exits 1. CI does not see this, because
 `go-version-file: go.mod` installs the one version it then uses for everything.
 Pin the run to match and it scans clean:
 
-    GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+    GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
 `staticcheck` builds the same way — its own `go.mod` selects a toolchain, so it
 needs the identical pin, for the identical reason:
 
-    GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+    GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
 staticcheck is required in CI, and the tree is at zero findings. It landed
 advisory (`continue-on-error: true`) for the 48-hour window every newly-added

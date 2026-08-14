@@ -2,7 +2,7 @@ module github.com/picatz/flowstate/plugins/vcs
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/go-git/go-git/v5 v5.19.2
