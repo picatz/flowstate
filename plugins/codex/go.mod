@@ -2,7 +2,7 @@ module github.com/picatz/flowstate/plugins/codex
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/picatz/flowstate v0.0.0-00010101000000-000000000000
