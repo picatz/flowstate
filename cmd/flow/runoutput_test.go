@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -49,12 +48,20 @@ func TestAPipedRunStillWritesTheTranscript(t *testing.T) {
 	piped := ui.Capabilities{Width: 80}
 	surface := ui.ForCapabilities(&out, &errOut, piped, piped)
 
-	require.NoError(t, writeRun(surface, FormatText, runForOutput(t)))
+	response := runForOutput(t)
+	require.NoError(t, writeRun(surface, FormatText, response))
 
-	require.NotEmpty(t, out.String(),
+	// Compared against what marshalJSON produces rather than against a literal,
+	// and that is not fussiness. protojson deliberately randomizes its
+	// whitespace, seeded per binary, so `{"stepValues":{` and `{"stepValues": {`
+	// are both legal output from the same code on different builds — a literal
+	// prefix here would pass all day and fail on somebody's rebuild. Marshalling
+	// the same document the same way asks the real question, which is whether
+	// stdout still carries the transcript a jq expression addresses.
+	want, err := marshalJSON(response.GetOutputs(), false)
+	require.NoError(t, err)
+	require.Equal(t, string(want)+"\n", out.String(),
 		"a pipe reads stdout, and every documented `flow run local … | jq` omits -o json")
-	require.True(t, strings.HasPrefix(out.String(), `{"stepValues":`),
-		"the transcript a jq expression addresses, byte for byte: got %q", out.String())
 }
 
 func TestATerminalRunWritesNothingToStdout(t *testing.T) {
