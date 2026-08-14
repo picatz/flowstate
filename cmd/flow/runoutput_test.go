@@ -97,6 +97,58 @@ func TestATerminalRunStillReportsDeclaredOutputs(t *testing.T) {
 	require.Contains(t, errOut.String(), "https://example.com/releases/2026.9.0")
 }
 
+// TestATerminalKeepsTheDocumentWhenTheSummaryIsLossy is the case Codex found on
+// this change, and it is a good example of removing something whose absence
+// invalidated a permission granted elsewhere.
+//
+// renderLiteral is allowed to be a summary — bytes are named as a length, and a
+// CEL kind it does not render is named as its type — and the comment granting
+// that permission says why: "the value itself is on stdout". Suppressing the
+// document on a terminal took that away, so a declared bytes output became
+// unreachable in the default invocation with nothing telling the person so.
+//
+// The document is therefore held back only when the summary carries everything.
+func TestATerminalKeepsTheDocumentWhenTheSummaryIsLossy(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		value *expr.Value
+	}{
+		{
+			name:  "bytes",
+			value: &expr.Value{Kind: &expr.Value_BytesValue{BytesValue: []byte{0x01, 0x02}}},
+		},
+		{
+			// Nested, because a lossy value hides just as well inside a list.
+			name: "bytes inside a list",
+			value: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+				Values: []*expr.Value{{Kind: &expr.Value_BytesValue{BytesValue: []byte{0x03}}}},
+			}}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			response := runForOutput(t)
+			response.RunOutputs = &v1.RunOutputs{
+				Values: map[string]*v1.Value{
+					"blob": {Kind: &v1.Value_Literal{Literal: test.value}},
+				},
+			}
+
+			var out, errOut bytes.Buffer
+			terminal := ui.Capabilities{Width: 80, TTY: true}
+			surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
+
+			require.NoError(t, writeRun(surface, FormatText, response))
+
+			require.NotEmpty(t, out.String(),
+				"the summary cannot carry this value, so the document must still be there")
+		})
+	}
+}
+
 // TestAMachineFormatIgnoresTheTerminal pins that -o json is unaffected. It is
 // the explicit override in the other direction, and a person who typed it on a
 // terminal meant it.

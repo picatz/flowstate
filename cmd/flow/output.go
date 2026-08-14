@@ -307,7 +307,7 @@ func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) err
 
 	writeRunOutputs(surface, response)
 
-	if surface.Caps.TTY {
+	if surface.Caps.TTY && everyDeclaredOutputRendersFaithfully(response) {
 		return nil
 	}
 
@@ -402,7 +402,9 @@ func renderLiteral(literal *expr.Value) string {
 
 	case *expr.Value_BytesValue:
 		// Named rather than written out: bytes on a terminal are either unreadable
-		// or a very long line, and the value itself is on stdout.
+		// or a very long line. The value itself is on stdout —
+		// [everyDeclaredOutputRendersFaithfully] is what keeps that true, by
+		// holding the document back whenever this branch is reached.
 		return fmt.Sprintf("(%d bytes)", len(kind.BytesValue))
 
 	case *expr.Value_TypeValue:
@@ -414,7 +416,68 @@ func renderLiteral(literal *expr.Value) string {
 	default:
 		// A kind CEL has and this does not render — an enum, a message. Named, so
 		// the line says a value is there and where to read it, rather than nothing.
+		// Like the bytes branch, this one is lossy, and
+		// [everyDeclaredOutputRendersFaithfully] keeps the document available
+		// wherever it fires.
 		return "(" + strings.TrimPrefix(fmt.Sprintf("%T", kind), "*v1alpha1.Value_") + ")"
+	}
+}
+
+// everyDeclaredOutputRendersFaithfully reports whether the summary on stderr
+// carries the whole of what the run answered with.
+//
+// [renderLiteral] is allowed to be a summary, and that permission rests entirely
+// on the value itself being on stdout in the run's own document: bytes are named
+// as a length, and a kind CEL has that this does not render is named as its type.
+// Suppressing the document on a terminal removes the thing that made those two
+// branches acceptable, so it is suppressed only when neither is reached — which
+// is every workflow whose outputs are strings, numbers, booleans, lists and maps
+// of the same, and so nearly all of them.
+//
+// The asymmetry with the step transcript is deliberate. The transcript is not the
+// answer and has always been reachable through `-o json`; the declared outputs
+// *are* the answer, and a person must not have to know they were shortchanged to
+// go looking for it.
+func everyDeclaredOutputRendersFaithfully(response *v1.GetResponse) bool {
+	for _, value := range response.GetRunOutputs().GetValues() {
+		if !literalRendersFaithfully(value.GetLiteral()) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// literalRendersFaithfully is the recursive half, because a lossy value hides
+// just as well inside a list or a map as it does at the top level.
+func literalRendersFaithfully(literal *expr.Value) bool {
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_StringValue, *expr.Value_BoolValue, *expr.Value_Int64Value,
+		*expr.Value_Uint64Value, *expr.Value_DoubleValue, *expr.Value_NullValue,
+		*expr.Value_TypeValue, nil:
+		return true
+
+	case *expr.Value_ListValue:
+		for _, item := range kind.ListValue.GetValues() {
+			if !literalRendersFaithfully(item) {
+				return false
+			}
+		}
+
+		return true
+
+	case *expr.Value_MapValue:
+		for _, entry := range kind.MapValue.GetEntries() {
+			if !literalRendersFaithfully(entry.GetKey()) || !literalRendersFaithfully(entry.GetValue()) {
+				return false
+			}
+		}
+
+		return true
+
+	default:
+		// Bytes, and anything renderLiteral names by type rather than by value.
+		return false
 	}
 }
 
