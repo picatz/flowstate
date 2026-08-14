@@ -233,10 +233,38 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 		// read its zero value forever, and the deployment would look like one
 		// that simply serves no webhooks.
 		"webhook", "secret-env", "secret-dir",
+
+		// The public listener's TLS configuration and the internal listener's
+		// address (cmd/flow/tls.go, cmd/flow/internallistener.go).
+		"tls-cert-file", "tls-key-file", "tls-min-version", "internal-listen",
 	} {
 		require.NotNil(t, server.Flags().Lookup(name),
 			"`flow server` does not take --%s, so a deployment cannot configure it", name)
 	}
+}
+
+// TestPublicMuxDoesNotServePprof pins the complement of
+// TestInternalListenerServesHealthAndPprofButNotTheRPCSurface: pprof can read
+// this process's memory and running goroutines, and belongs only on the
+// internal listener (routing.go's [internalHandler]). A request for it on the
+// public mux must fall through to the authenticated default route like any
+// other unrecognized path, not answer directly.
+func TestPublicMuxDoesNotServePprof(t *testing.T) {
+	t.Parallel()
+
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL + "/debug/pprof/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"the public listener must not serve pprof; it fell through to the RPC handler "+
+			"where the authenticator would have refused it, so an OK here means pprof is reachable")
 }
 
 // TestTheWebhookRouteIsMountedOnlyWhenConfigured pins both halves of the one

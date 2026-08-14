@@ -122,6 +122,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/credentials.go",
 		},
 		{
+			name:    "FLOWSTATE_INTERNAL_ADDRESS",
+			value:   "127.0.0.1:9090",
+			purpose: "Default for `--internal-listen` on `flow server`: a socket separate from the public listener, carrying health and pprof. Refused unless it is loopback or empty (which disables it); this listener has no TLS configuration of its own.",
+			read:    "cmd/flow/internallistener.go",
+		},
+		{
 			name:    "FLOWSTATE_MAX_STEPS_PER_RUN",
 			value:   "unset",
 			purpose: "Server-side ceiling on the steps one run may submit. An unparseable or non-positive value is ignored rather than lowering the bound.",
@@ -271,6 +277,24 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong.",
 			read:    "cmd/flow/internal/ui/ui.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CERT_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-cert-file` on `flow server`: a PEM certificate (or chain) for the public listener. Unset serves plain HTTP, refused unless the listen address is loopback. Must be given with `FLOWSTATE_TLS_KEY_FILE`.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_KEY_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-key-file` on `flow server`: the PEM private key matching `FLOWSTATE_TLS_CERT_FILE`.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_MIN_VERSION",
+			value:   "1.2",
+			purpose: "Default for `--tls-min-version` on `flow server`: the minimum TLS protocol version to accept, `1.2` or `1.3`. Nothing below 1.2 is offered.",
+			read:    "cmd/flow/tls.go",
 		},
 		{
 			name:    "FLOWSTATE_TOKEN",
