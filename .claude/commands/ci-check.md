@@ -14,8 +14,8 @@ go run ./cmd/flow fix --check examples/*/workflow.yaml
 go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
 go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
 go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
-GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 ```
 
 Advisory, run separately, not part of the block above (bounded per CLAUDE.md's
@@ -43,7 +43,7 @@ Notes, per CLAUDE.md:
   something pre-existing that isn't yours. The fuzz smoke job carries the same
   advisory window, to absorb flake rather than to excuse ignoring a real
   crasher.
-- The `GOTOOLCHAIN=go1.26.5` pin matches CI's toolchain; without it, a machine
+- The `GOTOOLCHAIN=go1.26.6` pin matches CI's toolchain; without it, a machine
   honouring a newer `toolchain` directive in `go.mod` can fail with a spurious
   "file requires newer Go version" error from files in the module cache. This
   applies to both govulncheck and staticcheck — each resolves its own

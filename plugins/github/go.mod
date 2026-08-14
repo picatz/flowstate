@@ -2,7 +2,7 @@ module github.com/picatz/flowstate/plugins/github
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/google/go-github/v75 v75.0.0
