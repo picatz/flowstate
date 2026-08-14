@@ -132,15 +132,6 @@ func runFakePlugin() int {
 		return 0
 	}
 
-	if mode == "short-lived" {
-		// Comes up correctly and then dies, over and over: the crash loop the
-		// restart budget exists to stop.
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			os.Exit(7)
-		}()
-	}
-
 	// Everything else serves.
 	listener, err := fakeListen()
 	if err != nil {
@@ -155,6 +146,31 @@ func runFakePlugin() int {
 	}
 
 	fakeAnnounce()
+
+	if mode == "short-lived" {
+		// Comes up correctly and then dies, over and over: the crash loop the
+		// restart budget exists to stop.
+		//
+		// The countdown starts *here* rather than at process start, and that
+		// placement is the whole point. Started earlier it also runs while the
+		// process is finding its socket path, listening and announcing, so what
+		// is left for the host's first Describe is 150ms minus however long
+		// this machine took to get that far — and on a loaded CI runner that
+		// remainder can be nothing. The plugin then dies before answering the
+		// call every test using it makes during Open, and the test fails at
+		// setup with `connect: connection refused`, for a reason that has
+		// nothing to do with what it asserts.
+		//
+		// TestARelaunchFromDifferentBytesIsRefused hit exactly this and worked
+		// around it by killing the process instead of using this fixture, and
+		// the three tests that do use it kept the hazard. Anchoring the clock
+		// to the moment the plugin is reachable makes the window a real
+		// second, not a leftover.
+		go func() {
+			time.Sleep(shortLivedLifetime)
+			os.Exit(7)
+		}()
+	}
 
 	if mode == "stdout-noise" {
 		// Breaks the protocol's promise by continuing to write to stdout. The
@@ -176,6 +192,14 @@ func runFakePlugin() int {
 
 	return 0
 }
+
+// shortLivedLifetime is how long the "short-lived" fake serves before exiting.
+//
+// Long enough that a Describe on a contended machine finishes first, short
+// enough that a test waiting fifteen seconds sees several restarts: three lives
+// exhaust a MaxRestarts of 2, and one is all TestRestartRecovers and
+// TestServiceSurvivesARestart need.
+const shortLivedLifetime = time.Second
 
 // exitWhenHostExits ends this process when the host's pipe closes.
 func exitWhenHostExits() {
