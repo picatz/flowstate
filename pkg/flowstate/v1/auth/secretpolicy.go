@@ -258,6 +258,7 @@ func newSecretEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.NativeTypes(ext.ParseStructTag("cel"),
 			reflect.TypeOf(workload{}), reflect.TypeOf(secret{})),
+		cel.Variable(attrIdentity, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrSecret, cel.ObjectType(secretTypeName)),
 		ext.Strings(ext.StringsVersion(5)),

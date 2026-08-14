@@ -29,7 +29,26 @@ const (
 	// attrAudience is the audience the target's exchanger requires.
 	attrAudience = "audience"
 
-	// attrWorkload is the object describing the workload asking.
+	// attrIdentity is the object describing who is asking, and it is the spelling
+	// to write.
+	//
+	// Egress rules and task-shape rules have always called this `identity`. This
+	// package called the same thing `workload`, so an operator writing all four
+	// policy surfaces had to remember which file used which word, and an
+	// expression that was correct in one was a compile error in the next. One
+	// meaning written down twice is the defect class CLAUDE.md names; this was
+	// that class, spelled out across a whole configuration surface (#548).
+	attrIdentity = "identity"
+
+	// attrWorkload is the retired spelling of [attrIdentity], bound to the same
+	// value so that policies written before the rename keep compiling.
+	//
+	// Both names are declared and both are populated, so `workload.namespace` and
+	// `identity.namespace` are the same object in the same rule. It is deprecated
+	// rather than removed because a policy file is a deployment's configuration
+	// and this package refuses to start when a rule fails to compile: dropping the
+	// old name in one release would take a worker down on upgrade, which is a
+	// worse failure than an extra binding.
 	attrWorkload = "workload"
 
 	// workloadTypeName is how the workload object is named in CEL, which appears
@@ -176,6 +195,7 @@ func newAssumeEnv() (*cel.Env, error) {
 		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeOf(workload{})),
 		cel.Variable(attrTarget, cel.StringType),
 		cel.Variable(attrAudience, cel.StringType),
+		cel.Variable(attrIdentity, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
 	)
@@ -250,19 +270,24 @@ func assumeVars(target, subject, audience string, identity WorkloadIdentity, ref
 		claims = map[string]string{}
 	}
 
+	who := workload{
+		Subject:          subject,
+		Namespace:        orDefault(identity.Namespace),
+		Deployment:       orDefault(identity.Deployment),
+		Workflow:         ref.Workflow,
+		Run:              ref.Run,
+		Step:             ref.Step,
+		OnBehalfOf:       identity.Subject,
+		OnBehalfOfIssuer: identity.Issuer,
+		Claims:           claims,
+	}
+
 	return map[string]any{
 		attrTarget:   target,
 		attrAudience: audience,
-		attrWorkload: workload{
-			Subject:          subject,
-			Namespace:        orDefault(identity.Namespace),
-			Deployment:       orDefault(identity.Deployment),
-			Workflow:         ref.Workflow,
-			Run:              ref.Run,
-			Step:             ref.Step,
-			OnBehalfOf:       identity.Subject,
-			OnBehalfOfIssuer: identity.Issuer,
-			Claims:           claims,
-		},
+		attrIdentity: who,
+
+		// The retired spelling, bound to the same value. See [attrWorkload].
+		attrWorkload: who,
 	}
 }
