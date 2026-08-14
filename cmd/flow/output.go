@@ -280,12 +280,36 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdou
 // outputs, because the account of how the run went has already been narrated to
 // them on stderr as it happened. A program is handed the whole state document,
 // because it was not watching and the status is part of what it asked for.
+// # Who is on the other end of stdout
+//
+// The text format's stdout is machine-shaped by design, and that is load-bearing:
+// `flow run local … | jq .stepValues.hello.namedValues` is documented in this
+// command's own help, with no `-o json` in it, so the transcript cannot move
+// behind a flag without breaking every one of those.
+//
+// It is also, on a terminal, the least useful line this command prints. A
+// workflow that declares no outputs — which is most of them — ends a clean run
+// with `{"stepValues":{"hello":{"namedValues":{}}},"runOutputs":null}`, two empty
+// containers and a null under three lines of well-judged narration. Every
+// decision that produces it is right on its own: stdout carries the answer,
+// unpopulated fields are emitted so one jq expression works against both
+// drivers, and an unset `run_outputs` is honestly "nothing to report" rather
+// than an empty result. The composite is what reads badly.
+//
+// So the destination decides, which is the same answer `git`, `ls` and `gh`
+// reach. Piped or redirected, the bytes are what they always were. On a terminal
+// there is provably no parser, the narration on stderr is the whole answer, and
+// [writeRunOutputs] has already said what the run produced (#551).
 func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) error {
 	if format.Machine() {
 		return writeJSON(surface, format, response)
 	}
 
 	writeRunOutputs(surface, response)
+
+	if surface.Caps.TTY {
+		return nil
+	}
 
 	return writeStepOutputs(surface, response)
 }
