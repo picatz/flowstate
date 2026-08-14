@@ -69,6 +69,18 @@ var requestTimeout = 30 * time.Second
 type serverFlags struct {
 	address   string
 	tokenFile string
+
+	// credentialSource is --credential-source / FLOWSTATE_CREDENTIAL_SOURCE:
+	// which named [credentialsource.Source] to acquire a token from, rather
+	// than the CLI's original token-file-or-environment default. Empty means
+	// that default; see [credentialSourceFor].
+	credentialSource string
+
+	// audience is --audience / FLOWSTATE_AUDIENCE: the relying party a
+	// minted token, such as one from the "github-actions" source, is
+	// addressed to. Ignored by sources that present a token they did not
+	// mint.
+	audience string
 }
 
 // addServerFlags declares them on a verb that contacts a server.
@@ -90,6 +102,20 @@ func addServerFlags(cmd *cobra.Command) {
 		"file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); "+
 			"re-read per request, so a rotating token keeps working. "+
 			"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
+
+	// Names a credentialsource.Source explicitly. "github-actions" is what
+	// turns a CI job's ambient OIDC identity into a token without any
+	// hand-written curl; "file" and "env" force the same reading --token-file
+	// and FLOWSTATE_TOKEN already do, but as a refusal rather than silent
+	// anonymity when the named source turns out empty.
+	cmd.Flags().String("credential-source", os.Getenv("FLOWSTATE_CREDENTIAL_SOURCE"),
+		"acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN "+
+			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. "+
+			"An unknown or unusable source is an error, never anonymous")
+
+	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
+		"the relying party a minted credential should be addressed to (overrides "+
+			"FLOWSTATE_AUDIENCE); required by --credential-source=github-actions")
 }
 
 // defaultServerAddress is where a Flowstate server runs unless told otherwise.
@@ -104,8 +130,15 @@ const defaultServerAddress = "localhost:9233"
 func serverFlagsOf(cmd *cobra.Command) serverFlags {
 	address, _ := cmd.Flags().GetString("address")
 	tokenFile, _ := cmd.Flags().GetString("token-file")
+	credentialSource, _ := cmd.Flags().GetString("credential-source")
+	audience, _ := cmd.Flags().GetString("audience")
 
-	return serverFlags{address: address, tokenFile: tokenFile}
+	return serverFlags{
+		address:          address,
+		tokenFile:        tokenFile,
+		credentialSource: credentialSource,
+		audience:         audience,
+	}
 }
 
 func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowServiceClient {
@@ -144,12 +177,24 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 		interceptors = append(interceptors, otelInterceptor)
 	}
 
+	// Resolving the source is local and cheap — no network call, just naming
+	// which one to build — so it happens once here rather than on every
+	// request. A failure (an unknown --credential-source, or one missing a
+	// required --audience) is a configuration error, not a transient one, so
+	// carrying it forward to be returned from the first RoundTrip is
+	// equivalent to failing now: nothing about a later request could make it
+	// succeed. Doing it this way, rather than threading an error out of this
+	// function, keeps every existing caller of newWorkflowServiceClient
+	// unchanged.
+	source, sourceErr := credentialSourceFor(server)
+
 	return flowstatev1connect.NewWorkflowServiceClient(
 		&http.Client{
 			Transport: &authorizingTransport{
 				base:      &boundedTransport{base: transport, max: maxResponseBytes},
 				baseURL:   baseURL,
-				tokenFile: server.tokenFile,
+				source:    source,
+				sourceErr: sourceErr,
 			},
 
 			// Bounded in time as well as in bytes, and for the same reason: the peer

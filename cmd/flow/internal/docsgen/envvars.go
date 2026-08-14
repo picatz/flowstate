@@ -44,6 +44,18 @@ type environmentVariable struct {
 func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 	return []environmentVariable{
 		{
+			name:    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+			value:   "unset",
+			purpose: "Set by GitHub Actions inside a job granted `id-token: write`; the request token the `github-actions` credential source presents to the runner's own OIDC token endpoint. Never configured by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/github_actions.go",
+		},
+		{
+			name:    "ACTIONS_ID_TOKEN_REQUEST_URL",
+			value:   "unset",
+			purpose: "Set by GitHub Actions inside a job granted `id-token: write`; the runner's OIDC token endpoint the `github-actions` credential source asks for a token. Never configured by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/github_actions.go",
+		},
+		{
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
@@ -54,6 +66,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Permit the `http` task to reach loopback addresses. Ignored while an `--egress-policy` file is in force: a policy that wants loopback says `allow_loopback: true`.",
 			read:    "pkg/flowstate/v1/eval_task_library.go",
+		},
+		{
+			name:    "FLOWSTATE_AUDIENCE",
+			value:   "unset",
+			purpose: "Default for `--audience`: the relying party a minted credential is addressed to. Required by `--credential-source=github-actions`; ignored by a source that presents a token it did not mint.",
+			read:    "cmd/flow/client.go",
 		},
 		{
 			name:    "FLOWSTATE_AUTH_POLICY",
@@ -72,6 +90,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `--build-id`: this worker binary's version identifier, unique per build. Required alongside the deployment name.",
 			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
+			value:   "unset",
+			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			read:    "cmd/flow/client.go",
 		},
 		{
 			name:    "FLOWSTATE_DEPLOYMENT_NAME",
