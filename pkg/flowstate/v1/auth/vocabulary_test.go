@@ -4,91 +4,160 @@ import (
 	"testing"
 )
 
-// One vocabulary, checked at the only place it can be: the compiled rule.
+// One vocabulary, and the trap on the way to it.
 //
-// Egress rules and task-shape rules call the caller `identity`; this package
-// called the same thing `workload`. That is one meaning written down twice, and
-// it was user-facing — an expression correct in one policy file was a compile
-// error in the next. #548's first slice makes `identity` the spelling to write
-// here too, with `workload` bound to the same value so a deployment's existing
-// policy keeps compiling across the upgrade.
+// Egress rules and task-shape rules call the caller `identity` and mean the
+// authenticated caller's own subject. This package had no such object: it
+// exposed `workload`, whose subject is the assertion Flowstate is about to
+// *mint*. Those are different principals.
 //
-// The assertion that matters is not that each name compiles on its own. It is
-// that they are the *same object*: a rule comparing the two fields must be true
-// for every field, or the alias is a second vocabulary wearing the first one's
-// name.
+// The first attempt at #548 bound `identity` as an alias for `workload`, which
+// looked like unification and was worse than the split: a rule copied from a
+// task-shape policy would compile, run, and decide something other than what it
+// says, with nothing to warn anybody. Two names meaning two things is at least
+// visible; one name meaning two things is not.
+//
+// So `identity` is the caller, with exactly netpolicy's and taskpolicy's four
+// fields, and `workload` keeps its own name for the minted assertion and its run
+// context. The tests below are the ones that can tell those two apart.
 
-func TestBothSpellingsNameTheSameCaller(t *testing.T) {
+// callerFixture is a caller whose every field differs from what the minted
+// assertion would carry, so a test cannot pass by the two happening to agree.
+func callerFixture() (WorkloadIdentity, StepRef) {
+	return WorkloadIdentity{
+			Subject:    "spiffe://acme/ci-runner",
+			Issuer:     "https://token.actions.githubusercontent.com",
+			Namespace:  "team-a",
+			Deployment: "prod",
+		}, StepRef{
+			Workflow: "deploy",
+			Run:      "run-1",
+			Step:     "push",
+		}
+}
+
+func TestIdentityIsTheCallerAndWorkloadIsTheAssertion(t *testing.T) {
 	t.Parallel()
 
-	for _, rule := range []string{
-		// The spelling to write.
-		`identity.namespace == "team-a"`,
-		// The retired spelling, still compiling.
-		`workload.namespace == "team-a"`,
-		// And the proof they are one value rather than two that happen to agree
-		// on the field a test picked.
-		`identity.subject == workload.subject`,
-		`identity.namespace == workload.namespace`,
-		`identity.deployment == workload.deployment`,
-		`identity.workflow == workload.workflow`,
-		`identity.run == workload.run`,
-		`identity.step == workload.step`,
-		`identity.on_behalf_of == workload.on_behalf_of`,
-		`identity.claims == workload.claims`,
+	identity, ref := callerFixture()
+
+	minted, err := identity.SubjectFor(ref)
+	if err != nil {
+		t.Fatalf("SubjectFor: %v", err)
+	}
+	if minted == identity.Subject {
+		t.Fatal("fixture is useless: the minted subject equals the caller's")
+	}
+
+	for _, test := range []struct {
+		rule string
+		want bool
+	}{
+		// The caller, which is what every other policy surface means by this.
+		{rule: `identity.subject == "spiffe://acme/ci-runner"`, want: true},
+		{rule: `identity.issuer == "https://token.actions.githubusercontent.com"`, want: true},
+		{rule: `identity.namespace == "team-a"`, want: true},
+
+		// The assertion about to be minted, which is a different principal.
+		{rule: `workload.subject == "` + minted + `"`, want: true},
+		{rule: `workload.workflow == "deploy" && workload.step == "push"`, want: true},
+
+		// And the assertion that would have caught the first attempt: the two
+		// subjects are not the same value, so a rule written about one does not
+		// silently decide the other.
+		{rule: `identity.subject != workload.subject`, want: true},
 	} {
-		t.Run(rule, func(t *testing.T) {
+		t.Run(test.rule, func(t *testing.T) {
 			t.Parallel()
 
-			rules, err := compileAssumeRules([]string{rule}, nil, DefaultAssumeRuleCostLimit)
+			rules, err := compileAssumeRules([]string{test.rule}, nil, DefaultAssumeRuleCostLimit)
 			if err != nil {
-				t.Fatalf("compiling %q: %v", rule, err)
+				t.Fatalf("compiling %q: %v", test.rule, err)
 			}
 
-			vars := assumeVars("aws-prod", "spiffe://acme/run", "https://as.example.com",
-				WorkloadIdentity{Namespace: "team-a", Subject: "caller", Issuer: "https://idp"},
-				StepRef{Workflow: "deploy", Run: "run-1", Step: "push"})
+			vars := assumeVars("aws-prod", minted, "https://as.example.com", identity, ref)
 
 			matched, err := rules.allow[0].eval(t.Context(), vars)
 			if err != nil {
-				t.Fatalf("evaluating %q: %v", rule, err)
+				t.Fatalf("evaluating %q: %v", test.rule, err)
 			}
-			if !matched {
-				t.Errorf("%q did not match; the two spellings are not the same value", rule)
+			if matched != test.want {
+				t.Errorf("%q = %v, want %v", test.rule, matched, test.want)
 			}
 		})
 	}
 }
 
-// TestASecretRuleTakesEitherSpelling covers the other surface that shares this
-// environment, because a vocabulary unified in one of the two is not unified.
-func TestASecretRuleTakesEitherSpelling(t *testing.T) {
+// TestIdentityCarriesTheSameFieldsAsEveryOtherSurface is the portability claim
+// stated as a test rather than as prose in a doc comment.
+//
+// netpolicy and taskpolicy both expose subject, issuer, namespace and claims. A
+// clause about the caller has to compile here too, or "one vocabulary" is a
+// slogan. `issuer` in particular is the field the first attempt could not
+// provide at all.
+func TestIdentityCarriesTheSameFieldsAsEveryOtherSurface(t *testing.T) {
 	t.Parallel()
 
 	for _, rule := range []string{
-		`identity.namespace == "team-a" && secret.scheme == "env"`,
-		`workload.namespace == "team-a" && secret.scheme == "env"`,
+		`identity.subject == "x"`,
+		`identity.issuer == "x"`,
+		`identity.namespace == "x"`,
+		`"repository" in identity.claims && identity.claims["repository"] == "x"`,
 	} {
-		if _, err := compileSecretRules([]string{rule}, nil, DefaultAssumeRuleCostLimit); err != nil {
+		if _, err := compileAssumeRules([]string{rule}, nil, DefaultAssumeRuleCostLimit); err != nil {
 			t.Errorf("compiling %q: %v", rule, err)
+		}
+		if _, err := compileSecretRules([]string{rule + ` && secret.scheme == "env"`}, nil, DefaultAssumeRuleCostLimit); err != nil {
+			t.Errorf("compiling %q against the secret surface: %v", rule, err)
 		}
 	}
 }
 
-// TestAnInventedSpellingIsStillRefused is the negative direction. Adding a name
-// must not turn the environment into one that accepts anything: a misspelled
-// attribute has to stay a startup error, which is what makes a policy file
-// trustworthy at all.
-func TestAnInventedSpellingIsStillRefused(t *testing.T) {
+// TestTheCallerHasNoRunContext is the negative direction, and it is what keeps
+// the two objects from drifting back together.
+//
+// A field that belongs to the minted assertion must not appear on the caller: if
+// `identity.workflow` compiled, the next person would reasonably write it, and
+// the same expression would then mean nothing on the surfaces this is supposed
+// to match.
+func TestTheCallerHasNoRunContext(t *testing.T) {
 	t.Parallel()
 
 	for _, rule := range []string{
-		`principal.namespace == "team-a"`,
+		`identity.workflow == "deploy"`,
+		`identity.run == "run-1"`,
+		`identity.step == "push"`,
+		`identity.deployment == "prod"`,
+		`identity.on_behalf_of == "x"`,
+		// And an invented name is still refused, because adding a variable must
+		// not turn a type-checked environment into one that accepts anything.
 		`identity.tenant == "team-a"`,
-		`workload.tenant == "team-a"`,
+		`principal.namespace == "team-a"`,
 	} {
 		if _, err := compileAssumeRules([]string{rule}, nil, DefaultAssumeRuleCostLimit); err == nil {
-			t.Errorf("compiling %q succeeded; an invented name must fail at startup", rule)
+			t.Errorf("compiling %q succeeded; the caller must not carry it", rule)
+		}
+	}
+}
+
+// TestTheWorkloadSpellingStillCompiles pins that no existing policy broke. The
+// minted-assertion object keeps every field it had, under the name it had.
+func TestTheWorkloadSpellingStillCompiles(t *testing.T) {
+	t.Parallel()
+
+	for _, rule := range []string{
+		`workload.subject == "x"`,
+		`workload.namespace == "team-a"`,
+		`workload.deployment == "prod"`,
+		`workload.workflow == "deploy"`,
+		`workload.run == "run-1"`,
+		`workload.step == "push"`,
+		`workload.on_behalf_of == "spiffe://acme/ci-runner"`,
+		`workload.on_behalf_of_issuer == "https://idp"`,
+		`"repository" in workload.claims`,
+	} {
+		if _, err := compileAssumeRules([]string{rule}, nil, DefaultAssumeRuleCostLimit); err != nil {
+			t.Errorf("compiling %q: %v", rule, err)
 		}
 	}
 }
