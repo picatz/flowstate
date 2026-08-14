@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -51,17 +54,34 @@ func TestAPipedRunStillWritesTheTranscript(t *testing.T) {
 	response := runForOutput(t)
 	require.NoError(t, writeRun(surface, FormatText, response))
 
-	// Compared against what marshalJSON produces rather than against a literal,
-	// and that is not fussiness. protojson deliberately randomizes its
-	// whitespace, seeded per binary, so `{"stepValues":{` and `{"stepValues": {`
-	// are both legal output from the same code on different builds — a literal
-	// prefix here would pass all day and fail on somebody's rebuild. Marshalling
-	// the same document the same way asks the real question, which is whether
-	// stdout still carries the transcript a jq expression addresses.
-	want, err := marshalJSON(response.GetOutputs(), false)
-	require.NoError(t, err)
-	require.Equal(t, string(want)+"\n", out.String(),
-		"a pipe reads stdout, and every documented `flow run local … | jq` omits -o json")
+	// Decoded and inspected by field name, which is the only form of this
+	// assertion that holds the contract.
+	//
+	// Two weaker versions were tried first and both are recorded here because
+	// each fails in an instructive way. A literal prefix asserts the encoder's
+	// whitespace, which is not the contract — though the claim that protojson's
+	// per-binary randomization could flake it was simply wrong: detrand injects
+	// after a comma in compact output, never after the opening brace, so that
+	// prefix was in fact stable. And comparing against marshalJSON's own output
+	// is worse still, because the expectation then comes from the same helper
+	// that produced the actual: setting UseProtoNames would rename every field
+	// to step_values and the test would stay green while `| jq
+	// .stepValues.hello.namedValues`, which this command's help documents, broke
+	// completely. That path is the whole reason this test exists.
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &document),
+		"stdout must be one JSON document a program can read: %q", out.String())
+
+	require.Contains(t, document, "runOutputs")
+
+	steps, ok := document["stepValues"].(map[string]any)
+	require.True(t, ok, "`jq .stepValues` is in this command's help; got %v", slices.Sorted(maps.Keys(document)))
+
+	hello, ok := steps["hello"].(map[string]any)
+	require.True(t, ok, "the step's own entry, addressed by id")
+
+	require.Contains(t, hello, "namedValues",
+		"`jq .stepValues.hello.namedValues` is the exact path the help documents")
 }
 
 func TestATerminalRunWritesNothingToStdout(t *testing.T) {
