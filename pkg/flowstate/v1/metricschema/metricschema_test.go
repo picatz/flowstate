@@ -388,6 +388,29 @@ func TestEveryMetricRecordingSiteGoesThroughTheSchema(t *testing.T) {
 			case ".git", "node_modules", "testdata":
 				return filepath.SkipDir
 			}
+
+			// A worktree is another checkout of this repository that happens to
+			// live inside it, so walking into one reports every recording site
+			// twice — once as itself and once as a copy nobody can edit from
+			// here. That is not hypothetical: agents working on this repository
+			// are told to use worktrees, they land under .claude/worktrees/, and
+			// a stale one fails this test on `main` for a reason that has
+			// nothing to do with the tree under review. CI never has them, so
+			// the failure appears only on the machine of whoever is doing the
+			// work.
+			//
+			// The exact relative path, not the `.claude` parent. .gitignore
+			// treats only .claude/worktrees/ as scratch and tracks everything
+			// else under .claude — the commands, skills and hooks — so pruning
+			// the parent would hide a real bypass in checked-in code, which is
+			// the one thing this walk exists to find. Skipping a whole directory
+			// to avoid a nuisance is how a guard quietly stops guarding.
+			if rel, err := filepath.Rel(root, path); err == nil {
+				if filepath.ToSlash(rel) == ".claude/worktrees" {
+					return filepath.SkipDir
+				}
+			}
+
 			return nil
 		}
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
