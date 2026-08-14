@@ -138,8 +138,6 @@ flow cancel flowstate-workflow-3f7c -o json | jq -r '.workflowId, .result'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--run-id <string>` | `string` | — | — | pin the request to one run of the workload; unset addresses whichever run is current |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -287,8 +285,6 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | ask about one attempt of the workload; unset asks about whichever is current |
@@ -500,8 +496,6 @@ flow list --all --filter 'name == "nightly-etl"'
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` (the workflow's own declared name, empty for a run older than this field); for example status == "FAILED" |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
@@ -583,9 +577,7 @@ flow mcp --plugin-dir ./plugins
 | `--as-issuer <string>` | `string` | `flowstate:local` | — | authenticated issuer to rehearse policy as (local runs only) |
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize local runs served to an agent |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
@@ -691,8 +683,6 @@ flow validate examples/hello-world/workflow.yaml
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
@@ -839,9 +829,7 @@ flow schedule create report.yaml --name report-us --input region=us-east-1
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
 | `--backfill <string,...>` | `stringSlice` | — | — | a missed window to recover at creation, START..END in RFC3339, repeatable up to 10 times and 31 days in total. Temporal evaluates the cadence after START and up to END, so write START a moment before the first firing you want back |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--input <string,...>` | `stringArray` | — | — | an argument this run is started with, as name=value (repeatable). The workflow's `inputs:` declaration decides how the value is read: an int is parsed as a number, a bool as true/false, and a list or struct as JSON |
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `--name <string>` | `string` | — | — | what to call the schedule; unset takes the workflow's own name, which is what one cadence per workflow wants |
@@ -876,8 +864,6 @@ flow schedule delete nightly-report -o json | jq -r '.scheduleName, .result'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -904,8 +890,6 @@ flow schedule describe nightly-report -o json | jq -r '.recentRuns[].workflowId'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -935,8 +919,6 @@ flow schedule list -o json | jq -r '.schedules[] | select(.paused) | .name'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -967,8 +949,6 @@ flow schedule pause nightly-report --note "INC-4471" -o json | jq -r .scheduleNa
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--note <string>` | `string` | — | — | recorded on the schedule and shown by list and describe; a paused schedule found by somebody else has no explanation attached unless this is written |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -999,8 +979,6 @@ flow schedule resume nightly-report -o json | jq -r '.scheduleName, .result'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--note <string>` | `string` | — | — | replaces the message on the schedule, which is usually still the reason it was paused |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
@@ -1034,8 +1012,6 @@ flow schedule describe nightly-report -o json | jq -r '.recentRuns[0].workflowId
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, and neither means anonymous |
 
@@ -1212,8 +1188,6 @@ flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--data <string>` | `string` | — | — | signal payload as a JSON object, whose keys become the waiting step's outputs, e.g. --data '{"approved": true}' |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--run-id <string>` | `string` | — | — | pin the signal to one run of the workload; unset addresses whichever run is current, which is what approving a workload means |
@@ -1369,8 +1343,6 @@ flow terminate flowstate-workflow-3f7c --reason "wedged" -o json | jq -r .result
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--reason <string>` | `string` | — | — | recorded on the terminated run; a terminated run leaves no account of itself, so this is the only explanation anyone will find |
 | `--run-id <string>` | `string` | — | — | pin the request to one run of the workload; unset addresses whichever run is current |
@@ -1502,8 +1474,6 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
-| `--audience <string>` | `string` | — | — | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
-| `--credential-source <string>` | `string` | — | — | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
