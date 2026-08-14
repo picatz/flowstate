@@ -10,9 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -100,6 +102,30 @@ func telemetryConfigured() bool {
 		os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") != ""
 }
 
+// instanceID is service.instance.id: which copy of flowstate this is, stable
+// for as long as the process lives and distinct from every other copy.
+//
+// Stability within the process is the whole requirement, and it is why this is
+// a [sync.OnceValues] rather than a call per resource. A process builds more than
+// one provider — traces, metrics and logs each take a resource — and an id that
+// differed between them would split one process into three services in the
+// backend, which is worse than having no instance id at all.
+//
+// It is random rather than derived from the hostname or the pid. A pid is
+// reused, a hostname is shared by every process on the machine, and in a
+// Deployment two pods restarting can present the same name; a restarted process
+// is a new instance and should say so.
+//
+// Randomness can fail, and this returns the error rather than panicking on it.
+// [uuid.NewString] is `Must(NewRandom())`, so a container whose entropy source
+// is unavailable would take down the command from inside a resource builder —
+// past [telemetryResource]'s error return, past the client path that warns and
+// continues without telemetry. Telemetry describes the work; it must never be
+// the reason the work does not happen. [telemetryResource] therefore drops the
+// attribute and warns, which is the same thing it already does for a detector
+// that comes back partial.
+var instanceID = sync.OnceValues(uuid.NewRandom)
+
 // telemetryResource describes what is emitting, so a collector can group by it.
 //
 // Order is the whole content of this function. Detectors merge left to right
@@ -117,13 +143,55 @@ func telemetryConfigured() bool {
 // it did detect, and a malformed OTEL_RESOURCE_ATTRIBUTES entry should cost the
 // attribute rather than the command. Anything else is a real misconfiguration
 // and is returned.
+//
+// # Which process, on which machine
+//
+// service.name and service.version say what this is. They do not say which
+// copy of it, and until they do, two workers in one Kubernetes Deployment are
+// one blurred worker in every signal: a latency spike on one pod averages into
+// the other, and a restart looks like a dip rather than a restart. So the host,
+// the container and a per-process instance id are detected here rather than
+// left to an operator to wire through the downward API. A deployment still
+// decides its own values — OTEL_RESOURCE_ATTRIBUTES is read last and wins —
+// but it should not have to supply the obvious ones to be legible.
+//
+// # Why the process detectors are named one by one
+//
+// [resource.WithProcess] is the convenient bundle and it is the wrong call
+// here, because it includes process.command_args. This binary is routinely
+// invoked as `flow run --input token=…`, so that attribute can hold a
+// credential, and a resource attribute is attached to *every* span, metric and
+// log this process emits — the widest possible blast radius for a value that is
+// not supposed to be in the clear anywhere. Naming the detectors individually
+// costs four lines and keeps the argument vector out of telemetry by
+// construction rather than by hoping nobody passes a secret that way.
+//
+// process.executable.path is left out for the same reason at lower stakes: a
+// path can carry a username or a deployment's directory layout, and the
+// executable's name already answers the question anyone is asking.
 func telemetryResource(ctx context.Context) (*resource.Resource, error) {
+	attrs := []attribute.KeyValue{
+		semconv.ServiceName("flowstate"),
+		semconv.ServiceVersion(version),
+	}
+
+	// An instance id this process could not generate is one attribute fewer, not
+	// a command that fails to run. See [instanceID] for why it can fail at all.
+	if id, err := instanceID(); err != nil {
+		log.Printf("WARNING: telemetry cannot identify this instance, so signals from it will not be distinguishable from another copy's: %v", err)
+	} else {
+		attrs = append(attrs, semconv.ServiceInstanceID(id.String()))
+	}
+
 	res, err := resource.New(ctx,
 		resource.WithTelemetrySDK(),
-		resource.WithAttributes(
-			semconv.ServiceName("flowstate"),
-			semconv.ServiceVersion(version),
-		),
+		resource.WithHost(),
+		resource.WithContainer(),
+		resource.WithProcessPID(),
+		resource.WithProcessExecutableName(),
+		resource.WithProcessRuntimeName(),
+		resource.WithProcessRuntimeVersion(),
+		resource.WithAttributes(attrs...),
 		resource.WithFromEnv(),
 	)
 	if err != nil {
