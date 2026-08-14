@@ -31,6 +31,21 @@ const (
 // verification, as required by RFC 7518 section 3.3.
 const minRSAKeyBits = 2048
 
+// maxRSAKeyBits is the largest, and it exists because a floor alone bounds the
+// wrong end of the range.
+//
+// RSA verification is superlinear in the modulus, so an absurdly large key
+// turns one unauthenticated Verify into arbitrary CPU: a 360,000-bit key
+// measured 2.53 seconds against 53 microseconds for a normal one, roughly fifty
+// thousand times the work, for a request that has proven nothing yet.
+//
+// 8192 rather than something tighter because it is comfortably above every key
+// anyone deploys -- 4096 is already unusual -- while leaving the quadratic term
+// nowhere to go. This bounds the resource the far side actually controls, which
+// is the size of the modulus in a key set we fetched, not the number of
+// requests.
+const maxRSAKeyBits = 8192
+
 // discoveryPath is appended to an issuer to find its OpenID Provider Metadata.
 const discoveryPath = "/.well-known/openid-configuration"
 
@@ -102,7 +117,11 @@ func (p publicKey) suitableFor(alg jwa.Algorithm) bool {
 	switch alg {
 	case jwa.RS256, jwa.RS384, jwa.RS512, jwa.PS256, jwa.PS384, jwa.PS512:
 		key, ok := p.key.(*rsa.PublicKey)
-		return ok && key.N.BitLen() >= minRSAKeyBits
+		if !ok {
+			return false
+		}
+		bits := key.N.BitLen()
+		return bits >= minRSAKeyBits && bits <= maxRSAKeyBits
 	case jwa.ES256:
 		key, ok := p.key.(*ecdsa.PublicKey)
 		return ok && key.Curve == elliptic.P256()
@@ -450,8 +469,8 @@ func parseJWK(value jwk.Value) (crypto.PublicKey, error) {
 		if err != nil {
 			return nil, err
 		}
-		if key.N.BitLen() < minRSAKeyBits {
-			return nil, fmt.Errorf("RSA key is %d bits, want at least %d", key.N.BitLen(), minRSAKeyBits)
+		if bits := key.N.BitLen(); bits < minRSAKeyBits || bits > maxRSAKeyBits {
+			return nil, fmt.Errorf("RSA key is %d bits, want between %d and %d", bits, minRSAKeyBits, maxRSAKeyBits)
 		}
 		return key, nil
 	case "EC":

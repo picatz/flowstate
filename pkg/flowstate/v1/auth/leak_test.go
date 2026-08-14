@@ -83,6 +83,20 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 	key, err := auth.GenerateSigningKey("leak-test", jwa.ES256)
 	require.NoError(t, err)
 
+	// An exchanger configured with a client secret. This one was missed for as
+	// long as this file claimed to cover "every secret-bearing value this
+	// package produces": the secret was held in a plain string field, so every
+	// verb printed it in full through the pointer NewClientCredentialsExchanger
+	// returns. A test whose stated scope is wider than its actual reach is worse
+	// than a narrower one, because it is believed.
+	secretExchanger, err := auth.NewClientCredentialsExchanger(auth.ClientCredentialsConfig{
+		TokenURL:     party.url + "/token",
+		ClientID:     "leak-test-client",
+		ClientSecret: "SUPERSECRET-CLIENT-SECRET",
+		Clock:        clock.Now,
+	})
+	require.NoError(t, err)
+
 	// An AWS credential carries three named values rather than one, so a leak
 	// through any of them is covered too.
 	aws, err := auth.NewCredential(auth.CredentialAWSSession, referenceTime.Add(time.Hour), map[string]string{
@@ -99,6 +113,7 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		"ASIA-SUPERSECRET-KEY-ID",
 		"SUPERSECRET-SECRET-ACCESS-KEY",
 		"SUPERSECRET-SESSION-TOKEN",
+		"SUPERSECRET-CLIENT-SECRET",
 	}
 
 	holder := secretHolder{credential: credential, assertion: assertion, key: key}
@@ -116,9 +131,20 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		"key %v":         func() string { return fmt.Sprintf("%v", key) },
 		"key %+v":        func() string { return fmt.Sprintf("%+v", key) },
 		"key %#v":        func() string { return fmt.Sprintf("%#v", key) },
-		"aws %v":         func() string { return fmt.Sprintf("%v", aws) },
-		"aws %+v":        func() string { return fmt.Sprintf("%+v", aws) },
-		"aws %#v":        func() string { return fmt.Sprintf("%#v", aws) },
+		"exchanger %v":   func() string { return fmt.Sprintf("%v", secretExchanger) },
+		"exchanger %+v":  func() string { return fmt.Sprintf("%+v", secretExchanger) },
+		"exchanger %#v":  func() string { return fmt.Sprintf("%#v", secretExchanger) },
+		"exchanger %s":   func() string { return fmt.Sprintf("%s", secretExchanger) },
+		"exchanger in a slice %v": func() string {
+			return fmt.Sprintf("%v", []auth.Exchanger{secretExchanger})
+		},
+		"exchanger in a map %v": func() string {
+			return fmt.Sprintf("%v", map[string]auth.Exchanger{"a": secretExchanger})
+		},
+
+		"aws %v":  func() string { return fmt.Sprintf("%v", aws) },
+		"aws %+v": func() string { return fmt.Sprintf("%+v", aws) },
+		"aws %#v": func() string { return fmt.Sprintf("%#v", aws) },
 
 		// Through unexported fields, where fmt cannot call String.
 		// %s on a struct with no String method is a vet error, so that vector is
