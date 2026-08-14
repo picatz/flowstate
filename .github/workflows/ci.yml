@@ -299,7 +299,7 @@ jobs:
       # library vendored into the newer toolchain's module cache — not a finding
       # about this tree at all.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+        run: GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 
   # The one job with a real identity provider on the other end. Everything in
   # pkg/flowstate/v1/auth verifies tokens from an in-process stand-in issuer,
