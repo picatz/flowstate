@@ -70,13 +70,26 @@ var switchCorpusTable = map[string]switchCorpusEntry{
 	// Pinned already by TestWebhookRoutingDomainStaysOpen
 	// (validate_switch_domain_internal_test.go, #590) — restated here rather
 	// than duplicated, so the corpus table has one entry per shipped switch.
-	// Open because the discriminant is `${inputs.action}`, a bare read of a
-	// workflow input: switchDomain only mines `${steps.<id>.<name>}`
-	// discriminants, and even if it read an input's declared type, `action`
-	// is declared `type: string` with no closed set — this is exactly the
-	// gap enum-typed inputs (#332) will close.
-	"webhook-routing/on_event": open("the discriminant is a bare `${inputs.action}` read, a provider-owned " +
-		"open string with no closed set until enum-typed inputs (#332) land"),
+	//
+	// Open, and correctly so. This entry used to say enum-typed inputs (#332)
+	// would close it, and that was wrong in a way worth recording rather than
+	// quietly deleting: `action` is a webhook provider's field, and the
+	// example's own prose says so — "the provider can add an action type
+	// tomorrow, and no validator on this machine can know the set — which is
+	// exactly where `default:` earns its slot."
+	//
+	// Declaring it `type: enum` would not improve a diagnostic, it would
+	// change runtime behaviour: a delivery carrying a novel action would be
+	// refused at BindRunInputs instead of landing in `default:` and being
+	// recorded, which is the drift detector this example exists to teach. An
+	// open set the far side owns is a string, and `default:` is how a file
+	// handles it.
+	//
+	// The closed-domain-from-an-input pin belongs to an example whose set the
+	// *author* owns — the `must: 'this in [...]'` sites are the candidates.
+	"webhook-routing/on_event": open("the discriminant is `${inputs.action}`, a set the webhook provider " +
+		"owns rather than this file; correctly declared `type: string`, with `default:` handling what it " +
+		"has not learned"),
 }
 
 // switchCorpusEntry is one table row: a switch's domain, if closed, and why
