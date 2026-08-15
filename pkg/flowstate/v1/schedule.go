@@ -126,8 +126,16 @@ const (
 // CheckScheduleBackfillForTrigger also bounds the work produced by the ranges.
 // A span alone is not a work bound: at the minimum one-second cadence the span
 // above contains millions of firing times. The estimate is deliberately an upper
-// bound. Five-field cron cannot fire more than once a minute; calendars and cron
-// forms carrying seconds may fire once a second.
+// bound. Five- and six-field cron cannot fire more than once a minute; calendars
+// and the seven-field form carrying seconds may fire once a second.
+//
+// Every cadence the trigger carries is charged its *own* firing count rather
+// than the whole trigger being charged the fastest cadence once per entry.
+// Those are not the same number and only one of them is the real ceiling: a
+// trigger with `every: 1s` alongside a `@daily` cron fires 86,401 times a day,
+// not twice the faster of the two. Charging the fastest one to all of them
+// refuses schedules whose actual fan-out is nowhere near the limit, which is
+// the other way a bound can be wrong.
 func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*ScheduleBackfill) error {
 	if err := CheckScheduleBackfill(backfills); err != nil {
 		return err
@@ -136,45 +144,114 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		return nil
 	}
 
-	minimum := time.Duration(0)
-	cadences := 0
-	consider := func(candidate time.Duration) {
-		if candidate > 0 && (minimum == 0 || candidate < minimum) {
-			minimum = candidate
-		}
-	}
+	var cadences []time.Duration
 	if every := trigger.GetEvery(); every != nil {
-		consider(every.AsDuration())
-		cadences++
+		if period := every.AsDuration(); period > 0 {
+			cadences = append(cadences, period)
+		}
 	}
 	for _, expression := range trigger.GetCron() {
-		cadences++
-		if len(strings.Fields(expression)) == 5 {
-			consider(time.Minute)
-		} else {
-			consider(time.Second)
-		}
+		cadences = append(cadences, cronMinimumPeriod(expression))
 	}
-	if len(trigger.GetCalendars()) > 0 {
-		consider(time.Second)
-		cadences += len(trigger.GetCalendars())
+	for range trigger.GetCalendars() {
+		// A calendar carries a seconds field, so its fastest legal cadence is
+		// one firing a second.
+		cadences = append(cadences, time.Second)
 	}
-	if minimum == 0 {
+	if len(cadences) == 0 {
 		return fmt.Errorf("a backfill needs a schedule cadence whose firing count can be bounded")
 	}
 
-	remaining := MaxScheduleBackfillFirings
+	remaining := int64(MaxScheduleBackfillFirings)
 	for i, b := range backfills {
 		span := b.GetEndAt().AsTime().Sub(b.GetStartAt().AsTime())
-		// Temporal's interval is (start, end], so division rounded down is the
-		// maximum number of evenly spaced firing times it can contain.
-		firings := int(span/minimum) * cadences
-		if firings > remaining {
-			return fmt.Errorf("the backfill can produce more than %d firings at this cadence; range %d would exceed the bounded recovery limit", MaxScheduleBackfillFirings, i+1)
+
+		var firings int64
+		for _, period := range cadences {
+			// Temporal's interval is (start, end], which holds one more evenly
+			// spaced firing than the floor of its length when the range is
+			// aligned that way: an aligned 300001s range at a 3s cadence holds
+			// 100,001 firings, and rounding down would have called it 100,000
+			// and let it past the ceiling. Round up, so what is compared
+			// against the limit is a number the range can never exceed.
+			firings += int64(span+period-1) / int64(period)
+			if firings > remaining {
+				return fmt.Errorf("the backfill can produce more than %d firings at this cadence; "+
+					"range %d would exceed the bounded recovery limit", MaxScheduleBackfillFirings, i+1)
+			}
 		}
 		remaining -= firings
 	}
 	return nil
+}
+
+// cronMinimumPeriod reports the shortest interval an expression accepted by
+// [CheckCronExpression] can fire at, for use as the denominator of a firing
+// count that must never come out too low.
+//
+// It reads the grammar that function reads, in the same order — comment, zone
+// prefix, shorthand, field count — because classifying the raw string instead
+// gets every accepted form but the bare five-field one wrong. `@daily` and
+// `CRON_TZ=UTC 0 9 * * *` are not five whitespace-separated fields, and calling
+// them one-second cadences estimates a two-day backfill of `@daily` at 172,800
+// firings and refuses it, when it produces two.
+//
+// Anything it cannot classify is charged the fastest cadence there is. That is
+// the fail-closed direction here: an over-estimate refuses a backfill somebody
+// then writes more narrowly, where an under-estimate is the fan-out this whole
+// check exists to stop.
+func cronMinimumPeriod(expression string) time.Duration {
+	if comment := strings.Index(expression, "#"); comment >= 0 {
+		expression = expression[:comment]
+	}
+	expression = strings.TrimSpace(expression)
+
+	if zone, rest, found := strings.Cut(expression, " "); found {
+		if strings.HasPrefix(zone, "CRON_TZ=") || strings.HasPrefix(zone, "TZ=") {
+			expression = strings.TrimSpace(rest)
+		}
+	}
+
+	if strings.HasPrefix(expression, "@") {
+		head, rest, _ := strings.Cut(expression, " ")
+		if strings.EqualFold(head, "@every") {
+			// `@every` carries its own interval, and the same reading
+			// CheckCronExpression leaves to the cluster is the one charged
+			// here; an interval it cannot read is charged a second.
+			if period, err := time.ParseDuration(strings.TrimSpace(rest)); err == nil && period > 0 {
+				return period
+			}
+			return time.Second
+		}
+		// The fixed shorthands, each charged the shortest period it can mean:
+		// a month is charged 28 days and a year 365, because a lower bound on
+		// the period is an upper bound on the firings.
+		switch strings.ToLower(head) {
+		case "@hourly":
+			return time.Hour
+		case "@daily", "@midnight":
+			return 24 * time.Hour
+		case "@weekly":
+			return 7 * 24 * time.Hour
+		case "@monthly":
+			return 28 * 24 * time.Hour
+		case "@yearly", "@annually":
+			return 365 * 24 * time.Hour
+		default:
+			return time.Second
+		}
+	}
+
+	switch len(strings.Fields(expression)) {
+	case 5, 6:
+		// Minute-resolution: the five ordinary fields, and the same five with a
+		// year appended.
+		return time.Minute
+	default:
+		// Seven fields put seconds first. Anything else is not an expression
+		// CheckCronExpression accepts, and is charged the fastest cadence.
+		return time.Second
+	}
 }
 
 // CheckScheduleBackfill bounds an operator-requested historical replay before

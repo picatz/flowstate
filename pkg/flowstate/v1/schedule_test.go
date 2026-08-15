@@ -143,6 +143,60 @@ func TestScheduleBackfillIsBoundedByCadence(t *testing.T) {
 	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
 		&v1.ScheduleTrigger{Cron: []string{"0 9 * * *"}}, backfill(v1.MaxScheduleBackfillSpan)),
 		"ordinary minute-resolution cron keeps the existing 31-day recovery window")
+
+	// Rounding down is not the maximum count a half-open (start, end] range can
+	// hold: aligned, it holds one more. At a 3s cadence a 300001s range holds
+	// 100,001 firings, which the floor calls 100,000 and lets past the ceiling.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Every: durationpb.New(3 * time.Second)}, backfill(300001*time.Second)),
+		"more than 100000 firings")
+
+	// Every cron form CheckCronExpression accepts has to be classified the way
+	// that function reads it, not by counting whitespace-separated fields in the
+	// raw string. All of these fire far under the limit over the widest
+	// permitted window, and an estimator that reads them as one-second cadences
+	// refuses every one.
+	for _, expression := range []string{
+		"@daily",
+		"@midnight",
+		"@hourly",
+		"@weekly",
+		"@monthly",
+		"@yearly",
+		"@every 15m",
+		"CRON_TZ=UTC 0 9 * * *",
+		"TZ=UTC 0 9 * * *",
+		"0 9 * * * 2030", // Six fields: the ordinary five, plus a year.
+		"0 9 * * MON-FRI # weekday mornings",
+	} {
+		require.NoError(t, v1.CheckCronExpression(expression),
+			"premise: %q is an expression this repository accepts", expression)
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+			&v1.ScheduleTrigger{Cron: []string{expression}}, backfill(v1.MaxScheduleBackfillSpan)),
+			"cron %q fires well under the limit over the widest permitted window", expression)
+	}
+
+	// The seven-field form puts seconds first and so is charged a second, as is
+	// a calendar, which carries its own seconds field.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"* * * * * * 2030"}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"more than 100000 firings")
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{{}}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"more than 100000 firings")
+
+	// Each cadence is charged its own count. A daily cron beside a one-second
+	// interval fires 86,401 times a day; charging both the faster of the two
+	// would report 172,800 and refuse a backfill well inside the limit.
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Every: durationpb.New(time.Second), Cron: []string{"@daily"}},
+		backfill(24*time.Hour)),
+		"a day of one-second firings plus one daily firing is inside the limit")
+
+	// A trigger with no cadence at all cannot have its firing count bounded, and
+	// is refused rather than passed through unbounded.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(&v1.ScheduleTrigger{}, backfill(time.Hour)),
+		"needs a schedule cadence")
 }
 
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
