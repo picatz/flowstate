@@ -588,7 +588,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	publicAddr := cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress)
-	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.allowPlaintext); err != nil {
+	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.tlsTerminatedUpstream); err != nil {
 		return err
 	}
 

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -165,10 +166,10 @@ func TestRefusePlaintextListenerAllowsNonLoopbackWithTLS(t *testing.T) {
 }
 
 // TestRefusePlaintextListenerAllowsNonLoopbackWithExplicitOptIn pins the
-// second escape hatch: --insecure-allow-plaintext-listener, said out loud,
-// same as TLS. Without either, the same address is still refused — this is
-// the negative half that makes the positive case mean something, since a
-// flag that always let everything through would not be an opt-in at all.
+// second escape hatch: --tls-terminated-upstream, said out loud, same as
+// TLS. Without either, the same address is still refused — this is the
+// negative half that makes the positive case mean something, since a flag
+// that always let everything through would not be an opt-in at all.
 func TestRefusePlaintextListenerAllowsNonLoopbackWithExplicitOptIn(t *testing.T) {
 	t.Parallel()
 
@@ -177,5 +178,29 @@ func TestRefusePlaintextListenerAllowsNonLoopbackWithExplicitOptIn(t *testing.T)
 	require.Error(t, refusePlaintextListener(addr, nil, false),
 		"without the flag, plaintext on a non-loopback address must still be refused")
 	require.NoError(t, refusePlaintextListener(addr, nil, true),
-		"with --insecure-allow-plaintext-listener, the same address must be allowed")
+		"with --tls-terminated-upstream, the same address must be allowed")
+}
+
+// TestTLSTerminatedUpstreamFlagIsOffByDefaultAndReadsItsEnvVar pins the
+// wiring, not just the function refusePlaintextListener already covers
+// above: the flag [addTLSFlags] registers is named --tls-terminated-upstream
+// (not --insecure-allow-plaintext-listener, an earlier name this flag no
+// longer carries because it is not always the insecure choice — see the
+// comment on [addTLSFlags]), defaults to false with nothing set, and reads
+// FLOWSTATE_TLS_TERMINATED_UPSTREAM the same way every other TLS flag reads
+// its own FLOWSTATE_TLS_* variable.
+func TestTLSTerminatedUpstreamFlagIsOffByDefaultAndReadsItsEnvVar(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids it.
+
+	t.Setenv("FLOWSTATE_TLS_TERMINATED_UPSTREAM", "")
+	cmd := &cobra.Command{}
+	addTLSFlags(cmd)
+	require.False(t, tlsFlagsOf(cmd).tlsTerminatedUpstream,
+		"the flag must default to off with nothing set, same as every other fail-closed refusal")
+
+	t.Setenv("FLOWSTATE_TLS_TERMINATED_UPSTREAM", "1")
+	cmd = &cobra.Command{}
+	addTLSFlags(cmd)
+	require.True(t, tlsFlagsOf(cmd).tlsTerminatedUpstream,
+		"FLOWSTATE_TLS_TERMINATED_UPSTREAM must be honored the same way FLOWSTATE_TLS_CERT_FILE is")
 }

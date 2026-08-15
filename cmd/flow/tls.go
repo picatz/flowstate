@@ -40,33 +40,54 @@ func addTLSFlags(cmd *cobra.Command) {
 	cmd.Flags().String("tls-min-version", cmp.Or(os.Getenv("FLOWSTATE_TLS_MIN_VERSION"), "1.2"),
 		`minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3"`)
 
-	// The one way around refusePlaintextListener, and it works the same way
-	// --insecure-no-auth does: off by default, and only on because an operator
-	// said so, never because a deployment forgot to configure a certificate.
+	// The one way around refusePlaintextListener that is not a certificate: off
+	// by default, and only on because an operator said so — the same shape as
+	// --insecure-no-auth, but deliberately not named "insecure", because its
+	// two legitimate callers are not the same claim.
 	//
-	// It exists for a shape refusePlaintextListener cannot see: a process that
-	// binds a non-loopback address only because something *else* enforces the
-	// boundary it would otherwise be enforcing itself — a container publishing
-	// its port to 127.0.0.1 alone, where 0.0.0.0 inside the container is not
-	// "reachable past this machine" the way it would be on bare metal, it is the
-	// only address Docker's NAT can deliver a published port to. See
-	// examples/observability/docker-compose.yaml, which sets this alongside
-	// --insecure-no-auth for the identical reason and says so in its own
-	// comments.
-	cmd.Flags().Bool("insecure-allow-plaintext-listener",
-		os.Getenv("FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER") != "",
+	// One caller really is shipping plaintext nowhere safe (there is no such
+	// caller this flag should serve — see the refusal's own message for what
+	// to do instead: a certificate, or loopback). The other is a process bound
+	// to a non-loopback address only because something *in front of it*
+	// terminates TLS or otherwise bounds who can reach that address — an
+	// Ingress or reverse proxy that speaks plaintext to the backend it
+	// forwards to (the ordinary shape for nginx-ingress, an ALB target group,
+	// Cloud Run and fly.io's edges), or a container that must bind 0.0.0.0 for
+	// Docker's published-port NAT to reach it at all, where 0.0.0.0 is not
+	// "reachable past this machine" the way it would be on bare metal because
+	// the publish binding (127.0.0.1) is the real boundary. See
+	// docs/DEPLOYMENT.md's Kubernetes and Cloud Run/fly.io sections and
+	// examples/observability/docker-compose.yaml, which sets this for the
+	// second reason and says so in its own comments.
+	//
+	// The flag cannot tell those two cases apart — it is a bool, and the second
+	// one is a fact about the network this process cannot observe — so the
+	// help text below is the whole of how an operator is asked to tell them
+	// apart before setting it, and [refusePlaintextListener]'s error message
+	// repeats the same question for whoever hits the refusal first.
+	cmd.Flags().Bool("tls-terminated-upstream",
+		os.Getenv("FLOWSTATE_TLS_TERMINATED_UPSTREAM") != "",
 		"allow the public listener to serve plain HTTP on a non-loopback address with no "+
-			"certificate configured (overrides FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER); "+
-			"for a deployment whose reachability is already bounded another way. Never a fallback "+
-			"for a missing certificate — say it out loud, the way --insecure-no-auth is said out loud")
+			"certificate configured (overrides FLOWSTATE_TLS_TERMINATED_UPSTREAM). Set this "+
+			"when, and only when, something in front of this process already terminates TLS or "+
+			"otherwise bounds who can reach this address — a reverse proxy, a Kubernetes Ingress, "+
+			"a load balancer, a container's published-port binding — so the plaintext this "+
+			"process serves never actually reaches an open network. Do NOT set it to ship "+
+			"plaintext to the internet: if nothing in front of this process terminates TLS, "+
+			"configure --tls-cert-file/--tls-key-file instead, or bind loopback for local "+
+			"development")
 }
 
 // tlsFlags is what an operator asked for, read once before anything binds.
 type tlsFlags struct {
-	certFile       string
-	keyFile        string
-	minVersion     string
-	allowPlaintext bool
+	certFile   string
+	keyFile    string
+	minVersion string
+
+	// tlsTerminatedUpstream is --tls-terminated-upstream: an assertion that
+	// something in front of this process, not this process, is the reason
+	// binding a non-loopback address without a certificate here is still safe.
+	tlsTerminatedUpstream bool
 }
 
 // tlsFlagsOf reads them off the command being run.
@@ -74,13 +95,13 @@ func tlsFlagsOf(cmd *cobra.Command) tlsFlags {
 	certFile, _ := cmd.Flags().GetString("tls-cert-file")
 	keyFile, _ := cmd.Flags().GetString("tls-key-file")
 	minVersion, _ := cmd.Flags().GetString("tls-min-version")
-	allowPlaintext, _ := cmd.Flags().GetBool("insecure-allow-plaintext-listener")
+	tlsTerminatedUpstream, _ := cmd.Flags().GetBool("tls-terminated-upstream")
 
 	return tlsFlags{
-		certFile:       certFile,
-		keyFile:        keyFile,
-		minVersion:     minVersion,
-		allowPlaintext: allowPlaintext,
+		certFile:              certFile,
+		keyFile:               keyFile,
+		minVersion:            minVersion,
+		tlsTerminatedUpstream: tlsTerminatedUpstream,
 	}
 }
 
@@ -148,29 +169,35 @@ func tlsMinVersion(v string) (uint16, error) {
 // reimplemented so the two sides cannot drift into disagreeing about what
 // counts as "this machine".
 //
-// allowPlaintext is --insecure-allow-plaintext-listener, said out loud: the
-// one way this refusal does not apply. It exists for a deployment where
-// "reaches past this machine" is not actually true of addr even though
-// [isLoopbackAddress] cannot tell — a container that must bind 0.0.0.0 for
-// Docker's published-port NAT to reach it at all, where the real boundary is
-// enforced by publishing that port to 127.0.0.1 alone. Off by default, same
-// as every other fail-closed refusal in this command.
-func refusePlaintextListener(addr string, tlsConfig *tls.Config, allowPlaintext bool) error {
+// tlsTerminatedUpstream is --tls-terminated-upstream, said out loud: the one
+// way this refusal does not apply besides a certificate. It exists for a
+// deployment where "reaches past this machine" is not actually true of addr
+// even though [isLoopbackAddress] cannot tell — an Ingress or reverse proxy
+// that terminates TLS and forwards plaintext to this process, or a container
+// that must bind 0.0.0.0 for Docker's published-port NAT to reach it at all,
+// where the real boundary is enforced by publishing that port to 127.0.0.1
+// alone. Off by default, same as every other fail-closed refusal in this
+// command — and see [addTLSFlags]'s comment on the flag for why it is not
+// named "insecure": that word fits only the caller this flag must refuse to
+// help, not the one it exists for.
+func refusePlaintextListener(addr string, tlsConfig *tls.Config, tlsTerminatedUpstream bool) error {
 	if tlsConfig != nil {
 		return nil
 	}
 	if isLoopbackAddress(addr) {
 		return nil
 	}
-	if allowPlaintext {
+	if tlsTerminatedUpstream {
 		return nil
 	}
 
 	return fmt.Errorf("refusing to listen on %s over plain HTTP: this address reaches past this "+
 		"machine, and cmd/flow/credentials.go already refuses to send a bearer token to a "+
-		"plaintext address that is not loopback — the server takes the same position now. "+
-		"Configure --tls-cert-file and --tls-key-file (or FLOWSTATE_TLS_CERT_FILE and "+
-		"FLOWSTATE_TLS_KEY_FILE); bind loopback for local development; or, only when this "+
-		"address's real reachability is already bounded another way, say so with "+
-		"--insecure-allow-plaintext-listener (or FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER)", addr)
+		"plaintext address that is not loopback — the server takes the same position now. Three "+
+		"ways forward: configure --tls-cert-file and --tls-key-file (or FLOWSTATE_TLS_CERT_FILE "+
+		"and FLOWSTATE_TLS_KEY_FILE) to terminate TLS here; bind loopback for local development; "+
+		"or, only when a reverse proxy, Ingress, load balancer or NAT boundary in front of this "+
+		"process already terminates TLS or bounds who can reach %s, say so with "+
+		"--tls-terminated-upstream (or FLOWSTATE_TLS_TERMINATED_UPSTREAM) — never as a substitute "+
+		"for one of the first two when nothing actually stands in front of this process", addr, addr)
 }

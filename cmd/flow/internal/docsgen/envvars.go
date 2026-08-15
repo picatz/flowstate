@@ -116,12 +116,6 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
 		},
 		{
-			name:    "FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER",
-			value:   "unset",
-			purpose: "Default for `--insecure-allow-plaintext-listener` on `flow server`: set (to anything) to permit the public listener to serve plain HTTP on a non-loopback address with no certificate configured. A refusal by default; only for a deployment whose reachability is already bounded another way, such as a container published to loopback alone.",
-			read:    "cmd/flow/tls.go",
-		},
-		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
 			value:   "false",
 			purpose: "Set to `true` to permit sending a bearer token over plain HTTP to somewhere that is not loopback. A refusal by default, because a token on the wire in the clear belongs to whatever is between here and there.",
@@ -300,6 +294,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_TLS_MIN_VERSION",
 			value:   "1.2",
 			purpose: "Default for `--tls-min-version` on `flow server`: the minimum TLS protocol version to accept, `1.2` or `1.3`. Nothing below 1.2 is offered.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_TERMINATED_UPSTREAM",
+			value:   "unset",
+			purpose: "Default for `--tls-terminated-upstream` on `flow server`: set (to anything) to permit the public listener to serve plain HTTP on a non-loopback address with no certificate configured. A refusal by default; set this only when something in front of this process — a reverse proxy, a Kubernetes Ingress, a load balancer, a container's published-port binding — already terminates TLS or bounds who can reach this address. Never a substitute for a certificate when nothing actually stands in front of this process.",
 			read:    "cmd/flow/tls.go",
 		},
 		{

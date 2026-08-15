@@ -74,16 +74,20 @@ services:
     # published port is loopback-only. The server says so in its own logs on
     # every start, which you will see in Grafana and in `docker compose logs`.
     #
-    # --insecure-allow-plaintext-listener: FLOWSTATE_ADDRESS above is 0.0.0.0,
-    # which cmd/flow/tls.go's refusePlaintextListener otherwise refuses to
-    # serve plaintext on — it reads as "reaches past this machine" the way it
-    # would on bare metal. Inside this container it does not: 0.0.0.0 is bound
-    # only because Docker's published-port NAT cannot deliver a packet to the
+    # --tls-terminated-upstream: FLOWSTATE_ADDRESS above is 0.0.0.0, which
+    # cmd/flow/tls.go's refusePlaintextListener otherwise refuses to serve
+    # plaintext on — it reads as "reaches past this machine" the way it would
+    # on bare metal. Inside this container it does not: 0.0.0.0 is bound only
+    # because Docker's published-port NAT cannot deliver a packet to the
     # container's own loopback interface, and the `ports:` line below is what
-    # actually bounds who can reach it — 127.0.0.1 on the host, same as
-    # --insecure-no-auth's justification above. Change that line to anything
-    # broader than 127.0.0.1 and both flags stop being true statements about
-    # this deployment; you now own what follows, same as --insecure-no-auth.
+    # actually bounds who can reach it — 127.0.0.1 on the host, the same
+    # boundary --insecure-no-auth's justification above relies on. This flag
+    # is not named "insecure": nothing terminates TLS in front of this
+    # container, but the published-port binding plays the same role a
+    # TLS-terminating proxy would — it is *why* plaintext this container
+    # serves never reaches anywhere but this host. Change the `ports:` line
+    # to anything broader than 127.0.0.1 and that stops being true, along
+    # with --insecure-no-auth's justification; you now own what follows.
     #
     # This is a runtime property, not a YAML one: `docker compose config -q`
     # (the check `make check` and CI run against this file) only parses the
@@ -102,7 +106,7 @@ services:
     # Arguments only: the image's ENTRYPOINT is already `flow`.
     command: [
       "server", "--address=temporal:7233",
-      "--insecure-no-auth", "--insecure-allow-plaintext-listener", "--verbose",
+      "--insecure-no-auth", "--tls-terminated-upstream", "--verbose",
     ]
     ports:
       - "127.0.0.1:9233:9233"
