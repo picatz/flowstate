@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,4 +204,24 @@ func TestTLSTerminatedUpstreamFlagIsOffByDefaultAndReadsItsEnvVar(t *testing.T) 
 	addTLSFlags(cmd)
 	require.True(t, tlsFlagsOf(cmd).tlsTerminatedUpstream,
 		"FLOWSTATE_TLS_TERMINATED_UPSTREAM must be honored the same way FLOWSTATE_TLS_CERT_FILE is")
+}
+
+// TestObservabilityDeploymentOptsIntoItsNonLoopbackPlaintextListener protects
+// the shipped deployment, rather than only the listener helper in isolation.
+// Docker Compose's config check validates YAML but cannot notice that this
+// command would be refused before binding its socket.
+func TestObservabilityDeploymentOptsIntoItsNonLoopbackPlaintextListener(t *testing.T) {
+	t.Parallel()
+
+	compose, err := os.ReadFile(filepath.Join("..", "..", "examples", "observability", "docker-compose.yaml"))
+	require.NoError(t, err)
+
+	const address = "FLOWSTATE_ADDRESS: 0.0.0.0:9233"
+	const optIn = `"--insecure-no-auth", "--tls-terminated-upstream", "--verbose"`
+	require.True(t, strings.Contains(string(compose), address),
+		"this regression check must follow the observability server's non-loopback address")
+	require.True(t, strings.Contains(string(compose), optIn),
+		"the observability server must explicitly opt into the Docker-published plaintext listener")
+	require.NoError(t, refusePlaintextListener("0.0.0.0:9233", nil, true),
+		"the deployment's address and explicit opt-in must pass the startup refusal")
 }
