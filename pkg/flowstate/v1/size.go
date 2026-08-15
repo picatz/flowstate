@@ -251,6 +251,25 @@ func CheckRunStateSize(st *RunState) error {
 		size, MaxRunStateBytes, proto.Size(st.GetWorkflow()))
 }
 
+// CheckRunResultSize reports whether a completed run's transcript is small
+// enough for Temporal to record as the workflow result.
+//
+// Completion needs its own check: a short run never reaches the
+// Continue-As-New check above, and repeated outputs can make its transcript
+// larger than the inputs from which they were computed. Letting Temporal find
+// that out would fail and retry the workflow task instead of closing the run.
+func CheckRunResultSize(outputs *Workflow_StepOutputs) error {
+	size := proto.Size(outputs)
+	if size <= MaxRunStateBytes {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"the completed run produced %d bytes of outputs, over the %d byte limit; "+
+			"write large results somewhere and return references to them instead",
+		size, MaxRunStateBytes)
+}
+
 // WorkerDeadlockDetectionTimeout is the workflow-task deadlock budget every
 // flowstate worker runs with, production and test alike.
 //

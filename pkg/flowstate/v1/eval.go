@@ -1124,6 +1124,9 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		return PartialTranscript(stepOutputs), err
 	}
 	stepOutputs.RunOutputs = outputs
+	if err := CheckRunResultSize(stepOutputs); err != nil {
+		return PartialTranscript(stepOutputs), err
+	}
 
 	return stepOutputs, nil
 }

@@ -481,6 +481,10 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: outputsErr.Error()}
 		}
 		stepOutputs.RunOutputs = runOutputs
+		if err := v1.CheckRunResultSize(stepOutputs); err != nil {
+			logger.Error("cannot complete run", "error", err.Error())
+			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: err.Error()}
+		}
 
 		return stepOutputs, nil
 
