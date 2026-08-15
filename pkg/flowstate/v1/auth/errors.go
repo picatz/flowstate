@@ -67,6 +67,14 @@ var (
 	// when a trust policy or the settings it is built with are not usable, and
 	// by an [Authenticator] with no verifier at all.
 	ErrInvalidPolicy = errors.New("auth: invalid authentication configuration")
+
+	// ErrAmbiguousIdentity is returned when a request carries both a verified
+	// client certificate and a bearer token, and they name different
+	// principals. Per CLAUDE.md's "fail closed", this is a refusal rather than
+	// a precedence rule: neither "the token wins" nor "the certificate wins"
+	// is a safe default on a control plane that mints workload assertions from
+	// whichever identity it decides to trust.
+	ErrAmbiguousIdentity = errors.New("auth: client certificate and bearer token name different principals")
 )
 
 // Errors returned when Flowstate acts as an identity of its own, minting
@@ -351,6 +359,8 @@ func publicReason(err error) string {
 		errors.Is(err, ErrUnknownKey),
 		errors.Is(err, ErrDisallowedAlgorithm):
 		return "invalid token signature"
+	case errors.Is(err, ErrAmbiguousIdentity):
+		return "client certificate and bearer token identify different callers"
 	default:
 		return "unauthenticated"
 	}

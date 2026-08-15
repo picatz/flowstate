@@ -653,6 +653,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// mTLS, picatz/flowstate#582: whether the public listener requires a
+	// client certificate, and whether a verified one also authenticates the
+	// caller. Resolved (and, if requested, applied to tlsCfg in place) after
+	// refusePlaintextListener, so a plaintext posture is refused for its own
+	// reason first and mTLS's own refusals — --tls-terminated-upstream, no
+	// server TLS at all, no kind: mtls policy entry — are reported in terms
+	// of the listener this process actually ended up with.
+	mtlsListenerFlags := mtlsFlagsOf(cmd)
+	peerVerifier, err := resolveMTLS(mtlsListenerFlags, policy, tlsListenerFlags.tlsTerminatedUpstream, tlsCfg)
+	if err != nil {
+		return err
+	}
+
 	// Acquisition is startup: obtain (or reuse from cache) a certificate for
 	// every configured host now, before this process claims to be serving
 	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
@@ -846,7 +859,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr:    publicAddr,
-		Handler: serverHandler(logger, verifier, broker, rpcMux, receiver),
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
@@ -871,7 +884,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("listening on %s: %w", httpServer.Addr, err)
 	}
 
-	logger.Info("starting server", "address", httpServer.Addr, "tls", tlsCfg != nil)
+	logger.Info("starting server", "address", httpServer.Addr, "tls", tlsCfg != nil,
+		"client_certificate_required", tlsCfg != nil && tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert,
+		"client_certificate_authenticates", peerVerifier != nil)
 	if authCfg.insecure {
 		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
@@ -1756,6 +1771,7 @@ flow server --verbose`,
 	// Server only: a worker makes no listener of its own to protect.
 	addTLSFlags(serverCmd)
 	addACMEFlags(serverCmd)
+	addMTLSFlags(serverCmd)
 	addInternalListenerFlags(serverCmd)
 
 	// Validate command, which checks Flowfiles without executing them.
