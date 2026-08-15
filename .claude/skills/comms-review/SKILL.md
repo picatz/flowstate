@@ -185,13 +185,26 @@ this section exists to prevent.
    actually lands on. GitHub's API can hide that summary: `PullRequestReview`
    implements `Minimizable` in the GraphQL schema, exactly as
    `PullRequestReviewComment` does, so `minimizeComment` accepts a review's
-   node id with a `minimizedReason` of `resolved` or `outdated`. What is
-   missing is on our side — the MCP tool surface exposes
-   `resolve_review_thread` and `unresolve_review_thread` and no minimize —
-   so today the summary survives every sweep, and that is a tooling gap to
-   close rather than an API limit to explain away. Until it closes, say
-   plainly that the root body is still open and why, instead of reporting a
-   PR as swept when its most visible block is not.
+   node id with a `minimizedReason` of `resolved` or `outdated`.
+
+   All three ways to reach it are blocked for this session type — tested on
+   2026-08-16 against a Copilot `COMMENTED` review, not assumed:
+
+       gh api graphql … minimizeComment       403  not in the pinned set
+       PUT  …/pulls/N/reviews/ID/dismissals   403  "not permitted for this
+                                                    session type"
+       DELETE …/pulls/N/reviews/ID            403  pending reviews only
+
+   So a review body cannot be hidden from here at all. Say that plainly
+   rather than reporting a PR as swept when its most visible block is not,
+   and do not spend calls rediscovering it: those three results are the
+   whole surface, and the fix is an added capability or an owner hiding it
+   in the UI.
+
+   Keep the three classes straight, because each has a different mechanism
+   and only one of them is a resolve: a review **thread** resolves, a
+   **top-level bot comment** deletes (below), and a review **body** does
+   neither.
 
    The complementary lever is reviewer configuration: automatic review set
    to request-only rather than on every push produces fewer summaries at
