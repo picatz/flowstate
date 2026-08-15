@@ -1076,7 +1076,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// `scope.Outputs` the successful path returns, so there is one accumulated
 		// record per run rather than a second one assembled for failures.
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			return PartialTranscript(stepOutputs), UndoRunError(err, runUndoOnCancel(ctx, w, undo))
+			// withCancellationCause reads context.Cause(ctx) here, at the run's own
+			// context — the one a caller like `flow run local` attaches a signal's
+			// or a `flow cancel`'s reason to (see cmd/flow/main.go). Whatever ran
+			// underneath already had its own chance to name a narrower cause (a
+			// step's schedule-to-close budget, the compensation budget below); this
+			// is the fallback for the cases nothing more specific was running, most
+			// visibly a run parked at a `wait:` when the stop arrives.
+			return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), runUndoOnCancel(ctx, w, undo))
 		}
 
 		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
@@ -1487,7 +1494,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 		return nil
 	}
 
-	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), UndoBudget)
+	uctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), UndoBudget, ErrUndoBudgetExpired)
 	defer cancel()
 
 	deadline, _ := uctx.Deadline()
@@ -2109,8 +2116,17 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// Derived here rather than around the whole run, so that exhausting it is
 		// an ordinary step failure `continue_on_error:` may tolerate — runNodes
 		// asks the *run's* context whether it is cancelled, and this one is not it.
+		//
+		// Given a cause: this budget and the per-attempt timeout in
+		// [runStepAttempt] both end a step with the same bare
+		// context.DeadlineExceeded, and today nothing an operator reads says
+		// which one it was — "this one attempt ran long" and "the step ran long
+		// across every retry" are different facts about the same failure. The
+		// per-attempt context stays uncaused, so [withCancellationCause] can tell
+		// them apart by whether a cause is present at all.
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeouts.ScheduleToClose)
+		ctx, cancel = context.WithTimeoutCause(ctx, timeouts.ScheduleToClose,
+			fmt.Errorf("schedule-to-close timeout of %s reached", timeouts.ScheduleToClose))
 		defer cancel()
 	}
 
@@ -2120,6 +2136,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		if err == nil {
 			return out, nil
 		}
+		err = withCancellationCause(ctx, err)
 
 		// Only failures that could plausibly succeed on another attempt are
 		// retried, matching how the durable driver classifies them.
@@ -2147,10 +2164,113 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// to run at test speed rather than spend the backoff for real.
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, withCancellationCause(ctx, ctx.Err())
 		case <-ClockFromContext(ctx).After(delay):
 		}
 	}
+}
+
+// withCancellationCause enriches err with the reason ctx (or the timeout
+// nearest to it) was given for stopping, when that reason is more specific
+// than the bare sentinel err already carries.
+//
+// [context.WithTimeoutCause] and [context.WithCancelCause] let a context name
+// why it stops, but a caller several layers below only ever sees
+// context.Canceled or context.DeadlineExceeded through ctx.Err() — the two
+// sentinels every std-library caller already checks with errors.Is, and the
+// only ones a task's own transport error is likely to wrap. [context.Cause]
+// is where the reason actually is, and reading it here is what turns "context
+// deadline exceeded" into "schedule-to-close timeout of 5m0s reached" without
+// disturbing errors.Is(err, context.DeadlineExceeded) for a caller checking
+// the ordinary way: err is wrapped with %w, so the chain still contains the
+// original sentinel.
+//
+// A cause that is itself just [context.Canceled] or [context.DeadlineExceeded]
+// — the default [context.WithCancelCause] leaves when nobody named a reason —
+// is not appended; wrapping "context canceled" in "context canceled" is noise,
+// not a diagnostic. Nor is a cause appended to an err that is not itself a
+// cancellation: a step that failed for its own reason while an unrelated outer
+// deadline happened to be running is not that deadline's business.
+//
+// Idempotent by construction, which matters because this is called at more than
+// one layer on the same error as it propagates: [runStepWithPolicy] calls it
+// where a step attempt or its retry backoff observes cancellation, and eval's
+// run-level fallback calls it again on whatever came back, in case nothing more
+// specific was running (a run parked at a `wait:` when the stop arrives). Both
+// calls read from context.Cause of a context that, absent a narrower budget in
+// between, names the same reason — so without a check somewhere the fallback
+// would append it a second time, rendering "context canceled: maintenance:
+// maintenance" instead of naming the reason once. [WithCause], which this
+// calls to do the actual appending, is where that check lives:
+// [causeEnrichedError] marks an error already enriched, and appending to one is
+// a no-op rather than a second suffix.
+func withCancellationCause(ctx context.Context, err error) error {
+	if err == nil {
+		return err
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	cause := context.Cause(ctx)
+	if cause == nil || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return err
+	}
+
+	return WithCause(err, cause)
+}
+
+// WithCause appends a fixed, named cause to err, in the same shape and with the
+// same idempotence [withCancellationCause] gives a context-derived one — see
+// [causeEnrichedError].
+//
+// Exported for the durable driver, which meets the equivalent of a cancellation
+// cause without a context to read one from: Temporal reports a compensation
+// activity cut off by [UndoBudget] as its own TimeoutError, wrapped in an
+// envelope this package's [StepErrorText] already knows how to shed (see
+// engine.recordedStepError), but with nothing resembling [context.Cause]
+// underneath for [withCancellationCause] to read. `engine.runUndoTask` calls
+// this directly once it has recognized that shape, naming the same
+// [ErrUndoBudgetExpired] the local driver's [runUndoOnCancel] attaches through
+// a context — one cause, spelled once here, read by both drivers, rather than
+// the durable driver inventing its own sentence for the same fact.
+func WithCause(err error, cause error) error {
+	if err == nil || cause == nil {
+		return err
+	}
+
+	var already *causeEnrichedError
+	if errors.As(err, &already) {
+		return err
+	}
+
+	return &causeEnrichedError{err: err, cause: cause}
+}
+
+// causeEnrichedError is what [withCancellationCause] and [WithCause] return
+// once a cause has been appended, and what both check for to avoid appending
+// a second one.
+//
+// A distinct type rather than a plain fmt.Errorf-built error, because
+// idempotence needs something to test for: a string check against the
+// rendered text would risk matching a cause's own wording that legitimately
+// recurs, where errors.As against this type can only ever match an error this
+// package itself produced.
+//
+// Renders identically to the fmt.Errorf("%w: %s", err, cause) this replaced —
+// same text, same errors.Is behavior through Unwrap — so no caller or test
+// observes the difference except the doubling this exists to prevent.
+type causeEnrichedError struct {
+	err   error
+	cause error
+}
+
+func (e *causeEnrichedError) Error() string {
+	return fmt.Sprintf("%s: %s", e.err, e.cause)
+}
+
+func (e *causeEnrichedError) Unwrap() error {
+	return e.err
 }
 
 // runStepAttempt performs one attempt, bounded by the per-attempt timeout.
