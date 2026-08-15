@@ -1015,13 +1015,34 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// run, which is what makes it a root and not a binding.
 	scope.Inputs = inputs
 
-	// The local driver has no authenticated caller at all — no server sits in
-	// front of it to attest anything — so Identity stays unset (every field
-	// reads empty) and Local is true. This is the same honest answer
-	// `LocalSignalSender` gives for a wait's `sender`, made for the run's own
-	// starter identity: a local run must never look like an attested
-	// production one, which is invariant 3's whole point.
+	// The local driver has no authenticated caller — no server sits in front of
+	// it to attest anything — so Local is true, unconditionally and with no way
+	// for a flag to turn it off. That is the field which says a local run is not
+	// a production one, it is what `run.local` renders, and it is what every
+	// reader of this scope can tell the two apart by.
 	scope.Local = true
+
+	// And the identity this rehearsal acts as, when its starter named one.
+	//
+	// Unset for the bare [Run] entry point and for `flow test`, which have no
+	// starter to name; set by `flow run local` from --as-subject and its
+	// siblings, the same identity that already reaches the secret-access
+	// policy, the credential broker, the plugin caller, and
+	// `distinct_from_starter:`. Three surfaces read this field — the
+	// task-shape policy (#187), the egress policy's identity dimension
+	// (#240), and `run.identity` — and leaving it empty while the other four
+	// saw the rehearsal identity is what made one flag rehearse some of a
+	// deployment's policy and silently no-op on the rest (#295): a rule keyed
+	// on `identity.namespace` matched nothing here and matched in production,
+	// so a local run *denied* what production permits.
+	//
+	// This does not make the rehearsal attested, and the mechanism that keeps
+	// it from looking attested was never this field's emptiness: `Local`
+	// above says so to anything reading the scope, and a minted credential's
+	// subject carries auth's unforgeable `_local` component, on a path that
+	// does not run through here at all. See [NewContextWithRehearsalIdentity]
+	// for the whole argument.
+	scope.Identity = RehearsalIdentityFromContext(ctx)
 
 	// And the address a local run answers with, which is a sentinel and not an
 	// empty string: a local run is not reachable by any name, so the honest

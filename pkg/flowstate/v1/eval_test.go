@@ -202,7 +202,13 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 			v1.SetDefaultTaskPolicy(policy)
 			t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-			out, err := v1.Run(t.Context(), tc.Workflow)
+			// The local driver's route for the case's identity: the same
+			// seam `flow run local --as-*` uses, which is the whole of what
+			// #295 fixed. A case with no identity sets nil, which is
+			// identical to not setting one — the starter-less run.
+			ctx := v1.NewContextWithRehearsalIdentity(t.Context(), tc.Identity)
+
+			out, err := v1.Run(ctx, tc.Workflow)
 
 			if tc.DeniedTask != "" {
 				require.Error(t, err, "the policy must refuse this dispatch")

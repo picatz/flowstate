@@ -510,10 +510,13 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 		// scope this request by tenant (#240). It is rendered from the one
 		// WorkloadIdentity the scope carries — the same source the secret-access and
 		// task-shape policies read — rather than derived a second way, which is what
-		// keeps the three surfaces agreeing about who is calling. A local run's scope
-		// has no identity: that renders as the empty identity, which an
-		// identity-scoped allow rule declines to match, exactly as the task-shape
-		// surface behaves.
+		// keeps the three surfaces agreeing about who is calling. A local run carries
+		// the identity its starter rehearsed as (`flow run local --as-namespace`,
+		// through [NewContextWithRehearsalIdentity]), so an identity-scoped rule
+		// answers here the way it answers in production — which is what a rehearsal
+		// under `--egress-policy` is for. A run whose starter named none renders as
+		// the empty identity, which an identity-scoped allow rule declines to match:
+		// the fail-closed reading, and the same one the task-shape surface gives.
 		if id := scope.GetIdentity(); id != nil {
 			ctx = netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
 				Subject:   id.GetSubject(),

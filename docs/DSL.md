@@ -4578,7 +4578,9 @@ becomes reachable when a case names a starter, which is the whole reason to name
 Neither field makes a case look attested. A scripted `sender:` delivers as a rehearsal,
 `sender.local` true, the same marker `--signal-as-subject` carries and the same one the
 durable driver refuses; a `starter:` reaches the signal policy and nothing else, leaving
-`run.identity` empty and `run.local` true exactly as every local run reports them. A
+`run.identity` empty and `run.local` true. (`flow run local --as-subject` does reach
+`run.identity`, and a test case's `starter:` deliberately does not: a case is not a run
+somebody started, so there is nobody for it to report.) A
 scripted sender that rendered as an attested one was a real inconsistency for as long as
 it lasted: `!sender.local` is what a workflow author reads to mean "a server accepted
 this", and a test harness is the last place that may be untrue.
