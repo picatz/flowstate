@@ -74,15 +74,43 @@ behaves oddly, check:
 
     ps -Ao pid,rss,args | grep -E '\.test|-fuzz' | grep -v grep
 
-## The gate: diff-scoped before a push, full on PR CI
+## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
 
-Two tiers over one list of checks. The diff-scoped tier runs locally before a
-push and covers what your diff can reach. PR CI runs the full list as seven
-parallel jobs in about six minutes and is the gate that decides; the
-orchestrator's webhook loop watches the PR and drives red back to green.
-`make check` runs the same full list locally, and remains the rehearsal for
-main-composition verification and for anyone who wants the whole answer on
-their own machine.
+Three tiers over one list of checks, and — this is the part worth holding on to
+— **one computation of what a diff can reach**, in `tools/gate`. The local tier
+runs it before a push. PR CI runs the same computation in its `plan` job and
+skips the jobs the diff cannot reach. The merge queue runs everything, because
+it is the last gate before main and the one place where being wrong about the
+plan is unrecoverable. `make check` remains the full local rehearsal.
+
+CI does not have a second opinion, and must never grow one. `paths:` filters in
+YAML are the obvious way to do this and the wrong one: they are the same value
+written down twice, in the venue where the copy cannot be unit tested, cannot
+see the import graph, and cannot see that `pkg/flowstate/v1/flowfile`'s tests
+read `examples/` off disk with no import anywhere (#589).
+
+Two GitHub semantics decide the shape of the PR lane, and both fail in a
+direction someone has to know about:
+
+- A **required** job skipped by an `if:` reports the conclusion `skipped`, and
+  a required status check counts `skipped` as satisfied. Make the conditional
+  jobs required and a wrongly-skipped `test` shows a green tick on a pull
+  request nothing tested. That is a gate passing on something it never looked
+  at, and it is the *default* behaviour.
+- A required check that never reports at all — what a workflow-level `paths:`
+  filter produces, since the whole workflow is skipped — stays pending forever
+  and blocks the merge with no way to clear it.
+
+So none of the conditional jobs is required. **`plan` and `verdict` are the two
+required checks.** `verdict` runs `if: always()`, re-reads the plan, and fails
+unless every job the plan selected succeeded, every job it did not select was
+skipped, and the two sets of job names match the workflow's. A skip can
+therefore only ever be a decision the plan made in writing.
+`tools/gate/verdict_test.go` executes that script — read out of the workflow
+file, not copied — against every one of those failure shapes.
+
+See `docs/CI.md` for the whole design, the measured numbers, and the repository
+settings it depends on.
 
 Before pushing a PR branch, run the diff-scoped tier:
 
@@ -118,7 +146,14 @@ That reasoning predates a six-minute parallel CI and a standing red-to-green
 driver: in the last wave, five agents each re-ran the full list serially on
 one contended machine at 30 to 60 minutes per gate, to predict an answer CI
 returns in six (#482). What survives is the bound, not the venue: nothing
-merges red, and every required check still runs on every PR.
+merges red, and every check still runs on every change whose diff can reach it.
+
+That last clause used to read "every required check still runs on every PR",
+and it was doing two jobs. As a claim about coverage it is now stated more
+precisely by `verdict`. As a claim about *enforcement* it was, until #489's
+branch-protection fix was written up and never shipped, a convention the owner
+was applying by hand — there was no required-status-checks ruleset on this
+repository at all. `docs/CI.md` records the ruleset that makes it a mechanism.
 
 Two habits the last wave paid for, now written down. Editing `docs/DSL.md`
 requires `go generate ./cmd/flow/internal/reference`, because that package

@@ -39,6 +39,16 @@ type plan struct {
 	// itself moved and every package is treated as affected.
 	moduleWide bool
 
+	// ciWide means a file changed that decides what the verification tiers
+	// themselves do: a workflow, the Makefile, or this gate's own source.
+	// A plan cannot reason about the effect of a change to the thing
+	// computing the plan, so CI runs everything. It is deliberately
+	// separate from moduleWide: that one widens the *affected package set*
+	// and is a fact about the Go build graph, while this one widens the
+	// *job set* and is a fact about the harness. A workflow edit affects no
+	// Go package at all, which is exactly why it needs its own answer.
+	ciWide bool
+
 	// Conditional legs, keyed on changed paths.
 	proto    bool // buf lint/breaking/generate + descriptorset pin
 	docs     bool // reference mirror + generated docs drift
@@ -89,6 +99,15 @@ func buildPlan(changed []string) plan {
 
 	for _, f := range changed {
 		f = path.Clean(f)
+
+		// The harness files decide what runs. Noted before anything else
+		// and without `continue`, because a workflow change is also an
+		// ordinary file change: tools/gate/ci.go is a Go file in a Go
+		// package, and the gate's own tests should still run for it.
+		if strings.HasPrefix(f, ".github/workflows/") || f == "Makefile" || strings.HasPrefix(f, "tools/gate/") {
+			p.ciWide = true
+			reason("ci", f)
+		}
 
 		// The module files move the whole graph.
 		if f == "go.mod" || f == "go.sum" {
