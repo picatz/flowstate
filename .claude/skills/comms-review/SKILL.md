@@ -239,14 +239,38 @@ this section exists to prevent.
    If `minimizeComment` becomes reachable, prefer it: hiding preserves the
    record where deleting does not, and the narrowness of this rule is a
    consequence of only having the destructive tool.
-9. **Respect the API budget.** REST and GraphQL each have their own pool.
+9. **Read threads over REST, resolve over GraphQL.** This is the single
+   biggest budget lever and it was found the expensive way: one wave of 27
+   PRs burned 10,757 GraphQL points and exhausted the pool, almost all of it
+   on *reading* threads rather than resolving them.
+
+   `GET /repos/{owner}/{repo}/pulls/{n}/comments` is REST, costs the core
+   budget (15,000/hour, rarely the constraint), and returns every review
+   comment with its id, author, path, line and `in_reply_to_id` — enough to
+   group comments into threads and decide what to act on. What REST does
+   *not* return is resolution state; there is no `isResolved` on that
+   payload, verified.
+
+   So: sweep with REST, act with REST (reactions, replies, deletes are all
+   REST), and spend GraphQL only on `resolve_review_thread` itself — one
+   call per thread you actually resolve. Track what you resolved in your own
+   notes rather than re-reading to confirm it; a resolve that returned
+   success succeeded, and re-reading to check costs the budget the sweep was
+   trying to save.
+
+   The failure mode this prevents is not slowness. With GraphQL exhausted,
+   threads cannot be resolved at all, and the rule that nothing merges with
+   unresolved threads then blocks every merge — the pool running dry stops
+   the entire pipeline, not just the sweep.
+
+10. **Respect the API budget.** REST and GraphQL each have their own pool.
    A pool is shared across everything the account does, so polling PR
    state exhausted one of them in a single wave, but the two are not
    shared with each other and go down independently. Prefer webhook
    events over polling, batch reads, and when a pool is exhausted back
    off from *that* pool rather than stopping altogether: see the budget
    section below for what still works when one of them is gone.
-10. **Know what the API can do, and separately what our tools can do.**
+11. **Know what the API can do, and separately what our tools can do.**
     These are two different questions and conflating them turns a missing
     tool into an imagined law of nature. GitHub's API offers all three
     operations: resolve/unresolve on threads; dismissal of a review, in
