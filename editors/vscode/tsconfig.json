@@ -2,6 +2,11 @@
   "compilerOptions": {
     "module": "node16",
     "moduleResolution": "node16",
+    // TypeScript 7 under node16 resolution no longer picks up ambient
+    // @types packages implicitly, so the two this extension needs are
+    // named: node for the built-ins binary.ts and the tests use, and
+    // vscode for the editor API itself.
+    "types": ["node", "vscode"],
     "target": "ES2022",
     "lib": ["ES2022"],
     "outDir": "out",
