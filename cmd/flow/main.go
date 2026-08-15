@@ -666,6 +666,22 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// picatz/flowstate#629: when ACME also terminates this listener,
+	// resolveMTLS just mutated the very tls.Config autocert's GetCertificate
+	// answers every handshake from, including the ACME CA's own
+	// TLS-ALPN-01 validation connection — which holds no certificate from
+	// the deployment's private client CA pool. Left alone,
+	// --tls-client-auth require would refuse that connection at the TLS
+	// layer before autocert ever decides anything, and renewal would fail
+	// quietly, sixty days out. Exempting it is safe only because it keys on
+	// the ALPN offer autocert itself uses to recognize the same connection
+	// (see acme.go's doc on this), so it is wired here, after tlsCfg's
+	// ClientAuth is whatever --tls-client-auth actually resolved to, and
+	// only for a listener this file's own ACME settings built.
+	if acmeCfg != nil {
+		exemptACMETLSALPN01ChallengeFromClientAuth(tlsCfg)
+	}
+
 	// Acquisition is startup: obtain (or reuse from cache) a certificate for
 	// every configured host now, before this process claims to be serving
 	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
