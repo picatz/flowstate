@@ -802,19 +802,31 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// A Flowfile can never compile a structure this deep — the compiler
+	// refuses it directly, with a position — but a specification built by
+	// hand and submitted straight to this RPC arrives without a compiler in
+	// front of it. Every walk this package runs over a structure later
+	// (secret authority, reference collection for Continue-As-New, encoding
+	// a request body) reads [v1.MaxStructureDepth], so a value nested past it
+	// is refused here rather than under-inspected by all of them.
+	if err := v1.CheckStructureDepth(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	return nil
 }
 
 // pinPlugins records the deployment's plugin selection on a specification about
 // to become durable, and refuses a specification the deployment cannot satisfy.
 //
-// Called by [FlowstateServer.validateSubmission], so by [FlowstateServer.Run]
-// and [FlowstateServer.SignalWithStart], and by
-// [FlowstateServer.CreateSchedule], which has its own submission pipeline. All
-// three because all three bring durable work into existence, and a schedule that
-// skipped this would persist a specification with requirements and no selection:
-// unpinned at three in the morning, when the deployment resolving it is not the
-// one the author submitted against and nobody is there to read a refusal.
+// Called by [FlowstateServer.validateSpecification], so by every RPC that shares
+// it: [FlowstateServer.Run] and [FlowstateServer.SignalWithStart] through
+// [FlowstateServer.validateSubmission], and [FlowstateServer.CreateSchedule]
+// directly. All three because all three bring durable work into existence, and a
+// schedule that skipped this would persist a specification with requirements and
+// no selection: unpinned at three in the morning, when the deployment resolving
+// it is not the one the author submitted against and nobody is there to read a
+// refusal.
 //
 // Unconditional, including for a specification that requires nothing. The
 // resolved list is the control plane's own answer, so a caller-supplied one is

@@ -290,24 +290,31 @@ func CollectRefsFromParsedExpr(pe *expr.ParsedExpr, prev *Workflow_StepOutputs, 
 // Without the descent, compaction at a Continue-As-New boundary would drop the
 // very output a shaped expression is about to read — a correctness failure, and
 // exactly the walk-misses-a-branch shape this repository keeps paying for.
-// The descent is depth-bounded for [maxStructureDepth]'s reason and not a
+// The descent is depth-bounded for [MaxStructureDepth]'s reason and not a
 // different one: a specification does not have to have come from a Flowfile, so
 // the depth of a structure is a number an outside party chooses, and this walk
 // is recursive.
 //
-// What lies below the bound is not recorded, and that is worth saying plainly
-// rather than implying it is free: an expression nested deeper than 32 levels of
-// structure could have an output it reads pruned at a Continue-As-New boundary.
-// No Flowfile can express one — a shaped mapping's entries are values, not
-// structures, and the compiler bounds nesting far below this — so the shape that
-// reaches the bound is a specification submitted directly, where the alternative
-// is a stack depth the peer decides.
+// Past the bound, this fails closed rather than silently stopping: every step
+// [prev] carries is marked as needed whole (see [MarkWholeStep]), because an
+// expression this walk cannot see the bottom of might reference any of them.
+// The alternative — CLAUDE.md's `walkSecretRefs` shape, answering "may hold a
+// reference" rather than "holds none" — is exactly this question asked by
+// Continue-As-New compaction instead of by secret authority: dropping an
+// output a live expression still needs fails a run after compaction, so the
+// walk that decides retention must answer conservatively at its own limit
+// the same way the authority walk already does. No Flowfile can express a
+// structure this deep — a shaped mapping's entries are values, not
+// structures, and the compiler bounds nesting far below this — so the shape
+// that reaches the bound is a specification submitted directly, where the
+// alternative is a stack depth the peer decides.
 func CollectValueRefs(value *Value, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
 	collectValueRefs(value, 0, prev, refs)
 }
 
 func collectValueRefs(value *Value, depth int, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
-	if depth > maxStructureDepth {
+	if depth > MaxStructureDepth {
+		retainAllSteps(prev, refs)
 		return
 	}
 
@@ -325,6 +332,18 @@ func collectValueRefs(value *Value, depth int, prev *Workflow_StepOutputs, refs 
 				collectValueRefs(entry, depth+1, prev, refs)
 			}
 		}
+	}
+}
+
+// retainAllSteps marks every step prev carries as needed whole.
+//
+// The fail-closed answer for a walk that has lost the ability to say which
+// step an expression references: over-retaining costs payload bytes on one
+// Continue-As-New, and under-retaining fails the run the first time the
+// pruned output is read.
+func retainAllSteps(prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
+	for step := range prev.GetStepValues() {
+		MarkWholeStep(refs, step)
 	}
 }
 
@@ -363,6 +382,13 @@ func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map
 			// and the cost of reading one position too many is a payload byte
 			// while the cost of reading one too few is a failed run.
 			CollectValueRefs(site.Value, prev, refs)
+		},
+		// The shared traversal's own bound and [CollectValueRefs]'s are the
+		// identical resource, so both fail closed the identical way: a
+		// position this walk could not finish looking inside of might still
+		// reference any step, so every step is retained rather than none.
+		Truncated: func(ValueSite) {
+			retainAllSteps(prev, refs)
 		},
 	})
 }

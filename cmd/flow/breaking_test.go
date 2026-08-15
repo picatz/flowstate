@@ -142,6 +142,33 @@ func TestBreakingConstraintNarrowed(t *testing.T) {
 		"removing a must must not be a break")
 }
 
+// TestBreakingEnumValueRemoved is the enum-narrowing class: removing a member
+// from an existing enum refuses an argument the old contract accepted, so it
+// must be reported — the same direction a raised min_len is. The negative
+// direction is an added member, which only admits more and must stay silent.
+func TestBreakingEnumValueRemoved(t *testing.T) {
+	old := fixtureHeader() +
+		"inputs:\n  environment:\n    type: enum\n    values: [staging, production]\n" +
+		fixtureStep
+	narrowed := fixtureHeader() +
+		"inputs:\n  environment:\n    type: enum\n    values: [production]\n" +
+		fixtureStep
+
+	ds := diffFixtures(t, old, narrowed)
+	require.Len(t, ds, 1, "removing an enum member should report exactly one break")
+	require.Contains(t, ds[0].Message, `input "environment" narrowed its constraint`)
+	require.Contains(t, ds[0].Message, "values removed: staging")
+	require.Positive(t, ds[0].Line)
+
+	// Widening: adding a member is silent.
+	require.Empty(t, diffFixtures(t, narrowed, old),
+		"adding an enum member must not be a break")
+
+	// No change: identical values is silent.
+	require.Empty(t, diffFixtures(t, old, old),
+		"unchanged enum values must not be a break")
+}
+
 // TestBreakingInputRemoved is the input-removed class: a caller passing it via
 // `with:` breaks, because an unknown `with:` key is refused
 // (flowfile/validate_call.go). It has no position in the new file, so it names

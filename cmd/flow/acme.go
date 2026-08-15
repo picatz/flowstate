@@ -297,6 +297,93 @@ func (s *acmeSettings) tlsConfig() *tls.Config {
 	return s.manager.TLSConfig()
 }
 
+// # ACME's own validation connection versus --tls-client-auth require
+//
+// picatz/flowstate#629: when --tls-client-auth require also applies to this
+// listener (cmd/flow/mtls.go's resolveMTLS mutates the same tls.Config this
+// file built), that requirement would otherwise govern every handshake the
+// listener accepts, including the ACME CA's own TLS-ALPN-01 validation
+// connection — and the CA holds no certificate from the deployment's private
+// client CA pool, so renewal fails at the TLS layer, quietly, sixty days
+// after a deployment that started from a cached certificate looked fine.
+//
+// [exemptACMETLSALPN01ChallengeFromClientAuth] closes that without giving up
+// either flag, by keying the exemption on exactly the fact that distinguishes
+// the CA's validation connection from an ordinary one, and nothing else:
+//
+//   - autocert's own GetCertificate decides whether a hello is a TLS-ALPN-01
+//     challenge with wantsTokenCert (acme/autocert.go): the ALPN offer is the
+//     single protocol "acme-tls/1", nothing else. This reuses that identical
+//     test — via [isACMETLSALPN01ChallengeHello] — rather than inventing a
+//     second one that could disagree with it.
+//   - crypto/tls calls tls.Config.GetConfigForClient, when set, from
+//     readClientHello, and replaces the config governing the rest of the
+//     handshake — including ClientAuth — with whatever it returns (see
+//     src/crypto/tls/handshake_server.go). So a config with ClientAuth left
+//     at its zero value (tls.NoClientCert), returned only for a hello that
+//     asks for "acme-tls/1" alone, exempts exactly that connection and
+//     nothing else; every other hello falls through to nil, which keeps
+//     using the outer config's own ClientAuth.
+//   - The exemption cannot become a way to reach the application without a
+//     certificate. Presenting ALPN=["acme-tls/1"] gets a caller past
+//     ClientAuth, but not past autocert's own GetCertificate: wantsTokenCert
+//     routes that hello to m.certTokens[name], which holds a certificate only
+//     while the manager itself is running a real TLS-ALPN-01 validation it
+//     initiated, keyed on the exact SNI. Any other name, or the same name
+//     with no challenge in flight, gets `no token cert for %q` and the
+//     handshake fails before any HTTP request could exist to authenticate —
+//     there is no certificate on the other side of this exemption for a
+//     caller to reach, real CA or not.
+//   - That last property is also why this must never apply to a tlsCfg whose
+//     GetCertificate is not autocert's: on any other listener,
+//     wantsTokenCert has no meaning, and exempting ALPN=["acme-tls/1"] there
+//     would just be an unauthenticated path to whatever certificate
+//     GetCertificate ordinarily serves. [resolveMTLS]'s caller only ever
+//     calls this on the tlsCfg this file itself built.
+
+// isACMETLSALPN01ChallengeHello reports whether hello is what the ACME CA's
+// TLS-ALPN-01 validation connection looks like: an ALPN offer of exactly one
+// protocol, "acme-tls/1" (acme.ALPNProto). This is byte-for-byte the same
+// test autocert's own unexported wantsTokenCert applies (acme/autocert.go) —
+// deliberately kept identical rather than approximated, since a second test
+// that drifted from autocert's own would reopen exactly the gap this
+// exemption exists to close.
+func isACMETLSALPN01ChallengeHello(hello *tls.ClientHelloInfo) bool {
+	return len(hello.SupportedProtos) == 1 && hello.SupportedProtos[0] == acme.ALPNProto
+}
+
+// exemptACMETLSALPN01ChallengeFromClientAuth wires tlsCfg.GetConfigForClient
+// so a TLS-ALPN-01 validation connection from the ACME CA is not asked for a
+// client certificate, while every other connection — including one that
+// merely claims the same ALPN protocol — is still governed by tlsCfg's own
+// ClientAuth and ClientCAs exactly as [resolveMTLS] set them.
+//
+// Call this only on the tls.Config [acmeSettings.tlsConfig] built, after
+// [resolveMTLS] has applied whatever --tls-client-auth requires: it clones
+// tlsCfg's state at the time it is called, so a mutation to ClientAuth or
+// ClientCAs afterward would not reach the cloned copy the exemption falls
+// back to for an ordinary hello — the ordinary path uses tlsCfg itself,
+// unmodified, not a snapshot, so it always sees the latest values, but the
+// challenge branch's own copy is fixed at wiring time. tlsCfg has no other
+// mutations after this point in this codebase, so the two never diverge in
+// practice; the ordering is still the contract.
+func exemptACMETLSALPN01ChallengeFromClientAuth(tlsCfg *tls.Config) {
+	challenge := tlsCfg.Clone()
+	challenge.ClientAuth = tls.NoClientCert
+	challenge.ClientCAs = nil
+	challenge.GetConfigForClient = nil
+
+	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if isACMETLSALPN01ChallengeHello(hello) {
+			return challenge, nil
+		}
+		// nil, nil: crypto/tls keeps using the config already in effect —
+		// tlsCfg itself, with --tls-client-auth's ClientAuth/ClientCAs
+		// intact — for every hello that is not the exempted shape.
+		return nil, nil
+	}
+}
+
 // acmeHostNamePattern is deliberately conservative: RFC 1035 labels
 // separated by dots, no wildcard, no trailing dot. A public CA cannot issue
 // for an IP address or a wildcard under this slice's TLS-ALPN-01-only
@@ -371,7 +458,8 @@ func checkACMECacheDir(path string) error {
 }
 
 // primeACMECertificates obtains (or renews) a certificate for every
-// configured host before the public listener starts accepting connections.
+// configured host, while the public listener is already accepting
+// connections.
 //
 // This is #581's "acquisition is startup" decision: a certificate the
 // manager cannot obtain right now means the listener cannot serve the
@@ -383,25 +471,79 @@ func checkACMECacheDir(path string) error {
 // SNI, and that connection's caller would be the one who discovers a
 // misconfiguration this process could have reported to its own operator
 // instead.
+//
+// # Why this runs after the listener is serving, not before (#628)
+//
+// It used to run before, which read as the more careful order and made
+// first-time issuance impossible. TLS-ALPN-01 is the only challenge this file
+// wires, deliberately, because it "answers the challenge on the same 443
+// socket the public listener already binds" — and on a cache miss
+// GetCertificate does not return a cached value, it *starts* an
+// authorization, which the CA completes by connecting back to that socket to
+// collect autocert's temporary challenge certificate. Called before anything
+// was listening, the CA's connection was refused, issuance failed, and the
+// process exited. A warm cache hid it completely, which is why no test saw
+// it: a cache hit never reaches the challenge at all.
+//
+// So the listener serves first and this runs against it. The startup property
+// is unchanged — the caller shuts the server down and fails when this
+// returns an error — and the window in between is a listener that answers
+// handshakes through autocert's ordinary lazy path, which is what it would
+// have done anyway.
 func primeACMECertificates(ctx context.Context, manager *autocert.Manager, hosts []string) error {
 	var errs []error
 	for _, host := range hosts {
-		if _, err := manager.GetCertificate(&tls.ClientHelloInfo{
+		if err := primeOneACMECertificate(ctx, manager, host); err != nil {
+			errs = append(errs, err)
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// primeOneACMECertificate obtains one host's certificate under ctx's deadline,
+// which it has to enforce itself.
+//
+// [autocert.Manager.GetCertificate] takes a [tls.ClientHelloInfo] and manages
+// its own background context, so a deadline on the caller's context cannot
+// reach it. Checking ctx.Err() after it returns — which is what this did — is
+// a bound that only applies once the thing it is bounding has already
+// finished, and the far side of an ACME exchange is a stranger's server. The
+// advertised three-minute startup bound could therefore be exceeded once per
+// host, serially across the host list, at the ACME provider's choice; that is
+// the house rule about bounding the resource the peer controls, and it was not
+// being kept.
+//
+// Waiting on a channel instead makes the deadline real. The goroutine outlives
+// this function when the deadline wins, which is deliberate and bounded on the
+// far end by autocert's own HTTP client timeouts — and the only caller that
+// reaches this path is on its way to shutting the process down.
+func primeOneACMECertificate(ctx context.Context, manager *autocert.Manager, host string) error {
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := manager.GetCertificate(&tls.ClientHelloInfo{
 			ServerName: host,
 			// autocert's TLS-ALPN-01 codepath only activates for a hello that
 			// asks for the "acme-tls/1" protocol; without it GetCertificate
 			// serves (or here, obtains) the ordinary certificate for the
 			// name, which is what priming wants.
 			SupportedProtos: []string{"h2", "http/1.1"},
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("obtaining an initial certificate for %s: %w", host, err))
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("obtaining an initial certificate for %s: %w", host, err)
 		}
-		if ctx.Err() != nil {
-			errs = append(errs, ctx.Err())
-			break
-		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("obtaining an initial certificate for %s: %w", host, ctx.Err())
 	}
-	return errors.Join(errs...)
 }
 
 // acmeWatchdogInterval is how often [acmeExpiryWatchdog] re-checks every

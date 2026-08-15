@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,97 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 		t.Errorf("%d of %d examples were refused, which is too many for refusal to still be the exception",
 			refused, len(copies))
 	}
+}
+
+// TestFmtOrdersPinnedCalleesBeforeCallersRegardlessOfDirectorySort is #339's
+// second half, made a property rather than an artifact of alphabetical luck.
+//
+// A `digest:` pin now survives `flow fmt` (see flowfile.Format), and a pin is
+// over *bytes*: reformatting a callee changes what it hashes to the same way
+// any other edit does. Formatting a whole directory in one run therefore has
+// to decide, for a caller and a pinned callee both inside it, which one's
+// bytes settle first — and TestFmtIsIdempotentAcrossExamples used to answer
+// that question by accident, from whichever order a directory walk happens
+// to visit `workflow.yaml` (the caller) and `workflows/` (the callee) in.
+// #339 named `lib/` as a directory that sorts the other way and would have
+// tripped it. This drives the same caller/callee pair through both name
+// orderings and asserts they land the same place: the callee reformats, and
+// the caller — whose on-disk pin, untouched until this run touches it, was
+// never going to match bytes the callee had not settled into yet — is
+// refused and left exactly as it was, in both directions. That is what
+// [orderCalleesBeforeCallers] buys: not that the pair always formats
+// cleanly, but that whether it does never depends on how the two files are
+// named.
+func TestFmtOrdersPinnedCalleesBeforeCallersRegardlessOfDirectorySort(t *testing.T) {
+	// Deliberately not already in the form Marshal writes — the single quote
+	// survives parsing but not writing back out — so reformatting this file
+	// really does change its bytes, and so its digest, which is the premise
+	// the whole test rests on.
+	calleeSource := `edition: v2026.3
+name: callee
+steps:
+  - id: greet
+    log:
+      message: 'hi there'
+`
+	digest := v1.ContentDigest([]byte(calleeSource))
+
+	run := func(t *testing.T, calleeDir string) {
+		t.Helper()
+
+		dir := t.TempDir()
+		calleePath := writeFixture(t, dir, filepath.Join(calleeDir, "callee.yaml"), calleeSource)
+		callerSource := fmt.Sprintf(`edition: v2026.3
+name: caller
+steps:
+  - id: run
+    call: ./%s/callee.yaml
+    digest: %s
+`, calleeDir, digest)
+		callerPath := writeFixture(t, dir, "caller.yaml", callerSource)
+		before := readFixture(t, callerPath)
+
+		out, _, err := runFmtCommand(t, dir)
+		if err == nil {
+			t.Fatalf("expected fmt to report incomplete work — the caller's pin cannot "+
+				"both survive verbatim and match a callee whose bytes just changed:\n%s", out)
+		}
+
+		calleeAfter := readFixture(t, calleePath)
+		if bytes.Equal(calleeAfter, []byte(calleeSource)) {
+			t.Fatalf("the fixture callee was not actually reformatted, so this run says "+
+				"nothing about a stale pin:\n%s", calleeAfter)
+		}
+
+		callerAfter := readFixture(t, callerPath)
+		if !bytes.Equal(before, callerAfter) {
+			t.Errorf("the caller was rewritten even though its pin no longer matches the "+
+				"reformatted callee — a stale pin left in place beats one silently dropped, "+
+				"but writing the file at all here is worse than either:\n--- before\n%s\n--- after\n%s",
+				before, callerAfter)
+		}
+		if !strings.Contains(out, "digest") || !strings.Contains(out, "hashes to") {
+			t.Errorf("expected a digest-mismatch refusal naming the callee's new digest, got:\n%s", out)
+		}
+	}
+
+	// "aaa-lib/callee.yaml" sorts before "caller.yaml" — a directory walk in
+	// alphabetical order would visit the callee first, which is also what
+	// dependency order asks for, so this direction cannot distinguish the
+	// two. It is here so the other direction has something to contrast with.
+	t.Run("callee's directory sorts before the caller", func(t *testing.T) {
+		run(t, "aaa-lib")
+	})
+
+	// "zzz-lib/callee.yaml" sorts after "caller.yaml" — an alphabetical walk
+	// would visit the caller first and, before this fix, would have written
+	// its pin out untouched while the callee still held its original bytes,
+	// which is exactly the state examples/pinned-call/ is in relative to its
+	// own workflow.yaml and workflows/. Dependency order still puts the
+	// callee first regardless, which is the property under test.
+	t.Run("callee's directory sorts after the caller", func(t *testing.T) {
+		run(t, "zzz-lib")
+	})
 }
 
 // fmtAccepts reports whether `flow fmt` has an answer for the file at path, as

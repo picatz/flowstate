@@ -130,6 +130,69 @@ steps:
 	}
 }
 
+// TestFmtDiagnosticsShareTheSameSpelling is the `flow fmt` counterpart to
+// TestLoadWorkflowDiagnosticsNameTheirFile: a file with more than one compile
+// diagnostic makes [flowfile.ParseFile] return [flowfile.Diagnostics], and
+// `flow fmt --check` rendered that error handed whole to a themed %v before
+// this fix — a space after the filename on the first line, and no filename at
+// all from the second diagnostic on, the same two spellings #384 found in
+// `flow validate`. #384's original fix routed `flow validate`, `flow run` and
+// `flow fix`'s per-diagnostic loops through the shared formatter; `flow fmt`
+// widened its own error with a bare Fprintf instead and kept the bug, which is
+// exactly the gap a corpus swept over one command cannot see.
+func TestFmtDiagnosticsShareTheSameSpelling(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "two-problems.yaml", `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    log:
+      message: ${vars.a +}
+    withh: nope
+`)
+
+	stdout, _, err := runFmtCommand(t, "--check", path)
+	require.Error(t, err, "the fixture must fail to compile, or it cannot see the multi-diagnostic bug")
+
+	assertLinkableDiagnostics(t, stdout)
+
+	lines := diagnosticLinesOf(stdout)
+	require.GreaterOrEqual(t, len(lines), 2,
+		"the fixture must produce more than one diagnostic or it cannot see the continuation-line bug")
+
+	for _, line := range lines {
+		assert.True(t, strings.HasPrefix(line, path+":"),
+			"every diagnostic line must stand alone and name its file, got %q", line)
+		assert.Regexp(t, linkablePosition, line)
+	}
+}
+
+// TestFixDiagnosticsShareTheSameSpelling is the `flow fix` counterpart. An
+// oversized file makes [flowfile.Fix] return a single-element
+// [flowfile.Diagnostics] as its own top-level error, which `flow fix --check`
+// rendered before this fix as `path: 1:1: message` — a space after the
+// filename, the first of the three spellings #384 found — because the
+// top-level error was handed to a themed %v instead of through the shared
+// formatter.
+func TestFixDiagnosticsShareTheSameSpelling(t *testing.T) {
+	dir := t.TempDir()
+	oversized := "edition: v2026.3\nname: big\nsteps:\n  - id: greet\n    log:\n      message: |\n        " +
+		strings.Repeat("x", 1<<20) + "\n"
+	path := writeFixture(t, dir, "big.yaml", oversized)
+
+	stdout, _, err := runFixCommand(t, "--check", path)
+	require.Error(t, err, "an oversized file must be refused, or it cannot see the bug")
+
+	assertLinkableDiagnostics(t, stdout)
+
+	lines := diagnosticLinesOf(stdout)
+	require.NotEmpty(t, lines, "the fixture produced no diagnostic line to check")
+	for _, line := range lines {
+		assert.True(t, strings.HasPrefix(line, path+":"), "got %q", line)
+		assert.Regexp(t, linkablePosition, line)
+	}
+}
+
 // diagnosticLinesOf keeps the lines of a report that carry a position, dropping
 // the summary words `validate` writes beside them.
 func diagnosticLinesOf(output string) []string {
@@ -248,6 +311,45 @@ steps:
             message: hi
 `,
 	"bad-http-method.yaml": brokenWorkflow,
+	"wait-outputs-secret.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approved
+      outputs:
+        token: ${secret('env:API_TOKEN')}
+`,
+	"loop-init-secret.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: accumulate
+    loop:
+      as: state
+      init: ${secret('env:API_TOKEN')}
+      until: ${true}
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
+
+	// old-edition-with-other-problems is the CLI-level regression for the
+	// second half of #385. `2026.1` is an edition this build knows and `flow
+	// fix` can rewrite from, so the gate is no longer absolute for it — the
+	// misspelled key below has to reach the author in the same `flow validate`
+	// run that reports the edition, not only after a `flow fix` round trip.
+	// `iff:` sits on a line the edition rewrite never moves (only the
+	// `edition:` line itself changes), which is what lets its position be
+	// reported at all; see [flowfile.editionOnlyRewrite].
+	"old-edition-with-other-problems.yaml": `edition: 2026.1
+name: old
+steps:
+  - id: greet
+    iff: true
+    log:
+      message: hi
+`,
 }
 
 // TestValidateCorpusAllDiagnosticsShareOneSpelling is the sweep #384 asked for:
@@ -306,4 +408,67 @@ func TestValidateCorpusAllDiagnosticsShareOneSpelling(t *testing.T) {
 		assert.Regexp(t, linkablePosition, line,
 			"every positioned diagnostic line must read file:line[:col]: message, got %q", line)
 	}
+}
+
+// linesForCorpusFile filters a report down to the lines naming one file of the
+// corpus, in the order `flow validate` printed them.
+func linesForCorpusFile(lines []string, name string) []string {
+	var out []string
+	for _, line := range lines {
+		path, _, ok := strings.Cut(line, ":")
+		if ok && filepath.Base(path) == name {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// TestValidateCorpusReportsRestOfFileAfterARewritableEdition is the CLI-level
+// regression for the second half of #385, run through the same corpus sweep
+// TestValidateCorpusAllDiagnosticsShareOneSpelling uses rather than a
+// hand-built fixture of its own — see that test's doc for why a corpus beats
+// one fixture per branch, and [pkg/flowstate/v1/flowfile.TestOlderEditionReportsTheRestOfTheFile]
+// for the same behavior pinned one layer down, against the compiler directly.
+//
+// old-edition-with-other-problems.yaml declares `2026.1`, an edition this
+// build knows and `flow fix` can mechanically rewrite from, and also
+// misspells `if:` as `iff:`. Before the fix landed, the edition gate was
+// absolute for every declared edition it did not compile, known or not, so
+// this file reported one line and the misspelling was invisible until the
+// author ran `flow fix` and validated again. What the corpus catches that a
+// single fixture would not: a diagnostic call site added anywhere in the
+// validator that regresses the gate back to absolute silently breaks this
+// sweep too, without anyone having to remember to update a fixture for it.
+func TestValidateCorpusReportsRestOfFileAfterARewritableEdition(t *testing.T) {
+	const name = "old-edition-with-other-problems.yaml"
+	require.Contains(t, diagnosticCorpus, name,
+		"the corpus fixture this test depends on is missing; nothing to sweep")
+
+	dir := t.TempDir()
+	for corpusName, body := range diagnosticCorpus {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, corpusName), []byte(body), 0o600))
+	}
+
+	out, err := validateOutput(t, dir)
+	require.Error(t, err, "every file in the corpus is broken; validate must fail")
+
+	lines := linesForCorpusFile(diagnosticLinesOf(out), name)
+
+	// Anti-vacuity: a gate regressed back to absolute reports exactly one line
+	// for this file, so requiring more than one is what makes this test fail
+	// on the bug it is written for, rather than passing on a fixture that
+	// happens to still print something.
+	require.GreaterOrEqual(t, len(lines), 2,
+		"%s must report the edition line and the misspelled key in one run; got:\n%s",
+		name, strings.Join(lines, "\n"))
+
+	// The edition diagnostic stays first, so the ordering tells the story: the
+	// rest of the report describes a file the author still has to rewrite.
+	assert.Contains(t, lines[0], "edition",
+		"the edition diagnostic must be first, got %q", lines[0])
+	assert.Contains(t, lines[0], "2026.1")
+
+	rest := strings.Join(lines[1:], "\n")
+	assert.Contains(t, rest, `did you mean "if"?`,
+		"the misspelled key must be reported alongside the edition line, not only after `flow fix`")
 }

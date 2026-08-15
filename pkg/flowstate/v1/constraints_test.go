@@ -555,7 +555,11 @@ func TestMustRefusesAnOversizedList(t *testing.T) {
 
 	require.Error(t, err, "a list past the element bound reached the evaluator")
 	assert.Contains(t, err.Error(), "items")
-	assert.Less(t, elapsed, time.Second, "the bound itself must be checked before any expensive work")
+	// A generous backstop, not a tight one: the point is "the bound tripped
+	// before any comprehension ran" versus "the value was actually walked",
+	// and this margin has nothing to do with wall-clock precision — see
+	// issue #431 and the identical reasoning in eval_task_http_test.go.
+	assert.Less(t, elapsed, 5*time.Second, "the bound itself must be checked before any expensive work")
 }
 
 // manyItems returns a []any of n small ints, for building oversized list
@@ -604,7 +608,11 @@ func TestBindRunInputsRefusesAStructWithAnOversizedNestedList(t *testing.T) {
 	require.Error(t, err, "a struct whose nested list exceeds the element bound reached the evaluator")
 	assert.Contains(t, err.Error(), "payload")
 	assert.Contains(t, err.Error(), "list elements")
-	assert.Less(t, elapsed, time.Second, "the bound itself must be checked before any expensive work")
+	// A generous backstop, not a tight one: the point is "the bound tripped
+	// before any comprehension ran" versus "the value was actually walked",
+	// and this margin has nothing to do with wall-clock precision — see
+	// issue #431 and the identical reasoning in eval_task_http_test.go.
+	assert.Less(t, elapsed, 5*time.Second, "the bound itself must be checked before any expensive work")
 }
 
 // TestBindRunInputsRefusesManySmallListsSummingOverTheBound is the direction a

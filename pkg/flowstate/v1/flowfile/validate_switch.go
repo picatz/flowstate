@@ -2,7 +2,6 @@ package flowfile
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -61,7 +60,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 		})
 	}
 
-	domain, domainKnown := switchDomain(sw.GetValue(), wf)
+	domain, domainKnown := switchDomain(sw.GetValue(), enclosing)
 
 	// The case literals: computed values refused, duplicates found after
 	// flattening `case: [a, b]` lists, and — where the domain is knowable —
@@ -242,7 +241,9 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	// only: a body cannot see a sibling body's steps, since at most one of them
 	// exists in any run.
 	seenIDs := make(map[string]bool, len(enclosing.steps)+1)
-	maps.Copy(seenIDs, enclosing.steps)
+	for id := range enclosing.steps {
+		seenIDs[id] = true
+	}
 	// The switch's own id, which enclosing.steps does not hold yet — the walk
 	// records a step only after validating it. Without this seed a body step
 	// reusing the switch's id validates clean and then has its outputs silently
@@ -280,14 +281,14 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	return ds
 }
 
-// switchStepIDs returns the ids of every step across a switch's bodies,
-// including those nested control flow merges out, mirroring [branchStepIDs].
-func switchStepIDs(sw *v1.Switch) []string {
-	var ids []string
+// switchStepNodes returns every step across a switch's bodies, including those
+// nested control flow merges out, mirroring [branchStepNodes].
+func switchStepNodes(sw *v1.Switch) []*v1.Node {
+	var nodes []*v1.Node
 	for _, body := range v1.SwitchBodies(sw) {
-		ids = append(ids, mergedStepIDs(body)...)
+		nodes = append(nodes, mergedStepNodes(body)...)
 	}
-	return ids
+	return nodes
 }
 
 // switchCaseField addresses one case literal the way its position was recorded:
@@ -317,7 +318,7 @@ func switchCaseField(caseIndex, valueCount, valueIndex int) string {
 // deliberately refused too — a switch over a constant is degenerate, and
 // inventing a singleton domain would fire the exhaustiveness checks on a file
 // whose real mistake is the dispatch itself.
-func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
+func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
 	parsed := value.GetExpr()
 	if parsed == nil {
 		return nil, false
@@ -334,7 +335,12 @@ func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
 	}
 	stepID, outputName := inner.GetField(), outer.GetField()
 
-	node := nodeWithID(stepID, wf)
+	// The step that id names *here*, taken from the scope this switch is checked
+	// against rather than found by searching the file: an id is unique within a
+	// visibility domain and not within a workflow, so a first-match search reads
+	// the shaping expression of some other block's step and infers a domain for a
+	// discriminant that has nothing to do with it (#323).
+	node := enclosing.steps[stepID]
 
 	// [v1.OutputNames] is the one answer to "what does this step produce and
 	// from what expression", shared with the language server so the two

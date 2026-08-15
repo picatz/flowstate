@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/stretchr/testify/require"
 )
@@ -80,9 +83,12 @@ func TestRunWorkflowLoop(t *testing.T) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
-				require.Error(t, err, "the loop was expected to fail at its ceiling")
-				require.Contains(t, err.Error(), "ran its full budget",
-					"a loop that exhausts its budget must say so distinctly")
+				require.Error(t, err, "the loop was expected to fail")
+				want := test.ExpectedErrorContains
+				if want == "" {
+					want = "ran its full budget"
+				}
+				require.Contains(t, err.Error(), want)
 				return
 			}
 			require.NoError(t, err)
@@ -196,7 +202,13 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 			v1.SetDefaultTaskPolicy(policy)
 			t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-			out, err := v1.Run(t.Context(), tc.Workflow)
+			// The local driver's route for the case's identity: the same
+			// seam `flow run local --as-*` uses, which is the whole of what
+			// #295 fixed. A case with no identity sets nil, which is
+			// identical to not setting one — the starter-less run.
+			ctx := v1.NewContextWithRehearsalIdentity(t.Context(), tc.Identity)
+
+			out, err := v1.Run(ctx, tc.Workflow)
 
 			if tc.DeniedTask != "" {
 				require.Error(t, err, "the policy must refuse this dispatch")
@@ -981,6 +993,142 @@ func TestRunWorkflowUndoOnCancellation(t *testing.T) {
 			tests.AssertCancellationRecorded(t, test, recorded())
 		})
 	}
+}
+
+// TestRunWorkflowCancellationCauseIsDistinguishable is issue #520's own
+// cancellation case: `context.WithCancelCause` was unused across the tree, so
+// every cancelled run read as the same "context canceled" whatever actually
+// stopped it. Two runs stopped for two different reasons — a stand-in for a
+// CEL cost limit and for [UndoBudget] running out — must produce two
+// different failure messages, and `errors.Is(err, context.Canceled)` must
+// still hold for both, which is what a caller distinguishing a stopped run
+// from a failed one relies on (see [UndoRunError]).
+func TestRunWorkflowCancellationCauseIsDistinguishable(t *testing.T) {
+	runCancelledWithCause := func(t *testing.T, cause error) error {
+		t.Helper()
+
+		base, recorded := tests.NewUndoServer(t)
+		workflow := tests.UndoCancellationCases(base)[0].Workflow
+
+		ctx, cancel := context.WithCancelCause(t.Context())
+		defer cancel(nil)
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := v1.Run(ctx, workflow)
+			done <- err
+		}()
+
+		require.Eventually(t, func() bool {
+			return slices.Contains(recorded(), "z")
+		}, 30*time.Second, time.Millisecond,
+			"the run never reached the step it was to be cancelled at")
+
+		cancel(cause)
+
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(30 * time.Second):
+			t.Fatal("a cancelled run did not stop")
+			return nil
+		}
+	}
+
+	errA := runCancelledWithCause(t, errors.New("cel cost limit of 1000000 exceeded"))
+	errB := runCancelledWithCause(t, errors.New("compensation budget for this cancelled run ran out"))
+
+	require.ErrorIs(t, errA, context.Canceled, "a cancelled run must still read as cancelled")
+	require.ErrorIs(t, errB, context.Canceled, "a cancelled run must still read as cancelled")
+
+	require.ErrorContains(t, errA, "cel cost limit of 1000000 exceeded")
+	require.ErrorContains(t, errB, "compensation budget for this cancelled run ran out")
+	require.NotEqual(t, errA.Error(), errB.Error(),
+		"two different cancellation reasons produced the same failure text")
+}
+
+// TestRunWorkflowCancellationCauseIsNotDoubled is the doubling the run-level
+// fallback ([eval.go]'s cancellation branch) could reintroduce once
+// [runStepWithPolicy] started enriching a cancellation with a cause of its
+// own: a run cancelled while a step is waiting out its retry backoff already
+// has a named cause by the time it reaches the fallback, and the fallback
+// must not name it a second time.
+//
+// The step is made to be waiting on its retry backoff, rather than mid-attempt,
+// because that is the deterministic half of "executing or waiting to retry" —
+// mid-attempt would race an in-flight HTTP request against the cancellation
+// with no signal to synchronize on. A five-second interval gives the
+// cancellation, sent the moment the first request is observed to have
+// arrived, a wide and reliable window to land inside the sleep.
+//
+// The exact text is asserted, not merely that "maintenance" appears once:
+// `require.Contains` would pass on the doubled "context canceled: maintenance:
+// maintenance" just as readily as on the single, correct rendering, since both
+// contain the substring once each without overlap being checked.
+func TestRunWorkflowCancellationCauseIsNotDoubled(t *testing.T) {
+	// Not parallel, for the reason TestAStepWithNoRetryBlockUsesTheSharedDefault
+	// gives: reaching a test server means swapping the http task's egress policy
+	// process-wide.
+	allowLoopback(t)
+
+	requested := make(chan struct{}, 1)
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(failing.Close)
+
+	workflow := &v1.Workflow{
+		Name:    "doubling-probe",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "a",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+				"url": v1.NewLiteral(failing.URL),
+			}}},
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{
+				MaxAttempts:     3,
+				InitialInterval: durationpb.New(5 * time.Second),
+			}},
+		}},
+	}
+
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := v1.Run(ctx, workflow)
+		done <- err
+	}()
+
+	select {
+	case <-requested:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the step never made its first request, so cancelling never lands in its retry backoff")
+	}
+
+	// `flow cancel`, arriving while the step is asleep between attempts —
+	// [runStepWithPolicy]'s own withCancellationCause call already names this
+	// cause before the error ever reaches eval's run-level fallback.
+	cancel(errors.New("maintenance"))
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a cancelled run did not stop")
+	}
+
+	require.Error(t, err, "a cancelled run reported success")
+	require.ErrorIs(t, err, context.Canceled,
+		"a stopped run stopped reading as cancelled: %v", err)
+
+	require.Equal(t, `step "a": context canceled: maintenance`, err.Error(),
+		"the cancellation cause was named more than once")
 }
 
 // undoPlaceholderBase is a base URL used only to enumerate the shared saga cases.

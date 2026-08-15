@@ -283,6 +283,27 @@ type fakeWorkflowService struct {
 	// than one schedule back: whether `-o jsonl` writes one line per schedule
 	// rather than the whole listing on one line.
 	listSchedulesResponse *v1.ListSchedulesResponse
+
+	// GetCatalog, whose tests live in mcp_test.go alongside
+	// flowstate_get_catalog's dispatch. gotGetCatalog records that this fake
+	// was the one asked, which is what distinguishes "the deployment answered"
+	// from "the in-process server answered" in a test that must tell the two
+	// apart.
+	gotGetCatalog      *v1.GetCatalogRequest
+	getCatalogResponse *v1.GetCatalogResponse
+	getCatalogErr      error
+}
+
+// GetCatalog implements [flowstatev1connect.WorkflowServiceHandler].
+func (f *fakeWorkflowService) GetCatalog(_ context.Context, req *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
+	f.gotGetCatalog = req.Msg
+	if f.getCatalogErr != nil {
+		return nil, f.getCatalogErr
+	}
+	if f.getCatalogResponse != nil {
+		return connect.NewResponse(f.getCatalogResponse), nil
+	}
+	return connect.NewResponse(&v1.GetCatalogResponse{}), nil
 }
 
 // DeleteSchedule implements [flowstatev1connect.WorkflowServiceHandler].

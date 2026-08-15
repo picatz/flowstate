@@ -79,7 +79,14 @@ Flowfile to completion in the calling process.
 - ❌ Identity is *asserted*, not verified: `--as-namespace`, `--as-deployment`,
   and `--as-claim` on `flow run local` let you rehearse policy as any tenant
   you like, with no credential check, because that is the point of local
-  rehearsal (`runLocalCmd` flags in `cmd/flow/main.go`).
+  rehearsal (`runLocalCmd` flags in `cmd/flow/main.go`). Every surface that
+  reads an identity reads that one — the secret rules, a credential the run
+  assumes, plugin tasks, `run.identity`, and the `--task-policy` and
+  `--egress-policy` rules — so what you rehearse is what the worker would
+  decide. What an assertion cannot do is travel: `run.local` reads true, and a
+  credential minted for a local run carries a `_local` subject component no
+  server-attested run can produce, so a cloud trust policy written for
+  production will not match a rehearsal's.
 - ❌ Never run this as a shared service. There is no authentication surface to
   turn on — it doesn't have one to withhold.
 
@@ -158,10 +165,14 @@ cheap to turn on, and undocumented until now.
   reach a host that every other tenant on that worker is denied — the one
   asymmetry that previously kept egress out of this tier. It is available in
   both rule scopes, so a resolved-address rule (`... && ip == "10.0.0.5"`) can
-  be tenant-scoped too. Fail-closed like the others: a run with no attested
-  identity (a local run, or one predating identity) presents an empty namespace
-  and matches no tenant rule. `examples/egress-policy.yaml` is the worked
-  example. This is Tier 1b — one shared worker — not the per-tenant worker of
+  be tenant-scoped too. Fail-closed like the others: a run that names no
+  identity (one predating identity, or a local rehearsal started without
+  `--as-namespace`) presents an empty namespace and matches no tenant rule. A
+  local run started *with* one presents it, so `flow run local --egress-policy
+  ... --as-namespace team-a` rehearses the answer this worker would give
+  team-a rather than the answer it gives a caller with no tenant at all
+  (#295) — asserted, never verified, which is what Tier 0 above says about
+  every `--as-*` flag. `examples/egress-policy.yaml` is the worked example. This is Tier 1b — one shared worker — not the per-tenant worker of
   Tier 2, which remains the stronger answer where history privacy is also
   required.
 - ❌ Still no history privacy and no plugin/process containment — those are

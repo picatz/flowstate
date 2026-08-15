@@ -3,6 +3,7 @@ package lsp
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,17 +67,31 @@ func TestHoverAnsweredWhenItArrivesWithDidOpen(t *testing.T) {
 		c := newClient(t)
 		c.initialize()
 
+		// require.NotNilf below is not a substitute: [documentStore.await]'s
+		// build deadline is 2s, and a build that lands just under that ceiling
+		// still answers non-nil and correct — a wall-clock threshold loose
+		// enough to tolerate scheduling jitter on a contended box is also loose
+		// enough for that failure mode to pass under it, which is the bug this
+		// test exists to catch wearing a passing assertion's clothes. So this
+		// asks the store directly rather than timing the round trip: hoverTrace
+		// records whether the wait that answered this hover ever gave up
+		// because [documentBuildTimeout] expired, as opposed to finding the
+		// document already landed. A hover racing an in-flight build honestly
+		// is allowed to wait — that is the mechanism #317 needs — but it must
+		// never be the deadline that ends the wait for a document that arrived
+		// in the same breath as its didOpen.
+		var boundExpired atomic.Bool
+		c.server.docs.setAwaitTrace(func(expired bool) { boundExpired.Store(expired) })
+
 		uri := "file:///race-open.yaml"
 		c.openNoWait(uri, raceSource)
 
 		at := positionOf(t, raceSource, "for_each:", 0)
-		start := time.Now()
 		got := c.hover(uri, at.Line, at.Character)
-		elapsed := time.Since(start)
 
 		require.NotNilf(t, got, "round %d: hover answered null for a document the client had already opened", round)
 		assert.Containsf(t, hoverText(got), "for_each", "round %d", round)
-		assert.Lessf(t, elapsed, time.Second, "round %d: hover took %s, which is a wait that is not ending on the build", round, elapsed)
+		assert.Falsef(t, boundExpired.Load(), "round %d: hover's wait ended because documentBuildTimeout expired rather than because the document was found built, which the elapsed-time check this replaced could not tell apart from a fast answer", round)
 	}
 }
 
@@ -152,15 +167,22 @@ func TestHoverThroughAChangeStormAnswersFromTheLatestVersion(t *testing.T) {
 		c.changeNoWait(uri, latest, i+1)
 	}
 
+	// Whether the answer came from in-memory state or from riding out a build,
+	// asked of the wait itself rather than of a stopwatch — the same instrument
+	// the test above uses, for the same reason. A wall-clock bound cannot
+	// separate the two: [documentBuildTimeout] is two seconds, so a hover that
+	// waited out the entire build still returns well inside any threshold loose
+	// enough to survive a contended box.
+	var boundExpired atomic.Bool
+	c.server.docs.setAwaitTrace(func(expired bool) { boundExpired.Store(expired) })
+
 	// Into the middle of the burst, with no wait of any kind. The position is the
 	// inner step's id, which every version of the document has in the same place.
 	at := positionOf(t, latest, "id: final_marker", 4)
-	start := time.Now()
 	got := c.hover(uri, at.Line, at.Character)
-	elapsed := time.Since(start)
 
 	require.NotNil(t, got, "hover answered null for a document in the middle of a change storm")
-	assert.Less(t, elapsed, time.Second, "hover took %s, which is a wait that is not ending on a build", elapsed)
+	assert.False(t, boundExpired.Load(), "hover's wait ended because a build bound expired rather than because the document was found built, which is the blocking this test exists to exclude")
 	text := hoverText(got)
 	named := slices.ContainsFunc(append(names, "shout"), func(name string) bool {
 		return strings.Contains(text, "step `"+name+"`")

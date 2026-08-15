@@ -1099,7 +1099,7 @@ the vocabulary work.
 
 *Since written:* structured auth shipped, under a different spelling — `bearer` and
 `credential` inputs on the `http` task (`TaskDef.AuthorityInputs`/`CredentialInputs`
-in `eval_task_library.go`; `examples/http-secret/`, `examples/http-federated/`).
+in `eval_task_http_def.go`; `examples/http-secret/`, `examples/http-federated/`).
 Only `idempotency_key` and the Flowfile-declared egress capabilities remain held.
 
 ### `triggers:` — the file declares a cadence, a person creates it *(landed)*
@@ -3998,9 +3998,13 @@ recording. Three further properties follow from the pin being over bytes:
   still bind every argument, is refused all the same when it is not the callee that was
   reviewed. That is the whole point: `flow validate` already answers the other question.
 - **Reformatting counts as a change.** `flow fmt` rewrites a file from its parsed form,
-  so it changes the callee's bytes and every pin on it, and drops a pin from a caller it
-  rewrites the way it drops a comment. Pin the callees whose change should stop the
-  world, and leave the rest unpinned.
+  so it changes the callee's bytes and every pin on it. It carries a caller's own pin
+  across a reformat unchanged, the way it carries a comment — a pin is not part of the
+  compiled workflow either, so it is read from source and written back at the same
+  position — but carrying the pin forward does not make it match a callee whose bytes
+  a reformat just changed; that mismatch is refused at the next compile, the same as
+  an author's own edit to the callee would be. Pin the callees whose change should
+  stop the world, and leave the rest unpinned.
 - **It is not a signature.** It says the bytes are the bytes, not that they came from
   anywhere in particular or that they are good ones.
 
@@ -4574,7 +4578,9 @@ becomes reachable when a case names a starter, which is the whole reason to name
 Neither field makes a case look attested. A scripted `sender:` delivers as a rehearsal,
 `sender.local` true, the same marker `--signal-as-subject` carries and the same one the
 durable driver refuses; a `starter:` reaches the signal policy and nothing else, leaving
-`run.identity` empty and `run.local` true exactly as every local run reports them. A
+`run.identity` empty and `run.local` true. (`flow run local --as-subject` does reach
+`run.identity`, and a test case's `starter:` deliberately does not: a case is not a run
+somebody started, so there is nobody for it to report.) A
 scripted sender that rendered as an attested one was a real inconsistency for as long as
 it lasted: `!sender.local` is what a workflow author reads to mean "a server accepted
 this", and a test harness is the last place that may be untrue.

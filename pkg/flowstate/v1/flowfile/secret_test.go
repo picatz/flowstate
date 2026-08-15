@@ -217,6 +217,90 @@ steps:
 			src:  taskInput(`token: ${secret(42)}`),
 			want: "takes one reference, written out",
 		},
+		{
+			// #534: a wait's shaped `outputs:` is evaluated by the workflow at
+			// the moment the wait resolves and its result is recorded on the
+			// run — durable, broadly readable history — so a bare reference
+			// here used to compile into a held [v1.SecretRef] with no
+			// diagnostic at all.
+			name: "a wait's shaped output",
+			src: `edition: v2026.3
+name: t
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approved
+      outputs:
+        token: ${secret('env:API_TOKEN')}
+`,
+			want: "cannot be part of a wait's shaped `outputs:`",
+		},
+		{
+			// The same reference nested one level down inside a shaped output —
+			// combined with text rather than the whole value — still has to be
+			// refused, and refused as a secret-in-a-wrong-place rather than
+			// merely as "not the whole value", since the latter would read as
+			// an invitation to make it the whole value instead.
+			name: "a wait's shaped output combined with text",
+			src: `edition: v2026.3
+name: t
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approved
+      outputs:
+        token: ${'Bearer ' + secret('env:API_TOKEN')}
+`,
+			want: "cannot be part of a wait's shaped `outputs:`",
+		},
+		{
+			name: "a loop's init",
+			src: `edition: v2026.3
+name: t
+steps:
+  - id: a
+    loop:
+      as: state
+      init: ${secret('env:API_TOKEN')}
+      until: ${true}
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
+			want: "cannot be carried as loop state",
+		},
+		{
+			name: "a loop's update",
+			src: `edition: v2026.3
+name: t
+steps:
+  - id: a
+    loop:
+      as: state
+      init: ${'start'}
+      update: ${secret('env:API_TOKEN')}
+      until: ${true}
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
+			want: "cannot be carried as loop state",
+		},
+		{
+			// The neighbour #534 asked to be checked, and the reason it needs
+			// no new code: a task's own shaped `outputs:` mapping is walked for
+			// a marker before it is ever compiled entry by entry
+			// ([compiler.shapedOutputs]), and "outputs" is not one of the
+			// inputs `http` accepts a nested reference in, so this was already
+			// refused. Pinned here so a future change to that walk cannot
+			// silently reopen the sibling this issue was about.
+			name: "a task's shaped output (sibling, already refused)",
+			src: httpInput(`outputs:
+        token: ${secret('env:API_TOKEN')}`),
+			want: "cannot be nested inside this input's list or mapping",
+		},
 	}
 
 	for _, tt := range tests {

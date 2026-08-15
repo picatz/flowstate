@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -40,6 +41,21 @@ import (
 // expensive one to lose (#381). Where a comment cannot be carried across at all,
 // because what it was written against is not written back in the same shape, the
 // whole file is refused and left alone rather than rewritten without it.
+//
+// A `digest:` pin beside a `call:` gets the same treatment, for a sharper reason
+// (#339): it is not part of the compiled workflow either, so it is carried across
+// from source the same way a comment is, and a file carrying one that cannot be
+// placed is refused rather than silently unpinned — dropping a security check
+// with no diagnostic is the one thing a rewriter here must never do. Formatting a
+// whole directory in one pass formats a callee before whatever pins it, so a
+// caller and a pinned callee inside the same run settle in the order that keeps
+// the pin meaningful rather than the order the directory happens to sort in; see
+// orderCalleesBeforeCallers. A caller's own pin still goes stale the moment its
+// callee's bytes actually change under a reformat, exactly as an author's own
+// edit to the callee would leave it — that mismatch is what the next compile of
+// the caller reports, not something this command re-stamps on the author's
+// behalf (DSL.md's pinning section says why: a pin a tool refreshed for you would
+// record that a file changed rather than that a person read the change).
 //
 // It refuses to touch a file that will not parse. Reporting a syntax error and
 // leaving the file exactly as it was is the same rule `flow fix` follows: a file
@@ -152,6 +168,22 @@ func runFmt(cmd *cobra.Command, paths []string, opts fmtOptions) error {
 	if opts.stdout && len(files) != 1 {
 		return newUsageError(fmt.Errorf("--stdout writes one document, but %d files were named", len(files)))
 	}
+
+	// A callee is formatted before whatever pins it, not in the walk's own
+	// alphabetical order. `flow fmt` now carries a `digest:` pin across
+	// verbatim (see flowfile.Format's doc), and a pin is over *bytes*:
+	// reformatting a callee changes what it hashes to the same way any other
+	// edit does. Format the caller first and its pin — read from the caller's
+	// source before the callee moved — is stamped onto disk still pointing at
+	// bytes the callee no longer has, which the *next* compile refuses rather
+	// than reports now: a directory-wide run left an inconsistency for
+	// something else to discover. Formatting callees first means a caller
+	// with a callee in this same run either compiles against that callee's
+	// already-final bytes, or already did not match before either file
+	// moved — in which case it was going to refuse regardless of order, and
+	// refusing now is the same fail-closed answer `flow fmt` already gives a
+	// file it cannot safely rewrite.
+	files = orderCalleesBeforeCallers(files)
 
 	// Reports go to stderr and the rewritten document to stdout under
 	// --stdout, for the same reason `flow fix --stdout` splits the two: a
@@ -268,9 +300,9 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// so there is nothing safe to write. Reported and left alone, the same
 		// as `flow fix` leaves a shape it refuses.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
+			writeErrDiagnostics(reports, theme, path, err)
 		}
-		report.Refusals = refusalDiagnostics(err)
+		report.Refusals = errDiagnosticsProto(err)
 		return fmtOutcome{refused: true, report: report}, nil
 	}
 
@@ -282,9 +314,9 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// carrying a comment the rewrite cannot keep: dropping an author's prose
 		// to win a reformat is the trade this command does not make.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
+			writeErrDiagnostics(reports, theme, path, err)
 		}
-		report.Refusals = refusalDiagnostics(err)
+		report.Refusals = errDiagnosticsProto(err)
 		return fmtOutcome{refused: true, report: report}, nil
 	}
 
@@ -324,24 +356,125 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 	return outcome, nil
 }
 
-// refusalDiagnostics widens an error from Unmarshal or Marshal into the schema
-// type a machine report carries.
+// orderCalleesBeforeCallers reorders files so that, within one `flow fmt`
+// invocation, every file a `call:` step reaches is formatted before the file
+// that calls it — see the comment where this is called for why a directory's
+// own alphabetical order cannot be trusted for that once a pin survives
+// formatting.
 //
-// [flowfile.Unmarshal] returns [flowfile.Diagnostics] with a position for a file
-// that failed to parse; [flowfile.Marshal] returns a bare error for a workflow it
-// cannot render back out. Both are real answers about the file, so both become a
-// diagnostic — positioned where one exists, and as a single unpositioned entry
-// where it does not, the same rule [validateMachine] applies to a parse failure
-// that is not even YAML.
-func refusalDiagnostics(err error) []*v1.Diagnostic {
-	var diagnostics flowfile.Diagnostics
-	if errors.As(err, &diagnostics) {
-		out := make([]*v1.Diagnostic, 0, len(diagnostics))
-		for _, d := range diagnostics {
-			out = append(out, d.Proto())
-		}
-		return out
+// Where files has no dependency between two entries, or where a dependency
+// could not be discovered (the caller does not parse, or its target is not
+// itself part of files), their relative order is left exactly as
+// collectFlowfiles produced it — this is a partial reorder, not a resort, and
+// touching the order of files a pin's presence has no bearing on would make
+// every unrelated report a diff too.
+func orderCalleesBeforeCallers(files []string) []string {
+	index := make(map[string]int, len(files))
+	for i, f := range files {
+		index[filepath.Clean(f)] = i
 	}
 
-	return []*v1.Diagnostic{{Message: err.Error()}}
+	// dependsOn[i] holds the indices, within files, of the callees a `call:`
+	// step in files[i] names directly. Only a direct edge is recorded — A
+	// calling B calling C orders as C, B, A regardless, because the sort
+	// below places a node only once every node it points at is already
+	// placed, and that chains through an indirect edge exactly as it does a
+	// direct one.
+	dependsOn := make([][]int, len(files))
+	for i, f := range files {
+		workflow, _, err := flowfile.ParseFile(f)
+		if err != nil {
+			// This file will refuse on its own merits when it is actually
+			// formatted; where it sorts among files with no bearing on that
+			// outcome.
+			continue
+		}
+		for target := range directCallTargets(f, workflow) {
+			if j, ok := index[target]; ok && j != i {
+				dependsOn[i] = append(dependsOn[i], j)
+			}
+		}
+	}
+
+	placed := make([]bool, len(files))
+	out := make([]string, 0, len(files))
+	for len(out) < len(files) {
+		progressed := false
+		for i, f := range files {
+			if placed[i] {
+				continue
+			}
+			ready := true
+			for _, dep := range dependsOn[i] {
+				if !placed[dep] {
+					ready = false
+					break
+				}
+			}
+			if !ready {
+				continue
+			}
+			placed[i] = true
+			out = append(out, f)
+			progressed = true
+		}
+		if !progressed {
+			// A cycle across files' `call:` graphs, which the compiler's own
+			// cycle check already refuses at compile time (parse.go), so
+			// every file still unplaced here is one that cannot compile on
+			// its own terms regardless of what order this hands it out in.
+			// Appended in their original order rather than dropped, the same
+			// fail-open-on-the-harmless-part rule [collectFlowfiles] already
+			// follows for a file that is not recognizably a Flowfile at all.
+			for i, f := range files {
+				if !placed[i] {
+					placed[i] = true
+					out = append(out, f)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// directCallTargets resolves every `call:` step's target in workflow —
+// including one nested in a loop, a parallel branch, or a switch case or
+// default — to the file it names, relative to path's own directory, the way
+// the compiler itself resolves one. Not followed transitively into what a
+// callee itself calls: [orderCalleesBeforeCallers] only needs a direct edge
+// per file, because chained direct edges already produce the same order a
+// transitive walk would, at a fraction of the parsing.
+func directCallTargets(path string, workflow *v1.Workflow) map[string]bool {
+	dir := filepath.Dir(path)
+	out := map[string]bool{}
+
+	var walk func(nodes []*v1.Node)
+	walk = func(nodes []*v1.Node) {
+		for _, node := range nodes {
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_Call:
+				if source := kind.Call.GetSource(); source != "" {
+					out[filepath.Clean(filepath.Join(dir, source))] = true
+				}
+			case *v1.Node_ForEach:
+				walk(kind.ForEach.GetBody())
+			case *v1.Node_Loop:
+				walk(kind.Loop.GetBody())
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					walk(branch.GetSteps())
+				}
+			case *v1.Node_Switch:
+				for _, c := range kind.Switch.GetCases() {
+					walk(c.GetSteps())
+				}
+				if def := kind.Switch.GetDefault(); def != nil {
+					walk(def.GetSteps())
+				}
+			}
+		}
+	}
+	walk(workflow.GetSteps())
+
+	return out
 }

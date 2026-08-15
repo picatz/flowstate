@@ -37,11 +37,21 @@ import (
 // pin matched, and the run is the run it would have been anyway, or it did not,
 // and there is no run.
 //
-// A pin is not written back out. [Marshal] renders a [v1.Workflow] and a pin is
-// not part of one, so `flow fmt` drops it the way it drops a comment. Which is
-// the same fact from the other side: a pin is over *bytes*, so anything that
-// rewrites the callee, a formatter as readily as an author, changes its digest
-// and needs the pin updated. That is the mechanism working rather than failing.
+// A pin is not part of what [Marshal] writes: it renders a [v1.Workflow], and
+// a pin is deliberately not one — SourceDigest is set whether or not an
+// author wrote a pin, so the compiled workflow cannot even say which calls
+// were pinned. `flow fmt` reads a pin from source instead and carries it
+// across the same way it carries a comment (see [Format]'s doc); dropping it
+// silently was the bug #339 fixed, because unlike a comment a pin is a
+// security check, and a rewriter turning one off with no diagnostic is the
+// worst shape this repository's own rules name.
+//
+// What carrying it across does not change: a pin is over *bytes*, so anything
+// that rewrites the callee, a formatter as readily as an author, changes its
+// digest and needs the pin updated. That is the mechanism working rather than
+// failing — the caller's own pin is carried forward exactly as written, and
+// the next thing that compiles it (`flow validate`, `flow test`, another
+// `flow fmt`) is what notices the mismatch and says so.
 
 // maxCallExpansionNodes bounds the total compiled node count across every
 // callee resolved while compiling one file's whole call tree.

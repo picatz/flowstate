@@ -67,13 +67,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
-			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/serverdev.go",
+			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
 			value:   "unset",
 			purpose: "Permit the `http` task to reach loopback addresses. Ignored while an `--egress-policy` file is in force: a policy that wants loopback says `allow_loopback: true`.",
-			read:    "pkg/flowstate/v1/eval_task_library.go, cmd/flow/serverdev.go",
+			read:    "pkg/flowstate/v1/eval_task_http_def.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_AUDIENCE",
@@ -341,6 +341,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/acme.go",
 		},
 		{
+			name:    "FLOWSTATE_TLS_CA_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-ca-file` on the client commands: a PEM CA bundle to verify the server's certificate against, in place of the system roots. Unset trusts the system roots.",
+			read:    "cmd/flow/clientcert.go",
+		},
+		{
 			name:    "FLOWSTATE_TLS_CERT_FILE",
 			value:   "unset",
 			purpose: "Default for `--tls-cert-file` on `flow server`: a PEM certificate (or chain) for the public listener. Unset serves plain HTTP, refused unless the listen address is loopback. Must be given with `FLOWSTATE_TLS_KEY_FILE`.",
@@ -357,6 +363,18 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `--tls-client-auth-identity` on `flow server`: set (to anything) to also authenticate the caller from a verified client certificate, through the `kind: mtls` trust policy entry that admitted it. Requires `FLOWSTATE_TLS_CLIENT_AUTH=require`; without it a required certificate is a connection-level fence only and a caller still needs a bearer token.",
 			read:    "cmd/flow/mtls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CLIENT_CERT_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-client-cert-file` on the client commands: a PEM client certificate to present to a server started with `--tls-client-auth require`. Must be given with `FLOWSTATE_TLS_CLIENT_KEY_FILE`. Unset presents no certificate, which such a server refuses at the handshake.",
+			read:    "cmd/flow/clientcert.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CLIENT_KEY_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-client-key-file` on the client commands: the PEM private key matching `FLOWSTATE_TLS_CLIENT_CERT_FILE`.",
+			read:    "cmd/flow/clientcert.go",
 		},
 		{
 			name:    "FLOWSTATE_TLS_KEY_FILE",

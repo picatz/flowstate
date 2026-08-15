@@ -381,6 +381,25 @@ func DeclaredTypeName(t InputDeclaration_Type) string {
 	return strings.ToLower(strings.TrimPrefix(t.String(), "TYPE_"))
 }
 
+// StringShaped reports whether a declared type's wire shape is a string:
+// true for TYPE_STRING itself, and for TYPE_ENUM, whose values travel as
+// strings and are judged by membership once resolved rather than by shape
+// (see [CheckInputValue] and [constraintCELType]).
+//
+// Written as one predicate rather than repeated at each call site, because
+// TYPE_ENUM's wire shape being string-shaped is a fact about the schema, and
+// a fact restated three times is a fact one of the three restatements will
+// eventually get wrong — which is exactly how TYPE_ENUM went unhandled in
+// `flow breaking`, a `call:` argument's static type check, and
+// `representativeValue`'s task-field validation, all at once: each compared
+// a declared type to TYPE_STRING directly instead of asking whether the two
+// were compatible. A caller that needs to know whether a statically known
+// string type is compatible with a declared type should ask this rather than
+// add a fourth `== TYPE_ENUM` beside the other three.
+func StringShaped(t InputDeclaration_Type) bool {
+	return t == InputDeclaration_TYPE_STRING || t == InputDeclaration_TYPE_ENUM
+}
+
 // DeclaredTypeNames returns every type an input may be declared as, in the order the
 // schema declares them, for a diagnostic offering the alternatives.
 func DeclaredTypeNames() []string {

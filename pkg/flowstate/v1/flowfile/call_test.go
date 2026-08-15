@@ -200,6 +200,77 @@ steps:
 	}
 }
 
+// TestCallEnumArgumentType is P2 of #621: a callee declaring an enum input is
+// callable with a statically string-typed expression, because enum values
+// travel as strings on the wire ([v1.StringShaped]) — the same shape
+// [v1.CheckInputValue] already accepted for a literal. A non-member literal
+// is still refused, and a statically mistyped expression (not a string at
+// all) is still refused too, so the fix widens exactly the one comparison
+// that was too narrow rather than the whole check.
+func TestCallEnumArgumentType(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.3
+name: callee
+inputs:
+  environment:
+    type: enum
+    values: [staging, production]
+    required: true
+steps:
+  - id: a
+    log:
+      message: ${'env ' + inputs.environment}
+`)
+
+	tests := []struct {
+		name    string
+		with    string
+		wantErr string // empty means "accepted"
+	}{
+		{
+			name:    "member literal",
+			with:    "environment: staging",
+			wantErr: "",
+		},
+		{
+			name:    "non-member literal",
+			with:    "environment: canary",
+			wantErr: `is "canary", which is not one of the values environment declares`,
+		},
+		{
+			name:    "statically string-typed expression, a member",
+			with:    "environment: ${\"staging\"}",
+			wantErr: "",
+		},
+		{
+			name:    "statically mistyped expression, not a string at all",
+			with:    "environment: ${1 + 2}",
+			wantErr: `with.environment is declared enum by workflow "callee", but this expression always produces int`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller := writeFile(t, dir, "caller-"+tt.name+".yaml", `edition: v2026.3
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+    with:
+      `+tt.with+`
+`)
+
+			ds := mustValidate(t, caller)
+			if tt.wantErr == "" {
+				require.Empty(t, ds, "an argument that should have been accepted was flagged: %v", ds)
+				return
+			}
+			require.NotEmpty(t, ds, "a mistyped argument was accepted")
+			require.Contains(t, ds.Error(), tt.wantErr)
+		})
+	}
+}
+
 // TestCallArgumentOverTheElementBoundRefused is #206's worst-case finding: a
 // literal `with:` argument over the server-wide element bound used to pass
 // `flow validate` cleanly, because checkCallArgumentType's own
