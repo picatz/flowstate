@@ -202,6 +202,14 @@ func TestEveryDocumentedReadLocationIsWhereItIsRead(t *testing.T) {
 		}
 
 		for _, where := range documented {
+			if !isLocalSource(where) {
+				// A read inside a dependency — `go.temporal.io/sdk envconfig` for
+				// the TEMPORAL_* variables — is a true and useful thing to tell a
+				// reader, and this scan walks cmd/ and pkg/ only, so it has no
+				// evidence either way. Asserting on it would fail an honest entry.
+				continue
+			}
+
 			assert.Contains(t, actual, where,
 				"%s's `read:` column sends a reader to %s and nothing there reads it; "+
 					"the reads are %s", variable.name, where, strings.Join(actual, ", "))
@@ -216,6 +224,25 @@ func TestEveryDocumentedReadLocationIsWhereItIsRead(t *testing.T) {
 			"column format changed and this test is no longer reading what it claims to",
 			checked)
 	}
+}
+
+// isLocalSource reports whether a documented location is somewhere this scan
+// looked, which is the only kind it can hold an opinion about.
+//
+// Codex raised this on #587 as a failure the gate was already having, and it was
+// not: the three TEMPORAL_* variables are read through `getenv(name)` over a
+// slice of names, so nothing resolves them to a literal, `reads` holds no entry,
+// and the comparison is skipped entirely. The gate is green.
+//
+// The finding is still worth acting on, because it describes a trap rather than
+// a break. Rewrite that loop as three literal `os.Getenv` calls — an ordinary,
+// harmless-looking refactor — and `reads` gains `cmd/flow/serverdev.go`, the
+// skip stops firing, and the reverse assertion fails on `go.temporal.io/sdk
+// envconfig`: a correct entry, reported as wrong, by a test that had been
+// passing. A check that turns red on a refactor it has no opinion about teaches
+// people to edit the check.
+func isLocalSource(location string) bool {
+	return strings.HasPrefix(location, "cmd/") || strings.HasPrefix(location, "pkg/")
 }
 
 // documentedReadLocations splits a `read:` column into the paths it names.
