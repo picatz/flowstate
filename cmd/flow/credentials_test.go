@@ -1,19 +1,22 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/credentialsource"
 )
 
 // withTokenConfig points the credential machinery at a fixture for one test.
 //
-// The token file is passed to [tokenFor] rather than set globally, so it is returned
-// here. allowPlaintextCredential is still package-level — it has no flag, only an
-// environment variable read at startup — so it is restored.
+// The token file is passed to [defaultSource] rather than set globally, so it is
+// returned here. allowPlaintextCredential is still package-level — it has no
+// flag, only an environment variable read at startup — so it is restored.
 func withTokenConfig(t *testing.T, file, env string, allowPlaintext bool) string {
 	t.Helper()
 
@@ -45,7 +48,7 @@ func writeToken(t *testing.T, contents string) string {
 func TestNoCredentialConfiguredIsAnonymous(t *testing.T) {
 	tokenFile := withTokenConfig(t, "", "", false)
 
-	token, err := tokenFor("https://flowstate.example.com", tokenFile)
+	token, err := tokenFor(context.Background(), "https://flowstate.example.com", defaultSource{tokenFile: tokenFile})
 	if err != nil {
 		t.Fatalf("no credential configured should not be an error: %v", err)
 	}
@@ -61,7 +64,7 @@ func TestNoCredentialConfiguredIsAnonymous(t *testing.T) {
 func TestATokenFileIsPreferredOverTheEnvironment(t *testing.T) {
 	tokenFile := withTokenConfig(t, writeToken(t, "from-the-file"), "from-the-environment", false)
 
-	token, err := tokenFor("https://flowstate.example.com", tokenFile)
+	token, err := tokenFor(context.Background(), "https://flowstate.example.com", defaultSource{tokenFile: tokenFile})
 	if err != nil {
 		t.Fatalf("tokenFor: %v", err)
 	}
@@ -79,8 +82,9 @@ func TestATokenFileIsPreferredOverTheEnvironment(t *testing.T) {
 func TestATokenFileIsReadPerRequest(t *testing.T) {
 	path := writeToken(t, "first")
 	tokenFile := withTokenConfig(t, path, "", false)
+	source := defaultSource{tokenFile: tokenFile}
 
-	if token, err := tokenFor("https://flowstate.example.com", tokenFile); err != nil || token != "first" {
+	if token, err := tokenFor(context.Background(), "https://flowstate.example.com", source); err != nil || token != "first" {
 		t.Fatalf("token = %q, %v; want the original", token, err)
 	}
 
@@ -88,7 +92,7 @@ func TestATokenFileIsReadPerRequest(t *testing.T) {
 		t.Fatalf("rotating the fixture: %v", err)
 	}
 
-	token, err := tokenFor("https://flowstate.example.com", tokenFile)
+	token, err := tokenFor(context.Background(), "https://flowstate.example.com", source)
 	if err != nil {
 		t.Fatalf("tokenFor after rotation: %v", err)
 	}
@@ -105,7 +109,7 @@ func TestATokenFileIsReadPerRequest(t *testing.T) {
 func TestATokenFileIsTrimmed(t *testing.T) {
 	tokenFile := withTokenConfig(t, writeToken(t, "  padded\n"), "", false)
 
-	token, err := tokenFor("https://flowstate.example.com", tokenFile)
+	token, err := tokenFor(context.Background(), "https://flowstate.example.com", defaultSource{tokenFile: tokenFile})
 	if err != nil {
 		t.Fatalf("tokenFor: %v", err)
 	}
@@ -119,9 +123,9 @@ func TestATokenFileIsTrimmed(t *testing.T) {
 // It is also the likelier mistake by far: a path pointing at the wrong thing. A
 // diagnostic beats hashing whatever it found into an Authorization header.
 func TestAnOversizedTokenFileIsRefused(t *testing.T) {
-	tokenFile := withTokenConfig(t, writeToken(t, strings.Repeat("x", maxTokenBytes+1)), "", false)
+	tokenFile := withTokenConfig(t, writeToken(t, strings.Repeat("x", credentialsource.MaxFileTokenBytes+1)), "", false)
 
-	_, err := tokenFor("https://flowstate.example.com", tokenFile)
+	_, err := tokenFor(context.Background(), "https://flowstate.example.com", defaultSource{tokenFile: tokenFile})
 	if err == nil {
 		t.Fatal("an oversized credential file was accepted")
 	}
@@ -139,7 +143,7 @@ func TestAnOversizedTokenFileIsRefused(t *testing.T) {
 func TestACredentialIsRefusedOverPlaintextToARemoteServer(t *testing.T) {
 	tokenFile := withTokenConfig(t, writeToken(t, "secret-token"), "", false)
 
-	_, err := tokenFor("http://flowstate.example.com:9233", tokenFile)
+	_, err := tokenFor(context.Background(), "http://flowstate.example.com:9233", defaultSource{tokenFile: tokenFile})
 	if err == nil {
 		t.Fatal("a credential was sent to a remote server over plain HTTP")
 	}
@@ -168,7 +172,7 @@ func TestACredentialIsSentWhereItIsSafeTo(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			tokenFile := withTokenConfig(t, writeToken(t, "secret-token"), "", test.allowPlaintext)
 
-			token, err := tokenFor(test.baseURL, tokenFile)
+			token, err := tokenFor(context.Background(), test.baseURL, defaultSource{tokenFile: tokenFile})
 			if err != nil {
 				t.Fatalf("tokenFor(%s): %v", test.baseURL, err)
 			}
@@ -190,7 +194,7 @@ func TestTheTransportPresentsTheCredential(t *testing.T) {
 
 	tokenFile := withTokenConfig(t, writeToken(t, "secret-token"), "", false)
 
-	transport := &authorizingTransport{base: http.DefaultTransport, baseURL: server.URL, tokenFile: tokenFile}
+	transport := &authorizingTransport{base: http.DefaultTransport, baseURL: server.URL, source: defaultSource{tokenFile: tokenFile}}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, nil)
 	if err != nil {
 		t.Fatalf("building the request: %v", err)
@@ -227,7 +231,7 @@ func TestTheTransportSendsNothingWhenNothingIsConfigured(t *testing.T) {
 
 	tokenFile := withTokenConfig(t, "", "", false)
 
-	transport := &authorizingTransport{base: http.DefaultTransport, baseURL: server.URL, tokenFile: tokenFile}
+	transport := &authorizingTransport{base: http.DefaultTransport, baseURL: server.URL, source: defaultSource{tokenFile: tokenFile}}
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, nil)
 	if err != nil {
 		t.Fatalf("building the request: %v", err)
@@ -241,5 +245,44 @@ func TestTheTransportSendsNothingWhenNothingIsConfigured(t *testing.T) {
 
 	if present {
 		t.Error("an Authorization header was sent with no credential configured")
+	}
+}
+
+// TestTheTransportRefusesAnUnknownCredentialSource is the fail-closed case a
+// misspelled --credential-source must hit: a configuration error surfaced on
+// the first request, never silently ignored in favor of anonymous.
+func TestTheTransportRefusesAnUnknownCredentialSource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the request must never reach the server when the credential source could not be resolved")
+	}))
+	t.Cleanup(server.Close)
+
+	_, sourceErr := credentialSourceFor(serverFlags{
+		address:          server.URL,
+		credentialSource: "made-up-source",
+	})
+	if sourceErr == nil {
+		t.Fatal("resolving an unknown credential source must fail")
+	}
+
+	transport := &authorizingTransport{base: http.DefaultTransport, baseURL: server.URL, sourceErr: sourceErr}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+
+	if _, err := transport.RoundTrip(req); err == nil {
+		t.Fatal("an unresolved credential source must refuse the request rather than send it anonymously")
+	}
+}
+
+// TestCredentialSourceForGitHubActionsRequiresAudience is the fail-closed case
+// for the explicit source itself: naming github-actions with no --audience
+// must be a construction error, not a source that later mints a token nobody
+// scoped to a relying party.
+func TestCredentialSourceForGitHubActionsRequiresAudience(t *testing.T) {
+	_, err := credentialSourceFor(serverFlags{credentialSource: credentialsource.SourceGitHubActions})
+	if err == nil {
+		t.Fatal("github-actions with no audience must be refused")
 	}
 }

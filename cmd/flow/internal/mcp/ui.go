@@ -1,4 +1,4 @@
-package main
+package mcp
 
 import (
 	"context"
@@ -47,45 +47,45 @@ import (
 // says so; an attested approver waits on the remote MCP surface.
 
 const (
-	// mcpUIExtension is the MCP Apps extension identifier, as the specification
+	// UIExtension is the MCP Apps extension identifier, as the specification
 	// defines it. It is the key both a client's and a server's capabilities use.
-	mcpUIExtension = "io.modelcontextprotocol/ui"
+	UIExtension = "io.modelcontextprotocol/ui"
 
-	// mcpUIAppMIME is the media type an MCP Apps resource is served as. It is a
+	// UIAppMIME is the media type an MCP Apps resource is served as. It is a
 	// profile of text/html, not a media type of its own, which is what lets a
 	// host that does not know the profile still recognise the document.
-	mcpUIAppMIME = "text/html;profile=mcp-app"
+	UIAppMIME = "text/html;profile=mcp-app"
 
-	// mcpApprovalCardURI is the card's identity. The URI never changes; the
+	// ApprovalCardURI is the card's identity. The URI never changes; the
 	// content digest below is what says which revision of it a host is holding.
-	mcpApprovalCardURI = "ui://flowstate/approval-card"
+	ApprovalCardURI = "ui://flowstate/approval-card"
 
-	// mcpUIToolMetaKey is the `_meta` member a tool declares its view under, and
-	// mcpUIResourceURIKey the member inside it naming the resource.
-	mcpUIToolMetaKey     = "ui"
-	mcpUIResourceURIKey  = "resourceUri"
-	mcpUIMIMETypesKey    = "mimeTypes"
-	mcpUIContentHashKey  = "picatz.github.io/flowstate.contentDigest"
-	mcpUICardResourceKey = "approval-card"
+	// UIToolMetaKey is the `_meta` member a tool declares its view under, and
+	// UIResourceURIKey the member inside it naming the resource.
+	UIToolMetaKey     = "ui"
+	UIResourceURIKey  = "resourceUri"
+	UIMIMETypesKey    = "mimeTypes"
+	UIContentHashKey  = "picatz.github.io/flowstate.contentDigest"
+	UICardResourceKey = "approval-card"
 )
 
-// mcpUIServerCapabilities is what `flow mcp` declares at initialize.
+// uiServerCapabilities is what `flow mcp` declares at initialize.
 //
 // A non-nil ServerCapabilities replaces the SDK's default, which is the deprecated
 // logging capability and nothing else; the tools and resources capabilities are
 // still inferred from what was registered, because the SDK only fills a field this
 // leaves nil. Nothing on this surface emits a log message, so dropping that default
 // removes a claim rather than a feature.
-func mcpUIServerCapabilities() *mcp.ServerCapabilities {
+func uiServerCapabilities() *mcp.ServerCapabilities {
 	caps := &mcp.ServerCapabilities{}
-	caps.AddExtension(mcpUIExtension, map[string]any{
-		mcpUIMIMETypesKey: []string{mcpUIAppMIME},
+	caps.AddExtension(UIExtension, map[string]any{
+		UIMIMETypesKey: []string{UIAppMIME},
 	})
 
 	return caps
 }
 
-// mcpApprovalCardDigest names the exact bytes served, in the one spelling this
+// ApprovalCardDigest names the exact bytes served, in the one spelling this
 // tree uses for that: see [v1.ContentDigest], which is the same function the
 // `digest:` pin on a `call:` step is compared against.
 //
@@ -93,11 +93,11 @@ func mcpUIServerCapabilities() *mcp.ServerCapabilities {
 // URI, so "which card am I holding" is a question only the content can answer,
 // and answering it with a hash rather than a hand-maintained number means the
 // answer cannot be forgotten in a diff that changes the card.
-func mcpApprovalCardDigest() string {
+func ApprovalCardDigest() string {
 	return v1.ContentDigest([]byte(fragments.ApprovalCard()))
 }
 
-// mcpApprovalCardResourceMeta is the `_meta` served both on the resource's
+// ApprovalCardResourceMeta is the `_meta` served both on the resource's
 // declaration and on its contents, so a host comparing the two cannot find them
 // disagreeing about which revision it has.
 //
@@ -106,37 +106,37 @@ func mcpApprovalCardDigest() string {
 // tool calls on that same connection, and it needs no origin, no camera, no
 // clipboard and no network of its own. A relaxation asked for "just in case" is a
 // relaxation a host grants.
-func mcpApprovalCardResourceMeta() mcp.Meta {
-	return mcp.Meta{mcpUIContentHashKey: mcpApprovalCardDigest()}
+func ApprovalCardResourceMeta() mcp.Meta {
+	return mcp.Meta{UIContentHashKey: ApprovalCardDigest()}
 }
 
-// mcpUIToolMeta is the `_meta` a tool carries to say which view renders it.
-func mcpUIToolMeta(resourceURI string) mcp.Meta {
-	return mcp.Meta{mcpUIToolMetaKey: map[string]any{
-		mcpUIResourceURIKey: resourceURI,
+// uiToolMeta is the `_meta` a tool carries to say which view renders it.
+func uiToolMeta(resourceURI string) mcp.Meta {
+	return mcp.Meta{UIToolMetaKey: map[string]any{
+		UIResourceURIKey: resourceURI,
 		// Deliberately no `visibility`. The default leaves the tool visible to
 		// the model, which is what keeps the plain result the primary answer and
 		// the card a second rendering of it.
 	}}
 }
 
-// addMCPUIResources registers the UI half of the resource surface.
+// addUIResources registers the UI half of the resource surface.
 //
-// Separate from addMCPResources because the two are different kinds of thing.
+// Separate from addResources because the two are different kinds of thing.
 // Those are documents an agent reads to decide what to do; this is a document a
 // *host* renders, and no model should ever be handed its bytes. It is registered
 // as a resource because that is how the extension addresses a view, not because
 // it is reference material.
-func addMCPUIResources(srv *mcp.Server) {
+func addUIResources(srv *mcp.Server) {
 	card := fragments.ApprovalCard()
 
 	srv.AddResource(&mcp.Resource{
-		URI:      mcpApprovalCardURI,
-		Name:     mcpUICardResourceKey,
+		URI:      ApprovalCardURI,
+		Name:     UICardResourceKey,
 		Title:    "Approval card",
-		MIMEType: mcpUIAppMIME,
+		MIMEType: UIAppMIME,
 		Size:     int64(len(card)),
-		Meta:     mcpApprovalCardResourceMeta(),
+		Meta:     ApprovalCardResourceMeta(),
 		Description: "The interactive approval card an MCP Apps host renders for flowstate_get: the " +
 			"gates a run is parked on, each with the question it is asking, and an approve and a " +
 			"reject that travel as a flowstate_signal call the server authorizes exactly as it " +
@@ -152,16 +152,16 @@ func addMCPUIResources(srv *mcp.Server) {
 // was built from.
 func mcpApprovalCardHandler() mcp.ResourceHandler {
 	return func(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		if req.Params.URI != mcpApprovalCardURI {
+		if req.Params.URI != ApprovalCardURI {
 			return nil, mcp.ResourceNotFoundError(req.Params.URI)
 		}
 
 		return &mcp.ReadResourceResult{
 			Contents: []*mcp.ResourceContents{{
-				URI:      mcpApprovalCardURI,
-				MIMEType: mcpUIAppMIME,
+				URI:      ApprovalCardURI,
+				MIMEType: UIAppMIME,
 				Text:     fragments.ApprovalCard(),
-				Meta:     mcpApprovalCardResourceMeta(),
+				Meta:     ApprovalCardResourceMeta(),
 			}},
 		}, nil
 	}

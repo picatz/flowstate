@@ -1,0 +1,56 @@
+# Three cases: a caller under quota (zero overage, zero charge), one whose
+# overage is an exact multiple of the block size, and one whose overage is a
+# partial block — the case that proves `math.ceil` rounds up rather than
+# truncating the way plain int division would.
+edition: v2026.3
+tests:
+  - name: a caller under quota owes nothing
+    workflow: ./workflow.yaml
+    inputs:
+      calls_made: 4000
+      quota: 10000
+      price_per_1000_cents: 150
+    stubs:
+      - task: log
+        where: inputs.message == '0 overage call(s), 0 block(s), 0 cent(s) owed'
+        returns: {}
+    expect:
+      ran: [overage, billable_blocks, cost_cents, announce]
+      outputs:
+        overage_calls: 0
+        billable_blocks: 0
+        cost_cents: 0
+
+  - name: overage that lands on an exact block boundary bills exactly that many blocks
+    workflow: ./workflow.yaml
+    inputs:
+      calls_made: 12000
+      quota: 10000
+      price_per_1000_cents: 150
+    stubs:
+      - task: log
+        where: inputs.message == '2000 overage call(s), 2 block(s), 300 cent(s) owed'
+        returns: {}
+    expect:
+      ran: [overage, billable_blocks, cost_cents, announce]
+      outputs:
+        overage_calls: 2000
+        billable_blocks: 2
+        cost_cents: 300
+
+  - name: one call past a block boundary still bills the whole next block
+    workflow: ./workflow.yaml
+    inputs:
+      calls_made: 12750
+      quota: 10000
+      price_per_1000_cents: 150
+    stubs:
+      - task: log
+        where: inputs.message == '2750 overage call(s), 3 block(s), 450 cent(s) owed'
+        returns: {}
+    expect:
+      ran: [overage, billable_blocks, cost_cents, announce]
+      outputs:
+        overage_calls: 2750
+        billable_blocks: 3
+        cost_cents: 450

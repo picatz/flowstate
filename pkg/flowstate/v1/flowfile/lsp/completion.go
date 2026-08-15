@@ -821,6 +821,32 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		c.detail = "parallel"
 		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
 
+	case s.loopEntry != nil, s.waitUntilEntry != nil, s.sleepEntry != nil,
+		s.waitForSignalEntry != nil, s.hasKey(waitUntilKey), s.hasKey(sleepKey), s.hasKey("wait_for_signal"):
+		// A `loop:` or a wait runs no task either, and stepCandidate had no
+		// branch for either — so completion fell into the default arm below,
+		// looked up an empty task name, and offered nothing after
+		// `${steps.paginate.}` or `${steps.gate.}` (#322, Codex's #320
+		// findings). [v1.OutputNames] is the same answer [hoverConstructOutput]
+		// reads, so accepting a candidate here and then hovering it cannot
+		// describe two different things.
+		if node := constructOutputNode(s); node != nil {
+			c.detail = s.kind()
+			if c.detail == "" {
+				c.detail = "wait"
+			}
+			names, _ := v1.OutputNames(node, tasks)
+			for _, n := range names {
+				if n.Name == "" {
+					continue
+				}
+				c.outputs = append(c.outputs, refOutput{
+					name: n.Name,
+					docs: n.Description,
+				})
+			}
+		}
+
 	case s.valueEntry != nil:
 		// The only candidate here whose output set is fixed by the *grammar*
 		// rather than read from a descriptor, a shaping expression, or a sender.

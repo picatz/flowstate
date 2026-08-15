@@ -1,4 +1,4 @@
-package main
+package mcp
 
 import (
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -121,10 +121,10 @@ func testInputSchema() map[string]any {
 	}
 }
 
-// schemaForMessage renders a message descriptor as a 2020-12 JSON Schema object
+// SchemaForMessage renders a message descriptor as a 2020-12 JSON Schema object
 // describing the message's protojson encoding: camelCase names, enums by name,
 // bytes as base64, 64-bit integers as strings.
-func schemaForMessage(md protoreflect.MessageDescriptor) map[string]any {
+func SchemaForMessage(md protoreflect.MessageDescriptor) map[string]any {
 	return messageSchema(md, map[protoreflect.FullName]bool{})
 }
 

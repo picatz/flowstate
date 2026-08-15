@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/encoding/protojson"
+
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
 
 // FuzzMCPToolArguments fuzzes the decode step every MCP tool call goes
@@ -17,10 +19,10 @@ import (
 // bytes, because both are reached by the same kind of caller:
 //
 //   - mcpHandler's protojson.Unmarshal(raw, in) — one call site, run here
-//     against every proto message a workflowServiceMethods() row names, since
+//     against every proto message a flowmcp.WorkflowServiceMethods() row names, since
 //     the decoder is shared and the schema is the only thing that varies.
 //   - runLocalToolHandler's encoding/json decode of runLocalArguments, the one
-//     tool that is not an RPC and so is not in workflowServiceMethods.
+//     tool that is not an RPC and so is not in flowmcp.WorkflowServiceMethods.
 //
 // Neither call executes a workflow or dials a server on this path — decoding
 // arguments is upstream of method.call and of v1.Run — so this is bounded to
@@ -64,7 +66,7 @@ func FuzzMCPToolArguments(f *testing.F) {
 		f.Add(seed)
 	}
 
-	methods := workflowServiceMethods()
+	methods := flowmcp.WorkflowServiceMethods()
 
 	f.Fuzz(func(t *testing.T, arguments string) {
 		raw := []byte(arguments)
@@ -73,7 +75,7 @@ func FuzzMCPToolArguments(f *testing.F) {
 		// a real client picks the tool and this fuzzes the decoder rather than
 		// the choice.
 		for _, method := range methods {
-			in := newMessage(method.input)
+			in := flowmcp.NewMessage(method.Input)
 			if len(raw) == 0 {
 				continue
 			}

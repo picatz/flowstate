@@ -7,12 +7,14 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -502,10 +504,23 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	reason, _ := cmd.Flags().GetString("reason")
 
-	started, err := newWorkflowServiceClient(serverFlagsOf(cmd)).Run(cmd.Context(),
+	server := serverFlagsOf(cmd)
+
+	// Built once and used for both the request that starts the run and every
+	// poll of the follow phase below, rather than once per RPC — see
+	// [newFollowClient]. That also moves a misconfigured --credential-source
+	// ahead of the Flowfile being submitted at all: refused here, before
+	// anything has started, instead of surfacing from the transport on the
+	// first request the same as any other refusal.
+	client, err := newFollowClient(server)
+	if err != nil {
+		return err
+	}
+
+	started, err := client.Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
 	if err != nil {
-		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), serverFlagsOf(cmd), err)
+		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), server, err)
 	}
 
 	workflowID := started.Msg.GetWorkflowId()
@@ -540,7 +555,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	}
 
 	return watchRun(cmd.Context(), surface, format,
-		clientPoller{workflowID: workflowID, server: serverFlagsOf(cmd), spec: workflow, reveal: reveal},
+		clientPoller{workflowID: workflowID, server: server, client: client, spec: workflow, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
 
@@ -575,6 +590,21 @@ func runServer(cmd *cobra.Command, args []string) error {
 	authCfg := authFlagsOf(cmd)
 	temporalCfg := temporalFlagsOf(cmd)
 
+	// The internal listener's address is validated now — loopback or
+	// empty, nothing else, per cmd/flow/internallistener.go — but not bound
+	// until this function is about to serve, so a later failure does not
+	// leave a socket open behind an error return.
+	internalFlags := internalListenerFlagsOf(cmd)
+	if err := checkInternalListenAddress(internalFlags.address); err != nil {
+		return err
+	}
+
+	// The trust policy is loaded before the public listener's certificate is
+	// resolved, not after as an earlier version of this function did,
+	// because [resolveACMESettings]'s federation cross-check (see
+	// cmd/flow/acme.go) needs policy.Federation.Issuer to compare against
+	// --tls-acme-hosts, and a value cannot be cross-checked before it is
+	// read.
 	verifier, policy, err := authVerifier(authCfg)
 	if err != nil {
 		return err
@@ -583,6 +613,71 @@ func runServer(cmd *cobra.Command, args []string) error {
 	broker, err := identityBroker(authCfg, policy)
 	if err != nil {
 		return err
+	}
+
+	// The public listener's certificate, and whether the address it is about
+	// to bind may go without one. Checked before any further I/O beyond the
+	// files and policy already read above: a certificate this process cannot
+	// load or obtain, or a non-loopback address with none configured, is a
+	// start-up failure rather than something discovered after Temporal has
+	// been dialed. See cmd/flow/tls.go and cmd/flow/acme.go.
+	tlsListenerFlags := tlsFlagsOf(cmd)
+	acmeListenerFlags := acmeFlagsOf(cmd)
+
+	var federationIssuer string
+	if policy != nil && policy.Federation != nil {
+		federationIssuer = policy.Federation.Issuer
+	}
+
+	acmeCfg, err := resolveACMESettings(acmeListenerFlags, tlsListenerFlags, internalFlags.address, federationIssuer)
+	if err != nil {
+		return err
+	}
+
+	var tlsCfg *tls.Config
+	if acmeCfg != nil {
+		tlsCfg = acmeCfg.tlsConfig()
+	} else {
+		tlsCfg, err = serverTLSConfig(tlsListenerFlags)
+		if err != nil {
+			return err
+		}
+	}
+
+	// --listen defaults to $FLOWSTATE_ADDRESS (cmp.Or at registration, above in
+	// this file), so an operator who only ever set the environment variable
+	// sees no change; --listen is what lets them override it from the command
+	// line, which nothing did before.
+	publicAddr, _ := cmd.Flags().GetString("listen")
+	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.tlsTerminatedUpstream); err != nil {
+		return err
+	}
+
+	// mTLS, picatz/flowstate#582: whether the public listener requires a
+	// client certificate, and whether a verified one also authenticates the
+	// caller. Resolved (and, if requested, applied to tlsCfg in place) after
+	// refusePlaintextListener, so a plaintext posture is refused for its own
+	// reason first and mTLS's own refusals — --tls-terminated-upstream, no
+	// server TLS at all, no kind: mtls policy entry — are reported in terms
+	// of the listener this process actually ended up with.
+	mtlsListenerFlags := mtlsFlagsOf(cmd)
+	peerVerifier, err := resolveMTLS(mtlsListenerFlags, policy, tlsListenerFlags.tlsTerminatedUpstream, tlsCfg)
+	if err != nil {
+		return err
+	}
+
+	// Acquisition is startup: obtain (or reuse from cache) a certificate for
+	// every configured host now, before this process claims to be serving
+	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
+	// see [primeACMECertificates]'s doc for why that matters.
+	if acmeCfg != nil {
+		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
+		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("obtaining ACME certificates before serving: %w", err)
+		}
+		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
 	}
 
 	// Fetch every trusted issuer's keys now, so an issuer that is misconfigured
@@ -753,13 +848,22 @@ func runServer(cmd *cobra.Command, args []string) error {
 	)
 
 	httpServer := &http.Server{
-		// Where this server *listens*, which was the same package variable a client
-		// used to decide where to *connect*. One default served both, so nothing
-		// broke — but they are different facts, and `flow server` never declared an
-		// --address flag, so the variable it shared could only ever hold the
-		// environment's value anyway. Read directly, which is what it meant.
-		Addr:    cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
-		Handler: serverHandler(logger, verifier, broker, rpcMux, receiver),
+		// Where this server *listens* (--listen / $FLOWSTATE_ADDRESS), which used
+		// to share a package variable with the address a client dials to
+		// *connect* — different facts that happened to share a default. --listen
+		// is this command's own flag for its own half of that; see its
+		// registration, above in this file, and cmd/flow/tls.go for why it is not
+		// spelled --address.
+		//
+		// The same value [refusePlaintextListener] already checked above, so a
+		// deployment cannot have this listener bind an address this function
+		// already refused.
+		Addr:    publicAddr,
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver),
+
+		// nil when no certificate was configured, which is only reachable here
+		// when publicAddr is loopback — anything else already returned above.
+		TLSConfig: tlsCfg,
 
 		// Without these a client that opens a connection and sends bytes
 		// slowly, or never, occupies a connection indefinitely. Go's zero
@@ -771,7 +875,18 @@ func runServer(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	logger.Info("starting server", "address", httpServer.Addr)
+	// Bound now, so a port already in use or a permission error is reported
+	// before the banner-equivalent log lines below claim the server is up,
+	// and so the internal listener (below) binds its own socket only after
+	// this one is known good.
+	publicListener, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", httpServer.Addr, err)
+	}
+
+	logger.Info("starting server", "address", httpServer.Addr, "tls", tlsCfg != nil,
+		"client_certificate_required", tlsCfg != nil && tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert,
+		"client_certificate_authenticates", peerVerifier != nil)
 	if authCfg.insecure {
 		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
@@ -784,20 +899,71 @@ func runServer(cmd *cobra.Command, args []string) error {
 			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
 	}
 
-	serveErr := make(chan error, 1)
+	// The internal listener binds only now, once the public one is already
+	// known good — see [checkInternalListenAddress] above for why its address
+	// was already validated, and this file's package comment on
+	// cmd/flow/internallistener.go for what it carries. internalServer is nil
+	// when the operator never opted into it (--internal-listen unset, the
+	// default), which every branch below treats as "nothing more to do".
+	internalServer, internalListener, err := startInternalListener(logger, internalFlags.address)
+	if err != nil {
+		publicListener.Close()
+		return err
+	}
+	if internalServer != nil {
+		logger.Info("starting internal listener", "address", internalListener.Addr().String())
+	}
+
+	// Buffered for both producers below, so neither goroutine blocks trying to
+	// report an outcome nobody is listening for anymore once shutdown starts.
+	serveErr := make(chan error, 2)
 	go func() {
 		// Report a listen failure instead of terminating the process from a
 		// goroutine, so shutdown still runs and the error reaches the caller.
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- fmt.Errorf("listening on %s: %w", httpServer.Addr, err)
+		// TLS is served through this same call: [http.Server.ServeTLS] reads
+		// the certificate from httpServer.TLSConfig when no file paths are
+		// given, which is exactly what [serverTLSConfig] populated it with.
+		var err error
+		if tlsCfg != nil {
+			err = httpServer.ServeTLS(publicListener, "", "")
+		} else {
+			err = httpServer.Serve(publicListener)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- fmt.Errorf("serving on %s: %w", httpServer.Addr, err)
 			return
 		}
 		serveErr <- nil
 	}()
+	if internalServer != nil {
+		go func() {
+			if err := internalServer.Serve(internalListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- fmt.Errorf("serving the internal listener on %s: %w",
+					internalListener.Addr(), err)
+				return
+			}
+			serveErr <- nil
+		}()
+	}
 
+	// The renewal watchdog, only running when ACME is configured. A nil
+	// channel blocks forever in the select below, which is exactly "there is
+	// nothing more for this to contribute" for a deployment using an
+	// explicit certificate or no TLS at all. See [acmeExpiryWatchdog]'s doc
+	// for #581's renewal-failure decision: silent while a valid certificate
+	// is on hand, loud well before expiry, fatal only once a certificate has
+	// actually expired with no successful renewal.
+	var acmeFatal <-chan error
+	if acmeCfg != nil {
+		watchdogCtx, cancelWatchdog := context.WithCancel(context.Background())
+		defer cancelWatchdog()
+		acmeFatal = acmeExpiryWatchdog(watchdogCtx, logger, cacheCertExpiry(acmeCfg.manager.Cache), acmeCfg.hosts)
+	}
+
+	var runErr error
 	select {
-	case err := <-serveErr:
-		return err
+	case runErr = <-serveErr:
+	case runErr = <-acmeFatal:
 	case <-cmd.Context().Done():
 	}
 
@@ -811,10 +977,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
+	if internalServer != nil {
+		if err := internalServer.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("the internal listener was forced down with requests still in flight",
+				"error", err)
+		}
+	}
 
 	// After the in-flight requests have drained, so their spans are in the
 	// batch rather than in the one nobody sends.
 	flushTelemetry()
+
+	if runErr != nil {
+		return runErr
+	}
 
 	logger.Info("server stopped")
 
@@ -1573,6 +1749,30 @@ flow server --verbose`,
 		"caller token claim to carry into each run's workload identity (repeatable), "+
 			"such as repository or email; only named claims are carried, and they are "+
 			"what workload.claims[...] policy rules read")
+
+	// The public listener's own address. Until now this was the one setting in
+	// the tree configured by environment variable with no flag beside it:
+	// FLOWSTATE_ADDRESS remains the default, so nothing that works today stops
+	// working, but `flow server --help` now says how to change it instead of
+	// sending an operator to the deployment docs. Named --listen rather than
+	// --address for the same reason `flow server dev` is: --address on this
+	// command already means Temporal's address (the loop two hundred lines up),
+	// and a bare host:port for net.Listen is not the client's --address either,
+	// which takes a URL and may carry a scheme.
+	serverCmd.Flags().String("listen", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
+		"address this server listens on, as a bare host:port for net.Listen (default "+
+			"$FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, "+
+			"refusePlaintextListener requires --tls-cert-file/--tls-key-file or "+
+			"--tls-terminated-upstream")
+
+	// The public listener's TLS configuration, its ACME automatic-certificate
+	// alternative, and the internal listener's own address — see
+	// cmd/flow/tls.go, cmd/flow/acme.go and cmd/flow/internallistener.go.
+	// Server only: a worker makes no listener of its own to protect.
+	addTLSFlags(serverCmd)
+	addACMEFlags(serverCmd)
+	addMTLSFlags(serverCmd)
+	addInternalListenerFlags(serverCmd)
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{

@@ -99,11 +99,21 @@ name the editor offers is always one the workflow can resolve:
 - A step cannot reference the block that contains it, since that block has not
   finished while the step runs.
 
-Each diagnostic carries a stable code you can filter on: `yaml-syntax`,
-`cel-syntax`, `document-too-large`, and `flowfile` for everything the shared
-validator reports — the same problems `flow validate` prints, with the same wording,
-positioned onto the token at fault. Most of what you will see is `flowfile`, and that
-is the point: the editor and the command line cannot disagree about a file.
+Each diagnostic carries a stable code you can filter on. Three of them belong to
+this server, for the problems it finds itself: `yaml-syntax`, `cel-syntax`, and
+`document-too-large`. Everything else is the shared validator's own code, published
+unchanged — `unknown-task`, `unresolved-reference`, `type-mismatch`,
+`constraint-violation`, `placement-refusal`, `retired-key`, `sensitive-in-log`,
+`sensitive-in-prompt`, and `general` for a class that has not earned one.
+[reference/diagnostics.md](reference/diagnostics.md) is the generated list.
+
+That the codes pass through is the point rather than an implementation detail. The
+server used to overwrite every validator code with a single spelling, `flowfile`,
+which meant an editor could filter every Flowfile problem or none while a program
+reading the same file over `flow validate --output json` could tell an unknown task
+from an unresolved reference. Two surfaces disagreeing about what a problem *is* is
+the drift the schema type exists to prevent, so what you see under the squiggle is
+what the JSON says.
 
 The two syntax codes are the exceptions, and they earn it: a document that will not
 parse has no model for the validator to run against, so there is nothing for it to
@@ -256,22 +266,21 @@ rather than a repository's about yours.
 
 ## Neovim
 
-### Without a plugin (Neovim 0.11+)
+This is the configuration CI runs. It lives at
+[`tools/editorsmoke/init.lua`](../tools/editorsmoke/init.lua), and
+`tools/editorsmoke/probe.lua` asserts on every pull request that the block below
+is that file byte for byte — so the instructions cannot quietly stop matching the
+thing that was tested. See [What has been verified](#what-has-been-verified) for
+what the run actually checks.
 
-`vim.lsp.config` and `vim.lsp.enable` are built in — no `nvim-lspconfig` needed.
-Put this in `init.lua`:
+### Neovim 0.11+, no plugin
+
+`vim.lsp.config`, `vim.lsp.enable` and `vim.lsp.completion` are built in, so
+`nvim-lspconfig` buys nothing here — the whole configuration is one `init.lua`:
 
 ```lua
-vim.lsp.config.flowstate = {
-  cmd = { 'flow', 'lsp' },
-  filetypes = { 'flowfile' },
-  root_markers = { 'go.mod', '.git' },
-}
-
-vim.lsp.enable('flowstate')
-
--- Give Flowfiles their own filetype so the server is not attached to every YAML
--- file. The pattern is what decides where you get diagnostics.
+-- Give Flowfiles their own filetype, so the server is not attached to every YAML
+-- file you open. These patterns are what decide where you get diagnostics.
 vim.filetype.add({
   filename = {
     ['Flowfile'] = 'flowfile',
@@ -284,6 +293,14 @@ vim.filetype.add({
   },
 })
 
+vim.lsp.config.flowstate = {
+  cmd = { 'flow', 'lsp' },
+  filetypes = { 'flowfile' },
+  root_markers = { 'go.mod', '.git' },
+}
+
+vim.lsp.enable('flowstate')
+
 -- Flowfiles are YAML, so keep YAML's indentation and comment rules.
 vim.api.nvim_create_autocmd('FileType', {
   pattern = 'flowfile',
@@ -293,48 +310,46 @@ vim.api.nvim_create_autocmd('FileType', {
     vim.bo.shiftwidth = 2
   end,
 })
-```
 
-Neovim 0.11 already binds `K` to hover and `gO` to document symbols when a server
-attaches, and `<C-]>` reaches definition through `tagfunc`. Add anything else you
-want, and turn completion on — it is off by default:
-
-```lua
 vim.api.nvim_create_autocmd('LspAttach', {
   callback = function(args)
+    local client = vim.lsp.get_client_by_id(args.data.client_id)
+    if not client or client.name ~= 'flowstate' then
+      return
+    end
     local opts = { buffer = args.buf }
     vim.keymap.set('n', 'gd', vim.lsp.buf.definition, opts)
     vim.keymap.set('n', 'gO', vim.lsp.buf.document_symbol, opts)
+    vim.keymap.set('n', '<leader>a', vim.lsp.buf.code_action, opts)
     -- Completion is not automatic unless you ask for it.
     vim.lsp.completion.enable(true, args.data.client_id, args.buf, { autotrigger = true })
   end,
 })
 ```
 
-### With nvim-lspconfig
+Two things in there are less arbitrary than they look. The `LspAttach` callback
+checks the client name before binding anything, because that autocommand fires for
+*every* server that attaches to *any* buffer — without the guard, opening a Go file
+gets flowstate's keymaps and its completion setting. And `vim.filetype.add` comes
+before `vim.lsp.enable`, because `filetypes = { 'flowfile' }` is only useful once
+something classifies a file that way; the order does not matter to Neovim, but
+reading it in the other order invites deleting the block that does the work.
 
-```lua
-local configs = require('lspconfig.configs')
-local util = require('lspconfig.util')
+Neovim 0.11 already binds `K` to hover and `gO` to document symbols when a server
+attaches, and `<C-]>` reaches definition through `tagfunc`, so the keymaps above are
+convenience rather than necessity. Completion genuinely is off until you enable it.
 
-configs.flowstate = {
-  default_config = {
-    cmd = { 'flow', 'lsp' },
-    filetypes = { 'flowfile' },
-    root_dir = util.root_pattern('go.mod', '.git'),
-    single_file_support = true,
-  },
-}
-
-require('lspconfig').flowstate.setup({})
-```
-
-You still need the `vim.filetype.add` block above; `nvim-lspconfig` decides *how*
-to start the server, not which files are Flowfiles.
+**Version.** `vim.lsp.config` arrived in Neovim 0.11, and this was verified on
+0.12.4. It is worth checking `nvim --version` before assuming: Ubuntu 24.04's
+`apt` package is 0.9.5, four minor versions behind, and on it this configuration
+fails with `attempt to index field 'config' (a nil value)`. Install from the
+[release tarball](https://github.com/neovim/neovim/releases) — which is what CI
+does — or use the "single file" recipe below, which works back to 0.8.
 
 ### Attaching to a single file, no config
 
-Useful for trying it out:
+Useful for trying it out. `flow lsp` attaches to whatever buffer is current, so the
+filetype does not have to be `flowfile`:
 
 ```vim
 :lua vim.lsp.start({ name = 'flowstate', cmd = { 'flow', 'lsp' } })
@@ -342,98 +357,29 @@ Useful for trying it out:
 
 ## Visual Studio Code
 
-There is no published extension. A minimal one is about twenty lines.
+`editors/vscode/` in this repository is a thin client over `flow lsp`, built to
+the design in [#585](https://github.com/picatz/flowstate/issues/585): the
+language client, the same filename/pattern association as the table above, and
+palette commands (`Flowstate: Validate/Test/Fix/Run Local`) that shell out to the
+matching subcommand and show its own output. See `editors/vscode/README.md` for
+what it does, what it deliberately leaves out (a workflow tree view and a
+step-graph webview are both designed but not shipped yet), and exactly what has
+been compiled and unit-tested here versus what still needs a human with a real
+editor window — this repository's CI has no display to open one on.
 
-Create a folder, then `package.json`:
-
-```json
-{
-  "name": "flowstate",
-  "displayName": "Flowstate Flowfile",
-  "version": "0.0.1",
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Programming Languages"],
-  "activationEvents": ["onLanguage:flowfile"],
-  "main": "./extension.js",
-  "contributes": {
-    "languages": [
-      {
-        "id": "flowfile",
-        "aliases": ["Flowfile"],
-        "filenames": ["Flowfile", "Flowfile.yaml"],
-        "filenamePatterns": ["**/workflow.yaml", "**/workflow.yml", "**/workflows/*.yaml"],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "flowfile",
-        "scopeName": "source.yaml",
-        "path": "./syntaxes/empty.tmLanguage.json"
-      }
-    ]
-  },
-  "dependencies": { "vscode-languageclient": "^9.0.1" }
-}
-```
-
-`language-configuration.json`, so comments and indentation behave like YAML:
-
-```json
-{
-  "comments": { "lineComment": "#" },
-  "brackets": [["{", "}"], ["[", "]"]],
-  "indentationRules": {
-    "increaseIndentPattern": "^\\s*[-\\w\"']+\\s*:\\s*$",
-    "decreaseIndentPattern": "^\\s+\\}"
-  }
-}
-```
-
-`extension.js`:
-
-```javascript
-const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
-
-let client;
-
-function activate(context) {
-  client = new LanguageClient(
-    'flowstate',
-    'Flowstate Flowfile',
-    // `flow` must be on the PATH, or give an absolute path here.
-    { command: 'flow', args: ['lsp'], transport: TransportKind.stdio },
-    { documentSelector: [{ scheme: 'file', language: 'flowfile' }] },
-  );
-  context.subscriptions.push(client);
-  client.start();
-}
-
-function deactivate() {
-  return client && client.stop();
-}
-
-module.exports = { activate, deactivate };
-```
-
-Then:
+**It is not published to any marketplace.** Install it from source:
 
 ```console
-$ npm install
-$ code --extensionDevelopmentPath="$PWD" .
+$ cd editors/vscode
+$ npm ci
+$ npm run compile
+$ code --extensionDevelopmentPath="$PWD" /path/to/a/repo/with/flowfiles
 ```
 
-Package it with `npx @vscode/vsce package` and install the `.vsix` when you are
-happy with it.
-
-To reuse YAML's syntax highlighting rather than shipping a grammar, drop the
-`grammars` block and instead map the language to YAML's tokenizer in your settings:
-
-```json
-{
-  "files.associations": { "**/workflow.yaml": "flowfile" }
-}
-```
+`flow` must be on your `PATH`, or point `flowstate.path` at it in your *user*
+settings. That setting and `flowstate.lsp.args` are `machine-overridable`, so a
+workspace's own `.vscode/settings.json` cannot choose what your editor executes —
+the same argument this page makes about Neovim's `--plugin-dir` above.
 
 ### Without writing an extension
 
@@ -472,10 +418,40 @@ Check it was picked up:
 
 ```console
 $ hx --health flowfile
+Configured language servers:
+  ✓ flowstate: /usr/local/bin/flow
+Configured debug adapter: None
+Configured formatter: None
+Tree-sitter parser: ✓
+Highlight queries: ✘
+Textobject queries: ✘
+Indent queries: ✘
 ```
+
+Those three crosses are the part that used to go unsaid. `grammar = "yaml"` gets
+you YAML's *parser*, and Helix then looks its queries up by the **language** name
+rather than by the grammar's — so a language called `flowfile` has no highlight
+queries anywhere and a Flowfile opens as undifferentiated text. Borrow YAML's, in
+two one-line files under your runtime directory:
+
+```console
+$ mkdir -p ~/.config/helix/runtime/queries/flowfile
+$ echo '; inherits: yaml' > ~/.config/helix/runtime/queries/flowfile/highlights.scm
+$ echo '; inherits: yaml' > ~/.config/helix/runtime/queries/flowfile/indents.scm
+```
+
+`hx --health flowfile` then reports highlight and indent queries present. Textobject
+queries stay absent, which costs you `mi`/`ma` motions inside a Flowfile and nothing
+else; add a third `; inherits: yaml` file named `textobjects.scm` if you want them.
 
 Helix binds `gd` to definition, `K` to hover, and `<space>s` to document symbols
 out of the box.
+
+Verified on Helix 25.07.1: the config above is picked up, the server resolves, and
+the queries fix moves both crosses to ticks. Not verified: the `workflows/*.yaml`
+glob matching a real nested path, and the editor behaviour itself — Helix is a
+terminal UI with no headless mode, so `--health` is as far as a scripted check
+reaches.
 
 ## Zed
 
@@ -500,10 +476,26 @@ binary through an existing YAML setup by adding to `settings.json`:
 This attaches the server to all YAML files, so expect Flowfile diagnostics
 elsewhere until a proper Flowfile extension exists.
 
+> **Untested.** Zed is a GUI application and was not run while writing this. The
+> settings shape is from Zed's documentation, not from a session anyone had.
+
 ## Emacs (eglot)
 
+`eglot` is built into Emacs 29 and later; nothing needs installing for the client
+half. `yaml-mode` is **not** built in — it is a MELPA package — so the derivation
+below fails on a stock Emacs with `Symbol's function definition is void:
+yaml-mode`. Emacs 29 ships `yaml-ts-mode` instead, which needs the tree-sitter YAML
+grammar installed once with `M-x treesit-install-language-grammar RET yaml`. Pick
+whichever of the three you actually have:
+
 ```elisp
-(define-derived-mode flowfile-mode yaml-mode "Flowfile")
+;; Name the parent you actually have. `define-derived-mode` is a macro and takes
+;; a literal symbol here, so this cannot be a `cond` that picks one at load time:
+;;
+;;   yaml-mode     from MELPA
+;;   yaml-ts-mode  Emacs 29+, after M-x treesit-install-language-grammar RET yaml
+;;   conf-mode     always present, comments and indentation but no highlighting
+(define-derived-mode flowfile-mode yaml-ts-mode "Flowfile")
 
 (add-to-list 'auto-mode-alist '("/Flowfile\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflow\\.ya?ml\\'" . flowfile-mode))
@@ -515,6 +507,13 @@ elsewhere until a proper Flowfile extension exists.
 
 (add-hook 'flowfile-mode-hook #'eglot-ensure)
 ```
+
+Partly verified on GNU Emacs 29.3: `eglot` is present without installing anything,
+and eglot connects to `flow lsp` and reports *"Connected! Server … now managing
+`(flowfile-mode)` buffers"*. Not verified: that diagnostics reach flymake, because
+driving eglot to that point under `emacs --batch` depends on idle timers and
+`post-command-hook` and proves more about batch mode than about anybody's editor.
+Take the connection as confirmed and the squiggles as expected.
 
 ## Checking it works
 
@@ -590,6 +589,60 @@ $ flow tasks
 `flow validate` runs the same semantic validation the language server reports, so
 if a file is clean there and not in your editor, the editor is looking at a
 different file than you think.
+
+## What has been verified
+
+Setup instructions rot silently, because nothing fails when they do — the person
+they fail for is somebody who never files a bug about it. So one editor's
+instructions are run on every pull request, and the rest of this page says which
+version it was checked on and what was not checked at all.
+
+**Neovim is the one CI runs.** `.github/workflows/editors.yml` installs a pinned
+Neovim release, builds `flow`, and drives the real editor through
+`tools/editorsmoke/probe.lua` — the configuration under
+[Neovim 0.11+, no plugin](#neovim-011-no-plugin) is
+`tools/editorsmoke/init.lua`, loaded as `-u`, and the first thing the probe
+asserts is that the two are the same text. It then checks, on a Flowfile in
+`tools/editorsmoke/fixtures/`:
+
+| | |
+| --- | --- |
+| **filetype** | each documented filename and the `workflows/` pattern classify as `flowfile`, and a `kustomization.yaml` does *not* — the negative direction, because a rule that matches everything also matches every one of your Kubernetes manifests |
+| **initialize** | the client attaches, and the server advertises hover, completion, definition, document symbol, formatting and code actions |
+| **publishDiagnostics** | a deliberate `lag:` draws one error, carrying the code `unknown-task`, positioned on the task name rather than on the file — and a Flowfile with nothing wrong with it draws nothing, which is what separates a working server from one that complains about everything |
+| **hover** | over `log` returns the summary and typed signature built from the task registry |
+| **completion** | inside `${` offers `vars` and `steps` among 35 items; where a step's keys go it offers the registry's tasks and the grammar's keys among 20 |
+| **documentSymbol** | both steps appear in the outline |
+
+You can run the same thing yourself; it needs `flow` on `PATH` and nothing else:
+
+```console
+$ go build -o /usr/local/bin/flow ./cmd/flow
+$ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
+…
+36 checks, 0 failed
+```
+
+**Verified by hand, not by CI:** Helix 25.07.1 (`hx --health flowfile`, including
+the missing-queries finding above) and GNU Emacs 29.3 (eglot connects). Both are
+recorded in their own sections with the part that was *not* reached.
+
+**Not verified inside a real editor:** Visual Studio Code and Zed. Both are GUI
+applications with no headless mode worth scripting. The VS Code extension under
+`editors/vscode/` compiles (`tsc`, `strict: true`) and its unit tests pass under
+Node's built-in test runner — argv construction for each palette command, and
+binary-resolution and availability-probe behavior — but nothing has confirmed the
+extension actually activates in a VS Code window, that diagnostics appear as you
+type, or that a palette command's task renders as expected; see
+`editors/vscode/README.md`'s "Verified, and not" section. Zed's section below has
+not been run by anyone. Both are marked as such where they appear rather than
+here, so nobody reads a confident paragraph without the caveat attached to it.
+
+The asymmetry is deliberate rather than lazy. The load-bearing half of every one of
+these configurations is `flow lsp` itself, and that half is exercised by the Neovim
+job on every pull request. What the untested sections risk is a wrong settings key,
+which costs a reader ten minutes — not a wrong claim about what the server does,
+which would cost them their trust in the page.
 
 ## Agents
 

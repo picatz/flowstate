@@ -34,7 +34,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 
 	// A verifier that refuses everything, so an authenticated route answering at
 	// all would mean the middleware was not applied.
-	handler := serverHandler(discardLogger(), refusingVerifier{}, broker, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
@@ -90,7 +90,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	), nil)
 
@@ -141,7 +141,7 @@ func testBroker(t *testing.T) *auth.Broker {
 func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a health probe reached the RPC handler")
 		}), nil)
@@ -185,7 +185,7 @@ func TestARejectionIsLoggedWithoutTheToken(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	handler := serverHandler(logger, refusingVerifier{}, nil, http.HandlerFunc(
+	handler := serverHandler(logger, refusingVerifier{}, nil, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a rejected request reached the RPC handler")
 		}), nil)
@@ -233,10 +233,38 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 		// read its zero value forever, and the deployment would look like one
 		// that simply serves no webhooks.
 		"webhook", "secret-env", "secret-dir",
+
+		// The public listener's TLS configuration and the internal listener's
+		// address (cmd/flow/tls.go, cmd/flow/internallistener.go).
+		"tls-cert-file", "tls-key-file", "tls-min-version", "internal-listen",
 	} {
 		require.NotNil(t, server.Flags().Lookup(name),
 			"`flow server` does not take --%s, so a deployment cannot configure it", name)
 	}
+}
+
+// TestPublicMuxDoesNotServePprof pins the complement of
+// TestInternalListenerServesHealthAndPprofButNotTheRPCSurface: pprof can read
+// this process's memory and running goroutines, and belongs only on the
+// internal listener (routing.go's [internalHandler]). A request for it on the
+// public mux must fall through to the authenticated default route like any
+// other unrecognized path, not answer directly.
+func TestPublicMuxDoesNotServePprof(t *testing.T) {
+	t.Parallel()
+
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil)
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL + "/debug/pprof/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"the public listener must not serve pprof; it fell through to the RPC handler "+
+			"where the authenticator would have refused it, so an OK here means pprof is reachable")
 }
 
 // TestTheWebhookRouteIsMountedOnlyWhenConfigured pins both halves of the one
@@ -267,7 +295,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 		}}, staticStore(t))
 	require.NoError(t, err)
 
-	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil,
+	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a delivery reached the RPC handler")
 		}), receiver))
@@ -283,7 +311,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode,
 		"a delivery was answered by something other than the receiver")
 
-	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil,
+	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil))
 	defer unconfigured.Close()
 

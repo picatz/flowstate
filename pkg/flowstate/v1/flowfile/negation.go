@@ -34,7 +34,7 @@ import (
 // Anything else — clause counts that do not match, more than one clause
 // differing, no explicit `!(...)` on either side once the shared prefix is
 // gone — is left alone. A workflow legitimately has sibling conditions that
-// share no relationship at all (`rejected` and `expired` beside `deploy` in
+// share no relationship at all (`rejected` and `undecided` beside `deploy` in
 // `examples/approval-gate/`), and others that partition one condition's
 // complement into several named cases rather than negate it
 // (`examples/enterprise-fund-transfer/`'s `rejected`/`expired`/

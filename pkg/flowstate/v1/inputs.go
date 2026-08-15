@@ -283,6 +283,21 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 		return fmt.Errorf("input %q is %s, which is not a kind of value an input can hold; "+
 			"it is declared %s", name, literalKindName(value.GetLiteral()), DeclaredTypeName(declaration.GetType()))
 	}
+
+	// TYPE_ENUM has no counterpart in [inputTypeOf]'s switch, deliberately:
+	// the wire shape a caller sends for an enum value is a string, the same
+	// shape TYPE_STRING sends, so the only rule this function checks is that
+	// shape. Which string is checked against the declaration's own `values:`
+	// is a set-fact about *this* declaration, and [CheckInputConstraints] is
+	// where set-facts are enforced.
+	if declaration.GetType() == InputDeclaration_TYPE_ENUM {
+		if got != InputDeclaration_TYPE_STRING {
+			return fmt.Errorf("input %q is declared %s but was given %s",
+				name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))
+		}
+		return nil
+	}
+
 	if got != declaration.GetType() {
 		return fmt.Errorf("input %q is declared %s but was given %s",
 			name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))

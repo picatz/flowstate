@@ -1655,14 +1655,25 @@ two spellings of "refuse to proceed" is one too many.
 
 ### `switch:` landed — the word buys the checks, not the branch (#357)
 
-The branching was always expressible: three sibling `if:` steps against one value,
-which `examples/approval-gate` defends well. What was inexpressible was the
-*checking*. Nothing ties three equalities together, so a validator cannot see that
-they intend a total dispatch over one value — it cannot catch the typo'd literal
-that is legal CEL and silently never matches, cannot notice a value nobody handles,
-and the run cannot record that an unhandled value arrived. Grouping the cases under
-one construct is the precondition for every one of those, and that is what earned
-the word.
+The branching was always expressible: three sibling `if:` steps against one value.
+What was inexpressible was the *checking*. Nothing ties three equalities together,
+so a validator cannot see that they intend a total dispatch over one value — it
+cannot catch the typo'd literal that is legal CEL and silently never matches,
+cannot notice a value nobody handles, and the run cannot record that an unhandled
+value arrived. Grouping the cases under one construct is the precondition for every
+one of those, and that is what earned the word.
+
+`examples/approval-gate` is where that trade is visible, because it is the case
+where the payoff is largest: its discriminant is a wait outcome whose domain the
+validator can *infer*, so all five domain diagnostics below apply to it. Written as
+three `if:`s — which is how it shipped until this construct landed — `- case:
+rejcted` is a branch that never runs and a dropped branch is a run that quietly
+does nothing; written as one `switch:`, both are `flow validate` failures naming
+the value. That is also why the gate's `outcome:` stays a shaping expression built
+from string literals, a conditional, and the read-side optional idioms
+(`optMap`, `orValue`): that shape is exactly what `switchDomain` reads a domain
+out of, so a rewrite into `value()` or anything else would compute the same
+three strings and silently take every check with it.
 
 ```yaml
 - id: on_event
@@ -1722,10 +1733,15 @@ domain is checkable — Rust's `_ => {}`, both times. A switch that is only a
 
 #### The diagnostics, where the domain is the file's to know
 
-Where the discriminant's domain is a property of the file — today, a wait outcome
-whose shaping expression is conditionals over string literals, the approval gate's
-ternary; enum-typed inputs extend the tier when they land — the validator checks
-the whole dispatch, every diagnostic fatal like every other in this language:
+Where the discriminant's domain is a property of the file — today, a wait's
+shaped output or a `value:` step whose shaping expression is built from string
+literals through conditionals and the read-side optional idioms (`optMap`,
+`optFlatMap`, `orValue`), the approval gate's own expression among them;
+enum-typed inputs extend the tier when they land — the validator checks the
+whole dispatch, every diagnostic fatal like every other in this language. A
+shaping expression that reaches for `value()`, or for anything else the walk
+does not read, still validates — it simply drops back to an open domain, silent
+per the report-what-the-file-owns rule below:
 
 - an impossible case value, with the nearest legal spelling;
 - a duplicate case after list-flattening (the second occurrence can never match);
@@ -1748,8 +1764,11 @@ six-site change and this construct does not need one. The switch is never a
 suspension position; its bodies may contain waits, and the container machinery
 handles them as it does a parallel branch's.
 
-`examples/webhook-routing` is the construct end to end, its `default:` logging the
-unexpected action — which doubles as the documentation for why the slot exists.
+`examples/webhook-routing` is the construct end to end over an *open* domain, its
+`default:` logging the unexpected action — which doubles as the documentation for
+why the slot exists. `examples/approval-gate` is the same construct over a closed
+one, and carries no `default:` for the mirror-image reason: the validator knows the
+three outcomes, the cases exhaust them, and a `default:` there can never run.
 
 ### `async:` landed — the departure from written order is one word (#418)
 

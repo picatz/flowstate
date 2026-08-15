@@ -1,0 +1,137 @@
+{
+  "name": "flowstate-flowfile",
+  "displayName": "Flowstate Flowfile",
+  "description": "Language client for Flowfile: launches `flow lsp` and shells out to `flow validate/test/fix/run local`. Not published to any marketplace.",
+  "version": "0.0.1",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -p ./ --watch",
+    "test": "npm run compile && node --test out/**/*.test.js"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "flowfile",
+        "aliases": [
+          "Flowfile"
+        ],
+        "filenames": [
+          "Flowfile",
+          "Flowfile.yaml"
+        ],
+        "filenamePatterns": [
+          "**/workflow.yaml",
+          "**/workflow.yml",
+          "**/workflows/*.yaml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "title": "Flowstate",
+      "properties": {
+        "flowstate.path": {
+          "type": "string",
+          "default": "flow",
+          "description": "Path to the flow binary. Ignored when set in workspace (.vscode) settings \u2014 a cloned repository must not choose what your editor executes.",
+          "scope": "machine-overridable"
+        },
+        "flowstate.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments for `flow lsp`, e.g. [\"--plugin-dir\", \"./plugins\"]. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
+          "scope": "machine-overridable"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "flowstate.validate",
+        "title": "Flowstate: Validate Flowfile",
+        "category": "Flowstate"
+      },
+      {
+        "command": "flowstate.test",
+        "title": "Flowstate: Test Flowfile",
+        "category": "Flowstate"
+      },
+      {
+        "command": "flowstate.fix",
+        "title": "Flowstate: Fix Flowfile",
+        "category": "Flowstate"
+      },
+      {
+        "command": "flowstate.runLocal",
+        "title": "Flowstate: Run Flowfile Locally",
+        "category": "Flowstate"
+      },
+      {
+        "command": "flowstate.restartLanguageServer",
+        "title": "Flowstate: Restart Language Server",
+        "category": "Flowstate"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "flowstate.validate",
+          "when": "resourceLangId == flowfile"
+        },
+        {
+          "command": "flowstate.test",
+          "when": "resourceLangId == flowfile"
+        },
+        {
+          "command": "flowstate.fix",
+          "when": "resourceLangId == flowfile"
+        },
+        {
+          "command": "flowstate.runLocal",
+          "when": "resourceLangId == flowfile"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "flowstate.validate",
+          "when": "resourceLangId == flowfile",
+          "group": "flowstate@1"
+        },
+        {
+          "command": "flowstate.test",
+          "when": "resourceLangId == flowfile",
+          "group": "flowstate@2"
+        },
+        {
+          "command": "flowstate.fix",
+          "when": "resourceLangId == flowfile",
+          "group": "flowstate@3"
+        },
+        {
+          "command": "flowstate.runLocal",
+          "when": "resourceLangId == flowfile",
+          "group": "flowstate@4"
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "@types/vscode": "1.125.0",
+    "typescript": "7.0.2"
+  }
+}

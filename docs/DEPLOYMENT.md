@@ -398,9 +398,20 @@ ProtectSystem=strict
 WantedBy=multi-user.target
 ```
 
-Put a TLS-terminating reverse proxy (nginx, Caddy, an ALB/NLB with a listener
-certificate) in front of `flowstate-server`, binding it to `127.0.0.1` as
-above — see [blockers](#blockers) below for why this is not optional.
+`FLOWSTATE_ADDRESS=127.0.0.1:9233` above is loopback, so `flow server` needs
+no TLS configuration of its own to start — [blockers](#blockers) below is
+where the choice this shape has already made gets explained. Two ways to
+finish it, and this recipe assumes the first:
+
+- **Terminate TLS in front of it** (nginx, Caddy, an ALB/NLB with a listener
+  certificate), forwarding to `127.0.0.1:9233` as configured above. Nothing
+  else in this file changes.
+- **Terminate TLS in `flow server` itself**, skipping the reverse proxy:
+  set `FLOWSTATE_ADDRESS` to the address you actually want reachable (not
+  loopback) and add `FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE` to
+  `server.env`, pointing at a certificate this unit can read. No further flag
+  needed — a certificate configured is what [blockers](#blockers) below calls
+  the ordinary way past the refusal.
 
 To reach Tier 2 on this shape: run one `flowstate-worker` unit per tenant, each
 with its own `TEMPORAL_NAMESPACE` and its own `--egress-policy` /
@@ -412,15 +423,44 @@ the least-documented production shape — it is systemd units, not Kubernetes.
 ### Kubernetes
 
 The same two binaries as containers: a `Deployment` for `flow server` behind
-an `Ingress`/`Service` doing TLS termination (again: `flow server` speaks
-plain HTTP only), and a `Deployment` per worker fleet — one per tenant
-namespace for Tier 2, replicas for throughput within a tenant. Plugins are
-Unix-socket subprocesses launched by the worker process itself, so no
-extra container or sidecar is needed for them; a `--plugin-dir` pointed at a
-`ConfigMap`- or `initContainer`-populated directory works as long as that
-directory isn't world-writable (see [blockers](#blockers)). Secrets mount as
-files (`--secret-dir`) or environment (`--secret-env`) the ordinary Kubernetes
-way — Secret volumes or `envFrom`.
+an `Ingress`/`Service` doing TLS termination, and a `Deployment` per worker
+fleet — one per tenant namespace for Tier 2, replicas for throughput within a
+tenant. Plugins are Unix-socket subprocesses launched by the worker process
+itself, so no extra container or sidecar is needed for them; a `--plugin-dir`
+pointed at a `ConfigMap`- or `initContainer`-populated directory works as
+long as that directory isn't world-writable (see [blockers](#blockers)).
+Secrets mount as files (`--secret-dir`) or environment (`--secret-env`) the
+ordinary Kubernetes way — Secret volumes or `envFrom`.
+
+**The pod's `FLOWSTATE_ADDRESS` needs a flag alongside it, and which one
+depends on where TLS actually ends.** A pod almost always sets
+`FLOWSTATE_ADDRESS=0.0.0.0:9233` (or lets the default resolve to it): the
+Service that routes an Ingress's traffic to the pod addresses it by pod IP,
+which a `localhost`-only listener never answers, so the container needs the
+wildcard bind the same way `examples/observability/docker-compose.yaml`'s
+container does. `flow server` reads that as "reaches past this machine" and
+refuses to start without one of:
+
+- **`--tls-terminated-upstream`** (or `FLOWSTATE_TLS_TERMINATED_UPSTREAM=1`),
+  when the `Ingress` (or a `Service` of type `LoadBalancer` fronted by
+  something doing TLS) is genuinely the TLS boundary and forwards plaintext
+  to the pod on the cluster network — the ordinary shape for `nginx-ingress`
+  and most managed ingress controllers by default. Say so on the container's
+  `command`/`args`, not by editing the Ingress: the pod is what refuses, and
+  the pod is what needs telling. This is the honest use of that flag — see
+  its own help text — because the Ingress really is doing the job the flag's
+  name used to claim for itself and no longer does.
+- **`FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE`** (a Secret volume
+  mount), when you would rather `flow server` terminate TLS itself — mutual
+  TLS to the pod, or an Ingress controller that only proxies TCP — and skip
+  `--tls-terminated-upstream` entirely, the same certificate-first choice the
+  systemd recipe above describes.
+
+Never set `--tls-terminated-upstream` on a `Service` of type `LoadBalancer`
+or `NodePort` with no TLS-terminating `Ingress`, controller, or mesh actually
+in front of it: that is exactly the plaintext-to-the-internet case the flag's
+help text tells you not to use it for, and the cluster network is not a
+substitute boundary the way a container's published-port binding is.
 
 ### Cloud Run / fly.io
 
@@ -433,6 +473,18 @@ These need attention before they're a good fit, not because they can't work:
   today, and it's env-only — there's no `--listen` flag. An entrypoint script
   translating `$PORT` into `FLOWSTATE_ADDRESS=0.0.0.0:$PORT` is the practical
   workaround until this lands upstream.
+- That `0.0.0.0` bind needs `--tls-terminated-upstream` (or
+  `FLOWSTATE_TLS_TERMINATED_UPSTREAM=1`) alongside it, on both platforms, for
+  the same reason the Kubernetes recipe above needs it: `flow server` reads a
+  non-loopback address with no certificate configured as reaching past the
+  machine and refuses to start. Both Cloud Run and fly.io terminate TLS at
+  their own edge and forward plaintext to the container over their internal
+  network, which is the honest case this flag exists for — it is not shipping
+  plaintext anywhere the platform doesn't already own. If you point either
+  platform at your container over a raw TCP proxy with no TLS termination of
+  its own, that stops being true, and `FLOWSTATE_TLS_CERT_FILE`/
+  `FLOWSTATE_TLS_KEY_FILE` (a certificate the container loads itself) is the
+  flag you want instead.
 - `--address` on `flow worker`/`flow server` means the **Temporal** address,
   not the HTTP listen address — a real foot-gun on a platform that hands you
   a `--address`-shaped port variable and expects it to mean "listen here."
@@ -487,13 +539,22 @@ gap you're supposed to work around silently.
 Read these before you assume any of the topologies above is further along
 than it is.
 
-- **`flow server` speaks cleartext HTTP only.** There is no `--tls-cert`/
-  `--tls-key` flag and no `ListenAndServeTLS` call anywhere in the
-  codebase — only `http.Server.ListenAndServe`
-  (`cmd/flow/main.go`). The bearer token authenticating every request is on
-  the wire in the clear. **Always terminate TLS in front of it** — a reverse
-  proxy, a load balancer with a TLS listener, a service mesh sidecar. This is
-  not a "for now" gap to route around quietly; every recipe above assumes it.
+- **`flow server` refuses to bind a non-loopback address without a TLS
+  answer, and there are exactly two acceptable answers.** `--tls-cert-file`/
+  `--tls-key-file` (or `FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE`)
+  make it terminate TLS itself — `cmd/flow/tls.go`, `http.Server.ServeTLS`.
+  `--tls-terminated-upstream` (or `FLOWSTATE_TLS_TERMINATED_UPSTREAM=1`) says
+  instead that something in front of it already does — a reverse proxy, a
+  Kubernetes `Ingress`, a load balancer with a TLS listener, a service mesh
+  sidecar, or (the compose lab's case) a container publish binding that
+  bounds reachability the same way a TLS-terminating proxy would. Loopback
+  addresses (`flow server dev`, and the systemd recipe above as written) need
+  neither: the bearer token authenticating every request never leaves the
+  machine. Every other recipe above assumes one of the two flags is present,
+  and says which. This refusal is not a "for now" gap to route around
+  quietly — see `cmd/flow/tls.go`'s `refusePlaintextListener` for the code,
+  and its help text (`flow server --help`) for the same choice stated at the
+  command line.
 - **No `$PORT` support.** Covered under [Cloud Run / fly.io](#cloud-run--flyio)
   above — an entrypoint translation is required today.
 - **Plugins are Unix-domain-socket only, which makes workers POSIX.**

@@ -16,6 +16,23 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # A cooldown delays the pull request Dependabot opens for a *version bump*,
+    # not the separate security-alert mechanism this file's own header
+    # describes: GO-2026-6061 arrived as its own PR the moment the advisory
+    # was published, independent of this schedule, which is why waiting here
+    # costs nothing on the path that actually matters for a live
+    # vulnerability. What it buys is time for a compromised or hastily yanked
+    # release to be caught and pulled before this repository ever proposes
+    # building against it. Patch releases get the shortest wait because they
+    # are the highest-volume, lowest-review-value case this file already
+    # treats as background noise (see `minor-and-patch` above); major
+    # releases get the longest because they are reviewed carefully anyway,
+    # so a few extra days of the ecosystem finding problems first is pure
+    # upside.
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     groups:
       # Kept apart from everything else: these three move together, and a bump to
       # one that leaves the others behind is how a build breaks in a way that
@@ -29,6 +46,68 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # This one module fails the whole run, which is the reason it is worth a
+      # dozen lines of explanation rather than a silent entry.
+      #
+      # `charmtone` is a nested module: it lives at
+      # github.com/charmbracelet/x/exp/charmtone inside the
+      # github.com/charmbracelet/x repository but publishes its own versions,
+      # and we depend on it at a pseudo-version. Dependabot's Go updater
+      # resolves it to the parent module instead, asks for
+      # github.com/charmbracelet/x@v0.1.0, and reports that the version it
+      # picked "does not contain package github.com/charmbracelet/x/exp/charmtone"
+      # — which is true, and not a fact about this repository.
+      #
+      # An updater error is not scoped to the dependency that caused it. The
+      # run aborts, so the grouped bump above never opens, and the scheduled
+      # updates this file exists to produce stop arriving with nothing saying
+      # so. That is the failure mode described at the top of this file, with
+      # the alarm disabled instead of the alert missing.
+      #
+      # So the module is skipped and everything else keeps flowing. The cost is
+      # real and worth naming: charmtone no longer gets bumped automatically,
+      # so it needs updating by hand — `go get -u
+      # github.com/charmbracelet/x/exp/charmtone` — until upstream tags it in a
+      # way the updater can resolve, at which point this entry should go.
+      - dependency-name: github.com/charmbracelet/x/exp/charmtone
+
+  # The plugin modules, which are separate Go modules and were invisible to
+  # everything above. `directory: /` covers one module; these five have their
+  # own go.mod, their own dependency graphs, and no coverage at all until now.
+  #
+  # The gap was not theoretical. A root-module bump landed, the plugin modules
+  # kept their older pins, and `make test-plugins` failed with "updates to
+  # go.mod needed" — a red check on a dependency PR whose own diff was correct,
+  # which is the shape that teaches people to merge past a failing job. They
+  # drift because nothing was updating them, not because the root bump was
+  # wrong.
+  #
+  # Grouped and weekly like the root module, for the same reason: a plugin's
+  # patch releases are background noise, and five modules times twelve patches
+  # is how a queue becomes unreadable.
+  - package-ecosystem: gomod
+    directories:
+      - /plugins/codex
+      - /plugins/git
+      - /plugins/github
+      - /plugins/sql
+      - /plugins/vcs
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    # Same reasoning and same values as the root module's cooldown above —
+    # these are separate go.mod graphs but the same threat (a compromised or
+    # hastily yanked release) and the same non-tradeoff against security
+    # fixes, which bypass this file entirely.
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      plugin-modules:
+        patterns:
+          - "*"
 
   # The workflows themselves, which are code that runs with a token and is
   # currently referenced by moving tags. Keeping this here is what makes pinning
@@ -40,3 +119,37 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    # github-actions supports `cooldown` too, but only `default-days` — the
+    # SemVer-specific keys (`semver-major-days` etc.) are gomod/npm-only and
+    # are silently unusable here, so this entry gets one number rather than
+    # three. 5 days: a compromised or force-pushed tag in the Actions
+    # marketplace (the tj-actions incident is the reference case) tends to be
+    # caught and yanked within hours to a couple of days once GitHub or the
+    # community notices, and this repo pins every `uses:` to a commit SHA
+    # already — this cooldown only delays the PR that would advance that SHA,
+    # never running unpinned in between. As with the gomod entries, a security
+    # fix for an action is not held back by this: Dependabot's security-alert
+    # path is separate from the scheduled-update path this file configures.
+    cooldown:
+      default-days: 5
+
+  # The VS Code extension's npm graph (#585). `cooldown` is not npm-specific —
+  # gomod and github-actions above both support it too, and now use it — but
+  # the threat here is the sharpest version of the same story: a maintainer
+  # account or build machine compromise that ships a malicious *patch*
+  # release, caught within hours to days, on the ecosystem with the
+  # highest-volume history of exactly that. Waiting seven days before
+  # Dependabot proposes a new release costs nothing real — this extension has
+  # no reason to run a dependency the day it ships — and it is the single
+  # cheapest defense in the supply-chain section of #585. `exclude-patterns`
+  # is not needed to keep the runtime surface small: package.json only has
+  # one runtime dependency to begin with (vscode-languageclient), and every
+  # proposed bump — runtime or dev — is still a reviewed pull request either
+  # way.
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
