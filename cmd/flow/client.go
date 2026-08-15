@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/credentialsource"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/spf13/cobra"
 )
@@ -142,6 +143,64 @@ func serverFlagsOf(cmd *cobra.Command) serverFlags {
 }
 
 func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowServiceClient {
+	// Resolving the source is local and cheap — no network call, just naming
+	// which one to build — so it happens once here rather than on every
+	// request. A failure (an unknown --credential-source, or one missing a
+	// required --audience) is a configuration error, not a transient one, so
+	// carrying it forward to be returned from the first RoundTrip is
+	// equivalent to failing now: nothing about a later request could make it
+	// succeed.
+	//
+	// Every caller of this function makes one RPC and reports whatever error
+	// comes back directly — nothing here retries — so surfacing the failure
+	// through the transport rather than as a second return value costs
+	// nothing and keeps every existing caller unchanged. A caller that polls
+	// on a loop, and so *would* retry, does not go through this function —
+	// see [newFollowClient].
+	source, sourceErr := credentialSourceFor(server)
+
+	return newWorkflowServiceClientWithSource(server, source, sourceErr)
+}
+
+// newFollowClient builds the client a follow polls through: `flow watch`, and
+// the follow phase of `flow run` once a workload has started.
+//
+// Built once and reused for every poll, unlike [newWorkflowServiceClient].
+// [clientPoller.Poll] used to call newWorkflowServiceClient itself on every
+// tick, which resolved the credential source fresh each time too — an empty
+// cache every poll, so `flow watch` and the follow phase of `flow run` minted
+// a new OIDC token roughly once a second (up to four times a second at the
+// allowed --interval floor) instead of retaining one until its own refresh
+// margin. A long-running CI job following a durable workload could mint
+// thousands of tokens over its life, which is the kind of thing a runner's
+// token endpoint throttles.
+//
+// The credential source's construction error is also returned directly here,
+// rather than carried into the transport the way newWorkflowServiceClient
+// does. That distinction is what keeps a misconfigured --credential-source
+// out of [classifyPollError]'s retry path: an unknown source name or a
+// github-actions source with no --audience can never succeed by being polled
+// again, so a caller of this function fails before the follow loop — and its
+// thirty-second outage allowance — ever starts, rather than exhausting that
+// allowance on an error a transport-level retry treats as an outage.
+func newFollowClient(server serverFlags) (flowstatev1connect.WorkflowServiceClient, error) {
+	source, err := credentialSourceFor(server)
+	if err != nil {
+		return nil, fmt.Errorf("%w\n  --credential-source names how this command should authenticate; "+
+			"omit it to use --token-file/FLOWSTATE_TOKEN instead", err)
+	}
+
+	return newWorkflowServiceClientWithSource(server, source, nil), nil
+}
+
+// newWorkflowServiceClientWithSource builds the client both constructors above
+// share, given a credential source already resolved (or its resolution error,
+// for [newWorkflowServiceClient]'s deferred-to-the-transport path).
+func newWorkflowServiceClientWithSource(
+	server serverFlags,
+	source credentialsource.Source,
+	sourceErr error,
+) flowstatev1connect.WorkflowServiceClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseURL := serverBaseURL(server.address)
 
@@ -176,17 +235,6 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 	if otelInterceptor, err := otelconnect.NewInterceptor(); err == nil {
 		interceptors = append(interceptors, otelInterceptor)
 	}
-
-	// Resolving the source is local and cheap — no network call, just naming
-	// which one to build — so it happens once here rather than on every
-	// request. A failure (an unknown --credential-source, or one missing a
-	// required --audience) is a configuration error, not a transient one, so
-	// carrying it forward to be returned from the first RoundTrip is
-	// equivalent to failing now: nothing about a later request could make it
-	// succeed. Doing it this way, rather than threading an error out of this
-	// function, keeps every existing caller of newWorkflowServiceClient
-	// unchanged.
-	source, sourceErr := credentialSourceFor(server)
 
 	return flowstatev1connect.NewWorkflowServiceClient(
 		&http.Client{
