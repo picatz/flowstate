@@ -66,7 +66,7 @@ func TestApprovalGateDomainIsInferable(t *testing.T) {
 
 	wf, sw := approvalGateSwitch(t)
 
-	domain, known := switchDomain(sw.GetValue(), wf)
+	domain, known := switchDomain(sw.GetValue(), domainScope(wf))
 	require.True(t, known,
 		"examples/approval-gate's discriminant no longer has an inferable domain\n"+
 			"  the gate's `outcome:` must stay conditionals over string literals all the way down —\n"+
@@ -136,7 +136,7 @@ func TestOptionalDispatchDomainIsInferable(t *testing.T) {
 
 	wf, sw := loadExampleSwitch(t, "optional-dispatch", "report")
 
-	domain, known := switchDomain(sw.GetValue(), wf)
+	domain, known := switchDomain(sw.GetValue(), domainScope(wf))
 	require.True(t, known,
 		"examples/optional-dispatch's discriminant no longer has an inferable domain\n"+
 			"  the `outcome` value step's expression must stay conditionals over string literals")
@@ -153,7 +153,7 @@ func TestListComprehensionsDomainIsInferable(t *testing.T) {
 
 	wf, sw := loadExampleSwitch(t, "list-comprehensions", "report")
 
-	domain, known := switchDomain(sw.GetValue(), wf)
+	domain, known := switchDomain(sw.GetValue(), domainScope(wf))
 	require.True(t, known,
 		"examples/list-comprehensions's discriminant no longer has an inferable domain")
 	assert.Equal(t, []string{"healthy", "degraded", "down"}, domain,
@@ -210,7 +210,7 @@ func TestValueStepDispatchExamplesValidateCleanWithKnownDomains(t *testing.T) {
 			assert.Empty(t, ds, "examples/%s/workflow.yaml should validate clean: %v", tc.dir, ds)
 
 			wf, sw := loadExampleSwitch(t, tc.dir, tc.stepID)
-			_, known := switchDomain(sw.GetValue(), wf)
+			_, known := switchDomain(sw.GetValue(), domainScope(wf))
 			assert.True(t, known,
 				"examples/%s's domain must be known, not merely silent — silence alone is also\n"+
 					"  what an open domain produces", tc.dir)
@@ -228,7 +228,7 @@ func TestWebhookRoutingDomainStaysOpen(t *testing.T) {
 
 	wf, sw := loadExampleSwitch(t, "webhook-routing", "on_event")
 
-	_, known := switchDomain(sw.GetValue(), wf)
+	_, known := switchDomain(sw.GetValue(), domainScope(wf))
 	assert.False(t, known,
 		"examples/webhook-routing dispatches on a workflow input, an open set no validator\n"+
 			"  on this machine can enumerate; it must stay open until enum-typed inputs land")
@@ -287,7 +287,7 @@ steps:
 			wf, err := Unmarshal([]byte(src))
 			require.NoError(t, err)
 
-			_, known := switchDomain(wf.GetSteps()[1].GetSwitch().GetValue(), wf)
+			_, known := switchDomain(wf.GetSteps()[1].GetSwitch().GetValue(), domainScope(wf))
 			assert.False(t, known,
 				"this shape is not conditionals over string literals, so the domain must be open")
 
@@ -411,7 +411,7 @@ steps:
 			decision := nodeWithID("decision", wf)
 			require.NotNil(t, decision)
 
-			_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+			_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 			assert.False(t, known,
 				"this shape is outside what switchDomain reads, so the domain must be open")
 
@@ -502,7 +502,7 @@ func TestOptMapOrValueDomainIsInferable(t *testing.T) {
 			"stops tracking macros, switchDomain's resolve-then-walk silently narrows to nothing, "+
 			"and this is the test meant to catch that as a red test rather than as no test at all")
 
-	domain, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	domain, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	require.True(t, known, "an optMap/orValue chain is exactly the shape totalStringLeaves/optionalLeaves read")
 	assert.Equal(t, []string{"deployed", "rejected", "expired"}, domain,
 		"the domain in the order the chain reads: the optional's branches, then orValue's fallback")
@@ -564,7 +564,7 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	domain, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	domain, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	require.True(t, known, "optFlatMap's body is itself optional-typed, which optionalLeaves must recurse through")
 	assert.Equal(t, []string{"on", "off", "unknown"}, domain)
 
@@ -608,7 +608,7 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	assert.False(t, known, "nothing discharges optionality here, so optional.none is a real outcome the domain must include")
 
 	ds, err := ValidateSource([]byte(src))
@@ -651,7 +651,7 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	assert.False(t, known, "optMap(v, v)'s body is the bound identifier, not a string literal")
 
 	ds, err := ValidateSource([]byte(src))
@@ -695,7 +695,7 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	assert.False(t, known, "value() is deliberately not recognized: see optionalLeaves's doc comment")
 
 	ds, err := ValidateSource([]byte(src))
@@ -739,7 +739,7 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	assert.False(t, known, "orValue's argument is a payload read, not a string literal")
 
 	ds, err := ValidateSource([]byte(src))
@@ -783,7 +783,7 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	assert.False(t, known, "hasValue() in leaf position produces a bool, never a string")
 
 	ds, err := ValidateSource([]byte(src))
@@ -829,11 +829,24 @@ steps:
 	decision := nodeWithID("decision", wf)
 	require.NotNil(t, decision)
 
-	domain, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	domain, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
 	require.True(t, known, "a value: step's optMap/orValue chain is exactly slice 1's tier crossed with slice 2's")
 	assert.Equal(t, []string{"deployed", "rejected", "expired"}, domain)
 
 	ds, err := ValidateSource([]byte(src))
 	require.NoError(t, err)
 	assert.Empty(t, ds, "the fixture validates clean: %v", ds)
+}
+
+// domainScope is the scope a switch is checked against in the walk: every
+// top-level step recorded under its own id, the way validateWorkflow records
+// one before validating the step after it. switchDomain reads a discriminant's
+// step from the scope rather than searching the file for its id (#323), so the
+// tests that call it directly have to hand it the same thing the walk would.
+func domainScope(wf *v1.Workflow) refScope {
+	scope := newRefScope(wf)
+	for _, node := range wf.GetSteps() {
+		recordStepInScope(scope, node)
+	}
+	return scope
 }

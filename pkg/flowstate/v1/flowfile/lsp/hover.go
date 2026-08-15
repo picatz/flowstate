@@ -694,10 +694,16 @@ func varEntry(vars *entry, name string) *entry {
 // ls widens visibility for a loop's `until:`/`update:`, which read the body's
 // own top-level steps — see [visibleFromEntry].
 func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Range, ls loopScope) *lsp.Hover {
-	target := doc.parsed.step(ref.step)
-	if !visibleFromEntry(target, from, ls) {
+	target := doc.parsed.stepVisibleFrom(ref.step, from, ls)
+	if target == nil {
 		// Not a step, or one whose outputs this step cannot see. The diagnostics
 		// say so; hover stays quiet rather than repeating it.
+		//
+		// Resolved among the steps in scope rather than by taking the first id
+		// match in the document: two sibling blocks may each declare a body step
+		// of the same id, and the first-match answer was a step from the other
+		// block, which the visibility check then discarded — see
+		// [parsedFile.stepVisibleFrom].
 		return nil
 	}
 	def, known := doc.tasks.Lookup(target.taskName)
