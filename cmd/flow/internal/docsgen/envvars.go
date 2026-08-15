@@ -16,8 +16,16 @@ type environmentVariable struct {
 	// purpose is what setting it does.
 	purpose string
 
-	// read is where the process reads it, as a package path or file — so a reader
-	// who doubts the sentence can go and check it.
+	// read is where the process reads it — the files calling os.Getenv or
+	// os.LookupEnv for this name, so a reader who doubts the sentence can go and
+	// check it.
+	//
+	// Read sites, not declaration sites, and the distinction is not pedantic:
+	// the five FLOWSTATE_PLUGIN_* entries pointed at the package declaring their
+	// names, which reads none of them, so anyone who followed the column found
+	// nothing and had no way to tell whether the document or their reading was
+	// wrong. TestEveryDocumentedReadLocationIsWhereItIsRead now compares this
+	// against the tree in both directions.
 	read string
 
 	// family marks an entry that stands for a *set* of variables rather than one
@@ -59,13 +67,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
-			read:    "cmd/flow/client.go, cmd/flow/main.go",
+			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
 			value:   "unset",
 			purpose: "Permit the `http` task to reach loopback addresses. Ignored while an `--egress-policy` file is in force: a policy that wants loopback says `allow_loopback: true`.",
-			read:    "pkg/flowstate/v1/eval_task_library.go",
+			read:    "pkg/flowstate/v1/eval_task_library.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_AUDIENCE",
@@ -77,7 +85,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_AUTH_POLICY",
 			value:   "unset",
 			purpose: "Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_BACKGROUND",
@@ -137,7 +145,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_IDENTITY_KEY",
 			value:   "unset",
 			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
@@ -167,31 +175,31 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_PLUGIN_HOST_FD",
 			value:   "unset",
 			purpose: "Handshake: the descriptor a plugin watches to learn its host has gone. Set by the host on the child process; never configured by an operator.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_MAGIC_COOKIE",
 			value:   "unset",
 			purpose: "Handshake: refuses to serve a plugin protocol to a process that did not mean to launch one. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS",
 			value:   "unset",
 			purpose: "Handshake: the protocol versions the host offers. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_SOCKET",
 			value:   "unset",
 			purpose: "Handshake: the socket path a plugin serves on. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_TOKEN",
 			value:   "unset",
 			purpose: "Handshake: the per-launch token a plugin authenticates its host with. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
@@ -348,19 +356,19 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
-			read:    "cmd/flow/telemetry.go",
+			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 			value:   "unset",
 			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
-			read:    "cmd/flow/telemetry.go",
+			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 			value:   "unset",
 			purpose: "The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry.",
-			read:    "cmd/flow/telemetry.go",
+			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_*",
