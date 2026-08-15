@@ -786,6 +786,18 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Compiling a Flowfile refuses `timeout:`/`retry:` on a step kind that
+	// schedules no activity for either to act on (see
+	// [v1.CheckPolicyPlacement]'s doc). A specification built by hand and
+	// submitted straight to this RPC arrives without that compiler in front
+	// of it, so the same refusal has to run here too, or the unsafe behavior
+	// it exists to prevent — a policy that silently does nothing — reaches
+	// production for any specification that did not begin life as a
+	// Flowfile.
+	if err := v1.CheckPolicyPlacement(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Size is a separate question from validity, and it has to be asked here
 	// because here is where somebody is still listening.
 	//

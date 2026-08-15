@@ -3,9 +3,11 @@ package flowfile_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -364,4 +366,47 @@ steps:
 		_, _, err := flowfile.ParseFile(caller)
 		require.NoError(t, err, "retry/timeout on a task inside a called workflow should be accepted")
 	})
+}
+
+// TestMarshalRefusesUnrepresentablePolicyPlacement covers the path
+// TestPolicyPlacementRefused cannot reach: a *v1.Workflow built directly in Go
+// never passes through the compiler, so a `for_each`/`parallel`/`call`/`loop`/
+// `switch`/`wait`/`value` node carrying a policy the parser would refuse can
+// only be caught by [flowfile.Marshal] itself, which must not hand back a
+// document that fails to parse.
+func TestMarshalRefusesUnrepresentablePolicyPlacement(t *testing.T) {
+	t.Parallel()
+
+	forEachWithTimeout := &v1.Workflow{
+		Name: "w",
+		Steps: []*v1.Node{{
+			Id: "fan",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items: v1.NewLiteralList(),
+				Body: []*v1.Node{{
+					Id:   "inner",
+					Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+				}},
+			}},
+			Policy: &v1.StepPolicy{Timeout: durationpb.New(5 * time.Minute)},
+		}},
+	}
+
+	_, err := flowfile.Marshal(forEachWithTimeout)
+	require.Error(t, err, "Marshal must refuse a for_each step carrying a timeout it cannot write back")
+	require.Contains(t, err.Error(), "for_each")
+
+	// The ordinary case — a task with the identical policy — must keep working.
+	taskWithTimeout := &v1.Workflow{
+		Name: "w",
+		Steps: []*v1.Node{{
+			Id:     "a",
+			Kind:   &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+			Policy: &v1.StepPolicy{Timeout: durationpb.New(5 * time.Minute)},
+		}},
+	}
+
+	out, err := flowfile.Marshal(taskWithTimeout)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "timeout:")
 }
