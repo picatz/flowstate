@@ -18,6 +18,8 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+
 	"github.com/picatz/flowstate/cmd/flow/internal/fragments"
 )
 
@@ -739,7 +741,7 @@ func strictSignalRequest(t *testing.T, params json.RawMessage) *v1.SignalRequest
 	}
 	require.NoError(t, json.Unmarshal(params, &call))
 
-	require.Equal(t, mcpToolName("Signal"), call.Name,
+	require.Equal(t, flowmcp.ToolName("Signal"), call.Name,
 		"the card calls a tool other than the one that delivers a signal")
 
 	var request v1.SignalRequest

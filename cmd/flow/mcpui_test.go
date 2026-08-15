@@ -16,6 +16,8 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+
 	"github.com/picatz/flowstate/cmd/flow/internal/fragments"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
@@ -55,7 +57,7 @@ func TestTheApprovalCardIsDeclaredOnTheToolThatReportsGates(t *testing.T) {
 
 	declared := map[string]string{}
 	for _, tool := range tools.Tools {
-		meta, ok := tool.Meta[mcpUIToolMetaKey]
+		meta, ok := tool.Meta[flowmcp.UIToolMetaKey]
 		if !ok {
 			continue
 		}
@@ -70,21 +72,21 @@ func TestTheApprovalCardIsDeclaredOnTheToolThatReportsGates(t *testing.T) {
 			"%s declares a visibility for its view; a card must not be able to reach a tool a "+
 				"direct caller cannot", tool.Name)
 
-		uri, ok := fields[mcpUIResourceURIKey].(string)
-		require.True(t, ok, "%s declares a view with no %s string", tool.Name, mcpUIResourceURIKey)
+		uri, ok := fields[flowmcp.UIResourceURIKey].(string)
+		require.True(t, ok, "%s declares a view with no %s string", tool.Name, flowmcp.UIResourceURIKey)
 		declared[tool.Name] = uri
 	}
 
 	// The set, not just the entry: a view added to a second tool without a line
-	// in mcpToolViews is a surface nobody reviewed.
+	// in flowmcp.ToolViews is a surface nobody reviewed.
 	want := map[string]string{}
-	for method, uri := range mcpToolViews {
-		want[mcpToolName(method)] = uri
+	for method, uri := range flowmcp.ToolViews {
+		want[flowmcp.ToolName(method)] = uri
 	}
 	assert.Equal(t, want, declared,
-		"the tools carrying a view are not the ones mcpToolViews names")
+		"the tools carrying a view are not the ones flowmcp.ToolViews names")
 
-	require.Equal(t, mcpApprovalCardURI, declared[mcpToolName("Get")],
+	require.Equal(t, flowmcp.ApprovalCardURI, declared[flowmcp.ToolName("Get")],
 		"the approval card is declared on some other tool than the one that reports a run and its "+
 			"pending gates")
 
@@ -93,17 +95,17 @@ func TestTheApprovalCardIsDeclaredOnTheToolThatReportsGates(t *testing.T) {
 
 	var card *mcp.Resource
 	for _, resource := range resources.Resources {
-		if resource.URI == mcpApprovalCardURI {
+		if resource.URI == flowmcp.ApprovalCardURI {
 			card = resource
 		}
 	}
 	require.NotNil(t, card,
 		"flowstate_get points at %s and no resource is registered under it, so a host would fetch "+
-			"a view that does not exist", mcpApprovalCardURI)
+			"a view that does not exist", flowmcp.ApprovalCardURI)
 
 	assert.True(t, strings.HasPrefix(card.URI, "ui://"),
 		"a view must be addressed under the ui:// scheme the extension reserves")
-	assert.Equal(t, mcpUIAppMIME, card.MIMEType,
+	assert.Equal(t, flowmcp.UIAppMIME, card.MIMEType,
 		"the card is served as a media type no MCP Apps host recognises as a view")
 }
 
@@ -117,14 +119,14 @@ func TestTheCardIsVersionedByItsContentDigest(t *testing.T) {
 
 	session := connectMCP(t, defaultLocalRunPosture())
 
-	result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: mcpApprovalCardURI})
+	result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.ApprovalCardURI})
 	require.NoError(t, err)
 	require.Len(t, result.Contents, 1)
 
 	contents := result.Contents[0]
 	digest := v1.ContentDigest([]byte(contents.Text))
 
-	assert.Equal(t, digest, contents.Meta[mcpUIContentHashKey],
+	assert.Equal(t, digest, contents.Meta[flowmcp.UIContentHashKey],
 		"the digest served beside the card is not the digest of the card")
 	assert.True(t, strings.HasPrefix(digest, v1.ContentDigestPrefix),
 		"the card is versioned by some other spelling than the one the rest of the tree uses")
@@ -133,11 +135,11 @@ func TestTheCardIsVersionedByItsContentDigest(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, resource := range listed.Resources {
-		if resource.URI != mcpApprovalCardURI {
+		if resource.URI != flowmcp.ApprovalCardURI {
 			continue
 		}
 
-		assert.Equal(t, digest, resource.Meta[mcpUIContentHashKey],
+		assert.Equal(t, digest, resource.Meta[flowmcp.UIContentHashKey],
 			"the declaration and the contents disagree about which revision of the card this is")
 	}
 }
@@ -153,14 +155,14 @@ func TestAHostNegotiatingTheExtensionIsToldTheServerSupportsIt(t *testing.T) {
 	caps := session.InitializeResult().Capabilities
 	require.NotNil(t, caps)
 
-	settings, ok := caps.Extensions[mcpUIExtension].(map[string]any)
+	settings, ok := caps.Extensions[flowmcp.UIExtension].(map[string]any)
 	require.True(t, ok,
 		"a host that declared %s was not told this server serves views at all, so it would never "+
-			"look for one", mcpUIExtension)
+			"look for one", flowmcp.UIExtension)
 
-	mimes, ok := settings[mcpUIMIMETypesKey].([]any)
-	require.True(t, ok, "the extension is declared without the required %s setting", mcpUIMIMETypesKey)
-	assert.Equal(t, []any{mcpUIAppMIME}, mimes)
+	mimes, ok := settings[flowmcp.UIMIMETypesKey].([]any)
+	require.True(t, ok, "the extension is declared without the required %s setting", flowmcp.UIMIMETypesKey)
+	assert.Equal(t, []any{flowmcp.UIAppMIME}, mimes)
 
 	// Registering the tools and resources is not conditional on any of that: the
 	// same walk has to work for a host that never mentioned the extension.
@@ -169,21 +171,21 @@ func TestAHostNegotiatingTheExtensionIsToldTheServerSupportsIt(t *testing.T) {
 
 	var get *mcp.Tool
 	for _, tool := range tools.Tools {
-		if tool.Name == mcpToolName("Get") {
+		if tool.Name == flowmcp.ToolName("Get") {
 			get = tool
 		}
 	}
 	require.NotNil(t, get)
 
-	view, ok := get.Meta[mcpUIToolMetaKey].(map[string]any)
+	view, ok := get.Meta[flowmcp.UIToolMetaKey].(map[string]any)
 	require.True(t, ok)
-	uri, ok := view[mcpUIResourceURIKey].(string)
+	uri, ok := view[flowmcp.UIResourceURIKey].(string)
 	require.True(t, ok)
 
 	read, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: uri})
 	require.NoError(t, err, "the URI a host reads off the tool could not be fetched")
 	require.Len(t, read.Contents, 1)
-	assert.Equal(t, mcpUIAppMIME, read.Contents[0].MIMEType)
+	assert.Equal(t, flowmcp.UIAppMIME, read.Contents[0].MIMEType)
 	assert.Equal(t, fragments.ApprovalCard(), read.Contents[0].Text,
 		"the bytes served are not the bytes compiled in")
 }
@@ -197,7 +199,7 @@ func TestAHostNegotiatingTheExtensionIsToldTheServerSupportsIt(t *testing.T) {
 func TestTheToolResultStandsAloneWithoutTheExtension(t *testing.T) {
 	t.Parallel()
 
-	description := mcpToolDescription("Get")
+	description := flowmcp.ToolDescription("Get")
 
 	for _, needed := range []string{
 		"flowstate_signal",
@@ -343,7 +345,7 @@ func TestTheCardNeverWritesMarkup(t *testing.T) {
 func TestTheCardDeclaresNoRelaxationAndNoPermission(t *testing.T) {
 	t.Parallel()
 
-	meta := mcpApprovalCardResourceMeta()
+	meta := flowmcp.ApprovalCardResourceMeta()
 
 	assert.NotContains(t, meta, "ui",
 		"the card's resource _meta carries a `ui` member; v1 declares neither csp nor permissions")
@@ -633,21 +635,22 @@ func TestTheCardSpeaksTheHandshake(t *testing.T) {
 func connectMCPAsUIHost(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 
-	srv := newMCPServer("test")
+	srv := flowmcp.NewServer("test")
+	posture := defaultLocalRunPosture()
 
-	addMCPCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, defaultLocalRunPosture())
+	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
 
 	capabilities := &mcp.ClientCapabilities{}
-	capabilities.AddExtension(mcpUIExtension, map[string]any{
-		mcpUIMIMETypesKey: []string{mcpUIAppMIME},
+	capabilities.AddExtension(flowmcp.UIExtension, map[string]any{
+		flowmcp.UIMIMETypesKey: []string{flowmcp.UIAppMIME},
 	})
 
 	client := mcp.NewClient(

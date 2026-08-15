@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
@@ -71,7 +72,7 @@ func mcpCatalogText(t *testing.T, posture *cobra.Command) string {
 	session := connectMCP(t, posture)
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      mcpToolName("GetCatalog"),
+		Name:      flowmcp.ToolName("GetCatalog"),
 		Arguments: map[string]any{},
 	})
 	require.NoError(t, err)
@@ -92,7 +93,7 @@ func mcpValidateDiagnostics(t *testing.T, posture *cobra.Command, source string)
 	session := connectMCP(t, posture)
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name: mcpToolName("Validate"),
+		Name: flowmcp.ToolName("Validate"),
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name":   "wf.yaml",
