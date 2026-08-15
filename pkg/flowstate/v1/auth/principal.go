@@ -84,6 +84,14 @@ type Principal struct {
 	// Treat this map as read-only. It is shared with every copy of the
 	// Principal, including copies held by other goroutines.
 	Claims map[string]any `json:"claims,omitempty"`
+
+	// CertificateThumbprint is the SHA-256 digest of a client certificate's DER
+	// encoding, hex-encoded, present only on a Principal a [PeerVerifier]
+	// produced from a verified mTLS connection. It is carried now for the
+	// certificate-bound access token binding (RFC 8705) that a later slice may
+	// add — see picatz/flowstate#582 — and nothing here reads it. Empty for
+	// every Principal a bearer token produced.
+	CertificateThumbprint string `json:"certificate_thumbprint,omitempty"`
 }
 
 // AnonymousPrincipal returns the Principal assigned to callers when anonymous

@@ -347,6 +347,18 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/tls.go",
 		},
 		{
+			name:    "FLOWSTATE_TLS_CLIENT_AUTH",
+			value:   "off",
+			purpose: "Default for `--tls-client-auth` on `flow server`: `off` or `require`. `require` makes the public listener refuse a handshake with no client certificate, or one that does not chain to a `kind: mtls` issuer entry's `client_ca_file` in `--auth-policy` — there is no separate CA flag. Only these two values are ever offered.",
+			read:    "cmd/flow/mtls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CLIENT_AUTH_IDENTITY",
+			value:   "unset",
+			purpose: "Default for `--tls-client-auth-identity` on `flow server`: set (to anything) to also authenticate the caller from a verified client certificate, through the `kind: mtls` trust policy entry that admitted it. Requires `FLOWSTATE_TLS_CLIENT_AUTH=require`; without it a required certificate is a connection-level fence only and a caller still needs a bearer token.",
+			read:    "cmd/flow/mtls.go",
+		},
+		{
 			name:    "FLOWSTATE_TLS_KEY_FILE",
 			value:   "unset",
 			purpose: "Default for `--tls-key-file` on `flow server`: the PEM private key matching `FLOWSTATE_TLS_CERT_FILE`.",
