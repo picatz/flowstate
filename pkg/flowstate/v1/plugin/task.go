@@ -297,7 +297,9 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 		if v == nil {
 			continue
 		}
-		scrubMessage(scrubber, v.ProtoReflect())
+		if err := scrubMessage(scrubber, v.ProtoReflect()); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -309,70 +311,142 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 // strings: notably Error.message, Structure entries, and ParsedExpr nodes. A
 // walk limited to Value.literal therefore leaves valid response shapes able to
 // carry a resolved secret into workflow history.
-func scrubMessage(scrubber *secrets.Scrubber, msg protoreflect.Message) {
+func scrubMessage(scrubber *secrets.Scrubber, msg protoreflect.Message) error {
+	// Collected before anything is written back, rather than mutated inside
+	// Range: protoreflect leaves the effect of mutating a message mid-range
+	// unspecified, and a scrub that depends on that is a scrub that can be
+	// changed by a dependency bump.
+	type populated struct {
+		field protoreflect.FieldDescriptor
+		value protoreflect.Value
+	}
+	fields := make([]populated, 0, 8)
 	msg.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
-		switch {
-		case field.IsMap():
-			scrubMap(scrubber, value.Map(), field.MapKey(), field.MapValue())
-		case field.IsList():
-			list := value.List()
-			for i := 0; i < list.Len(); i++ {
-				list.Set(i, scrubFieldValue(scrubber, field, list.Get(i)))
-			}
-		default:
-			msg.Set(field, scrubFieldValue(scrubber, field, value))
-		}
+		fields = append(fields, populated{field, value})
+
 		return true
 	})
+
+	for _, f := range fields {
+		switch {
+		case f.field.IsMap():
+			if err := scrubMap(scrubber, f.value.Map(), f.field); err != nil {
+				return err
+			}
+		case f.field.IsList():
+			list := f.value.List()
+			for i := 0; i < list.Len(); i++ {
+				scrubbed, err := scrubFieldValue(scrubber, f.field, list.Get(i))
+				if err != nil {
+					return err
+				}
+				list.Set(i, scrubbed)
+			}
+		default:
+			scrubbed, err := scrubFieldValue(scrubber, f.field, f.value)
+			if err != nil {
+				return err
+			}
+			// A nested message was scrubbed in place and is the same value;
+			// setting it back would be a mutation with nothing to change.
+			if kind := f.field.Kind(); kind != protoreflect.MessageKind && kind != protoreflect.GroupKind {
+				msg.Set(f.field, scrubbed)
+			}
+		}
+	}
+
+	return nil
 }
 
-func scrubMap(
-	scrubber *secrets.Scrubber,
-	m protoreflect.Map,
-	keyField, valueField protoreflect.FieldDescriptor,
-) {
+// scrubMap scrubs a map's keys and values, and refuses a map whose keys collide
+// once scrubbed.
+//
+// Two distinct keys can redact to the same text — the resolved secret itself
+// and a literal "[REDACTED]" is the easy case — and writing both back would
+// silently drop one. Which one survives depends on protobuf map iteration
+// order, which is deliberately unspecified, so the same plugin response could
+// produce one output locally and a different one durably: the drivers
+// disagreeing about a value neither of them is wrong to compute.
+//
+// Refusing is the fail-closed answer and costs a plugin nothing it should have
+// been doing: a map key is a name, and a resolved secret is not one.
+func scrubMap(scrubber *secrets.Scrubber, m protoreflect.Map, field protoreflect.FieldDescriptor) error {
+	keyField, valueField := field.MapKey(), field.MapValue()
+
 	type entry struct {
 		key   protoreflect.MapKey
 		value protoreflect.Value
 	}
 	entries := make([]entry, 0, m.Len())
+	originalKeys := make([]protoreflect.MapKey, 0, m.Len())
+
+	var rangeErr error
 	m.Range(func(key protoreflect.MapKey, value protoreflect.Value) bool {
-		scrubbedKey := scrubFieldValue(scrubber, keyField, key.Value()).MapKey()
-		entries = append(entries, entry{scrubbedKey, scrubFieldValue(scrubber, valueField, value)})
+		originalKeys = append(originalKeys, key)
+
+		scrubbedKey, err := scrubFieldValue(scrubber, keyField, key.Value())
+		if err != nil {
+			rangeErr = err
+
+			return false
+		}
+		scrubbedValue, err := scrubFieldValue(scrubber, valueField, value)
+		if err != nil {
+			rangeErr = err
+
+			return false
+		}
+		entries = append(entries, entry{scrubbedKey.MapKey(), scrubbedValue})
+
 		return true
 	})
+	if rangeErr != nil {
+		return rangeErr
+	}
+
+	seen := make(map[any]struct{}, len(entries))
+	for _, item := range entries {
+		if _, collides := seen[item.key.Interface()]; collides {
+			return connect.NewError(connect.CodeInternal, fmt.Errorf(
+				"two keys of output field %q redact to the same key %v, so one would silently "+
+					"replace the other: a map key is a name, and a resolved secret must not be used as one",
+				field.Name(), item.key.Interface()))
+		}
+		seen[item.key.Interface()] = struct{}{}
+	}
+
 	// Clear the original keys first: a scrubbed key is not necessarily equal to
 	// the key that arrived from the plugin.
-	var originalKeys []protoreflect.MapKey
-	m.Range(func(key protoreflect.MapKey, _ protoreflect.Value) bool {
-		originalKeys = append(originalKeys, key)
-		return true
-	})
 	for _, key := range originalKeys {
 		m.Clear(key)
 	}
 	for _, item := range entries {
 		m.Set(item.key, item.value)
 	}
+
+	return nil
 }
 
 func scrubFieldValue(
 	scrubber *secrets.Scrubber,
 	field protoreflect.FieldDescriptor,
 	value protoreflect.Value,
-) protoreflect.Value {
+) (protoreflect.Value, error) {
 	switch field.Kind() {
 	case protoreflect.StringKind:
-		return protoreflect.ValueOfString(scrubber.Scrub(value.String()))
+		return protoreflect.ValueOfString(scrubber.Scrub(value.String())), nil
 	case protoreflect.BytesKind:
 		original := string(value.Bytes())
 		if scrubbed := scrubber.Scrub(original); scrubbed != original {
-			return protoreflect.ValueOfBytes([]byte(scrubbed))
+			return protoreflect.ValueOfBytes([]byte(scrubbed)), nil
 		}
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		scrubMessage(scrubber, value.Message())
+		if err := scrubMessage(scrubber, value.Message()); err != nil {
+			return value, err
+		}
 	}
-	return value
+
+	return value, nil
 }
 
 // taskError classifies a plugin's task failure into the engine's own error

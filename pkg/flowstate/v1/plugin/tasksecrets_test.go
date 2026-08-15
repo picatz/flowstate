@@ -305,3 +305,33 @@ func TestAcceptedPluginSecretInputsHelpNamesEveryDeclaredInput(t *testing.T) {
 	help := acceptedPluginSecretInputsHelp([]string{"token", "credential"})
 	assert.True(t, strings.Contains(help, "credential") && strings.Contains(help, "token"))
 }
+
+// TestScrubPluginOutputsRefusesCollidingScrubbedMapKeys covers the one case
+// where scrubbing a map cannot be done faithfully: two distinct keys that
+// redact to the same text. Writing both back drops one, and which one survives
+// follows protobuf's deliberately unspecified map iteration order — so the same
+// plugin response could scrub to one output locally and another durably, which
+// is the drivers disagreeing about a value.
+//
+// The refusal is asserted rather than the surviving entry, because there is no
+// correct surviving entry to assert.
+func TestScrubPluginOutputsRefusesCollidingScrubbedMapKeys(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-used-as-a-map-key"
+
+	scrubber := secrets.NewScrubber()
+	scrubber.AddValue(material)
+
+	outputs := &flowstatev1.Node_Outputs{NamedValues: map[string]*flowstatev1.Value{
+		"structure": flowstatev1.NewStructureMap(map[string]*flowstatev1.Value{
+			material:         flowstatev1.NewLiteral("one"),
+			secrets.Redacted: flowstatev1.NewLiteral("two"),
+		}),
+	}}
+
+	err := scrubPluginOutputs(scrubber, outputs)
+	require.Error(t, err, "a map whose keys collide once scrubbed must be refused, not silently reduced")
+	assert.Contains(t, err.Error(), "redact to the same key")
+	assert.NotContains(t, err.Error(), material, "the refusal must not itself leak the material")
+}
