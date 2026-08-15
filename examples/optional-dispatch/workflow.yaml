@@ -1,0 +1,85 @@
+edition: v2026.3
+name: optional-dispatch
+description: >-
+  A signal answers true, answers false, or never arrives — three outcomes an
+  optional keeps apart, where a defaulted read would collapse two of them
+  into one.
+
+# `payload.?approved.orValue(false)` looks like a safe read and is a bug the
+# moment "nobody decided" and "decided no" are different answers: both take
+# the same branch, because a default cannot tell a missing field from one
+# that says false. `hasValue()` asks the question a defaulted read skips —
+# was anything sent at all — before asking what it said. See
+# docs/reference/cel.md's "Idioms" section for the same distinction written
+# out.
+#
+#   flow test examples/optional-dispatch/
+#
+#   flow run local examples/optional-dispatch/workflow.yaml \
+#     --signal decision-made='{"approved": true}'
+#
+#   flow run local examples/optional-dispatch/workflow.yaml \
+#     --signal decision-made='{"approved": false}'
+#
+#   flow run local examples/optional-dispatch/workflow.yaml   # nobody signals: lapses
+
+steps:
+  - id: request
+    log:
+      message: requesting a decision, and not waiting long
+
+  # `outputs:` replaces what the wait produces, so `timed_out` is re-exposed
+  # here the same way examples/computed-durations does — it is what tells a
+  # lapsed gate apart from one nobody answered with `approved` at all.
+  #
+  # `responded` and `approved` are kept as two separate facts rather than one
+  # defaulted bool, because they answer two different questions: whether the
+  # sender sent the field, and what it said when they did.
+  - id: gate
+    wait_for_signal:
+      name: decision-made
+      timeout: 2s
+      outputs:
+        responded: ${payload.?approved.hasValue()}
+        approved: ${payload.?approved.orValue(false)}
+        timed_out: ${timed_out}
+
+  # Named once, so the three cases are three visible branches rather than a
+  # nested conditional repeated at every place that needs the answer — the
+  # decomposition #540 asks for, over the one-line ternary this used to be.
+  - id: outcome
+    value: >-
+      ${steps.gate.timed_out || !steps.gate.responded
+          ? "no_response"
+          : (steps.gate.approved ? "approved" : "rejected")}
+
+  # One switch over the named value, rather than three siblings each
+  # re-testing `steps.gate.timed_out` and `steps.gate.approved` by hand.
+  - id: report
+    switch:
+      value: ${steps.outcome.value}
+      cases:
+        - case: approved
+          steps:
+            - id: publish
+              log:
+                message: decision received - approved, publishing
+
+        - case: rejected
+          steps:
+            - id: hold
+              log:
+                message: decision received - rejected, holding back
+      default:
+        steps:
+          - id: escalate
+            log:
+              level: warn
+              message: no response arrived before the deadline, escalating
+
+outputs:
+  outcome:
+    value: ${steps.outcome.value}
+    description: >-
+      approved, rejected, or no_response — never the same branch for
+      "nobody decided" and "decided no"

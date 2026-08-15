@@ -1,0 +1,6 @@
+{
+  "checks": [
+    { "host": "web-1", "healthy": true },
+    { "host": "web-2", "healthy": false }
+  ]
+}

@@ -1,0 +1,83 @@
+edition: v2026.3
+name: usage-billing
+description: >-
+  Bills API overage in whole 1,000-call blocks — `math.greatest` instead of a
+  negative overage, and an explicit `double()` before dividing, because CEL
+  divides two ints as an int and truncates rather than rounding.
+
+# CEL is not automatically-widening like some scripting languages: `7 / 2` is
+# `3`, not `3.5`, because both operands are `int` and int division truncates.
+# Getting a fraction to round *up* from means converting to `double` first —
+# `double(7) / 2.0` is `3.5` — before `math.ceil` ever sees it. Skipping the
+# conversion is not an error CEL raises; it is a wrong answer that looks
+# right until a caller checks the invoice, which is why this file says the
+# conversion out loud rather than leaving it implicit.
+#
+# `math.greatest` (a macro from the `math` library, written on the namespace
+# rather than on a value) replaces `max(0, x)` for the same reason a
+# defaulted optional replaced `has(...) ? ... : ...` elsewhere in this
+# corpus: CEL has no built-in `max`, and `x > 0 ? x : 0` says the same thing
+# with the comparison written twice.
+#
+#   flow run local examples/usage-billing/workflow.yaml \
+#     --input calls_made=12750 --input quota=10000 --input price_per_1000_cents=150
+#
+#   flow run local examples/usage-billing/workflow.yaml \
+#     --input calls_made=4000 --input quota=10000 --input price_per_1000_cents=150
+
+inputs:
+  calls_made:
+    type: int
+    required: true
+    example: 12750
+    description: API calls this billing period actually made
+
+  quota:
+    type: int
+    required: true
+    example: 10000
+    description: calls included in the plan before overage billing starts
+
+  price_per_1000_cents:
+    type: int
+    required: true
+    example: 150
+    description: cents charged per whole 1,000-call block of overage
+
+steps:
+  # Never negative: a caller under quota has zero overage, not a negative
+  # number of calls nobody made.
+  - id: overage
+    value: ${math.greatest(0, inputs.calls_made - inputs.quota)}
+
+  # The truncation this file exists to avoid getting wrong: `overage / 1000`
+  # would floor-divide as an int, undercharging every overage that is not an
+  # exact multiple of 1,000. `double(...)` first makes the division exact,
+  # and `math.ceil` is what rounds a partial block up to a whole one — a
+  # caller who made even one call past a clean block is billed for the
+  # block, not let off for the fraction.
+  - id: billable_blocks
+    value: ${math.ceil(double(steps.overage.value) / 1000.0)}
+
+  # Back to `int`: money is cents, and `billable_blocks` is a `double`
+  # produced by `ceil` — CEL will not silently mix the two in a
+  # multiplication, so the result is converted back before it is priced.
+  - id: cost_cents
+    value: ${int(steps.billable_blocks.value) * inputs.price_per_1000_cents}
+
+  - id: announce
+    log:
+      message: >-
+        ${"%d overage call(s), %d block(s), %d cent(s) owed".format([
+            steps.overage.value, int(steps.billable_blocks.value), steps.cost_cents.value])}
+
+outputs:
+  overage_calls:
+    value: ${steps.overage.value}
+    description: calls made past the included quota, never negative
+  billable_blocks:
+    value: ${int(steps.billable_blocks.value)}
+    description: whole 1,000-call blocks charged, rounded up from any partial block
+  cost_cents:
+    value: ${steps.cost_cents.value}
+    description: total overage charge, in cents
