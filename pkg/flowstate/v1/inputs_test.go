@@ -178,3 +178,52 @@ func TestASideEffectDoesNotOccurWhenOutputMustCannotCompile(t *testing.T) {
 			"it must be refused before execution starts, not discovered after a side effect happened",
 		posts.Load())
 }
+
+// TestStringShapedCoversEveryDeclaredType is the guard #621 asks for: a
+// future type added to [v1.InputDeclaration_Type] has to be given an
+// explicit answer here, string-shaped or not, or this test fails — rather
+// than silently defaulting through [v1.StringShaped] and reintroducing the
+// exact defect this PR fixes (a type that exists in the schema and is
+// unhandled everywhere that switches on declared type). The set of types is
+// read from the generated descriptor rather than hand-listed, so it always
+// reflects what the schema actually declares today.
+func TestStringShapedCoversEveryDeclaredType(t *testing.T) {
+	// The known answer for every type the schema declares today. Adding a
+	// type to the schema without adding it here fails this test, which is
+	// the point.
+	want := map[v1.InputDeclaration_Type]bool{
+		v1.InputDeclaration_TYPE_STRING: true,
+		v1.InputDeclaration_TYPE_ENUM:   true,
+		v1.InputDeclaration_TYPE_INT:    false,
+		v1.InputDeclaration_TYPE_FLOAT:  false,
+		v1.InputDeclaration_TYPE_BOOL:   false,
+		v1.InputDeclaration_TYPE_LIST:   false,
+		v1.InputDeclaration_TYPE_STRUCT: false,
+	}
+
+	values := v1.InputDeclaration_Type(0).Descriptor().Values()
+	seen := make(map[v1.InputDeclaration_Type]bool, values.Len())
+	for i := range values.Len() {
+		typ := v1.InputDeclaration_Type(values.Get(i).Number())
+		if typ == v1.InputDeclaration_TYPE_UNSPECIFIED {
+			continue // Not a type an author can declare; see [v1.DeclaredTypeNames].
+		}
+		seen[typ] = true
+
+		wantShaped, known := want[typ]
+		require.True(t, known,
+			"InputDeclaration_Type %s (%d) is declared in the schema but has no expected "+
+				"answer in this test's `want` table; add one — this is exactly the class of "+
+				"omission #621 fixed", typ, typ)
+		require.Equal(t, wantShaped, v1.StringShaped(typ),
+			"v1.StringShaped(%s) = %v, want %v", typ, v1.StringShaped(typ), wantShaped)
+	}
+
+	// The reverse direction: every type this test knows about is one the
+	// schema still declares, so a retired type does not leave a stale, silently
+	// passing entry behind.
+	for typ := range want {
+		require.True(t, seen[typ],
+			"this test's `want` table names %s, which the schema descriptor no longer declares", typ)
+	}
+}

@@ -170,6 +170,15 @@ func checkCallArgumentType(stepID, name string, value *v1.Value, declaration *v1
 		if declaredType == declaration.GetType() {
 			return nil
 		}
+		if declaredType == v1.InputDeclaration_TYPE_STRING && v1.StringShaped(declaration.GetType()) {
+			// The callee declares an enum, and enum values travel as strings
+			// (see [v1.StringShaped]) — a statically string-typed expression
+			// such as `${"staging"}` is exactly the shape [v1.CheckInputValue]
+			// accepts for a literal. Membership is a value-level question this
+			// checker cannot answer for an expression, so it is left to
+			// [v1.BindRunInputs] once the expression has a value to check.
+			return nil
+		}
 
 		return &Diagnostic{
 			Step: stepID, Field: "with." + name,

@@ -301,9 +301,15 @@ func knowableReferenceType(root, name string, wf *v1.Workflow) (value *expr.Valu
 // each is enough. An unspecified or unknown type has no representative and is left to
 // the run.
 func representativeValue(t v1.InputDeclaration_Type) *expr.Value {
-	switch t {
-	case v1.InputDeclaration_TYPE_STRING:
+	if v1.StringShaped(t) {
+		// TYPE_STRING and TYPE_ENUM both travel as a string on the wire (see
+		// [v1.StringShaped]); a zero string stands in for either so a direct
+		// reference such as `${inputs.environment}` reaches [literalMismatch]
+		// instead of falling through to no representative at all and skipping
+		// task-field validation.
 		return &expr.Value{Kind: &expr.Value_StringValue{}}
+	}
+	switch t {
 	case v1.InputDeclaration_TYPE_INT:
 		return &expr.Value{Kind: &expr.Value_Int64Value{}}
 	case v1.InputDeclaration_TYPE_FLOAT:
