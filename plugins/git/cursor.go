@@ -218,6 +218,24 @@ func (it *multiRootCommitIter) Next() (*object.Commit, error) {
 		}
 		it.seen[h] = true
 
+		// The parent bound is enforced here, before the list below expands
+		// it, because expanding it *is* the allocation the bound exists to
+		// refuse: every parent is appended to it.stack, and a later
+		// Frontier() copies the whole stack again. Checked downstream, in
+		// collectLogCommits, it reads a list the walk has already paid for
+		// - and with a path filter in front it never reads it at all,
+		// since a commit the filter discards is one collectLogCommits
+		// never sees while its parents went onto the stack regardless.
+		//
+		// Refused rather than truncated, for the reason
+		// [errCommitMetadataTooLarge] gives: this is a property of the
+		// history, identical on every retry, so no resumable page could
+		// hand back a cursor that makes progress past it.
+		if len(c.ParentHashes) > maxLogParents {
+			return nil, fmt.Errorf("%w: commit %s has %d parents, and at most %d are read",
+				errCommitMetadataTooLarge, h, len(c.ParentHashes), maxLogParents)
+		}
+
 		// Parents pushed in reverse so the first parent is popped (and
 		// thus visited) first - matching the same "first parent explored
 		// before second" convention object.NewCommitPreorderIter's own

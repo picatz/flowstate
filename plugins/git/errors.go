@@ -69,6 +69,15 @@ func classifyGitError(err error) error {
 				"retry deliberately if that is still what should happen - this task never forces "+
 				"a push: %v", err)
 
+	case errors.Is(err, errCommitMetadataTooLarge):
+		// A case of its own rather than the default, which would report the
+		// bare sentence with nothing an author can act on. Both are
+		// permanent; this one says which walk to write instead, the same
+		// way the shallow-clone revision case above does.
+		return sdk.InvalidInput(
+			"this walk reached a commit whose own metadata is larger than git.log reads: %v; "+
+				"narrow the walk with since or path so it does not reach that commit", err)
+
 	case errors.As(err, new(*netpolicy.DenyError)):
 		return sdk.PermissionDenied("egress policy denied this request: %v", err)
 

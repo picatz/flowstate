@@ -416,13 +416,28 @@ func resolveOptionalRef(repo *git.Repository, ref string) (plumbing.Hash, error)
 	return resolve(repo, ref)
 }
 
+// errCommitMetadataTooLarge marks a commit refused for its own metadata, as
+// against a page that stopped because a budget ran out.
+//
+// The distinction decides what may be handed back. A budget refills on the next
+// call, so the commit that exhausted one is pushed back, named in next_cursor,
+// and collected by the page after - the cursor makes progress. A commit larger
+// than a per-commit limit does not become smaller on the next call: a cursor
+// naming it would refuse it again forever, and doLogWithBounds would read the
+// resulting truncated zero-commit page as a shallow boundary, retry every clone
+// depth, and finally report that the cursor is too far behind the tips, which is
+// not what happened. So this leaves as an error rather than as a page.
+var errCommitMetadataTooLarge = errors.New("commit metadata exceeds what git.log reads")
+
 // collectLogCommits walks iter, keeping at most maxCommits entries and
-// stopping early - reporting truncated: true - the moment any bound is
+// stopping early - reporting truncated: true - the moment any budget is
 // reached: maxCommits entries collected, maxTotalLogMessageBytes worth of
 // message text, or maxTotalLogMetadataBytes worth of identities and parent
-// hashes, whichever comes first. Per-field identity and parent-count limits
-// are checked before those attacker-controlled values are copied into the
-// response.
+// hashes, whichever comes first. A per-commit identity limit is checked
+// before that attacker-controlled value is copied into the response, and
+// refuses the walk rather than truncating it - see
+// [errCommitMetadataTooLarge]. The per-commit parent limit is enforced
+// earlier still, in [multiRootCommitIter.Next].
 //
 // A third way collection can stop is the shallow clone's own fetch boundary,
 // rather than either bound above: with a sparse path filter, the walk can run
@@ -476,8 +491,24 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 			return storer.ErrStop
 		}
 
-		metadataBytes, metadataOK := logMetadataBytes(c)
-		if !metadataOK || totalMetadataBytes+metadataBytes > maxTotalLogMetadataBytes {
+		metadataBytes, metadataErr := logMetadataBytes(c)
+		if metadataErr != nil {
+			// Not a budget running out, and so not a truncation: this
+			// commit is refused for what it is rather than for what is
+			// left, and it will be refused identically on the next call.
+			// Pushing it back and naming it in next_cursor would hand the
+			// caller a cursor whose only effect is to fail again - and
+			// worse than merely failing, doLogWithBounds reads the
+			// resulting truncated zero-commit page as a shallow boundary,
+			// retries every clone depth, and reports that the cursor is
+			// too far behind, which is not what happened.
+			return metadataErr
+		}
+		if totalMetadataBytes+metadataBytes > maxTotalLogMetadataBytes {
+			// The aggregate metadata budget, which *is* a budget: the next
+			// page starts with a fresh one and this commit fits in it, so
+			// the cursor below makes progress exactly as the message
+			// budget's does.
 			truncated = true
 			h := c.Hash
 			discarded = &h
@@ -522,19 +553,22 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 // logMetadataBytes validates and charges every variable-length piece of commit
 // metadata other than the message before collectLogCommits copies it. Hash text
 // has a fixed encoded width, but its count is controlled by the repository.
-func logMetadataBytes(c *object.Commit) (int, bool) {
+//
+// The parent count is charged here and bounded in [multiRootCommitIter.Next],
+// which is the last point before the walk expands it - by the time a commit
+// reaches this function its parents are already on the iterator's stack, so a
+// refusal here would be a bound on the copy rather than on the allocation.
+func logMetadataBytes(c *object.Commit) (int, error) {
 	identities := [...]string{c.Author.Name, c.Author.Email, c.Committer.Name, c.Committer.Email}
 	total := 0
 	for _, identity := range identities {
 		if len(identity) > maxLogIdentityBytes {
-			return 0, false
+			return 0, fmt.Errorf("%w: commit %s carries a %d byte identity field, and at most %d are read",
+				errCommitMetadataTooLarge, c.Hash, len(identity), maxLogIdentityBytes)
 		}
 		total += len(identity)
 	}
-	if len(c.ParentHashes) > maxLogParents {
-		return 0, false
-	}
-	return total + len(c.ParentHashes)*len(plumbing.ZeroHash.String()), true
+	return total + len(c.ParentHashes)*len(plumbing.ZeroHash.String()), nil
 }
 
 // repoHasShallowBoundary reports whether repo's own object store recorded any
