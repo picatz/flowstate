@@ -530,7 +530,8 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	inputs, err := s.validateSubmission(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	workflow := s.trustedWorkflow(req.Msg.GetWorkflow())
+	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
 	}
@@ -548,11 +549,11 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// through `Run` and not through here — which is the fail-closed direction:
 	// a requirement nothing can satisfy refuses, rather than being waived by the
 	// path that has nowhere to put it.
-	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), ""); err != nil {
+	if err := v1.CheckManualStart(workflow, identity.GetSubject(), ""); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -564,7 +565,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		ctx, workflowID, req.Msg.GetName(),
 		&v1.SignalDelivery{Payload: payload, Sender: sender},
 		options, engine.Run, &v1.RunState{
-			Workflow:    req.Msg.GetWorkflow(),
+			Workflow:    workflow,
 			StepsBudget: int32(s.maxStepsPerRun),
 			Identity:    identity,
 			Inputs:      inputs,

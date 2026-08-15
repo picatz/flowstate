@@ -171,6 +171,31 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 	}
 }
 
+// WithTrustedWorkflows installs deployment-owned workflow specifications for
+// remote submission. A request whose workflow name matches one of these entries
+// is authorized and executed from the trusted copy, not from the copy carried by
+// the request. This is what makes restrictions such as `manual: denied` and
+// `manual.allowed_principals` authorization policy rather than caller input.
+//
+// Workflows not named by this option retain the open submission behavior: the
+// Run API accepts ad-hoc specifications. Deployments that use manual restrictions
+// must therefore register the restricted workflow here under its name. Cloning at
+// configuration time prevents a caller that still holds the source pointer from
+// changing policy after the server has started.
+func WithTrustedWorkflows(workflows ...*v1.Workflow) Option {
+	return func(s *FlowstateServer) {
+		if s.trustedWorkflows == nil {
+			s.trustedWorkflows = make(map[string]*v1.Workflow)
+		}
+		for _, workflow := range workflows {
+			if workflow == nil || workflow.GetName() == "" {
+				continue
+			}
+			s.trustedWorkflows[workflow.GetName()] = proto.Clone(workflow).(*v1.Workflow)
+		}
+	}
+}
+
 // FlowstateServer implements the flowstatev1connect.WorkflowServiceHandler interface
 // and provides methods to run and get the status of workflows using Temporal.
 type FlowstateServer struct {
@@ -201,6 +226,7 @@ type FlowstateServer struct {
 	credentialTargets           []string
 	credentialTargetsConfigured bool
 	pluginCatalog               *v1.PluginCatalog
+	trustedWorkflows            map[string]*v1.Workflow
 
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
@@ -211,6 +237,21 @@ type FlowstateServer struct {
 	// client: memos, a schedule's stored arguments, an activity's heartbeat
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
+}
+
+// trustedWorkflow returns the deployment-owned specification for a registered
+// workflow name. The clone is per request: validation and preparation currently
+// treat specifications as immutable, but keeping the configured authority out of
+// request-lifetime code makes that trust boundary robust to later normalization.
+func (s *FlowstateServer) trustedWorkflow(requested *v1.Workflow) *v1.Workflow {
+	if requested == nil {
+		return nil
+	}
+	trusted, ok := s.trustedWorkflows[requested.GetName()]
+	if !ok {
+		return requested
+	}
+	return proto.Clone(trusted).(*v1.Workflow)
 }
 
 // WithDataConverter sets the data converter this server reads its own recorded
@@ -607,7 +648,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	inputs, err := s.validateSubmission(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	workflow := s.trustedWorkflow(req.Msg.GetWorkflow())
+	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
 	}
@@ -650,11 +692,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), req.Msg.GetReason()); err != nil {
+	if err := v1.CheckManualStart(workflow, identity.GetSubject(), req.Msg.GetReason()); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +714,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	options.Memo = memo
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    req.Msg.GetWorkflow(),
+		Workflow:    workflow,
 		StepsBudget: int32(s.maxStepsPerRun),
 		Identity:    identity,
 
