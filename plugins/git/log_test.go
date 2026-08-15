@@ -263,6 +263,29 @@ func TestGitLogReportsTruncatedWhenTotalMessageBudgetExceeded(t *testing.T) {
 	}
 }
 
+func TestLogMetadataBytesBoundsIdentitiesAndParents(t *testing.T) {
+	base := object.Commit{
+		Author:       object.Signature{Name: "A", Email: "a@example.com"},
+		Committer:    object.Signature{Name: "C", Email: "c@example.com"},
+		ParentHashes: make([]plumbing.Hash, maxLogParents),
+	}
+	if _, ok := logMetadataBytes(&base); !ok {
+		t.Fatal("metadata at the documented parent limit was refused")
+	}
+
+	oversizedIdentity := base
+	oversizedIdentity.Author.Name = strings.Repeat("a", maxLogIdentityBytes+1)
+	if _, ok := logMetadataBytes(&oversizedIdentity); ok {
+		t.Fatal("metadata with an oversized author name was accepted")
+	}
+
+	tooManyParents := base
+	tooManyParents.ParentHashes = make([]plumbing.Hash, maxLogParents+1)
+	if _, ok := logMetadataBytes(&tooManyParents); ok {
+		t.Fatal("metadata with too many parents was accepted")
+	}
+}
+
 // TestGitLogPathFilterFindsOnlyTouchingCommits proves path narrows results
 // to commits that actually touched it, not merely that it does not crash -
 // the traversal a naive "returns something" test would miss.

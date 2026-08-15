@@ -417,12 +417,12 @@ func resolveOptionalRef(repo *git.Repository, ref string) (plumbing.Hash, error)
 }
 
 // collectLogCommits walks iter, keeping at most maxCommits entries and
-// stopping early - reporting truncated: true - the moment either bound is
-// reached: maxCommits entries collected, or maxTotalLogMessageBytes worth of
-// message text collected across them, whichever comes first. Both bounds
-// exist independently (see validate.go's own doc comment on
-// maxTotalLogMessageBytes): a repository with few, enormous commit messages
-// can exceed the byte budget long before it exceeds the count.
+// stopping early - reporting truncated: true - the moment any bound is
+// reached: maxCommits entries collected, maxTotalLogMessageBytes worth of
+// message text, or maxTotalLogMetadataBytes worth of identities and parent
+// hashes, whichever comes first. Per-field identity and parent-count limits
+// are checked before those attacker-controlled values are copied into the
+// response.
 //
 // A third way collection can stop is the shallow clone's own fetch boundary,
 // rather than either bound above: with a sparse path filter, the walk can run
@@ -453,7 +453,7 @@ func resolveOptionalRef(repo *git.Repository, ref string) (plumbing.Hash, error)
 // TestGitLogCursorPagesReachEveryCommitExactlyOnce, which under-counted by
 // exactly the commits lost this way before discarded existed.
 func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits int) (commits []*gitv1.Commit, truncated bool, discarded *plumbing.Hash, err error) {
-	var totalBytes int
+	var totalMessageBytes, totalMetadataBytes int
 	err = iter.ForEach(func(c *object.Commit) error {
 		if len(commits) >= maxCommits {
 			truncated = true
@@ -463,7 +463,7 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 		}
 
 		message, messageBytes := truncateLogMessage(c.Message, maxLogMessageBytes)
-		if totalBytes+messageBytes > maxTotalLogMessageBytes {
+		if totalMessageBytes+messageBytes > maxTotalLogMessageBytes {
 			// The total message budget, not the per-entry cap or
 			// maxCommits, is what ran out here - stopped with the same
 			// honest signal: there was more history this call could have
@@ -475,7 +475,16 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 			discarded = &h
 			return storer.ErrStop
 		}
-		totalBytes += messageBytes
+
+		metadataBytes, metadataOK := logMetadataBytes(c)
+		if !metadataOK || totalMetadataBytes+metadataBytes > maxTotalLogMetadataBytes {
+			truncated = true
+			h := c.Hash
+			discarded = &h
+			return storer.ErrStop
+		}
+		totalMessageBytes += messageBytes
+		totalMetadataBytes += metadataBytes
 
 		commits = append(commits, &gitv1.Commit{
 			Sha:          c.Hash.String(),
@@ -508,6 +517,24 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 		return commits, true, nil, nil
 	}
 	return nil, false, nil, err
+}
+
+// logMetadataBytes validates and charges every variable-length piece of commit
+// metadata other than the message before collectLogCommits copies it. Hash text
+// has a fixed encoded width, but its count is controlled by the repository.
+func logMetadataBytes(c *object.Commit) (int, bool) {
+	identities := [...]string{c.Author.Name, c.Author.Email, c.Committer.Name, c.Committer.Email}
+	total := 0
+	for _, identity := range identities {
+		if len(identity) > maxLogIdentityBytes {
+			return 0, false
+		}
+		total += len(identity)
+	}
+	if len(c.ParentHashes) > maxLogParents {
+		return 0, false
+	}
+	return total + len(c.ParentHashes)*len(plumbing.ZeroHash.String()), true
 }
 
 // repoHasShallowBoundary reports whether repo's own object store recorded any

@@ -98,6 +98,15 @@ const (
 	maxLogMessageBytes      = 4096
 	maxTotalLogMessageBytes = 256 << 10 // 256 KiB
 
+	// Identity fields and parent lists come from the same attacker-chosen
+	// commit object as its message, but are independent resources: bounding
+	// message text does not bound either of them. Refuse a commit rather than
+	// copying metadata beyond any one limit, and also bound the aggregate
+	// metadata across an otherwise-valid page.
+	maxLogIdentityBytes      = 1024
+	maxLogParents            = 64
+	maxTotalLogMetadataBytes = 256 << 10 // 256 KiB
+
 	// maxLogPathBytes bounds git.log's optional path filter before it is
 	// used to build a PathFilter closure - the same "bound before the real
 	// use sees it" reasoning validateRevision documents.
