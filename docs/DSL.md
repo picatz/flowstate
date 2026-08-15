@@ -1655,14 +1655,24 @@ two spellings of "refuse to proceed" is one too many.
 
 ### `switch:` landed — the word buys the checks, not the branch (#357)
 
-The branching was always expressible: three sibling `if:` steps against one value,
-which `examples/approval-gate` defends well. What was inexpressible was the
-*checking*. Nothing ties three equalities together, so a validator cannot see that
-they intend a total dispatch over one value — it cannot catch the typo'd literal
-that is legal CEL and silently never matches, cannot notice a value nobody handles,
-and the run cannot record that an unhandled value arrived. Grouping the cases under
-one construct is the precondition for every one of those, and that is what earned
-the word.
+The branching was always expressible: three sibling `if:` steps against one value.
+What was inexpressible was the *checking*. Nothing ties three equalities together,
+so a validator cannot see that they intend a total dispatch over one value — it
+cannot catch the typo'd literal that is legal CEL and silently never matches,
+cannot notice a value nobody handles, and the run cannot record that an unhandled
+value arrived. Grouping the cases under one construct is the precondition for every
+one of those, and that is what earned the word.
+
+`examples/approval-gate` is where that trade is visible, because it is the case
+where the payoff is largest: its discriminant is a wait outcome whose domain the
+validator can *infer*, so all five domain diagnostics below apply to it. Written as
+three `if:`s — which is how it shipped until this construct landed — `- case:
+rejcted` is a branch that never runs and a dropped branch is a run that quietly
+does nothing; written as one `switch:`, both are `flow validate` failures naming
+the value. That is also why the gate's `outcome:` stays a conditional over string
+literals: that shape is exactly what `switchDomain` reads a domain out of, so a
+rewrite into an `optMap` or an `orValue` would compute the same three strings and
+silently take every check with it.
 
 ```yaml
 - id: on_event
@@ -1748,8 +1758,11 @@ six-site change and this construct does not need one. The switch is never a
 suspension position; its bodies may contain waits, and the container machinery
 handles them as it does a parallel branch's.
 
-`examples/webhook-routing` is the construct end to end, its `default:` logging the
-unexpected action — which doubles as the documentation for why the slot exists.
+`examples/webhook-routing` is the construct end to end over an *open* domain, its
+`default:` logging the unexpected action — which doubles as the documentation for
+why the slot exists. `examples/approval-gate` is the same construct over a closed
+one, and carries no `default:` for the mirror-image reason: the validator knows the
+three outcomes, the cases exhaust them, and a `default:` there can never run.
 
 ### `async:` landed — the departure from written order is one word (#418)
 
