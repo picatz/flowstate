@@ -192,6 +192,25 @@ type documentStore struct {
 	// settled is closed and replaced on every change to docs or building, which
 	// is how a waiter is woken without polling. Nil until someone waits.
 	settled chan struct{}
+
+	// awaitTrace, when set, is called once by every [documentStore.await] return
+	// with whether that call gave up because its bound expired rather than
+	// because it found a current document. It exists for tests that need to
+	// tell "the wait never rode out the build bound" from "it did, and still
+	// answered" — a distinction elapsed wall-clock time cannot make reliably
+	// under contention, since a build that lands just under the deadline looks
+	// identical to one answered from memory once you're only counting
+	// milliseconds. Nil in production, where the call costs nothing.
+	awaitTrace func(boundExpired bool)
+}
+
+// setAwaitTrace installs the test hook described on [documentStore.awaitTrace].
+// Locked because it is set from a different goroutine than the one that will
+// read it inside [documentStore.await].
+func (s *documentStore) setAwaitTrace(f func(boundExpired bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.awaitTrace = f
 }
 
 // beginBuild records that a document notification for uri is being handled.
@@ -264,6 +283,10 @@ func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{},
 	graceDeadline := now.Add(documentSettleGrace)
 	buildDeadline := now.Add(documentBuildTimeout)
 
+	s.mu.Lock()
+	trace := s.awaitTrace
+	s.mu.Unlock()
+
 	// Whether a build was ever seen registered decides which bound applies: the
 	// short one is for finding out that nothing is coming, the long one is for
 	// waiting on something that is.
@@ -284,6 +307,9 @@ func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{},
 		// a version the client has already replaced, and answering from it would
 		// describe text the author is no longer looking at.
 		if ok && inFlight == 0 {
+			if trace != nil {
+				trace(false)
+			}
 			return doc, true
 		}
 
@@ -293,6 +319,9 @@ func (s *documentStore) await(ctx context.Context, disconnected <-chan struct{},
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			if trace != nil {
+				trace(true)
+			}
 			return doc, ok
 		}
 
