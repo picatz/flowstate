@@ -55,6 +55,35 @@ updates:
       # way the updater can resolve, at which point this entry should go.
       - dependency-name: github.com/charmbracelet/x/exp/charmtone
 
+  # The plugin modules, which are separate Go modules and were invisible to
+  # everything above. `directory: /` covers one module; these five have their
+  # own go.mod, their own dependency graphs, and no coverage at all until now.
+  #
+  # The gap was not theoretical. A root-module bump landed, the plugin modules
+  # kept their older pins, and `make test-plugins` failed with "updates to
+  # go.mod needed" — a red check on a dependency PR whose own diff was correct,
+  # which is the shape that teaches people to merge past a failing job. They
+  # drift because nothing was updating them, not because the root bump was
+  # wrong.
+  #
+  # Grouped and weekly like the root module, for the same reason: a plugin's
+  # patch releases are background noise, and five modules times twelve patches
+  # is how a queue becomes unreadable.
+  - package-ecosystem: gomod
+    directories:
+      - /plugins/codex
+      - /plugins/git
+      - /plugins/github
+      - /plugins/sql
+      - /plugins/vcs
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      plugin-modules:
+        patterns:
+          - "*"
+
   # The workflows themselves, which are code that runs with a token and is
   # currently referenced by moving tags. Keeping this here is what makes pinning
   # actions to commit SHAs maintainable rather than a thing that rots: Dependabot

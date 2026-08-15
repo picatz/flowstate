@@ -7,12 +7,12 @@ toolchain go1.26.6
 require (
 	github.com/google/go-github/v75 v75.0.0
 	github.com/picatz/flowstate v0.0.0-00010101000000-000000000000
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1 // indirect
-	buf.build/go/protovalidate v1.2.0 // indirect
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260709200747-435963d16310.1 // indirect
+	buf.build/go/protovalidate v1.3.0 // indirect
 	cel.dev/expr v0.25.2 // indirect
 	connectrpc.com/authn v0.2.0 // indirect
 	connectrpc.com/connect v1.20.0 // indirect
@@ -21,7 +21,7 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/google/cel-go v0.30.0 // indirect
+	github.com/google/cel-go v0.31.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/picatz/jose v0.0.0-20250624193854-494d48fb4d59 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
