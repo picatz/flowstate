@@ -1,8 +1,14 @@
 package auth
 
 import (
+	"errors"
 	"testing"
 )
+
+type vocabularySecretRef struct{}
+
+func (vocabularySecretRef) GetScheme() string { return "env" }
+func (vocabularySecretRef) GetName() string   { return "DEPLOY_TOKEN" }
 
 // One vocabulary, and the trap on the way to it.
 //
@@ -86,6 +92,53 @@ func TestIdentityIsTheCallerAndWorkloadIsTheAssertion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCallerSubjectRulesDecideOnTheCaller exercises both authorization paths,
+// rather than only inspecting the activation assembled for CEL. In particular,
+// the deny case guards the security-sensitive direction: a deny rule naming the
+// authenticated caller must still win when a separate allow rule names the
+// assertion Flowstate is about to mint.
+func TestCallerSubjectRulesDecideOnTheCaller(t *testing.T) {
+	t.Parallel()
+
+	identity, ref := callerFixture()
+	minted, err := identity.SubjectFor(ref)
+	if err != nil {
+		t.Fatalf("SubjectFor: %v", err)
+	}
+
+	t.Run("assumption allow", func(t *testing.T) {
+		rules, err := compileAssumeRules(
+			[]string{`identity.subject == "spiffe://acme/ci-runner"`}, nil, DefaultAssumeRuleCostLimit,
+		)
+		if err != nil {
+			t.Fatalf("compileAssumeRules: %v", err)
+		}
+		if err := rules.evaluate(t.Context(), "aws-prod", minted,
+			assumeVars("aws-prod", minted, "https://as.example.com", identity, ref)); err != nil {
+			t.Fatalf("caller allow rule denied assumption: %v", err)
+		}
+	})
+
+	t.Run("secret deny wins over workload allow", func(t *testing.T) {
+		policy, err := (SecretAccessPolicy{
+			Allow: []string{`workload.subject == "` + minted + `"`},
+			Deny:  []string{`identity.subject == "spiffe://acme/ci-runner"`},
+		}).Compile()
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+
+		err = policy.Authorize(t.Context(), identity, ref, vocabularySecretRef{})
+		if !errors.Is(err, ErrSecretDenied) {
+			t.Fatalf("caller deny rule returned %v, want ErrSecretDenied", err)
+		}
+		var denied *SecretDeniedError
+		if !errors.As(err, &denied) || denied.Reason != ReasonSecretDenyRule {
+			t.Fatalf("caller deny rule returned %v, want reason %s", err, ReasonSecretDenyRule)
+		}
+	})
 }
 
 // TestIdentityCarriesTheSameFieldsAsEveryOtherSurface is the portability claim
