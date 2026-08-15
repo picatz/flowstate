@@ -198,6 +198,34 @@ this section exists to prevent.
    the source. That is a repository setting and therefore an owner
    decision, and it reduces the inflow — it does not close what is already
    on the page.
+
+   **A bot's operational notice is a third class, and it has its own
+   mechanism.** Codex posts things like `You have reached your Codex usage
+   limits for security reviews. Please try again later.` as a *top-level
+   PR comment*, not a review thread. Nothing resolves a top-level comment —
+   GitHub offers no resolve for one, and `minimizeComment` needs GraphQL
+   this environment refuses. So a sweep that only resolves threads leaves
+   these sitting on the page, and twenty-four of them accumulated across one
+   wave of PRs before anyone counted.
+
+   REST deletes them, and that is the right answer *for this class only*:
+
+       gh api -X DELETE repos/{owner}/{repo}/issues/comments/{id}
+
+   **Never delete a finding.** Not a review comment, not a review summary,
+   not a human's comment, not a bot's comment that contains an actual claim
+   about the code — even a wrong one, which gets a thumbs-down and a
+   sentence of evidence so the judgment is on the record. Deletion destroys
+   the record, and the record is why the thread rule exists at all.
+
+   What qualifies is narrow and testable: the comment carries **no claim
+   about the diff**. A rate-limit notice, a "try again later", a bot
+   announcing it is starting. If you have to think about whether it carries
+   signal, it does — resolve it, or leave it and say so.
+
+   If `minimizeComment` becomes reachable, prefer it: hiding preserves the
+   record where deleting does not, and the narrowness of this rule is a
+   consequence of only having the destructive tool.
 9. **Respect the API budget.** REST and GraphQL each have their own pool.
    A pool is shared across everything the account does, so polling PR
    state exhausted one of them in a single wave, but the two are not
