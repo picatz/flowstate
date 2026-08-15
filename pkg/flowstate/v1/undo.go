@@ -62,6 +62,20 @@ const UndoBudget = 2 * time.Minute
 // up by hand needs that distinction.
 var ErrUndoBudget = errors.New("not attempted: the compensation budget for a cancelled run was already spent")
 
+// errUndoBudgetExpired is the [context.WithTimeoutCause] cause attached to the
+// context a compensation runs under once a cancellation has triggered it.
+//
+// Distinct from [ErrUndoBudget], which names a compensation [RunUndoLogWithin]
+// never attempted because it saw no time left. This is the other half of the
+// same bound: a compensation that was already *running* when the budget expired
+// fails with an ordinary context.DeadlineExceeded, indistinguishable on its own
+// from a step's own `timeout:` reaching the same underlying error. Naming the
+// cause is what [withCancellationCause] surfaces, so a "could not undo" entry
+// says which of the two happened rather than leaving an operator to guess
+// between "this compensation is slow" and "the two-minute budget ran out while
+// it was working".
+var errUndoBudgetExpired = errors.New("the compensation budget for this cancelled run ran out")
+
 // UndoLog is the compensations a run has registered and not yet run, oldest first.
 //
 // A Go type rather than a schema one, because what travels is

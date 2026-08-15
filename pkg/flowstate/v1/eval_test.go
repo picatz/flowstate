@@ -983,6 +983,58 @@ func TestRunWorkflowUndoOnCancellation(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowCancellationCauseIsDistinguishable is issue #520's own
+// cancellation case: `context.WithCancelCause` was unused across the tree, so
+// every cancelled run read as the same "context canceled" whatever actually
+// stopped it. Two runs stopped for two different reasons — a stand-in for a
+// CEL cost limit and for [UndoBudget] running out — must produce two
+// different failure messages, and `errors.Is(err, context.Canceled)` must
+// still hold for both, which is what a caller distinguishing a stopped run
+// from a failed one relies on (see [UndoRunError]).
+func TestRunWorkflowCancellationCauseIsDistinguishable(t *testing.T) {
+	runCancelledWithCause := func(t *testing.T, cause error) error {
+		t.Helper()
+
+		base, recorded := tests.NewUndoServer(t)
+		workflow := tests.UndoCancellationCases(base)[0].Workflow
+
+		ctx, cancel := context.WithCancelCause(t.Context())
+		defer cancel(nil)
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := v1.Run(ctx, workflow)
+			done <- err
+		}()
+
+		require.Eventually(t, func() bool {
+			return slices.Contains(recorded(), "z")
+		}, 30*time.Second, time.Millisecond,
+			"the run never reached the step it was to be cancelled at")
+
+		cancel(cause)
+
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(30 * time.Second):
+			t.Fatal("a cancelled run did not stop")
+			return nil
+		}
+	}
+
+	errA := runCancelledWithCause(t, errors.New("cel cost limit of 1000000 exceeded"))
+	errB := runCancelledWithCause(t, errors.New("compensation budget for this cancelled run ran out"))
+
+	require.ErrorIs(t, errA, context.Canceled, "a cancelled run must still read as cancelled")
+	require.ErrorIs(t, errB, context.Canceled, "a cancelled run must still read as cancelled")
+
+	require.ErrorContains(t, errA, "cel cost limit of 1000000 exceeded")
+	require.ErrorContains(t, errB, "compensation budget for this cancelled run ran out")
+	require.NotEqual(t, errA.Error(), errB.Error(),
+		"two different cancellation reasons produced the same failure text")
+}
+
 // undoPlaceholderBase is a base URL used only to enumerate the shared saga cases.
 //
 // `.invalid` is reserved by RFC 2606 and resolves nowhere, so a case list built
