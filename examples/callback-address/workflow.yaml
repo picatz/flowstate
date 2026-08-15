@@ -137,7 +137,7 @@ outputs:
 
   outcome:
     value: >-
-      ${has(steps.decision.payload.accepted)
-        ? (steps.decision.payload.accepted ? "accepted" : "rejected")
-        : "abandoned"}
+      ${steps.decision.payload.?accepted
+          .optMap(accepted, accepted ? "accepted" : "rejected")
+          .orValue("abandoned")}
     description: what the reviewer decided, or that they never answered

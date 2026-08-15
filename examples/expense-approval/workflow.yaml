@@ -99,9 +99,9 @@ steps:
         outcome: >-
           ${timed_out
             ? "expired"
-            : (has(payload.approved)
-                ? (payload.approved ? "approved" : "rejected")
-                : "no_decision")}
+            : payload.?approved
+                .optMap(approved, approved ? "approved" : "rejected")
+                .orValue("no_decision")}
         # Re-exposed because `outputs:` replaces what the wait produced:
         # `escalate` and `finance_review` still branch on `timed_out`, and
         # `reimburse`'s log line and `approved_by` still name the sender.
@@ -137,9 +137,9 @@ steps:
         outcome: >-
           ${timed_out
             ? "expired"
-            : (has(payload.approved)
-                ? (payload.approved ? "approved" : "rejected")
-                : "no_decision")}
+            : payload.?approved
+                .optMap(approved, approved ? "approved" : "rejected")
+                .orValue("no_decision")}
         # Re-exposed for `reimburse`'s log line and `approved_by`.
         sender: ${sender}
 

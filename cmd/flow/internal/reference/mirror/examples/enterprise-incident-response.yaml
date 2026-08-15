@@ -230,7 +230,7 @@ steps:
         outcome: >-
           ${timed_out
             ? "unremediated"
-            : ((has(payload.authorized) && payload.authorized &&
+            : ((payload.?authorized.orValue(false) &&
                 !sender.local && !run.local &&
                 sender.identity.subject != "" &&
                 !(sender.identity.subject == run.identity.subject &&

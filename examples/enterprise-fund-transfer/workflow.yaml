@@ -157,9 +157,9 @@ steps:
         outcome: >-
           ${timed_out
             ? "expired"
-            : (has(payload.approved)
-                ? (payload.approved ? "approved" : "rejected")
-                : "malformed")}
+            : payload.?approved
+                .optMap(approved, approved ? "approved" : "rejected")
+                .orValue("malformed")}
 
   # Cleared to move: either the amount never needed a gate, or the gate was
   # answered yes. `signals:` above is what makes that a real check - an

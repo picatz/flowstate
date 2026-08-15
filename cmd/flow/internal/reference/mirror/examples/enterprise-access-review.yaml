@@ -150,7 +150,7 @@ steps:
         # test is `unattested`, and a gate that lapsed is `expired`. `timed_out`
         # tells those apart, and only a timeout ever produces `expired`.
         outcome: >-
-          ${(has(payload.attested) && payload.attested &&
+          ${(payload.?attested.orValue(false) &&
               !sender.local && !run.local &&
               sender.identity.subject != "" &&
               sender.identity.subject == inputs.expected_reviewer)
