@@ -73,7 +73,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
 			value:   "unset",
 			purpose: "Permit the `http` task to reach loopback addresses. Ignored while an `--egress-policy` file is in force: a policy that wants loopback says `allow_loopback: true`.",
-			read:    "pkg/flowstate/v1/eval_task_library.go, cmd/flow/serverdev.go",
+			read:    "pkg/flowstate/v1/eval_task_http_def.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_AUDIENCE",

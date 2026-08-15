@@ -377,7 +377,7 @@ $ code --extensionDevelopmentPath="$PWD" /path/to/a/repo/with/flowfiles
 ```
 
 `flow` must be on your `PATH`, or point `flowstate.path` at it in your *user*
-settings. That setting and `flowstate.lsp.args` are `machine-overridable`, so a
+settings. That setting and `flowstate.lsp.args` are `machine`, so a
 workspace's own `.vscode/settings.json` cannot choose what your editor executes —
 the same argument this page makes about Neovim's `--plugin-dir` above.
 
