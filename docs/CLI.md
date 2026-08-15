@@ -450,9 +450,18 @@ claude mcp add flowstate -- flow mcp
 
 # With a server for the durable verbs, and egress for local runs:
 claude mcp add flowstate -- flow mcp \
-  --address flowstate.internal:9233 \
+  --address https://flowstate.internal:9233 \
   --egress-policy /etc/flowstate/egress.yaml
 ```
+
+Written with an explicit `https://` rather than the bare
+`flowstate.internal:9233` a copy-paste might reach for: a client defaults a
+*non-loopback* bare address to `https` too (`cmd/flow/client.go`'s
+`serverBaseURL`, matching `flow server`'s own refusal to listen plaintext
+anywhere but loopback), so the two spellings resolve the same way here — but
+this is the one place in this document where an example address is not this
+machine, and the scheme is worth saying rather than relying on a default a
+reader of this file may not know about.
 
 That writes to Claude Code's own config; the equivalent, checked into a
 project so a team shares one setup, is a `.mcp.json` at the repository root:
@@ -464,7 +473,7 @@ project so a team shares one setup, is a `.mcp.json` at the repository root:
       "command": "flow",
       "args": ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"],
       "env": {
-        "FLOWSTATE_ADDRESS": "flowstate.internal:9233"
+        "FLOWSTATE_ADDRESS": "https://flowstate.internal:9233"
       }
     }
   }
@@ -481,7 +490,7 @@ Support/Claude/` on macOS, `%APPDATA%\Claude\` on Windows:
       "command": "flow",
       "args": ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"],
       "env": {
-        "FLOWSTATE_ADDRESS": "flowstate.internal:9233"
+        "FLOWSTATE_ADDRESS": "https://flowstate.internal:9233"
       }
     }
   }
@@ -496,7 +505,7 @@ command = "flow"
 args = ["mcp", "--egress-policy", "/etc/flowstate/egress.yaml"]
 
 [mcp_servers.flowstate.env]
-FLOWSTATE_ADDRESS = "flowstate.internal:9233"
+FLOWSTATE_ADDRESS = "https://flowstate.internal:9233"
 ```
 
 **Any other stdio client** takes the same three things, whatever it calls the

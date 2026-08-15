@@ -2,6 +2,7 @@ package main
 
 import (
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -52,6 +53,21 @@ type plan struct {
 	// plugins are the plugin modules with changes (e.g. "plugins/openai").
 	// They are separate Go modules, reported rather than gated here.
 	plugins []string
+
+	// examplePluginNames are the second path segments of any changed
+	// examples/plugins/<name>/ file (e.g. "vcs" for
+	// examples/plugins/vcs/workflow.yaml). Each plugin module's own
+	// *_test.go reads its shipped example the same way the root module's
+	// tests read examples/ (plugins/vcs/reachable/reachable_test.go opens
+	// examples/plugins/vcs/workflow.yaml with os.ReadFile), so this is the
+	// same #589 data dependency, one Go module further out than this gate
+	// can walk with `go list`. run() checks each name against the plugin
+	// modules that actually exist before folding it into the plugins skip
+	// notice — not every examples/plugins/<name> names a plugin module
+	// (examples/plugins/greet is pkg/flowstate/v1/plugin's in-repo fixture,
+	// not a separate module), and buildPlan has no filesystem to check that
+	// with.
+	examplePluginNames []string
 
 	// reasons maps a leg name to the first changed path that triggered it,
 	// so the output can say why a leg ran.
@@ -159,6 +175,18 @@ func buildPlan(changed []string) plan {
 			reason("examples", f)
 		}
 
+		// examples/plugins/<name>/... is a plugin module's shipped
+		// example, read by that module's own tests the same way
+		// exampleDataDepPattern's root-module targets are — see
+		// examplePluginNames' doc comment.
+		if strings.HasPrefix(f, "examples/plugins/") {
+			parts := strings.SplitN(f, "/", 4)
+			if len(parts) >= 3 && !pluginSeen["examples/plugins/"+parts[2]] {
+				pluginSeen["examples/plugins/"+parts[2]] = true
+				p.examplePluginNames = append(p.examplePluginNames, parts[2])
+			}
+		}
+
 		// Anything that could change what the CLI prints, which the
 		// appearance goldens record.
 		if strings.HasPrefix(f, "cmd/flow/") && strings.HasSuffix(f, ".go") ||
@@ -170,6 +198,7 @@ func buildPlan(changed []string) plan {
 
 	sort.Strings(p.goFiles)
 	sort.Strings(p.fileDirs)
+	sort.Strings(p.examplePluginNames)
 	sort.Strings(p.plugins)
 	return p
 }
@@ -296,6 +325,88 @@ func needsOrdering(affected []string) bool {
 // unit tests pin; this closes over everything they cannot see.
 func needsDocs(affected []string) bool {
 	return contains(affected, cmdFlowPkg)
+}
+
+// exampleDataDepPattern matches a Go string literal that opens onto
+// examples/ at the repository root: a leading double quote, zero or more
+// "../" segments climbing back to the repository root, then "examples" and
+// either a path separator or the closing quote. That covers both literal
+// shapes found across this repository's example-reading tests — an inline
+// relative path ("../../../../examples/approval-gate/workflow.yaml") and
+// the bare "examples" argument a test hands to filepath.Join alongside the
+// rest of the path (filepath.Join(root, "examples", "approval-gate",
+// "workflow.yaml")) — which is a data dependency the Go import graph cannot
+// see, because nothing is ever imported (#589: a changed value inside
+// examples/approval-gate/workflow.yaml broke
+// TestApprovalGateDomainIsInferable in pkg/flowstate/v1/flowfile, and the
+// import-graph mapper had no changed package to expand from).
+//
+// The quote anchor is deliberate, not decorative: an earlier version of
+// this pattern matched the bare substring "examples/" anywhere, which
+// caught doc comments quoting an unrelated path in prose
+// (pkg/flowstate/v1/flowtest's comment about
+// "examples/call-a-workflow/workflow.test.yaml" describing a bug, with no
+// code anywhere near it that reads the real corpus) and a path that merely
+// contains "examples/" as a directory named *inside* something else
+// (tools/hooks/genguard's fixture path
+// "cmd/flow/internal/reference/mirror/examples/hello.yaml", a directory
+// literally named "examples" one level under the reference mirror, not the
+// repository's example corpus at all). Anchoring the match to right after
+// the opening quote — allowing only "../" between — accepts a path that
+// *starts* at examples/ from wherever the test's working directory is, and
+// rejects one where "examples" is a substring in the middle of an unrelated
+// path.
+var exampleDataDepPattern = regexp.MustCompile(`"(\.\./)*examples(/|")`)
+
+// exampleDataDepPackages reports which of testSrc's packages have a test
+// file reaching into examples/, matched by exampleDataDepPattern. testSrc
+// maps an import path to the concatenated contents of that package's
+// _test.go files (both white-box and black-box); production builds it from
+// disk in readTestSources, and it is injected here (the same shape
+// resolveDirs takes pkgByDir) so the mapping is testable without a
+// filesystem walk.
+//
+// This only ever adds packages to a changed set the caller already knows is
+// examples-triggered (buildPlan's p.examples); it does not run on every
+// diff, so it cannot turn an unrelated change into "everything affected" —
+// see TestExampleDataDepPackagesIsNotEveryPackage.
+func exampleDataDepPackages(testSrc map[string][]byte) []string {
+	var out []string
+	for ip, src := range testSrc {
+		if exampleDataDepPattern.Match(src) {
+			out = append(out, ip)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// pluginSkipNotices builds the "plugins" leg's skip message entries: every
+// plugin module p.plugins already names, plus (per p.examplePluginNames)
+// any plugin module whose shipped example changed without the module's own
+// files changing. moduleExists reports whether "plugins/<name>" is a real
+// module (checked against plugins/<name>/go.mod on disk in production,
+// injected here so this is testable without a filesystem) — not every
+// examples/plugins/<name> does; examples/plugins/greet names
+// pkg/flowstate/v1/plugin's in-repo fixture, not a separate module.
+//
+// The two sources are distinguished in the text (see main's call site) so
+// the same "say why" rule the affected-set notice follows also applies
+// here: a reader can tell a module changed directly from one whose only
+// signal was its shipped example moving.
+func pluginSkipNotices(p plan, moduleExists func(mod string) bool) []string {
+	notices := append([]string{}, p.plugins...)
+	for _, name := range p.examplePluginNames {
+		mod := "plugins/" + name
+		if contains(notices, mod) {
+			continue
+		}
+		if moduleExists(mod) {
+			notices = append(notices,
+				mod+" (via examples/plugins/"+name+" data dependency, not a change under plugins/)")
+		}
+	}
+	return notices
 }
 
 func contains(paths []string, want string) bool {

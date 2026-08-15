@@ -66,9 +66,30 @@ test-plugins:
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go build ./... && go vet ./... && \
-			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || exit 1; \
+			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
+			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
 		fmt_out="$$(gofmt -l $$module)"; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
+	done
+
+# The other half of `test-plugins`, and the reason that target now names it.
+#
+# A bump to the root module moves shared dependencies — protobuf, cel-go, the
+# generated protovalidate module — out from under pins the plugin modules carry
+# separately, and `test-plugins` then fails with `updates to go.mod needed`.
+# That is a correct failure about a stale file, not about the bump, and it has
+# now arrived twice on Dependabot pull requests whose own diffs were fine
+# (#605, #611). A red check on a correct diff is how people learn to merge past
+# a failing job, so the fix is one command rather than five `cd`s.
+#
+# Deliberately not run by `test-plugins` itself: a check that repairs what it is
+# checking cannot fail, and the staleness is a fact about committed files that
+# somebody has to commit.
+tidy-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> $$module"; \
+		( cd "$$module" && go mod tidy ) || exit 1; \
 	done
 
 # The packages whose correctness is an *ordering* claim, run under a schedule

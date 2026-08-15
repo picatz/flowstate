@@ -1,0 +1,11 @@
+# Not currently used to build a .vsix (this extension is not packaged or
+# published — see README.md), but kept accurate for whoever adds that step.
+.vscode/**
+.gitignore
+.npmrc
+tsconfig.json
+src/**
+out/**/*.test.js
+out/**/*.test.js.map
+node_modules/**
+*.vsix

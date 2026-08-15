@@ -86,22 +86,26 @@ steps:
       timeout: 4s
       outputs:
         # What the manager said, shaped ONCE here on the step that produced it,
-        # the way approval-gate shapes its gate. "manager approved" was written
-        # five times below - in `reimburse`'s `if:` and its log line, in
-        # `outcome`, in `approved_by`, and hand-negated in `deny`'s `if:` - and
-        # nothing kept those copies in agreement except review. Every reader now
-        # compares this recorded name.
+        # the way approval-gate shapes its gate. "manager approved" used to be
+        # written five times below - in `reimburse`'s `if:` and its log line,
+        # in `outcome`, in `approved_by`, and hand-negated in `deny`'s `if:` -
+        # and nothing kept those copies in agreement except review. Every
+        # reader now compares this recorded name.
         #
         # Four states, because "answered" is not one thing: a payload can carry
         # `approved: true`, `approved: false`, or neither, and a gate can lapse.
         # `no_decision` (answered without an `approved` field, not a timeout) is
         # kept distinct so it takes no branch, exactly as the raw predicates did.
+        #
+        # `payload.?approved` is an optional select, read the way approval-gate's
+        # own gate is: present-and-true or present-and-false when the manager
+        # actually sent the field, absent when they answered with something
+        # else entirely. `.optMap` only ever sees an actual boolean; `.orValue`
+        # supplies the case nothing was sent to decide.
         outcome: >-
           ${timed_out
             ? "expired"
-            : (has(payload.approved)
-                ? (payload.approved ? "approved" : "rejected")
-                : "no_decision")}
+            : payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
         # Re-exposed because `outputs:` replaces what the wait produced:
         # `escalate` and `finance_review` still branch on `timed_out`, and
         # `reimburse`'s log line and `approved_by` still name the sender.
@@ -137,42 +141,21 @@ steps:
         outcome: >-
           ${timed_out
             ? "expired"
-            : (has(payload.approved)
-                ? (payload.approved ? "approved" : "rejected")
-                : "no_decision")}
+            : payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
         # Re-exposed for `reimburse`'s log line and `approved_by`.
         sender: ${sender}
 
-  - id: reimburse
-    if: >-
-      ${steps.manager_review.outcome == "approved" ||
-        (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "approved")}
-    log:
-      message: >-
-        ${steps.manager_review.outcome == "approved"
-          ? "reimbursing %s $%.2f, approved by %s".format(
-              [inputs.employee, inputs.amount, steps.manager_review.sender.identity.subject])
-          : "reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format(
-              [inputs.employee, inputs.amount, steps.finance_review.sender.identity.subject])}
-
-  # Denied covers three different reasons under one branch: somebody said no,
-  # or nobody ever said anything. A read of `outcome` below tells them apart;
-  # what they share is that the money does not move.
-  - id: deny
-    if: >-
-      ${steps.manager_review.outcome == "rejected" ||
-        (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "rejected") ||
-        (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "expired")}
-    log:
-      level: warn
-      message: ${"%s's expense report was not approved".format([inputs.employee])}
-
-outputs:
-  # Deliberately more detailed than "approved: bool" — a caller reading this
-  # after the fact (a payroll job, an auditor) needs to know *which* gate
-  # decided it, and "denied_no_response" is a materially different fact from
-  # "denied" for anyone deciding whether to ask again.
-  outcome:
+  # The two gates named once, the same lesson approval-gate's own `decision`
+  # applies: "which of the four endings this report reached" was computed
+  # three times below - in `reimburse`'s `if:`, hand-negated across `deny`'s,
+  # and re-derived a third time in each of the two `outputs:`. Every reader
+  # now reads this one recorded value instead.
+  #
+  # `steps.finance_review.outcome` is read only in the branch where the
+  # manager gate expired, the identical short circuit the file used before a
+  # named value existed - `finance_review` never ran on any other path, so
+  # nothing else may read it.
+  - id: outcome
     value: >-
       ${steps.manager_review.outcome == "approved"
         ? "approved_by_manager"
@@ -181,15 +164,59 @@ outputs:
           : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "expired")
             ? "denied_no_response"
             : "denied"}
+
+  # One switch over the named outcome, rather than two `if:`-guarded steps
+  # each re-testing the manager and finance gates by hand. Two explicit cases
+  # for the two ways the report is approved - the log line differs by which
+  # gate actually said yes - and a `default:` for the two ways it is not,
+  # which `deny` below reports as one fact the same way it always has: the
+  # money does not move, whichever of the reasons `outcome` names caused it.
+  - id: settle
+    switch:
+      value: ${steps.outcome.value}
+      cases:
+        - case: approved_by_manager
+          steps:
+            - id: reimburse
+              log:
+                message: >-
+                  ${"reimbursing %s $%.2f, approved by %s".format(
+                      [inputs.employee, inputs.amount, steps.manager_review.sender.identity.subject])}
+        - case: approved_after_escalation
+          steps:
+            - id: reimburse_escalated
+              log:
+                message: >-
+                  ${"reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format(
+                      [inputs.employee, inputs.amount, steps.finance_review.sender.identity.subject])}
+      default:
+        steps:
+          - id: deny
+            log:
+              level: warn
+              message: ${"%s's expense report was not approved".format([inputs.employee])}
+
+outputs:
+  # Deliberately more detailed than "approved: bool" — a caller reading this
+  # after the fact (a payroll job, an auditor) needs to know *which* gate
+  # decided it, and "denied_no_response" is a materially different fact from
+  # "denied" for anyone deciding whether to ask again.
+  #
+  # This can no longer disagree with the branch `settle` took, in the same
+  # strong sense approval-gate's own `decision` output cannot: it reads
+  # `steps.outcome.value` directly, the exact name `settle` dispatches on,
+  # rather than re-deriving the four endings a second time.
+  outcome:
+    value: ${steps.outcome.value}
     description: which gate decided the report, or why neither did
   amount:
     value: ${inputs.amount}
     description: the amount this run decided about
   approved_by:
     value: >-
-      ${steps.manager_review.outcome == "approved"
+      ${steps.outcome.value == "approved_by_manager"
         ? steps.manager_review.sender.identity.subject
-        : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "approved")
+        : steps.outcome.value == "approved_after_escalation"
           ? steps.finance_review.sender.identity.subject
           : ""}
     description: >-

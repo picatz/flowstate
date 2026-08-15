@@ -131,6 +131,39 @@ var exemptExternalReadLocations = map[string]bool{
 	"go.temporal.io/sdk envconfig": true,
 }
 
+// TestExternalReadExemptionsAreActuallyExternal is the guard Copilot asked for
+// on #622, and why it is needed is subtle enough to write down.
+//
+// The exemption above is not exercised by the drift test today. All three
+// TEMPORAL_* variables are read through a loop variable, so `reads` holds no
+// entry for them and the comparison returns before it ever consults the
+// allowlist. Delete the allowlist, or misspell its one entry, and every test
+// still passes — which makes it a fail-open escape hatch nobody is watching.
+//
+// So the allowlist is checked on its own terms, and the property that matters is
+// that an entry is genuinely somewhere this scan cannot see. A local path
+// smuggled in here — by a typo, or by somebody quieting a real failure — would
+// exempt a read site the scan *can* resolve, turning the reverse comparison off
+// for that variable with nothing to say so.
+func TestExternalReadExemptionsAreActuallyExternal(t *testing.T) {
+	t.Parallel()
+
+	require.NotEmpty(t, exemptExternalReadLocations,
+		"the allowlist is empty; either it is no longer needed and should go, or an entry was lost")
+
+	for location := range exemptExternalReadLocations {
+		assert.False(t, strings.HasPrefix(location, "cmd/") || strings.HasPrefix(location, "pkg/"),
+			"%q is inside a tree scanEnvironmentReads walks, so exempting it turns the reverse "+
+				"comparison off for a read site this test can actually check. An exemption is for "+
+				"a dependency, never for a path in this repository", location)
+
+		assert.NotContains(t, location, ".go",
+			"%q names a Go file, which reads as a path in this repository rather than a module; "+
+				"an external read site should name the dependency, as `go.temporal.io/sdk envconfig` does",
+			location)
+	}
+}
+
 // TestEveryEnvironmentReadIsDocumented is the drift test, and the point of the
 // whole exercise.
 //
