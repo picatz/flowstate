@@ -83,9 +83,12 @@ func TestRunWorkflowLoop(t *testing.T) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
-				require.Error(t, err, "the loop was expected to fail at its ceiling")
-				require.Contains(t, err.Error(), "ran its full budget",
-					"a loop that exhausts its budget must say so distinctly")
+				require.Error(t, err, "the loop was expected to fail")
+				want := test.ExpectedErrorContains
+				if want == "" {
+					want = "ran its full budget"
+				}
+				require.Contains(t, err.Error(), want)
 				return
 			}
 			require.NoError(t, err)

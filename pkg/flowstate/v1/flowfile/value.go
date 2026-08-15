@@ -168,6 +168,31 @@ func (c *compiler) varValue(n ast.Node, path string, r ref) *v1.Value {
 	return c.inputValue(n, path, r)
 }
 
+// waitOutputValue compiles one entry of a `wait_for_signal:`'s shaped
+// `outputs:`, refusing a secret reference the same way [compiler.varValue]
+// does and for the same reason read at [notInWaitOutputsHelp]: this position
+// is evaluated by the workflow and its result travels, so none of the
+// placements [misplacedHelp] draws describes it honestly.
+func (c *compiler) waitOutputValue(n ast.Node, path string, r ref) *v1.Value {
+	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
+		c.report(c.secretMarkerSpan(resolved), r, "%s", notInWaitOutputsHelp)
+		return nil
+	}
+	return c.inputValue(n, path, r)
+}
+
+// loopStateValue compiles a loop's `init:` or `update:`, refusing a secret
+// reference the same way [compiler.varValue] does and for the same reason
+// read at [notInLoopStateHelp]: carried state is evaluated by the workflow
+// and its result travels across every Continue-As-New.
+func (c *compiler) loopStateValue(n ast.Node, path string, r ref) *v1.Value {
+	if resolved := c.resolveQuiet(n); resolved != nil && c.holdsSecretMarker(resolved) {
+		c.report(c.secretMarkerSpan(resolved), r, "%s", notInLoopStateHelp)
+		return nil
+	}
+	return c.inputValue(n, path, r)
+}
+
 // value compiles one node into a schema Value.
 //
 // It returns nil after reporting a diagnostic, so a caller building a message must

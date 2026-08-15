@@ -577,6 +577,44 @@ func WaitCases() []Case {
 				},
 			},
 		},
+		{
+			// #534: a bare `${secret(...)}` in a wait's shaped `outputs:` is
+			// refused by the compiler now, but a spec submitted straight to
+			// the Run RPC never goes through the compiler — [v1.ValidateWait]
+			// and the schema's own rules are what a hand-built spec meets
+			// instead. This pins the runtime backstop directly: a shaped
+			// output holding a [v1.SecretRef] must fail the run rather than
+			// leaking the resolved value into the outputs it records, or
+			// silently carrying the reference through as a dangling one.
+			//
+			// [v1.ShapeSignalOutputs] evaluates each shaped output through an
+			// internal switch that has no case for `*Value_SecretRef` — it is
+			// neither a literal nor an expression — so it falls to the
+			// default arm and fails the step. That is the fact this case
+			// establishes for both drivers: not a leak, and not a
+			// silently-empty value either, but a failed run.
+			Name:          "a shaped output holding a secret reference fails the run rather than leaking it",
+			ExpectFailure: true,
+			Workflow: &v1.Workflow{
+				Name: "wait-shaping-secret-ref",
+				Steps: []*v1.Node{
+					{
+						Id: "gate",
+						Kind: &v1.Node_Wait{Wait: &v1.Wait{
+							Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+								Name: "sign-off",
+								Outputs: map[string]*v1.Value{
+									"token": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{
+										Scheme: "env", Name: "API_TOKEN",
+									}}},
+								},
+							}},
+							TimeoutExpr: v1.NewExpr(`duration("0s")`),
+						}},
+					},
+				},
+			},
+		},
 		// There is deliberately no case here for shaping on a `sleep:` or a
 		// `wait_until:`, and its absence is the decision rather than a gap.
 		//
