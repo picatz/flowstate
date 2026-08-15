@@ -160,7 +160,12 @@ func TestHoverThroughAChangeStormAnswersFromTheLatestVersion(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.NotNil(t, got, "hover answered null for a document in the middle of a change storm")
-	assert.Less(t, elapsed, time.Second, "hover took %s, which is a wait that is not ending on a build", elapsed)
+	// A generous backstop rather than a tight one, matching the 5s bound this
+	// file already uses a few lines up for the same reason (issue #431): what
+	// this needs to distinguish is "hover answered from in-memory state" from
+	// "hover blocked on a build finishing", which differ by much more than a
+	// second of scheduling jitter on a contended box.
+	assert.Less(t, elapsed, 5*time.Second, "hover took %s, which is a wait that is not ending on a build", elapsed)
 	text := hoverText(got)
 	named := slices.ContainsFunc(append(names, "shout"), func(name string) bool {
 		return strings.Contains(text, "step `"+name+"`")

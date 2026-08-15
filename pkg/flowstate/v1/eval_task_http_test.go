@@ -346,7 +346,18 @@ func Test_httpTask_parseJSON(t *testing.T) {
 		elapsed := time.Since(start)
 
 		require.Error(t, err, "an outputs: comprehension over an oversized response must be refused")
-		require.Less(t, elapsed, time.Second,
+		// A generous backstop, not a tight one: what this actually needs to
+		// distinguish is "the bound tripped before the comprehension ran" (a few
+		// hundred microseconds) from "the comprehension ran to completion"
+		// (#204 measured this shape at 10k elements/228ms — see
+		// [maxListElements]), and five seconds keeps roughly 20x margin over
+		// the latter. A one-second bound here is exactly the load-sensitive
+		// assertion issue #431 is about: it is the scheduling delay on a
+		// contended box, not the comprehension, that eats a tight budget. The
+		// ErrorContains assertions below are the real proof that the bound
+		// tripped rather than the comprehension failing on its own; this is a
+		// sanity check on top; not the whole of it.
+		require.Less(t, elapsed, 5*time.Second,
 			"the element bound must trip before the comprehension runs, not after")
 
 		require.ErrorContains(t, err, "list elements")

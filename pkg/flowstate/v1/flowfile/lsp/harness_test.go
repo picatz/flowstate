@@ -23,6 +23,19 @@ import (
 // right ranges, that a capability the server claims is one it answers — and none
 // of that is exercised by calling handler functions directly.
 
+// harnessHangBackstop is how long this harness waits for a message that a
+// working server always sends, before calling the test hung rather than slow.
+//
+// This is a backstop against a genuine hang, not a measurement of how fast
+// diagnostics normally arrive — they normally arrive in milliseconds, over an
+// in-memory pipe with no I/O to wait on. Ten seconds was tight enough to fail
+// under machine contention (issue #431: TestDocumentSizeIsBounded, building
+// and checking a document sized to just clear [maxDocumentBytes], was seen
+// timing out on a loaded box and passing in isolation), so this is wider —
+// still far below "the test suite hangs forever" territory, and nothing here
+// asserts the server responded *quickly*, only that it responded at all.
+const harnessHangBackstop = 30 * time.Second
+
 // A client is a test-side LSP client connected to a server over an in-memory pipe.
 type client struct {
 	t    *testing.T
@@ -253,7 +266,7 @@ func (c *client) await(wait chan struct{}) lsp.PublishDiagnosticsParams {
 	c.t.Helper()
 	select {
 	case <-wait:
-	case <-time.After(10 * time.Second):
+	case <-time.After(harnessHangBackstop):
 		c.t.Fatal("timed out waiting for diagnostics")
 	}
 	c.mu.Lock()
@@ -419,7 +432,7 @@ func (p *rawPeer) receive() map[string]any {
 	case r := <-done:
 		require.NoError(p.t, r.err)
 		return r.obj
-	case <-time.After(10 * time.Second):
+	case <-time.After(harnessHangBackstop):
 		p.t.Fatal("timed out waiting for a message from the server")
 		return nil
 	}

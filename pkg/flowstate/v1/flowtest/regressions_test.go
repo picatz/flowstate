@@ -300,7 +300,16 @@ tests:
 	require.Len(t, report.GetCases(), 1)
 	c := report.GetCases()[0]
 	require.True(t, c.GetPassed(), "failures: %v", c.GetFailures())
-	require.Less(t, elapsed, time.Second)
+	// realClockBackstop, not a one-second budget: this case resolves two
+	// `wait_for_signal:` gates ten virtual minutes apart on [v1.VirtualClock],
+	// which never sleeps, so what this measures is real wall time spent
+	// parsing, scheduling and running the case — not the ten minutes it
+	// simulates. A tight bound here is exactly the load-sensitive assertion
+	// [realClockBackstop]'s own doc comment describes; this case was the one
+	// instance in this file that predated that constant and was never moved
+	// onto it. See issue #431.
+	require.Less(t, elapsed, realClockBackstop,
+		"delivering two scripted signals took %s in real time", elapsed)
 }
 
 // TestP1LoadRejectsAnAliasBomb is P1-4: an alias-expansion bomb well under

@@ -10,6 +10,21 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
+// virtualClockRealTimeBackstop is how long a run that is supposed to resolve
+// on a [v1.VirtualClock] may take in real time before this file calls it a
+// regression, rather than a measurement of how close to instant "instant"
+// actually is.
+//
+// A day-long sleep under a virtual clock resolves in the time it takes to
+// evaluate a handful of steps — milliseconds — or, if the clock injection is
+// broken, it resolves in the day it claims to skip; nothing meaningful sits
+// between those two outcomes, so any threshold between "milliseconds" and
+// "most of a day" detects the identical defect. A one-second budget is the
+// bound that actually failed under contention (issue #431): these assertions
+// exist to prove a virtual day elapsed without a real one doing so, not to
+// measure how many milliseconds a busy test binary took to get there.
+const virtualClockRealTimeBackstop = time.Minute
+
 // sleepWorkflow is a workflow with one sleep of d.
 func sleepWorkflow(d time.Duration) *v1.Workflow {
 	return &v1.Workflow{
@@ -83,7 +98,7 @@ func TestVirtualClockResolvesALongSleepInstantly(t *testing.T) {
 
 	require.NoError(t, err)
 	require.False(t, outputs.GetStepValues()["pause"].GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
-	require.Less(t, elapsed, time.Second,
+	require.Less(t, elapsed, virtualClockRealTimeBackstop,
 		"a 24h sleep took %s under a virtual clock; it should resolve close to instantly", elapsed)
 
 	require.Equal(t, time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), clock.Now(),
@@ -119,7 +134,7 @@ func TestVirtualClockAdvancesPastMultipleSequentialWaits(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, outputs.GetStepValues()["second"])
-	require.Less(t, elapsed, time.Second)
+	require.Less(t, elapsed, virtualClockRealTimeBackstop)
 	require.Equal(t, time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), clock.Now())
 }
 
