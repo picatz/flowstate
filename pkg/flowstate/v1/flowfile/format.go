@@ -499,18 +499,80 @@ func sourcePins(source []byte) (map[string]sourcePin, error) {
 
 	out := map[string]sourcePin{}
 	for _, doc := range file.Docs {
-		if err := collectPins(doc.Body, "", 0, out); err != nil {
+		collector := pinCollector{anchors: map[string]ast.Node{}, out: out}
+		if err := collector.collectAnchors(doc.Body, 0); err != nil {
+			return nil, err
+		}
+		if err := collector.collect(doc.Body, "", 0); err != nil {
 			return nil, err
 		}
 	}
 	return out, nil
 }
 
+// pinCollector resolves scalar aliases the same way the compiler does. Anchors
+// are document-scoped in YAML, so sourcePins creates one collector per document.
+type pinCollector struct {
+	anchors map[string]ast.Node
+	out     map[string]sourcePin
+}
+
+func (c *pinCollector) collectAnchors(n ast.Node, depth int) error {
+	if depth > maxDepth {
+		return fmt.Errorf("nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
+	}
+	switch node := n.(type) {
+	case nil:
+		return nil
+	case *ast.AnchorNode:
+		if name, ok := scalarText(node.Name); ok {
+			c.anchors[name] = node.Value
+		}
+		return c.collectAnchors(node.Value, depth+1)
+	case *ast.MappingNode:
+		for _, value := range node.Values {
+			if err := c.collectAnchors(value, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.MappingValueNode:
+		if err := c.collectAnchors(node.Key, depth+1); err != nil {
+			return err
+		}
+		return c.collectAnchors(node.Value, depth+1)
+	case *ast.SequenceNode:
+		for _, value := range node.Values {
+			if err := c.collectAnchors(value, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *pinCollector) scalar(n ast.Node) (string, bool) {
+	for depth := 0; depth <= maxAliasDepth; depth++ {
+		switch node := n.(type) {
+		case *ast.AnchorNode:
+			n = node.Value
+		case *ast.AliasNode:
+			target, ok := c.anchors[node.Value.String()]
+			if !ok {
+				return "", false
+			}
+			n = target
+		default:
+			return scalarText(n)
+		}
+	}
+	return "", false
+}
+
 // collectPins walks a source document exactly the way [collectComments] does —
 // same node kinds, same path arithmetic — because a pin is placed by the same
 // walk finding the same path later, and a shape one of them knows about and the
 // other does not is a pin that goes missing.
-func collectPins(n ast.Node, path string, depth int, out map[string]sourcePin) error {
+func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
 	if n == nil {
 		return nil
 	}
@@ -531,37 +593,36 @@ func collectPins(n ast.Node, path string, depth int, out map[string]sourcePin) e
 			}
 		}
 		if hasCall && digest != nil {
-			// A digest reaching here compiled, through [compiler.text], which
-			// accepts exactly the two node kinds scalarText does — so `ok` is
-			// always true for a Flowfile Format was actually given one of.
-			// Skipped rather than recorded on the rare hand-built AST it is
-			// not: an entry this cannot read the value of is not a pin this
-			// can carry, and pretending it is one with an empty string would
-			// write `digest: ` into the mapping it lands in.
-			if text, ok := scalarText(digest.Value); ok {
+			// The compiler resolves anchors and aliases before reading this
+			// scalar, so the formatter must do the same. If a hand-built or
+			// otherwise mismatched source cannot be resolved, refuse rather
+			// than silently treating a security pin as absent.
+			if text, ok := c.scalar(digest.Value); ok {
 				pin := sourcePin{text: text}
 				if token := digest.Key.GetToken(); token != nil && token.Position != nil {
 					pin.line, pin.column = token.Position.Line, token.Position.Column
 				}
-				out[path] = pin
+				c.out[path] = pin
+			} else {
+				return fmt.Errorf("digest value could not be resolved while collecting call pins")
 			}
 		}
 		for _, value := range x.Values {
-			if err := collectPins(value, path, depth+1, out); err != nil {
+			if err := c.collect(value, path, depth+1); err != nil {
 				return err
 			}
 		}
 
 	case *ast.MappingValueNode:
 		child := childPath(path, keyStep(x))
-		if err := collectPins(x.Value, child, depth+1, out); err != nil {
+		if err := c.collect(x.Value, child, depth+1); err != nil {
 			return err
 		}
 
 	case *ast.SequenceNode:
 		for i, value := range x.Values {
 			element := childPath(path, indexStep(i))
-			if err := collectPins(value, element, depth+1, out); err != nil {
+			if err := c.collect(value, element, depth+1); err != nil {
 				return err
 			}
 		}

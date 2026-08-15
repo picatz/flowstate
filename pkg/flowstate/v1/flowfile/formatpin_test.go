@@ -52,6 +52,33 @@ steps:
 	assert.Equal(t, want, string(got))
 }
 
+// TestFormatKeepsAnAliasedDigestPin covers the scalar alias path accepted by
+// compiler.text: collecting the raw AliasNode must not mistake it for no pin.
+func TestFormatKeepsAnAliasedDigestPin(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
+	pin := digestOf(t, simpleCalleeSource)
+	src := `edition: v2026.3
+name: caller
+description: &pin ` + pin + `
+steps:
+  - id: provision
+    call: ./callee.yaml
+    digest: *pin
+    with:
+      tenant: acme
+`
+	caller := writeFile(t, dir, "caller.yaml", src)
+
+	workflow, _, err := flowfile.ParseFile(caller)
+	require.NoError(t, err)
+	got, err := flowfile.Format([]byte(src), workflow)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(got), "digest: "+pin)
+	assert.NotContains(t, string(got), "digest: *pin")
+}
+
 // TestFormatPinIsIdempotent is [TestFormatIsIdempotent] for a pin: formatting
 // the output of formatting a pinned caller must not move the pin, drop it, or
 // duplicate it.
