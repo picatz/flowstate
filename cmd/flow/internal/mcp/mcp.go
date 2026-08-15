@@ -123,13 +123,19 @@ var toolNotes = map[string]string{
 		"MCP surface.",
 
 	// A fact about where this surface dispatches the call, which the schema's
-	// GetCatalog cannot know: runMCP answers it from the in-process server, so
-	// against a deployment addressed with --address the catalog described is
-	// this binary's own build, and a deployment running other plugins or
-	// another version answers the wire RPC differently.
-	"GetCatalog": "On this surface the answer is this binary's own build (its task registry and any plugins " +
-		"this process started), not the deployment --address points at; a deployment with other plugins or " +
-		"another version may differ.",
+	// GetCatalog cannot know: by default runMCP answers it from the in-process
+	// server, but with --address (or FLOWSTATE_ADDRESS) explicitly naming a
+	// deployment, it dispatches there instead — see [Deps.RemoteCatalogAddress]
+	// and TestTheGetCatalogToolDispatchesToAnAddressedDeployment. Refuses rather
+	// than falling back to the local answer when that deployment cannot be
+	// reached, because a silent fallback is this same defect one level up: an
+	// answer that looks authoritative and is not.
+	"GetCatalog": "Without --address (and without FLOWSTATE_ADDRESS) this answers locally: this binary's " +
+		"own build (its task registry and any plugins this process started), no server or Temporal needed. " +
+		"With --address or FLOWSTATE_ADDRESS explicitly naming a deployment, this dispatches to that " +
+		"deployment's own GetCatalog instead — the deployment is what will actually run a submitted " +
+		"workflow, and may have plugins or a version this binary does not. If that deployment cannot be " +
+		"reached, the call is refused rather than silently answering from this binary's build.",
 }
 
 // localToolNote says that a tool needs nothing stood up, for the tools where
@@ -141,6 +147,15 @@ var toolNotes = map[string]string{
 // reader of that same decision, and the two must not be able to disagree.
 func localToolNote(rpc string) string {
 	if !LocalTools[rpc] {
+		return ""
+	}
+
+	// GetCatalog's own toolNotes entry already states when this holds and
+	// when it does not; the blanket sentence below is only true of it by
+	// default, and appending an unconditional "answers locally" after a
+	// paragraph that says "unless --address names a deployment" would
+	// contradict its own preceding sentence.
+	if rpc == "GetCatalog" {
 		return ""
 	}
 
@@ -185,6 +200,20 @@ type Deps struct {
 	// this dispatch has no specification in reach). Required; a nil field
 	// means nothing is ever withheld.
 	Redact func(response *v1.GetResponse) *v1.GetResponse
+
+	// RemoteCatalogAddress, when non-empty, routes flowstate_get_catalog to
+	// the deployment named here instead of answering from this binary's own
+	// build. The caller sets it only when the operator named a deployment
+	// explicitly — --address or FLOWSTATE_ADDRESS — so the in-process answer
+	// stays the default an agent gets with nothing else stood up (see
+	// [LocalTools]).
+	//
+	// It is a value rather than a bool so a failure to reach that deployment
+	// can name it: the tool refuses rather than falling back to the local
+	// answer, because a silent fallback is the defect this field exists to
+	// fix, one level up — an answer that looks like the deployment's and
+	// is not. See remoteCatalogCall.
+	RemoteCatalogAddress string
 }
 
 // ToolRegistration is one tool this package does not itself derive from the
@@ -261,6 +290,14 @@ func AddTools(
 		}
 		if view, ok := ToolViews[method.Name]; ok {
 			tool.Meta = uiToolMeta(view)
+		}
+
+		// GetCatalog is the one RPC whose dispatch a caller may override at
+		// registration time rather than always answering from the in-process
+		// server — see [Deps.RemoteCatalogAddress] for why, and
+		// [remoteCatalogCall] for the refusal this substitutes in.
+		if method.Name == "GetCatalog" && deps.RemoteCatalogAddress != "" {
+			method.Call = remoteCatalogCall(deps.RemoteCatalogAddress)
 		}
 
 		srv.AddTool(tool, dispatch(method, local, remote, deps))
@@ -522,6 +559,35 @@ func WorkflowServiceMethods() []ServiceMethod {
 				return resp.Msg, nil
 			},
 		},
+	}
+}
+
+// remoteCatalogCall builds the GetCatalog dispatch AddTools substitutes in
+// place of [WorkflowServiceMethods]'s own in-process entry, when
+// [Deps.RemoteCatalogAddress] names a deployment.
+//
+// address is carried only to name it in the refusal below — the RPC itself
+// dials through remote(), which already carries the address the client was
+// built with. Fails closed: an error dialling or answering from that
+// deployment is returned as-is rather than falling back to local()'s answer,
+// which is the behavior #439 exists to remove. A silent fallback here would
+// be the identical defect one level up — a caller asking a named deployment
+// and receiving, without being told, an answer describing something else.
+func remoteCatalogCall(address string) func(
+	ctx context.Context, _ *server.FlowstateServer,
+	remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message,
+) (proto.Message, error) {
+	return func(ctx context.Context, _ *server.FlowstateServer,
+		remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+		resp, err := remote().GetCatalog(ctx, connect.NewRequest(in.(*v1.GetCatalogRequest)))
+		if err != nil {
+			return nil, fmt.Errorf("getting the task catalog from the deployment at %s: %w\n  "+
+				"this refuses rather than falling back to this binary's own build, which could describe "+
+				"different tasks; fix --address/FLOWSTATE_ADDRESS, or start that deployment, then retry",
+				address, err)
+		}
+
+		return resp.Msg, nil
 	}
 }
 
