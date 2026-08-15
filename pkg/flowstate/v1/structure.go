@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 )
@@ -27,14 +28,114 @@ import (
 //   - Only a task input the task *applies itself*, entry by entry, accepts one.
 //     See [TaskDef.NestedSecretInputs].
 
-// maxStructureDepth bounds how deeply a structure may nest.
+// MaxStructureDepth bounds how deeply a [Value_Structure] may nest.
+//
+// Exported, and the only definition of this number in the module, per the
+// one-constant rule: every walk below that descends into a structure reads
+// this one, `pkg/flowstate/v1/flowfile` reads it to refuse a Flowfile whose
+// compiled structure would exceed it before it ever reaches a walk that
+// enforces it a second time, and `CheckStructureDepth` reads it to refuse a
+// hand-built specification arriving over the RPC path without ever passing
+// through the compiler at all. Before this was unified, the compiler's own
+// document-nesting bound (`flowfile.maxDepth`, 64) and this bound disagreed —
+// two constants for what reads as one concept, and the gap between them was
+// exactly where #329's depth-33 fail-open evasion lived: a Flowfile the
+// compiler accepted could still compile a structure deeper than the walks
+// below were prepared to fully inspect. Document nesting and structure
+// nesting share one YAML depth budget during compilation (a `Value_Structure`
+// literal is built by descending the same document tree flowfile.maxDepth
+// bounds), but 64 is loose enough to admit a structure past 32 while staying
+// well inside the document bound — see structure_depth_test.go for the
+// reproduction. 32 is the bound that wins: fail closed at the number every
+// walk below can actually afford to inspect, everywhere a structure can
+// arrive, rather than loosening every walk to match a looser parser limit
+// that exists to bound a different resource (total YAML document depth, not
+// structure nesting specifically).
 //
 // The walks below are recursive and a specification does not have to have come
 // from a Flowfile — the compiler's own nesting bound says nothing about a message
 // submitted over the wire, which is a value an outside party chooses. Depth is the
 // resource that walk spends, so depth is what is bounded here; breadth costs one
 // pass per entry and is bounded by the size of the specification itself.
-const maxStructureDepth = 32
+const MaxStructureDepth = 32
+
+// CheckStructureDepth refuses a workflow holding a [Value_Structure] nested
+// deeper than [MaxStructureDepth], at any value position [WalkWorkflow] can
+// reach.
+//
+// This is the RPC-path half of the bound. A Flowfile can never compile one
+// this deep — see [MaxStructureDepth]'s doc — but a specification submitted
+// directly over the RPC boundary arrives without the compiler in front of it,
+// so the schema-level walks that decide authority, references and Continue-
+// As-New retention are the only defense a hand-built spec meets. Called from
+// submission validation, alongside [Validate] and [CheckSpecSize]: those ask
+// whether the message is well-formed and whether it fits, and this asks
+// whether every walk this package runs over it later can actually see all of
+// it. A structure too deep to inspect is refused here rather than silently
+// under-inspected later.
+func CheckStructureDepth(wf *Workflow) error {
+	var violation *ValueSite
+	WalkWorkflow(wf, Walk{
+		Value: func(site ValueSite) {
+			if violation != nil {
+				return
+			}
+			if structureDepth(site.Value, 0) > MaxStructureDepth {
+				s := site
+				violation = &s
+			}
+		},
+	})
+	if violation == nil {
+		return nil
+	}
+
+	field := violation.Field()
+	where := violation.Step
+	if where == "" {
+		where = "the workflow"
+	} else if field != "" {
+		where = fmt.Sprintf("step %q", where)
+	}
+	if field != "" {
+		return fmt.Errorf(
+			"%s's %s nests a structure more than %d levels deep, which is deeper than this server can "+
+				"walk cheaply while deciding whether a step reads a secret; flatten it, or have a step "+
+				"read it from a reference instead of submitting it nested this deep",
+			where, field, MaxStructureDepth)
+	}
+	return fmt.Errorf(
+		"%s nests a structure more than %d levels deep, which is deeper than this server can walk "+
+			"cheaply while deciding whether a step reads a secret; flatten it, or have a step read it "+
+			"from a reference instead of submitting it nested this deep",
+		where, MaxStructureDepth)
+}
+
+// structureDepth measures how many levels of [Value_Structure] nest inside v,
+// stopping early once it has already proven the answer is over the bound: the
+// caller only needs to know "too deep" versus a precise number, and stopping
+// early keeps this cheap against a value built to make it expensive.
+func structureDepth(v *Value, depth int) int {
+	if depth > MaxStructureDepth {
+		return depth
+	}
+
+	structure := v.GetStructure()
+	if structure == nil {
+		return depth
+	}
+
+	max := depth
+	for _, entry := range StructureValues(structure) {
+		if d := structureDepth(entry, depth+1); d > max {
+			max = d
+			if max > MaxStructureDepth {
+				return max
+			}
+		}
+	}
+	return max
+}
 
 // ValueHoldsSecretRef reports whether v is a secret reference or contains one at
 // any depth.
@@ -92,7 +193,7 @@ func SecretRefsIn(task *Task) []string {
 
 // walkSecretRefs visits every reference in v, stopping early when visit says so.
 //
-// Past maxStructureDepth the walk cannot see what is below, and it visits nil to
+// Past MaxStructureDepth the walk cannot see what is below, and it visits nil to
 // say so rather than walking on or staying silent: a visitor deciding an
 // authority or refusal question must treat "too deep to scan" as "may hold one",
 // because the compiler admits deeper nesting than this walk inspects and a
@@ -102,7 +203,7 @@ func walkSecretRefs(v *Value, depth int, visit func(*SecretRef) bool) bool {
 	if v == nil {
 		return true
 	}
-	if depth > maxStructureDepth {
+	if depth > MaxStructureDepth {
 		return visit(nil)
 	}
 

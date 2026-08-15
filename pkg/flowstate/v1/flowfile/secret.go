@@ -233,7 +233,7 @@ func (c *compiler) structure(n ast.Node, path string, r ref) *v1.Value {
 		return nil
 	}
 
-	return c.structureValue(n, path, r)
+	return c.structureValue(n, path, r, 0)
 }
 
 // acceptedElsewhere names the inputs of a task that do accept a nested reference,
@@ -267,7 +267,19 @@ func (c *compiler) markerNode(n ast.Node) ast.Node {
 }
 
 // structureValue compiles one node of a structure that holds a reference.
-func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
+//
+// sdepth counts levels of [v1.Value_Structure] specifically — list-or-map
+// nesting within this one structure literal — which is a narrower count than
+// [compiler.enter]'s document depth: the surrounding step, task and input
+// wrapper each cost a level of document depth before this function is ever
+// called, so document depth alone admits a structure nested well past
+// [v1.MaxStructureDepth] while staying comfortably under the document's own
+// [maxDepth]. See [v1.MaxStructureDepth]'s doc for the reproduction and why
+// this compiler, rather than only the schema-side walks, is where a structure
+// this deep is refused: every walk downstream of here reads that one bound,
+// and admitting a value none of them can fully inspect is the fail-open shape
+// #329 found.
+func (c *compiler) structureValue(n ast.Node, path string, r ref, sdepth int) *v1.Value {
 	n = c.resolve(n, path, r)
 	if n == nil || !c.enter(n, r) {
 		return nil
@@ -275,11 +287,20 @@ func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
 	defer c.exit()
 	c.pos.record(path, spanOfNode(n))
 
+	if sdepth > v1.MaxStructureDepth {
+		c.report(spanOfNode(n), r,
+			"nests a structure more than %d levels deep, which is deeper than this server can walk "+
+				"cheaply while deciding whether a step reads a secret; flatten it, or have a step read it "+
+				"from a reference instead of submitting it nested this deep",
+			v1.MaxStructureDepth)
+		return nil
+	}
+
 	switch node := n.(type) {
 	case *ast.SequenceNode:
 		values := make([]*v1.Value, 0, len(node.Values))
 		for i, element := range node.Values {
-			value := c.structureValue(element, indexPath(path, i), r)
+			value := c.structureValue(element, indexPath(path, i), r, sdepth+1)
 			if value == nil {
 				return nil
 			}
@@ -294,7 +315,7 @@ func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
 		}
 		mapped := make(map[string]*v1.Value, len(entries))
 		for _, e := range entries {
-			value := c.structureValue(e.value, fieldPath(path, e.name), r)
+			value := c.structureValue(e.value, fieldPath(path, e.name), r, sdepth+1)
 			if value == nil {
 				return nil
 			}
