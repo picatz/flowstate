@@ -311,6 +311,36 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/internal/ui/ui.go",
 		},
 		{
+			name:    "FLOWSTATE_TLS_ACME_ACCEPT_TOS",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-accept-tos` on `flow server`: set (to anything) to agree to the ACME CA's subscriber agreement. Required to turn ACME automatic-certificate issuance on; not defaulted, because agreeing to a third party's terms on an operator's behalf is not this process's decision to make quietly.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_CACHE",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-cache` on `flow server`: the directory holding the ACME account key and issued certificates. Required when ACME is configured — an in-memory-only cache re-issues on every restart, which burns the CA's rate limit. Created with mode 0700 if missing, and refused if it exists but is readable or writable by anyone but its owner.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_DIRECTORY",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-directory` on `flow server`: the ACME directory URL to request certificates from. Unset means Let's Encrypt's production directory; point this at a staging or private directory (Pebble, an enterprise ACME server) for anything other than a real production certificate.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_EMAIL",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-email` on `flow server`: a contact email the ACME CA may use to warn about a problem with an issued certificate. Optional.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_HOSTS",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-hosts` on `flow server`: comma-separated public DNS host(s) to obtain a certificate for automatically via ACME's TLS-ALPN-01 challenge. Required to turn ACME on, and the whole of what a certificate may be obtained for — refused empty rather than defaulting to issuing for whatever SNI a caller sends. Mutually exclusive with the explicit certificate flags and `--tls-terminated-upstream`, and refused together with `--internal-listen`.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
 			name:    "FLOWSTATE_TLS_CERT_FILE",
 			value:   "unset",
 			purpose: "Default for `--tls-cert-file` on `flow server`: a PEM certificate (or chain) for the public listener. Unset serves plain HTTP, refused unless the listen address is loopback. Must be given with `FLOWSTATE_TLS_KEY_FILE`.",

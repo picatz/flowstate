@@ -7,6 +7,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -589,26 +590,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 	authCfg := authFlagsOf(cmd)
 	temporalCfg := temporalFlagsOf(cmd)
 
-	// The public listener's certificate, and whether the address it is about
-	// to bind may go without one. Both are checked first and without any I/O
-	// beyond reading the files named on the command line: a certificate this
-	// process cannot load, or a non-loopback address with none configured, is
-	// a start-up failure rather than something discovered after Temporal has
-	// been dialed and a policy file parsed. See cmd/flow/tls.go.
-	tlsListenerFlags := tlsFlagsOf(cmd)
-	tlsCfg, err := serverTLSConfig(tlsListenerFlags)
-	if err != nil {
-		return err
-	}
-	// --listen defaults to $FLOWSTATE_ADDRESS (cmp.Or at registration, above in
-	// this file), so an operator who only ever set the environment variable
-	// sees no change; --listen is what lets them override it from the command
-	// line, which nothing did before.
-	publicAddr, _ := cmd.Flags().GetString("listen")
-	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.tlsTerminatedUpstream); err != nil {
-		return err
-	}
-
 	// The internal listener's address is validated now — loopback or
 	// empty, nothing else, per cmd/flow/internallistener.go — but not bound
 	// until this function is about to serve, so a later failure does not
@@ -618,6 +599,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The trust policy is loaded before the public listener's certificate is
+	// resolved, not after as an earlier version of this function did,
+	// because [resolveACMESettings]'s federation cross-check (see
+	// cmd/flow/acme.go) needs policy.Federation.Issuer to compare against
+	// --tls-acme-hosts, and a value cannot be cross-checked before it is
+	// read.
 	verifier, policy, err := authVerifier(authCfg)
 	if err != nil {
 		return err
@@ -626,6 +613,58 @@ func runServer(cmd *cobra.Command, args []string) error {
 	broker, err := identityBroker(authCfg, policy)
 	if err != nil {
 		return err
+	}
+
+	// The public listener's certificate, and whether the address it is about
+	// to bind may go without one. Checked before any further I/O beyond the
+	// files and policy already read above: a certificate this process cannot
+	// load or obtain, or a non-loopback address with none configured, is a
+	// start-up failure rather than something discovered after Temporal has
+	// been dialed. See cmd/flow/tls.go and cmd/flow/acme.go.
+	tlsListenerFlags := tlsFlagsOf(cmd)
+	acmeListenerFlags := acmeFlagsOf(cmd)
+
+	var federationIssuer string
+	if policy != nil && policy.Federation != nil {
+		federationIssuer = policy.Federation.Issuer
+	}
+
+	acmeCfg, err := resolveACMESettings(acmeListenerFlags, tlsListenerFlags, internalFlags.address, federationIssuer)
+	if err != nil {
+		return err
+	}
+
+	var tlsCfg *tls.Config
+	if acmeCfg != nil {
+		tlsCfg = acmeCfg.tlsConfig()
+	} else {
+		tlsCfg, err = serverTLSConfig(tlsListenerFlags)
+		if err != nil {
+			return err
+		}
+	}
+
+	// --listen defaults to $FLOWSTATE_ADDRESS (cmp.Or at registration, above in
+	// this file), so an operator who only ever set the environment variable
+	// sees no change; --listen is what lets them override it from the command
+	// line, which nothing did before.
+	publicAddr, _ := cmd.Flags().GetString("listen")
+	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.tlsTerminatedUpstream); err != nil {
+		return err
+	}
+
+	// Acquisition is startup: obtain (or reuse from cache) a certificate for
+	// every configured host now, before this process claims to be serving
+	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
+	// see [primeACMECertificates]'s doc for why that matters.
+	if acmeCfg != nil {
+		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
+		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("obtaining ACME certificates before serving: %w", err)
+		}
+		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
 	}
 
 	// Fetch every trusted issuer's keys now, so an issuer that is misconfigured
@@ -892,9 +931,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// The renewal watchdog, only running when ACME is configured. A nil
+	// channel blocks forever in the select below, which is exactly "there is
+	// nothing more for this to contribute" for a deployment using an
+	// explicit certificate or no TLS at all. See [acmeExpiryWatchdog]'s doc
+	// for #581's renewal-failure decision: silent while a valid certificate
+	// is on hand, loud well before expiry, fatal only once a certificate has
+	// actually expired with no successful renewal.
+	var acmeFatal <-chan error
+	if acmeCfg != nil {
+		watchdogCtx, cancelWatchdog := context.WithCancel(context.Background())
+		defer cancelWatchdog()
+		acmeFatal = acmeExpiryWatchdog(watchdogCtx, logger, cacheCertExpiry(acmeCfg.manager.Cache), acmeCfg.hosts)
+	}
+
 	var runErr error
 	select {
 	case runErr = <-serveErr:
+	case runErr = <-acmeFatal:
 	case <-cmd.Context().Done():
 	}
 
@@ -1696,10 +1750,12 @@ flow server --verbose`,
 			"refusePlaintextListener requires --tls-cert-file/--tls-key-file or "+
 			"--tls-terminated-upstream")
 
-	// The public listener's TLS configuration and the internal listener's own
-	// address — see cmd/flow/tls.go and cmd/flow/internallistener.go. Server
-	// only: a worker makes no listener of its own to protect.
+	// The public listener's TLS configuration, its ACME automatic-certificate
+	// alternative, and the internal listener's own address — see
+	// cmd/flow/tls.go, cmd/flow/acme.go and cmd/flow/internallistener.go.
+	// Server only: a worker makes no listener of its own to protect.
 	addTLSFlags(serverCmd)
+	addACMEFlags(serverCmd)
 	addInternalListenerFlags(serverCmd)
 
 	// Validate command, which checks Flowfiles without executing them.
