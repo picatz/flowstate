@@ -336,15 +336,25 @@ func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
 
 	node := nodeWithID(stepID, wf)
 
+	// [v1.OutputNames] is the one answer to "what does this step produce and
+	// from what expression", shared with the language server so the two
+	// cannot come to disagree about a wait's shaped names or a `value:`
+	// step's output the way three independent copies of this knowledge
+	// eventually would (#322). Only entries carrying a [v1.NamedOutput.Source]
+	// matter here — a name the engine synthesizes itself (`timed_out`, a
+	// task's declared field) has no written expression to mine a domain from,
+	// and every other node kind's names carry no Source at all, which is what
+	// keeps this exactly as narrow as the two-branch version it replaces.
 	var shaped *v1.Value
-	if signal := node.GetWait().GetSignal(); signal != nil {
-		shaped = signal.GetOutputs()[outputName]
-	} else if valueNode := node.GetValue(); valueNode != nil && outputName == v1.ValueOutput {
-		shaped = valueNode
-	} else {
-		return nil, false
+	if names, ok := v1.OutputNames(node, nil); ok {
+		for _, n := range names {
+			if n.Name == outputName && n.Source != nil {
+				shaped = n.Source
+				break
+			}
+		}
 	}
-	if shaped.GetExpr() == nil {
+	if shaped == nil || shaped.GetExpr() == nil {
 		return nil, false
 	}
 

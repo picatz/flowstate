@@ -320,7 +320,7 @@ func LoopNextState(ctx context.Context, loop *Loop, scope *Scope) (*Value, error
 func LoopStateOutputs(iterations []*Workflow_StepOutputs, finalState *Value) *Node_Outputs {
 	out := LoopOutputs(iterations)
 	if finalState != nil {
-		out.NamedValues["state"] = finalState
+		out.NamedValues[LoopStateField] = finalState
 	}
 	return out
 }
@@ -354,7 +354,7 @@ func LoopStateOutputsHonest(iterations []*Workflow_StepOutputs, finalState *Valu
 	if truncated {
 		out := &Node_Outputs{NamedValues: map[string]*Value{}}
 		if finalState != nil {
-			out.NamedValues["state"] = finalState
+			out.NamedValues[LoopStateField] = finalState
 		}
 		return out
 	}
