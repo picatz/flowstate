@@ -300,9 +300,9 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// so there is nothing safe to write. Reported and left alone, the same
 		// as `flow fix` leaves a shape it refuses.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
+			writeErrDiagnostics(reports, theme, path, err)
 		}
-		report.Refusals = refusalDiagnostics(err)
+		report.Refusals = errDiagnosticsProto(err)
 		return fmtOutcome{refused: true, report: report}, nil
 	}
 
@@ -314,9 +314,9 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		// carrying a comment the rewrite cannot keep: dropping an author's prose
 		// to win a reformat is the trade this command does not make.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
+			writeErrDiagnostics(reports, theme, path, err)
 		}
-		report.Refusals = refusalDiagnostics(err)
+		report.Refusals = errDiagnosticsProto(err)
 		return fmtOutcome{refused: true, report: report}, nil
 	}
 
@@ -354,28 +354,6 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 		return outcome, fmt.Errorf("error writing %s: %w", path, err)
 	}
 	return outcome, nil
-}
-
-// refusalDiagnostics widens an error from Unmarshal or Marshal into the schema
-// type a machine report carries.
-//
-// [flowfile.Unmarshal] returns [flowfile.Diagnostics] with a position for a file
-// that failed to parse; [flowfile.Marshal] returns a bare error for a workflow it
-// cannot render back out. Both are real answers about the file, so both become a
-// diagnostic — positioned where one exists, and as a single unpositioned entry
-// where it does not, the same rule [validateMachine] applies to a parse failure
-// that is not even YAML.
-func refusalDiagnostics(err error) []*v1.Diagnostic {
-	var diagnostics flowfile.Diagnostics
-	if errors.As(err, &diagnostics) {
-		out := make([]*v1.Diagnostic, 0, len(diagnostics))
-		for _, d := range diagnostics {
-			out = append(out, d.Proto())
-		}
-		return out
-	}
-
-	return []*v1.Diagnostic{{Message: err.Error()}}
 }
 
 // orderCalleesBeforeCallers reorders files so that, within one `flow fmt`

@@ -74,6 +74,33 @@ do with its own diff. Merge one PR, confirm main still builds, then merge
 the next. Issue #489 carries the full account and the branch-protection
 fix that came out of it.
 
+### Read the base before you merge
+
+A merge button says "Merge pull request" whether the base is `main` or a
+branch that merged three days ago, and the API answers `"merged": true`
+either way. On 2026-08-15 four PRs in one queue targeted branches rather
+than `main` — #622 onto `claude/envvars-read-locations`, #624 onto
+`claude/serving-tls-internal-listener`, #625 and #626 likewise — because
+each was authored from a worktree checked out on the branch its work
+followed. Every one of those base branches had already merged and been
+left behind. #622 was merged before anyone looked: it reported success,
+main did not move, no CI ran, and the work sat on a dead branch.
+
+So read `base.ref` as part of deciding to merge, not afterwards. It costs
+one field on a call already being made, and the failure it prevents is
+silent in every direction — green checks, a successful merge response,
+and nothing on `main`.
+
+Two things follow when the base is wrong. Changing a PR's base is not
+available to every session, so the fallback is a second PR from the same
+head branch against `main`, and a comment on the original saying which PR
+carries the work and why. And a branch whose base was a stale branch is
+itself stale: merging `main` into it before opening the replacement is
+what stops its diff from reverting whatever landed in between. Diff the
+branch against `main` and read the stat line before opening anything —
+three of those four would have deleted a PR merged an hour earlier, and
+the diff said so plainly.
+
 ## The bot-review loop
 
 Automated review (Codex, Copilot) lands on every PR. The procedure is
