@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -170,21 +171,57 @@ type TrustedIssuer struct {
 	// caller is rejected with [ErrNoNamespace]. A verified caller whose tenant
 	// cannot be determined is not admitted to a shared one.
 	//
-	// The claim's value must also satisfy the namespace grammar checked by
+	// The claim's raw value must satisfy the namespace grammar checked by
 	// [ValidateNamespace] (lowercase ASCII letters, digits, and dashes, dash not
-	// first, at most [MaxNamespaceLen] characters). A value that does not is
-	// refused at verification, the same way a missing claim is: the caller is
-	// rejected with [ErrNoNamespace] rather than admitted to a default tenant.
-	// For an issuer whose tenant-shaped claims cannot satisfy that grammar, such
-	// as GitHub Actions' "repository" claim (`<owner>/<name>`) or a
-	// "repository_owner" whose org login has uppercase letters or an underscore,
-	// the answer is not a looser grammar. It is one issuer entry per tenant, each
-	// with a fixed Namespace and a Require rule that pins the claim identifying
-	// that tenant, and those entries must be ordered before any entry of the
-	// same issuer that reads NamespaceClaim: entries are tried in order, and a
+	// first, at most [MaxNamespaceLen] characters) unless NamespaceMap is set, in
+	// which case the raw value is looked up there instead — see NamespaceMap. A
+	// value that satisfies neither is refused at verification, the same way a
+	// missing claim is: the caller is rejected with [ErrNoNamespace] rather than
+	// admitted to a default tenant.
+	//
+	// Many CI platforms mint tenant-shaped claims that do not themselves satisfy
+	// the grammar: GitHub Actions' "repository" claim is `<owner>/<name>`, which
+	// always contains "/", and its "repository_owner" is only sometimes legal,
+	// since an org login may carry uppercase letters or an underscore. For those,
+	// set NamespaceMap rather than reaching for a looser grammar here: the
+	// grammar is also what a namespace must satisfy to reach a signed assertion
+	// subject and a secret provider's path (see [ValidateNamespace]'s doc), so
+	// loosening it for this one entry point would loosen it for both.
+	//
+	// A single-tenant issuer that cannot be mapped at all — such as one whose
+	// only claim is "repository" and there is one tenant to admit — does not need
+	// NamespaceClaim: use Namespace with a Require rule pinning that repository
+	// instead, one issuer entry per tenant, ordered before any entry of the same
+	// issuer that reads NamespaceClaim. Entries are tried in order, and a
 	// namespace an admitting entry cannot map is a rejection, deliberately never
 	// a reason to try the next entry.
 	NamespaceClaim string `json:"namespace_claim,omitempty" yaml:"namespace_claim,omitempty"`
+
+	// NamespaceMap, when set, maps the exact raw value of the NamespaceClaim
+	// claim to a Flowstate namespace, instead of validating the raw claim value
+	// against the namespace grammar directly. Every value on the right must
+	// itself satisfy [ValidateNamespace]; that is checked once, at policy load,
+	// so a bad mapping fails at startup rather than the first admitted caller.
+	//
+	// This is the answer for a CI issuer whose tenant-shaped claim cannot satisfy
+	// the namespace grammar at all — GitHub Actions' "repository" claim
+	// (`<owner>/<name>`) can never pass [ValidateNamespace] because "/" is
+	// outside the grammar, however many tenants share the issuer — and for one
+	// whose claim only sometimes satisfies it, such as "repository_owner" with a
+	// login that has uppercase letters or an underscore. Rather than loosen the
+	// grammar (which would loosen it everywhere else the grammar protects, not
+	// just here) or normalize the raw value implicitly (which can silently merge
+	// two distinct claim values into one tenant, such as "Octo-Org" and
+	// "octo-org"), an operator states the mapping explicitly, one entry at a
+	// time, the same way a Require rule states which values are accepted: no
+	// wildcards, nothing implied.
+	//
+	// The lookup is exact and fails closed: a raw claim value that is not a key
+	// in this map is refused with [ErrNoNamespace], never fallen back to grammar
+	// validation of the raw value and never admitted to a default tenant. Only
+	// meaningful together with NamespaceClaim; refused if set alongside Namespace
+	// or on a kind: mtls entry, the same as NamespaceClaim itself.
+	NamespaceMap map[string]string `json:"namespace_map,omitempty" yaml:"namespace_map,omitempty"`
 
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
@@ -402,13 +439,34 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 		return "", fmt.Errorf("%w: token from %q carries no %q claim", ErrNoNamespace, t.Name, t.NamespaceClaim)
 	}
 
-	namespace, ok := value.(string)
+	raw, ok := value.(string)
 	if !ok {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is %T, not a string",
 			ErrNoNamespace, t.NamespaceClaim, t.Name, value)
 	}
-	if namespace == "" {
+	if raw == "" {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is empty", ErrNoNamespace, t.NamespaceClaim, t.Name)
+	}
+
+	if t.NamespaceMap != nil {
+		namespace, mapped := t.NamespaceMap[raw]
+		if !mapped {
+			return "", fmt.Errorf(
+				"%w: the %q claim of a token from %q is %q, which is not a value named in namespace_map; "+
+					"add an entry mapping it to a namespace, or the caller cannot be admitted to any tenant",
+				ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(raw, 64))
+		}
+		// Validated once already at policy load (see validateNamespaceFields),
+		// checked again here for the same reason every namespace is checked at
+		// the point it is about to be used: this is the value that is about to
+		// reach a signed assertion subject and a secret rule, and a mismatch
+		// between what was validated and what is used here would be exactly the
+		// "one value, checked two different ways" class CLAUDE.md warns about.
+		if err := ValidateNamespace(namespace); err != nil {
+			return "", fmt.Errorf("%w: namespace_map for %q maps %q to %q, which is invalid: %w",
+				ErrNoNamespace, t.Name, truncate(raw, 64), namespace, err)
+		}
+		return namespace, nil
 	}
 
 	// A namespace names a tenant, and it reaches an assertion subject and a
@@ -417,12 +475,14 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 	// eventually be refused fails at verification, with the token and the claim
 	// named, rather than later and more opaquely when a subject or a secret
 	// reference is built from it.
-	if err := ValidateNamespace(namespace); err != nil {
-		return "", fmt.Errorf("%w: the %q claim of a token from %q is %q: %w",
-			ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64), err)
+	if err := ValidateNamespace(raw); err != nil {
+		return "", fmt.Errorf("%w: the %q claim of a token from %q is %q: %w; "+
+			"if this issuer mints values in this claim that are legal to it but not to this grammar, "+
+			"configure namespace_map to map each such value to a namespace explicitly rather than reading it raw",
+			ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(raw, 64), err)
 	}
 
-	return namespace, nil
+	return raw, nil
 }
 
 // timeClaims are validated by the verifier itself and are numbers, not strings,
@@ -551,15 +611,16 @@ func (t TrustedIssuer) validateMTLS() error {
 		return err
 	}
 
-	if t.NamespaceClaim != "" {
+	if t.NamespaceClaim != "" || t.NamespaceMap != nil {
 		// The only claim a kind: mtls [Principal] ever carries is "subject",
 		// so a namespace_claim naming anything else can never resolve — and
 		// naming "subject" itself would make every caller's own identity its
-		// namespace, which is not tenancy. One entry per tenant, with a fixed
-		// Namespace, is the same answer this package already gives an OIDC
-		// claim whose shape does not fit the namespace grammar; see
-		// NamespaceClaim's own doc.
-		return fmt.Errorf("namespace_claim is not supported for kind: %s: a client certificate exposes no claim "+
+		// namespace, which is not tenancy. namespace_map only matters together
+		// with namespace_claim, so it is refused for the same reason. One entry
+		// per tenant, with a fixed Namespace, is the same answer this package
+		// already gives an OIDC claim whose shape does not fit the namespace
+		// grammar; see NamespaceClaim's own doc.
+		return fmt.Errorf("namespace_claim and namespace_map are not supported for kind: %s: a client certificate exposes no claim "+
 			"besides the subject SAN itself, so it cannot name a tenant. Give this entry a fixed namespace, "+
 			"and use one entry per tenant if several must share a CA", IssuerKindMTLS)
 	}
@@ -604,6 +665,24 @@ func (t TrustedIssuer) validateNamespaceFields() error {
 			return fmt.Errorf("namespace: %w", err)
 		}
 	}
+
+	if t.NamespaceMap != nil {
+		if t.NamespaceClaim == "" {
+			return fmt.Errorf("namespace_map is only meaningful together with namespace_claim: it maps that claim's raw value to a namespace")
+		}
+		if len(t.NamespaceMap) == 0 {
+			return fmt.Errorf("namespace_map is present but empty: every possible claim value would be refused; remove it, or name at least one mapping")
+		}
+		for raw, namespace := range t.NamespaceMap {
+			if namespace == "" {
+				return fmt.Errorf("namespace_map[%q] is empty", raw)
+			}
+			if err := ValidateNamespace(namespace); err != nil {
+				return fmt.Errorf("namespace_map[%q]: %w", raw, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -681,6 +760,9 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	clone.Require = slices.Clone(t.Require)
 	for i, rule := range clone.Require {
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
+	}
+	if t.NamespaceMap != nil {
+		clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 	}
 
 	return clone

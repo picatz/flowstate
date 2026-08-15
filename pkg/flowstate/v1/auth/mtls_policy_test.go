@@ -101,6 +101,15 @@ func TestPolicyValidateMTLS(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "namespace_map is refused too: it only interprets a namespace_claim value",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.Namespace = ""
+				i.NamespaceClaim = "namespace"
+				i.NamespaceMap = map[string]string{"raw": "mapped"}
+			}),
+			wantErr: true,
+		},
+		{
 			name:   "a fixed namespace is fine",
 			policy: spoil(func(i *auth.TrustedIssuer) { i.Namespace = "team-a" }),
 		},

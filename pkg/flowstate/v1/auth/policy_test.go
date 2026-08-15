@@ -191,6 +191,55 @@ func TestPolicyValidate(t *testing.T) {
 			}},
 			wantErr: true,
 		},
+		{
+			name: "namespace_map without namespace_claim, which it has nothing to interpret",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.NamespaceMap = map[string]string{"octo-org/octo-repo": "octo-org"}
+			}),
+			wantErr: true,
+		},
+		{
+			name: "namespace_map alongside namespace, which already fixes the tenant",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.Namespace = "team-a"
+				i.NamespaceMap = map[string]string{"octo-org/octo-repo": "octo-org"}
+			}),
+			wantErr: true,
+		},
+		{
+			name: "an empty namespace_map, which would refuse every possible claim value",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{}
+			}),
+			wantErr: true,
+		},
+		{
+			name: "namespace_map with an empty target namespace",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{"octo-org/octo-repo": ""}
+			}),
+			wantErr: true,
+		},
+		{
+			name: "namespace_map mapping to a namespace that fails the grammar",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{"octo-org/octo-repo": "Octo Org"}
+			}),
+			wantErr: true,
+		},
+		{
+			name: "namespace_map mapping repository values that could never satisfy the grammar directly",
+			policy: spoil(func(i *auth.TrustedIssuer) {
+				i.NamespaceClaim = "repository"
+				i.NamespaceMap = map[string]string{
+					"octo-org/octo-repo":  "octo-org",
+					"Octo-Org/other-repo": "octo-org",
+				}
+			}),
+		},
 	}
 
 	for _, test := range tests {

@@ -283,6 +283,113 @@ func TestCITenantFromClaim(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, auth.ErrNoNamespace)
 	})
+
+	t.Run("the refusal names the claim, the value the issuer minted, and what to do", func(t *testing.T) {
+		verifier := verifierFor(t, "repository")
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
+
+		_, err := verifier.Verify(context.Background(), token)
+		require.Error(t, err)
+
+		message := err.Error()
+		assert.Contains(t, message, "repository", "names the claim")
+		assert.Contains(t, message, "octo-org/octo-repo", "names the value the issuer actually minted")
+		assert.Contains(t, message, "namespace_map", "tells the operator what to configure instead")
+	})
+}
+
+// TestCITenantFromNamespaceMap is #342: the fix for the gap the previous test
+// documents. "repository" can never satisfy [auth.ValidateNamespace] on its
+// own — every value contains "/" — so the answer is not a looser grammar (the
+// grammar also gates the file secret provider's per-tenant directory and the
+// signed assertion subject; loosening it here loosens it everywhere) but an
+// explicit, fail-closed mapping from the raw claim value an issuer actually
+// mints to the namespace an operator names for it.
+func TestCITenantFromNamespaceMap(t *testing.T) {
+	t.Parallel()
+
+	key := authtest.GenerateKey("gha-key-1", jwa.RS256)
+	clock := authtest.NewClock(time.Now())
+	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+
+	// Two tenants, each identified by GitHub's "repository" claim, which can
+	// never satisfy the namespace grammar directly.
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{
+		Issuers: []auth.TrustedIssuer{{
+			Name:           "ci",
+			Issuer:         issuer.URL(),
+			Audiences:      []string{"flowstate"},
+			NamespaceClaim: "repository",
+			NamespaceMap: map[string]string{
+				"octo-org/octo-repo":  "octo-org",
+				"Octo-Corp/other-app": "octo-corp",
+			},
+		}},
+	}, auth.WithClock(clock.Now))
+	require.NoError(t, err)
+
+	t.Run("a mapped repository lands in the namespace its entry names", func(t *testing.T) {
+		token := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
+
+		principal, err := verifier.Verify(context.Background(), token)
+		require.NoError(t, err)
+		assert.Equal(t, "octo-org", principal.Namespace)
+	})
+
+	t.Run("a second mapped repository, whose owner login the grammar could never accept raw, lands in its own namespace", func(t *testing.T) {
+		token := ciToken(issuer, "Octo-Corp", "other-app", "main", "flowstate")
+
+		principal, err := verifier.Verify(context.Background(), token)
+		require.NoError(t, err)
+		assert.Equal(t, "octo-corp", principal.Namespace)
+	})
+
+	// The negative direction: a repository the operator never listed must be
+	// refused outright, never fall back to grammar validation of the raw claim
+	// (which could admit it if the raw value happened to be grammar-legal) and
+	// never land in either configured tenant's namespace. This is the property
+	// that makes namespace_map an isolation boundary rather than a convenience
+	// normalizer: CLAUDE.md's rule is to test that A cannot reach B, not only
+	// that A can reach A.
+	t.Run("a repository absent from the map is refused, not admitted anywhere", func(t *testing.T) {
+		token := ciToken(issuer, "evil-org", "evil-repo", "main", "flowstate")
+
+		_, err := verifier.Verify(context.Background(), token)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, auth.ErrNoNamespace)
+	})
+
+	// Same property, stated the way an attacker would actually try it: a
+	// repository whose owner login is already grammar-legal on its own, but was
+	// never listed in the map, must still be refused rather than silently
+	// falling through to raw-claim validation. If namespace_map merely
+	// supplemented the grammar instead of replacing it for this entry, this is
+	// exactly where tenant octo-org's neighbor would slip into some namespace.
+	t.Run("an unlisted repository whose owner login is otherwise grammar-legal still cannot slip through", func(t *testing.T) {
+		token := ciToken(issuer, "someoneelse", "octo-repo", "main", "flowstate")
+
+		_, err := verifier.Verify(context.Background(), token)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, auth.ErrNoNamespace)
+	})
+
+	t.Run("octo-org's token cannot be admitted to octo-corp's namespace or vice versa", func(t *testing.T) {
+		octoOrgToken := ciToken(issuer, "octo-org", "octo-repo", "main", "flowstate")
+		octoCorpToken := issuer.MintToken(
+			ciClaims("Octo-Corp", "other-app", "main"),
+			authtest.WithSubject(ciSubject("Octo-Corp", "other-app", "main")),
+			authtest.WithAudience("flowstate"),
+		)
+
+		octoOrgPrincipal, err := verifier.Verify(context.Background(), octoOrgToken)
+		require.NoError(t, err)
+		octoCorpPrincipal, err := verifier.Verify(context.Background(), octoCorpToken)
+		require.NoError(t, err)
+
+		assert.NotEqual(t, octoOrgPrincipal.Namespace, octoCorpPrincipal.Namespace)
+		assert.Equal(t, "octo-org", octoOrgPrincipal.Namespace)
+		assert.Equal(t, "octo-corp", octoCorpPrincipal.Namespace)
+	})
 }
 
 // TestCIClaimsCarriedIntoRunIdentity records which claims survive the step from

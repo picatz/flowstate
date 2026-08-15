@@ -28,13 +28,38 @@ issuers:
     # The tenant, read off a claim the issuer signed. The value read must be
     # lowercase letters, digits, and dashes, at most 63 characters; an org
     # login outside that grammar (uppercase letters or an underscore, both
-    # legal on GitHub) is refused at verification rather than admitted. Such
-    # an org needs its own issuer entry with a fixed `namespace:` and a
-    # `require:` rule pinning its repository, placed ABOVE this one: entries
-    # are tried in order, this entry has no `require:` rules so it admits the
-    # token first, and a namespace it cannot map is a rejection, never a
-    # reason to try the next entry.
+    # legal on GitHub) is refused at verification rather than admitted, and
+    # "repository" (`<owner>/<name>`) can never satisfy it at all, since "/"
+    # is always in the value. For those, use `namespace_map:` — see
+    # github-actions-repos below — rather than loosening this grammar: it
+    # also gates the file secret provider's per-tenant directory and the
+    # signed assertion subject, so a looser check here is a looser check
+    # everywhere.
     namespace_claim: repository_owner
+
+  # The same issuer, read a different way: mapping the "repository" claim
+  # explicitly rather than relying on the owner login already being a legal
+  # namespace. This is the general answer, and the only one that works for a
+  # claim like "repository" that can never satisfy the grammar raw. Every
+  # value on the right is checked against the namespace grammar once, at
+  # startup, and a repository this map does not name is refused rather than
+  # admitted to any tenant — no wildcards, nothing implied, same as a
+  # `require:` rule.
+  #
+  # This entry is ordered after github-actions above, so a caller whose owner
+  # login already maps takes the simpler entry; only a repository that entry
+  # cannot resolve reaches this one. Entries are tried in order, and a
+  # namespace an admitting entry cannot map is a rejection, deliberately never
+  # a reason to try the next entry — so a repository absent from *this* map is
+  # refused outright, not passed further down the list.
+  - name: github-actions-repos
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+    namespace_claim: repository
+    namespace_map:
+      octo-org/octo-repo: octo-org
+      Octo-Corp/internal-tools: octo-corp
 
   # A second platform, pinned to one tenant outright rather than reading a claim.
   # Both spellings are legal in one file; what is not legal is an issuer with

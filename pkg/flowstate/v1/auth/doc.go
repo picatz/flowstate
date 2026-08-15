@@ -259,7 +259,15 @@
 //	    namespace_claim: repository_owner
 //
 // A verified caller whose namespace cannot be determined is rejected with
-// [ErrNoNamespace], not admitted to a shared one. And a policy is either
+// [ErrNoNamespace], not admitted to a shared one — including a namespace_claim
+// value that fails [ValidateNamespace], such as GitHub Actions' "repository"
+// claim ("<owner>/<name>", which always contains "/"). For an issuer whose
+// claims never satisfy the grammar raw, namespace_map maps each raw value an
+// operator names to a namespace explicitly, fails closed on any other value,
+// and is checked against [ValidateNamespace] once at policy load rather than
+// loosening the grammar itself.
+//
+// And a policy is either
 // tenant-aware or it is not: if one issuer determines a namespace, every issuer
 // must, because the ones that did not would put their callers in a namespace
 // alongside tenants meant to be separated. There is no switch to forget.
