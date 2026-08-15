@@ -1099,7 +1099,7 @@ the vocabulary work.
 
 *Since written:* structured auth shipped, under a different spelling — `bearer` and
 `credential` inputs on the `http` task (`TaskDef.AuthorityInputs`/`CredentialInputs`
-in `eval_task_library.go`; `examples/http-secret/`, `examples/http-federated/`).
+in `eval_task_http_def.go`; `examples/http-secret/`, `examples/http-federated/`).
 Only `idempotency_key` and the Flowfile-declared egress capabilities remain held.
 
 ### `triggers:` — the file declares a cadence, a person creates it *(landed)*

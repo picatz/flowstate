@@ -20,7 +20,8 @@ Flowstate compiles a YAML-plus-CEL Flowfile into a typed Protobuf specification 
 executes it, either in the calling process (`flow run local`) or durably on Temporal
 through a control plane (`flow server`) and a worker fleet (`flow worker`). Tasks
 are the only thing that touches the outside world; today the built-in set is `log`
-and `http` (`pkg/flowstate/v1/eval_task_library.go:36`, `:107`), and everything else
+and `http` (`pkg/flowstate/v1/eval_task_library.go:35`,
+`pkg/flowstate/v1/eval_task_http_def.go:66`), and everything else
 is a plugin, which is a separate process speaking Connect RPC over a Unix socket.
 Policy surfaces (authentication, egress, secret access, task shape, signal
 authorization) are CEL over deployment-supplied configuration files, evaluated
@@ -260,10 +261,10 @@ DNS-rebinding answer gains nothing (`:26-31`, `:441`). CEL rules are compiled an
 type-checked when configuration loads, deny beats allow, and a rule that errors
 denies (`:91-111`). Rules may key on the run's identity, including namespace, so one
 worker can serve two tenants with different reach
-(`pkg/flowstate/v1/eval_task_library.go:502`, `docs/DEPLOYMENT.md:153-166`).
+(`pkg/flowstate/v1/eval_task_http_run.go:316`, `docs/DEPLOYMENT.md:153-166`).
 
 **Limits.** This is enforced *inside* the Go `http` task
-(`pkg/flowstate/v1/eval_task_library.go:69`, `:105`). That is honest exactly while
+(`pkg/flowstate/v1/eval_task_http_def.go:30`, `:66`). That is honest exactly while
 every task is our code, which is #341 invariant 1 stated as a limit: the moment a
 task is a container running arbitrary code, in-process enforcement is theater,
 because the code opens its own sockets. A plugin task's network access is the
@@ -376,7 +377,8 @@ brokered credentials all apply per call, and the trajectory is the workflow hist
 In the *opaque delegate*, a whole agent runs as one sandboxed task and its trajectory
 is internal. Neither the `llm` task nor the `mcp:` tool source exists in this tree
 (#341 C, not landed; the built-in task set is `log` and `http`,
-`pkg/flowstate/v1/eval_task_library.go:36`, `:107`). Until #341 C and E land, the
+`pkg/flowstate/v1/eval_task_library.go:35`,
+`pkg/flowstate/v1/eval_task_http_def.go:66`). Until #341 C and E land, the
 transparent loop's per-call policy spine is a design claim and the opaque delegate
 has no sandbox tier to run in. Batch approval bound to a plan digest, which is what
 saves a human from per-call fatigue, is #341 D, not landed.
