@@ -2702,7 +2702,14 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// `for_each`'s `results` gets below, and neither loop kind's certainty reaches past
 	// its own top-level name.
 	if loop := node.GetLoop(); loop != nil {
-		if state := loop.GetState(); state != "" && ref.Output == state {
+		// A loop whose carried state happens to be named `error` collides, by
+		// spelling alone, with the tolerated-error output a `continue_on_error:`
+		// loop also carries. Where the policy is set, `error` is not a mistaken
+		// reach for the loop's `as:` name — it is the real output the policy
+		// grants — so that reading has to win before the state-name message
+		// below claims the whole name for itself.
+		if state := loop.GetState(); state != "" && ref.Output == state &&
+			!(ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError()) {
 			return Diagnostic{
 				Step: stepID, Field: inputName, Value: ref.Output,
 				Message: fmt.Sprintf(

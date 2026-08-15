@@ -699,6 +699,32 @@ func TestToleratedCompoundStepsErrorOutputIsAllowed(t *testing.T) {
 	}
 }
 
+// A stateful loop whose carried-state name happens to be `error` collides, by
+// spelling alone, with the tolerated-error output a `continue_on_error:` loop
+// also carries. Where the policy is set, `steps.<loop>.error` is the real
+// tolerated output, not a mistaken reach for the loop's own `as:` name, so it
+// must not be rejected by the state-name-collision message.
+func TestToleratedLoopWithStateNamedErrorStillExposesTheToleratedOutput(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: v2026.3\nname: t\nsteps:\n" +
+		"  - id: risky\n" +
+		"    continue_on_error: true\n" +
+		"    loop:\n" +
+		"      as: error\n" +
+		"      init: ${''}\n" +
+		"      update: ${error}\n" +
+		"      until: true\n" +
+		"      steps:\n" +
+		"        - id: nested\n" +
+		"          log:\n" +
+		"            message: hi\n" +
+		"  - id: report\n" +
+		"    log:\n" +
+		"      message: ${steps.risky.error}\n"
+	require.Empty(t, diagnose(t, src))
+}
+
 // TestAToleratedStepListsTheErrorOutput checks the message, not only the verdict.
 //
 // An author who wrote `${steps.risky.reslt}` on a tolerated step and is shown a list
