@@ -63,32 +63,31 @@ steps:
     log:
       message: ${"requesting approval to deploy %s to %s".format([inputs.version, inputs.environment])}
 
-  # The gate. It resolves to one of three outcomes, named once, on the step
-  # that produced the data. Three and not two, because a payload carrying no
-  # decision at all is neither an approval nor a rejection.
+  # The gate. Two questions, named once each on the step that produced the
+  # data: was there a decision at all, and was it yes. Two and not one,
+  # because a payload carrying no decision is neither an approval nor a
+  # rejection, and a gate that lapses is not a gate that said no.
   - id: approval
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
       outputs:
-        outcome: >-
-          ${has(payload.approved)
-            ? (payload.approved ? "deployed" : "rejected")
-            : "expired"}
+        decided: ${payload.?approved.hasValue()}
+        approved: ${payload.?approved.orValue(false)}
         sender: ${sender}
 
   - id: deploy
-    if: ${steps.approval.outcome == "deployed"}
+    if: ${steps.approval.decided && steps.approval.approved}
     log:
       message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
 
   - id: rejected
-    if: ${steps.approval.outcome == "rejected"}
+    if: ${steps.approval.decided && !steps.approval.approved}
     log:
       message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
 
   - id: expired
-    if: ${steps.approval.outcome == "expired"}
+    if: ${!steps.approval.decided}
     log:
       message: nobody decided in time
 ```
