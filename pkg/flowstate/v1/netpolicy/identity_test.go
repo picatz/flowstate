@@ -1,6 +1,7 @@
 package netpolicy
 
 import (
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -54,6 +55,57 @@ func Test_Policy_connectionRules_areRecheckedAcrossIdentities(t *testing.T) {
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, int64(1), connections.Load())
 
+	_, err = getAs(t, policy, server.URL, Identity{Namespace: "team-b"})
+	requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
+	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the server")
+}
+
+// Test_Policy_connectionRules_areRecheckedAcrossIdentities_overHTTP2 is the
+// same claim over TLS with HTTP/2 negotiated, which is the transport a real
+// egress target uses and the one where "no keep-alive" is not obviously
+// enough: HTTP/2 multiplexes many requests onto one connection, so a pool that
+// honoured DisableKeepAlives only for HTTP/1 would let a second identity ride
+// the first identity's connection and never reach the dialer where connection
+// rules are evaluated.
+//
+// It does hold — golang.org/x/net/http2 reads the HTTP/1 transport's
+// DisableKeepAlives and marks each ClientConn single-use — but that is a fact
+// about a dependency rather than about this package, so it is asserted here
+// instead of assumed.
+func Test_Policy_connectionRules_areRecheckedAcrossIdentities_overHTTP2(t *testing.T) {
+	var connections atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.EnableHTTP2 = true
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+
+	policy, err := New(
+		WithAllowLoopback(),
+		WithRootCAs(pool),
+		WithAllowRules(`identity.namespace == "team-a" && ip == "127.0.0.1"`),
+	)
+	require.NoError(t, err)
+
+	resp, err := getAs(t, policy, server.URL, Identity{Namespace: "team-a"})
+	require.NoError(t, err)
+	require.Equal(t, 2, resp.ProtoMajor, "the server must actually be speaking HTTP/2 for this test to mean anything")
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, int64(1), connections.Load())
+
+	// The negative direction: another identity must not be carried by the
+	// connection the first one established.
 	_, err = getAs(t, policy, server.URL, Identity{Namespace: "team-b"})
 	requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
 	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the server")
