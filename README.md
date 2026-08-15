@@ -65,18 +65,23 @@ steps:
 
   # The gate. It resolves to one of three outcomes, named once, on the step
   # that produced the data. Three and not two, because a payload carrying no
-  # decision at all is neither an approval nor a rejection. Conditionals over
-  # string literals, deliberately: that is the shape `flow validate` can read a
-  # domain out of, and it is what makes the dispatch below checkable.
+  # decision at all is neither an approval nor a rejection — which is why the
+  # absent case stays visible: `payload.?approved` is an optional select,
+  # `optMap` runs only when the field was actually sent, and `orValue` supplies
+  # the case where nobody decided. (`.orValue(false)` on that read would be a
+  # bug: it makes "missing" and "answered no" the same branch.) String literals
+  # reached through conditionals and those optional idioms, deliberately: that
+  # is the shape `flow validate` can read a domain out of, and it is what makes
+  # the dispatch below checkable.
   - id: approval
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
       outputs:
         outcome: >-
-          ${has(payload.approved)
-            ? (payload.approved ? "deployed" : "rejected")
-            : "undecided"}
+          ${payload.?approved
+              .optMap(approved, approved ? "deployed" : "rejected")
+              .orValue("undecided")}
         sender: ${sender}
 
   # One dispatch, not three sibling `if:`s. The validator knows this value is
