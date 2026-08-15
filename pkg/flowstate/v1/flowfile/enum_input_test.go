@@ -1,8 +1,11 @@
 package flowfile_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -340,4 +343,201 @@ steps:
 	require.Equal(t, "staging", environment.GetDefault().GetLiteral().GetStringValue())
 	require.Equal(t, "production", environment.GetExample().GetLiteral().GetStringValue())
 	require.Equal(t, `this != ""`, environment.GetMust())
+}
+
+// TestEnumValuesDuplicateMember pins the durable-vs-local disagreement PR
+// #621's last review finding named: a duplicate member in `values:` used to
+// validate cleanly at author time and only get refused at durable submission,
+// through [v1.Validate] on the complete request. It is now refused here too,
+// at the `values:` key's own position — a duplicate is a property of the list
+// as a whole rather than of one member, since protovalidate's own
+// repeated.unique rule does not say *which* member is the repeat, so this
+// lands on the list rather than pretending to a member-level position it does
+// not have.
+func TestEnumValuesDuplicateMember(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+inputs:
+  environment:
+    type: enum
+    values: [staging, production, staging]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	wf, positions, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err, "a duplicate value is a semantic mistake, not a syntax one")
+	require.Equal(t, []string{"staging", "production", "staging"}, wf.GetDeclaredInputs()[0].GetValues())
+	want, ok := positions.At("inputs.environment.values")
+	require.True(t, ok, "no position was recorded for inputs.environment.values")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	d, ok := findDiagnostic(ds, "inputs.environment.values")
+	require.True(t, ok, "no diagnostic landed on inputs.environment.values; got %+v", ds)
+	require.Equal(t,
+		`input "environment" value 2 ("staging") repeats one already declared; an enum's values must be distinct`,
+		d.Message)
+	require.Equal(t, want.Start.Line, d.Line)
+	require.Equal(t, want.Start.Column, d.Column)
+}
+
+// TestEnumValuesEmptyMember pins the second of the four boundary violations:
+// an empty string as a member is refused, and — unlike the duplicate case
+// above — protovalidate's string.min_len rule does identify which member
+// failed, so the diagnostic lands on that member's own position
+// (`values[1]`) rather than on the list as a whole.
+func TestEnumValuesEmptyMember(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+inputs:
+  environment:
+    type: enum
+    values: [staging, ""]
+steps:
+  - id: a
+    log:
+      message: hi
+`
+
+	wf, positions, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err)
+	require.Equal(t, []string{"staging", ""}, wf.GetDeclaredInputs()[0].GetValues())
+	want, ok := positions.At("inputs.environment.values[1]")
+	require.True(t, ok, "no position was recorded for inputs.environment.values[1]")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	d, ok := findDiagnostic(ds, "inputs.environment.values[1]")
+	require.True(t, ok, "no diagnostic landed on inputs.environment.values[1]; got %+v", ds)
+	require.Equal(t,
+		`input "environment" value 1 is empty; every enum value must be at least 1 character`,
+		d.Message)
+	require.Equal(t, want.Start.Line, d.Line)
+	require.Equal(t, want.Start.Column, d.Column)
+}
+
+// TestEnumValuesOverlongMember pins the third boundary violation: a member
+// over 128 characters is refused, at that member's own position, one
+// character past the bound [TestEnumValuesReachedBoundary] proves is
+// otherwise accepted.
+func TestEnumValuesOverlongMember(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("a", 129)
+	src := fmt.Sprintf(`edition: v2026.3
+name: t
+inputs:
+  environment:
+    type: enum
+    values: [staging, %s]
+steps:
+  - id: a
+    log:
+      message: hi
+`, long)
+
+	wf, positions, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err)
+	require.Equal(t, []string{"staging", long}, wf.GetDeclaredInputs()[0].GetValues())
+	want, ok := positions.At("inputs.environment.values[1]")
+	require.True(t, ok, "no position was recorded for inputs.environment.values[1]")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	d, ok := findDiagnostic(ds, "inputs.environment.values[1]")
+	require.True(t, ok, "no diagnostic landed on inputs.environment.values[1]; got %+v", ds)
+	require.Equal(t,
+		`input "environment" value 1 is 129 characters, over the 128 an enum value may hold`,
+		d.Message)
+	require.Equal(t, want.Start.Line, d.Line)
+	require.Equal(t, want.Start.Column, d.Column)
+}
+
+// TestEnumValuesOver64Members pins the fourth boundary violation: a 65th
+// member is refused against the list as a whole, since protovalidate's
+// repeated.max_items rule names a count rather than a member.
+func TestEnumValuesOver64Members(t *testing.T) {
+	t.Parallel()
+
+	members := make([]string, 65)
+	for i := range members {
+		members[i] = fmt.Sprintf("v%d", i)
+	}
+	src := fmt.Sprintf(`edition: v2026.3
+name: t
+inputs:
+  environment:
+    type: enum
+    values: [%s]
+steps:
+  - id: a
+    log:
+      message: hi
+`, strings.Join(members, ", "))
+
+	wf, positions, err := flowfile.Parse([]byte(src))
+	require.NoError(t, err)
+	require.Len(t, wf.GetDeclaredInputs()[0].GetValues(), 65)
+	want, ok := positions.At("inputs.environment.values")
+	require.True(t, ok, "no position was recorded for inputs.environment.values")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+
+	d, ok := findDiagnostic(ds, "inputs.environment.values")
+	require.True(t, ok, "no diagnostic landed on inputs.environment.values; got %+v", ds)
+	require.Equal(t,
+		`input "environment" declares 65 values, but an enum may declare at most 64; trim the list, or split it into more than one input`,
+		d.Message)
+	require.Equal(t, want.Start.Line, d.Line)
+	require.Equal(t, want.Start.Column, d.Column)
+}
+
+// TestEnumValuesReachedBoundary is the direction that makes the four tests
+// above meaningful: a list at exactly the schema's own bound — 64 members,
+// each exactly 128 characters, all distinct — validates cleanly. `<= bound`
+// is also satisfied by a check that gives up early, per CLAUDE.md's rule
+// about asserting a bound was *reached* rather than merely not exceeded; this
+// is the test that would fail if [checkEnumValuesShape] (or the schema
+// annotation it derives from) quietly used 63, or 127, or refused the
+// boundary case itself.
+func TestEnumValuesReachedBoundary(t *testing.T) {
+	t.Parallel()
+
+	members := make([]string, 64)
+	for i := range members {
+		// "v" plus 127 zero-padded digits: 128 characters, and unique per index
+		// so this boundary case cannot also trip the distinctness rule.
+		members[i] = fmt.Sprintf("v%0127d", i)
+	}
+	src := fmt.Sprintf(`edition: v2026.3
+name: t
+inputs:
+  environment:
+    type: enum
+    values: [%s]
+steps:
+  - id: a
+    log:
+      message: hi
+`, strings.Join(members, ", "))
+
+	wf, err := flowfile.Unmarshal([]byte(src))
+	require.NoError(t, err)
+	require.Len(t, wf.GetDeclaredInputs()[0].GetValues(), 64)
+	for _, v := range wf.GetDeclaredInputs()[0].GetValues() {
+		assert.Len(t, v, 128)
+	}
+
+	require.Empty(t, flowfile.Validate(wf), "a 64-member enum of 128-character values should validate cleanly")
 }

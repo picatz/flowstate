@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -136,6 +137,17 @@ func validateInputConstraintShape(declaration *v1.InputDeclaration, field string
 	if err == nil {
 		return nil
 	}
+
+	// A per-member or list-size violation of `values:` carries its own field
+	// path — "values" for a whole-list rule, "values[i]" when member i is the
+	// one at fault — which [enumValues] recorded a position for while parsing
+	// the list, so this points there directly rather than falling back to
+	// [inputConstraintShapeField]'s coarser guess.
+	var shapeErr *v1.EnumValuesShapeError
+	if errors.As(err, &shapeErr) {
+		return Diagnostics{{Field: field + "." + shapeErr.Field, Message: err.Error()}}
+	}
+
 	return Diagnostics{{Field: inputConstraintShapeField(declaration, field), Message: err.Error()}}
 }
 
@@ -144,17 +156,20 @@ func validateInputConstraintShape(declaration *v1.InputDeclaration, field string
 // lands on the line an author wrote the mistake on rather than always on the
 // declaration as a whole.
 //
-// [v1.CheckInputConstraintShape] walks a fixed order and reports the first
-// defect it finds — the string constraints, then the list constraints, then
-// `values:`, then `must:` — so this mirrors that same order rather than
-// pattern-matching the message text: a declaration that also has a
-// min_len/max_len or min_items/max_items mismatch is reported against the
-// declaration as a whole, because that earlier check is the one that actually
-// fired, and pointing at `values:` for it would send a reader to a line that
-// is not what failed. `values:` beside a type that is not enum is the one
-// case with a more specific home than the declaration: the line the author
-// actually wrote `values:` on. Everything else — including `type: enum` with
-// no `values:` at all, which has no line of its own to point at instead — is
+// Only reached for an error that is not a [v1.EnumValuesShapeError] —
+// [validateInputConstraintShape] handles that case itself, since the error
+// already names its own field path. What is left is: [v1.CheckInputConstraintShape]
+// walks a fixed order and reports the first defect it finds — the string
+// constraints, then the list constraints, then `values:`, then `must:` — so
+// this mirrors that same order rather than pattern-matching the message
+// text: a declaration that also has a min_len/max_len or
+// min_items/max_items mismatch is reported against the declaration as a
+// whole, because that earlier check is the one that actually fired, and
+// pointing at `values:` for it would send a reader to a line that is not
+// what failed. `values:` beside a type that is not enum is the one case with
+// a more specific home than the declaration: the line the author actually
+// wrote `values:` on. Everything else — including `type: enum` with no
+// `values:` at all, which has no line of its own to point at instead — is
 // reported against the declaration, unchanged from before `values:` existed.
 func inputConstraintShapeField(declaration *v1.InputDeclaration, field string) string {
 	t := declaration.GetType()

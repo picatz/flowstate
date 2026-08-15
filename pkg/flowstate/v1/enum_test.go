@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,4 +135,102 @@ func TestBindRunInputsRefusesEnumOver64Values(t *testing.T) {
 	require.Error(t, err, "a 65-value enum declaration was accepted")
 	assert.Contains(t, err.Error(), "values")
 	assert.Contains(t, err.Error(), "64")
+
+	// The disagreement PR #621's review finding named: BindRunInputs used to
+	// accept this same 65-value declaration, because CheckInputConstraintShape
+	// checked only membership (type mismatch, empty domain), never the
+	// per-member and list-size rules the schema itself declares on `values`.
+	// Both execution drivers reach BindRunInputs before running anything, so
+	// this is the assertion that closes the gap for both at once rather than
+	// for whichever driver a test happens to exercise.
+	_, err = v1.BindRunInputs(wf65, map[string]*v1.Value{"environment": v1.NewLiteral("v0")})
+	require.Error(t, err, "BindRunInputs accepted a 65-value enum declaration")
+	assert.Contains(t, err.Error(), "64")
+}
+
+// distinctEnumValues returns n values, each exactly length characters and
+// distinct from every other, for building a values: list that sits at a
+// chosen point relative to the schema's bounds without also tripping a
+// different rule than the one under test.
+func distinctEnumValues(n, length int) []string {
+	vals := make([]string, n)
+	for i := range vals {
+		vals[i] = fmt.Sprintf("v%0*d", length-1, i)
+	}
+	return vals
+}
+
+// TestEnumValuesShapeAgreesWithValidate is the guard PR #621's review finding
+// asked for, and the actual deliverable: [v1.CheckInputConstraintShape] —
+// what [v1.BindRunInputs] enforces on both execution drivers, and what the
+// flowfile compiler's author-time diagnostic now delegates to — and
+// [v1.Validate] — what durable submission's complete-request check applies,
+// through the server's own validation of a [v1.RunRequest] — must reach the
+// identical verdict on a declared enum's `values:`, at and past each of the
+// three bounds the schema itself declares on [v1.InputDeclaration_values]:
+// 64 items, 128 characters per item, and distinctness.
+//
+// This is deliberately not a test of either function's behavior in
+// isolation — both are covered elsewhere — but of the join: that
+// checkEnumValuesShape's choice to derive its answer from [v1.Validate]
+// rather than restate "64, 128, unique" a second time actually keeps the two
+// from disagreeing, which is the property CLAUDE.md's "one rule, not two"
+// exists to protect and the property that would silently break if that seam
+// were ever swapped back out for a hand-copied bound.
+func TestEnumValuesShapeAgreesWithValidate(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		values  []string
+		wantErr bool
+	}{
+		{name: "63 distinct, 128 chars: under every bound", values: distinctEnumValues(63, 128), wantErr: false},
+		{name: "64 distinct, 128 chars: exactly at every bound", values: distinctEnumValues(64, 128), wantErr: false},
+		{name: "65 distinct, 128 chars: one past the count bound", values: distinctEnumValues(65, 128), wantErr: true},
+		{
+			name:    "64 members, one at 129 chars: one past the length bound",
+			values:  append(distinctEnumValues(63, 128), strings.Repeat("z", 129)),
+			wantErr: true,
+		},
+		{
+			name:    "64 members, one at exactly 128 chars: still at the length bound",
+			values:  append(distinctEnumValues(63, 128), strings.Repeat("z", 128)),
+			wantErr: false,
+		},
+		{
+			name:    "64 members, one duplicated: fails distinctness at the count bound",
+			values:  append(distinctEnumValues(63, 128), distinctEnumValues(1, 128)[0]),
+			wantErr: true,
+		},
+		{
+			name:    "64 members, one empty: fails the length floor",
+			values:  append(distinctEnumValues(63, 128), ""),
+			wantErr: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			decl := enumDecl(test.values...)
+			shapeErr := v1.CheckInputConstraintShape(decl)
+
+			wf := constrainedWorkflow(decl)
+			validateErr := v1.Validate(wf)
+
+			if test.wantErr {
+				assert.Errorf(t, shapeErr, "CheckInputConstraintShape accepted: %s", test.name)
+				assert.Errorf(t, validateErr, "Validate accepted: %s", test.name)
+			} else {
+				assert.NoErrorf(t, shapeErr, "CheckInputConstraintShape refused: %s", test.name)
+				assert.NoErrorf(t, validateErr, "Validate refused: %s", test.name)
+			}
+
+			// The join itself: not merely that each independently matches
+			// wantErr, but that neither one accepts what the other refuses.
+			assert.Equalf(t, validateErr == nil, shapeErr == nil,
+				"CheckInputConstraintShape and Validate disagreed for %s: shape=%v validate=%v",
+				test.name, shapeErr, validateErr)
+		})
+	}
 }
