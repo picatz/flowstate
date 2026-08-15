@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -77,15 +78,50 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 	// function: if it fails, the tracked changes still diff.
 	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "add", "--intent-to-add", "--", ".")
 
-	// The repository is controlled by the task and may configure diff helpers
-	// that execute as the worker, outside the Codex sandbox. Patch rendering
-	// must therefore refuse both external diff commands and textconv filters.
-	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M", "HEAD")
+	// The repository is controlled by the task and may configure helpers that
+	// execute as the worker, outside the Codex sandbox. --no-ext-diff and
+	// --no-textconv cover diff drivers, but Git still applies clean/process
+	// filters when it converts working-tree content for comparison. Discover
+	// every configured filter command and override it with an empty value for
+	// this invocation; an empty filter command means no filter. If the config
+	// cannot be enumerated, fail closed rather than render with an unknown
+	// command still enabled.
+	diffArgs, ok := safeDiffArgs(ctx, gitBin, workDir)
+	if !ok {
+		return "", filesChanged, false
+	}
+	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, diffArgs...)
 	if !ok {
 		return "", filesChanged, false
 	}
 
 	return out, filesChanged, truncatedOutput
+}
+
+// safeDiffArgs builds a diff command with every configured content-filter
+// command disabled. Git config keys cannot contain NUL, so --name-only --null
+// gives an unambiguous list even when a task-controlled value contains newlines.
+func safeDiffArgs(ctx context.Context, gitBin, workDir string) ([]string, bool) {
+	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
+		"config", "--list", "--name-only", "--null")
+	if !ok || truncated {
+		return nil, false
+	}
+
+	var keys []string
+	for _, key := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "filter.") &&
+			(strings.HasSuffix(lower, ".clean") || strings.HasSuffix(lower, ".process")) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	overrides := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		overrides = append(overrides, "-c", key+"=")
+	}
+	return append(overrides, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M", "HEAD"), true
 }
 
 // workspaceBaseline is what was true of working_context *before* a run

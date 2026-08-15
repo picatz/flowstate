@@ -111,20 +111,29 @@ func TestComputePatchRendersAUnifiedDiff(t *testing.T) {
 	}
 }
 
-func TestComputePatchDoesNotRunRepositoryDiffHelper(t *testing.T) {
+func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 	gitBin := realGitBinary(t)
 	t.Setenv(gitBinaryEnv, gitBin)
 
 	dir := t.TempDir()
 	initRepoWithCommit(t, gitBin, dir)
 	marker := filepath.Join(t.TempDir(), "external-diff-ran")
-	helper := filepath.Join(dir, "external-diff.sh")
-	if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch \""+marker+"\"\n"), 0o700); err != nil {
+	helper := filepath.Join(dir, "git-helper.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch \""+marker+"\"\ncat\n"), 0o700); err != nil {
 		t.Fatalf("WriteFile helper: %v", err)
 	}
-	cmd := exec.Command(gitBin, "-C", dir, "config", "diff.external", helper)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("configure repository diff.external: %v: %s", err, out)
+	for key, value := range map[string]string{
+		"diff.external":     helper,
+		"filter.evil.clean": helper,
+	} {
+		cmd := exec.Command(gitBin, "-C", dir, "config", key, value)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("configure repository %s: %v: %s", key, err, out)
+		}
+	}
+	attributes := filepath.Join(dir, ".git", "info", "attributes")
+	if err := os.WriteFile(attributes, []byte("*.txt filter=evil\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile attributes: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile change: %v", err)
@@ -136,7 +145,7 @@ func TestComputePatchDoesNotRunRepositoryDiffHelper(t *testing.T) {
 		t.Fatalf("computePatch = (%q, truncated %v), want an ordinary unified diff", patch, truncated)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("repository-controlled diff.external ran outside the Codex sandbox: Stat marker error = %v", err)
+		t.Fatalf("repository-controlled diff or content-filter helper ran outside the Codex sandbox: Stat marker error = %v", err)
 	}
 }
 
