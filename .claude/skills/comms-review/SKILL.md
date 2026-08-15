@@ -192,13 +192,67 @@ this section exists to prevent.
     what it has. Checked against the GraphQL reference on 2026-08-13; the
     earlier version of this rule asserted the opposite and was wrong.
 
-## The API budget is bounded
+## The API budget is bounded — and measurable
 
 The account's GitHub API budget is a shared, hourly, bounded resource, so
 the repo's own doctrine applies here too: bound the resource the consumer
-controls. It was exhausted twice in one session, both times by PR status
-polling, and both times it blocked real work.
+controls. It was exhausted three times in one session, and every time the
+session treated it as a full stop when it was not.
 
+**Measure it before rationing it.** One call, and it does not count
+against anything:
+
+    curl -sS https://api.github.com/rate_limit
+
+The first time anyone actually ran it, the numbers reframed the whole
+problem: `graphql` at 10039 used against a 5000 limit — 2× over — while
+`core` sat at 13 used against 15000. The session had been holding merges
+because "the API is exhausted" with 14,987 REST calls unused. Guessing
+at a bounded resource produced a 500× misestimate of what was left.
+
+- **The two pools are not comparable in size or in kind.** REST is
+  metered in *calls* (15,000/hr). GraphQL is metered in *points*
+  (5,000/hr), charged by query complexity — a thread listing with nested
+  connections costs many points per call, which is why GraphQL drains
+  invisibly while REST barely moves. A few dozen thread reads went 2×
+  over.
+- **Route the operation to the pool that has budget, and prefer REST.**
+  Only two things in this loop genuinely require GraphQL: resolving a
+  thread, and reading whether a thread is resolved. Everything else has a
+  REST spelling, so the scarce pool is spent on resolve mutations at
+  roughly a point each — hundreds per hour, far more than any review wave
+  needs:
+
+      gh api repos/{o}/{r}/pulls/{n}/comments --paginate    # findings, with diff_hunk
+      gh api repos/{o}/{r}/pulls/{n}/reviews  --paginate    # review summary bodies
+      gh api repos/{o}/{r}/pulls/comments/{id}/reactions -f content=+1
+      gh api repos/{o}/{r}/pulls/{n}/comments/{id}/replies -f body=…
+      gh api repos/{o}/{r}/commits/{sha}/check-runs --paginate
+
+  **`--paginate`, always, on any listing.** `per_page` defaults to 30, so
+  the bare call silently truncates a PR with 31 findings, and the review
+  loop then reports it handled having never seen the rest — the exact
+  failure this section exists to prevent, reintroduced by the fix for it.
+  Codex caught this in the first draft of this very paragraph. `gh`
+  follows the `Link` headers itself, which is most of why it beats
+  hand-rolled requests here: the correct thing is also the shorter thing
+  to type.
+- **The MCP tools are not the only door.** `gh` is authenticated through
+  the proxy and reaches the whole REST API, including endpoints the MCP
+  surface does not expose. Install it once with
+  `GOBIN=/usr/local/bin go install github.com/cli/cli/v2/cmd/gh@latest`
+  if it is missing. When an MCP tool fails on a GraphQL limit, ask
+  whether the thing you wanted has a REST endpoint before concluding you
+  are blocked — twice now the answer was yes and the block was
+  self-imposed. Direct requests also appear not to draw down the pool
+  `rate_limit` reports (five calls left `core.used` unmoved), so treat
+  that counter as a floor on what is left rather than a precise gauge,
+  and do not build a plan on its exact value. The same door does not open
+  onto GraphQL: the proxy serves only a pinned set of PR-review
+  operations there and answers anything else with a 403 telling you to
+  use REST, so hand-written or batched GraphQL is not a way around an
+  exhausted GraphQL pool — `gh api graphql` gets the same 403. Resolving
+  threads goes through the MCP tools or it waits.
 - **Events beat polling.** Webhook activity already wakes a session on CI
   failures, review comments, and merges. The only legitimate polls are for
   state webhooks do not cover, and those get one deliberate check rather
@@ -222,9 +276,12 @@ polling, and both times it blocked real work.
   produces a merge with unread review state. If review state cannot be
   read, the merge waits. A rule that only holds when it is convenient is
   not a rule.
-- **On exhaustion:** stop cleanly, do not retry in a loop, do not spread
-  the same calls across subagents, report what is blocked, schedule one
-  retry past the reset, and switch to work that needs no API.
+- **On exhaustion:** measure first, then decide. `rate_limit` reports the
+  reset as an epoch second, so the wait is a known number rather than a
+  guess. Move every operation that has a spelling on the healthy pool,
+  do the rest of the work that needs no API at all, and come back at the
+  reset — do not retry in a loop, and do not spread the same calls across
+  subagents, which multiplies the drain rather than the budget.
 
 ## Failure modes
 
