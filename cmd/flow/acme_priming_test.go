@@ -259,11 +259,6 @@ func (p parsedFile) textFrom(offset int) string {
 	return string(p.contents[offset:])
 }
 
-// textOf returns the text of one declaration.
-func (p parsedFile) textOf(fn *ast.FuncDecl) string {
-	return string(p.contents[p.file.Offset(fn.Pos()):p.file.Offset(fn.End())])
-}
-
 // TestACMEPrimingAsksForTheOrdinaryCertificate pins the one detail of the hello
 // that decides which autocert codepath runs.
 //
