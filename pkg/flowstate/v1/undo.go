@@ -62,6 +62,26 @@ const UndoBudget = 2 * time.Minute
 // up by hand needs that distinction.
 var ErrUndoBudget = errors.New("not attempted: the compensation budget for a cancelled run was already spent")
 
+// ErrUndoBudgetExpired is the cause attached to a compensation that was
+// already *running* when [UndoBudget] ran out — the other half of the same
+// bound as [ErrUndoBudget], which names one [RunUndoLogWithin] never attempted
+// because it saw no time left going in.
+//
+// A compensation cut off mid-flight fails with an ordinary
+// context.DeadlineExceeded on the local driver or an unadorned Temporal
+// activity timeout on the durable one, either of which is indistinguishable on
+// its own from a step's own `timeout:` reaching the same underlying error. This
+// is exported, and the same value on both drivers, so both name it rather than
+// each inventing its own sentence for the same fact: the local driver attaches
+// it as a [context.WithTimeoutCause] cause that [withCancellationCause]
+// surfaces in [runUndoOnCancel], and the durable driver attaches it directly
+// via [WithCause] where `engine.runUndoTask` recognizes the same shape —
+// Temporal has no context to carry a cause through. Either way a "could not
+// undo" entry says which of the two happened rather than leaving an operator
+// to guess between "this compensation is slow" and "the two-minute budget ran
+// out while it was working".
+var ErrUndoBudgetExpired = errors.New("the compensation budget for this cancelled run ran out")
+
 // UndoLog is the compensations a run has registered and not yet run, oldest first.
 //
 // A Go type rather than a schema one, because what travels is
