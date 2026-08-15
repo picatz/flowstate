@@ -1,8 +1,10 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -221,4 +223,246 @@ func TestNestedSecretStructureCompilesOnlyWithinTheBound(t *testing.T) {
 	require.Error(t, v1.CheckStructureDepth(over),
 		"a hand-built specification past the bound must be refused before it reaches any walk that "+
 			"cannot fully inspect it")
+}
+
+// callWorkflow builds a workflow with a single step of id, which calls callee
+// with no arguments — the shape of a `call:` [v1.WalkWorkflow] deliberately does
+// not descend into (see [v1.NodeRecursionEdges]), and the shape
+// [v1.CheckStructureDepth] must descend into anyway.
+func callWorkflow(id string, callee *v1.Workflow) *v1.Workflow {
+	return &v1.Workflow{
+		Name: "caller-" + id,
+		Steps: []*v1.Node{{
+			Id:   id,
+			Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}},
+		}},
+	}
+}
+
+// taskWorkflow builds a workflow with a single task step holding headers.
+func taskWorkflow(name string, headers *v1.Value) *v1.Workflow {
+	return &v1.Workflow{
+		Name: name,
+		Steps: []*v1.Node{{
+			Id: "a",
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "http",
+				Inputs: map[string]*v1.Value{"headers": headers},
+			}},
+		}},
+	}
+}
+
+// TestCheckStructureDepthReachesAnInlinedCallee is Finding 1's regression: a
+// [v1.Value_Structure] over the bound hidden entirely inside a `call:`'s
+// inlined callee has to be refused, at any nesting of calls the bound
+// permits — not only at the top level and not only one call deep.
+//
+// [v1.WalkWorkflow] deliberately skips `Workflow.steps[].call.workflow` for
+// every other caller sharing that traversal (diagnostics, reference
+// collection, the negation-drift lint), which is why this cannot simply lean
+// on that walk: it is testing that [v1.CheckStructureDepth] does something
+// none of those other callers may do, not that the shared traversal changed.
+func TestCheckStructureDepthReachesAnInlinedCallee(t *testing.T) {
+	t.Parallel()
+
+	leaf := v1.NewLiteral("x")
+	overStructure := wrapStructure(leaf, v1.MaxStructureDepth+1)
+
+	t.Run("one call deep", func(t *testing.T) {
+		t.Parallel()
+
+		callee := taskWorkflow("callee", overStructure)
+		caller := callWorkflow("call-1", callee)
+
+		require.Error(t, v1.CheckStructureDepth(callee),
+			"sanity: the callee alone must be refused too, or this is not testing what it claims")
+		err := v1.CheckStructureDepth(caller)
+		require.Error(t, err,
+			"an over-depth structure hidden only inside a called workflow's own step must be refused")
+		require.Contains(t, err.Error(), "32",
+			"the refusal must still name the bound even when it was found inside a callee")
+	})
+
+	t.Run("nested at every depth the bound permits", func(t *testing.T) {
+		t.Parallel()
+
+		// A chain of calls exactly [v1.MaxCallDepth] deep, with the offending
+		// structure at the bottom of the chain — the deepest position
+		// [v1.CheckCallDepth] still lets execution reach at all. Anything this
+		// walk accepts as reachable must actually be inspected.
+		wf := taskWorkflow("leaf", overStructure)
+		for i := v1.MaxCallDepth; i >= 1; i-- {
+			wf = callWorkflow(fmt.Sprintf("call-%d", i), wf)
+		}
+
+		err := v1.CheckStructureDepth(wf)
+		require.Error(t, err,
+			"a structure past the bound must be refused however many calls deep it is hidden, up to "+
+				"the depth the engine will actually execute")
+	})
+
+	t.Run("a within-bound structure inside a callee is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		withinStructure := wrapStructure(leaf, v1.MaxStructureDepth)
+		callee := taskWorkflow("callee", withinStructure)
+		caller := callWorkflow("call-1", callee)
+
+		require.NoError(t, v1.CheckStructureDepth(caller),
+			"a callee whose own structure sits exactly at the bound must not be refused just for "+
+				"being reached through a call")
+	})
+}
+
+// TestCheckStructureDepthCallGraphTerminates pins the traversal's own two
+// bounds — call-nesting depth and total steps visited — against the two
+// shapes that could otherwise make it run forever or run long: a call that
+// (directly or through others) calls itself, and a diamond where several call
+// steps share a callee, multiplying the walk's breadth the same way a
+// billion-laughs YAML document multiplies alias expansion.
+//
+// CLAUDE.md: "when a bound exists, assert it was reached as well as not
+// exceeded" — a walk that gives up after one node also satisfies
+// `err == nil` on a small input, so this asserts termination on inputs
+// specifically built to demand many nodes of budget, not merely that small
+// ones return quickly.
+func TestCheckStructureDepthCallGraphTerminates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a self-referential call terminates rather than recursing forever", func(t *testing.T) {
+		t.Parallel()
+
+		// A structure violation sits beside the self-call rather than inside
+		// it: the cycle itself carries no structure at all — a pure
+		// self-reference is legal right up to [v1.MaxCallDepth], same as at
+		// execution — so the assertion below is on termination, not on the
+		// cycle somehow being the thing refused. The violation on the sibling
+		// step is what proves the walk still finished and kept looking,
+		// rather than hanging inside the cycle and never returning at all.
+		cyclic := &v1.Workflow{
+			Name: "cyclic",
+			Steps: []*v1.Node{
+				{Id: "self", Kind: &v1.Node_Call{Call: &v1.Call{}}},
+				{
+					Id: "task",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name: "http",
+						Inputs: map[string]*v1.Value{
+							"headers": wrapStructure(v1.NewLiteral("x"), v1.MaxStructureDepth+1),
+						},
+					}},
+				},
+			},
+		}
+		// Point the first step's call back at the caller itself, forging the
+		// cycle a hand-built specification can express even though the
+		// compiler's own file-reading walk would refuse it.
+		cyclic.Steps[0].GetKind().(*v1.Node_Call).Call.Workflow = cyclic
+
+		done := make(chan error, 1)
+		go func() { done <- v1.CheckStructureDepth(cyclic) }()
+
+		select {
+		case err := <-done:
+			require.Error(t, err,
+				"the walk must finish past the cycle and still catch the structure violation on the "+
+					"step beside it, rather than never returning at all")
+			require.Contains(t, err.Error(), "32")
+		case <-time.After(10 * time.Second):
+			t.Fatal("CheckStructureDepth did not terminate on a cyclic call graph")
+		}
+	})
+
+	t.Run("a diamond of calls terminates and is still refused", func(t *testing.T) {
+		t.Parallel()
+
+		leaf := taskWorkflow("leaf", wrapStructure(v1.NewLiteral("x"), v1.MaxStructureDepth+1))
+
+		// Widened at every level: each of several call steps at one level calls
+		// several callees at the next, each of which shares leaf as its own
+		// callee — a diamond that multiplies breadth at every level the way a
+		// self-referential call multiplies depth.
+		const fanOut = 6
+		const levels = 4
+
+		wf := leaf
+		for level := 0; level < levels; level++ {
+			branches := make([]*v1.Node, 0, fanOut)
+			for i := range fanOut {
+				branches = append(branches, &v1.Node{
+					Id:   fmt.Sprintf("l%d-c%d", level, i),
+					Kind: &v1.Node_Call{Call: &v1.Call{Workflow: wf}},
+				})
+			}
+			wf = &v1.Workflow{Name: fmt.Sprintf("level-%d", level), Steps: branches}
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- v1.CheckStructureDepth(wf) }()
+
+		select {
+		case err := <-done:
+			require.Error(t, err, "a diamond of calls burying an over-depth structure must be refused")
+		case <-time.After(10 * time.Second):
+			t.Fatal("CheckStructureDepth did not terminate on a diamond-shaped call graph")
+		}
+	})
+}
+
+// TestCheckStructureDepthCallWalkNodeBudgetIsReached pins the traversal's total
+// -nodes-visited bound on its own, separate from the depth bound: a call graph
+// no single chain of which goes anywhere near [v1.MaxCallDepth], but wide
+// enough at every level that the walk following every `call:` would visit far
+// more steps than [v1.CheckStructureDepth] can afford, must be refused for
+// exactly that — not accepted for lack of a structure violation, and not
+// merely rejected via CheckCallDepth for being too deep, since it never is.
+//
+// This is the "reached, not just not exceeded" half CLAUDE.md's paging
+// section asks for: a walk that gave up after one node would also satisfy
+// "no structure violation found" on a small input, so this input is built
+// wide enough that only a walker that actually tried to visit everything
+// would notice it ran out of budget.
+func TestCheckStructureDepthCallWalkNodeBudgetIsReached(t *testing.T) {
+	t.Parallel()
+
+	// No leaf holds an over-depth structure at all — every leaf value is an
+	// ordinary literal — so a refusal here can only come from the walk's own
+	// node budget, not from [v1.MaxStructureDepth].
+	leaf := taskWorkflow("leaf", v1.NewLiteral("x"))
+
+	// fanOut steps per level, each calling the same shared callee, four
+	// levels deep: at fanOut=20 that is up to 20^4 = 160,000 steps the walk
+	// would visit just entering the innermost level, well past the 100,000
+	// budget, while every chain is only 4 calls deep — nowhere near
+	// [v1.MaxCallDepth]'s 8.
+	const fanOut = 20
+	const levels = 4
+
+	wf := leaf
+	for level := range levels {
+		branches := make([]*v1.Node, 0, fanOut)
+		for i := range fanOut {
+			branches = append(branches, &v1.Node{
+				Id:   fmt.Sprintf("l%d-c%d", level, i),
+				Kind: &v1.Node_Call{Call: &v1.Call{Workflow: wf}},
+			})
+		}
+		wf = &v1.Workflow{Name: fmt.Sprintf("wide-%d", level), Steps: branches}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- v1.CheckStructureDepth(wf) }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err,
+			"a call graph too wide for the walk's node budget must be refused rather than silently "+
+				"under-inspected")
+		require.Contains(t, err.Error(), "100000",
+			"the refusal should name the node budget so the shape of the problem (breadth, not depth) "+
+				"is legible")
+	case <-time.After(10 * time.Second):
+		t.Fatal("CheckStructureDepth did not terminate on a call graph wide enough to exceed its node budget")
+	}
 }

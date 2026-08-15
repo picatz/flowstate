@@ -819,13 +819,14 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 // pinPlugins records the deployment's plugin selection on a specification about
 // to become durable, and refuses a specification the deployment cannot satisfy.
 //
-// Called by [FlowstateServer.validateSubmission], so by [FlowstateServer.Run]
-// and [FlowstateServer.SignalWithStart], and by
-// [FlowstateServer.CreateSchedule], which has its own submission pipeline. All
-// three because all three bring durable work into existence, and a schedule that
-// skipped this would persist a specification with requirements and no selection:
-// unpinned at three in the morning, when the deployment resolving it is not the
-// one the author submitted against and nobody is there to read a refusal.
+// Called by [FlowstateServer.validateSpecification], so by every RPC that shares
+// it: [FlowstateServer.Run] and [FlowstateServer.SignalWithStart] through
+// [FlowstateServer.validateSubmission], and [FlowstateServer.CreateSchedule]
+// directly. All three because all three bring durable work into existence, and a
+// schedule that skipped this would persist a specification with requirements and
+// no selection: unpinned at three in the morning, when the deployment resolving
+// it is not the one the author submitted against and nobody is there to read a
+// refusal.
 //
 // Unconditional, including for a specification that requires nothing. The
 // resolved list is the control plane's own answer, so a caller-supplied one is
