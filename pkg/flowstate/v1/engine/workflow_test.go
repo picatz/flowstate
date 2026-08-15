@@ -205,7 +205,13 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+			// The durable driver's route for the case's identity: the server
+			// established it and it rides on the run's own state, which
+			// workflow.go copies into the scope every task is dispatched in.
+			// A different route from the local driver's rehearsal context
+			// value, deliberately — what the pair of callers compares is the
+			// answer, not the plumbing.
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow, Identity: tc.Identity})
 			require.True(t, env.IsWorkflowCompleted())
 
 			if tc.DeniedTask != "" {

@@ -1553,12 +1553,17 @@ flow validate examples/hello-world/workflow.yaml`,
 			"in the words a server refuses a submission in. Without --plugin-dir there are no " +
 			"plugins, and a step naming one is an unknown task, which is what a worker without " +
 			"them would also say.\n\n" +
-			"One limit worth knowing before writing a rule about who is running. --as-subject " +
-			"and its siblings name the identity this rehearsal's secret rules and plugin tasks " +
-			"see. They do not make the run attested: a local run has no server in front of it " +
-			"to attest anything, so `run.identity` and the task-shape and egress rules keep " +
-			"reading it as having no caller. A rule keyed on identity.namespace therefore " +
-			"matches nothing here, and can refuse locally what production allows.\n\n" +
+			"--as-subject and its siblings name the identity this rehearsal runs as, and every " +
+			"surface that reads one reads that: the secret access rules, a credential the run " +
+			"assumes, plugin tasks, `run.identity`, and the --task-policy and --egress-policy " +
+			"rules a worker would enforce. So a rule keyed on identity.namespace answers here " +
+			"the way it answers in production, which is what rehearsing under a policy is for.\n\n" +
+			"What that does not do is make the run attested. Nothing verified these flags - they " +
+			"are what you say you are - so `run.local` reads true, and a credential this run " +
+			"assumes is minted under a subject carrying a `_local` component no server-attested " +
+			"run can ever produce. A cloud trust policy written for your production subject will " +
+			"not match a rehearsal's, deliberately: that refusal is the one divergence between " +
+			"the two drivers that is a feature.\n\n" +
 			"A gate is the one place that limit is lifted, because a gate is the thing worth " +
 			"rehearsing. --signal-as-subject and its siblings name the approver a --signal " +
 			"delivery stands in for, and the workflow's own `signals:` policy is then checked " +

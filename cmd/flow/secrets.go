@@ -547,6 +547,24 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	// follows for the durable driver.
 	ctx = plugin.NewContextWithIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
 
+	// And onto the run's own scope, from that same one source, for the same
+	// reason and on the same unconditional path (#295). [v1.Scope]'s identity is
+	// what the task-shape policy, the egress policy's identity dimension and
+	// `run.identity` all read; leaving it empty while the plugin caller and the
+	// secret rules above saw the rehearsal identity is what made one flag
+	// rehearse part of a deployment's policy and silently no-op on the rest —
+	// and no-op in the refusing direction, so a local run denied what production
+	// permits. Rendered through the same [v1.ProtoWorkloadIdentity] the line
+	// above uses rather than converted a second way: one identity, three
+	// renderings, so nothing can disagree about who is calling.
+	//
+	// It stays a rehearsal. [v1.Scope]'s `local` is set by the local driver
+	// itself and no flag reaches it, and the `local` marker
+	// [auth.NewLocalWorkloadIdentity] set above — the one that puts `_local` in
+	// every minted subject — travels with the [v1.TaskRuntime] identity, not
+	// with this. See [v1.NewContextWithRehearsalIdentity].
+	ctx = v1.NewContextWithRehearsalIdentity(ctx, v1.ProtoWorkloadIdentity(identity))
+
 	// The worker's own spelling, from [workerRuntime] directly above: a plugin
 	// that advertises a secrets backend registered it into this registry when
 	// the host launched, which is after the flags were read, so "is any secret

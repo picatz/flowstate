@@ -25,6 +25,32 @@ func TestRunIdentityShapeLocal(t *testing.T) {
 	tests.AssertRunIdentityShape(t, outputs, true, "")
 }
 
+// TestRunIdentityShapeLocalRehearsal is the row #295 corrected. A local run
+// whose starter named an identity — `flow run local --as-subject` — reports
+// that identity under `run.identity`, because it is the same identity the
+// secret rules, the credential broker, the plugin caller and the task-shape
+// and egress policies all see, and a surface that read empty while the others
+// read the rehearsal identity is a surface that answers a different question
+// than production answers.
+//
+// `run.local` still reads true, and that is the whole of what keeps this
+// honest: naming an identity is not being attested as one, and `local` is the
+// field that says which of those happened. A rehearsal that could turn it off
+// would be the thing eval.go's local-scope comment forbids; nothing here can,
+// because the local driver sets it unconditionally.
+func TestRunIdentityShapeLocalRehearsal(t *testing.T) {
+	ctx := v1.NewContextWithRehearsalIdentity(context.Background(), &v1.WorkloadIdentity{
+		Subject:   "release-requester@example.com",
+		Issuer:    "flowstate:test",
+		Namespace: "team-a",
+	})
+
+	outputs, err := v1.Run(ctx, tests.RunIdentityWorkflow())
+	require.NoError(t, err)
+
+	tests.AssertRunIdentityShape(t, outputs, true, "release-requester@example.com")
+}
+
 // TestRunIdentityContainmentShapes checks the opposite direction from
 // CLAUDE.md's secret-containment tests: `run.identity.subject` is exactly the
 // value examples/approval-gate/workflow.yaml documents as deliberately *not*
