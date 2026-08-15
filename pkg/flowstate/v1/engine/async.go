@@ -56,7 +56,16 @@ func (a *asyncStep) wait(ctx workflow.Context) {
 	if a == nil || a.joined {
 		return
 	}
-	a.done.Receive(ctx, nil)
+
+	// Scope exit must drain work even when the exit was caused by workflow
+	// cancellation. In particular, the coroutine may still be between its
+	// successful side effect and filling the undo slot; returning from this wait
+	// before its completion signal would let cancellation compensation race that
+	// registration. Use the same cancellation-independent context shape as
+	// compensateCancelled, while retaining the workflow environment needed to
+	// receive the durable signal.
+	drainCtx, _ := workflow.NewDisconnectedContext(ctx)
+	a.done.Receive(drainCtx, nil)
 	a.joined = true
 }
 
