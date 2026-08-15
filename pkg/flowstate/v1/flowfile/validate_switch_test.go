@@ -151,6 +151,24 @@ steps:
 		_, err := flowfile.ValidateSource([]byte(src.String()))
 		require.ErrorContains(t, err, "switch case has 101 values; at most 100 are allowed")
 	})
+
+	t.Run("maximum flattened values", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString(header)
+		for caseIndex := range 100 {
+			src.WriteString("        - case: [")
+			for valueIndex := range 100 {
+				if valueIndex > 0 {
+					src.WriteString(", ")
+				}
+				fmt.Fprintf(&src, "value-%d-%d", caseIndex, valueIndex)
+			}
+			src.WriteString("]\n          steps: []\n")
+		}
+
+		_, err := flowfile.ValidateSource([]byte(src.String()))
+		require.NoError(t, err, "the schema-valid maximum must remain accepted")
+	})
 }
 
 // Diagnostic 3: exhaustiveness. No `default:` claims every value is handled,

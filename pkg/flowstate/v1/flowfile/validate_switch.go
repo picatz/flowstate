@@ -1,8 +1,11 @@
 package flowfile
 
 import (
+	"encoding/base64"
 	"fmt"
 	"maps"
+	"math"
+	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -65,14 +68,15 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 
 	// The case literals: computed values refused, duplicates found after
 	// flattening `case: [a, b]` lists, and — where the domain is knowable —
-	// impossible values and type mismatches. `seen` carries every literal already
-	// accepted, with the field it was written under, so the duplicate diagnostic
-	// can name the first occurrence.
+	// impossible values and type mismatches. `seen` buckets every literal already
+	// accepted by its CEL equality value, with the field it was written under, so
+	// the duplicate diagnostic can name the first occurrence without comparing
+	// every flattened value with every value before it.
 	type acceptedCase struct {
 		literal *expr.Value
 		field   string
 	}
-	var seen []acceptedCase
+	seen := map[string][]acceptedCase{}
 	handled := map[string]bool{}
 
 	for i, c := range sw.GetCases() {
@@ -133,7 +137,8 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 			// can never match — cases are tried in written order and the first
 			// match wins — so it is a mistake by construction.
 			duplicated := false
-			for _, previous := range seen {
+			key := switchLiteralEqualityKey(lit)
+			for _, previous := range seen[key] {
 				if v1.SwitchLiteralsEqual(previous.literal, lit) {
 					ds = append(ds, Diagnostic{
 						Step: id, Field: field, Value: text,
@@ -150,7 +155,9 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 			if duplicated {
 				continue
 			}
-			seen = append(seen, acceptedCase{literal: lit, field: field})
+			if key != "" { // NaN is not equal to any literal, including itself.
+				seen[key] = append(seen[key], acceptedCase{literal: lit, field: field})
+			}
 
 			if !domainKnown {
 				continue
@@ -556,6 +563,47 @@ func switchLiteralText(lit *expr.Value) string {
 		return "null"
 	default:
 		return "this value"
+	}
+}
+
+// switchLiteralEqualityKey puts values that can be equal under
+// [v1.SwitchLiteralsEqual] in the same bucket. The equality check remains the
+// final authority inside a bucket; the key only makes finding candidates
+// constant-time. In particular, a rational key preserves CEL's cross-type
+// numeric equality without rounding large integers through float64.
+func switchLiteralEqualityKey(lit *expr.Value) string {
+	switch kind := lit.GetKind().(type) {
+	case *expr.Value_Int64Value:
+		return "number:" + new(big.Rat).SetInt64(kind.Int64Value).RatString()
+	case *expr.Value_Uint64Value:
+		integer := new(big.Int).SetUint64(kind.Uint64Value)
+		return "number:" + new(big.Rat).SetInt(integer).RatString()
+	case *expr.Value_DoubleValue:
+		switch {
+		case math.IsNaN(kind.DoubleValue):
+			// NaN is unequal to every value, including itself, so it need not be
+			// retained as a future duplicate candidate.
+			return ""
+		case math.IsInf(kind.DoubleValue, 1):
+			return "number:+inf"
+		case math.IsInf(kind.DoubleValue, -1):
+			return "number:-inf"
+		default:
+			return "number:" + new(big.Rat).SetFloat64(kind.DoubleValue).RatString()
+		}
+	case *expr.Value_StringValue:
+		return "string:" + kind.StringValue
+	case *expr.Value_BoolValue:
+		return "bool:" + strconv.FormatBool(kind.BoolValue)
+	case *expr.Value_BytesValue:
+		return "bytes:" + base64.RawStdEncoding.EncodeToString(kind.BytesValue)
+	case nil, *expr.Value_NullValue:
+		return "null"
+	default:
+		// Non-scalars are refused before duplicate detection. Keep a stable
+		// fallback so a future scalar kind cannot accidentally restore a full
+		// scan while its equality spelling is being added.
+		return fmt.Sprintf("kind:%T", kind)
 	}
 }
 
