@@ -73,3 +73,26 @@ datasources:
           url: "${__value.raw}"
           datasourceUid: flowstate-tempo
           urlDisplayLabel: View trace
+
+  # The same OTLP logs and traces are also written to ClickHouse. The plugin's
+  # query builder discovers the contrib exporter's tables, while this fixed uid
+  # makes downstream dashboards portable. No password exists in this loopback-
+  # only lab; production guidance in README.md explicitly requires one.
+  - name: ClickHouse
+    uid: flowstate-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    url: http://clickhouse:8123
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      defaultDatabase: otel
+      username: default
+      tlsSkipVerify: false
+      logs:
+        defaultDatabase: otel
+        defaultTable: otel_logs
+      traces:
+        defaultDatabase: otel
+        defaultTable: otel_traces
