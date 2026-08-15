@@ -1413,6 +1413,70 @@ steps:
 	}
 }
 
+// TestEditionHoverSpellsTheListOneWay is the LSP-side regression for the first
+// half of #385.
+//
+// The compiler's own diagnostics render the known-editions list through one
+// formatter that quotes every member (`editionName`/`editionList` in the
+// flowfile package), but the `edition:` key's hover text built its own list by
+// joining [flowfile.KnownEditions] straight into a sentence — the same set,
+// spelled a second way, on a surface an author reads before ever running
+// `flow validate`. An author who read the hover, typed what it showed, and then
+// hit the (correctly quoted) diagnostic would see the same set named two
+// different ways and have no reason to think they were the same list.
+//
+// Checked against the live hover text a real hover request returns, not the
+// package var directly, so a refactor that stops routing through
+// [flowfile.KnownEditionsList] fails here rather than only in a test that reads
+// the same shortcut the bug took.
+func TestEditionHoverSpellsTheListOneWay(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///edition-hover.yaml"
+	c.open(uri, hoverSource)
+
+	pos := positionOfKey(t, hoverSource, "edition", 0, "")
+	got := c.hover(uri, pos.Line, pos.Character)
+	require.NotNil(t, got, "no hover for the edition key")
+	text := hoverText(got)
+
+	// Scoped to the sentence that renders the *list*, rather than the whole
+	// hover. The doc text legitimately names the current edition once more on
+	// its own, backtick-quoted ("as a v-prefixed date: `v2026.3`") to say what
+	// to write — that single mention is not the list and must not make this
+	// check fail on an edition it never got wrong.
+	const marker = "this one knows "
+	start := strings.Index(text, marker)
+	require.GreaterOrEqual(t, start, 0, "hover text has no known-editions sentence to check: %q", text)
+	sentence := text[start+len(marker):]
+	if end := strings.Index(sentence, ")"); end >= 0 {
+		sentence = sentence[:end]
+	}
+
+	editions := flowfile.KnownEditions()
+	require.NotEmpty(t, editions, "the anti-vacuity floor: nothing to check spelling against")
+
+	for _, edition := range editions {
+		// [flowfile.editionName] quotes with strconv.Quote, which is what the
+		// compiler's own edition diagnostics render — see
+		// TestEditionsAreSpelledOneWay in the flowfile package. The hover must
+		// use the identical spelling.
+		quoted := `"` + edition + `"`
+		assert.Contains(t, sentence, quoted,
+			"the hover must name %s through the same quoting the compiler's diagnostics use", edition)
+
+		// The defect itself: a member of the list appearing bare beside the
+		// quoted spelling. Checked as absence of the unquoted form rather than
+		// comparing the whole sentence, so rewording the hover prose does not
+		// make this pass for the wrong reason.
+		bare := strings.ReplaceAll(sentence, quoted, "")
+		assert.NotContains(t, bare, edition,
+			"edition %s must not appear unquoted beside the quoted spelling", edition)
+	}
+}
+
 // positionOfKey returns a position on the name of the line declaring a key at or
 // deeper than minIndent, which is how a key that exists at several levels — name and
 // description do — is disambiguated.

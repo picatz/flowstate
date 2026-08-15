@@ -52,7 +52,13 @@ var oneStepKind = "A step does exactly one of " + flowfile.StepKindList() + "."
 // flowfile package for the same reason oneStepKind is: a version number copied
 // into a sentence here is a version number that will eventually describe a
 // grammar this build does not have.
-var editionList = strings.Join(flowfile.KnownEditions(), ", ")
+//
+// Rendered through [flowfile.KnownEditionsList] rather than joining
+// [flowfile.KnownEditions] directly: the compiler's own diagnostics quote each
+// edition, and a hover that joined the raw names would spell the same set a
+// second way — one bare, one the compiler's error text quotes — for an author
+// who compares the two (#385).
+var editionList = flowfile.KnownEditionsList()
 
 // dslKeys are the keys the Flowfile document shape defines, as opposed to those a
 // task's schema defines.
