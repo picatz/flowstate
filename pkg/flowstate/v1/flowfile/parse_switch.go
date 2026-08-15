@@ -6,6 +6,15 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
+// These are the schema's repeated-field bounds. Enforce them while parsing as
+// well as at the protobuf boundary: validation performs cross-case duplicate
+// checks, so letting an oversized source reach that work would make the size
+// limit too late to bound its cost.
+const (
+	maxSwitchCases      = 100
+	maxSwitchCaseValues = 100
+)
+
 // A `switch:` is a mapping under the kind key — `value:`, `cases:`, optionally
 // `default:` — matching the one-kind-key-per-step rule every block construct
 // follows (`for_each: {items, as, steps}`, `loop: {as, init, update, until,
@@ -73,9 +82,14 @@ func (c *compiler) switchCases(n ast.Node, path string, r ref) []*v1.Switch_Case
 				"unconditional block, so write the steps directly")
 		return nil
 	}
+	if len(sequence.Values) > maxSwitchCases {
+		c.report(spanOfNode(n), r, "switch has %d cases; at most %d are allowed",
+			len(sequence.Values), maxSwitchCases)
+	}
 
-	cases := make([]*v1.Switch_Case, 0, len(sequence.Values))
-	for i, value := range sequence.Values {
+	caseCount := min(len(sequence.Values), maxSwitchCases)
+	cases := make([]*v1.Switch_Case, 0, caseCount)
+	for i, value := range sequence.Values[:caseCount] {
 		if compiled := c.switchCase(value, indexPath(path, i), r); compiled != nil {
 			cases = append(cases, compiled)
 		}
@@ -139,8 +153,13 @@ func (c *compiler) switchCaseValues(n ast.Node, path string, r ref) []*v1.Value 
 				"switch case has no values; write the literal this body handles, or a list of them")
 			return nil
 		}
-		values := make([]*v1.Value, 0, len(sequence.Values))
-		for i, element := range sequence.Values {
+		if len(sequence.Values) > maxSwitchCaseValues {
+			c.report(spanOfNode(resolved), r, "switch case has %d values; at most %d are allowed",
+				len(sequence.Values), maxSwitchCaseValues)
+		}
+		valueCount := min(len(sequence.Values), maxSwitchCaseValues)
+		values := make([]*v1.Value, 0, valueCount)
+		for i, element := range sequence.Values[:valueCount] {
 			elementPath := indexPath(path, i)
 			if value := c.inputValue(element, elementPath,
 				ref{step: r.step, path: elementPath, label: "switch case"}); value != nil {

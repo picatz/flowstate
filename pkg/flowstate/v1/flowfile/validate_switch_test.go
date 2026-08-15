@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -106,6 +107,50 @@ steps:
 	text := diagnosticMessages(ds)
 	assert.Contains(t, text, `case "prod" is already handled`)
 	assert.Contains(t, text, "the first match wins")
+}
+
+func TestSwitchCaseCountsAreBoundedBeforeValidation(t *testing.T) {
+	t.Parallel()
+
+	const header = `edition: v2026.3
+name: t
+inputs:
+  key:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.key}
+      cases:
+`
+
+	t.Run("cases", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString(header)
+		for i := range 101 {
+			fmt.Fprintf(&src, "        - case: value-%d\n          steps: []\n", i)
+		}
+
+		_, err := flowfile.ValidateSource([]byte(src.String()))
+		require.ErrorContains(t, err, "switch has 101 cases; at most 100 are allowed")
+	})
+
+	t.Run("values", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString(header)
+		src.WriteString("        - case: [")
+		for i := range 101 {
+			if i > 0 {
+				src.WriteString(", ")
+			}
+			fmt.Fprintf(&src, "value-%d", i)
+		}
+		src.WriteString("]\n          steps: []\n")
+
+		_, err := flowfile.ValidateSource([]byte(src.String()))
+		require.ErrorContains(t, err, "switch case has 101 values; at most 100 are allowed")
+	})
 }
 
 // Diagnostic 3: exhaustiveness. No `default:` claims every value is handled,
