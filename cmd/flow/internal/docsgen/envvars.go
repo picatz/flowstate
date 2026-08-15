@@ -146,6 +146,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/credentials.go",
 		},
 		{
+			name:    "FLOWSTATE_INTERNAL_ADDRESS",
+			value:   "unset",
+			purpose: "Default for `--internal-listen` on `flow server`: a socket separate from the public listener, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback; this listener has no TLS configuration of its own.",
+			read:    "cmd/flow/internallistener.go",
+		},
+		{
 			name:    "FLOWSTATE_MAX_STEPS_PER_RUN",
 			value:   "unset",
 			purpose: "Server-side ceiling on the steps one run may submit. An unparseable or non-positive value is ignored rather than lowering the bound.",
@@ -295,6 +301,30 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong.",
 			read:    "cmd/flow/internal/ui/ui.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CERT_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-cert-file` on `flow server`: a PEM certificate (or chain) for the public listener. Unset serves plain HTTP, refused unless the listen address is loopback. Must be given with `FLOWSTATE_TLS_KEY_FILE`.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_KEY_FILE",
+			value:   "unset",
+			purpose: "Default for `--tls-key-file` on `flow server`: the PEM private key matching `FLOWSTATE_TLS_CERT_FILE`.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_MIN_VERSION",
+			value:   "1.2",
+			purpose: "Default for `--tls-min-version` on `flow server`: the minimum TLS protocol version to accept, `1.2` or `1.3`. Nothing below 1.2 is offered.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_TERMINATED_UPSTREAM",
+			value:   "unset",
+			purpose: "Default for `--tls-terminated-upstream` on `flow server`: set (to anything) to permit the public listener to serve plain HTTP on a non-loopback address with no certificate configured. A refusal by default; set this only when something in front of this process — a reverse proxy, a Kubernetes Ingress, a load balancer, a container's published-port binding — already terminates TLS or bounds who can reach this address. Never a substitute for a certificate when nothing actually stands in front of this process.",
+			read:    "cmd/flow/tls.go",
 		},
 		{
 			name:    "FLOWSTATE_TOKEN",

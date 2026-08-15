@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -588,6 +589,31 @@ func runServer(cmd *cobra.Command, args []string) error {
 	authCfg := authFlagsOf(cmd)
 	temporalCfg := temporalFlagsOf(cmd)
 
+	// The public listener's certificate, and whether the address it is about
+	// to bind may go without one. Both are checked first and without any I/O
+	// beyond reading the files named on the command line: a certificate this
+	// process cannot load, or a non-loopback address with none configured, is
+	// a start-up failure rather than something discovered after Temporal has
+	// been dialed and a policy file parsed. See cmd/flow/tls.go.
+	tlsListenerFlags := tlsFlagsOf(cmd)
+	tlsCfg, err := serverTLSConfig(tlsListenerFlags)
+	if err != nil {
+		return err
+	}
+	publicAddr := cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress)
+	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.tlsTerminatedUpstream); err != nil {
+		return err
+	}
+
+	// The internal listener's address is validated now — loopback or
+	// empty, nothing else, per cmd/flow/internallistener.go — but not bound
+	// until this function is about to serve, so a later failure does not
+	// leave a socket open behind an error return.
+	internalFlags := internalListenerFlagsOf(cmd)
+	if err := checkInternalListenAddress(internalFlags.address); err != nil {
+		return err
+	}
+
 	verifier, policy, err := authVerifier(authCfg)
 	if err != nil {
 		return err
@@ -771,8 +797,16 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// broke — but they are different facts, and `flow server` never declared an
 		// --address flag, so the variable it shared could only ever hold the
 		// environment's value anyway. Read directly, which is what it meant.
-		Addr:    cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
+		//
+		// The same value [refusePlaintextListener] already checked above, so a
+		// deployment cannot have this listener bind an address this function
+		// already refused.
+		Addr:    publicAddr,
 		Handler: serverHandler(logger, verifier, broker, rpcMux, receiver),
+
+		// nil when no certificate was configured, which is only reachable here
+		// when publicAddr is loopback — anything else already returned above.
+		TLSConfig: tlsCfg,
 
 		// Without these a client that opens a connection and sends bytes
 		// slowly, or never, occupies a connection indefinitely. Go's zero
@@ -784,7 +818,16 @@ func runServer(cmd *cobra.Command, args []string) error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	logger.Info("starting server", "address", httpServer.Addr)
+	// Bound now, so a port already in use or a permission error is reported
+	// before the banner-equivalent log lines below claim the server is up,
+	// and so the internal listener (below) binds its own socket only after
+	// this one is known good.
+	publicListener, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", httpServer.Addr, err)
+	}
+
+	logger.Info("starting server", "address", httpServer.Addr, "tls", tlsCfg != nil)
 	if authCfg.insecure {
 		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
@@ -797,20 +840,56 @@ func runServer(cmd *cobra.Command, args []string) error {
 			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
 	}
 
-	serveErr := make(chan error, 1)
+	// The internal listener binds only now, once the public one is already
+	// known good — see [checkInternalListenAddress] above for why its address
+	// was already validated, and this file's package comment on
+	// cmd/flow/internallistener.go for what it carries. internalServer is nil
+	// when the operator never opted into it (--internal-listen unset, the
+	// default), which every branch below treats as "nothing more to do".
+	internalServer, internalListener, err := startInternalListener(logger, internalFlags.address)
+	if err != nil {
+		publicListener.Close()
+		return err
+	}
+	if internalServer != nil {
+		logger.Info("starting internal listener", "address", internalListener.Addr().String())
+	}
+
+	// Buffered for both producers below, so neither goroutine blocks trying to
+	// report an outcome nobody is listening for anymore once shutdown starts.
+	serveErr := make(chan error, 2)
 	go func() {
 		// Report a listen failure instead of terminating the process from a
 		// goroutine, so shutdown still runs and the error reaches the caller.
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- fmt.Errorf("listening on %s: %w", httpServer.Addr, err)
+		// TLS is served through this same call: [http.Server.ServeTLS] reads
+		// the certificate from httpServer.TLSConfig when no file paths are
+		// given, which is exactly what [serverTLSConfig] populated it with.
+		var err error
+		if tlsCfg != nil {
+			err = httpServer.ServeTLS(publicListener, "", "")
+		} else {
+			err = httpServer.Serve(publicListener)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- fmt.Errorf("serving on %s: %w", httpServer.Addr, err)
 			return
 		}
 		serveErr <- nil
 	}()
+	if internalServer != nil {
+		go func() {
+			if err := internalServer.Serve(internalListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serveErr <- fmt.Errorf("serving the internal listener on %s: %w",
+					internalListener.Addr(), err)
+				return
+			}
+			serveErr <- nil
+		}()
+	}
 
+	var runErr error
 	select {
-	case err := <-serveErr:
-		return err
+	case runErr = <-serveErr:
 	case <-cmd.Context().Done():
 	}
 
@@ -824,10 +903,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 		return fmt.Errorf("server forced to shutdown: %w", err)
 	}
+	if internalServer != nil {
+		if err := internalServer.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("the internal listener was forced down with requests still in flight",
+				"error", err)
+		}
+	}
 
 	// After the in-flight requests have drained, so their spans are in the
 	// batch rather than in the one nobody sends.
 	flushTelemetry()
+
+	if runErr != nil {
+		return runErr
+	}
 
 	logger.Info("server stopped")
 
@@ -1586,6 +1675,12 @@ flow server --verbose`,
 		"caller token claim to carry into each run's workload identity (repeatable), "+
 			"such as repository or email; only named claims are carried, and they are "+
 			"what workload.claims[...] policy rules read")
+
+	// The public listener's TLS configuration and the internal listener's own
+	// address — see cmd/flow/tls.go and cmd/flow/internallistener.go. Server
+	// only: a worker makes no listener of its own to protect.
+	addTLSFlags(serverCmd)
+	addInternalListenerFlags(serverCmd)
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{
