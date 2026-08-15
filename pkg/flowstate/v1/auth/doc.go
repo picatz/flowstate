@@ -231,6 +231,7 @@
 // when the policy is built, deny beats allow, and a rule that cannot be evaluated
 // refuses:
 //
+//	# assumption policy
 //	allow:
 //	  - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
 //	  - 'target == "partner" && workload.namespace == "acme"'
@@ -278,6 +279,7 @@
 // assume a downstream identity, so it is asked in the same language against the
 // same workload attributes, with a secret object added:
 //
+//	# secret access policy
 //	secrets:
 //	  allow:
 //	    - 'secret.scheme == "env" && secret.name.startsWith(workload.namespace + "_")'

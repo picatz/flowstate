@@ -65,6 +65,7 @@ type FederationPolicy struct {
 	// collide with any other reserved word. Under an object every name is a
 	// field, and no name is reserved.
 	//
+	//	# assumption policy
 	//	allow:
 	//	  - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:acme/infra:")'
 	//	  - 'target == "partner" && identity.namespace == "acme"'

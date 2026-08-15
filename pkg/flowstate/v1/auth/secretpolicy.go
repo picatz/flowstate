@@ -64,6 +64,7 @@ type SecretAccessPolicy struct {
 	// The attributes are the workload object, as in the assumption rules, plus a
 	// secret object with scheme and name:
 	//
+	//	# secret access policy
 	//	allow:
 	//	  - 'secret.scheme == "env" && workload.namespace == "acme"'
 	//	  - 'secret.name.startsWith(workload.namespace + "/")'
