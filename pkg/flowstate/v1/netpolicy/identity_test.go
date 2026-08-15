@@ -1,7 +1,11 @@
 package netpolicy
 
 import (
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,6 +26,37 @@ func getAs(t *testing.T, policy *Policy, target string, id Identity) (*http.Resp
 	}
 
 	return resp, err
+}
+
+func Test_Policy_connectionRules_areRecheckedAcrossIdentities(t *testing.T) {
+	var connections atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+
+	policy, err := New(
+		WithAllowLoopback(),
+		WithAllowRules(`identity.namespace == "team-a" && ip == "127.0.0.1"`),
+	)
+	require.NoError(t, err)
+
+	resp, err := getAs(t, policy, server.URL, Identity{Namespace: "team-a"})
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, int64(1), connections.Load())
+
+	_, err = getAs(t, policy, server.URL, Identity{Namespace: "team-b"})
+	requireDenied(t, err, ReasonNoAllowRule, "no allow rule matched")
+	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the server")
 }
 
 func Test_Policy_rules_identity(t *testing.T) {

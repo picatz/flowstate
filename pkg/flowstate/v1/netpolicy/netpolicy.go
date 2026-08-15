@@ -184,10 +184,10 @@ func New(opts ...Option) (*Policy, error) {
 }
 
 // Client returns an http.Client that enforces p. Every returned client shares one
-// transport, and so one connection pool, but each is a distinct value: a caller
-// that reassigns Transport or CheckRedirect on the client it was handed disables
-// the policy only for itself, and cannot disable it for other tasks holding the
-// same [Policy].
+// transport (and its connection pool when reuse is safe), but each is a distinct
+// value: a caller that reassigns Transport or CheckRedirect on the client it was
+// handed disables the policy only for itself, and cannot disable it for other
+// tasks holding the same [Policy].
 //
 // Requests made with it are checked before they are sent, again in the dialer for
 // every address connected to, and again for every redirect hop. Response bodies
@@ -232,6 +232,10 @@ func (p *Policy) newClient() *http.Client {
 	transport.MaxIdleConnsPerHost = 8
 	transport.MaxConnsPerHost = 32
 	transport.MaxResponseHeaderBytes = DefaultMaxResponseHeaderBytes
+	// Connection-scoped rules are evaluated by the dialer. Do not let a later
+	// request bypass that evaluation by reusing a connection established for a
+	// different request (and potentially a different workload identity).
+	transport.DisableKeepAlives = !p.connRules.empty()
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
