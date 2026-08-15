@@ -94,6 +94,45 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
+			// The plugin's own module (a separate `go list` walk this
+			// gate does not perform) reads this exact file at test
+			// time with os.ReadFile, the same #589 shape one module
+			// further out; buildPlan records the plugin name so run()
+			// can fold it into the plugins skip notice once it has
+			// checked plugins/vcs/go.mod actually exists.
+			name:    "an examples/plugins/ change fires examples and records the plugin name",
+			changed: []string{"examples/plugins/vcs/workflow.yaml"},
+			want: plan{
+				fileDirs:           []string{"examples/plugins/vcs"},
+				docs:               true,
+				examples:           true,
+				examplePluginNames: []string{"vcs"},
+				reasons: map[string]string{
+					"docs":     "examples/plugins/vcs/workflow.yaml",
+					"examples": "examples/plugins/vcs/workflow.yaml",
+				},
+			},
+		},
+		{
+			// examples/plugins/greet has no corresponding plugins/
+			// module — it is pkg/flowstate/v1/plugin's in-repo
+			// fixture — but buildPlan has no filesystem to know that
+			// with, so it records the name regardless; run() is where
+			// the existence check happens.
+			name:    "examples/plugins/greet records a name buildPlan cannot verify",
+			changed: []string{"examples/plugins/greet/workflow.yaml"},
+			want: plan{
+				fileDirs:           []string{"examples/plugins/greet"},
+				docs:               true,
+				examples:           true,
+				examplePluginNames: []string{"greet"},
+				reasons: map[string]string{
+					"docs":     "examples/plugins/greet/workflow.yaml",
+					"examples": "examples/plugins/greet/workflow.yaml",
+				},
+			},
+		},
+		{
 			name:    "the cobra and MCP surfaces fire the docs leg",
 			changed: []string{"cmd/flow/internal/docsgen/cli.go"},
 			want: plan{
@@ -335,6 +374,183 @@ func TestNeedsDocs(t *testing.T) {
 	if !needsDocs([]string{modulePath + "/pkg/flowstate/v1", cmdFlowPkg}) {
 		t.Error("docs leg must fire when cmd/flow is affected")
 	}
+}
+
+// TestExampleDataDepPackages is a direct test of the pattern match, with the
+// two literal shapes found across the repository's example-reading tests:
+// an inline relative path, and the bare "examples" segment handed to
+// filepath.Join alongside the rest of the path. A package whose tests never
+// mention examples/ at all must not match.
+func TestExampleDataDepPackages(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		// pkg/flowstate/v1/flowfile/validate_switch_domain_internal_test.go's
+		// actual shape (#589): filepath.Join with a bare "examples" token.
+		m + "/pkg/flowstate/v1/flowfile": []byte(
+			`data, err := os.ReadFile(filepath.Join(repoRoot(), "examples", "approval-gate", "workflow.yaml"))`),
+		// cmd/flow/unreachable_test.go's actual shape: an inline relative path.
+		m + "/cmd/flow": []byte(
+			`refusedStart("../../examples/hello-world/workflow.yaml", "hello-world", nil, server, unavailable())`),
+		// A package with no example-shaped tokens at all.
+		m + "/pkg/flowstate/v1/engine": []byte(`func TestPolicy(t *testing.T) {}`),
+	}
+
+	got := exampleDataDepPackages(testSrc)
+	want := []string{m + "/cmd/flow", m + "/pkg/flowstate/v1/flowfile"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("exampleDataDepPackages = %v, want %v", got, want)
+	}
+}
+
+// TestExamplesChangeReachesAPackageThatOnlyReadsExamplesAtRuntime reproduces
+// #589: a change confined to examples/approval-gate/workflow.yaml touches no
+// .go file and so no package's directory, but
+// pkg/flowstate/v1/flowfile/validate_switch_domain_internal_test.go reads
+// that exact file with os.ReadFile at test time
+// (TestApprovalGateDomainIsInferable pins the values it produces). The
+// import-graph mapper alone has nothing to expand from; seeding the changed
+// set with exampleDataDepPackages before calling affectedPackages is what
+// makes the flowfile package show up.
+func TestExamplesChangeReachesAPackageThatOnlyReadsExamplesAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	flowfilePkg := m + "/pkg/flowstate/v1/flowfile"
+
+	changed := []string{"examples/approval-gate/workflow.yaml"}
+	p := buildPlan(changed)
+	if !p.examples {
+		t.Fatal("a change under examples/ must set p.examples")
+	}
+
+	// What run() does: resolve changed file directories to packages (here,
+	// none — examples/approval-gate is not a Go package), then seed in
+	// whatever exampleDataDepPackages finds among the affected-set input.
+	changedSet := map[string]bool{}
+	for _, ip := range resolveDirs(p.fileDirs, map[string]string{}) {
+		changedSet[ip] = true
+	}
+	if len(changedSet) != 0 {
+		t.Fatalf("examples/approval-gate has no Go package ancestor; changedSet = %v", changedSet)
+	}
+
+	testSrc := map[string][]byte{
+		flowfilePkg: []byte(
+			`data, err := os.ReadFile(filepath.Join(repoRoot(), "examples", "approval-gate", "workflow.yaml"))`),
+		m + "/pkg/flowstate/v1/secrets": []byte(`func TestUnrelated(t *testing.T) {}`),
+	}
+	for _, ip := range exampleDataDepPackages(testSrc) {
+		changedSet[ip] = true
+	}
+
+	pkgs := []pkgMeta{
+		{ImportPath: flowfilePkg},
+		{ImportPath: m + "/pkg/flowstate/v1/secrets"},
+		{ImportPath: m + "/pkg/flowstate/v1/engine", Deps: []string{flowfilePkg}},
+	}
+	affected := affectedPackages(pkgs, changedSet)
+	if !contains(affected, flowfilePkg) {
+		t.Errorf("flowfile must be affected by an examples/approval-gate change; affected = %v", affected)
+	}
+	// And it carries the rest of the import graph with it, same as any
+	// other changed package would.
+	if !contains(affected, m+"/pkg/flowstate/v1/engine") {
+		t.Errorf("a package importing flowfile must also be affected; affected = %v", affected)
+	}
+	if contains(affected, m+"/pkg/flowstate/v1/secrets") {
+		t.Errorf("an unrelated package must not be swept in; affected = %v", affected)
+	}
+}
+
+// TestExampleDataDepPackagesIsNotEveryPackage is the negative direction: the
+// data-dependency seed only ever adds packages whose own test files reach
+// into examples/, never the whole package universe. An over-broad fix that
+// marked everything affected on any examples/ change would pass the
+// reproduction test above while destroying the reason the gate is
+// diff-scoped at all.
+func TestExampleDataDepPackagesIsNotEveryPackage(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/pkg/flowstate/v1/flowfile": []byte(`os.ReadFile(filepath.Join(root, "examples", "approval-gate", "workflow.yaml"))`),
+	}
+	// A large, otherwise-unrelated package universe: none of these have any
+	// test source in testSrc, so none of them may be pulled in.
+	pkgs := []pkgMeta{
+		{ImportPath: m + "/pkg/flowstate/v1/flowfile"},
+		{ImportPath: m + "/pkg/flowstate/v1/secrets"},
+		{ImportPath: m + "/pkg/flowstate/v1/engine"},
+		{ImportPath: m + "/pkg/flowstate/v1/auth"},
+		{ImportPath: m + "/cmd/flow"},
+		{ImportPath: m + "/pkg/flowstate/v1/netpolicy"},
+	}
+
+	deps := exampleDataDepPackages(testSrc)
+	if len(deps) != 1 || deps[0] != m+"/pkg/flowstate/v1/flowfile" {
+		t.Fatalf("exampleDataDepPackages = %v, want exactly the flowfile package", deps)
+	}
+
+	changedSet := map[string]bool{}
+	for _, ip := range deps {
+		changedSet[ip] = true
+	}
+	affected := affectedPackages(pkgs, changedSet)
+	want := []string{m + "/pkg/flowstate/v1/flowfile"}
+	if !reflect.DeepEqual(affected, want) {
+		t.Errorf("seeding from examples/ data deps must not sweep in unrelated packages; affected = %v, want %v",
+			affected, want)
+	}
+}
+
+// TestPluginSkipNotices covers the second #589 shape: a plugin module's own
+// tests read its shipped example under examples/plugins/<name>/, one Go
+// module further out than this gate's `go list` walk reaches, so the notice
+// has to come from checking the name against a real module rather than the
+// import graph.
+func TestPluginSkipNotices(t *testing.T) {
+	t.Parallel()
+
+	exists := func(mod string) bool { return mod == "plugins/vcs" || mod == "plugins/sql" }
+
+	t.Run("a real module's example is folded in with its own reason", func(t *testing.T) {
+		t.Parallel()
+		p := plan{examplePluginNames: []string{"vcs"}}
+		got := pluginSkipNotices(p, exists)
+		want := []string{"plugins/vcs (via examples/plugins/vcs data dependency, not a change under plugins/)"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("pluginSkipNotices = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a name with no matching module is dropped, not guessed at", func(t *testing.T) {
+		t.Parallel()
+		// examples/plugins/greet has no plugins/greet module.
+		p := plan{examplePluginNames: []string{"greet"}}
+		got := pluginSkipNotices(p, exists)
+		if len(got) != 0 {
+			t.Errorf("pluginSkipNotices = %v, want none: greet names no real plugin module", got)
+		}
+	})
+
+	t.Run("a module already named by a direct change is not duplicated", func(t *testing.T) {
+		t.Parallel()
+		p := plan{plugins: []string{"plugins/vcs"}, examplePluginNames: []string{"vcs"}}
+		got := pluginSkipNotices(p, exists)
+		want := []string{"plugins/vcs"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("pluginSkipNotices = %v, want %v (no duplicate entry)", got, want)
+		}
+	})
+
+	t.Run("no plugin signal at all yields no notices", func(t *testing.T) {
+		t.Parallel()
+		if got := pluginSkipNotices(plan{}, exists); len(got) != 0 {
+			t.Errorf("pluginSkipNotices = %v, want none", got)
+		}
+	})
 }
 
 // TestProtoChangeReachesTheDocsBinary is the same claim one level down: a

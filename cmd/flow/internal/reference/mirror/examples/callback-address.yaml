@@ -85,34 +85,52 @@ steps:
       name: review-decided
       timeout: 6s
 
-  # A lapsed gate carries no payload at all — `timed_out` is how a wait reports
-  # that, rather than failing — so `accepted` reads the maybe-absent key with
-  # `.?` and its default beside it. `rejected` keeps `has()`, because it asks a
-  # different question: answered *no*, which only an answer can be.
-  - id: accepted
-    if: ${steps.decision.payload.?accepted.orValue(false)}
-    log:
-      message: >-
-        ${"%s was accepted by %s".format(
-            [inputs.document, steps.decision.sender.identity.subject == ""
-              ? "an unattested caller"
-              : steps.decision.sender.identity.subject])}
+  # What the reviewer decided, named ONCE here rather than re-derived at every
+  # branch below and again in the `outcome` output — the decomposition #540
+  # asks for, over what used to be a `has()`-guarded read repeated three ways.
+  # `.?accepted` is an optional select: present-and-true or present-and-false
+  # when the reviewer actually answered, absent on a lapsed gate or a payload
+  # that answered with something else entirely — both of which this reads as
+  # "abandoned," the same as the run's own `outcome` output always has.
+  - id: outcome
+    value: >-
+      ${steps.decision.payload.?accepted
+          .optMap(accepted, accepted ? "accepted" : "rejected")
+          .orValue("abandoned")}
 
-  - id: rejected
-    if: ${has(steps.decision.payload.accepted) && !steps.decision.payload.accepted}
-    log:
-      level: warn
-      message: ${"%s was rejected".format([inputs.document])}
-
-  # The reviewer had the address and never used it. Worth its own branch and its
-  # own log line: a review nobody answered is a different fact from a review
-  # somebody declined, and an operator reading the history should not have to
-  # infer which happened.
-  - id: abandoned
-    if: ${steps.decision.timed_out}
-    log:
-      level: warn
-      message: ${"nobody answered the review of %s in time".format([inputs.document])}
+  # One switch over the named outcome, rather than three siblings each
+  # re-testing the payload or the timeout by hand. `rejected` and `abandoned`
+  # used to hand-negate each other's condition — the exact copy a De Morgan
+  # slip corrupts silently — and nothing tied the three together as a single
+  # dispatch a validator could check.
+  - id: report
+    switch:
+      value: ${steps.outcome.value}
+      cases:
+        - case: accepted
+          steps:
+            - id: accepted
+              log:
+                message: >-
+                  ${"%s was accepted by %s".format(
+                      [inputs.document, steps.decision.sender.identity.subject == ""
+                        ? "an unattested caller"
+                        : steps.decision.sender.identity.subject])}
+        - case: rejected
+          steps:
+            - id: rejected
+              log:
+                level: warn
+                message: ${"%s was rejected".format([inputs.document])}
+      default:
+        # Covers a lapsed gate and a payload that answered with no usable
+        # `accepted` field alike — the reviewer had the address and this run
+        # ended without a real decision either way.
+        steps:
+          - id: abandoned
+            log:
+              level: warn
+              message: ${"nobody answered the review of %s in time".format([inputs.document])}
 
 outputs:
   # That this run had an address to hand out at all — asserted rather than
@@ -136,8 +154,5 @@ outputs:
     description: whether this run had an address to register at all
 
   outcome:
-    value: >-
-      ${has(steps.decision.payload.accepted)
-        ? (steps.decision.payload.accepted ? "accepted" : "rejected")
-        : "abandoned"}
+    value: ${steps.outcome.value}
     description: what the reviewer decided, or that they never answered

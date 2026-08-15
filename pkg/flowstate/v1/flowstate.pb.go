@@ -60,6 +60,7 @@ const (
 	InputDeclaration_TYPE_BOOL        InputDeclaration_Type = 4
 	InputDeclaration_TYPE_STRUCT      InputDeclaration_Type = 5
 	InputDeclaration_TYPE_LIST        InputDeclaration_Type = 6
+	InputDeclaration_TYPE_ENUM        InputDeclaration_Type = 9
 )
 
 // Enum value maps for InputDeclaration_Type.
@@ -72,6 +73,7 @@ var (
 		4: "TYPE_BOOL",
 		5: "TYPE_STRUCT",
 		6: "TYPE_LIST",
+		9: "TYPE_ENUM",
 	}
 	InputDeclaration_Type_value = map[string]int32{
 		"TYPE_UNSPECIFIED": 0,
@@ -81,6 +83,7 @@ var (
 		"TYPE_BOOL":        4,
 		"TYPE_STRUCT":      5,
 		"TYPE_LIST":        6,
+		"TYPE_ENUM":        9,
 	}
 )
 
@@ -1300,7 +1303,20 @@ type InputDeclaration struct {
 	// reference `now` or call anything nondeterministic: a constraint has to answer
 	// the same way on every replay and at every one of this declaration's
 	// enforcement points, which an expression reading the clock cannot promise.
-	Must          *string `protobuf:"bytes,16,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	Must *string `protobuf:"bytes,16,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	// Values is the closed set of strings a `type: enum` value may be. Only the
+	// per-declaration shape lives here: that they are non-empty, bounded, and
+	// distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
+	// whether at least one is given, and whether `default`/`example` are
+	// themselves members are set-facts about this declaration, and per this
+	// message's own doc comment those belong to the compiler for a Flowfile and
+	// to [CheckInputConstraintShape] for a hand-built specification — not here.
+	//
+	// Bounded the way any set quoted into a diagnostic must be: an enum's
+	// declared choices are rendered into the "not one of" message a bad
+	// submission gets back, so an unbounded set is an unbounded response the
+	// caller controls the shape of.
+	Values        []string `protobuf:"bytes,17,rep,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1417,6 +1433,13 @@ func (x *InputDeclaration) GetMust() string {
 		return *x.Must
 	}
 	return ""
+}
+
+func (x *InputDeclaration) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
 }
 
 // OutputDeclaration is one value a finished run reports: a name, and the
@@ -12163,7 +12186,7 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"\fsubject_from\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vsubjectFrom\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfd\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc6\x06\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +
@@ -12178,7 +12201,8 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	" \x01(\x04H\x02R\x06maxLen\x88\x01\x01\x12 \n" +
 	"\tmin_items\x18\r \x01(\x04H\x03R\bminItems\x88\x01\x01\x12 \n" +
 	"\tmax_items\x18\x0e \x01(\x04H\x04R\bmaxItems\x88\x01\x01\x12\x17\n" +
-	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\"z\n" +
+	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\x12+\n" +
+	"\x06values\x18\x11 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\"\x95\x01\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vTYPE_STRING\x10\x01\x12\f\n" +
@@ -12187,7 +12211,8 @@ const file_flowstate_v1_flowstate_proto_rawDesc = "" +
 	"TYPE_FLOAT\x10\x03\x12\r\n" +
 	"\tTYPE_BOOL\x10\x04\x12\x0f\n" +
 	"\vTYPE_STRUCT\x10\x05\x12\r\n" +
-	"\tTYPE_LIST\x10\x06B\x0e\n" +
+	"\tTYPE_LIST\x10\x06\x12\r\n" +
+	"\tTYPE_ENUM\x10\t\"\x04\b\a\x10\a\"\x04\b\b\x10\bB\x0e\n" +
 	"\f_descriptionB\n" +
 	"\n" +
 	"\b_min_lenB\n" +

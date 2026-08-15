@@ -53,6 +53,17 @@ this list acceptable, and you own what follows.
   and can start workflows. The server logs a warning saying exactly that on every
   start, which you will see in the lab's own log panel — that is a nice thing to
   look at once.
+- **The Flowstate server also runs `--tls-terminated-upstream`.** `flow
+  server` otherwise refuses to bind a non-loopback address (like the 0.0.0.0
+  this container needs — see the compose file's comment on
+  `FLOWSTATE_ADDRESS`) without a TLS certificate. Nothing in this stack
+  terminates TLS, so the flag's name is not describing what usually earns it
+  — what makes it safe *here* is the same fact `--insecure-no-auth` above
+  relies on: the published port is loopback-only, so nothing outside this
+  machine can complete a connection to reach it, plaintext or not. Neither
+  flag is exercised by `docker compose config -q`, which only parses YAML —
+  this whole deployment stopped serving anything the moment the refusal
+  landed, and the only way to have caught that was to run it.
 - **Grafana is anonymous, with the Admin role, and the login form is disabled.**
   No password is set, because the alternative is a password living in a compose
   file in a public repository, which is worse than no password on a port only this

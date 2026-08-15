@@ -55,7 +55,9 @@ description: >-
 # two `outputs:`. `approval`'s own `outputs:` block now states it once, on the
 # step that produced the data, and every reader reads that recorded output. The
 # `decision` output can no longer disagree with the branch that ran, because it
-# *is* the name the branches switch on.
+# *is* the name the branches switch on — literally, since #357: the branches are
+# one `switch:` over that name rather than three `if:`s that each happen to
+# mention it.
 #
 # The authorization half was never workflow logic. `FlowstateServer.Signal`
 # already refuses a signal that fails any of it — synchronously, before
@@ -92,7 +94,7 @@ description: >-
 # the server from the run's own memo, frozen at submit, never re-read from a
 # running workflow's own reasoning — but the Flowfile that *declares*
 # `signals:` in the first place is still this same file, so an author who can
-# edit `deploy`'s `if:` can as easily delete the `signals:` block above it or
+# edit the dispatch below can as easily delete the `signals:` block above it or
 # widen `allow:` to match anyone. Binding that requires policy the workflow's
 # own author does not control at all — deployment-side task-shape policy
 # (#187). That is gap 3, and it stays open, tracked at #187.
@@ -243,69 +245,126 @@ steps:
       outputs:
         # The gate itself, stated once — and stated as the *outcome* rather than
         # as three booleans, because three booleans is four copies again in a
-        # smaller font. Every branch below asks this one name which of the three
-        # states it named, and `decision` simply *is* it. There is nowhere left
-        # for the report and the branch to drift apart.
+        # smaller font. The one `switch:` below dispatches on this name, and
+        # `decision` simply *is* it. There is nowhere left for the report and the
+        # branch to drift apart.
+        #
+        # The spelling matters as much as the naming: this shaping expression
+        # names its three outcomes as string literals, and `flow validate`
+        # reads them back out through the read-side optional idioms below —
+        # `optMap` and `orValue` — the same way it reads a bare conditional.
+        # That is what lets the dispatch below be checked for an impossible
+        # case and for exhaustiveness; a value pulled from elsewhere in the
+        # payload, or built with anything the walk does not read, would
+        # compute the same three strings and quietly cost every one of those
+        # checks.
+        #
+        # `payload.?approved` is an optional select: present and true or false
+        # when the sender sent the field, absent otherwise. `.optMap(approved,
+        # ...)` runs its lambda only in the present case, so the ternary
+        # inside it only ever sees an actual boolean. `.orValue("undecided")`
+        # supplies the absent case.
         #
         # Three states and not two: a payload is whatever the sender chose to
         # send, so one carrying no `approved` field at all is representable, and
-        # it is not a rejection. `!timed_out` would say it was.
+        # it is not a rejection. It is also not the same fact as the timer
+        # lapsing — a signal that arrives with no `approved` field releases the
+        # wait immediately, `timed_out` false — so this state is named for what
+        # is true in both sub-cases: nobody decided. `!timed_out` would claim
+        # the timer lapsed when it did not.
         outcome: >-
-          ${has(payload.approved)
-            ? (payload.approved ? "deployed" : "rejected")
-            : "expired"}
+          ${payload.?approved
+              .optMap(approved, approved ? "deployed" : "rejected")
+              .orValue("undecided")}
         # Re-exposed deliberately: `outputs:` replaces what the wait produces,
         # so these are gone unless a line puts them back. `sender` is read by
         # the log lines and by `approver_subject`; `timed_out` is what lets the
-        # `expired` branch say *why* nothing was decided.
+        # `undecided` branch say *why* nothing was decided.
         timed_out: ${timed_out}
         sender: ${sender}
 
   # A wait reports how it ended rather than failing, so a lapsed approval is an
   # ordinary branch and not an error to be tolerated.
   #
-  # `deploy` asks exactly one question, and it asks it by *name*: did the
-  # approver say yes. That is not an oversight — `signals:` above already
-  # refused any signal whose sender was unattested, wrongly claimed, or this
-  # run's own starter, before it ever reached this step. `sender` is still read
-  # in the log line below, as evidence for the audit trail, not as a second
-  # gate: by the time a payload is here to read, the server has already vouched
-  # for who sent it.
-  - id: deploy
-    if: ${steps.approval.outcome == "deployed"}
-    log:
-      message: >-
-        ${"deploying %s to %s, approved by %s".format(
-            [inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
-
-  # The copy that used to be a hand-expanded negation, which the issue calls the
-  # worst of the four: getting a De Morgan expansion subtly wrong is not
-  # something review reliably catches. There is nothing left to expand — the
-  # three branches are three equalities against one name, so they cannot
-  # overlap and cannot all be false.
-  - id: rejected
-    if: ${steps.approval.outcome == "rejected"}
-    log:
-      message: >-
-        ${"%s declined the deploy of %s".format(
-            [steps.approval.sender.identity.subject, inputs.version])}
-
-  # This branch is where naming the gate found a real disagreement. `decision`
-  # below has always reported "expired" for a signal that arrived carrying no
-  # `approved` field, while this step's `if:` asked only about the *timer* — so
-  # no branch ran and the output said one had. Exactly the failure #207 is
-  # about, surviving in the one copy nobody thought to compare. Both are the
-  # same name now, so it cannot come back.
+  # One `switch:` and not three sibling `if:`s, which is what this was until
+  # #357 gave the language a word for "a total dispatch over one value". The
+  # three equalities were correct; what they could not do was *say* they were a
+  # dispatch. Nothing ties three `if:`s together, so a validator reading them
+  # sees three independent predicates and has nothing to check — a typo'd
+  # `"rejcted"` is legal CEL that silently never matches, and a fourth outcome
+  # nobody handled reads exactly like a run where nothing happened to apply.
   #
-  # `timed_out` is re-exposed by the gate above precisely so this line can still
-  # tell the two apart in what it says.
-  - id: expired
-    if: ${steps.approval.outcome == "expired"}
-    log:
-      message: >-
-        ${steps.approval.timed_out
-          ? "nobody approved deploying %s in time".format([inputs.version])
-          : "the approval for %s carried no decision".format([inputs.version])}
+  # Grouping them buys the checks, and the checks here are not hypothetical:
+  # this discriminant has a domain the validator can *infer*. `outcome` above
+  # names its three outcomes as string literals reached through a conditional
+  # and the read-side optional idioms (`optMap`, `orValue`), which is
+  # precisely the form `switchDomain` reads, so `flow validate` knows this
+  # dispatch can only ever see "deployed", "rejected" or "undecided" — and refuses
+  # a case outside that set, by name, with the nearest legal spelling.
+  #
+  # Hence no `default:`, and deliberately so: the three cases exhaust the domain,
+  # and a `default:` beside them is dead code the validator refuses outright
+  # ("`default:` can never run"). Where a domain is *not* the file's to know — a
+  # webhook action, say, as in `examples/webhook-routing` — a `default:` is
+  # exactly right, and an empty `default: {steps: []}` is how "I mean to handle
+  # nothing else" gets written down.
+  #
+  # Exactly one body runs, in the run's own scope, and its outputs merge into the
+  # enclosing namespace — so the ids below are unique across all three bodies for
+  # the same reason parallel branches' are.
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        # `deploy` asks no question of its own any more, and did not really ask
+        # one before either: `signals:` above already refused any signal whose
+        # sender was unattested, wrongly claimed, or this run's own starter,
+        # before it ever reached the gate. `sender` is still read in the log line
+        # below, as evidence for the audit trail rather than as a second gate —
+        # by the time a payload is here to read, the server has already vouched
+        # for who sent it.
+        - case: deployed
+          steps:
+            - id: deploy
+              log:
+                message: >-
+                  ${"deploying %s to %s, approved by %s".format(
+                      [inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
+
+        # The branch that used to be a hand-expanded negation, which #207 calls
+        # the worst of the four: getting a De Morgan expansion subtly wrong is
+        # not something review reliably catches. There is nothing left to expand,
+        # and now nothing left to negate either — a case literal is not a
+        # predicate at all.
+        - case: rejected
+          steps:
+            - id: rejected
+              log:
+                message: >-
+                  ${"%s declined the deploy of %s".format(
+                      [steps.approval.sender.identity.subject, inputs.version])}
+
+        # This branch is where naming the gate found a real disagreement. The
+        # `decision` output below used to report "expired" for a signal that
+        # arrived carrying no `approved` field, while this branch's old `if:`
+        # asked only about the *timer* — so no branch ran and the output said one
+        # had. Exactly the failure #207 is about, surviving in the one copy
+        # nobody thought to compare. `undecided` (#579) is true in both
+        # sub-cases — nobody answered, or somebody answered without deciding —
+        # so the case and the output can finally agree without either one
+        # lying, and the exhaustiveness check means dropping this case is a
+        # validation error rather than a silent gap.
+        #
+        # `timed_out` is re-exposed by the gate above precisely so this line can
+        # still tell the two apart in what it says.
+        - case: undecided
+          steps:
+            - id: undecided
+              log:
+                message: >-
+                  ${steps.approval.timed_out
+                    ? "nobody approved deploying %s in time".format([inputs.version])
+                    : "the approval for %s carried no decision".format([inputs.version])}
 
 outputs:
   # Three states, not the six this file used to carry. "Approved, but the
@@ -315,9 +374,12 @@ outputs:
   # to distinguish.
   #
   # This value cannot disagree with the branch that ran, which is this issue's
-  # acceptance test — and it cannot in the strongest way available: the three
-  # branches switch on this exact name, so the report is not derived from the
-  # same facts as the branch, it *is* the branch.
+  # acceptance test — and it cannot in the strongest way available: the dispatch
+  # above switches on this exact name, so the report is not derived from the
+  # same facts as the branch, it *is* the branch. (`steps.decision.case` records
+  # the same fact from the other end — which case took it — and this output reads
+  # the gate's own name instead, because that is where the decision is made once
+  # and everything else, the dispatch included, reads it from there.)
   decision:
     value: ${steps.approval.outcome}
     description: which branch this run ended on

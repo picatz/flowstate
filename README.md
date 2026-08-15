@@ -65,7 +65,9 @@ steps:
 
   # The gate. It resolves to one of three outcomes, named once, on the step
   # that produced the data. Three and not two, because a payload carrying no
-  # decision at all is neither an approval nor a rejection.
+  # decision at all is neither an approval nor a rejection. Conditionals over
+  # string literals, deliberately: that is the shape `flow validate` can read a
+  # domain out of, and it is what makes the dispatch below checkable.
   - id: approval
     wait_for_signal:
       name: deploy-approved
@@ -74,32 +76,60 @@ steps:
         outcome: >-
           ${has(payload.approved)
             ? (payload.approved ? "deployed" : "rejected")
-            : "expired"}
+            : "undecided"}
         sender: ${sender}
 
-  - id: deploy
-    if: ${steps.approval.outcome == "deployed"}
-    log:
-      message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
-
-  - id: rejected
-    if: ${steps.approval.outcome == "rejected"}
-    log:
-      message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
-
-  - id: expired
-    if: ${steps.approval.outcome == "expired"}
-    log:
-      message: nobody decided in time
+  # One dispatch, not three sibling `if:`s. The validator knows this value is
+  # always one of "deployed", "rejected", "undecided" — the gate's own
+  # expression above says so — so a typo'd case is refused by name and a case
+  # nobody wrote is reported as unhandled. No `default:` on purpose: the three
+  # cases exhaust the domain, and a `default:` beside them is dead code the
+  # validator refuses.
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: deployed
+          steps:
+            - id: deploy
+              log:
+                message: ${"deploying, approved by %s".format([steps.approval.sender.identity.subject])}
+        - case: rejected
+          steps:
+            - id: rejected
+              log:
+                message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
+        - case: undecided
+          steps:
+            - id: undecided
+              log:
+                message: nobody decided in time
 ```
 
-Two things carry the weight here. First, authorization lives in `signals:`, not in
+Three things carry the weight here. First, authorization lives in `signals:`, not in
 the steps: `FlowstateServer.Signal` refuses a signal from an unattested, wrongly
 claimed, or mismatched sender before Temporal ever sees it, so the workflow's own
 logic is left with the one question that belongs to it (did the approver say yes).
 Second, `steps.approval.sender` is not something the approver typed into a payload.
 It is who the server authenticated the signal as, and no caller can set it. A payload
 is evidence; a sender is identity.
+
+Third, the two halves of that gate are one claim the validator can check rather than
+two that have to agree. The wait's `outcome:` states the three states once, and
+`switch:` dispatches on that name, so `flow validate` reads the domain straight out
+of the shaping expression and holds the branches to it:
+
+```console
+$ flow validate examples/approval-gate/workflow.yaml     # with `- case: rejcted`
+case "rejcted" is not a value `steps.approval.outcome` can produce; the values are
+"deployed", "rejected", "undecided"; did you mean "rejected"?
+cases do not handle "rejected", which `steps.approval.outcome` can produce; a switch
+with no `default:` claims to handle every value, so add the missing cases, or add a
+`default:` — an empty `default: {steps: []}` is how deliberately handling nothing
+else is written down
+```
+
+Written as three `if:`s, both of those are a run that quietly does nothing.
 
 One honest caveat before you copy this into production: whoever can edit the
 Flowfile can also widen or delete its `signals:` block. Binding that requires
