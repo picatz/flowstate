@@ -1669,10 +1669,11 @@ validator can *infer*, so all five domain diagnostics below apply to it. Written
 three `if:`s — which is how it shipped until this construct landed — `- case:
 rejcted` is a branch that never runs and a dropped branch is a run that quietly
 does nothing; written as one `switch:`, both are `flow validate` failures naming
-the value. That is also why the gate's `outcome:` stays a conditional over string
-literals: that shape is exactly what `switchDomain` reads a domain out of, so a
-rewrite into an `optMap` or an `orValue` would compute the same three strings and
-silently take every check with it.
+the value. That is also why the gate's `outcome:` stays a shaping expression built
+from string literals, a conditional, and the read-side optional idioms
+(`optMap`, `orValue`): that shape is exactly what `switchDomain` reads a domain
+out of, so a rewrite into `value()` or anything else would compute the same
+three strings and silently take every check with it.
 
 ```yaml
 - id: on_event
@@ -1732,10 +1733,15 @@ domain is checkable — Rust's `_ => {}`, both times. A switch that is only a
 
 #### The diagnostics, where the domain is the file's to know
 
-Where the discriminant's domain is a property of the file — today, a wait outcome
-whose shaping expression is conditionals over string literals, the approval gate's
-ternary; enum-typed inputs extend the tier when they land — the validator checks
-the whole dispatch, every diagnostic fatal like every other in this language:
+Where the discriminant's domain is a property of the file — today, a wait's
+shaped output or a `value:` step whose shaping expression is built from string
+literals through conditionals and the read-side optional idioms (`optMap`,
+`optFlatMap`, `orValue`), the approval gate's own expression among them;
+enum-typed inputs extend the tier when they land — the validator checks the
+whole dispatch, every diagnostic fatal like every other in this language. A
+shaping expression that reaches for `value()`, or for anything else the walk
+does not read, still validates — it simply drops back to an open domain, silent
+per the report-what-the-file-owns rule below:
 
 - an impossible case value, with the nearest legal spelling;
 - a duplicate case after list-flattening (the second occurrence can never match);

@@ -25,8 +25,9 @@ import (
 // The domain checks (impossible value, exhaustiveness, unreachable default, type
 // mismatch) fire only where the discriminant's domain is a property of the file:
 // a `${steps.<id>.<name>}` naming a wait's shaped output whose expression is
-// built from conditionals over string literals — the approval gate's ternary
-// yields exactly `deployed | rejected | undecided`, which is inferable. An open
+// built from string literals through conditionals and the read-side optional
+// idioms — the approval gate's `optMap`/`orValue` chain yields exactly
+// `deployed | rejected | undecided`, which is inferable. An open
 // domain (a webhook field, an input, anything shaped by an expression the
 // validator cannot bound) is deliberately silent, per the report-what-the-file-
 // owns rule: the runtime half — the unmatched record in the step's outputs —
@@ -308,7 +309,7 @@ func switchCaseField(caseIndex, valueCount, valueIndex int) string {
 // name a `value:` step ever produces. Either way, the shaping expression must
 // be conditionals over string literals all the way down (through the
 // `optMap`/`optFlatMap`/`orValue` optional idioms `totalStringLeaves` and
-// `optionalLeaves` also recognize) — the approval gate's ternary, or
+// `optionalLeaves` also recognize) — the approval gate's optional chain, or
 // `examples/optional-dispatch`'s named `outcome`. Enum-typed
 // workflow inputs extend this tier when they land. A `must:` constraint is
 // deliberately *not* mined for a domain: a constraint expression is not a

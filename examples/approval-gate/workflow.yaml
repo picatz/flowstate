@@ -249,12 +249,21 @@ steps:
         # `decision` simply *is* it. There is nowhere left for the report and the
         # branch to drift apart.
         #
-        # The spelling matters as much as the naming: conditionals over string
-        # literals, nothing else. That is the one shape `flow validate` can read
-        # a domain out of, so it is what lets the dispatch below be checked for
-        # an impossible case and for exhaustiveness. An `optMap`, an `orValue`,
-        # or a value taken from the payload would compute the same three strings
-        # and quietly cost every one of those checks.
+        # The spelling matters as much as the naming: this shaping expression
+        # names its three outcomes as string literals, and `flow validate`
+        # reads them back out through the read-side optional idioms below —
+        # `optMap` and `orValue` — the same way it reads a bare conditional.
+        # That is what lets the dispatch below be checked for an impossible
+        # case and for exhaustiveness; a value pulled from elsewhere in the
+        # payload, or built with anything the walk does not read, would
+        # compute the same three strings and quietly cost every one of those
+        # checks.
+        #
+        # `payload.?approved` is an optional select: present and true or false
+        # when the sender sent the field, absent otherwise. `.optMap(approved,
+        # ...)` runs its lambda only in the present case, so the ternary
+        # inside it only ever sees an actual boolean. `.orValue("undecided")`
+        # supplies the absent case.
         #
         # Three states and not two: a payload is whatever the sender chose to
         # send, so one carrying no `approved` field at all is representable, and
@@ -264,9 +273,9 @@ steps:
         # is true in both sub-cases: nobody decided. `!timed_out` would claim
         # the timer lapsed when it did not.
         outcome: >-
-          ${has(payload.approved)
-            ? (payload.approved ? "deployed" : "rejected")
-            : "undecided"}
+          ${payload.?approved
+              .optMap(approved, approved ? "deployed" : "rejected")
+              .orValue("undecided")}
         # Re-exposed deliberately: `outputs:` replaces what the wait produces,
         # so these are gone unless a line puts them back. `sender` is read by
         # the log lines and by `approver_subject`; `timed_out` is what lets the
@@ -286,8 +295,9 @@ steps:
   # nobody handled reads exactly like a run where nothing happened to apply.
   #
   # Grouping them buys the checks, and the checks here are not hypothetical:
-  # this discriminant has a domain the validator can *infer*. `outcome` above is
-  # shaped by conditionals over string literals all the way down, which is
+  # this discriminant has a domain the validator can *infer*. `outcome` above
+  # names its three outcomes as string literals reached through a conditional
+  # and the read-side optional idioms (`optMap`, `orValue`), which is
   # precisely the form `switchDomain` reads, so `flow validate` knows this
   # dispatch can only ever see "deployed", "rejected" or "undecided" — and refuses
   # a case outside that set, by name, with the nearest legal spelling.
