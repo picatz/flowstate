@@ -40,10 +40,12 @@ import (
 // because it is the only verb that both narrates a run and produces its result, in
 // one process, at the same time.
 func runLocalWorkflow(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
+
+	format := rendering.format
 
 	// Before the policies load and before any plugin process starts, because
 	// those are work, and the venue is announced before a run does any. The
@@ -194,7 +196,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// empty stdout is a meaningful value there, because the answer is the outputs
 		// and a failed run has none. `{}` would claim it produced none *successfully*.
 		if format.Machine() {
-			if err := writeJSON(surface, format, response); err != nil {
+			if err := writeRunJSON(surface, rendering, response); err != nil {
 				return err
 			}
 		}
@@ -218,7 +220,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			workflow.GetName())
 	}
 
-	if err := writeRun(surface, format, response); err != nil {
+	if err := writeRun(surface, rendering, response); err != nil {
 		return fmt.Errorf("writing the outputs of %s: %w", workflow.GetName(), err)
 	}
 

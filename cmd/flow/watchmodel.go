@@ -67,6 +67,14 @@ type watchModel struct {
 	// quit records that the person asked to stop, so the outcome is not reported as
 	// the run's.
 	quit bool
+
+	// rendering is how the run's answer will be written when the view ends.
+	//
+	// The live view is drawn to stderr and only ever draws text, so this is not the
+	// format the *view* uses — it is the one [watchEnding] hands to [finishWatch],
+	// and it is carried rather than assumed because `--raw` is a decision about the
+	// document on stdout and a run watched live still writes one.
+	rendering runRendering
 }
 
 // watchPollMsg is the clock: its time is what elapsed is measured against.
@@ -93,7 +101,14 @@ func newWatchModel(
 	known *v1.GetResponse,
 ) watchModel {
 	return watchModel{
-		surface:  surface,
+		surface: surface,
+
+		// Text unless a caller says otherwise, which [followLive] does. The live
+		// view is the one shape that cannot have been asked for as a document —
+		// `--output json` takes the plain path — so the interesting part of the
+		// rendering here is `--raw`, and a caller with one sets it.
+		rendering: runRendering{format: FormatText},
+
 		poller:   poller,
 		state:    newWatchState(workflowID, known),
 		ctx:      ctx,
@@ -107,12 +122,14 @@ func newWatchModel(
 func followLive(
 	ctx context.Context,
 	surface *ui.UI,
+	rendering runRendering,
 	poller watchPoller,
 	interval time.Duration,
 	workflowID string,
 	known *v1.GetResponse,
 ) error {
 	model := newWatchModel(ctx, surface, poller, interval, workflowID, known)
+	model.rendering = rendering
 
 	// Drawn to stderr, so stdout carries the outputs and nothing else — which is
 	// what lets one invocation show a live view and pipe its answer. The colour
@@ -159,7 +176,7 @@ func watchEnding(surface *ui.UI, model watchModel) error {
 	// Otherwise the same ending the plain shape reaches, from the same state, so the
 	// outputs on stdout and the exit code are identical whichever shape drew the
 	// progress. A TUI that reports differently from a pipe is two commands.
-	return finishWatch(surface, FormatText, model.state)
+	return finishWatch(surface, model.rendering, model.state)
 }
 
 // Init asks immediately rather than after one interval, so the first frame says

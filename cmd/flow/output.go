@@ -146,6 +146,29 @@ func addOutputFlag(cmd *cobra.Command) {
 		})
 }
 
+// addRawOutputFlag declares --raw beside --output on the verbs that answer with a
+// run.
+//
+// Only those verbs, because it only means something there: a run's answer is the
+// one document this CLI renders rather than passes through, so everywhere else
+// `--raw` would be a flag that changes nothing, which is worse than a flag that is
+// absent. See rundoc.go for what the rendering is and why it is derived from the
+// descriptors rather than written down.
+func addRawOutputFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool("raw", false,
+		"write the schema's own protojson instead of the run document: `stepValues`, "+
+			"`namedValues` and CEL's tagged encoding of every value, exactly as the RPC "+
+			"surface spells them. For a consumer generated against the schema")
+}
+
+// resolveRawOutput reads --raw off the command being run, per [resolveOutputFormat]
+// and for the same reason: the value belongs to this invocation, not to the process.
+func resolveRawOutput(cmd *cobra.Command) bool {
+	raw, _ := cmd.Flags().GetBool("raw")
+
+	return raw
+}
+
 // marshalJSON renders a message the way the schema describes it.
 //
 // protojson rather than encoding/json, so the field names are the schema's and an
@@ -166,10 +189,68 @@ func marshalJSON(message proto.Message, indent bool) ([]byte, error) {
 
 // writeJSON writes one document, indented for a person who is about to read it and
 // compact for the line-per-record form.
+//
+// The schema's own shape, for the verbs whose answer *is* a schema document: a
+// compiled workflow, a validation report, a task catalog, a schedule. A run's
+// answer goes through [writeRunJSON] instead, which renders it — see rundoc.go for
+// what that means and why the two are different functions rather than one with a
+// mode.
 func writeJSON(surface *ui.UI, format OutputFormat, message proto.Message) error {
 	encoded, err := marshalJSON(message, format == FormatJSON)
 	if err != nil {
 		return fmt.Errorf("rendering the answer as %s: %w", format, err)
+	}
+
+	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+
+	return err
+}
+
+// runRendering is how one invocation was asked to write a run's answer.
+//
+// Two values that travel together everywhere, so they travel as one thing rather
+// than as two parameters every function in the chain has to remember to forward in
+// the same order. Resolved once per invocation, from the command's own flags, per
+// [resolveOutputFormat]'s note on why that is not a package variable.
+type runRendering struct {
+	// format is --output.
+	format OutputFormat
+
+	// raw is --raw: the schema's protojson instead of the rendering.
+	raw bool
+}
+
+// Machine reports whether a program is on the other end, per [OutputFormat.Machine].
+func (r runRendering) Machine() bool { return r.format.Machine() }
+
+// renderingOf is a rendering that asks for one format and nothing else.
+//
+// The plain-format case, named rather than written out: a caller that has a format
+// and no opinion about `--raw` should not have to know the struct has a second
+// field, and should not silently start disagreeing with the flags if it ever gains
+// a third.
+func renderingOf(format OutputFormat) runRendering { return runRendering{format: format} }
+
+// resolveRunRendering reads both flags off the command being run.
+func resolveRunRendering(cmd *cobra.Command) (runRendering, error) {
+	format, err := resolveOutputFormat(cmd)
+	if err != nil {
+		return runRendering{}, err
+	}
+
+	return runRendering{format: format, raw: resolveRawOutput(cmd)}, nil
+}
+
+// writeRunJSON writes one run document.
+//
+// The counterpart of [writeJSON] for the answers a run gives, and the only place
+// the rendering in rundoc.go is reached from — so `flow run`, `flow run local`,
+// `flow get`, `flow watch` and `flow task run` cannot end up writing four
+// different documents about one finished run.
+func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message) error {
+	encoded, err := marshalRunDocument(message, rendering.format == FormatJSON, rendering.raw)
+	if err != nil {
+		return fmt.Errorf("rendering the answer as %s: %w", rendering.format, err)
 	}
 
 	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
@@ -268,6 +349,33 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdou
 	"went on to observe it. Fields that do not apply to a verb are present and empty, so one " +
 	"expression reads every one of them."
 
+// runDocumentHelp is the paragraph the verbs that answer with a run end with.
+//
+// One string rather than five copies, per [mutationFlagHelp]: the document's shape
+// is one decision, and a help text restating it per verb is a thing that drifts.
+//
+// It names the paths because a caller reading `--help` is deciding what to index,
+// and it makes the stability promise because the alternative is silence, and
+// silence is what makes people depend on a shape nobody agreed to. See rundoc.go
+// for how the rendering is derived from the schema.
+const runDocumentHelp = "\n\nThe run document on stdout is written for a program. A step's outputs " +
+	"are `.steps.<id>.<output>` — the path the file itself writes as " +
+	"`${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` " +
+	"are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: " +
+	"`.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in " +
+	"the run's own state, so the transcript is `.outputs.steps` and the answer stays " +
+	"`.runOutputs`.\n\n" +
+	"This document is a contract. Its field names and shape are treated as a public " +
+	"interface: they are pinned by tests, and changing one is a breaking change " +
+	"announced in the release notes, exactly as a change to the schema would be. " +
+	"Fields are added, never renamed or removed in place, and an empty value is " +
+	"written rather than omitted so an expression that resolves against one run " +
+	"resolves against the next.\n\n" +
+	"`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` " +
+	"and CEL's tagged encoding of every value — which is the shape to read if you " +
+	"are generating a consumer against `flowstate.v1` rather than writing a `jq` " +
+	"expression by hand."
+
 // writeRun writes a finished run, in the shape the format asks for.
 //
 // One function for both drivers. `flow run` and `flow run local` execute a workload
@@ -283,26 +391,25 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), stdou
 // # Who is on the other end of stdout
 //
 // The text format's stdout is machine-shaped by design, and that is load-bearing:
-// `flow run local … | jq .stepValues.hello.namedValues` is documented in this
-// command's own help, with no `-o json` in it, so the transcript cannot move
-// behind a flag without breaking every one of those.
+// `flow run local … | jq .steps.hello` is documented in this command's own help,
+// with no `-o json` in it, so the transcript cannot move behind a flag without
+// breaking every one of those.
 //
 // It is also, on a terminal, the least useful line this command prints. A
 // workflow that declares no outputs — which is most of them — ends a clean run
-// with `{"stepValues":{"hello":{"namedValues":{}}},"runOutputs":null}`, two empty
-// containers and a null under three lines of well-judged narration. Every
-// decision that produces it is right on its own: stdout carries the answer,
-// unpopulated fields are emitted so one jq expression works against both
-// drivers, and an unset `run_outputs` is honestly "nothing to report" rather
+// with two empty containers and a null under three lines of well-judged
+// narration. Every decision that produces it is right on its own: stdout carries
+// the answer, unpopulated fields are emitted so one jq expression works against
+// both drivers, and an unset `run_outputs` is honestly "nothing to report" rather
 // than an empty result. The composite is what reads badly.
 //
 // So the destination decides, which is the same answer `git`, `ls` and `gh`
-// reach. Piped or redirected, the bytes are what they always were. On a terminal
+// reach. Piped or redirected, the bytes are the run document. On a terminal
 // there is provably no parser, the narration on stderr is the whole answer, and
 // [writeRunOutputs] has already said what the run produced (#551).
-func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) error {
-	if format.Machine() {
-		return writeJSON(surface, format, response)
+func writeRun(surface *ui.UI, rendering runRendering, response *v1.GetResponse) error {
+	if rendering.Machine() {
+		return writeRunJSON(surface, rendering, response)
 	}
 
 	writeRunOutputs(surface, response)
@@ -311,7 +418,7 @@ func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) err
 		return nil
 	}
 
-	return writeStepOutputs(surface, response)
+	return writeStepOutputs(surface, rendering, response)
 }
 
 // writeRunOutputs names what the run answered with, for a person.
@@ -498,13 +605,19 @@ func quotedLiteral(literal *expr.Value) string {
 // Nothing rather than an empty document, because a failed run produced no outputs
 // and `{}` would claim it produced none *successfully* — a distinction a shell
 // reader has only the exit code to recover.
-func writeStepOutputs(surface *ui.UI, response *v1.GetResponse) error {
+//
+// This is the document the README shows and the one a pipe with no `-o json`
+// receives, and it is where the rendering pays for itself most plainly: what a
+// reader sees is `{"steps": {"greet": {"result": "…"}}, "runOutputs": …}`, so
+// `jq .steps.greet.result` is the same path the file itself writes as
+// `${steps.greet.result}`.
+func writeStepOutputs(surface *ui.UI, rendering runRendering, response *v1.GetResponse) error {
 	outputs := response.GetOutputs()
 	if outputs == nil {
 		return nil
 	}
 
-	encoded, err := marshalJSON(outputs, false)
+	encoded, err := marshalRunDocument(outputs, false, rendering.raw)
 	if err != nil {
 		return fmt.Errorf("formatting the outputs of the run: %w", err)
 	}

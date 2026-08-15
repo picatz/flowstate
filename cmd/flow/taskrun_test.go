@@ -115,9 +115,7 @@ func TestTheMachineShapeIsTheDocumentTheLocalDriverWrites(t *testing.T) {
 	var document struct {
 		Status  string `json:"status"`
 		Outputs struct {
-			StepValues map[string]struct {
-				NamedValues map[string]any `json:"namedValues"`
-			} `json:"stepValues"`
+			Steps map[string]map[string]any `json:"steps"`
 		} `json:"outputs"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &document),
@@ -125,7 +123,7 @@ func TestTheMachineShapeIsTheDocumentTheLocalDriverWrites(t *testing.T) {
 
 	assert.Equal(t, "STATUS_COMPLETED", document.Status,
 		"the machine shape does not carry the status the local driver's document carries")
-	assert.Contains(t, document.Outputs.StepValues, "log",
+	assert.Contains(t, document.Outputs.Steps, "log",
 		"the transcript is not keyed by the step id a Flowfile would have written")
 }
 

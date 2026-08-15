@@ -214,7 +214,7 @@ func TestWatchReportsOnlyChanges(t *testing.T) {
 	}}
 	surface, _, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(errOut.String())
@@ -347,7 +347,7 @@ func TestWatchPlainLinesSayWhereTheRunIsAndWhatFailed(t *testing.T) {
 	}}
 	surface, out, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(errOut.String())
@@ -452,7 +452,7 @@ func TestWatchOutcomeCarriesTheFailureMessage(t *testing.T) {
 	}}
 	surface, out, _ := plainSurface()
 
-	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	err := followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil)
 
 	require.ErrorContains(t, err, "failed")
@@ -472,7 +472,7 @@ func TestWatchSurvivesAnOutageAndSaysSo(t *testing.T) {
 	}}
 	surface, _, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil),
 		"a watch died on a transient refusal it should have survived")
 
@@ -595,7 +595,7 @@ func TestWatchDoesNotRetryAPermanentRefusal(t *testing.T) {
 	poller := &scriptedPoller{answers: []pollAnswer{{err: permanentRefusal()}}}
 	surface, _, _ := plainSurface()
 
-	err := followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	err := followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil)
 
 	require.ErrorContains(t, err, "check the id")
@@ -630,14 +630,14 @@ func TestWatchSeparatesOutputsFromProgress(t *testing.T) {
 	poller := &scriptedPoller{answers: []pollAnswer{runningPoll(), finishedPoll("greet")}}
 	surface, out, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatText, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	// Everything on stdout has to parse, or a pipe into jq breaks.
 	var outputs map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out.String()), &outputs),
 		"stdout was not one JSON document: %q", out.String())
-	require.Contains(t, outputs, "stepValues")
+	require.Contains(t, outputs, "steps")
 
 	require.NotContains(t, out.String(), "COMPLETED",
 		"the progress account was written to stdout, which corrupts anything piping the outputs")
@@ -655,7 +655,7 @@ func TestWatchJSONLIsOneDocumentPerChange(t *testing.T) {
 	}}
 	surface, out, errOut := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatJSONL, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatJSONL), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	lines := reportedLines(out.String())
@@ -684,7 +684,7 @@ func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
 	}}
 	surface, out, _ := plainSurface()
 
-	require.NoError(t, followPlainly(t.Context(), surface, FormatJSON, poller, time.Millisecond,
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatJSON), poller, time.Millisecond,
 		"flowstate-workflow-3f7c", nil))
 
 	var document map[string]any
@@ -710,7 +710,7 @@ func TestWatchWritesNothingFinalWhenItGaveUp(t *testing.T) {
 		t.Run(string(format), func(t *testing.T) {
 			surface, out, _ := plainSurface()
 
-			require.ErrorContains(t, finishWatch(surface, format, state), "stopped answering")
+			require.ErrorContains(t, finishWatch(surface, renderingOf(format), state), "stopped answering")
 			require.Empty(t, out.String(),
 				"a watch that lost the server wrote %q as though it were the answer", out.String())
 		})
@@ -769,7 +769,7 @@ func TestWatchInterruptedStillNamesTheRunForAMachine(t *testing.T) {
 		cancel()
 
 		started := response(v1.RunResponse_STATUS_RUNNING)
-		require.NoError(t, followPlainly(ctx, surface, FormatJSON,
+		require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatJSON),
 			&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
 			time.Millisecond, "flowstate-workflow-3f7c", started))
 
@@ -788,7 +788,7 @@ func TestWatchInterruptedStillNamesTheRunForAMachine(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
-		require.NoError(t, followPlainly(ctx, surface, FormatText,
+		require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatText),
 			&scriptedPoller{answers: []pollAnswer{runningPoll()}},
 			time.Millisecond, "flowstate-workflow-3f7c", response(v1.RunResponse_STATUS_RUNNING)))
 
@@ -874,7 +874,7 @@ func TestWatchStopsWhenTheWatcherDoesRatherThanWhenTheRunDoes(t *testing.T) {
 			defer cancel()
 			poller := &interruptedPoller{cancel: cancel, refuse: refuse}
 
-			require.NoError(t, followPlainly(ctx, surface, FormatText, poller, time.Millisecond,
+			require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatText), poller, time.Millisecond,
 				"flowstate-workflow-3f7c", nil),
 				"an interrupted watch was reported as a failed run")
 			require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
@@ -896,10 +896,10 @@ func TestWatchDrawsNoViewWhenAFormatWasAskedFor(t *testing.T) {
 			surface, out, _ := plainSurface()
 			surface.ErrCaps.TTY = true
 
-			require.NoError(t, watchRun(t.Context(), surface, format, poller, time.Millisecond, false,
+			require.NoError(t, watchRun(t.Context(), surface, renderingOf(format), poller, time.Millisecond, false,
 				"flowstate-workflow-3f7c", nil))
 
-			require.Contains(t, out.String(), "stepValues")
+			require.Contains(t, out.String(), `"steps"`)
 			require.NotContains(t, out.String(), "\x1b",
 				"a live view was drawn over a requested document")
 		})
@@ -931,14 +931,14 @@ func TestWatchPlainForcesLinesOnATerminal(t *testing.T) {
 	surface, out, errOut := plainSurface()
 	surface.ErrCaps.TTY = true
 
-	require.NoError(t, watchRun(t.Context(), surface, FormatText, poller, time.Millisecond, true,
+	require.NoError(t, watchRun(t.Context(), surface, renderingOf(FormatText), poller, time.Millisecond, true,
 		"flowstate-workflow-3f7c", nil))
 
 	require.Len(t, reportedLines(errOut.String()), 2,
 		"--plain did not produce one line per change:\n%s", errOut.String())
 	require.NotContains(t, errOut.String(), "q stops watching",
 		"a live view was drawn despite --plain")
-	require.Contains(t, out.String(), "stepValues")
+	require.Contains(t, out.String(), `"steps"`)
 }
 
 // TestRunFollowsToAnyTerminalStatus is a regression test for a loop that could not

@@ -108,24 +108,24 @@ func TestRunLocalExecutesAPluginTaskFromAnExample(t *testing.T) {
 		"--output", "json")
 	require.NoError(t, err, stderr)
 
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	decoder.UseNumber()
+
 	var response struct {
-		RunOutputs struct {
-			Values map[string]struct {
-				Literal map[string]any `json:"literal"`
-			} `json:"values"`
-		} `json:"runOutputs"`
+		RunOutputs map[string]any `json:"runOutputs"`
 	}
-	require.NoError(t, json.Unmarshal([]byte(stdout), &response), "stdout is not a run document:\n%s", stdout)
+	require.NoError(t, decoder.Decode(&response), "stdout is not a run document:\n%s", stdout)
 
-	outputs := response.RunOutputs.Values
+	outputs := response.RunOutputs
 	require.Contains(t, outputs, "greeting")
-	assert.Equal(t, "Hello, world!", outputs["greeting"].Literal["stringValue"])
+	assert.Equal(t, "Hello, world!", outputs["greeting"])
 
-	// int64 crosses JSON as a string, which is protojson's rule and not this
-	// test being careful: what matters is that the field is an int64 at all.
-	assert.Equal(t, "13", outputs["length"].Literal["int64Value"],
+	// A number, rather than protojson's string-encoded int64: the run document
+	// writes a value the way a `jq` reader spells one. What matters is still that
+	// the field is a whole number at all, which json.Number carries exactly.
+	assert.Equal(t, json.Number("13"), outputs["length"],
 		"the plugin's own integer output did not arrive as an integer")
-	assert.Equal(t, true, outputs["authenticated"].Literal["boolValue"],
+	assert.Equal(t, true, outputs["authenticated"],
 		"the plugin task did not receive the secret the Flowfile routed to it")
 
 	assert.NotContains(t, stdout, material, "the secret reached the run's outputs")

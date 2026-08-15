@@ -7,7 +7,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -21,10 +20,12 @@ import (
 // started it has to be askable about afterwards, and an approval gate is the
 // clearest example: it is waiting precisely because nobody is watching.
 func runGet(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
+
+	format := rendering.format
 
 	surface := newSurface(cmd)
 	workflowID := args[0]
@@ -71,7 +72,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// The exit status is still the run's outcome, so `flow get x -o json && ...`
 	// behaves the way the shell reader expects either way.
 	if format.Machine() {
-		if err := writeJSON(surface, format, msg); err != nil {
+		if err := writeRunJSON(surface, rendering, msg); err != nil {
 			return err
 		}
 
@@ -124,12 +125,14 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// asked about.
 	writeRunOutputs(surface, msg)
 
-	if outputs := msg.GetOutputs(); outputs != nil {
-		encoded, err := protojson.Marshal(outputs)
-		if err != nil {
-			return fmt.Errorf("formatting the outputs of %s: %w", workflowID, err)
-		}
-		fmt.Fprintf(surface.Out, "%s\n", encoded)
+	// Through the one function that writes this document, rather than through a
+	// bare protojson.Marshal of its own, which is what stood here. That was the
+	// divergence runlocal.go's own doc comment warns about, live in a third verb:
+	// `flow get x | jq` received a document with unpopulated fields dropped while
+	// `flow run local x | jq` received them, so the same expression answered
+	// differently depending on which verb a script had asked.
+	if err := writeStepOutputs(surface, rendering, msg); err != nil {
+		return fmt.Errorf("formatting the outputs of %s: %w", workflowID, err)
 	}
 
 	// A run that failed is reported as a failure, so `flow get x && ...` behaves
