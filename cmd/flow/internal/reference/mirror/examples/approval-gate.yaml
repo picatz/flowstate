@@ -250,10 +250,17 @@ steps:
         # Three states and not two: a payload is whatever the sender chose to
         # send, so one carrying no `approved` field at all is representable, and
         # it is not a rejection. `!timed_out` would say it was.
+        #
+        # Read top to bottom: take the approval if there is one, say which of
+        # the two decisions it was, and otherwise say nobody decided. The
+        # optional carries the third state, so nothing here has to ask whether
+        # the field exists before reading it — which is what a `has()` and a
+        # ternary nested inside another ternary were doing before, in a line a
+        # reader skips (#540).
         outcome: >-
-          ${has(payload.approved)
-            ? (payload.approved ? "deployed" : "rejected")
-            : "expired"}
+          ${payload.?approved
+              .optMap(approved, approved ? "deployed" : "rejected")
+              .orValue("expired")}
         # Re-exposed deliberately: `outputs:` replaces what the wait produces,
         # so these are gone unless a line puts them back. `sender` is read by
         # the log lines and by `approver_subject`; `timed_out` is what lets the
