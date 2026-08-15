@@ -2,6 +2,7 @@ package flowfile_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -254,4 +255,50 @@ steps:
 	writeFile(t, dir, "caller.yaml", string(got))
 	_, _, err = flowfile.ParseFile(caller)
 	require.NoError(t, err, "the formatted file's pin no longer compiles")
+}
+
+// TestFormatAnchorIsNotALevelOfNesting pins the accounting the pin collector's
+// anchor walk uses. An anchor labels the value it wraps; it is not a level of
+// structure, and the compiler does not count it as one. Counting it here would
+// make `flow fmt` refuse an anchored document one level shallower than the
+// byte-identical unanchored one — a formatter failing on a file that compiles,
+// caused by nothing but the `&a`. Asserted as a comparison between the two
+// spellings rather than against a fixed depth, because the number that matters
+// is that they agree, not what it happens to be.
+func TestFormatAnchorIsNotALevelOfNesting(t *testing.T) {
+	deep := func(anchored bool, levels int) string {
+		var b strings.Builder
+		b.WriteString("edition: v2026.3\nname: deep\nvars:\n  blob:")
+		if anchored {
+			b.WriteString(" &a")
+		}
+		b.WriteString("\n")
+		indent := "    "
+		for range levels {
+			b.WriteString(indent + "k:\n")
+			indent += "  "
+		}
+		b.WriteString(indent + "leaf: 1\n")
+		b.WriteString("steps:\n  - id: s\n    value: 1\n")
+		return b.String()
+	}
+
+	// Walk out to where the formatter's own bound bites, and require the two
+	// spellings to reach it together at every level along the way.
+	for levels := 1; levels <= 32; levels++ {
+		dir := t.TempDir()
+		plainSrc, anchoredSrc := deep(false, levels), deep(true, levels)
+
+		plainWorkflow, _, err := flowfile.ParseFile(writeFile(t, dir, "plain.yaml", plainSrc))
+		require.NoError(t, err)
+		_, plainErr := flowfile.Format([]byte(plainSrc), plainWorkflow)
+
+		anchoredWorkflow, _, err := flowfile.ParseFile(writeFile(t, dir, "anchored.yaml", anchoredSrc))
+		require.NoError(t, err)
+		_, anchoredErr := flowfile.Format([]byte(anchoredSrc), anchoredWorkflow)
+
+		assert.Equal(t, plainErr == nil, anchoredErr == nil,
+			"at %d levels: anchoring changed whether Format succeeds (plain=%v, anchored=%v)",
+			levels, plainErr, anchoredErr)
+	}
 }

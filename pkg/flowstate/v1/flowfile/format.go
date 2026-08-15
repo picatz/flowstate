@@ -528,7 +528,12 @@ func (c *pinCollector) collectAnchors(n ast.Node, depth int) error {
 		if name, ok := scalarText(node.Name); ok {
 			c.anchors[name] = node.Value
 		}
-		return c.collectAnchors(node.Value, depth+1)
+		// An anchor is a label on the value it wraps, not a level of nesting:
+		// `k: &a {…}` and `k: {…}` are the same structure to the compiler. So
+		// descend at the same depth, or this walk refuses an anchored document
+		// one level shallower than the identical unanchored one — a `flow fmt`
+		// failure on a file that compiles, caused solely by the `&a`.
+		return c.collectAnchors(node.Value, depth)
 	case *ast.MappingNode:
 		for _, value := range node.Values {
 			if err := c.collectAnchors(value, depth+1); err != nil {
@@ -604,7 +609,14 @@ func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
 				}
 				c.out[path] = pin
 			} else {
-				return fmt.Errorf("digest value could not be resolved while collecting call pins")
+				// Name the position, the way every other diagnostic here
+				// does: this refuses to format a file, so the author needs
+				// to be told which `digest:` it could not read.
+				where := ""
+				if token := digest.Key.GetToken(); token != nil && token.Position != nil {
+					where = fmt.Sprintf("%d:%d: ", token.Position.Line, token.Position.Column)
+				}
+				return fmt.Errorf("%sdigest: pins the call here, but its value could not be read as text; write the digest as a scalar, or as an alias of one", where)
 			}
 		}
 		for _, value := range x.Values {
