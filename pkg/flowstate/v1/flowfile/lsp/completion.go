@@ -693,11 +693,23 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 
 	// Steps in reverse document order, so the list reads nearest-first: the step
 	// just above you is the one most often referenced.
+	//
+	// Nearest-first is load-bearing rather than cosmetic, because one id can name
+	// two steps in a document — ids are unique within a visibility domain, not
+	// within a file. Every candidate visible from one position sits in a prefix of
+	// that position's scope frames, so of two carrying the same id the deeper one
+	// is always the later in document order; taking the first of the reversed walk
+	// therefore takes the binding the engine reads, which is what
+	// `outputCandidates` then reads the outputs of. The rest are dropped rather
+	// than offered: a menu with the same id twice cannot say which is which, and
+	// the second entry's outputs are a step this expression cannot reach.
+	seen := map[string]bool{}
 	for i := len(doc.parsed.steps) - 1; i >= 0; i-- {
 		s := doc.parsed.steps[i]
-		if s.id == "" || !visibleFromEntry(s, from, ls) {
+		if s.id == "" || seen[s.id] || !visibleFromEntry(s, from, ls) {
 			continue
 		}
+		seen[s.id] = true
 		scope.steps = append(scope.steps, stepCandidate(s, doc.tasks))
 	}
 

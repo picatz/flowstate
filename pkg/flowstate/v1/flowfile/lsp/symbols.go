@@ -141,8 +141,12 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 				return
 			}
 
-			target := doc.parsed.step(ref.step)
-			if !visibleFromEntry(target, from, ls) || target.idEntry == nil {
+			// Among the steps in scope at this position, not the first id match in
+			// the document: sibling blocks may each declare a body step of the
+			// same id, and jumping to the wrong block's — or, once visibility
+			// rejected it, nowhere at all — is what #323 was.
+			target := doc.parsed.stepVisibleFrom(ref.step, from, ls)
+			if target == nil || target.idEntry == nil {
 				return
 			}
 			locations = []lsp.Location{{URI: doc.uri, Range: target.idEntry.valueRange()}}
