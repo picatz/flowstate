@@ -3,6 +3,7 @@ package lsp
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,25 +67,31 @@ func TestHoverAnsweredWhenItArrivesWithDidOpen(t *testing.T) {
 		c := newClient(t)
 		c.initialize()
 
+		// require.NotNilf below is not a substitute: [documentStore.await]'s
+		// build deadline is 2s, and a build that lands just under that ceiling
+		// still answers non-nil and correct — a wall-clock threshold loose
+		// enough to tolerate scheduling jitter on a contended box is also loose
+		// enough for that failure mode to pass under it, which is the bug this
+		// test exists to catch wearing a passing assertion's clothes. So this
+		// asks the store directly rather than timing the round trip: hoverTrace
+		// records whether the wait that answered this hover ever gave up
+		// because [documentBuildTimeout] expired, as opposed to finding the
+		// document already landed. A hover racing an in-flight build honestly
+		// is allowed to wait — that is the mechanism #317 needs — but it must
+		// never be the deadline that ends the wait for a document that arrived
+		// in the same breath as its didOpen.
+		var boundExpired atomic.Bool
+		c.server.docs.setAwaitTrace(func(expired bool) { boundExpired.Store(expired) })
+
 		uri := "file:///race-open.yaml"
 		c.openNoWait(uri, raceSource)
 
 		at := positionOf(t, raceSource, "for_each:", 0)
-		start := time.Now()
 		got := c.hover(uri, at.Line, at.Character)
-		elapsed := time.Since(start)
 
 		require.NotNilf(t, got, "round %d: hover answered null for a document the client had already opened", round)
 		assert.Containsf(t, hoverText(got), "for_each", "round %d", round)
-		// A generous backstop rather than a tight one, matching the 5s bound this
-		// file uses elsewhere for the same reason (issue #431). require.NotNilf
-		// above is not a substitute: [documentStore.await]'s build deadline is 2s,
-		// and on a contended box a build that lands just under that ceiling still
-		// answers non-nil and correct — this is what needs to distinguish "hover
-		// answered from in-memory state" from "hover rode out most of the build
-		// wait before landing", which differ by much more than a second of
-		// scheduling jitter.
-		assert.Lessf(t, elapsed, 5*time.Second, "round %d: hover took %s, which is a wait that is not ending on the build", round, elapsed)
+		assert.Falsef(t, boundExpired.Load(), "round %d: hover's wait ended because documentBuildTimeout expired rather than because the document was found built, which the elapsed-time check this replaced could not tell apart from a fast answer", round)
 	}
 }
 
