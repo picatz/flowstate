@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -37,6 +39,16 @@ import (
 // fields per diagnostic all along, and this is only the text form agreeing with
 // the convention.
 
+// positionLine is the one join every rendered diagnostic line goes through:
+// path, a colon, and whatever comes after — no space, because a space between
+// the filename and the position is exactly the first of the three spellings
+// #384 found. Both path and tail arrive already themed where a caller has a
+// theme, so the styling wraps either half without touching the colon a
+// consumer matches on.
+func positionLine(path, tail string) string {
+	return path + ":" + tail
+}
+
 // diagnosticLine renders one diagnostic as `file:line:column: message`, or
 // `file:line: message` when no column is known.
 //
@@ -48,7 +60,7 @@ import (
 // document rather than a line in it, so there is no line to name. See
 // [flowfile.Diagnostic.Error], which supplies the leading separator.
 func diagnosticLine(path string, d flowfile.Diagnostic) string {
-	return path + ":" + d.Error()
+	return positionLine(path, d.Error())
 }
 
 // writeDiagnostics writes every diagnostic in ds, one standalone line each.
@@ -70,4 +82,52 @@ func diagnosticsError(path string, ds flowfile.Diagnostics) error {
 		lines = append(lines, diagnosticLine(path, d))
 	}
 	return errors.New(strings.Join(lines, "\n"))
+}
+
+// errDiagnosticsOf widens any error into the diagnostics it carries: a parse or
+// compile failure already returns [flowfile.Diagnostics] with a real line and
+// column, and anything else — a bare I/O or YAML-syntax error — becomes one
+// unpositioned diagnostic naming the whole document, [flowfile.Diagnostic]'s own
+// honest answer for a fact about the file as a whole. The `errors.As` pattern is
+// shared with [diagnosticsError]'s callers rather than repeated per command, so
+// a third command cannot widen an error its own way and spell the fallback
+// differently.
+func errDiagnosticsOf(err error) flowfile.Diagnostics {
+	var diagnostics flowfile.Diagnostics
+	if errors.As(err, &diagnostics) {
+		return diagnostics
+	}
+	return flowfile.Diagnostics{{Message: err.Error()}}
+}
+
+// writeErrDiagnostics reports err as one diagnostic line per position it
+// carries, each naming path and each danger-toned the way a refusal reads
+// elsewhere in `flow fix` and `flow fmt`.
+//
+// This is the call site both commands were missing: err handed whole to
+// theme.Danger.Render before this fix meant a multi-diagnostic compile failure
+// rendered its first line with a space after the filename and every line after
+// the first with no filename at all — the same two spellings #384 found in
+// `flow validate`, reintroduced here because [flowfile.Diagnostics.Error]
+// joins its members with newlines and knows no filename to put in front of
+// them.
+func writeErrDiagnostics(w io.Writer, theme ui.Theme, path string, err error) {
+	themedPath := theme.Muted.Render(path)
+	for _, d := range errDiagnosticsOf(err) {
+		fmt.Fprintln(w, positionLine(themedPath, theme.Danger.Render(d.Error())))
+	}
+}
+
+// errDiagnosticsProto widens err into the schema diagnostics a machine report
+// carries — [flowfile.Diagnostic.Proto] applied over [errDiagnosticsOf]'s
+// widening, shared by `flow fix` and `flow fmt` so a machine format and a
+// human-readable one describe the same failure from the same source rather
+// than each widening err its own way.
+func errDiagnosticsProto(err error) []*v1.Diagnostic {
+	diagnostics := errDiagnosticsOf(err)
+	out := make([]*v1.Diagnostic, 0, len(diagnostics))
+	for _, d := range diagnostics {
+		out = append(out, d.Proto())
+	}
+	return out
 }

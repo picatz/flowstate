@@ -231,22 +231,25 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 
 	result, err := flowfile.Fix(data)
 	if err != nil {
-		// Not YAML at all. Reported rather than returned, so one unparseable file
-		// does not stop the rest of a directory — but counted as a refusal, because
-		// the file is certainly not in the current edition.
+		// Not YAML at all, or [flowfile.Fix] refused before a first pass for a
+		// reason of its own (too large, stuck in a rewrite cycle) — either way
+		// reported rather than returned, so one unparseable file does not stop
+		// the rest of a directory, but counted as a refusal, because the file is
+		// certainly not in the current edition. Routed through the one
+		// formatter every text surface shares (#384): err may itself carry
+		// [flowfile.Diagnostics] with real positions, and rendering it with
+		// %v instead is exactly what gave `flow validate` two other spellings
+		// of the same fact.
 		if !machine {
-			fmt.Fprintf(reports, "%s: %s\n", theme.Muted.Render(path), theme.Danger.Render(err.Error()))
+			writeErrDiagnostics(reports, theme, path, err)
 		}
-		// Unpositioned: this is a fact about the whole document rather than a line
-		// within it, the same distinction [Diagnostic] draws with Line and Column
-		// both zero.
-		report.Refusals = []*v1.Diagnostic{{Message: err.Error()}}
+		report.Refusals = errDiagnosticsProto(err)
 		return fixOutcome{refused: true, report: report}, nil
 	}
 
 	for _, refusal := range result.Refusals {
 		if !machine {
-			fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), theme.Danger.Render(refusal.Error()))
+			fmt.Fprintln(reports, positionLine(theme.Muted.Render(path), theme.Danger.Render(refusal.Error())))
 		}
 		report.Refusals = append(report.Refusals, refusal.Proto())
 	}
@@ -255,7 +258,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	// stop `flow fix . && git commit`.
 	for _, note := range result.Notes {
 		if !machine {
-			fmt.Fprintf(reports, "%s:%s\n", theme.Muted.Render(path), note.Error())
+			fmt.Fprintln(reports, diagnosticLine(theme.Muted.Render(path), note))
 		}
 		report.Notes = append(report.Notes, note.Proto())
 	}
@@ -289,8 +292,8 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 			if !applied {
 				message = change.Pending
 			}
-			fmt.Fprintf(reports, "%s:%d: %s\n",
-				theme.Muted.Render(path), change.Line, theme.Warning.Render(message))
+			fmt.Fprintln(reports, diagnosticLine(theme.Muted.Render(path),
+				flowfile.Diagnostic{Line: change.Line, Message: theme.Warning.Render(message)}))
 		}
 		report.Changes = append(report.Changes, &v1.FixChange{
 			Line:    uint32(max(change.Line, 0)),
