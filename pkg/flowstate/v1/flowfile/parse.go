@@ -1531,7 +1531,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	}
 
 	step.Policy = c.policy(fields, path, r)
-	c.checkWaitPolicy(step, fields, path, r)
+	c.checkPolicyPlacement(step, fields, path, r)
 
 	return step
 }
