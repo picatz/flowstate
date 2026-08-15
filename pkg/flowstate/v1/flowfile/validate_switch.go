@@ -306,9 +306,10 @@ func switchCaseField(caseIndex, valueCount, valueIndex int) string {
 // either the step is a `wait_for_signal:` shaping `<name>` in its `outputs:`,
 // or the step is a `value:` step and `<name>` is [v1.ValueOutput] — the only
 // name a `value:` step ever produces. Either way, the shaping expression must
-// be conditionals over string literals all the way down (through the read-side
-// optional idioms `literalStringLeaves` also recognizes) — the approval gate's
-// ternary, or `examples/optional-dispatch`'s named `outcome`. Enum-typed
+// be conditionals over string literals all the way down (through the
+// `optMap`/`optFlatMap`/`orValue` optional idioms `totalStringLeaves` and
+// `optionalLeaves` also recognize) — the approval gate's ternary, or
+// `examples/optional-dispatch`'s named `outcome`. Enum-typed
 // workflow inputs extend this tier when they land. A `must:` constraint is
 // deliberately *not* mined for a domain: a constraint expression is not a
 // type. A `value:` step holding a literal rather than an expression is
@@ -346,8 +347,17 @@ func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
 		return nil, false
 	}
 
+	// The stored tree has `optMap`/`optFlatMap` already expanded by the parser
+	// into a comprehension over `@result`/`hasValue()` — the walk below matches
+	// on the call an author wrote, not on what cel-go turned it into, so it has
+	// to see the written form back. resolveMacros (audit.go, already depth-bounded
+	// by maxAuditResolveDepth) reconstructs it from the tracked macro calls.
+	// `steps.<id>.<name>` above contains no macros, so it is read from the raw
+	// AST unchanged; only the shaping expression needs this.
+	written := resolveMacros(shaped.GetExpr().GetExpr(), shaped.GetExpr().GetSourceInfo().GetMacroCalls(), 0)
+
 	var leaves []string
-	if !literalStringLeaves(shaped.GetExpr().GetExpr(), &leaves) {
+	if !totalStringLeaves(written, &leaves) {
 		return nil, false
 	}
 
@@ -365,20 +375,42 @@ func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
 	return domain, true
 }
 
-// literalStringLeaves walks a shaping expression and collects the string
-// literals it can produce, reporting false the moment any leaf is something
-// else — at which point the domain is open and every domain check stays silent.
-func literalStringLeaves(e *expr.Expr, into *[]string) bool {
+// totalStringLeaves walks a shaping expression and collects the string
+// literals it always evaluates to, reporting false the moment any leaf is
+// something else — at which point the domain is open and every domain check
+// stays silent.
+//
+// "Total" means e always produces one of the collected strings — as opposed to
+// [optionalLeaves], where absence is an acceptable outcome because something
+// upstream (an `orValue`) discharges it. The two are mutually recursive rather
+// than one function with a flag: which one a subexpression is walked under is
+// the soundness argument, and collapsing them would erase the distinction that
+// keeps optMap's absence case from being reported as a value.
+//
+// e must already be resolved through [resolveMacros] — see [switchDomain] — so
+// that `optMap`/`optFlatMap` appear as the calls an author wrote rather than as
+// the comprehensions cel-go expands them into.
+func totalStringLeaves(e *expr.Expr, into *[]string) bool {
 	switch {
 	case e.GetCallExpr() != nil:
 		call := e.GetCallExpr()
+
 		// The conditional operator, spelled the way cel-go names it. Only its
 		// two result branches contribute values; the condition itself decides
 		// which, and can be anything.
-		if call.GetFunction() != "_?_:_" || len(call.GetArgs()) != 3 {
-			return false
+		if call.GetFunction() == "_?_:_" && call.GetTarget() == nil && len(call.GetArgs()) == 3 {
+			return totalStringLeaves(call.GetArgs()[1], into) && totalStringLeaves(call.GetArgs()[2], into)
 		}
-		return literalStringLeaves(call.GetArgs()[1], into) && literalStringLeaves(call.GetArgs()[2], into)
+
+		// `<optional>.orValue(<string>)`: the one idiom that discharges
+		// optionality into a total result. The receiver walks first so a
+		// switch's own domain enumerates in the order the expression reads —
+		// the optional chain's values, then the fallback.
+		if call.GetFunction() == "orValue" && call.GetTarget() != nil && len(call.GetArgs()) == 1 {
+			return optionalLeaves(call.GetTarget(), into) && totalStringLeaves(call.GetArgs()[0], into)
+		}
+
+		return false
 
 	case e.GetConstExpr() != nil:
 		s, ok := e.GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
@@ -387,6 +419,61 @@ func literalStringLeaves(e *expr.Expr, into *[]string) bool {
 		}
 		*into = append(*into, s.StringValue)
 		return true
+
+	default:
+		return false
+	}
+}
+
+// optionalLeaves walks an optional-typed shaping expression and collects the
+// string literals it evaluates to when present. Absence (`optional.none`) is
+// not reported as a failure here — it is the caller's job, per [totalStringLeaves]'s
+// `orValue` case, to discharge it into a total value; a bare optional chain
+// with nothing discharging it is refused where it is used, not here.
+//
+// Deliberately excluded, each because recognizing it would either encode a
+// runtime claim the validator cannot check or has no reason to, since the
+// recommended idiom (`orValue`) already covers the case:
+//
+//   - `value()` — aborts evaluation on `optional.none` rather than producing a
+//     value, so treating it as contributing leaves would assert "the error path
+//     never reaches the dispatch, on both drivers", which is a claim about
+//     runtime behavior, not the file.
+//   - hand-written `optional.of(...)` / `optional.none()` — nothing stops an
+//     author from writing these instead of `optMap`, but no shipped idiom needs
+//     them recognized, and recognizing arbitrary calls broadens the walk past
+//     what it can prove.
+//   - `or()` / `hasValue()` — `or()` combines two optionals without producing
+//     a value at all, and `hasValue()` produces a bool, never a string; neither
+//     belongs in leaf position.
+func optionalLeaves(e *expr.Expr, into *[]string) bool {
+	switch {
+	case e.GetCallExpr() != nil:
+		call := e.GetCallExpr()
+
+		// `<optional>.optMap(v, body)`: the receiver decides *whether* a value
+		// exists, exactly as a conditional's condition decides *which* branch —
+		// neither decides *what* the strings are, so the receiver is not walked
+		// at all, even for completeness. A body that reads the bound variable
+		// (`optMap(v, v)`) hits an ident in leaf position of totalStringLeaves
+		// and correctly returns false.
+		if call.GetFunction() == "optMap" && call.GetTarget() != nil && len(call.GetArgs()) == 2 {
+			return totalStringLeaves(call.GetArgs()[1], into)
+		}
+
+		// `<optional>.optFlatMap(v, body)`: the body is itself optional-typed,
+		// unlike optMap's, so it is walked with this function rather than
+		// [totalStringLeaves].
+		if call.GetFunction() == "optFlatMap" && call.GetTarget() != nil && len(call.GetArgs()) == 2 {
+			return optionalLeaves(call.GetArgs()[1], into)
+		}
+
+		// A conditional choosing between two optional-typed branches.
+		if call.GetFunction() == "_?_:_" && call.GetTarget() == nil && len(call.GetArgs()) == 3 {
+			return optionalLeaves(call.GetArgs()[1], into) && optionalLeaves(call.GetArgs()[2], into)
+		}
+
+		return false
 
 	default:
 		return false
