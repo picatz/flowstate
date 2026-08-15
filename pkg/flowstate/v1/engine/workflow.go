@@ -477,13 +477,23 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// is the answer the caller asked for, and a run that cannot produce it has not
 		// succeeded.
 		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
-		if outputsErr != nil {
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: outputsErr.Error()}
+		if outputsErr == nil {
+			stepOutputs.RunOutputs = runOutputs
+			if sizeErr := v1.CheckRunResultSize(stepOutputs); sizeErr != nil {
+				logger.Error("cannot complete run", "error", sizeErr.Error())
+				outputsErr = sizeErr
+			}
 		}
-		stepOutputs.RunOutputs = runOutputs
-		if err := v1.CheckRunResultSize(stepOutputs); err != nil {
-			logger.Error("cannot complete run", "error", err.Error())
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: err.Error()}
+		if outputsErr != nil {
+			// Out through [compensate], the way every other failure leaves this
+			// function. A run that executed every step and then could not report
+			// them has failed, and a failed saga takes back what it did:
+			// reporting FAILED while leaving in place every resource those steps
+			// created is the outcome compensation exists to prevent, and it does
+			// not become acceptable because the failure arrived after the last
+			// step rather than during one.
+			return v1.PartialTranscript(stepOutputs),
+				compensate(ctx, exec, &ErrRunFailed{Message: outputsErr.Error()})
 		}
 
 		return stepOutputs, nil

@@ -1117,15 +1117,27 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
 	// workflow code is written down.
 	outputs, err := EvalRunOutputs(ctx, w, scope)
-	if err != nil {
-		// A run that cannot produce its declared outputs has not succeeded, and it
-		// gets the same accompanying transcript every other failure gets: every step
-		// did run, which is precisely why the outputs were reachable to evaluate.
-		return PartialTranscript(stepOutputs), err
+	if err == nil {
+		stepOutputs.RunOutputs = outputs
+		err = CheckRunResultSize(stepOutputs)
 	}
-	stepOutputs.RunOutputs = outputs
-	if err := CheckRunResultSize(stepOutputs); err != nil {
-		return PartialTranscript(stepOutputs), err
+	if err != nil {
+		// A run that cannot produce its declared outputs — because an expression
+		// failed, or because the transcript it computed is too large to record —
+		// has not succeeded, and it gets the same accompanying transcript every
+		// other failure gets: every step did run, which is precisely why the
+		// outputs were reachable to evaluate.
+		//
+		// And it takes back what it did, through the same undo log the failing
+		// path above runs. A saga that reports FAILED with entries still pending
+		// has left the world holding resources nobody will come back for; that
+		// the failure arrived after the last step rather than during one changes
+		// nothing about it. The durable driver reaches its own [compensate] on
+		// this path for the same reason, which is what keeps the two answering
+		// alike (invariant 3).
+		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
+			return runUndoTask(ctx, w.GetProfile(), entry)
+		}))
 	}
 
 	return stepOutputs, nil
