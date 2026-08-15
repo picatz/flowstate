@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -293,43 +294,85 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 				"output %q holds a secret reference, which a task output must never be: "+
 					"step outputs are written to workflow history", name)
 		}
-		scrubLiteral(scrubber, v.GetLiteral())
+		if v == nil {
+			continue
+		}
+		scrubMessage(scrubber, v.ProtoReflect())
 	}
 
 	return nil
 }
 
-// scrubLiteral redacts every string a CEL literal holds, recursively through a
-// list or a mapping.
-func scrubLiteral(scrubber *secrets.Scrubber, lit *expr.Value) {
-	if lit == nil {
-		return
-	}
+// scrubMessage redacts every string and byte field in a protobuf message,
+// including map keys and values and fields nested in lists or messages. Plugin
+// outputs use flowstate.v1.Value, whose non-literal variants can also carry
+// strings: notably Error.message, Structure entries, and ParsedExpr nodes. A
+// walk limited to Value.literal therefore leaves valid response shapes able to
+// carry a resolved secret into workflow history.
+func scrubMessage(scrubber *secrets.Scrubber, msg protoreflect.Message) {
+	msg.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+		switch {
+		case field.IsMap():
+			scrubMap(scrubber, value.Map(), field.MapKey(), field.MapValue())
+		case field.IsList():
+			list := value.List()
+			for i := 0; i < list.Len(); i++ {
+				list.Set(i, scrubFieldValue(scrubber, field, list.Get(i)))
+			}
+		default:
+			msg.Set(field, scrubFieldValue(scrubber, field, value))
+		}
+		return true
+	})
+}
 
-	switch kind := lit.GetKind().(type) {
-	case *expr.Value_StringValue:
-		kind.StringValue = scrubber.Scrub(kind.StringValue)
-	case *expr.Value_BytesValue:
-		// A plugin that decodes a secret input into bytes and returns it in a
-		// bytes output ships the credential to history unredacted unless this
-		// case exists — bytes are not a string, so the case above never
-		// matches, and there is otherwise nothing here that looks at them at
-		// all. [secrets.Scrubber]'s registered forms already include base64
-		// and hex, so a value transported as bytes and one transported as text
-		// are matched the same way; only the field kind holding it differs.
-		if scrubbed := scrubber.Scrub(string(kind.BytesValue)); scrubbed != string(kind.BytesValue) {
-			kind.BytesValue = []byte(scrubbed)
-		}
-	case *expr.Value_ListValue:
-		for _, element := range kind.ListValue.GetValues() {
-			scrubLiteral(scrubber, element)
-		}
-	case *expr.Value_MapValue:
-		for _, entry := range kind.MapValue.GetEntries() {
-			scrubLiteral(scrubber, entry.GetKey())
-			scrubLiteral(scrubber, entry.GetValue())
-		}
+func scrubMap(
+	scrubber *secrets.Scrubber,
+	m protoreflect.Map,
+	keyField, valueField protoreflect.FieldDescriptor,
+) {
+	type entry struct {
+		key   protoreflect.MapKey
+		value protoreflect.Value
 	}
+	entries := make([]entry, 0, m.Len())
+	m.Range(func(key protoreflect.MapKey, value protoreflect.Value) bool {
+		scrubbedKey := scrubFieldValue(scrubber, keyField, key.Value()).MapKey()
+		entries = append(entries, entry{scrubbedKey, scrubFieldValue(scrubber, valueField, value)})
+		return true
+	})
+	// Clear the original keys first: a scrubbed key is not necessarily equal to
+	// the key that arrived from the plugin.
+	var originalKeys []protoreflect.MapKey
+	m.Range(func(key protoreflect.MapKey, _ protoreflect.Value) bool {
+		originalKeys = append(originalKeys, key)
+		return true
+	})
+	for _, key := range originalKeys {
+		m.Clear(key)
+	}
+	for _, item := range entries {
+		m.Set(item.key, item.value)
+	}
+}
+
+func scrubFieldValue(
+	scrubber *secrets.Scrubber,
+	field protoreflect.FieldDescriptor,
+	value protoreflect.Value,
+) protoreflect.Value {
+	switch field.Kind() {
+	case protoreflect.StringKind:
+		return protoreflect.ValueOfString(scrubber.Scrub(value.String()))
+	case protoreflect.BytesKind:
+		original := string(value.Bytes())
+		if scrubbed := scrubber.Scrub(original); scrubbed != original {
+			return protoreflect.ValueOfBytes([]byte(scrubbed))
+		}
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		scrubMessage(scrubber, value.Message())
+	}
+	return value
 }
 
 // taskError classifies a plugin's task failure into the engine's own error

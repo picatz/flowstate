@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -162,6 +163,46 @@ func TestScrubPluginOutputsRedactsRegisteredValues(t *testing.T) {
 			"map":  flowstatev1.NewValue(map[string]any{"nested": material}),
 		},
 	}
+
+	require.NoError(t, scrubPluginOutputs(scrubber, outputs))
+
+	rendered := outputs.String()
+	assert.NotContains(t, rendered, material)
+	assert.Contains(t, rendered, secrets.Redacted)
+}
+
+// TestScrubPluginOutputsRedactsEveryValueVariant covers the response shapes
+// outside Value.literal. These are wire-valid plugin outputs too, and every
+// string they hold must be scrubbed before the output reaches workflow
+// history.
+func TestScrubPluginOutputsRedactsEveryValueVariant(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-in-a-non-literal-value"
+
+	scrubber := secrets.NewScrubber()
+	scrubber.AddValue(material)
+
+	outputs := &flowstatev1.Node_Outputs{NamedValues: map[string]*flowstatev1.Value{
+		"expression": {
+			Kind: &flowstatev1.Value_Expr{Expr: &expr.ParsedExpr{Expr: &expr.Expr{
+				ExprKind: &expr.Expr_ConstExpr{ConstExpr: &expr.Constant{
+					ConstantKind: &expr.Constant_StringValue{StringValue: material},
+				}},
+			}}},
+		},
+		"error": {
+			Kind: &flowstatev1.Value_Error_{Error: &flowstatev1.Value_Error{
+				Message: "backend reflected " + material,
+				Code:    flowstatev1.Value_Error_CODE_INTERNAL,
+			}},
+		},
+		"structure": flowstatev1.NewStructureMap(map[string]*flowstatev1.Value{
+			"key-" + material: flowstatev1.NewStructureList(
+				flowstatev1.NewLiteral("nested " + material),
+			),
+		}),
+	}}
 
 	require.NoError(t, scrubPluginOutputs(scrubber, outputs))
 
