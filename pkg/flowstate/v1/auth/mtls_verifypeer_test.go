@@ -98,6 +98,79 @@ func TestMTLSVerifierVerifyPeerRejectsNoMatchingSAN(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrMissingClaim)
 }
 
+// TestMTLSVerifierVerifyPeerReadsEachSANKind is the coverage the three
+// SubjectFrom spellings need, and staticcheck is what noticed it was missing:
+// `withEmailSAN` existed as a helper that nothing called, which is the shape of
+// a configuration option shipped without a test.
+//
+// The negative half is the point. Each case issues a leaf carrying *only* its
+// own SAN kind, so a verifier that quietly fell back to another kind — or to
+// the Subject DN, which this package deliberately never reads — would produce
+// the right subject for the wrong reason and pass a positive-only test.
+func TestMTLSVerifierVerifyPeerReadsEachSANKind(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		from    string
+		leaf    leafOption
+		subject string
+	}{
+		{
+			name:    "uri",
+			from:    auth.SubjectFromURISAN,
+			leaf:    withURISAN("spiffe://example.org/ns/ci/sa/runner"),
+			subject: "spiffe://example.org/ns/ci/sa/runner",
+		},
+		{
+			name:    "dns",
+			from:    auth.SubjectFromDNSSAN,
+			leaf:    withDNSSAN("runner.mesh.internal"),
+			subject: "runner.mesh.internal",
+		},
+		{
+			name:    "email",
+			from:    auth.SubjectFromEmailSAN,
+			leaf:    withEmailSAN("runner@example.org"),
+			subject: "runner@example.org",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ca := newTestCA(t, "root")
+			verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+				Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
+				ClientCAFile: ca.clientCAFile(t), SubjectFrom: test.from,
+				Namespace: "ci",
+			})
+
+			leaf := ca.issueLeaf(t, test.leaf)
+
+			principal, err := verifier.VerifyPeer(t.Context(), chainFor(t, leaf, ca))
+			require.NoError(t, err)
+			require.Equal(t, test.subject, principal.Subject)
+
+			// And the negative direction: an entry asking for one kind must not
+			// read another. A certificate carrying only a URI SAN cannot satisfy
+			// an entry configured for email, however plausible its contents.
+			for _, other := range []string{
+				auth.SubjectFromURISAN, auth.SubjectFromDNSSAN, auth.SubjectFromEmailSAN,
+			} {
+				if other == test.from {
+					continue
+				}
+
+				mismatched := newMTLSVerifier(t, auth.TrustedIssuer{
+					Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
+					ClientCAFile: ca.clientCAFile(t), SubjectFrom: other,
+					Namespace: "ci",
+				})
+
+				_, err := mismatched.VerifyPeer(t.Context(), chainFor(t, leaf, ca))
+				require.Error(t, err,
+					"a leaf carrying only a %s SAN satisfied an entry asking for %s", test.from, other)
+			}
+		})
+	}
+}
+
 // TestMTLSVerifierVerifyPeerRejectsRequireMismatch is the SAN-shaped version
 // of a claim rule: a certificate that chains to a trusted CA but whose
 // subject no require rule accepts is refused.
