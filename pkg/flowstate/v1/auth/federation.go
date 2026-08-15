@@ -53,12 +53,22 @@ type FederationPolicy struct {
 	// Allow are CEL rules gating credential assumption. When any are present, a
 	// request must match one of them.
 	//
-	// The attributes are the same names the assertion claims use: target, subject,
-	// audience, namespace, deployment, workflow, run, step, on_behalf_of,
-	// on_behalf_of_issuer, and claims. For example:
+	// The attributes are `target` and `audience`, plus two objects: `identity`,
+	// the authenticated caller, carrying subject, issuer, namespace and claims —
+	// the same four an egress or task-shape rule sees, meaning the same things —
+	// and `workload`, the assertion this request would mint, carrying subject,
+	// namespace, deployment, workflow, run, step, on_behalf_of,
+	// on_behalf_of_issuer and claims.
 	//
+	// Grouped rather than bare because `namespace` is a reserved identifier in
+	// CEL and cannot be a variable name, and a claim an operator carries could
+	// collide with any other reserved word. Under an object every name is a
+	// field, and no name is reserved.
+	//
+	//	# assumption policy
 	//	allow:
-	//	  - 'target == "aws-prod" && on_behalf_of.startsWith("repo:acme/infra:")'
+	//	  - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:acme/infra:")'
+	//	  - 'target == "partner" && identity.namespace == "acme"'
 	Allow []string `json:"allow,omitempty" yaml:"allow,omitempty"`
 
 	// Deny are CEL rules refusing credential assumption. A request matching any of
