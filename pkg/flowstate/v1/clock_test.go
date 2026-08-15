@@ -76,9 +76,18 @@ func TestLocalRunDefaultsToRealTime(t *testing.T) {
 }
 
 // TestVirtualClockResolvesALongSleepInstantly is the load-bearing proof from
-// #155: a workflow that sleeps for a day must run under test in well under a
-// second, deterministically, because that is the entire reason `flow test`'s
-// clock exists rather than the local driver's plain wall-clock sleep.
+// #155: a workflow that sleeps for a day advances the *virtual* clock by a
+// day without a real day passing, because that is the entire reason `flow
+// test`'s clock exists rather than the local driver's plain wall-clock
+// sleep. That is a claim about virtual time, checked below by asserting the
+// clock's own now advanced by exactly the sleep's duration; elapsed real
+// time is not what proves it.
+//
+// The real-time assertion below is [virtualClockRealTimeBackstop], not a
+// speed measurement: it exists to catch the clock injection being broken —
+// which turns this into a real day-long sleep — as a fast, deterministic
+// failure instead of a hang, not to bound how many milliseconds a busy test
+// binary takes to get there.
 //
 // Run this test with the injection in [runWithVirtualClock] deleted (pass
 // t.Context() to v1.Run directly, as the test above does) to see it go red —
@@ -99,7 +108,7 @@ func TestVirtualClockResolvesALongSleepInstantly(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, outputs.GetStepValues()["pause"].GetNamedValues()[v1.TimedOutOutput].GetLiteral().GetBoolValue())
 	require.Less(t, elapsed, virtualClockRealTimeBackstop,
-		"a 24h sleep took %s under a virtual clock; it should resolve close to instantly", elapsed)
+		"a 24h sleep took %s under a virtual clock; the clock injection is likely broken and this ran in real time", elapsed)
 
 	require.Equal(t, time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), clock.Now(),
 		"the virtual clock's own now did not advance by the sleep's duration")
