@@ -300,7 +300,7 @@ func compileAssumeRules(allow, deny []string, costLimit uint64) (assumeRules, er
 }
 
 // assumeVars builds the attributes a rule is evaluated against.
-func assumeVars(target, subject, audience string, identity WorkloadIdentity, ref StepRef) map[string]any {
+func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentity, ref StepRef) map[string]any {
 	claims := identity.Claims
 	if claims == nil {
 		// CEL cannot index a null map, and a rule reading claims["x"] for a
@@ -309,7 +309,7 @@ func assumeVars(target, subject, audience string, identity WorkloadIdentity, ref
 	}
 
 	who := workload{
-		Subject:          subject,
+		Subject:          mintedSubject,
 		Namespace:        orDefault(identity.Namespace),
 		Deployment:       orDefault(identity.Deployment),
 		Workflow:         ref.Workflow,

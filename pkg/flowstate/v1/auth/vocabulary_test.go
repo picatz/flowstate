@@ -1,8 +1,36 @@
 package auth
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
+
+	"github.com/picatz/jose/pkg/jwa"
 )
+
+type vocabularySecretRef struct{}
+
+func (vocabularySecretRef) GetScheme() string { return "env" }
+func (vocabularySecretRef) GetName() string   { return "DEPLOY_TOKEN" }
+
+// vocabularyExchanger is a minimal [Exchanger], just enough to prove
+// [Broker.Credential] actually reached the relying party rather than being
+// refused by policy, without pulling in the network fixtures the
+// auth_test-package broker tests use to exercise a real exchange.
+type vocabularyExchanger struct {
+	audience string
+	seen     []Assertion
+}
+
+func (e *vocabularyExchanger) Name() string { return "vocabulary-test" }
+func (e *vocabularyExchanger) Requirement() Requirement {
+	return Requirement{Audience: e.audience}
+}
+func (e *vocabularyExchanger) Exchange(_ context.Context, assertion Assertion) (Credential, error) {
+	e.seen = append(e.seen, assertion)
+	return Credential{Type: CredentialBearer, Provider: e.Name(), ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
 
 // One vocabulary, and the trap on the way to it.
 //
@@ -86,6 +114,76 @@ func TestIdentityIsTheCallerAndWorkloadIsTheAssertion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCallerSubjectRulesDecideOnTheCaller exercises both authorization paths,
+// rather than only inspecting the activation assembled for CEL. In particular,
+// the deny case guards the security-sensitive direction: a deny rule naming the
+// authenticated caller must still win when a separate allow rule names the
+// assertion Flowstate is about to mint.
+func TestCallerSubjectRulesDecideOnTheCaller(t *testing.T) {
+	t.Parallel()
+
+	identity, ref := callerFixture()
+	minted, err := identity.SubjectFor(ref)
+	if err != nil {
+		t.Fatalf("SubjectFor: %v", err)
+	}
+
+	t.Run("assumption allow", func(t *testing.T) {
+		// Routed through [Broker.Credential], the production call site, rather
+		// than through compileAssumeRules and assumeVars directly: those two
+		// calls are what Credential itself makes, so a test that builds its own
+		// activation would still pass if Credential's wiring swapped which
+		// subject it hands assumeVars, which is exactly the mistake this
+		// package's rename was fixing.
+		key, err := GenerateSigningKey("test-key", jwa.ES256)
+		if err != nil {
+			t.Fatalf("GenerateSigningKey: %v", err)
+		}
+		issuer, err := NewIssuer("https://issuer.example.com", key)
+		if err != nil {
+			t.Fatalf("NewIssuer: %v", err)
+		}
+
+		exchanger := &vocabularyExchanger{audience: "https://as.example.com"}
+		broker, err := NewBroker(issuer,
+			WithTarget("aws-prod", exchanger),
+			WithAssumeAllowRules(`identity.subject == "spiffe://acme/ci-runner"`),
+		)
+		if err != nil {
+			t.Fatalf("NewBroker: %v", err)
+		}
+
+		if _, err := broker.Credential(t.Context(), identity, ref, "aws-prod"); err != nil {
+			t.Fatalf("caller allow rule denied assumption: %v", err)
+		}
+		if len(exchanger.seen) != 1 {
+			t.Fatalf("exchanger saw %d assertions, want 1 (Credential must have reached the exchanger)", len(exchanger.seen))
+		}
+		if got := exchanger.seen[0].Subject; got != minted {
+			t.Errorf("assertion subject = %q, want the minted subject %q", got, minted)
+		}
+	})
+
+	t.Run("secret deny wins over workload allow", func(t *testing.T) {
+		policy, err := (SecretAccessPolicy{
+			Allow: []string{`workload.subject == "` + minted + `"`},
+			Deny:  []string{`identity.subject == "spiffe://acme/ci-runner"`},
+		}).Compile()
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+
+		err = policy.Authorize(t.Context(), identity, ref, vocabularySecretRef{})
+		if !errors.Is(err, ErrSecretDenied) {
+			t.Fatalf("caller deny rule returned %v, want ErrSecretDenied", err)
+		}
+		var denied *SecretDeniedError
+		if !errors.As(err, &denied) || denied.Reason != ReasonSecretDenyRule {
+			t.Fatalf("caller deny rule returned %v, want reason %s", err, ReasonSecretDenyRule)
+		}
+	})
 }
 
 // TestIdentityCarriesTheSameFieldsAsEveryOtherSurface is the portability claim
