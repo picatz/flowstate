@@ -130,6 +130,69 @@ steps:
 	}
 }
 
+// TestFmtDiagnosticsShareTheSameSpelling is the `flow fmt` counterpart to
+// TestLoadWorkflowDiagnosticsNameTheirFile: a file with more than one compile
+// diagnostic makes [flowfile.ParseFile] return [flowfile.Diagnostics], and
+// `flow fmt --check` rendered that error handed whole to a themed %v before
+// this fix — a space after the filename on the first line, and no filename at
+// all from the second diagnostic on, the same two spellings #384 found in
+// `flow validate`. #384's original fix routed `flow validate`, `flow run` and
+// `flow fix`'s per-diagnostic loops through the shared formatter; `flow fmt`
+// widened its own error with a bare Fprintf instead and kept the bug, which is
+// exactly the gap a corpus swept over one command cannot see.
+func TestFmtDiagnosticsShareTheSameSpelling(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "two-problems.yaml", `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    log:
+      message: ${vars.a +}
+    withh: nope
+`)
+
+	stdout, _, err := runFmtCommand(t, "--check", path)
+	require.Error(t, err, "the fixture must fail to compile, or it cannot see the multi-diagnostic bug")
+
+	assertLinkableDiagnostics(t, stdout)
+
+	lines := diagnosticLinesOf(stdout)
+	require.GreaterOrEqual(t, len(lines), 2,
+		"the fixture must produce more than one diagnostic or it cannot see the continuation-line bug")
+
+	for _, line := range lines {
+		assert.True(t, strings.HasPrefix(line, path+":"),
+			"every diagnostic line must stand alone and name its file, got %q", line)
+		assert.Regexp(t, linkablePosition, line)
+	}
+}
+
+// TestFixDiagnosticsShareTheSameSpelling is the `flow fix` counterpart. An
+// oversized file makes [flowfile.Fix] return a single-element
+// [flowfile.Diagnostics] as its own top-level error, which `flow fix --check`
+// rendered before this fix as `path: 1:1: message` — a space after the
+// filename, the first of the three spellings #384 found — because the
+// top-level error was handed to a themed %v instead of through the shared
+// formatter.
+func TestFixDiagnosticsShareTheSameSpelling(t *testing.T) {
+	dir := t.TempDir()
+	oversized := "edition: v2026.3\nname: big\nsteps:\n  - id: greet\n    log:\n      message: |\n        " +
+		strings.Repeat("x", 1<<20) + "\n"
+	path := writeFixture(t, dir, "big.yaml", oversized)
+
+	stdout, _, err := runFixCommand(t, "--check", path)
+	require.Error(t, err, "an oversized file must be refused, or it cannot see the bug")
+
+	assertLinkableDiagnostics(t, stdout)
+
+	lines := diagnosticLinesOf(stdout)
+	require.NotEmpty(t, lines, "the fixture produced no diagnostic line to check")
+	for _, line := range lines {
+		assert.True(t, strings.HasPrefix(line, path+":"), "got %q", line)
+		assert.Regexp(t, linkablePosition, line)
+	}
+}
+
 // diagnosticLinesOf keeps the lines of a report that carry a position, dropping
 // the summary words `validate` writes beside them.
 func diagnosticLinesOf(output string) []string {
