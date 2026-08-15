@@ -217,29 +217,42 @@ at a bounded resource produced a 500× misestimate of what was left.
   invisibly while REST barely moves. A few dozen thread reads went 2×
   over.
 - **Route the operation to the pool that has budget, and prefer REST.**
-  Reading review comments is `GET /repos/{o}/{r}/pulls/{n}/comments` —
-  REST, one call, complete bodies including `diff_hunk`. Reactions are
-  `POST /repos/{o}/{r}/pulls/comments/{id}/reactions` — REST. Replies are
-  `POST …/pulls/{n}/comments/{id}/replies` — REST. Only two things
-  genuinely require GraphQL: resolving a thread, and reading whether a
-  thread is resolved. Everything else the review loop does has a REST
-  spelling, so the scarce pool is spent on resolve mutations at roughly a
-  point each — hundreds per hour, which is far more than any review wave
-  needs.
-- **The MCP tools are not the only door.** `curl` through the proxy is
-  authenticated and reaches the whole REST API, including endpoints the
-  MCP surface does not expose. When an MCP tool fails on a GraphQL limit,
-  ask whether the thing you wanted has a REST endpoint before concluding
-  you are blocked — twice now the answer was yes and the block was
-  self-imposed. Direct `curl` also appears not to draw down the pool
+  Only two things in this loop genuinely require GraphQL: resolving a
+  thread, and reading whether a thread is resolved. Everything else has a
+  REST spelling, so the scarce pool is spent on resolve mutations at
+  roughly a point each — hundreds per hour, far more than any review wave
+  needs:
+
+      gh api repos/{o}/{r}/pulls/{n}/comments --paginate    # findings, with diff_hunk
+      gh api repos/{o}/{r}/pulls/{n}/reviews  --paginate    # review summary bodies
+      gh api repos/{o}/{r}/pulls/comments/{id}/reactions -f content=+1
+      gh api repos/{o}/{r}/pulls/{n}/comments/{id}/replies -f body=…
+      gh api repos/{o}/{r}/commits/{sha}/check-runs --paginate
+
+  **`--paginate`, always, on any listing.** `per_page` defaults to 30, so
+  the bare call silently truncates a PR with 31 findings, and the review
+  loop then reports it handled having never seen the rest — the exact
+  failure this section exists to prevent, reintroduced by the fix for it.
+  Codex caught this in the first draft of this very paragraph. `gh`
+  follows the `Link` headers itself, which is most of why it beats
+  hand-rolled requests here: the correct thing is also the shorter thing
+  to type.
+- **The MCP tools are not the only door.** `gh` is authenticated through
+  the proxy and reaches the whole REST API, including endpoints the MCP
+  surface does not expose. Install it once with
+  `GOBIN=/usr/local/bin go install github.com/cli/cli/v2/cmd/gh@latest`
+  if it is missing. When an MCP tool fails on a GraphQL limit, ask
+  whether the thing you wanted has a REST endpoint before concluding you
+  are blocked — twice now the answer was yes and the block was
+  self-imposed. Direct requests also appear not to draw down the pool
   `rate_limit` reports (five calls left `core.used` unmoved), so treat
   that counter as a floor on what is left rather than a precise gauge,
   and do not build a plan on its exact value. The same door does not open
   onto GraphQL: the proxy serves only a pinned set of PR-review
   operations there and answers anything else with a 403 telling you to
   use REST, so hand-written or batched GraphQL is not a way around an
-  exhausted GraphQL pool. Resolving threads goes through the MCP tools
-  or it waits.
+  exhausted GraphQL pool — `gh api graphql` gets the same 403. Resolving
+  threads goes through the MCP tools or it waits.
 - **Events beat polling.** Webhook activity already wakes a session on CI
   failures, review comments, and merges. The only legitimate polls are for
   state webhooks do not cover, and those get one deliberate check rather
