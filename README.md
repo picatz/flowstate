@@ -233,9 +233,9 @@ NEXT
   flow test my-pipeline
 
 $ go run ./cmd/flow run local my-pipeline/workflow.yaml
+running locally
 INFO hello, world
 COMPLETED workflow my-pipeline
-{"stepValues":{"greet":{"namedValues":{}}}, "runOutputs":null}
 
 $ go run ./cmd/flow test my-pipeline
 PASS  my-pipeline/workflow.test.yaml: the greeting uses the input it was given
@@ -280,11 +280,22 @@ Then run a workflow durably, through the server:
 $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
 started flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2; come back to it with `flow watch flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2`
 COMPLETED workflow flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2 run 019fe297-35dc-743c-b8c0-2a3c65e64f8a after greet, shout
-{"stepValues":{"greet":{"namedValues":{}}, "shout":{"namedValues":{}}}, "runOutputs":null}
 ```
 
-The same file run with `flow run local` prints the same steps and the same final
-document; the difference is that this one survives its worker being restarted.
+The same file run with `flow run local` reports the same steps; the difference is that
+this one survives its worker being restarted.
+
+Neither of those printed a document, because both were read by a person. Redirect one,
+or ask for a machine format, and the transcript is there in full — every field present,
+including the empty ones, so a `jq` path that works on one run works on the next:
+
+```console
+$ go run ./cmd/flow run local my-pipeline/workflow.yaml | jq -c
+running locally
+INFO hello, world
+COMPLETED workflow my-pipeline
+{"stepValues":{"greet":{"namedValues":{}}},"runOutputs":null}
+```
 
 `go install ./cmd/flow` puts `flow` on your `PATH` (at `$(go env GOPATH)/bin/flow`)
 once you'd rather not type `go run` every time. Everything above also has a `--help`,
