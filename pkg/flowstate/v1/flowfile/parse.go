@@ -958,7 +958,6 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 			declaration.Must = proto.String(v)
 		}
 	}
-
 	return declaration
 }
 
