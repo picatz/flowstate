@@ -58,7 +58,7 @@ var (
 	// name rather than the names themselves — which are the author's and are checked
 	// as names, not as keys.
 	inputKeys = []string{
-		"type", "required", "default", "description", "example", "sensitive",
+		"type", "values", "required", "default", "description", "example", "sensitive",
 		"min_len", "max_len", "min_items", "max_items", "must",
 	}
 	outputKeys = []string{"value", "description", "must", "sensitive"}
@@ -877,6 +877,12 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 			strings.Join(v1.DeclaredTypeNames(), ", "))
 	}
 
+	if f, found := fields.get("values"); found {
+		valuesPath := fieldPath(path, "values")
+		declaration.Values = c.enumValues(f.value, valuesPath,
+			ref{path: valuesPath, label: "input " + e.name + " values"})
+	}
+
 	if f, found := fields.get("required"); found {
 		requiredPath := fieldPath(path, "required")
 		if required, ok := c.boolean(f.value, requiredPath,
@@ -954,6 +960,48 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 	}
 
 	return declaration
+}
+
+// enumValues compiles an input declaration's `values:` list — the closed set a
+// `type: enum` input may hold.
+//
+// This is the shape half only: whether `values:` belongs here at all (it does
+// not, beside anything but `type: enum`) and whether an enum declares at
+// least one are set-facts about the *declaration as a whole*, judged in
+// [validateInputConstraintShape] once the whole declaration exists to judge —
+// the same split the schema's own doc on [v1.InputDeclaration_values] draws
+// between what a compiler decides and what [v1.CheckInputConstraintShape]
+// decides for a specification that never was a Flowfile. What belongs here is
+// only what this one key's own value can be wrong about: a scalar or a
+// mapping written where a list belongs.
+func (c *compiler) enumValues(n ast.Node, path string, r ref) []string {
+	n = c.resolve(n, path, r)
+	if n == nil {
+		return nil
+	}
+	c.pos.record(path, spanOfNode(n))
+
+	sequence, ok := n.(*ast.SequenceNode)
+	if !ok {
+		c.report(spanOfNode(n), r,
+			"must be a list of the values this input may hold, like [staging, production], but %s was written here",
+			describeNode(n))
+		return nil
+	}
+
+	// An empty list is not a shape mistake this function can see — `values: []`
+	// parses as a perfectly good, empty list — so it is left to
+	// [validateInputConstraintShape], which reports "enum with no values" the
+	// same way whether the key was omitted or written empty, against the
+	// declaration as a whole rather than a list with nothing in it to point at.
+	values := make([]string, 0, len(sequence.Values))
+	for i, value := range sequence.Values {
+		elementPath := indexPath(path, i)
+		if text, ok := c.text(value, elementPath, ref{path: elementPath, label: r.label}); ok {
+			values = append(values, text)
+		}
+	}
+	return values
 }
 
 // declaredOutputs compiles the top-level `outputs:` block: one named expression per

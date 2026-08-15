@@ -918,6 +918,18 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 	for _, declaration := range declarations {
 		entry := yaml.MapSlice{{Key: "type", Value: v1.DeclaredTypeName(declaration.GetType())}}
 
+		// Written right after `type:`, the position [declaredInput] reads it
+		// from and the position an author reaches for: the closed set a
+		// `type: enum` input holds is the next thing about the type worth
+		// knowing, above whether the input is required or what it defaults to.
+		if len(declaration.GetValues()) > 0 {
+			values := make([]any, 0, len(declaration.GetValues()))
+			for _, value := range declaration.GetValues() {
+				values = append(values, textToYAML(value))
+			}
+			entry = append(entry, yaml.MapItem{Key: "values", Value: values})
+		}
+
 		// Only when true. An input that says `required: false` has asked for the
 		// default, and writing it back would make two identical workflows produce
 		// different documents depending on whether one spelled the default out — the
