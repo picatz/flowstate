@@ -1,0 +1,1632 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/signal.proto";
+import "flowstate/v1/task.proto";
+import "flowstate/v1/trigger.proto";
+import "flowstate/v1/value.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/duration.proto";
+
+option go_package = "flowstatev1";
+
+// Workflows in Flowstate is a collection of steps that can be executed in a
+// specific order. Each step within a workflow can have inputs and outputs,
+// and can be a task that performs some action. The workflow can be run and the
+// outputs of each step are collected in a structured way that allows for subsequent
+// steps to access the outputs of previous steps.
+message Workflow {
+  // StepOutputs is a map of step IDs to their outputs. Each step's outputs are
+  // represented as a map of named values, allowing for structured outputs that
+  // can be referenced by subsequent steps in the workflow.
+  //
+  // This is used to collect the outputs of each step in the workflow, which can
+  // then be used as inputs to other steps or returned as the final result of the
+  // workflow run.
+  message StepOutputs {
+    map<string, Node.Outputs> step_values = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).map = {
+        keys: {string: {min_len: 1}}
+      }
+    ];
+
+    // RunOutputs are the values [Workflow.declared_outputs] promised, once this
+    // run has computed them. Unset for a workflow that declares none, and unset
+    // for a run that has not finished.
+    //
+    // # Why the answer travels beside the transcript
+    //
+    // This message *is* what a finished run hands back (the local driver returns
+    // it and the durable workflow completes with it), so it is the one value both
+    // drivers already carry out of a run. A field here is therefore how the answer
+    // reaches a caller without either driver changing shape, which is what keeps
+    // `flow run local` and a durable run reporting one thing (invariant 3).
+    //
+    // The alternative was a new result message wrapping both. That is a *different
+    // type* on the workflow's completion payload, and a run that completed before
+    // the change is read back by decoding its stored payload into whatever type the
+    // reader names, so an old result would be decoded as a new message and mean
+    // something else, or fail. Adding a field is free and reads back as absent
+    // (invariant 10); replacing the type is not, and this is a payload nobody can
+    // rewrite after the fact.
+    //
+    // It stays a distinct message rather than more entries in `step_values` for the
+    // reason [RunOutputs] gives: the transcript is keyed by the step that produced
+    // each value, and these are the few values the *workflow* said it would report.
+    // A reader never has to ask which of the two it is holding, because they are
+    // different fields of different types.
+    //
+    // Meaningless on the copies of this message that are not a run's result (a
+    // scope's visible outputs, one loop iteration's results, the outputs carried
+    // across a Continue-As-New), where it is simply never set. The run's own end is
+    // the only place anything writes it.
+    RunOutputs run_outputs = 2;
+  }
+
+  // Workflow is identified by a unique name.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$" // Alphanumeric, dashes, and underscores.
+    }
+  ];
+
+  // Workflows can have an optional description that provides additional context or
+  // information about the workflow itself that may be useful for users or developers.
+  optional string description = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Steps are the individual tasks or operations that make up the workflow.
+  // Each step is represented by a Node, which can be a task or another type of
+  // operation. The steps are executed in the order they are defined in the workflow.
+  // Each step can have its own inputs and outputs, allowing for complex workflows
+  // that can perform a variety of operations.
+  repeated Node steps = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+
+  // Field 4 was `map<string, Value> inputs`, meant as initial data for a workflow.
+  //
+  // Nothing ever wrote it and nothing ever read it. No Flowfile key compiled to it,
+  // no RPC carried a value for it, and no evaluation bound a name from it. The
+  // parser answers `inputs:` at this level with "unknown key", listing the keys that
+  // do exist. It was a shape held open for a feature, and the feature it is now
+  // wanted for is not this one: Phase 2's parameters are typed and declared, not a
+  // bare map, and they belong in a message that can say so.
+  //
+  // Reserved by *name* as well as by number, which is the part that matters here.
+  // There is no custom data converter, so Temporal's default composite converter
+  // reaches ProtoJSON before Proto and every specification in a workflow's history
+  // is stored with field *names*. A future `inputs` of a different shape would
+  // therefore be read out of an old history by name and silently mean something
+  // else, which the number alone does not prevent.
+  //
+  // The same fact has a cost, and it is worth stating once here because it applies
+  // to every deletion in this file rather than to this one. Temporal's ProtoJSON
+  // converter is built with `protojson.UnmarshalOptions{}` (`DiscardUnknown` is
+  // false), so a history whose stored specification carries a deleted field does
+  // not decode at all:
+  //
+  //   unable to decode: proto: (line 1:68): unknown field "inputs"
+  //
+  // Measured, not assumed. A run in flight when the field goes away therefore fails
+  // rather than ignoring it, and the failure is at the worker rather than at
+  // submission.
+  //
+  // Accepted here on the same terms as the two deletions already in this file:
+  // `Task.description` below, and the three retired tasks. Nothing in this
+  // repository ever set `inputs`, no release has ever been tagged, and a schema
+  // change that a run cannot survive is what an *edition* boundary is for. What
+  // would not be acceptable is doing it quietly: a deletion that costs an in-flight
+  // run has to be a decision somebody made, which is why it is written down.
+  reserved 4;
+  reserved "inputs";
+
+  // Labels are key-value pairs that can be used to organize and categorize workflows.
+  map<string, string> labels = 5 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+    }
+  ];
+
+  // Profile names the vocabulary every expression in this workflow was compiled
+  // against: which CEL extension libraries are in scope.
+  //
+  // Set by the compiler, not written by an author. There is deliberately no
+  // `profile:` key: an author choosing a vocabulary per file is how a file came to
+  // have two of them, which is what one profile removes.
+  //
+  // Recorded rather than resolved at execution because a run has to keep meaning
+  // what it meant. A future build that adds a library must not change how an
+  // expression already stored in `RunState` evaluates (invariant 10), and
+  // "whatever this worker has" is a set that changes underfoot. A profile name has
+  // frozen membership, so a worker resolves the name rather than asking what it
+  // ships with, and refuses a name it does not know.
+  //
+  // A different axis from `edition:`, and the distinction is load-bearing. An
+  // edition is a property of a *file*: read when it compiles, gone afterwards, and
+  // retiring one affects nothing already executing. A profile is a property of a
+  // *run*, and travels.
+  //
+  // Empty means a spec compiled before this field existed, which resolves to the
+  // first profile: a compatibility arm rather than a guess, since nothing has been
+  // released and such a spec can only have come from a build whose one vocabulary
+  // was that profile's.
+  string profile = 6 [(google.api.field_behavior) = OPTIONAL];
+
+  // Vars are named expressions evaluated once at the start of the run, visible to
+  // every step as `vars.<name>`.
+  //
+  // They exist because the alternative is repetition: a value derived once and used
+  // in six places is written six times today, and the six copies drift. A `cel` step
+  // can compute one, but then it is a step: it occupies the step budget, appears in
+  // the run's outputs, and has to be ordered before everything that reads it.
+  //
+  // # Rooted, not bare
+  //
+  // `vars.<name>` rather than `<name>`, which is the same decision `steps.<id>` made
+  // and for the same reason: rooting makes a collision between a var and a step id
+  // *unrepresentable* rather than something a validation rule has to forbid. What
+  // stays bare is only what is bound where the expression is written: a `for_each`
+  // iterator, `now` inside `wait_until:`, the names a task resolves against its own
+  // scope. Those are bare bindings; see [Scope.vars].
+  //
+  // # Two sites, and only this one is rooted
+  //
+  // `vars:` is also accepted on a step, where it means something deliberately
+  // different: a step's vars are *bare* within that step (`${modified}`), because
+  // they are author-chosen and lexically local, the same standing as a loop
+  // binding. Only the workflow-level ones are ambient, so only these are rooted.
+  // See [Scope.vars] for where a step's land.
+  //
+  // # Shadowing is refused, not resolved
+  //
+  // A bare name must be unique against every bare name in scope: a step var may not
+  // collide with an enclosing loop binding, a loop binding may not collide with an
+  // enclosing step var, and neither may be `now`. `flow validate` reports the
+  // collision at the inner declaration. Silent shadowing is how `${body}` comes to
+  // mean two things eleven lines apart.
+  //
+  // Nothing needs to be refused *here*, at the workflow level, because these are
+  // rooted: `vars.region` cannot collide with anything, which is the whole reason
+  // the ambient half of the namespace is rooted at all.
+  map<string, Value> vars = 7 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
+
+  // DeclaredInputs are the parameters a run may be started with, each declared
+  // with a name and a type.
+  //
+  // A workflow that cannot be parameterized has to be *edited* to be reused: the
+  // same file with one URL changed becomes a second file, and the second one
+  // drifts from the first. These are what let one file serve both runs, which is
+  // also what makes a workflow something an agent or a schedule can invoke rather
+  // than something a person forks.
+  //
+  // # Declarations, not a map
+  //
+  // Field 4 was `map<string, Value> inputs` and is reserved above, which is most
+  // of the argument already: a bare map is a shape held open, and every consumer
+  // of it has to invent the same missing half for itself. The consumers that want
+  // this want *different* halves: the language server type-checks an expression
+  // against the environment a run will actually have, `flow run --input k=v` has
+  // to turn a command line's strings into typed values, a schedule binds its
+  // arguments once and statically, and a Nexus operation has a signature. Not
+  // one of them can be built over a map whose values are whatever arrived.
+  // Declaring the shape once, here, is what lets all four read the same answer
+  // instead of drifting apart holding four guesses.
+  //
+  // # Named for what it holds
+  //
+  // Not `inputs`. That name is reserved above by *name* as well as by number, for
+  // a reason that has not expired: there is no custom data converter, so a
+  // specification is stored in history through ProtoJSON, by field name, and an
+  // `inputs` of a new shape would be read out of an old history as the old one.
+  //
+  // The name is honest anyway, because these are not the values. What a caller
+  // passes is [RunRequest.inputs]; what the specification carries is the
+  // declaration of what may be passed. A run carries both, they are different
+  // things, and they are wanted at different moments: the declaration when the
+  // file is written and type-checked, the values when a run is submitted.
+  //
+  // # Size (invariant 9)
+  //
+  // These ride in the specification, so `CheckSpecSize` weighs them at submit and
+  // `CheckRunStateSize` weighs them again through [RunState.workflow] at every
+  // Continue-As-New. Both call `proto.Size` on the whole message rather than
+  // summing the fields they know about, so a field added here is bounded on the
+  // day it is added and nobody has to remember to count it.
+  repeated InputDeclaration declared_inputs = 8 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+
+  // DeclaredOutputs are the values a finished run reports: named expressions,
+  // evaluated once the steps are done.
+  //
+  // Nothing carries a value out of a run today. `vars:` names a value inside the
+  // file, and the retirement edition took away `cel:`, which was the one step
+  // whose purpose was to shape a final answer, so a run's result is now the
+  // union of whatever its steps happened to produce. That is a transcript, not a
+  // result: whoever reads the run has to already know which step's which output
+  // was the point, which is exactly the knowledge a caller on the other side of
+  // an RPC does not have.
+  //
+  // # Why the computed values are a different message
+  //
+  // These are declarations and travel with the specification; what a particular
+  // run computed is [RunOutputs] and belongs to that run. Widening one message to
+  // carry both would make every reader check which half it was holding, and would
+  // put an expression and its result in the same field, the shape that makes it
+  // possible to confuse "what this workflow promises" with "what this run
+  // returned". Two messages also keep the addition additive on both sides: a
+  // field added to either is free, where widening either would be breaking.
+  //
+  // The expression is evaluated by the run, at the end, in the run's own scope.
+  // It is not a value a caller supplies, which is the mirror image of the rule on
+  // [RunRequest.inputs] and worth reading beside it. Which names that scope holds
+  // (`steps`, `vars`, `inputs`) is the compiler's business, not the schema's.
+  repeated OutputDeclaration declared_outputs = 9 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+
+  // Triggers are the ways this workload is *meant* to start other than somebody
+  // asking for it, declared by the file and acted on by nobody until a person
+  // says so.
+  //
+  // # Why a declaration lives in the specification at all
+  //
+  // A schedule is arguably a property of a deployment rather than of a file: two
+  // environments running the same workflow will want different cadences, and the
+  // artifact that records "this exists and fires at 09:00" is a Temporal
+  // Schedule, which lives in a cluster and not in a repository. All of that is
+  // true, and none of it makes the *intent* a deployment's. "This report is a
+  // daily report" is a fact about the workload, written by whoever wrote the
+  // steps, and reviewed with them.
+  //
+  // So the file declares and the operator creates, and the two are different
+  // acts. Nothing here starts anything: `Run` ignores this field entirely, and
+  // `flow run` does not create a schedule, because a file that begins running on
+  // its own the moment it merges is a surprise, and a surprise with a cost, since
+  // the first firing is indistinguishable from somebody having deliberately
+  // started it. Creating one is `CreateSchedule`, where a human is present to be
+  // refused.
+  //
+  // # Why it travels with the workflow rather than sitting in the request
+  //
+  // The alternative was a schedule spec on [CreateScheduleRequest] alone, keeping
+  // the specification free of anything that does not execute. It was rejected for
+  // costing more than it saves: the Flowfile compiles to this message and nothing
+  // else, so a `triggers:` block with no field would either be dropped on the
+  // floor (the shape `flow fix`'s history says never to build) or would need a
+  // second compilation output that only one command reads, and `flow compile`
+  // would then answer with less than the file says.
+  //
+  // Carried into a run's history as part of the specification, which costs a few
+  // bytes per run and is weighed by the same `CheckSpecSize` as everything else
+  // (invariant 9). That is the price of one compiled artifact, and it is small.
+  Triggers triggers = 10 [(google.api.field_behavior) = OPTIONAL];
+
+  // Signals declares, per signal name, who may deliver it. See
+  // [SignalPolicy]. Absent for a name means today's behavior: any
+  // authenticated caller who can address the run in its tenant may deliver
+  // that signal, exactly as before this field existed. Authorization is
+  // therefore opt-in per signal name, deliberately: failing closed on every
+  // existing workflow the day this field appears would turn every signal
+  // user's next `flow signal` into a denial for a policy nobody wrote.
+  //
+  // # Enforced where the signal is accepted, not where it is read
+  //
+  // A workflow can already gate its own logic on `steps.<wait>.sender`, and
+  // that is real, but it is a check the workflow performs, so it is a check
+  // the workflow's own author can skip: delete the `if:`, and the gate is
+  // gone. This field is read by `FlowstateServer.Signal`, before Temporal
+  // ever sees the signal, against the caller's authenticated identity. A
+  // rejected sender never reaches the workflow at all, and gets
+  // `PermissionDenied` synchronously rather than a signal that was silently
+  // dropped or a wait that quietly never resolves. See lifecycle.go's
+  // `Signal` handler.
+  //
+  // # Frozen at submit, like the rest of the specification
+  //
+  // The whole specification is frozen once a run starts (invariant 10) so
+  // that a run means the same thing on its last segment as its first; this
+  // field is no exception; it is extracted into the run's tenancy memo
+  // alongside the namespace at submit and never re-read from the
+  // specification afterward, which is also what makes it cheap to enforce:
+  // the same `DescribeWorkflowExecution` that already establishes tenancy
+  // for every verb in lifecycle.go answers this too, at no extra Temporal
+  // round trip.
+  //
+  // # Per name, not per wait
+  //
+  // A signal may legitimately arrive before the wait that will consume it is
+  // reached (that is what `PendingSignal` carry exists for), so the server
+  // knows the signal's *name* when it must decide, never which wait (if any)
+  // is currently parked on it. The policy is keyed by name for exactly that
+  // reason: it is the only unit the accepting boundary can actually ask
+  // about. A `wait_for_signal:`-local spelling would only be a projection of
+  // this map back onto one call site, and two waits on the same name with
+  // different local policies would be an ambiguity the compiler would have
+  // to refuse. Better not to have the ambiguity at all.
+  //
+  // # Bounded (invariant: bound anything that consumes untrusted input)
+  //
+  // A hand-built specification can reach `Run` directly, so this is
+  // untrusted input like the rest of the spec: at most 64 signal names, each
+  // with at most 32 alternative rules ([SignalPolicy.allow]), each rule with
+  // at most 16 claim entries. `CheckSpecSize`/`CheckRunStateSize` also weigh
+  // the whole message via `proto.Size`, so this is bounded twice over: by
+  // shape here, and by total bytes there.
+  map<string, SignalPolicy> signals = 11 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+          pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+        }
+      }
+      max_pairs: 64
+    }
+  ];
+
+  // PluginRequirements are the minimum compatible plugin versions written in
+  // the Flowfile. ResolvedPlugins is the immutable selection made by the
+  // control plane before a durable run is accepted.
+  repeated PluginRequirement plugin_requirements = 12 [(buf.validate.field).repeated = {max_items: 64}];
+  repeated ResolvedPlugin resolved_plugins = 13 [(buf.validate.field).repeated = {max_items: 64}];
+}
+
+// PluginRequirement is what a Flowfile's plugins: block declares: a plugin
+// this workflow needs, by name, at or above a minimum version with the same
+// major. It is the author's half of the pinning contract; submission resolves
+// each requirement against the deployment's catalog into a [ResolvedPlugin],
+// and a requirement no installed plugin satisfies refuses the run before
+// anything durable is created.
+message PluginRequirement {
+  string name = 1 [(buf.validate.field).string = {pattern: "^[a-z][a-z0-9_-]*$"}];
+  string minimum_version = 2 [(buf.validate.field).string = {pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+$"}];
+}
+
+// ResolvedPlugin is part of the replay contract, not merely inventory. All
+// fields identify the behavior selected for this run and must match a worker
+// before it executes plugin work.
+message ResolvedPlugin {
+  string name = 1;
+  string version = 2;
+  uint32 protocol_version = 3;
+  string task_schema_digest = 4;
+  string distribution_digest = 5;
+}
+
+// InputDeclaration is one parameter a run may be started with: what it is
+// called, what a value for it must be, whether it may be left out, and what it
+// is for.
+//
+// # What the schema checks, and what the compiler checks
+//
+// The schema checks what a single declaration can be wrong about on its own: the
+// name is a CEL identifier of bounded length, the type is a defined value other
+// than unspecified, the description fits. Everything that is a fact about a *set*
+// of declarations, or about a name CEL's lexer will not accept, is the
+// compiler's: protovalidate rules are per-field and RE2 has no negative
+// lookahead, so a rule spelled here that cannot hold is worse than no rule, per
+// this file's own history with nineteen of them.
+//
+// Deferred to the compiler, deliberately and in one list so nobody has to
+// rediscover it:
+//
+//   - Two declarations may not share a name. A repeated field cannot say so.
+//   - The names `true`, `false`, `null` and `in` are refused. They are CEL lexer
+//     tokens, so `inputs.in` is a syntax error in the grammar itself rather than
+//     an unknown field, the same four that are refused as step ids, and for the
+//     same reason. The other seventeen CEL reserved words are fine here (see
+//     `name` below).
+//   - A `default` must be a literal, not an expression and not a secret
+//     reference. [Value] is a oneof and protovalidate rules attach to fields, so
+//     "which arm" is not something this file can require.
+//   - A required input with a default is a contradiction, and one of the two is
+//     a mistake worth naming rather than resolving by precedence.
+//   - Whether a submitted value matches the declared type, which is the check
+//     at submit. See [RunRequest.inputs].
+message InputDeclaration {
+  // Type is the shape a value must have to be accepted.
+  //
+  // An enum rather than a type *expression* like [TaskField.type], and the
+  // difference between those two fields is the difference between what they are
+  // for. A TaskField is documentation: it is rendered for a person or an agent
+  // reading the catalog, and `list[string]` is the right answer there because it
+  // is what an author would say. This one is *enforced*, at submit, against a
+  // value some caller chose, so it has to be a closed set the schema can
+  // constrain and every consumer can switch on. Spelling it as a string would put
+  // a parser for the same small type language into the CLI, the server, the
+  // language server and the compiler, which is the "one value written down four
+  // times" failure this repository keeps finding in other clothes.
+  //
+  // These are the six of [Value.Type] that describe *data*, with the same names
+  // and the same numbers. The two left out are TYPE_EXPR and TYPE_ERROR, and they
+  // are precisely the two that are not data: an expression is something a run
+  // evaluates, and a caller does not get to send one. Sharing numbers does not
+  // make the enums interchangeable: the sets differ, so a conversion between
+  // them is a switch somebody wrote and somebody reviewed, never a cast.
+  //
+  // A parameterized type (a list *of* what) is not expressible here yet, on
+  // purpose. An element type that nothing checks is decoration, which is the rule
+  // that put this whole surface in Phase 2 with its checker; and an added enum
+  // value or an added field is free later, where a wrong one is not.
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_STRING = 1;
+    TYPE_INT = 2;
+    TYPE_FLOAT = 3;
+    TYPE_BOOL = 4;
+    TYPE_STRUCT = 5;
+    TYPE_LIST = 6;
+    // 7 and 8 are deliberately holes: on [Value.Type] those numbers are
+    // TYPE_EXPR and TYPE_ERROR, which are not data and so have no
+    // counterpart here (see above).
+    reserved 7, 8;
+    TYPE_ENUM = 9;
+  }
+
+  // Name is what the input is called, and how an expression reaches it:
+  // `${inputs.<name>}`.
+  //
+  // Stricter than a step id's pattern, which takes dashes for historical latitude
+  // and then has the compiler refuse the ones CEL cannot read. There is no
+  // history here, so the boundary refuses them outright: this pattern *is* a CEL
+  // identifier.
+  //
+  // Rooting under `inputs` is what keeps the rest of the question small, the same
+  // way `steps.<id>` did (invariant 2). A name here is a field selection rather
+  // than an identifier, so seventeen of CEL's twenty-one reserved words are legal
+  // (`namespace`, `loop`, `if` and the rest) and only the four lexer tokens are
+  // not. Nothing needs refusing against `steps`, `vars` or `now` either: an input
+  // called `steps` is `inputs.steps`, which cannot collide with anything, which is
+  // the entire reason ambient namespaces get a root.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$" // A CEL identifier, so `inputs.<name>` parses.
+    }
+  ];
+
+  // Type is what a submitted value must be, checked at submit rather than where
+  // the value is first read. A run that is going to be refused for a bad argument
+  // should be refused while the caller is still there to be told, not three steps
+  // in with two requests already sent.
+  Type type = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).enum = {
+      defined_only: true
+      not_in: [0]
+    }
+  ];
+
+  // Required reports that a run cannot start without this input.
+  //
+  // The default is false, which means optional, which is the safe direction for a
+  // field being added to a schema: a declaration written before anyone thought
+  // about optionality does not silently start refusing runs. Fail-closed lives at
+  // the other end of this surface: an *undeclared* input is refused, and a value
+  // of the wrong type is refused, where the thing being denied is something a
+  // caller sent rather than something an author forgot.
+  bool required = 3;
+
+  // Default is the value used when the caller passes nothing.
+  //
+  // A [Value] rather than a string, so that a default for an int input is an int
+  // and nobody writes a second coercion path for defaults alongside the one for
+  // submitted values. It must be a literal: an expression here would be evaluated
+  // somewhere, and the only place with a scope to evaluate it in is the run,
+  // which would make a default a different kind of thing from the value it stands
+  // in for. The compiler enforces that, per the list on the message above.
+  Value default = 4;
+
+  // Description is prose for whoever is supplying the value: a person reading
+  // `flow run --help`, an agent choosing arguments, an editor's hover. It is the
+  // only part of a declaration written *for the caller* rather than for the
+  // machine, which is why it is worth carrying rather than leaving in a comment
+  // the compiler throws away.
+  optional string description = 5 [(buf.validate.field).string = {max_len: 256}];
+
+  // Example is an illustrative value for this input, never applied at runtime.
+  //
+  // `default` and `example` used to be one field, because `default` was the only
+  // way to make a workflow runnable unattended, so a required-feeling input like
+  // "who is asking" ended up with a specific person as its default, which is
+  // incoherent: there is no sensible absent value for who is asking, only a
+  // plausible one to paste. The two are different things. A default is applied
+  // when a caller supplies nothing, and is legitimate only when absence itself
+  // has a meaning (`region: us-east-1`). An example is what a caller unsure what
+  // to send would copy, is legal on a required input precisely because a required
+  // input cannot have a default, and is checked against this declaration's own
+  // type and constraints when the specification compiles: a stale example that
+  // no longer satisfies its own `must:` is a diagnostic, not a value nobody
+  // notices went wrong. It is never bound to a run; it exists for an editor's
+  // hover, a generated doc, and a machine caller's schema.
+  Value example = 6;
+
+  // Sensitive marks a value as private but not secret: a salary in an approval, a
+  // customer's email. These are values a run legitimately computes on and that
+  // legitimately ride in history, but that should not be casually pasted into a
+  // terminal, a log, or an agent's answer.
+  //
+  // This is display etiquette and nothing more. It is not containment: the value
+  // is an ordinary part of the run's history exactly like any other input, and
+  // anyone with access to that history reads it in the clear, the same way they
+  // read any other input. A secret reference is different: it keeps the value
+  // *out* of history entirely, resolving it only inside the activity that needs
+  // it. That is containment, and this is not it. Marking sensitive a value that
+  // must never reach an operator's screen at all is a mistake; that value is a
+  // secret reference, not this.
+  //
+  // # What this does on an *input*, precisely
+  //
+  // Declared *outputs* are redacted everywhere Flowstate renders them; an input
+  // is rendered on exactly one surface (a schedule's bound arguments, through
+  // `flow schedule describe` and `flow schedule list`), and there a
+  // sensitive-declared value is redacted the same way, server-side, before it
+  // crosses the wire. The redaction lives on the server rather than the client
+  // because the server is the only party that holds both the schedule and the
+  // spec that declared the sensitivity; a `ScheduleDescription` on the wire
+  // carries the already-redacted value, not the raw one for a client to hide.
+  //
+  // What is not yet built is a reveal path: `flow get` has `--reveal-sensitive`,
+  // and the schedule RPCs have no field to carry that request. An operator who
+  // needs the value must read it from wherever it was configured, not from a
+  // describe. That is a display-surface gap, not a containment one: this flag
+  // was never containment (see above).
+  bool sensitive = 7;
+
+  // Field 8 was Pattern: an RE2 regular expression a `type: string` value had to
+  // fully match. Removed rather than kept, because it said nothing `must:`
+  // could not already say, and said it worse. `must: this.matches('<regex>')`
+  // is the identical check (CEL's `matches()` compiles to the same RE2 engine
+  // `regexp.Compile` gave `pattern:`, so nothing about cost or backtracking
+  // changes), through the one expression surface this schema has, rather than a
+  // second vocabulary that happened to duplicate one corner of it. Every
+  // declaration that used it in this repository's own examples now spells it
+  // that way; see docs/DSL.md.
+  //
+  // Reserved rather than reused, on the same terms as the two deletions already
+  // in this file (`Workflow.inputs` above, `Task.description` below): a number
+  // that meant something else in a spec some worker may still be replaying must
+  // never come back with a new meaning. The parser also still recognizes the
+  // key `pattern:` specifically (see `flowfile.declaredInput`) and refuses it
+  // with a diagnostic naming the `must:` spelling to write instead, rather than
+  // reporting it as an unknown key, because "unknown key" describes a typo
+  // nobody made.
+  reserved 8;
+  reserved "pattern";
+
+  // MinLen and MaxLen bound a `type: string` value's length, counted in runes.
+  // Either may be given alone. Named after `buf.validate`'s `string.min_len` and
+  // `string.max_len`, for the reason `pattern` above is.
+  optional uint64 min_len = 9;
+  optional uint64 max_len = 10;
+
+  // Fields 11 and 12 were Min and Max: a `type: int` or `type: float` value's
+  // bound, one field serving both declared types. Removed rather than kept,
+  // for a reason sharper than the bloat argument that retired `pattern:`
+  // above: on `type: int` these were *wrong*. Both fields were `double`, so
+  // an int64 literal converted to float64 before every comparison, and past
+  // 2^53 that conversion loses precision: `min: 9007199254740993` accepted
+  // 9007199254740992, a value one below the declared minimum, because both
+  // numbers round to the identical float64. `must: this >= 9007199254740993`
+  // has no such conversion (CEL's `>=` on two ints compares the int64s
+  // directly) and refuses that value correctly. The typed key was weaker
+  // than the CEL spelling on exactly the type it most obviously served.
+  //
+  // `must: this >= <N>` / `must: this <= <N>` say the identical thing at
+  // every magnitude either declared type allows, through the one expression
+  // surface this schema has. See docs/DSL.md.
+  //
+  // Reserved rather than reused, on the same terms as `pattern` above: a
+  // number that meant something else in a spec some worker may still be
+  // replaying must never come back with a new meaning. The parser still
+  // recognizes `min:`/`max:` specifically and refuses each with a diagnostic
+  // naming the `must:` spelling to write instead, built from the author's own
+  // number so the remedy is copy-pasteable. See `flowfile.declaredInput`.
+  reserved 11, 12;
+  reserved "min", "max";
+
+  // MinItems and MaxItems bound a `type: list` value's length. Either may be
+  // given alone. Named after `buf.validate`'s `repeated.min_items` and
+  // `repeated.max_items`.
+  optional uint64 min_items = 13;
+  optional uint64 max_items = 14;
+
+  // Field 15 was Unique: whether a `type: list` value's elements must all
+  // differ from one another. Removed for the reason `pattern` was: it said
+  // nothing `must:` could not already say, and said it worse, through a
+  // second vocabulary that duplicated one corner of the one expression
+  // surface this schema has. `must: this == this.distinct()` is the identical
+  // check: CEL's `distinct()` (a `lists` extension macro, part of this
+  // schema's own profile since #234's V1) returns the value's elements with
+  // duplicates removed, order preserved, so equality against the original
+  // holds exactly when every element was already unique. See docs/DSL.md.
+  //
+  // Reserved rather than reused, on the same terms as `min`/`max` above. The
+  // parser still recognizes `unique:` specifically and refuses it with a
+  // diagnostic naming the `must:` spelling to write instead. See
+  // `flowfile.declaredInput`.
+  reserved 15;
+  reserved "unique";
+
+  // Must is a CEL predicate over `this`, the value being checked, for a rule the
+  // declarative keys above cannot state: the escape hatch `buf.validate` itself
+  // keeps behind its own standard-rule vocabulary, and for the identical reason:
+  // making an author spell `size(this) > 0 && size(this) <= 100` for every
+  // bounded list is the ergonomic failure the keys above exist to prevent, so
+  // this exists only for what they genuinely cannot say.
+  //
+  // Compiled and type-checked when the specification loads (not when a run
+  // submits one), so a bad expression is a defect in the specification itself,
+  // caught the same way a mistyped default is. Evaluated under this schema's
+  // standard CEL cost bound at every point a value is checked against it, because
+  // a specification (and the `must:` inside it) can arrive over the RPC and is
+  // therefore untrusted input like any other stored expression here. It may not
+  // reference `now` or call anything nondeterministic: a constraint has to answer
+  // the same way on every replay and at every one of this declaration's
+  // enforcement points, which an expression reading the clock cannot promise.
+  optional string must = 16;
+
+  // Values is the closed set of strings a `type: enum` value may be. Only the
+  // per-declaration shape lives here: that they are non-empty, bounded, and
+  // distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
+  // whether at least one is given, and whether `default`/`example` are
+  // themselves members are set-facts about this declaration, and per this
+  // message's own doc comment those belong to the compiler for a Flowfile and
+  // to [CheckInputConstraintShape] for a hand-built specification — not here.
+  //
+  // Bounded the way any set quoted into a diagnostic must be: an enum's
+  // declared choices are rendered into the "not one of" message a bad
+  // submission gets back, so an unbounded set is an unbounded response the
+  // caller controls the shape of.
+  repeated string values = 17 [
+    (buf.validate.field).repeated = {
+      max_items: 64
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+    }
+  ];
+}
+
+// OutputDeclaration is one value a finished run reports: a name, and the
+// expression that produces it.
+//
+// The expression is evaluated by the run, in the run's own scope, after its steps
+// have finished, so this is the one place in the schema where an author's
+// expression is deliberately what is stored, as against [RunRequest.inputs] where
+// an expression is deliberately what is refused. The two rules point the same
+// way: an expression may come from the file, which is reviewed and compiled, and
+// never from a caller.
+//
+// Deferred to the compiler for the same reasons as [InputDeclaration]: that two
+// declarations do not share a name, and that the expression's references resolve
+// against the scope a finished run actually has.
+message OutputDeclaration {
+  // Name is what the value is called in the run's result.
+  //
+  // Same pattern as an input's, and for a weaker reason: nothing selects an
+  // output through CEL today. It is held to the same shape anyway so that the two
+  // halves of one contract cannot disagree about what a name is, and so that a
+  // later `${outputs.<name>}` or a cross-file signature check is not a break.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  ];
+
+  // Value is the expression evaluated to produce this output.
+  Value value = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Description is prose for whoever reads the result.
+  optional string description = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Must is a CEL predicate over `this`, the value this output's own expression
+  // produced, checked once that expression has been evaluated, so a workflow
+  // cannot report a value that violates its own contract, which is what makes
+  // consuming a library workflow's result safe. Same rules as
+  // [InputDeclaration.must]: compiled and type-checked when the specification
+  // loads, evaluated under the standard CEL cost bound, and refused if it
+  // references `now` or calls anything else nondeterministic.
+  optional string must = 4;
+
+  // Sensitive marks this output's value the way [InputDeclaration.sensitive]
+  // marks an input's: display etiquette, never containment. See that field's
+  // doc comment for the honesty this comes with; nothing about the two differs
+  // beyond which side of a run they describe.
+  bool sensitive = 5;
+}
+
+// RunOutputs is what one run computed for its declared outputs.
+//
+// Its own message rather than a widening of [Workflow.StepOutputs], which is a
+// different question with a similar shape: step outputs are every value the run
+// produced, keyed by the step that produced it, and these are the few values the
+// *workflow* said it would report. A caller wanting the answer should not have to
+// know the run's internal structure to find it, and a reader of either message
+// should never have to ask which of the two it is holding.
+//
+// Carried in [RunState] as well as returned, because a run that suspends has to
+// keep what it has computed; and weighed there by `CheckRunStateSize`, which
+// measures the whole message (invariant 9).
+message RunOutputs {
+  // Values are the declared outputs, keyed by the name their declaration gave.
+  //
+  // A map rather than a repeated message: order is a property of the declaration
+  // list, which is already ordered, and a result is looked up by name.
+  map<string, Value> values = 1 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
+}
+
+// Node represents a step in the workflow. Each node can be a task or another type of operation.
+// Nodes can have outputs that are structured as named values, allowing for complex workflows
+// where the outputs of one node can be used as inputs to another node.
+message Node {
+  // Outputs are the results produced by the node. Each output is a named value that can be
+  // referenced by subsequent nodes in the workflow. This allows for structured outputs that
+  // can be used to pass data between nodes.
+  message Outputs {
+    map<string, Value> named_values = 1 [
+      (buf.validate.field).required = true,
+      (google.api.field_behavior) = REQUIRED,
+      (buf.validate.field).map = {
+        keys: {string: {min_len: 1}}
+      }
+    ];
+  }
+
+  // Each node has a unique identifier within the workflow. This ID is used to reference the
+  // node in the workflow's step outputs and can be used to access the outputs of the
+  // node after the workflow has been executed.
+  string id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$" // Alphanumeric, dashes, and underscores.
+    }
+  ];
+
+  // A node must be a specific kind of operation.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    Task task = 2;
+    ForEach for_each = 5;
+    Parallel parallel = 6;
+    Wait wait = 7;
+    Call call = 11;
+    Loop loop = 12;
+
+    // Value is a computed value the step names, as `value: ${...}`.
+    //
+    // A kind of step rather than a task, because a value is not an effect: it is
+    // evaluated in workflow code, in written order, against exactly what any step
+    // in that position sees, and it replays to the same answer. Nothing is
+    // scheduled, nothing is attempted twice, and nothing outside the run is
+    // touched.
+    //
+    // What it produces is an ordinary named output called `value`, read as
+    // `steps.<id>.value` like any other. Deliberately ordinary: the alternative
+    // considered was making a whole-step reference yield the scalar directly,
+    // which would have been six characters shorter to write and would have made
+    // every tool that reads outputs uniformly (the language server's shaping,
+    // the compaction walker's whole-step marker, the JSON answer document) learn
+    // that one node kind is not like the others. The word `value` already means
+    // "the expression this name holds" in the workflow's own `outputs:` block, so
+    // it means one thing in both positions.
+    //
+    // The result may be anything a step output can hold, a list or a map as
+    // readily as a boolean, and is bounded by what already bounds every other
+    // expression and output: `DefaultCostLimit` per evaluation, and
+    // `MaxRunStateBytes` for what the run carries.
+    Value value = 13;
+
+    // Switch dispatches on one value, as `switch: {value, cases, default}`.
+    //
+    // See [Switch] for the semantics; the reason it is a node kind rather than
+    // sugar over `if:`-guarded steps is that sugar is invisible to Marshal, so
+    // `flow fmt` would rewrite an author's `switch:` into its expansion.
+    Switch switch = 14;
+  }
+
+  // Condition determines whether the step runs.
+  //
+  // It is evaluated before the step is scheduled and must produce a boolean. A
+  // step whose condition is false is skipped and produces no outputs, so a later
+  // step referencing it will not resolve, which is the honest outcome, since
+  // the value genuinely does not exist.
+  //
+  // Unset means the step always runs.
+  Value condition = 3;
+
+  // Policy controls how the step is executed: how long it may take, whether and
+  // how it is retried, and whether its failure ends the run.
+  //
+  // Unset means the engine's defaults apply.
+  StepPolicy policy = 4;
+
+  // Description is optional prose about what this step is for.
+  //
+  // It belongs to the step rather than to the task the step runs, which is where
+  // it used to live. Once a step names its task directly, the value under `echo:`
+  // is that task's inputs, so a `description` written there would be an input of
+  // that name; and a `for_each` or a `sleep` is just as worth explaining as a
+  // task is. The step is the thing an author is describing either way.
+  optional string description = 8 [(buf.validate.field).string = {max_len: 256}];
+
+  // Vars are names this step binds for itself, read *bare* inside it: `${modified}`.
+  //
+  // Bare rather than rooted, which is the opposite of [Workflow.vars] and deliberate.
+  // The rule is not about which block a name came from but about where it is bound:
+  // an author-chosen name bound lexically, close enough to read the binding and the
+  // use together, stays bare, the same standing a `for_each` binding has. A name
+  // that is simply in the air everywhere gets a root, because that is the only thing
+  // that keeps it from colliding with what an author chose.
+  //
+  // Evaluated after the step's condition and before its inputs, in the step's own
+  // scope: it may read `vars.<name>`, the outputs of steps already run, and any
+  // binding it sits inside. So unlike a workflow var it *can* see the run.
+  //
+  // # Collisions are refused, not resolved
+  //
+  // Every name here is bare and so can collide with another bare name: an enclosing
+  // loop's binding, a step var further out, `now`. That is refused at validation, at
+  // the inner declaration, rather than resolved by a precedence rule. Silent
+  // shadowing is how `${body}` comes to mean two things eleven lines apart, and a
+  // precedence rule is a thing every reader has to know before they can read the
+  // second one correctly.
+  //
+  // By the time a spec reaches the engine there is therefore nothing to decide, which
+  // is why [Scope.vars] holds these and a loop's binding in one map.
+  map<string, Value> vars = 9 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+    max_pairs: 64
+  }];
+
+  // Undo is how this step is taken back when a *later* step fails and the run
+  // cannot continue: the saga compensation for whatever this step did.
+  //
+  // It hangs off the step rather than being a handler list at the workflow level
+  // because the undo and the do are one decision. The thing to be deleted is named
+  // by the outputs of the step that created it, so a list somewhere else would have
+  // to reach back across the file for every value it needs, and a reviewer would
+  // have to read two places to answer "does this get cleaned up". One place, and
+  // one fewer control-flow construct (DSL.md's rule 10).
+  //
+  // Field 10 rather than an arm of the `kind` oneof, because a compensation is not
+  // a kind of work a step does. It is a property of a step that does some other
+  // kind, exactly as `policy` and `condition` are.
+  Compensation undo = 10;
+
+  // Async marks a step execution may depart from written order for, as
+  // `async: true`.
+  //
+  // The opt-in half of structured concurrency (issue #418). Flowstate already
+  // carries every dependency edge in the most natural position there is —
+  // `${steps.build.artifact}` *is* the edge, written at the point of use — so
+  // the open question was never how an author states edges but when execution
+  // may leave written order. This is the answer: never, unless a step says so.
+  //
+  // Three rules carry it, and each is a property of the *scope* the step is
+  // written in rather than of the step:
+  //
+  //   - **Default unchanged.** A step without this runs in written order. No
+  //     specification that predates the field changes meaning.
+  //   - **A reference is a join.** Any syntactic mention of an async step's
+  //     outputs — in `if:`, `vars:`, a task input, a `value:` expression, a
+  //     `has()` guard, a call's arguments — waits for it before that step
+  //     evaluates anything. Total by design: a presence check that could answer
+  //     "not finished yet" would make completion order observable, which is the
+  //     one thing this design promises it never is.
+  //   - **A scope's end joins what it started.** The end of the enclosing step
+  //     list — a workflow, a callee's body, a loop body, a switch case — joins
+  //     every async step still outstanding, in written order, on the failing
+  //     path as well as the succeeding one. There is no fire-and-forget.
+  //
+  // Outputs therefore become visible only at joins, at fixed textual positions,
+  // so two runs that complete their async steps in different orders record the
+  // same thing. A failure is reported against the async step itself and surfaces
+  // where it is joined.
+  //
+  // # What may carry it
+  //
+  // A task step, at a sequential placement. [CheckAsyncPlacement] owns the rules
+  // and both drivers plus the validator ask it: control flow has no work of its
+  // own to overlap, a `wait:` marked async would be a parked step joined only at
+  // scope end — a deadlock its author cannot see — and a `value:` is a pure
+  // instant computation with nothing to overlap. A `for_each` body or a
+  // `parallel` branch refuses it too, in this slice: concurrency inside
+  // concurrency multiplies width by a factor the enclosing construct chooses,
+  // and the answer to that belongs with async `call:` rather than ahead of it.
+  //
+  // # Bounded
+  //
+  // Width is bounded by [MaxAsyncInFlight] per scope, checked as work is
+  // launched rather than trusted to the step cap, because it is the count of
+  // simultaneously outstanding activities — the resource — rather than the count
+  // of steps in the file.
+  //
+  // Field 15 and a bare bool rather than an arm of the `kind` oneof, for the
+  // reason `undo` is field 10: departing from written order is not a kind of
+  // work, it is a property of a step doing some other kind.
+  bool async = 15;
+}
+
+// Compensation is what undoes one step.
+//
+// # A task, not a node
+//
+// The field is a [Task] and not a [Node], and that is the load-bearing choice in
+// this message rather than an economy. Three things follow from it, each of which
+// would otherwise be a rule somebody has to enforce:
+//
+//   - A compensation cannot itself be compensated. There is nowhere to write a
+//     nested `undo`, so an infinite compensation loop is not something a
+//     specification can express. Better than a bound on one.
+//   - A compensation cannot loop, branch, or wait. Those are the node kinds, and
+//     each of them is a position a run could suspend at; compensation runs in the
+//     segment that failed and does not suspend (see [RunState.pending_undo]), so a
+//     kind that needs a resume position could not honour that.
+//   - A compensation has no `id`, so it can never appear in `steps.<id>` and no
+//     expression can depend on one having run.
+//
+// # No policy field, deliberately
+//
+// A compensation is retried and bounded exactly as a step with no `retry:` and no
+// `timeout:` is: the engine's defaults, from the same constants both drivers read
+// (`retrydefaults.go`). A `policy` field here would be a bound nothing reaches
+// until an author writes one, and CLAUDE.md's rule about those is that they are
+// bounds nothing tests. Adding the field later is additive; guessing its semantics
+// now is not.
+message Compensation {
+  // Task is the work that undoes the step.
+  //
+  // Its inputs are resolved at the moment the step *succeeds*, not at the moment
+  // compensation runs. See [PendingUndo.task] for why that is the whole design.
+  Task task = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+// Wait suspends a workload until time passes, a condition holds, or a signal
+// arrives.
+//
+// This is the primitive a CI system fundamentally cannot copy. A run that waits
+// a week for a human approval and survives every worker restart in between is
+// not a long-running process: the process may not exist for most of that week.
+// The wait is durable state on the execution substrate, so a worker that is
+// redeployed, crashes, or moves machines resumes exactly where it was.
+//
+// It is a node kind rather than a task, because waiting schedules no activity
+// and touches nothing outside the workflow: no worker executes it, no
+// credentials are needed, and nothing can fail except the wait itself. Making it
+// a task would put an evaluator and an activity round trip behind something that
+// is a timer.
+message Wait {
+  // What is being waited for.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // Duration waits for time to pass, as `sleep: 30s`.
+    //
+    // It is a durable timer, so the workload is not holding a worker or a thread
+    // while it elapses. A week is as reasonable as a second.
+    google.protobuf.Duration duration = 1;
+
+    // Until waits for a *moment*, as `wait_until: <expr>`.
+    //
+    // The expression is evaluated once, against the outputs of steps that have
+    // already run, and must produce a time; a boolean is refused rather than
+    // polled. Inside it `now` names the moment the wait is evaluated (taken from
+    // the driver's clock, so it replays to the same instant), and the duration
+    // units make a relative deadline readable: `${now + days(3)}`.
+    //
+    // It is a moment and not a condition because a condition here could only ever
+    // spell "wait forever". A blocked workload runs no step, so nothing it can
+    // see changes while it waits: a condition over step outputs is either already
+    // true or never going to be. Waiting on something outside the workload is
+    // what a signal is for.
+    //
+    // A moment already past releases the wait immediately, which is what lets a
+    // workload resumed after an outage reach an open window and catch up instead
+    // of failing for being late.
+    Value until = 2;
+
+    // Signal waits for something outside the workload to say it may proceed,
+    // which is what makes a human approval gate expressible.
+    Signal signal = 3;
+
+    // DurationExpr is a `sleep:` whose length is computed: `sleep: ${inputs.grace}`.
+    //
+    // A separate field from `duration` rather than a widening of it, because
+    // `duration` is a published field carried in every running spec and in every
+    // `RunState` crossing a Continue-As-New: changing its type would break the
+    // wire contract invariant 10 exists to protect. So a literal `sleep: 30s`
+    // still compiles to `duration` and is byte-identical through a round trip,
+    // and only a `${...}` reaches here.
+    //
+    // Two fields for one meaning is the shape CLAUDE.md warns about, so nothing
+    // reads them apart: [EvalWaitDuration] is the single reader, both drivers
+    // call it, and neither knows which field answered.
+    //
+    // The expression must produce a CEL duration (`duration('720h')`,
+    // `days(30)`, `hours(2) + minutes(30)`) or a string spelled the way the
+    // literal does (`30s`, `5m`, `7d`), which is what lets a plain string input
+    // carry one. An int is refused rather than guessed at, because nothing says
+    // whether it counts seconds or nanoseconds.
+    //
+    // Inside it `now` is bound, exactly as in `until`: a wait is a node kind
+    // evaluated in workflow code holding the driver's own clock, on both
+    // drivers, so every arm of this message has the replay-safe clock the
+    // binding rule asks for. See [NowIdentifier].
+    Value duration_expr = 5;
+  }
+
+  // Timeout bounds how long the wait may last, for a wait that might otherwise
+  // never end.
+  //
+  // It is meaningful for `until` and `signal`, and meaningless for `duration`,
+  // where the duration is already the bound. A wait that times out is not a
+  // failure: it produces its outputs with `timed_out` true, so an author decides
+  // what a lapsed approval means with an ordinary `if:` rather than having to
+  // treat a normal outcome as an error.
+  //
+  // Unset means the wait may last as long as the run does. That is a deliberate
+  // choice for an approval gate that genuinely should block until someone acts,
+  // and a mistake everywhere else.
+  google.protobuf.Duration timeout = 4;
+
+  // TimeoutExpr is a `timeout:` whose length is computed: `${deadline - now}`.
+  //
+  // Beside `timeout` for the reason `duration_expr` is beside `duration`, and
+  // read through one function for the same reason: [EvalWaitTimeout]. Setting
+  // both is refused by [ValidateWait]: two answers to one question is not
+  // something a spec gets to say.
+  //
+  // A wait whose computed timeout is negative fails the run rather than falling
+  // through to the encoding that means *unbounded*. That is the one outcome
+  // worth spelling out here: `timeout <= 0` is how "no timeout" is spelled on
+  // the wire, so a sign error in an expression would silently convert a bounded
+  // approval gate into one that blocks forever. Zero is legal and means the
+  // wait times out at once.
+  Value timeout_expr = 6;
+}
+
+// ForEach runs a body of steps once per item of a list.
+//
+// This is how a workload expresses "do this to each of these" without the author
+// unrolling it by hand, which they cannot do anyway when the list is computed at
+// run time.
+//
+// The body sees the current item under the iterator's name, and body steps can
+// reference each other within an iteration. Body step outputs do not escape the
+// iteration; the loop as a whole reports every iteration's outputs through its own
+// `results` output, so that what a later step sees does not depend on which
+// iteration happened to run last.
+message ForEach {
+  // Items is an expression producing the list to iterate. An empty list runs the
+  // body zero times, which is a normal outcome rather than an error.
+  Value items = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Iterator names the variable bound to the current item inside the body.
+  // Defaults to "item". It must not collide with a step id, since both are
+  // resolved from the same namespace.
+  string iterator = 2 [(buf.validate.field).string = {
+    max_len: 128
+    pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+  }];
+
+  // Body is the steps to run per item.
+  repeated Node body = 3 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+
+  // MaxParallel bounds how many iterations run concurrently. Zero or one runs
+  // them one at a time, which is the safe default: concurrency is worth
+  // requesting explicitly, because it changes both the load placed on whatever
+  // the body touches and the order in which side effects happen.
+  int32 max_parallel = 4 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 1000
+  }];
+}
+
+// Parallel runs several branches of steps concurrently and waits for all of them.
+//
+// Branches are for work that is independent by construction: checking three
+// services, publishing to two destinations, where doing it sequentially wastes
+// time for no benefit. Steps within a branch still run in order.
+//
+// Branches must not depend on each other's outputs. There is no ordering between
+// them, so such a dependency would be a race; each branch sees the outputs that
+// existed before the parallel node began, plus its own.
+message Parallel {
+  message Branch {
+    repeated Node steps = 1 [
+      (buf.validate.field).required = true,
+      (buf.validate.field).repeated = {
+        min_items: 1
+        max_items: 100
+      }
+    ];
+  }
+
+  repeated Branch branches = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+}
+
+// Loop repeats a body of steps, carrying a value from one iteration to the next,
+// until a condition holds or a hard iteration ceiling is reached.
+//
+// It is the primitive `for_each` is not. `for_each` maps a body over a list it
+// already holds; nothing in it threads a value from iteration N into N+1, and its
+// length is fixed before the first iteration runs. A loop is what expresses "keep
+// going until you are done, and each step decides where the next one starts". That
+// is the shape a cursor-paged API has, where you cannot know how many pages there are
+// until a page tells you it was the last one.
+//
+// # Do-while, deliberately
+//
+// The body runs, and *then* [until] is evaluated, so a loop always runs its body
+// at least once, and [until] may read that body's own outputs. That is not an
+// arbitrary choice between while and do-while: the whole point is that the stop
+// condition is something a body step *produces* (a page reporting it was not
+// truncated), which a pre-body check could not see, because on the first iteration
+// no body step has run and nothing it could read exists yet.
+//
+// # The carried value, and why it is one
+//
+// [state] names a single value the body reads under that bare name, the same
+// standing a `for_each` binding has, an author-chosen name bound where the body's
+// expressions are written (docs/DSL.md principle 5). [initial] is what it holds on
+// the first iteration; [update] computes what it holds on the next, from the
+// current value and the body's outputs. All three are optional together: a bounded
+// retry-until loop that carries nothing writes none of them.
+//
+// One carried value rather than a block of several, and that is the smaller
+// language on purpose. A named block of state entries would immediately need an
+// answer to whether one entry may read another: the exact `vars:`-sibling
+// ordering question a protobuf map cannot answer and this repo already refused
+// once ([Workflow.vars]). A single value sidesteps it: when several fields are
+// wanted, [initial] and [update] are CEL maps, and the ordering question never
+// arises because there is one expression, evaluated once per iteration.
+//
+// # Bounded, because the author does not control the trip count
+//
+// [until] is a promise the loop cannot keep on its own: a cursor that never
+// reports exhaustion, an update that never satisfies the condition, is an infinite
+// loop, and the resource an author does not fully control is the iteration count.
+// So a loop is bounded by [max_iterations], read through the one function both
+// drivers call ([LoopMaxIterations]) so the ceiling cannot disagree with itself,
+// and hitting it is a *distinct* failure: the loop reports that it exhausted its
+// budget without [until] ever holding, rather than stopping silently as though it
+// had finished. See [LoopIterationLimitError], the one sentence both drivers
+// report it with.
+//
+// # Results
+//
+// A loop reports its body's per-iteration outputs through `results`, exactly as a
+// `for_each` does (`results[0]` is the first iteration's body outputs, and so
+// on), which is what lets a pagination loop gather every page. When the loop carries
+// state, its final value is also reported as `state`, because an accumulate-until
+// loop's answer *is* that value and it is reachable nowhere else once the loop
+// ends.
+//
+// # What is deferred
+//
+// This is slice 1: a *finite* loop, provable by the bound. An unbounded loop that
+// runs forever compacting its carried state across Continue-As-New (the entity
+// pattern) is a separate, larger slice, because it needs a byte bound on [state]
+// and a suspend cadence driven from history size, neither of which a finite loop
+// needs. Nested loops and a concurrent loop are deferred too; see docs/DSL.md.
+message Loop {
+  // Body is the steps to run each iteration.
+  //
+  // Spelled `steps:` in the DSL, the same key a `for_each` body and a `parallel`
+  // branch use, because it is the same thing: a list of steps that runs as a unit.
+  // Body step outputs do not escape one iteration into the next any more than a
+  // `for_each`'s do: each iteration starts from the outputs visible before the
+  // loop, plus the carried [state], so the only value threaded between iterations
+  // is the one [update] computes.
+  repeated Node body = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+
+  // Until is the stop condition, evaluated after the body each iteration and
+  // required to produce a boolean. When it is true the loop stops, reporting normal
+  // completion.
+  //
+  // Evaluated in the scope the body finished in (the body's own step outputs are
+  // visible, and so is [state] under its bare name), which is what makes
+  // `${!steps.page.truncated}` mean "stop once the last page said it was not
+  // truncated". A non-boolean is an error rather than being coerced, the same rule
+  // a step's `if:` follows.
+  Value until = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // MaxIterations is the author's hard ceiling on how many times the body runs.
+  //
+  // Zero (or unset) takes [LoopMaxIterations]'s default, which both drivers read
+  // from one constant so the ceiling cannot differ between a local rehearsal and a
+  // durable run. A value above the absolute cap this field allows is refused by the
+  // schema, so the bound the engine enforces is never larger than the one an author
+  // can see written down.
+  //
+  // Reaching it is not a silent stop: the loop fails with [LoopIterationLimitError],
+  // because a loop that ran its whole budget without [until] holding did not do what
+  // it was asked, and reporting success would hide exactly the runaway the bound
+  // exists to catch.
+  int32 max_iterations = 3 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 100000
+  }];
+
+  // State names the value the body carries from one iteration to the next, read
+  // *bare* inside the body, [until] and [update]: `${cursor}`.
+  //
+  // Bare rather than rooted, the same standing as a `for_each` binding and for the
+  // same reason (docs/DSL.md principle 5): it is an author-chosen name bound
+  // lexically where the expressions that read it are written. `flow validate`
+  // refuses a name that collides with an enclosing bare binding, with `now`, or
+  // with a declaration root, exactly as it refuses a colliding loop iterator or
+  // step var: a bare name may mean one thing at a time.
+  //
+  // Optional. A loop that carries nothing (a bounded retry-until) leaves this,
+  // [initial] and [update] all unset. Setting one without the others is refused by
+  // the compiler: a name with no initial value, or a value that never changes, is a
+  // mistake worth naming rather than a shape to run.
+  //
+  // The pattern is ignored when unset, because unset is the whole stateless mode: an
+  // empty string is the *absence* of a name, not a malformed one, and applying an
+  // identifier pattern to it would refuse the loop that carries nothing, the mode
+  // examples/loop-poll-until ships.
+  string state = 4 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    string: {
+      max_len: 128
+      pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+    }
+  }];
+
+  // Initial is the value [state] holds on the first iteration.
+  //
+  // Evaluated once, before the loop begins, against the scope the loop node sits in,
+  // so it may read `vars.*`, `inputs.*`, and the outputs of steps that ran before
+  // the loop, but not [state] itself, which does not exist yet. A literal is the
+  // common case (`init: ${''}`); an expression is evaluated like any other.
+  Value initial = 5;
+
+  // Update computes the value [state] holds on the *next* iteration, from the value
+  // it holds now and the body's outputs.
+  //
+  // Evaluated after the body each iteration, in the same scope [until] sees (the
+  // body's step outputs and the current [state]), which is what lets it say
+  // `${steps.page.next_cursor}` (take the next value the body produced) or
+  // `${state + steps.tick.amount}` (fold the body's output into an accumulator).
+  // Required when [state] is set and refused when it is not.
+  Value update = 6;
+}
+
+// Switch dispatches on one value: the discriminant is evaluated once, cases are
+// tried in written order, the first literal match wins, and there is no
+// fallthrough. Matching is literal equality only; a case needing a predicate is
+// what a step's `if:` remains for.
+//
+// # Why grouping the cases is the feature
+//
+// The branching is expressible today as sibling `if:` steps against one value.
+// What is inexpressible without this message is the *checking*: nothing ties
+// those steps together, so a validator cannot see that they intend a total
+// dispatch over one value — it cannot catch a typo'd literal that is legal CEL
+// and simply never matches, cannot notice a value nobody handles, and the run
+// cannot record that an unhandled value arrived. The word buys the checks, not
+// the branch.
+//
+// # Evaluation and the record
+//
+// The discriminant evaluates inline in workflow code — the sanctioned exception
+// to activity purity, exactly as a step's `if:` and a loop's `items:` do — and
+// the evaluated value goes on the record: the step's outputs carry the observed
+// value ([SwitchValueOutput]) and the case that took it ([SwitchCaseOutput],
+// null when none did). That record is the replay anchor for the durable driver
+// and the drift detector for an operator: an unmatched value with no `default:`
+// runs nothing, and *says so*, observably, rather than falling through in
+// silence.
+//
+// An unresolvable discriminant — one referencing a skipped step's output, say —
+// is an error, never `unmatched`. Fail closed: `default:` means "a value
+// arrived that I didn't enumerate", never "I couldn't compute the value";
+// letting evaluation failure flow into the default path would make `default:`
+// swallow bugs, the opposite of what the slot is for.
+//
+// # Equality where YAML scalar typing and CEL equality meet
+//
+// Matching follows CEL's equality for scalars: numbers compare numerically
+// across int, uint and double (`case: 1` matches a discriminant of `1.0`),
+// strings and booleans compare as themselves, and values of incomparable kinds
+// simply do not match. YAML 1.2 typing decides what a case literal *is*, so
+// `case: no` in a country-code switch is the string "no", not a boolean —
+// this grammar's YAML parser speaks 1.2, where only `true`/`false` are
+// booleans. Where the discriminant's type is knowable the validator makes most
+// cross-type cases unreachable by refusing them as mismatches.
+//
+// # The bodies
+//
+// Case bodies and the default body are ordinary step lists, scoped like a
+// parallel branch's for outputs: exactly one body runs, its step outputs merge
+// into the enclosing namespace, and ids must be unique across the whole switch
+// for the same reason they must be unique across branches — expressions resolve
+// them from one namespace. An *empty* body (`steps: []`) is legal and
+// load-bearing: `case: ignore` with an empty body is how ignoring a value is
+// written down where a reviewer can see it, and an empty `default:` is how "and
+// I mean to handle nothing else" is written when the domain is checkable —
+// Rust's `_ => {}`, both times. A switch with only a `default:` is refused by
+// the schema: that is an unconditional block wearing a switch's clothes.
+message Switch {
+  // Case is one dispatch arm: the literals it matches, and the steps it runs.
+  message Case {
+    // Values are the literals this case matches, spelled `case:` in the DSL as
+    // a scalar or a list; a list is flattened into one membership check (Go's
+    // `case a, b:`). Static literals only — a computed case would erase every
+    // check the validator can make for the whole switch, so `flow validate`
+    // refuses an expression here and both drivers fail closed on one that
+    // arrives anyway.
+    repeated Value values = 1 [
+      (buf.validate.field).required = true,
+      (buf.validate.field).repeated = {
+        min_items: 1
+        max_items: 100
+      }
+    ];
+
+    // Steps is the body to run when this case matches. May be empty: an empty
+    // body is written-down ignoring, reviewable where silence would not be.
+    repeated Node steps = 2 [(buf.validate.field).repeated = {max_items: 100}];
+  }
+
+  // Default is the body that runs when no case matches. Its own message rather
+  // than a repeated field on [Switch], so that "no default" and "a default with
+  // an empty body" stay distinguishable — the first claims exhaustiveness where
+  // the domain is checkable, the second is deliberate, written-down
+  // non-handling.
+  message Default {
+    repeated Node steps = 1 [(buf.validate.field).repeated = {max_items: 100}];
+  }
+
+  // Value is the discriminant, evaluated exactly once per execution.
+  Value value = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Cases are tried in written order; the first match wins. At least one,
+  // because a switch that is only a `default:` dispatches on nothing.
+  repeated Case cases = 2 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 100
+    }
+  ];
+
+  // Default runs when no case matches. Optional: absent, an unmatched value
+  // runs nothing and the step's outputs record that none matched. A key beside
+  // `cases:` rather than a magic case entry, so YAML map semantics give
+  // uniqueness for free and no way exists to write a default that positionally
+  // swallows later cases.
+  Default default = 3;
+}
+
+// Call runs another workflow as a step.
+//
+// This is how a Flowfile stops being a single file. Before it, an organisation's
+// second workflow copied its first: there was no way to factor a sequence out, no
+// way to version one, and no way to test one apart from the thing that used it.
+//
+// # Resolved when the file is compiled, carried whole
+//
+// A `Call` holds the callee's *specification*, not a reference to it. The
+// resolution (reading `./provision.yaml`, compiling it, checking its arguments)
+// happens once, in the client, when a Flowfile becomes a Workflow.
+//
+// That is not an optimisation, it is invariant 10. A run's specification is frozen
+// when it is submitted and carried across every Continue-As-New in its chain; a
+// call resolved by name at execution time would make a durable run depend on a
+// definition someone can edit while it is in flight, so a workload could mean one
+// thing in its first segment and another in its last. It would also put a
+// filesystem read inside a worker, which is the second reason: the server and the
+// worker never resolve a path, so there is no traversal surface there to defend.
+// The client that reads the author's files is the one place that can.
+//
+// The cost is honest and worth stating: a specification carrying its callees is
+// bigger than one naming them, and it counts against [CheckSpecSize] like
+// everything else. A workflow too large to submit is refused with the same
+// message it would have been refused with if somebody had pasted the same steps
+// in by hand, which is the right answer, because that is what this is.
+//
+// # A nested run, not an inlining
+//
+// The callee's steps are kept as a workflow rather than spliced into the caller's
+// list, and each of the three reasons is something inlining loses.
+//
+// A position stays a path. `deploy > provision > network` is where a run is, and
+// a flattened list would report `provision-network`: a name nobody wrote, in a
+// file nobody can open. Diagnostics and failures name the callee the same way.
+//
+// The isolation below is real rather than achieved by renaming. And a call remains
+// a *place* the engine can decide to execute differently: running one as a Temporal
+// child workflow, with its own history and its own versioning, is additive from
+// here and impossible after inlining.
+//
+// # What a callee can see
+//
+// Its `inputs:`, and nothing else. Not the caller's steps, not the caller's
+// `vars:`, not a loop binding it happens to sit inside.
+//
+// That is the whole point rather than a restriction. A workflow that can read its
+// caller's scope is not a unit: it cannot be understood, tested, or reused apart
+// from the file that calls it, which is what a call was meant to make possible. It
+// is also a security property once workflows are shared: a library workflow cannot
+// read the values its caller resolved, including any it resolved from a secret.
+//
+// What comes back is what the callee `outputs:` declares, under the step's id. A
+// callee that declares no outputs is a step that produces none: legal, and the
+// right shape for a workflow called for its effects.
+message Call {
+  // Workflow is the callee, already compiled.
+  //
+  // Whole rather than referenced, for the reasons on the message above. It carries
+  // its own `inputs:` declarations, which is what `arguments` below are checked
+  // against, so a call type-checks in an editor, before anything runs.
+  Workflow workflow = 1 [(buf.validate.field).required = true];
+
+  // Arguments bind the callee's declared inputs, by name.
+  //
+  // Values, never expressions evaluated by the callee. They are resolved in the
+  // *caller's* scope (where `${steps.build.digest}` means something), and what
+  // crosses the boundary is the result. A callee evaluating an expression handed
+  // to it would be reading a scope it is not allowed to see, through a string.
+  //
+  // Every declared input the callee requires must be bound, and binding one it
+  // does not declare is refused. Both are decided when the file is compiled, with
+  // a position, rather than when the run reaches the step.
+  map<string, Value> arguments = 2 [(buf.validate.field).map = {
+    max_pairs: 100
+    keys: {
+      string: {
+        min_len: 1
+        max_len: 128
+      }
+    }
+  }];
+
+  // Source is where the callee was read from, as written in the file.
+  //
+  // Carried for diagnostics and for `flow compile` output, so a reader of a
+  // compiled specification can see which file a nested workflow came from. It is
+  // never resolved again (nothing reads a path from here), which is why it is a
+  // plain string with no validation beyond a length: it is a record of what
+  // happened, not an instruction.
+  string source = 3 [(buf.validate.field).string = {max_len: 1024}];
+
+  // SourceDigest is a content digest of the callee file's bytes, taken at the
+  // same moment the resolver reads them, formatted `sha256:<hex>`.
+  //
+  // Recorded rather than verified, exactly as `source` is: neither is
+  // resolved again by anything that reads a compiled specification. What it
+  // buys is provenance an operator can audit after the fact: "this run
+  // called provision-tenant.yaml at sha256:…" is answerable from a run record
+  // alone, without the file that produced it necessarily being reachable, or
+  // unchanged, by the time anyone asks. A platform sharing modules across
+  // tenants is exactly the setting where "which bytes actually ran" needs an
+  // answer that outlives the file.
+  string source_digest = 4 [(buf.validate.field).string = {max_len: 128}];
+}
+
+// StepPolicy controls the execution of a single step.
+//
+// These settings exist because one policy cannot fit every step. Reading a
+// configuration file and provisioning a cluster differ by orders of magnitude in
+// how long they take and how safe they are to repeat, and a workload engine that
+// applies the same timeout and the same retry count to both is wrong for at least
+// one of them.
+message StepPolicy {
+  // Timeout bounds a single attempt at the step. A step exceeding it fails that
+  // attempt, which may then be retried according to Retry.
+  google.protobuf.Duration timeout = 1 [(buf.validate.field).duration = {gt: {}}];
+
+  // Retry describes how a failed attempt is retried. Only failures that could
+  // plausibly succeed on another attempt are retried; a step that failed because
+  // its inputs are invalid is not retried regardless of this setting.
+  RetryPolicy retry = 2;
+
+  // ContinueOnError lets the run proceed when this step fails.
+  //
+  // The step records its failure instead of ending the run, which is what makes
+  // best-effort work expressible: a notification that could not be delivered
+  // should not abandon the workload that succeeded.
+  bool continue_on_error = 3;
+}
+
+// RetryPolicy describes how a failed step attempt is retried.
+message RetryPolicy {
+  // MaxAttempts bounds total attempts, including the first. Zero uses the
+  // engine's default. One disables retrying, which is the right choice for an
+  // operation that is not safe to repeat.
+  int32 max_attempts = 1 [(buf.validate.field).int32 = {gte: 0}];
+
+  // InitialInterval is the delay before the second attempt.
+  google.protobuf.Duration initial_interval = 2 [(buf.validate.field).duration = {gt: {}}];
+
+  // BackoffCoefficient multiplies the delay after each attempt. Values below one
+  // are rejected, since a shrinking delay defeats the purpose of backing off.
+  double backoff_coefficient = 3 [(buf.validate.field).double = {gte: 1.0}];
+
+  // MaxInterval caps the delay between attempts, so exponential growth does not
+  // produce an unbounded wait.
+  google.protobuf.Duration max_interval = 4 [(buf.validate.field).duration = {gt: {}}];
+}

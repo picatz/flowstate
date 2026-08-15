@@ -1,0 +1,554 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/value.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// Triggers is what a workflow says about starting itself.
+//
+// A message with one field per kind of trigger rather than a oneof, because these
+// are not alternatives: a workload that runs nightly *and* on a webhook is an
+// ordinary thing to want, and a oneof would make expressing it a schema change
+// rather than a second key. Adding a kind is then a new field here, which is
+// additive on the wire and additive in the grammar: `triggers:` gains a key and
+// every existing file still means what it meant.
+//
+// Its own message rather than fields on [Workflow] for the same reason the DSL
+// spells it `triggers: { schedule: ... }`: a reader meets one block that answers
+// "how does this start", and a second kind does not scatter a third and fourth
+// top-level key across the file.
+message Triggers {
+  // Schedule is the cadence this workload is meant to run at.
+  //
+  // Optional and, when present, still inert until somebody creates it. See
+  // [Workflow.triggers] for why the declaration and the act are separate.
+  ScheduleTrigger schedule = 1 [(google.api.field_behavior) = OPTIONAL];
+
+  // Webhooks are the deliveries this workload is meant to start on, one entry
+  // per source.
+  //
+  // Repeated rather than singular because several sources starting one workload
+  // is the ordinary case rather than the exotic one — a payments provider and a
+  // storefront both reporting the same order — and each brings its own payload
+  // shape, its own signing scheme, and therefore its own mapping into
+  // [Workflow.declared_inputs]. That is what makes a webhook a *call site*
+  // rather than a second declaration of the inputs: `arguments` here is the same
+  // construct as [Call.arguments], checked against the same signature, so N
+  // sources are N callers instead of a keyed sub-language nobody asked for.
+  //
+  // Inert exactly as `schedule` is. Nothing in `Run` reads this, both execution
+  // drivers ignore it, and no HTTP endpoint in this repository serves a
+  // delivery yet: what a file declares here is checked by `flow validate` and
+  // replayed offline by `flow test`. See [WebhookTrigger] for what the receiver
+  // will be handed when it lands.
+  repeated WebhookTrigger webhooks = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 32}
+  ];
+
+  // Manual narrows the start that already works, and is the one entry in this
+  // message that does not enable anything.
+  //
+  // `flow run`, `flow run local`, the `Run` RPC and MCP all start a workflow
+  // today with no declaration at all, so `triggers:` is deliberately *not*
+  // exhaustive: adding a webhook must never silently stop `flow run` from
+  // working, or authoring and testing break together the first time somebody
+  // integrates a payment provider. Absent therefore means what it has always
+  // meant — a human may start this — and the field exists to say something
+  // narrower. See [ManualTrigger].
+  ManualTrigger manual = 3 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// ManualTrigger is what a workload says about being started by a person.
+//
+// # Narrowing, never enabling
+//
+// Every field here removes something. A workflow with no `manual:` block may be
+// started by anyone who can reach the server; declaring one requires a recorded
+// reason, or restricts who may, or refuses the start outright. There is
+// deliberately no field that *grants* a manual start, because one already
+// exists in the absence of this message, and a grant-shaped spelling would make
+// "did somebody remember to write it" the difference between a runnable file
+// and an unrunnable one.
+//
+// # Where it is enforced, and where it deliberately is not
+//
+// [FlowstateServer.Run] enforces this, against the caller the server itself
+// attested, before Temporal sees anything — the same placement [SignalPolicy]
+// has and for the same reason. `flow run local` and `flow test` are never
+// gated: the author's machine is not a deployment, and a workflow that cannot
+// be developed locally is not one anybody will maintain. That is the rule that
+// already keeps egress policy out of the validator, applied to the one entry
+// path an author uses while writing.
+//
+// # Why this and not `if: ${trigger.principal == "admin"}`
+//
+// Authorization belongs on the trigger, decided when configuration loads,
+// where the validator can see it and a deployment owns it. The same test
+// written in the body is an expression a test can fake, one `flow validate`
+// cannot reason about, and one a later refactor can reorder past the step it
+// was guarding. [TriggerContext] is for behaviour; this message is for
+// authorization, and the two are kept apart on purpose.
+message ManualTrigger {
+  // Denied refuses manual starts outright: this workload is started by its
+  // other declared triggers and by nothing else.
+  //
+  // Explicit and greppable, which is the whole point. "Triggers are
+  // exhaustive" would have given the same refusal by inference — declare a
+  // webhook, lose `flow run` — and nobody discovers an inferred lock until
+  // they need it not to be there.
+  //
+  // Contradicts both fields below, and the compiler refuses the combination
+  // rather than resolving it by precedence: a refusal that also lists who may
+  // start the workload is two sentences that cannot both be true.
+  bool denied = 1 [(google.api.field_behavior) = OPTIONAL];
+
+  // RequireReason makes a manual start carry a reason, recorded on the run
+  // ([RunRequest.reason]).
+  //
+  // For the workload where "who ran this, and why" is asked after the fact —
+  // a break-glass rotation, a manual refund — and where the answer being
+  // absent is the failure. A start with no reason is refused while the person
+  // who has one is still present to give it.
+  bool require_reason = 2 [(google.api.field_behavior) = OPTIONAL];
+
+  // AllowedPrincipals restricts a manual start to these attested subjects,
+  // matched against [WorkloadIdentity.subject] — the caller the server
+  // authenticated, never anything the request asserts about itself.
+  //
+  // Empty means every authenticated caller, which is today's behavior and what
+  // a workflow with no `manual:` block keeps. Non-empty is a closed set: a
+  // subject that is not in it is refused, including the empty subject an
+  // unauthenticated deployment attests, because a policy that admits "nobody
+  // in particular" is a policy that admits everyone.
+  repeated string allowed_principals = 3 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {
+      max_items: 64
+      items: {
+        string: {
+          min_len: 1
+          max_len: 256
+        }
+      }
+    }
+  ];
+}
+
+// TriggerContext is how a run was started, as its own steps may read it:
+// `trigger.kind`, `trigger.name`, `trigger.principal`, `trigger.delivery_id`.
+//
+// # Safe for durable execution, and why that is not obvious
+//
+// Every field is fixed when the run starts and carried in [RunState], so it is
+// the same value on every replay and across every Continue-As-New. That is what
+// separates it from the two facts this language refuses to make ambiently
+// readable — the clock and randomness — which change underneath a run and would
+// make a replayed step take a different branch than the one history recorded.
+// A trigger cannot drift, so it can be read anywhere an ordinary expression is.
+//
+// # Metadata, never data
+//
+// The set is closed at these four fields on purpose. Everything a workflow
+// *operates on* arrives through a trigger's `with:` into [Workflow.declared_inputs],
+// checked against declarations `flow validate` can see. A payload field reachable
+// under `trigger` would be a second input path with no contract, invisible to
+// the validator — so there is no `trigger.payload`, no `trigger.headers`, and
+// none will be added.
+//
+// # Behaviour, never authorization
+//
+// `if: ${trigger.kind != "schedule"}` is what this is for: a nightly sweep that
+// does not page anyone, a human start that takes a second pair of eyes.
+// `if: ${trigger.principal == "admin"}` is the shape to refuse — see
+// [ManualTrigger] for where that decision belongs instead.
+//
+// # Nothing secret rides along
+//
+// These values are written to durable history, which is broadly readable, so
+// [principal] is an attested subject and [delivery_id] is a digest rather than
+// the idempotency key it names (a webhook's key is frequently a signature
+// header). Neither is material anything can authenticate with.
+message TriggerContext {
+  // Kind is how the run started: `manual`, `webhook`, or `schedule`.
+  //
+  // A string rather than an enum because it is read from a CEL expression, where
+  // an enum arrives as a number and `trigger.kind == 1` is not a sentence
+  // anybody wants to write or review. The set is closed all the same:
+  // `v1.TriggerKinds` names it, and the compiler refuses a comparison against a
+  // word that is not in it, so a misspelled `"schedual"` is a diagnostic rather
+  // than a branch that is never taken.
+  //
+  // Empty for a run started before this field existed, which reads as "no
+  // trigger recorded" and is the honest answer for one: see
+  // `v1.TriggerContextValue` for how that renders, and why every field is
+  // rendered rather than omitted.
+  string kind = 1 [(buf.validate.field).string = {max_len: 32}];
+
+  // Name identifies which trigger of that kind started the run: the webhook's
+  // declared name, or the schedule's. Empty for a manual start, which has no
+  // name to carry — a person is not a declared source.
+  string name = 2 [(buf.validate.field).string = {max_len: 64}];
+
+  // Principal is who or what started the run, as the server attested it: a
+  // caller's subject for a manual start, the trigger the delivery arrived at
+  // for a webhook, the schedule's owner for a scheduled firing.
+  //
+  // Never taken from a request. It is the same value [RunState.identity]
+  // carries, restated here because a step reading "how was I started" should
+  // not have to know that a webhook's principal is spelled one way under `run`
+  // and another under `trigger`.
+  string principal = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // DeliveryID names the one arrival that started this run, for correlating a
+  // run against the provider's own record of what it sent.
+  //
+  // A digest of the trigger's evaluated `idempotency_key`, never the key: the
+  // usual key is a signature header, and this is written to a memo and to
+  // history, both durable and broadly readable. Empty for every kind that has
+  // no delivery.
+  string delivery_id = 4 [(buf.validate.field).string = {max_len: 128}];
+}
+
+// WebhookTrigger is one source that may start this workload by delivering to it.
+//
+// # A call site, not a second declaration of the inputs
+//
+// `arguments` is the same construct a `call:` step writes as `with:`: the
+// workflow's `inputs:` is the signature, and a trigger is another caller of it,
+// exactly as `flow run --input` and an MCP invocation are. That choice is the
+// whole reason `flow validate` can say `webhook "stripe" does not supply
+// required input "amount"` with a line and a column, which a per-input `from:`
+// or a per-trigger mapping block could never say: with a mapping block the same
+// fact is written twice, in `inputs:` and beside it, with nothing forcing the
+// two to agree.
+//
+// The expressions in `arguments` and in `idempotency_key` are evaluated against
+// one bound name, `event`, holding the delivery — its headers and its decoded
+// body. That name is bound here and nowhere else in the language: a step body
+// that wants to know how the run started is a later slice (`trigger.kind` and
+// friends), and payload data must arrive through `arguments` into `inputs:` or
+// the file has grown a second input path with no contract.
+//
+// # Fail closed, declared rather than assumed
+//
+// Two fields are required by the shape of the problem rather than by taste, and
+// both are refused when the file is compiled rather than when a delivery
+// arrives:
+//
+//   - `verify` names at least one signing scheme. There is deliberately no
+//     spelling that means "accept anything": an unverifiable delivery is
+//     refused, never allowed because it could not be checked.
+//   - `idempotency_key` is required. Webhook delivery is at-least-once by
+//     nature, so a trigger with no dedupe key turns every retried delivery into
+//     a second run — a fact about the transport, not about this integration's
+//     luck.
+//
+// The remaining bound belongs to the receiver that does not exist yet: a
+// request body is attacker-chosen input and gets a byte bound *before* it is
+// read into memory. `v1.MaxWebhookPayloadBytes` is that number, and it is
+// already enforced by the one reader there is today — `flow test` reading a
+// stored delivery off disk — so the receiver inherits a bound rather than
+// introducing one.
+message WebhookTrigger {
+  // Name identifies this source, both in a diagnostic (`webhook "stripe" …`)
+  // and in a `flow test` case that replays a stored delivery against it. Unique
+  // within a file: two sources sharing a name are two mappings a reader cannot
+  // tell apart, and a test naming one of them addresses whichever came first.
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[A-Za-z][A-Za-z0-9_-]*$"
+    }
+  ];
+
+  // Verify names the signing schemes a delivery must satisfy, each bound to the
+  // key it is checked with — written in a Flowfile as `${secret('...')}`, so the
+  // material is a reference the receiver resolves rather than a value in a
+  // repository.
+  //
+  // At least one entry, and the schemes are a closed set
+  // ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme
+  // nobody implements is a delivery nobody can verify, which under the rule
+  // above means a delivery that is always refused — better said with a line and
+  // a column than discovered in production.
+  map<string, Value> verify = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).map = {
+      min_pairs: 1
+      max_pairs: 8
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 64
+        }
+      }
+    }
+  ];
+
+  // IdempotencyKey is the expression that names a delivery, so a redelivery of
+  // the same event is recognized as one rather than started again.
+  //
+  // Evaluated against `event`, like `arguments`. Required — see the message doc
+  // for why "this integration has no stable key" has to be something somebody
+  // writes down rather than something a default quietly assumes.
+  Value idempotency_key = 3 [(google.api.field_behavior) = REQUIRED];
+
+  // Arguments bind this source's payload to the workflow's declared inputs, one
+  // expression per input, over `event`.
+  //
+  // Named `arguments` rather than `with` for the reason [Call.arguments] is: the
+  // schema says what the field holds and the DSL says how it is spelled, and the
+  // two constructs are deliberately the same construct — checked against
+  // [Workflow.declared_inputs] by the same rules, in both directions.
+  map<string, Value> arguments = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      max_pairs: 64
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 64
+        }
+      }
+    }
+  ];
+}
+
+// ScheduleTrigger says when a workload should run.
+//
+// # A projection of Temporal's ScheduleSpec, not a reimplementation
+//
+// Temporal has first-class Schedules, with a spec covering cron expressions,
+// intervals, calendars, skips, jitter, time zones, start and end bounds, and
+// policy about what to do when a firing overlaps the last one. Every field here
+// is passed to that spec unchanged; nothing in Flowstate computes a next firing
+// time, and nothing here is a second implementation of a cron parser at run time.
+// What this message is for is giving those parameters a *declarable* spelling:
+// the surface, not the mechanism.
+//
+// # What is here, and what is deliberately not yet
+//
+// Cron expressions, intervals and explicit calendars are unioned. Start/end
+// bounds constrain that union, catch-up limits automatic missed-fire recovery,
+// and overlap and pause-on-failure define how executions interact. Backfill is
+// creation-only and therefore lives on [CreateScheduleRequest], not here.
+//
+// # Where the arguments are not
+//
+// There is deliberately no `inputs:` under a schedule. What a scheduled run is
+// started with is bound at creation, from the command that creates it (see
+// [CreateScheduleRequest.inputs]), because arguments are a deployment's answer
+// (which cluster, which account, which region) while the cadence is the
+// workload's. Putting them here would also make the same values expressible in
+// two places, since an input declaration already carries a default, and a
+// precedence rule between a default and a schedule's override is a rule somebody
+// has to learn for no benefit.
+message ScheduleTrigger {
+  // Calendar is an explicit calendar cadence, matched field by field the way a
+  // cron expression is: a time matches when at least one range of every field
+  // matches it. A field nobody writes takes Temporal's default for that field:
+  // second, minute and hour default to zero, and the three date fields match
+  // everything. That is why a calendar with no fields at all is refused rather
+  // than compiled: it means 00:00:00 every day, and nobody writes that by
+  // meaning it.
+  message Calendar {
+    // Range is a low-to-high span of one field, written in a Flowfile as a whole
+    // number, a list of them, or `{start: 9, end: 17, step: 2}`.
+    message Range {
+      // Start is the first value the range matches, and the only required one.
+      int32 start = 1;
+
+      // End is the last value, inclusive. Zero means no end was written, which
+      // matches the start alone. The schema cannot distinguish an unwritten end
+      // from one written as zero, and Temporal reads both the same way. An end
+      // below the start is refused rather than passed on, since Temporal would
+      // silently narrow it to the start.
+      int32 end = 2;
+
+      // Step is how far apart the matched values are. Zero means no step was
+      // written, which takes every value in the range.
+      int32 step = 3;
+    }
+    repeated Range second = 1;
+    repeated Range minute = 2;
+    repeated Range hour = 3;
+    repeated Range day_of_month = 4;
+    repeated Range month = 5;
+    repeated Range year = 6;
+    repeated Range day_of_week = 7;
+    string comment = 8 [(buf.validate.field).string = {max_len: 256}];
+  }
+  // Overlap says what happens when a firing comes due while the previous run is
+  // still going.
+  //
+  // Mirrors Temporal's `ScheduleOverlapPolicy` value for value. Named as a
+  // Flowstate enum rather than importing Temporal's because this is the schema a
+  // Flowfile compiles to and a plugin compiles against, and neither should
+  // acquire a dependency on the execution substrate's API to read a workflow,
+  // the same reasoning that keeps [RetryPolicy] a Flowstate message.
+  enum Overlap {
+    // Unspecified takes Temporal's own default, which is SKIP.
+    //
+    // Left as a real arm rather than defaulted here so that "the author said
+    // nothing" and "the author wrote skip" stay distinguishable in the
+    // specification. They behave identically; only one of them changes if
+    // Temporal's default ever does, and that is the correct one to move.
+    OVERLAP_UNSPECIFIED = 0;
+
+    // Skip drops the new firing entirely. The safe default: a nightly job that
+    // takes longer than a day does not pile up.
+    OVERLAP_SKIP = 1;
+
+    // BufferOne runs the new firing after the current one finishes, keeping at
+    // most one waiting.
+    OVERLAP_BUFFER_ONE = 2;
+
+    // BufferAll queues every firing, running them one after another. A backlog
+    // is bounded only by how long the runs take, so this is the arm to think
+    // twice about.
+    OVERLAP_BUFFER_ALL = 3;
+
+    // CancelOther cancels the running one and starts the new one once it has
+    // stopped, letting the old run clean up on the way out.
+    OVERLAP_CANCEL_OTHER = 4;
+
+    // TerminateOther stops the running one immediately and starts the new one.
+    // Nothing the old run would have done on its way out is done.
+    OVERLAP_TERMINATE_OTHER = 5;
+
+    // AllowAll starts the new firing regardless, so several runs of the workload
+    // are in flight at once.
+    OVERLAP_ALLOW_ALL = 6;
+  }
+
+  // Cron holds cron expressions, each naming a set of firing times.
+  //
+  // Repeated because a cadence like "every weekday at 09:00, and at noon on
+  // Sunday" is two expressions and cannot be one: the union is what Temporal
+  // takes. The DSL accepts a single string as well as a list, so the common case
+  // reads as one line.
+  //
+  // Temporal accepts 5, 6 or 7 fields, the `@daily`-style shorthands, `@every
+  // <interval>`, and an optional `CRON_TZ=`/`TZ=` prefix. `flow validate` checks
+  // the shape of what is written here and reports a position; the cluster is the
+  // authority on the rest, which is the standing rule for anything a deployment
+  // decides.
+  repeated string cron = 1 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {
+      max_items: 32
+      items: {
+        string: {
+          min_len: 1
+          max_len: 256
+        }
+      }
+    }
+  ];
+
+  // Every fires on a fixed interval, measured from the epoch rather than from the
+  // last firing, so `every: 1h` is every hour on the hour, not an hour after
+  // whenever the previous run happened to end.
+  //
+  // Beside `cron:` rather than instead of it because the two answer different
+  // questions. An interval is what somebody means by "every fifteen minutes"; a
+  // cron expression is what they mean by "at 09:00 on weekdays", and expressing
+  // either in the other's notation is where the mistakes live.
+  google.protobuf.Duration every = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).duration = {
+      gte: {seconds: 1}
+      lte: {seconds: 31536000} // A year.
+    }
+  ];
+
+  // TimeZone is the IANA zone a calendar-based expression is read in, for example
+  // `America/New_York`. Empty means UTC.
+  //
+  // Resolved by the Temporal cluster from the zone database it runs with, not
+  // here: a zone name is exactly the kind of thing a deployment answers, and a
+  // validator running in an editor would be answering from the author's laptop.
+  // What is checked here is that it is a plausible name; whether this cluster has
+  // it is the cluster's to say.
+  string time_zone = 3 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {max_len: 64}
+  ];
+
+  // Jitter spreads firings over a window, so a fleet of schedules that all say
+  // `0 * * * *` does not become a thundering herd on the hour.
+  //
+  // Each firing is delayed by a random amount between zero and this, capped by
+  // the time until the next firing.
+  google.protobuf.Duration jitter = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).duration = {
+      gte: {seconds: 0}
+      lte: {seconds: 86400}
+    }
+  ];
+
+  // Overlap is what happens when a firing comes due with the last run still
+  // going. Unset takes Temporal's default, which is to skip.
+  Overlap overlap = 5 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).enum = {defined_only: true}
+  ];
+
+  // Calendars are unioned with cron and interval cadences: a schedule fires at
+  // every time any of the three matches, so a calendar beside a cron expression
+  // adds firings rather than filtering them.
+  repeated Calendar calendars = 6 [(buf.validate.field).repeated = {max_items: 32}];
+
+  // StartAt and EndAt bound the window in which firings may occur, inclusively
+  // at both ends. Either may be written alone. A start that is not before its
+  // end is refused at creation, because such a schedule can never fire and would
+  // be created successfully by Temporal all the same.
+  google.protobuf.Timestamp start_at = 7 [(google.api.field_behavior) = OPTIONAL];
+  google.protobuf.Timestamp end_at = 8 [(google.api.field_behavior) = OPTIONAL];
+
+  // CatchupWindow limits how late a missed firing may still be taken when the
+  // Temporal service returns from an outage.
+  //
+  // Optional here, but never absent by the time Temporal sees it: an unset
+  // window is one Temporal defaults to *one year*, so a schedule that says
+  // nothing would take a year of missed firings at once. The server therefore
+  // substitutes its own bounded default (`v1.DefaultScheduleCatchupWindow`) for
+  // an absent value, and this field is how an operator asks for a different one,
+  // up to thirty days.
+  google.protobuf.Duration catchup_window = 9 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).duration = {gte: {seconds: 60}, lte: {seconds: 2592000}}
+  ];
+
+  // PauseOnFailure pauses the whole schedule after an action exhausts its
+  // retries or times out, so a workload failing every hour stops at the first
+  // failure rather than at the hundredth. A firing already started is not
+  // recalled.
+  bool pause_on_failure = 10 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// ScheduleBackfill asks creation to evaluate the declared cadence over a
+// historical interval, taking the actions it would have taken then, now.
+//
+// The interval is half-open: Temporal evaluates times *after* start_at and up
+// to and including end_at, so a start written at exactly the first firing time
+// wanted excludes it. Write the start a moment earlier.
+//
+// The server bounds both how many intervals are accepted and their total span,
+// because a backfill is the one place where a single request decides how many
+// executions a cluster starts at once.
+message ScheduleBackfill {
+  google.protobuf.Timestamp start_at = 1 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp end_at = 2 [(buf.validate.field).required = true];
+  ScheduleTrigger.Overlap overlap = 3 [(buf.validate.field).enum = {defined_only: true}];
+}

@@ -3033,7 +3033,7 @@ child's finishing time out of the run's one log.
 not survive being checked (#253). The refusal said that a sequential loop's registration
 order is well defined but that what "the compensation for iteration 3" resolves against,
 once a later iteration has moved the carried state on, was not designed yet. Read
-[`PendingUndo`](../proto/flowstate/v1/flowstate.proto): a compensation is resolved the
+[`PendingUndo`](../proto/flowstate/v1/run.proto): a compensation is resolved the
 instant its step *succeeds*, in that step's own scope, and what is stored is values —
 running one "evaluates nothing at all". Iteration 3 has nothing left to move. And the
 ordering half of the argument is the one that keeps the fan-out refusal above true and

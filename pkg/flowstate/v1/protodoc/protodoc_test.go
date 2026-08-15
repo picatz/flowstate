@@ -32,17 +32,21 @@ func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
 		t.Fatal("embedded descriptor set holds no files")
 	}
 
-	var found *descriptorpb.FileDescriptorProto
+	// Every file of the schema, not one of them: the schema is spelled in
+	// several files now, and a check naming only one would pass on an artifact
+	// missing the other eleven.
+	var found int
 	for _, file := range set.GetFile() {
-		if file.GetName() == "flowstate/v1/flowstate.proto" {
-			found = file
+		if !strings.HasPrefix(file.GetName(), "flowstate/v1/") {
+			continue
+		}
+		found++
+		if len(file.GetSourceCodeInfo().GetLocation()) == 0 {
+			t.Fatalf("%s carries no SourceCodeInfo; the artifact must be built without --exclude-source-info", file.GetName())
 		}
 	}
-	if found == nil {
-		t.Fatal("embedded descriptor set does not hold flowstate/v1/flowstate.proto")
-	}
-	if len(found.GetSourceCodeInfo().GetLocation()) == 0 {
-		t.Fatal("flowstate/v1/flowstate.proto carries no SourceCodeInfo; the artifact must be built without --exclude-source-info")
+	if found == 0 {
+		t.Fatal("embedded descriptor set holds no flowstate/v1 file")
 	}
 }
 

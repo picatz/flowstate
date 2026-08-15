@@ -818,7 +818,22 @@ var hostProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 		}
 	}
 
-	walk(flowstatev1.File_flowstate_v1_flowstate_proto)
+	// Every file of flowstate's schema, not merely the ones plugin.proto
+	// imports: the engine links the whole generated package, so the set it has
+	// is the whole schema. This list is the twelve files flowstate/v1 is
+	// spelled in; a thirteenth belongs here the day it exists.
+	walk(flowstatev1.File_flowstate_v1_catalog_proto)
+	walk(flowstatev1.File_flowstate_v1_diagnostics_proto)
+	walk(flowstatev1.File_flowstate_v1_identity_proto)
+	walk(flowstatev1.File_flowstate_v1_reports_proto)
+	walk(flowstatev1.File_flowstate_v1_run_proto)
+	walk(flowstatev1.File_flowstate_v1_schedule_proto)
+	walk(flowstatev1.File_flowstate_v1_service_proto)
+	walk(flowstatev1.File_flowstate_v1_signal_proto)
+	walk(flowstatev1.File_flowstate_v1_task_proto)
+	walk(flowstatev1.File_flowstate_v1_trigger_proto)
+	walk(flowstatev1.File_flowstate_v1_value_proto)
+	walk(flowstatev1.File_flowstate_v1_workflow_proto)
 	walk(pluginv1.File_flowstate_plugin_v1_plugin_proto)
 
 	return provided

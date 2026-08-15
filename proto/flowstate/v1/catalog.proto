@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+option go_package = "flowstatev1";
+
+// Task represents a specific operation that can be performed within a workflow as a node step.
+// TaskCatalog is what this build can execute, described so that something other
+// than a person can read it.
+//
+// The task registry is the single source of truth for capability (the engine
+// dispatches from it, the validator checks against it, the editor completes from
+// it), and until this existed the only way out of the process was a table meant
+// for a terminal. An agent driving the CLI as a tool, a generator producing
+// documentation, or an editor that is not this project's language server all had
+// to parse columns, which is not a contract.
+//
+// It is a schema type rather than a shape invented in the CLI because it
+// describes the system, which is what this file is for: a field added to it
+// appears in every consumer without any of them changing, and it is already
+// versioned and wire-stable, which is what let GetCatalog return it unchanged
+// the day that RPC arrived.
+message TaskCatalog {
+  // Tasks is every task this build can run, sorted by name.
+  repeated TaskDescription tasks = 1;
+
+  // CelLibraries are the CEL extension libraries every expression in a workflow
+  // reaches. Not opt-in: a workflow speaks one dialect, so this is the vocabulary
+  // of `if:`, `items:`, `wait_until:`, a task input and a `cel` step alike.
+  repeated string cel_libraries = 2;
+
+  // DurationUnits are the duration constructors available to *every* expression
+  // (`days(3)`, `minutes(30)`) rather than only where a library is enabled.
+  // Listed separately for that reason: somebody reading cel_libraries to find out
+  // what an expression can say would otherwise conclude these are unavailable.
+  repeated string duration_units = 3;
+
+  // NowIdentifier is the name bound to the evaluation moment inside a
+  // `wait_until` expression, and nowhere else. It is the one identifier whose
+  // availability depends on position, so a reader cannot infer it.
+  string now_identifier = 4;
+
+  // ValueRoots are the names an expression reaches a value through: `vars` for a
+  // value the file names, `steps` for what a step produced.
+  //
+  // Here for the same reason NowIdentifier is (a reader cannot infer it from the
+  // task list), and the retirement edition made that sharper rather than softer. A
+  // consumer reading this catalog now sees two tasks, one of which produces nothing
+  // at all, and could reasonably conclude the language has almost no way to compute
+  // anything. It has one: an expression, bound under `vars:` at the workflow or on a
+  // step, read back through these roots.
+  //
+  // Roots rather than prose because this message is the machine-readable half. What
+  // the roots *mean* is `flow tasks` output and docs/DSL.md; what an agent needs in
+  // order to write a reference that resolves is the words themselves.
+  repeated string value_roots = 5;
+
+  // CelFunctions is every name the profile's libraries add, sorted by library and
+  // then by name.
+  //
+  // cel_libraries above says which libraries are switched on and nothing about what
+  // is in any of them, which is the difference between a fact and an answer: a
+  // reader who wants to sort a list learns that `lists` is enabled and still has to
+  // go and find cel-go's documentation to discover `sortBy`. That was survivable
+  // while the answer was "everything cel-go has"; it stopped being survivable when a
+  // profile became a *membership*, because a subset nobody can enumerate is a subset
+  // nobody can write against.
+  //
+  // Both fields, rather than replacing one with the other. A library name is what
+  // groups these and what docs/DSL.md and the profile definition talk in, so a
+  // consumer that only wants to know the shape of the dialect should not have to
+  // derive it from ninety names.
+  repeated CELFunction cel_functions = 6;
+}
+
+// CELFunction is one name an expression may call.
+message CELFunction {
+  // Name is written as it is called: `math.abs`, `upperAscii`.
+  //
+  // With one qualification, for a macro. cel-go identifies a macro by the name after
+  // the dot, so `math.greatest(1, 2)` is reported as `greatest` and
+  // `[3,1,2].sortBy(v, v)` as `sortBy`: a receiver style whose receiver is a
+  // namespace in the first case and a value in the second, which its API does not
+  // distinguish. So for a macro this is the name and not the whole call form, and a
+  // consumer must not render it as one.
+  string name = 1;
+
+  // Library is the profile library that declares it.
+  //
+  // One library per name even where two declare it: this build's `regex` entry pulls
+  // in cel-go's optional types, so an undeduplicated listing repeats all thirteen of
+  // `optional` beneath it. A profile is one membership rather than a set of
+  // switches, so which library a name arrived through is a fact about wiring, and
+  // printing it twice reads as two functions.
+  string library = 2;
+
+  // Macro says the parser expands this rather than the evaluator calling it.
+  //
+  // Visible to an author in one place, which is why it is carried rather than
+  // levelled away: a macro is settled when the file compiles, so its meaning is
+  // frozen into the compiled workflow, where a function is looked up by whichever
+  // worker evaluates the run.
+  bool macro = 3;
+
+  // Example is a complete expression calling this, set only where `name` is not
+  // enough to construct one, which is exactly the macros.
+  //
+  // A function's name *is* its call form: `upperAscii` is written `x.upperAscii()`
+  // or `regex.replace(a, b, c)` as the name says. A macro's is not, and cel-go's
+  // parser API is why: `Macro` exposes `Function`, `ArgCount`, `IsReceiverStyle`
+  // and `MacroKey`, and none of them names the *receiver*. So `greatest` is
+  // reported for something written `math.greatest(1, 2)` and `sortBy` for
+  // something written `[3,1,2].sortBy(v, v)`: a namespace in one case and a value
+  // in the other, indistinguishable from the outside.
+  //
+  // Which means this cannot be derived, and a consumer told "do not render `name`
+  // as a call" and given nothing else has been handed a catalogue of things it
+  // cannot use. It is a written table, kept honest the way this repo keeps the
+  // things that cannot be derived: a test asks the environment for its macros and
+  // fails on any that has no example, and every example is *evaluated* rather than
+  // inspected, so an entry that stops working stops passing.
+  //
+  // Deriving it was tried and rejected rather than skipped. A library's macros can
+  // be paired with the internal `@` names it declares (`math.@max` alongside
+  // `greatest` gives `math`), and that is right for `math` and `bindings` and
+  // silently wrong for `comprehensions`, which declares `cel.@mapInsert` while
+  // `transformList` is written on a value. A derivation that is wrong for one
+  // library in five is worse than a table somebody has to keep, because nothing
+  // about it says which one.
+  string example = 4;
+}
+
+// TaskDescription is one task's name and shape.
+message TaskDescription {
+  string name = 1;
+
+  // Summary is a single line, the same one `flow tasks` prints.
+  string summary = 2;
+
+  repeated TaskField inputs = 3;
+  repeated TaskField outputs = 4;
+}
+
+// PluginCatalog is what a deployment's plugins add to this build, described so
+// that something other than a person can read it.
+//
+// The same argument as [TaskCatalog], applied one process boundary out. A plugin
+// is code the engine does not ship, so "which tasks can this worker run" stops
+// being a property of the binary and becomes a property of a deployment. A
+// question nobody can ask from outside is one every operator answers by reading
+// logs.
+//
+// A plugin's task is described by [TaskDescription], the same message a built-in
+// one is. That is not a convenience: a plugin ships protobuf descriptors for its
+// inputs and outputs, so there is genuinely nothing left over to say about it,
+// and giving it a parallel message would have been a second definition of the
+// same thing. Where the two differ is *provenance*, which is the field this
+// message adds and the reason it exists: a reviewer needs to know that a step
+// leaves the engine's code.
+//
+// Wire-stable, on the same terms as [TaskCatalog], and for the same reason: a
+// worker-introspection RPC that wants to return one should not have to invent a
+// shape the CLI already prints.
+message PluginCatalog {
+  // Plugins is every plugin the worker brought up, sorted by name.
+  repeated PluginDescription plugins = 1;
+
+  // SearchPath is the directories the worker was configured to discover plugins
+  // in, in precedence order.
+  //
+  // Carried because an empty plugin list has two meanings that matter to tell
+  // apart (nothing installed, or nowhere to look), and only one of them is a
+  // configuration mistake.
+  repeated string search_path = 2;
+}
+
+// PluginDescription is one plugin's identity and what it advertises.
+message PluginDescription {
+  // Name is the segment after `flowstate-plugin-` in the executable's name, and
+  // is how discovery establishes it. It is not self-reported.
+  string name = 1;
+
+  // Version is what the plugin says it is. Informational: compatibility is
+  // decided by the protocol version, not by this.
+  string version = 2;
+
+  // Description is the plugin's own one-line summary.
+  string description = 3;
+
+  // Path is the executable this worker launched, which is the fact an operator
+  // wants when two directories on the search path hold the same name.
+  string path = 4;
+
+  // SecretSchemes are the secret reference schemes this plugin resolves.
+  repeated string secret_schemes = 5;
+
+  // Tasks are the tasks this plugin provides, described exactly as a built-in
+  // task is.
+  repeated TaskDescription tasks = 6;
+  uint32 protocol_version = 7;
+  string task_schema_digest = 8;
+  string distribution_digest = 9;
+}
+
+// TaskField is one input or output, described in the DSL's vocabulary.
+message TaskField {
+  string name = 1;
+
+  // Type is what an author would call it: `string`, `list[string]`,
+  // `map[string, string]`, or `any` where the shape is whatever an expression
+  // produced. Deliberately not the Protobuf type name, which is accurate about
+  // the schema and useless about the file being written.
+  string type = 2;
+
+  // Required reports whether the task cannot run without this input. Never set on
+  // an output, where the question does not arise.
+  bool required = 3;
+
+  // Deferred reports that the task evaluates this input's expression itself,
+  // against a scope the workflow does not have.
+  //
+  // It changes what may legally be written here, which is why it is a field
+  // rather than prose: `http`'s `outputs` may name `status_code` because the task
+  // evaluates it after the response arrives, and an ordinary input may not,
+  // because the engine resolves it before the step is even scheduled.
+  bool deferred = 4;
+
+  // Constraints are the rest of what the schema and the task already know about
+  // what may be written here, each one a phrase in the author's vocabulary:
+  // `3 to 6 characters`, `matching ^(?i)(GET|POST)$`, `at most 32 entries`,
+  // `must be written as an expression`, `may hold a secret reference`.
+  //
+  // Derived, never maintained. The length, count and range phrases are read off
+  // the field's own protovalidate rules, which are the rules the engine rejects a
+  // run against, and the last two off the task definition's own
+  // `ExpressionInputs` and secret-accepting input lists. So a bound tightened in
+  // the schema is a bound `flow tasks http` states, with nothing else touched.
+  //
+  // Rendered rather than structured for the same reason [TaskField.type] is a
+  // string saying `map[string, any]` rather than a Protobuf type name: what a
+  // reader needs is the sentence they would have had to assemble out of the rule
+  // message anyway, and a consumer wanting the rules themselves has the
+  // descriptor this was read from.
+  repeated string constraints = 5;
+}

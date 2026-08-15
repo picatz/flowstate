@@ -1,5 +1,5 @@
 version: v1
-# managed mode's only job here is telling buf what flowstate/v1/flowstate.proto's
+# managed mode's only job here is telling buf what flowstate/v1/value.proto's
 # go_package is, so it can resolve the import our own vcs.proto makes - this
 # plugin never generates code for that file. Everything about our own package
 # is already spelled out by vcs.proto's own go_package option.
@@ -7,7 +7,7 @@ managed:
   enabled: true
   override:
     GO_PACKAGE:
-      flowstate/v1/flowstate.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+      flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
 # Generated with the locally installed protoc-gen-go rather than a remote
 # plugin, so regenerating needs no network - the same choice
 # flowstate-plugin-example makes and for the same reason. flowstate.proto
@@ -19,7 +19,7 @@ managed:
 # buf refuses a workspace directory that reaches outside the directory it was
 # invoked against (`buf.work.yaml: directory "../../proto" is invalid: ... is
 # outside the context directory`), and this plugin's proto genuinely needs the
-# root repository's proto/flowstate/v1/flowstate.proto beside its own - it is
+# root repository's proto/flowstate/v1/value.proto beside its own - it is
 # where flowstate.v1.Value, the type a secret reference travels as, is
 # defined. The only way to put both in one buf workspace is to run buf from a
 # directory that contains both, which means the repository root, which means

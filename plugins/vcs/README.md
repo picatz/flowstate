@@ -151,7 +151,7 @@ which is a change to `pkg/flowstate/v1/plugin`, not to this plugin.
 **Regenerating this plugin's own `.proto` needs the repository root's
 workspace, temporarily.** `buf` refuses a workspace directory that reaches
 outside the directory it was invoked against, and this plugin's schema
-imports `flowstate/v1/flowstate.proto` from the repository root - the only
+imports `flowstate/v1/value.proto` from the repository root - the only
 way to satisfy both is to run `buf generate` from the root with the root's
 own `buf.work.yaml` temporarily listing this plugin's proto directory too.
 See `buf.gen.yaml`'s own comment for the exact recipe. This works, but it is
