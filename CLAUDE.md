@@ -469,6 +469,23 @@ When several agents edit interlocking packages:
   greenness says nothing about what is committed. Clone the pushed branch to a
   scratch directory and build, vet, and test there. That is the only view a
   colleague pulling tomorrow will actually get.
+
+  The same tree tells the same lie about *code*, and that version is quieter.
+  The shared checkout sits on whatever branch somebody left it on, which after a
+  wave of merges is behind `main` by every one of them. An analysis that reads it
+  is not confused and does not fail — it produces findings that are internally
+  consistent, specific, and describe code that stopped existing hours ago. One
+  such pass reported that `flow breaking` ignored an enum's `values:` and that
+  `typeName` was a hand-kept switch missing `TYPE_ENUM`, citing line numbers for
+  both. Both were true of the branch it read and false of `main`, where the fix
+  had landed that morning — and the second one's replacement carries a doc
+  comment naming the exact defect being reported.
+
+  So: any task whose output is a claim about the code starts with
+  `git fetch origin main` and reads `origin/main`, or works in a worktree created
+  from it. Cite the commit the claim is against. A finding with no revision
+  attached is a finding about an unknown tree, and it costs more to disprove than
+  it did to make.
 - **Verify claims rather than relaying them.** Reproduce a coverage number or a
   failure before acting on it.
 - **Kill processes by PID, never by pattern.** `pkill -f 'go test'` on a shared

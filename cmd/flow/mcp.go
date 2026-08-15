@@ -43,6 +43,46 @@ import (
 // they run in-process and an agent gets a working authoring loop with nothing
 // else stood up. The lifecycle verbs address durable runs, which only a server
 // has; without --address they explain that rather than failing opaquely.
+//
+// GetCatalog is the one exception to "in-process, always": with --address or
+// FLOWSTATE_ADDRESS explicitly naming a deployment, it answers from that
+// deployment instead (#439). The deployment is what will actually run a
+// submitted workflow and may have plugins or a version this binary does not,
+// so an agent authoring against this binary's own build would write a file
+// that validates here and is refused on submission. It refuses rather than
+// falling back to the local answer when that deployment cannot be reached —
+// this repository fails closed, and a silent fallback here would be the
+// identical defect one level up: an answer that looks like the deployment's
+// and is not. Validate and Compile stay unconditionally local: neither
+// consults a task registry (flowfile's own validator deliberately does not,
+// per CLAUDE.md's "report what is a property of the file, and stay silent
+// about what a deployment decides"), so there is no deployment-shaped answer
+// for either to diverge toward.
+
+// remoteCatalogAddressFor decides whether flowstate_get_catalog should
+// dispatch to the addressed deployment rather than answering from this
+// binary's own build — see [flowmcp.Deps.RemoteCatalogAddress] and #439.
+//
+// An operator names a deployment two ways — --address on the command line or
+// FLOWSTATE_ADDRESS in the environment (addServerFlags reads the latter into
+// the former's default at declaration, so a flag left untouched still carries
+// it) — and either one counts. cmd.Flags().Changed alone would miss the
+// common case of an environment-configured deployment with no flag typed;
+// reading the environment variable directly, rather than comparing the flag's
+// resolved value against defaultServerAddress, is what keeps this from
+// mistaking a deployment that genuinely runs at the default host:port for
+// "nothing was configured".
+//
+// A helper of its own rather than inlined in runMCP so the decision is
+// testable without standing up the stdio server — see
+// TestRemoteCatalogAddressForRespectsExplicitAddress.
+func remoteCatalogAddressFor(cmd *cobra.Command, flags serverFlags) string {
+	if cmd.Flags().Changed("address") || os.Getenv("FLOWSTATE_ADDRESS") != "" {
+		return flags.address
+	}
+
+	return ""
+}
 
 // runMCP implements the mcp sub-command.
 func runMCP(cmd *cobra.Command, args []string) error {
@@ -122,6 +162,8 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			return redactGetResponse(response, nil, revealSensitiveRequested(cmd))
 		},
 	}
+
+	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
 	extra := []flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
 		{Tool: flowmcp.TestTool(), Handler: testToolHandler()},

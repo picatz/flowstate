@@ -67,7 +67,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
-			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/serverdev.go",
+			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",

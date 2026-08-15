@@ -682,19 +682,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 		exemptACMETLSALPN01ChallengeFromClientAuth(tlsCfg)
 	}
 
-	// Acquisition is startup: obtain (or reuse from cache) a certificate for
-	// every configured host now, before this process claims to be serving
-	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
-	// see [primeACMECertificates]'s doc for why that matters.
-	if acmeCfg != nil {
-		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
-		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("obtaining ACME certificates before serving: %w", err)
-		}
-		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
-	}
+	// Acquisition is startup, but it cannot happen *here*: see the ordering
+	// note where priming actually runs, below the point this listener starts
+	// serving. #628.
 
 	// Fetch every trusted issuer's keys now, so an issuer that is misconfigured
 	// or unreachable is reported at startup instead of as a puzzling
@@ -960,6 +950,35 @@ func runServer(cmd *cobra.Command, args []string) error {
 			}
 			serveErr <- nil
 		}()
+	}
+
+	// Acquisition is startup — and it runs here, with the listener above
+	// already serving, because TLS-ALPN-01 is answered on that very socket.
+	// The CA completes the challenge by connecting back to it, so priming
+	// before the socket existed made first-time issuance impossible and left
+	// ACME working only from a warm cache (#628; [primeACMECertificates] has
+	// the mechanism).
+	//
+	// Failing here still fails startup: the deferred shutdown below runs, and
+	// the error is returned rather than logged, which is the property #581
+	// asked for. What changed is only that the challenge can now be answered
+	// while it is asked.
+	if acmeCfg != nil {
+		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
+		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
+		cancel()
+		if err != nil {
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 1*time.Minute)
+			_ = httpServer.Shutdown(shutdownCtx)
+			cancelShutdown()
+			if internalServer != nil {
+				internalShutdownCtx, cancelInternal := context.WithTimeout(context.Background(), 1*time.Minute)
+				_ = internalServer.Shutdown(internalShutdownCtx)
+				cancelInternal()
+			}
+			return fmt.Errorf("obtaining ACME certificates: %w", err)
+		}
+		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
 	}
 
 	// The renewal watchdog, only running when ACME is configured. A nil
@@ -2021,8 +2040,11 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 		Short: "Serve Flowstate to an AI agent over the Model Context Protocol",
 		Long: "Serve every workflow-service RPC as an MCP tool over stdin and stdout, " +
 			"with input schemas derived from the same protobuf schema the API speaks. " +
-			"Validation, the task catalog and local execution answer in this process; " +
-			"the run-lifecycle tools call the configured server.\n\n" +
+			"Validation, compilation and local execution always answer in this process; " +
+			"the run-lifecycle tools call the configured server. The task catalog answers " +
+			"in this process too, unless --address (or FLOWSTATE_ADDRESS) explicitly names " +
+			"a deployment, in which case it answers from that deployment instead, and " +
+			"refuses rather than falling back here if it cannot be reached.\n\n" +
 			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
 			"does. What such a run may reach is decided by the flags this process is started " +
 			"with and by nothing a client sends: with no flags, egress is denied and no secret " +
