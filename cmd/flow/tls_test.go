@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,9 +12,11 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -203,4 +206,58 @@ func TestTLSTerminatedUpstreamFlagIsOffByDefaultAndReadsItsEnvVar(t *testing.T) 
 	addTLSFlags(cmd)
 	require.True(t, tlsFlagsOf(cmd).tlsTerminatedUpstream,
 		"FLOWSTATE_TLS_TERMINATED_UPSTREAM must be honored the same way FLOWSTATE_TLS_CERT_FILE is")
+}
+
+// observabilityComposeService is the slice of a Compose service definition
+// TestObservabilityDeploymentOptsIntoItsNonLoopbackPlaintextListener reads:
+// enough to pull flowstate-server's actual environment and command out of
+// the document, rather than matching text that could belong to any service.
+type observabilityComposeService struct {
+	Environment map[string]string `yaml:"environment"`
+	Command     []string          `yaml:"command"`
+}
+
+type observabilityCompose struct {
+	Services map[string]observabilityComposeService `yaml:"services"`
+}
+
+// TestObservabilityDeploymentOptsIntoItsNonLoopbackPlaintextListener protects
+// the shipped deployment, rather than only the listener helper in isolation.
+// Docker Compose's config check validates YAML but cannot notice that this
+// command would be refused before binding its socket.
+//
+// It decodes the compose file and reads services.flowstate-server's own
+// environment and command directly, rather than matching substrings against
+// the whole document: a hard-coded address or flag list would keep passing
+// after the server's actual configuration moved or lost the opt-in, which a
+// document-wide `strings.Contains` cannot tell apart from finding it in the
+// right place.
+func TestObservabilityDeploymentOptsIntoItsNonLoopbackPlaintextListener(t *testing.T) {
+	t.Parallel()
+
+	compose, err := os.ReadFile(filepath.Join("..", "..", "examples", "observability", "docker-compose.yaml"))
+	require.NoError(t, err)
+
+	// AllowDuplicateMapKey: the compose file merges a shared environment
+	// anchor into flowstate-server with `<<: *flowstate-env` and then, in the
+	// same mapping, layers its own `FLOWSTATE_ADDRESS` on top — a deliberate
+	// override, not a mistake, but the decoder otherwise reports it as a
+	// duplicate key.
+	var doc observabilityCompose
+	dec := yaml.NewDecoder(bytes.NewReader(compose), yaml.AllowDuplicateMapKey())
+	require.NoError(t, dec.Decode(&doc))
+
+	server, ok := doc.Services["flowstate-server"]
+	require.True(t, ok, "docker-compose.yaml must define a flowstate-server service")
+
+	address := server.Environment["FLOWSTATE_ADDRESS"]
+	require.Equal(t, "0.0.0.0:9233", address,
+		"this regression check must follow the observability server's actual non-loopback address")
+
+	tlsTerminatedUpstream := slices.Contains(server.Command, "--tls-terminated-upstream")
+	require.True(t, tlsTerminatedUpstream,
+		"the observability server's own command must explicitly opt into the Docker-published plaintext listener")
+
+	require.NoError(t, refusePlaintextListener(address, nil, tlsTerminatedUpstream),
+		"the deployment's actual address and opt-in must pass the startup refusal")
 }
