@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -394,6 +395,11 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 			"input %q is declared enum but declares no values; an enum needs at least one member "+
 				"to be a closed set of anything", name)
 	}
+	if t == InputDeclaration_TYPE_ENUM && len(decl.Values) > 0 {
+		if err := checkEnumValuesShape(name, decl.Values); err != nil {
+			return err
+		}
+	}
 
 	if decl.Must != nil {
 		if _, err := CompileMustExpression(decl.GetMust(), t); err != nil {
@@ -402,6 +408,169 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 	}
 
 	return nil
+}
+
+// EnumValuesShapeError reports that a declared enum's `values:` list
+// violates one of the per-member or list-size rules the schema itself
+// declares on [InputDeclaration.values] in
+// proto/flowstate/v1/flowstate.proto: at most 64 entries, each 1-128
+// characters, all distinct.
+//
+// [CheckInputConstraintShape] returns one of these, rather than a bare
+// error, so that a caller which knows where in a source document each part
+// of the declaration was written — the flowfile compiler — can point a
+// diagnostic at the exact member responsible instead of at the declaration
+// as a whole. Field is empty for every other error
+// [CheckInputConstraintShape] can return, so a caller distinguishes this
+// case with [errors.As] rather than by matching message text.
+type EnumValuesShapeError struct {
+	// Name is the input's own name, folded into [EnumValuesShapeError.Error]'s
+	// message.
+	Name string
+
+	// Field is the path of the value at fault, relative to the declaration
+	// itself the way protovalidate reports it: "values" for a rule about the
+	// list as a whole (too many entries, a duplicate among them), or
+	// "values[i]" when one member at index i is the one that failed (empty,
+	// or over the length bound).
+	Field string
+
+	message string
+}
+
+// Error renders the violation as a sentence naming the input and, for a
+// member-specific violation, which one — not the raw protovalidate message,
+// which names a rule ID and a generic bound rather than the actual member or
+// count at fault.
+func (e *EnumValuesShapeError) Error() string {
+	return fmt.Sprintf("input %q %s", e.Name, e.message)
+}
+
+// checkEnumValuesShape applies the schema's own bound on a declared enum's
+// `values:` — at most 64 entries, each 1-128 characters, all distinct — to
+// values.
+//
+// Rather than hand-writing those three numbers a second time, which is
+// exactly the kind of copy CLAUDE.md's "one rule, not two" warns drifts from
+// the schema the moment somebody edits the (buf.validate.field) annotation
+// on [InputDeclaration.values], this builds a throwaway declaration carrying
+// only a placeholder name and the values in question and runs it through
+// [Validate] — the identical schema-driven validator the server applies to a
+// submitted specification — so the two can never disagree about where the
+// bound sits. The placeholder name is a valid identifier so that
+// [InputDeclaration.name]'s own rules, irrelevant to this function, never
+// fire and need filtering out of the result.
+//
+// A violation's rule ID and field path pick out which of the three
+// author-facing messages to build; the values slice already in hand supplies
+// the specifics — the actual duplicate, the actual length — that
+// protovalidate's own message does not carry, per CLAUDE.md's rule that a
+// diagnostic surfaced to an author is written for an editor rather than
+// wrapped from the validator that found it.
+func checkEnumValuesShape(name string, values []string) error {
+	probe := &InputDeclaration{
+		Name:   "x",
+		Type:   InputDeclaration_TYPE_ENUM,
+		Values: values,
+	}
+
+	verr := Validate(probe)
+	if verr == nil {
+		return nil
+	}
+
+	var invalid *ValidationError
+	if !errors.As(verr, &invalid) {
+		// The validator itself could not be run at all (see
+		// [ErrValidatorUnavailable]) — fail closed per CLAUDE.md rather than
+		// let a declaration this function could not actually check through.
+		return fmt.Errorf("input %q values: %w", name, verr)
+	}
+
+	for _, v := range invalid.Violations {
+		switch {
+		case v.Field == "values" && v.Rule == "repeated.max_items":
+			return &EnumValuesShapeError{
+				Name: name, Field: v.Field,
+				message: fmt.Sprintf(
+					"declares %d values, but an enum may declare at most 64; trim the list, or split it "+
+						"into more than one input", len(values)),
+			}
+		case v.Field == "values" && v.Rule == "repeated.unique":
+			if dup, idx := firstDuplicateEnumValue(values); idx >= 0 {
+				return &EnumValuesShapeError{
+					Name: name, Field: v.Field,
+					message: fmt.Sprintf(
+						"value %d (%q) repeats one already declared; an enum's values must be distinct",
+						idx, dup),
+				}
+			}
+			return &EnumValuesShapeError{
+				Name: name, Field: v.Field,
+				message: "declares two identical values; an enum's values must be distinct",
+			}
+		case strings.HasPrefix(v.Field, "values[") && v.Rule == "string.min_len":
+			return &EnumValuesShapeError{
+				Name: name, Field: v.Field,
+				message: fmt.Sprintf(
+					"value %d is empty; every enum value must be at least 1 character",
+					enumValueIndex(v.Field)),
+			}
+		case strings.HasPrefix(v.Field, "values[") && v.Rule == "string.max_len":
+			idx := enumValueIndex(v.Field)
+			length := 0
+			if idx >= 0 && idx < len(values) {
+				length = utf8.RuneCountInString(values[idx])
+			}
+			return &EnumValuesShapeError{
+				Name: name, Field: v.Field,
+				message: fmt.Sprintf(
+					"value %d is %d characters, over the 128 an enum value may hold", idx, length),
+			}
+		}
+	}
+
+	// Every rule this function knows to translate lives on the schema today
+	// and is handled above; this is reached only if the schema's own
+	// annotation on `values` grows a rule this function has not been taught
+	// yet. Fail closed rather than silently accept a declaration the server
+	// would still refuse: the raw validator message is worse than a
+	// hand-written one, but it is far better than reporting nothing wrong.
+	return fmt.Errorf("input %q %s", name, invalid.Error())
+}
+
+// firstDuplicateEnumValue returns the first value in values that repeats one
+// seen earlier, and the index it repeats at, so [checkEnumValuesShape] can
+// name the actual duplicate rather than parrot protovalidate's
+// rule-shaped-but-contentless "must contain unique items".
+//
+// Returns ("", -1) if values holds no duplicate — which callers only reach
+// this for after protovalidate's own repeated.unique rule already fired, so
+// in practice one always exists; the -1 sentinel exists so this function
+// cannot panic if that ever stops being true.
+func firstDuplicateEnumValue(values []string) (string, int) {
+	seen := make(map[string]bool, len(values))
+	for i, v := range values {
+		if seen[v] {
+			return v, i
+		}
+		seen[v] = true
+	}
+	return "", -1
+}
+
+// enumValueIndex parses the index out of a protovalidate field path shaped
+// like "values[3]", returning -1 if field is not that shape.
+func enumValueIndex(field string) int {
+	open := strings.IndexByte(field, '[')
+	if open < 0 || !strings.HasSuffix(field, "]") {
+		return -1
+	}
+	n, err := strconv.Atoi(field[open+1 : len(field)-1])
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // CheckOutputConstraintShape is [CheckInputConstraintShape] for an output's

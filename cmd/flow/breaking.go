@@ -493,7 +493,38 @@ func constraintNarrowed(old, neu *v1.InputDeclaration) string {
 		reasons = append(reasons, "must tightened")
 	}
 
+	// An enum's `values:` is a closed set, so removing a member refuses an
+	// argument the old contract accepted — the identical narrowing a raised
+	// `min_len` is, just over a set instead of a range. Adding a member only
+	// admits more, the same direction a dropped bound does, so it is silent.
+	// Reached only when the type is unchanged (the caller checks that first),
+	// so both declarations are enums here whenever either carries `values:`.
+	if removed := removedValues(old.GetValues(), neu.GetValues()); len(removed) > 0 {
+		reasons = append(reasons, fmt.Sprintf("values removed: %s", strings.Join(removed, ", ")))
+	}
+
 	return strings.Join(reasons, ", ")
+}
+
+// removedValues returns the members of old that are absent from neu, in old's
+// order, for a narrowing message that reads like the enum the author wrote
+// rather than in whatever order a set iterates.
+func removedValues(old, neu []string) []string {
+	if len(old) == 0 {
+		return nil
+	}
+	present := make(map[string]bool, len(neu))
+	for _, v := range neu {
+		present[v] = true
+	}
+
+	var removed []string
+	for _, v := range old {
+		if !present[v] {
+			removed = append(removed, v)
+		}
+	}
+	return removed
 }
 
 // raised reports whether a lower bound (min_len, min_items) tightened: it appeared
@@ -524,23 +555,15 @@ func lowered(old, neu *uint64) bool {
 
 // typeName renders an input type for a diagnostic in the spelling an author
 // writes in the file.
+//
+// Delegates to [v1.DeclaredTypeName] rather than repeating its own switch:
+// that function derives its spelling from the schema's descriptor, so a type
+// added to [v1.InputDeclaration_Type] is named correctly here the day it is
+// added, with nothing in this file to edit. A hand-kept switch here is
+// exactly how TYPE_ENUM went unnamed ("unspecified") in a breaking-change
+// diagnostic despite being a real, well-formed type.
 func typeName(t v1.InputDeclaration_Type) string {
-	switch t {
-	case v1.InputDeclaration_TYPE_STRING:
-		return "string"
-	case v1.InputDeclaration_TYPE_INT:
-		return "int"
-	case v1.InputDeclaration_TYPE_FLOAT:
-		return "float"
-	case v1.InputDeclaration_TYPE_BOOL:
-		return "bool"
-	case v1.InputDeclaration_TYPE_STRUCT:
-		return "struct"
-	case v1.InputDeclaration_TYPE_LIST:
-		return "list"
-	default:
-		return "unspecified"
-	}
+	return v1.DeclaredTypeName(t)
 }
 
 // --- git plumbing: read the ref's bytes without touching the working tree ---

@@ -371,6 +371,55 @@ steps:
 	}
 }
 
+// TestExpressionInputTypeMismatchThroughAnEnumInput is P3 of #621:
+// representativeValue used to return nil for TYPE_ENUM, so a direct
+// reference to an enum-typed input — `${inputs.environment}` — reached no
+// representative value at all and [checkExpressionInputTypes] fell through
+// silently, wiring an enum input to a non-string task field with nothing
+// caught until the run actually executed it. An enum's wire shape is a
+// string ([v1.StringShaped]), so this must be caught the same way a
+// declared-string input already was.
+func TestExpressionInputTypeMismatchThroughAnEnumInput(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+inputs:
+  environment:
+    type: enum
+    values: [staging, production]
+    required: true
+steps:
+  - id: a
+    http:
+      url: https://example.com
+      parse_json: ${inputs.environment}
+`
+	ds, err := flowfile.ValidateSource([]byte(src))
+	if err != nil {
+		t.Fatalf("ValidateSource() error: %v", err)
+	}
+
+	var found *flowfile.Diagnostic
+	for i := range ds {
+		if ds[i].Code == "type-mismatch" {
+			found = &ds[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no type_mismatch diagnostic; got:\n%s", ds.Error())
+	}
+
+	const want = `expected true or false, but this is a string (from ${inputs.environment})`
+	if got := found.Message; got != want {
+		t.Errorf("message =\n  %q\nwant\n  %q", got, want)
+	}
+	if found.Step != "a" || found.Field != "parse_json" {
+		t.Errorf("diagnostic names step %q input %q, want step \"a\" input \"parse_json\"", found.Step, found.Field)
+	}
+}
+
 // logInput returns a workflow whose single log step has the given inputs body.
 func logInput(inputs string) string {
 	return `edition: v2026.3
