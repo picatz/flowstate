@@ -128,6 +128,23 @@ func TestScheduleBackfillBoundsAreReachedAndNotExceeded(t *testing.T) {
 		"the start must come first")
 }
 
+func TestScheduleBackfillIsBoundedByCadence(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	backfill := func(d time.Duration) []*v1.ScheduleBackfill {
+		return []*v1.ScheduleBackfill{{StartAt: timestamppb.New(now.Add(-d)), EndAt: timestamppb.New(now)}}
+	}
+	oneSecond := &v1.ScheduleTrigger{Every: durationpb.New(time.Second)}
+
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(oneSecond,
+		backfill(v1.MaxScheduleBackfillFirings*time.Second)))
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(oneSecond,
+		backfill((v1.MaxScheduleBackfillFirings+1)*time.Second)), "more than 100000 firings")
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"0 9 * * *"}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"ordinary minute-resolution cron keeps the existing 31-day recovery window")
+}
+
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
 // values that cannot be right on any cluster.
 //

@@ -113,13 +113,69 @@ const (
 // Two bounds rather than one, because they bound different resources and an
 // attacker (or a tired operator) picks whichever the other one leaves open. The
 // count bounds how many separate evaluations the cluster is asked for; the total
-// span bounds how much *time* those evaluations cover, which is what decides how
-// many executions come out of them. One 40-day range and forty 1-day ranges are the
-// same burst, and only checking both refuses both.
+// span bounds how much *time* those evaluations cover. One 40-day range and forty
+// 1-day ranges are the same window, and only checking both refuses both. The
+// cadence-aware check below separately bounds how many executions that window can
+// produce.
 const (
-	MaxScheduleBackfills    = 10
-	MaxScheduleBackfillSpan = 31 * 24 * time.Hour
+	MaxScheduleBackfills       = 10
+	MaxScheduleBackfillSpan    = 31 * 24 * time.Hour
+	MaxScheduleBackfillFirings = 100000
 )
+
+// CheckScheduleBackfillForTrigger also bounds the work produced by the ranges.
+// A span alone is not a work bound: at the minimum one-second cadence the span
+// above contains millions of firing times. The estimate is deliberately an upper
+// bound. Five-field cron cannot fire more than once a minute; calendars and cron
+// forms carrying seconds may fire once a second.
+func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*ScheduleBackfill) error {
+	if err := CheckScheduleBackfill(backfills); err != nil {
+		return err
+	}
+	if len(backfills) == 0 {
+		return nil
+	}
+
+	minimum := time.Duration(0)
+	cadences := 0
+	consider := func(candidate time.Duration) {
+		if candidate > 0 && (minimum == 0 || candidate < minimum) {
+			minimum = candidate
+		}
+	}
+	if every := trigger.GetEvery(); every != nil {
+		consider(every.AsDuration())
+		cadences++
+	}
+	for _, expression := range trigger.GetCron() {
+		cadences++
+		if len(strings.Fields(expression)) == 5 {
+			consider(time.Minute)
+		} else {
+			consider(time.Second)
+		}
+	}
+	if len(trigger.GetCalendars()) > 0 {
+		consider(time.Second)
+		cadences += len(trigger.GetCalendars())
+	}
+	if minimum == 0 {
+		return fmt.Errorf("a backfill needs a schedule cadence whose firing count can be bounded")
+	}
+
+	remaining := MaxScheduleBackfillFirings
+	for i, b := range backfills {
+		span := b.GetEndAt().AsTime().Sub(b.GetStartAt().AsTime())
+		// Temporal's interval is (start, end], so division rounded down is the
+		// maximum number of evenly spaced firing times it can contain.
+		firings := int(span/minimum) * cadences
+		if firings > remaining {
+			return fmt.Errorf("the backfill can produce more than %d firings at this cadence; range %d would exceed the bounded recovery limit", MaxScheduleBackfillFirings, i+1)
+		}
+		remaining -= firings
+	}
+	return nil
+}
 
 // CheckScheduleBackfill bounds an operator-requested historical replay before
 // it can turn a short outage into an unbounded burst of executions.
