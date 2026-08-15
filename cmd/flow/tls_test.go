@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -237,8 +238,14 @@ func TestObservabilityDeploymentOptsIntoItsNonLoopbackPlaintextListener(t *testi
 	compose, err := os.ReadFile(filepath.Join("..", "..", "examples", "observability", "docker-compose.yaml"))
 	require.NoError(t, err)
 
+	// AllowDuplicateMapKey: the compose file merges a shared environment
+	// anchor into flowstate-server with `<<: *flowstate-env` and then, in the
+	// same mapping, layers its own `FLOWSTATE_ADDRESS` on top — a deliberate
+	// override, not a mistake, but the decoder otherwise reports it as a
+	// duplicate key.
 	var doc observabilityCompose
-	require.NoError(t, yaml.Unmarshal(compose, &doc))
+	dec := yaml.NewDecoder(bytes.NewReader(compose), yaml.AllowDuplicateMapKey())
+	require.NoError(t, dec.Decode(&doc))
 
 	server, ok := doc.Services["flowstate-server"]
 	require.True(t, ok, "docker-compose.yaml must define a flowstate-server service")
