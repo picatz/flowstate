@@ -72,7 +72,7 @@ steps:
       name: deploy-approved
       timeout: 24h
       outputs:
-        decided: ${payload.?approved.hasValue()}
+        decided: ${has(payload.approved)}
         approved: ${payload.?approved.orValue(false)}
         sender: ${sender}
 
