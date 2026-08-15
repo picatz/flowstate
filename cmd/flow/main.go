@@ -666,19 +666,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Acquisition is startup: obtain (or reuse from cache) a certificate for
-	// every configured host now, before this process claims to be serving
-	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
-	// see [primeACMECertificates]'s doc for why that matters.
-	if acmeCfg != nil {
-		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
-		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("obtaining ACME certificates before serving: %w", err)
-		}
-		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
-	}
+	// ACME issuance is deliberately not primed here. TLS-ALPN-01 proves control
+	// by connecting back to this process's public TLS listener, which is not
+	// bound and serving until below. autocert's first live handshake initiates
+	// issuance after that challenge-capable listener is available.
 
 	// Fetch every trusted issuer's keys now, so an issuer that is misconfigured
 	// or unreachable is reported at startup instead of as a puzzling

@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -355,53 +354,7 @@ func checkACMECacheDir(path string) error {
 		return fmt.Errorf("--tls-acme-cache %s is not a directory", path)
 	}
 
-	// See cmd/flow/keys.go's identical carve-out: Windows has no POSIX
-	// permission bits, so Perm() there reflects nothing this check could act
-	// on, and enforcing it would refuse every directory rather than an
-	// actually-too-open one.
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("--tls-acme-cache %s has mode %s; this must be readable and "+
-			"writable by its owner only (0700) because it holds an ACME account key and "+
-			"issued certificates' private keys", path, info.Mode().Perm())
-	}
-	return nil
-}
-
-// primeACMECertificates obtains (or renews) a certificate for every
-// configured host before the public listener starts accepting connections.
-//
-// This is #581's "acquisition is startup" decision: a certificate the
-// manager cannot obtain right now means the listener cannot serve the
-// posture the operator configured, which is a start-up failure — the same
-// refusal [serverTLSConfig] gives an unloadable cert file — rather than a
-// deployment that appears to start and then fails the first real TLS
-// handshake with no explanation. Without this, autocert only ever requests a
-// certificate lazily, on the first connection that names a configured host in
-// SNI, and that connection's caller would be the one who discovers a
-// misconfiguration this process could have reported to its own operator
-// instead.
-func primeACMECertificates(ctx context.Context, manager *autocert.Manager, hosts []string) error {
-	var errs []error
-	for _, host := range hosts {
-		if _, err := manager.GetCertificate(&tls.ClientHelloInfo{
-			ServerName: host,
-			// autocert's TLS-ALPN-01 codepath only activates for a hello that
-			// asks for the "acme-tls/1" protocol; without it GetCertificate
-			// serves (or here, obtains) the ordinary certificate for the
-			// name, which is what priming wants.
-			SupportedProtos: []string{"h2", "http/1.1"},
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("obtaining an initial certificate for %s: %w", host, err))
-		}
-		if ctx.Err() != nil {
-			errs = append(errs, ctx.Err())
-			break
-		}
-	}
-	return errors.Join(errs...)
+	return checkACMECacheDirSecurity(path, info)
 }
 
 // acmeWatchdogInterval is how often [acmeExpiryWatchdog] re-checks every

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // What a declared webhook can be wrong about, and how a delivery becomes a run's
@@ -235,7 +236,8 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	// be named alike, so either all of them dedupe against each other or none does.
 	// Refused where it is written rather than at the first redelivery, which is the
 	// one moment nobody is watching.
-	if _, computed := key.GetKind().(*Value_Expr); !computed {
+	expression, computed := key.GetKind().(*Value_Expr)
+	if !computed || !celExprReferencesIdentifier(expression.Expr.GetExpr(), EventRoot) {
 		return fmt.Errorf("webhook %q writes an `idempotency_key:` that does not depend on the delivery, so "+
 			"every delivery would be named alike; write an expression over `%s`, such as "+
 			"`${%s.%s[\"stripe-signature\"]}` or an id from the body",
@@ -243,6 +245,51 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	}
 
 	return nil
+}
+
+// celExprReferencesIdentifier reports whether an expression syntactically
+// depends on name. Trigger expressions are already type-checked separately;
+// this walk exists to distinguish a delivery-derived key from a CEL expression
+// that merely wraps a constant.
+func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
+	if expression == nil {
+		return false
+	}
+	switch kind := expression.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		return kind.IdentExpr.GetName() == name
+	case *expr.Expr_SelectExpr:
+		return celExprReferencesIdentifier(kind.SelectExpr.GetOperand(), name)
+	case *expr.Expr_CallExpr:
+		if celExprReferencesIdentifier(kind.CallExpr.GetTarget(), name) {
+			return true
+		}
+		for _, argument := range kind.CallExpr.GetArgs() {
+			if celExprReferencesIdentifier(argument, name) {
+				return true
+			}
+		}
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			if celExprReferencesIdentifier(element, name) {
+				return true
+			}
+		}
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			if celExprReferencesIdentifier(entry.GetMapKey(), name) || celExprReferencesIdentifier(entry.GetValue(), name) {
+				return true
+			}
+		}
+	case *expr.Expr_ComprehensionExpr:
+		comprehension := kind.ComprehensionExpr
+		return celExprReferencesIdentifier(comprehension.GetIterRange(), name) ||
+			celExprReferencesIdentifier(comprehension.GetAccuInit(), name) ||
+			celExprReferencesIdentifier(comprehension.GetLoopCondition(), name) ||
+			celExprReferencesIdentifier(comprehension.GetLoopStep(), name) ||
+			celExprReferencesIdentifier(comprehension.GetResult(), name)
+	}
+	return false
 }
 
 // CheckWebhookTriggers reports what is wrong across a workflow's whole set of

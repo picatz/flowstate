@@ -33,6 +33,15 @@ func stripeTrigger() *v1.WebhookTrigger {
 	}
 }
 
+func TestCheckWebhookIdempotencyKeyRejectsConstantExpression(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWebhookIdempotencyKey("constant", v1.NewExpr(`"all-events"`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not depend on the delivery")
+	require.NoError(t, v1.CheckWebhookIdempotencyKey("derived", v1.NewExpr(`event.body.id`)))
+}
+
 // orderWorkflow declares the signature the trigger above is a call site of.
 func orderWorkflow() *v1.Workflow {
 	return &v1.Workflow{
