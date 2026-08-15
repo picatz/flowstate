@@ -61,6 +61,15 @@ type scannedSource struct {
 	// names maps each environment variable mentioned to where it was mentioned.
 	names map[string][]string
 
+	// reads is the narrower half: only the files that actually call
+	// os.Getenv/os.LookupEnv for a name, as opposed to writing the name down.
+	//
+	// The two have to be separate because the widest mention of every variable
+	// in this repository is the table below, which names all of them and reads
+	// none. Checking the documented `read:` column against `names` would
+	// therefore be satisfied by the document describing itself.
+	reads map[string][]string
+
 	// dynamic is every os.Getenv/os.LookupEnv whose argument could not be
 	// resolved to a name, as file:line.
 	dynamic []string
@@ -140,6 +149,86 @@ func TestEveryEnvironmentReadIsDocumented(t *testing.T) {
 	}
 }
 
+// TestEveryDocumentedReadLocationIsWhereItIsRead checks the third column, which
+// nothing checked until now.
+//
+// The two tests around this one compare the *set* of names both ways, and that
+// is what the table's doc comment promises. But each entry also carries a
+// `read:` — "where the process reads it, as a package path or file — so a reader
+// who doubts the sentence can go and check it" — and a reader who does go and
+// check it has, three times, arrived somewhere the variable is not read from and
+// missed somewhere it is.
+//
+// The data to catch that was already in hand. scanEnvironmentReads visits every
+// os.Getenv and os.LookupEnv in the tree and records the file, and the set test
+// then used only the keys of that map and discarded the locations. A gate
+// holding the evidence and not looking at it is worse than one that never
+// collected it, because the document it guards reads as verified.
+//
+// Both directions, for the reason CLAUDE.md gives about isolation tests: a
+// missing location sends a reader to a file where the answer is not, and a
+// stale one sends them to a file where it never was.
+func TestEveryDocumentedReadLocationIsWhereItIsRead(t *testing.T) {
+	t.Parallel()
+
+	generator := testGenerator(t)
+	found := scanEnvironmentReads(t)
+
+	var checked int
+
+	for _, variable := range generator.documentedEnvironmentVariables() {
+		if variable.family {
+			// A family has no single name to look up, so there is no set of
+			// call sites to compare against.
+			continue
+		}
+
+		actual := found.reads[variable.name]
+		if len(actual) == 0 {
+			// Read through a name this scan cannot resolve; the exemption is
+			// checked by TestEveryEnvironmentReadIsDocumented, and there is
+			// nothing here to compare.
+			continue
+		}
+
+		checked++
+		documented := documentedReadLocations(variable.read)
+
+		for _, where := range actual {
+			assert.Contains(t, documented, where,
+				"%s is read in %s and its `read:` column does not say so, so a reader "+
+					"checking the sentence looks in the wrong place; the column reads %q",
+				variable.name, where, variable.read)
+		}
+
+		for _, where := range documented {
+			assert.Contains(t, actual, where,
+				"%s's `read:` column sends a reader to %s and nothing there reads it; "+
+					"the reads are %s", variable.name, where, strings.Join(actual, ", "))
+		}
+	}
+
+	// The anti-vacuity guard. A scan that stops resolving names, or a column
+	// whose format changes, would otherwise turn this into a test that compares
+	// nothing and passes.
+	if checked < 20 {
+		t.Errorf("compared only %d entries against their read locations; the scan or the "+
+			"column format changed and this test is no longer reading what it claims to",
+			checked)
+	}
+}
+
+// documentedReadLocations splits a `read:` column into the paths it names.
+func documentedReadLocations(column string) []string {
+	var locations []string
+	for _, part := range strings.Split(column, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			locations = append(locations, trimmed)
+		}
+	}
+	return locations
+}
+
 // TestEveryDocumentedEnvironmentVariableIsRead is the other direction, and the
 // one that wastes a reader's time rather than hiding something from them.
 //
@@ -204,7 +293,7 @@ func scanEnvironmentReads(t *testing.T) scannedSource {
 	root, err := filepath.Abs("../../../..")
 	require.NoError(t, err)
 
-	found := scannedSource{names: map[string][]string{}}
+	found := scannedSource{names: map[string][]string{}, reads: map[string][]string{}}
 
 	// Constant values, so a read spelled `os.Getenv(protocol.SocketEnv)` resolves
 	// to the name it actually reads. Keyed by the identifier's own name, which is
@@ -302,6 +391,7 @@ func scanEnvironmentReads(t *testing.T) scannedSource {
 					return true
 				}
 				found.names[name] = appendOnce(found.names[name], relative)
+				found.reads[name] = appendOnce(found.reads[name], relative)
 			}
 
 			return true
