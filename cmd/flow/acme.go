@@ -458,7 +458,8 @@ func checkACMECacheDir(path string) error {
 }
 
 // primeACMECertificates obtains (or renews) a certificate for every
-// configured host before the public listener starts accepting connections.
+// configured host, while the public listener is already accepting
+// connections.
 //
 // This is #581's "acquisition is startup" decision: a certificate the
 // manager cannot obtain right now means the listener cannot serve the
@@ -470,25 +471,79 @@ func checkACMECacheDir(path string) error {
 // SNI, and that connection's caller would be the one who discovers a
 // misconfiguration this process could have reported to its own operator
 // instead.
+//
+// # Why this runs after the listener is serving, not before (#628)
+//
+// It used to run before, which read as the more careful order and made
+// first-time issuance impossible. TLS-ALPN-01 is the only challenge this file
+// wires, deliberately, because it "answers the challenge on the same 443
+// socket the public listener already binds" — and on a cache miss
+// GetCertificate does not return a cached value, it *starts* an
+// authorization, which the CA completes by connecting back to that socket to
+// collect autocert's temporary challenge certificate. Called before anything
+// was listening, the CA's connection was refused, issuance failed, and the
+// process exited. A warm cache hid it completely, which is why no test saw
+// it: a cache hit never reaches the challenge at all.
+//
+// So the listener serves first and this runs against it. The startup property
+// is unchanged — the caller shuts the server down and fails when this
+// returns an error — and the window in between is a listener that answers
+// handshakes through autocert's ordinary lazy path, which is what it would
+// have done anyway.
 func primeACMECertificates(ctx context.Context, manager *autocert.Manager, hosts []string) error {
 	var errs []error
 	for _, host := range hosts {
-		if _, err := manager.GetCertificate(&tls.ClientHelloInfo{
+		if err := primeOneACMECertificate(ctx, manager, host); err != nil {
+			errs = append(errs, err)
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// primeOneACMECertificate obtains one host's certificate under ctx's deadline,
+// which it has to enforce itself.
+//
+// [autocert.Manager.GetCertificate] takes a [tls.ClientHelloInfo] and manages
+// its own background context, so a deadline on the caller's context cannot
+// reach it. Checking ctx.Err() after it returns — which is what this did — is
+// a bound that only applies once the thing it is bounding has already
+// finished, and the far side of an ACME exchange is a stranger's server. The
+// advertised three-minute startup bound could therefore be exceeded once per
+// host, serially across the host list, at the ACME provider's choice; that is
+// the house rule about bounding the resource the peer controls, and it was not
+// being kept.
+//
+// Waiting on a channel instead makes the deadline real. The goroutine outlives
+// this function when the deadline wins, which is deliberate and bounded on the
+// far end by autocert's own HTTP client timeouts — and the only caller that
+// reaches this path is on its way to shutting the process down.
+func primeOneACMECertificate(ctx context.Context, manager *autocert.Manager, host string) error {
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := manager.GetCertificate(&tls.ClientHelloInfo{
 			ServerName: host,
 			// autocert's TLS-ALPN-01 codepath only activates for a hello that
 			// asks for the "acme-tls/1" protocol; without it GetCertificate
 			// serves (or here, obtains) the ordinary certificate for the
 			// name, which is what priming wants.
 			SupportedProtos: []string{"h2", "http/1.1"},
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("obtaining an initial certificate for %s: %w", host, err))
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("obtaining an initial certificate for %s: %w", host, err)
 		}
-		if ctx.Err() != nil {
-			errs = append(errs, ctx.Err())
-			break
-		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("obtaining an initial certificate for %s: %w", host, ctx.Err())
 	}
-	return errors.Join(errs...)
 }
 
 // acmeWatchdogInterval is how often [acmeExpiryWatchdog] re-checks every
