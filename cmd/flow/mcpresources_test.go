@@ -14,6 +14,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	"github.com/picatz/flowstate/cmd/flow/internal/reference"
 )
 
@@ -37,18 +38,18 @@ func TestResourcesMatchTheInventory(t *testing.T) {
 	t.Parallel()
 
 	inventory := map[string]string{
-		mcpDSLResourceURI: mcpMarkdownMIME,
+		flowmcp.DSLResourceURI: flowmcp.MarkdownMIME,
 		// The one resource on this surface that is not reference material and
 		// not addressed to a model at all: the MCP Apps view a host renders for
 		// flowstate_get. It is listed because the extension requires a view to be
 		// predeclared and enumerable, which is what lets a host prefetch it and a
 		// reviewer inspect it, and its description says plainly that a model has
 		// no reason to read its bytes.
-		mcpApprovalCardURI:    mcpUIAppMIME,
-		mcpCatalogResourceURI: mcpJSONMIME,
+		flowmcp.ApprovalCardURI:    flowmcp.UIAppMIME,
+		flowmcp.CatalogResourceURI: flowmcp.JSONMIME,
 	}
 	for _, name := range reference.ExampleNames() {
-		inventory[mcpExamplePrefix+name] = mcpYAMLMIME
+		inventory[flowmcp.ExamplePrefix+name] = flowmcp.YAMLMIME
 	}
 	require.Greater(t, len(inventory), 3, "no examples are embedded; the mirror is empty")
 
@@ -88,7 +89,7 @@ func TestResourcesMatchTheInventory(t *testing.T) {
 
 		got = append(got, template.URITemplate)
 	}
-	assert.Equal(t, []string{mcpExampleTemplate}, got)
+	assert.Equal(t, []string{flowmcp.ExampleTemplate}, got)
 }
 
 // TestEveryListedResourceIsReadable walks the listing and reads each entry.
@@ -135,12 +136,12 @@ func TestTheDSLResourceServesTheWholeReference(t *testing.T) {
 
 	session := connectMCP(t, defaultLocalRunPosture())
 
-	result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: mcpDSLResourceURI})
+	result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.DSLResourceURI})
 	require.NoError(t, err)
 	require.Len(t, result.Contents, 1)
 
 	assert.Equal(t, reference.DSL(), result.Contents[0].Text)
-	assert.Equal(t, mcpMarkdownMIME, result.Contents[0].MIMEType)
+	assert.Equal(t, flowmcp.MarkdownMIME, result.Contents[0].MIMEType)
 }
 
 // TestTheCatalogResourceIsTheCatalogTheToolAnswers.
@@ -161,7 +162,7 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 
 	session := connectMCP(t, defaultLocalRunPosture())
 
-	read, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: mcpCatalogResourceURI})
+	read, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.CatalogResourceURI})
 	require.NoError(t, err)
 	require.Len(t, read.Contents, 1)
 	assert.Equal(t, string(want), read.Contents[0].Text)
@@ -169,7 +170,7 @@ func TestTheCatalogResourceIsTheCatalogTheToolAnswers(t *testing.T) {
 	// And against the tool, over the same session, since that is the comparison
 	// an agent can actually make.
 	called, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      mcpToolName("GetCatalog"),
+		Name:      flowmcp.ToolName("GetCatalog"),
 		Arguments: map[string]any{},
 	})
 	require.NoError(t, err)
@@ -236,7 +237,7 @@ func TestEveryExampleResourceIsAValidFlowfile(t *testing.T) {
 		}
 
 		result, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{
-			URI: mcpExamplePrefix + name,
+			URI: flowmcp.ExamplePrefix + name,
 		})
 		require.NoError(t, err, "reading the %s example", name)
 		require.Len(t, result.Contents, 1)
@@ -265,10 +266,10 @@ func TestAnUnknownExampleIsNotFound(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	for _, uri := range []string{
-		mcpExamplePrefix + "no-such-example",
-		mcpExamplePrefix + "hello-world.yaml",
-		mcpExamplePrefix + "../DSL.md",
-		mcpExamplePrefix,
+		flowmcp.ExamplePrefix + "no-such-example",
+		flowmcp.ExamplePrefix + "hello-world.yaml",
+		flowmcp.ExamplePrefix + "../DSL.md",
+		flowmcp.ExamplePrefix,
 	} {
 		_, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: uri})
 		assert.Error(t, err, "reading %s answered with something", uri)
