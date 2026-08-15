@@ -1,0 +1,122 @@
+name: Editors
+
+# Does the editor setup in docs/EDITORS.md actually work?
+#
+# Setup instructions are the one kind of documentation that rots without anybody
+# noticing. Nothing fails when they go stale — the person they fail for is a
+# newcomer who never files a bug about it, and by the time somebody does, the
+# instructions have been wrong for a year. So the Neovim configuration is not
+# quoted into the document and hoped over: it is a file this job loads with `-u`,
+# and the probe's first assertion is that the fenced block in docs/EDITORS.md is
+# that same file byte for byte.
+#
+# What it proves is narrow and deliberate. `flow lsp` is exercised through a real
+# editor's LSP client rather than a hand-rolled JSON-RPC script, because what is
+# under test is the *configuration* — the filetype patterns, the `vim.lsp.config`
+# entry, the `LspAttach` wiring. A script speaking the protocol directly would
+# prove the server works and say nothing about the document.
+#
+# ── Why this is a separate workflow, and not a job in ci.yml ──────────────────
+#
+# This job installs a third-party editor and, once a VS Code extension exists
+# (#585), will install npm packages. Neither belongs anywhere near a Go build,
+# and "separate job in the same workflow" is not enough separation, because jobs
+# in one workflow share the caches keyed by that workflow's own conventions. The
+# isolation here is four things, each of which is a way the boundary could leak:
+#
+#   1. Its own workflow file, its own `permissions: contents: read`, and no job
+#      here ever needs more. Nothing in this file can write to the repository,
+#      publish a package, or touch a release.
+#   2. `cache: false` on setup-go. This job builds `flow` as a *test fixture*,
+#      not as a release artifact, and it must not read or write the module and
+#      build caches ci.yml's jobs use. A shared build cache is a channel: a
+#      compromised dependency of an editor plugin that could write into it would
+#      be writing into the inputs of the jobs that decide whether Go code merges.
+#      The cost is one uncached module download per run, on a job that runs in
+#      about a minute. That is the right trade for a boundary.
+#   3. Its own toolchain pin, read from go.mod like everywhere else, so it cannot
+#      be the job that quietly builds `flow` with something different — but read
+#      independently rather than inherited from another job's setup.
+#   4. Every download pinned by digest. The actions are pinned to commit SHAs for
+#      the reason ci.yml gives at length, and the Neovim tarball is pinned to a
+#      release *and* verified against a recorded SHA-256 before anything in it is
+#      executed. `releases/latest/download/…` is convenient and is exactly the
+#      thing this workflow exists to argue against: it makes what runs in our
+#      repository, with our token, a decision somebody else takes tomorrow.
+#
+# Consequently this workflow is not required to merge and does not gate Go code.
+# A red run here means the *instructions* are wrong, which is worth fixing and is
+# not worth blocking an unrelated engine change on.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      # The document, the fixtures and the probe, plus the language server and
+      # everything the server's answers are derived from — a task added to the
+      # registry changes what completion offers, and the probe asserts on that.
+      - 'docs/EDITORS.md'
+      - 'tools/editorsmoke/**'
+      - 'pkg/flowstate/v1/flowfile/**'
+      - 'cmd/flow/**'
+      - '.github/workflows/editors.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # The Neovim release the instructions are written against and verified on.
+  # `vim.lsp.config` needs 0.11 or later; Ubuntu 24.04's apt package is 0.9.5,
+  # which is why this is a tarball and not `apt-get install neovim`.
+  NVIM_VERSION: v0.12.4
+  NVIM_SHA256: 012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+
+jobs:
+  neovim:
+    name: Neovim LSP smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # Deliberately uncached — see the isolation note at the top of this
+          # file. This job must not share a build cache with the jobs that gate
+          # Go code.
+          cache: false
+
+      - name: Report toolchain
+        run: go version
+
+      - name: Install Neovim
+        run: |
+          set -euo pipefail
+          url="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-x86_64.tar.gz"
+          curl --fail --silent --show-error --location --output nvim.tar.gz "$url"
+          # Verified before anything inside it is unpacked, let alone executed.
+          echo "${NVIM_SHA256}  nvim.tar.gz" | sha256sum --check --strict
+          tar -xzf nvim.tar.gz
+          echo "${PWD}/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Report Neovim version
+        run: nvim --version | head -n 1
+
+      # `flow` is a test fixture here. It goes on PATH because that is what the
+      # documented `cmd = { 'flow', 'lsp' }` resolves, so the smoke test exercises
+      # the same lookup a reader's editor performs rather than an absolute path
+      # only CI would ever use.
+      - name: Build flow
+        run: |
+          set -euo pipefail
+          go build -o "${PWD}/bin/flow" ./cmd/flow
+          echo "${PWD}/bin" >> "$GITHUB_PATH"
+
+      - name: Drive flow lsp through Neovim
+        run: nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
