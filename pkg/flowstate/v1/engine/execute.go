@@ -7,6 +7,7 @@ import (
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
@@ -828,19 +829,41 @@ func (e *executor) dispatch(
 // which passes a disconnected one. `within` narrows the overall bound to what is
 // left of [v1.UndoBudget] on that path, and is zero on the failure path, where the
 // step defaults are the whole answer.
+//
+// # Naming [v1.UndoBudget] expiry, the durable half
+//
+// The local driver names this by attaching [v1.ErrUndoBudgetExpired] as a
+// [context.WithTimeoutCause] cause on the context a compensation runs under —
+// see [v1.runUndoOnCancel] — so a compensation cut off mid-flight there reads
+// as "…: the compensation budget for this cancelled run ran out" rather than a
+// bare context.DeadlineExceeded indistinguishable from any other timeout.
+// Temporal gives this driver nothing equivalent to read a cause from: an
+// activity cut off by its narrowed ScheduleToClose or StartToClose timeout
+// comes back as an ordinary `*temporal.TimeoutError`, identical in shape to
+// one produced by a step's own `timeout:` reaching the same ceiling any other
+// way. `budgetLimited` records whether this call actually narrowed either
+// timeout to what was left of the budget — mirroring the local driver's own
+// "narrowed and never widened" check above — and [isUndoActivityTimeout] uses
+// it to tell a budget-caused timeout from an ordinary one, attaching the identical,
+// shared [v1.ErrUndoBudgetExpired] cause through [v1.WithCause] so an operator
+// reading a compensated run's summary sees the same fact stated the same way
+// regardless of which driver ran it.
 func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, within time.Duration) error {
 	task := entry.GetTask()
 
 	opts := activityOptionsFor(nil)
+	budgetLimited := false
 	if within > 0 {
 		// Narrowed and never widened: a budget with more room left than a step's
 		// own ceiling does not entitle a compensation to more time than any other
 		// task gets.
 		if within < opts.ScheduleToCloseTimeout {
 			opts.ScheduleToCloseTimeout = within
+			budgetLimited = true
 		}
 		if within < opts.StartToCloseTimeout {
 			opts.StartToCloseTimeout = within
+			budgetLimited = true
 		}
 	}
 
@@ -868,12 +891,41 @@ func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, wit
 	// compensated run reports would then be a *different string* on the two
 	// drivers, and unstable between durable runs on top of that, which is the exact
 	// defect `steperror.go` exists to describe.
-	recorded, _ := recordedStepError(err)
+	recorded, fromTask := recordedStepError(err)
+
+	// A budget-caused timeout only, and only when the failure is Temporal's own
+	// timeout rather than a task that classified its own failure: a task that
+	// returned a classified [v1.TaskError] — including one that itself observed
+	// context.DeadlineExceeded and named a cause, since the local driver's
+	// analogous case ([runStepWithPolicy]) would do the same — already said
+	// everything there is to say about why it failed, and this must not
+	// overwrite that with a guess about the budget.
+	if budgetLimited && !fromTask && isUndoActivityTimeout(err) {
+		recorded = v1.StepErrorText(v1.WithCause(errors.New(recorded), v1.ErrUndoBudgetExpired))
+	}
 
 	// A plain error, deliberately: what is left is the sentence, and rewrapping it
 	// in anything this driver understands would give the shared renderer something
 	// to find and re-render.
 	return errors.New(recorded)
+}
+
+// isUndoActivityTimeout reports whether err is Temporal's own ScheduleToClose or
+// StartToClose timeout — the shape [runUndoTask] narrows to what is left of
+// [v1.UndoBudget], as opposed to a heartbeat or schedule-to-start timeout this
+// driver never narrows for a compensation, or any other failure.
+func isUndoActivityTimeout(err error) bool {
+	var timeoutErr *temporal.TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		return false
+	}
+
+	switch timeoutErr.TimeoutType() {
+	case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
+		return true
+	default:
+		return false
+	}
 }
 
 // runForEach runs a loop body once per item, sequentially or with bounded

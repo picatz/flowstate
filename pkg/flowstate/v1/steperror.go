@@ -81,9 +81,32 @@ const StepErrorItemOutput = "item"
 //
 // A failure that is not a classified [TaskError] is recorded as its own words,
 // which both drivers hold identically before any wrapping is applied.
+//
+// A cancellation cause [withCancellationCause] appended is read out and
+// reattached explicitly, rather than left to whatever errors.As happens to
+// find. A task classifies its own error into a [TaskError] before
+// [withCancellationCause] ever sees it — the http task returns one wrapping
+// context.DeadlineExceeded, and the cause naming *why* the step's deadline
+// was reached (a schedule-to-close budget, an undo budget) is appended
+// outside that TaskError, not inside it. errors.As walks past the wrapper to
+// find the TaskError underneath regardless, so building the rendered text
+// from taskErr.Task/Kind/Err alone silently drops that outer suffix — leaving
+// schedule-to-close expiry indistinguishable from an ordinary per-attempt
+// timeout in exactly the outputs (`continue_on_error:`, a compensation
+// summary) this feature exists to make distinguishable. Keeping the cause
+// here, rather than folding it into TaskError.Err at the point it is
+// attached, is the choice that keeps [withCancellationCause] free of any
+// TaskError-specific knowledge: it enriches whatever error it is given, and
+// this is the one place that already has to know how a [TaskError] renders.
 func StepErrorText(err error) string {
 	if err == nil {
 		return ""
+	}
+
+	var cause string
+	var enriched *causeEnrichedError
+	if errors.As(err, &enriched) {
+		cause = ": " + enriched.cause.Error()
 	}
 
 	var taskErr *TaskError
@@ -92,10 +115,10 @@ func StepErrorText(err error) string {
 	}
 
 	if taskErr.Kind == "" {
-		return fmt.Sprintf("task %q failed: %v", taskErr.Task, taskErr.Err)
+		return fmt.Sprintf("task %q failed: %v%s", taskErr.Task, taskErr.Err, cause)
 	}
 
-	return fmt.Sprintf("task %q failed (%s): %v", taskErr.Task, taskErr.Kind, taskErr.Err)
+	return fmt.Sprintf("task %q failed (%s): %v%s", taskErr.Task, taskErr.Kind, taskErr.Err, cause)
 }
 
 // FailedStepOutputs records a tolerated failure as a step's outputs, under
