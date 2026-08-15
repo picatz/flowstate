@@ -227,10 +227,17 @@ steps:
         # is unreachable here by design (see the test's coverage note) and this
         # shapes to `refused` or `unremediated` in a rehearsal, never
         # `authorized`.
+        #
+        # `payload.?authorized.orValue(false)` reads the one field a defaulted
+        # optional can answer correctly here: this line ANDs it against three
+        # more conditions that only ask what the sender was attested to be, so
+        # collapsing presence-and-truth into one defaulted read costs nothing
+        # `has(payload.authorized) && payload.authorized` had - both are false
+        # exactly when the field was absent or explicitly false.
         outcome: >-
           ${timed_out
             ? "unremediated"
-            : ((has(payload.authorized) && payload.authorized &&
+            : ((payload.?authorized.orValue(false) &&
                 !sender.local && !run.local &&
                 sender.identity.subject != "" &&
                 !(sender.identity.subject == run.identity.subject &&
