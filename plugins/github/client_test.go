@@ -86,3 +86,37 @@ func TestAuthenticatedClientUsesOperatorSelectedBaseURL(t *testing.T) {
 		t.Fatalf("BaseURL: got %q, want %q", got, want)
 	}
 }
+
+// TestAuthenticatedClientKeepsTheGitHubComDefault covers the path the change
+// above alters for every deployment that has not set GITHUB_API_BASE_URL: a
+// credential now forces the base to the operator-selected one, and with nothing
+// configured that is github.com's.
+//
+// Worth asserting because forcing it makes baseURL non-empty, which sends this
+// path through go-github's WithEnterpriseURLs — the call that appends "/api/v3/"
+// to a Enterprise Server base. It does not append here, because it skips hosts
+// beginning "api.", so the default stays exactly what an unauthenticated client
+// uses. Both are checked, so a regression shows up as the two disagreeing rather
+// than as every authenticated github.com call 404ing in production.
+func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
+	t.Setenv(envAPIBaseURL, "")
+	if err := installEgressPolicy(); err != nil {
+		t.Fatalf("installEgressPolicy: %v", err)
+	}
+
+	authenticated, err := newClient("credential", "")
+	if err != nil {
+		t.Fatalf("newClient with a credential: %v", err)
+	}
+	if got, want := authenticated.BaseURL.String(), defaultAPIBaseURL+"/"; got != want {
+		t.Fatalf("authenticated BaseURL: got %q, want %q", got, want)
+	}
+
+	unauthenticated, err := newClient("", "")
+	if err != nil {
+		t.Fatalf("newClient without a credential: %v", err)
+	}
+	if got, want := authenticated.BaseURL.String(), unauthenticated.BaseURL.String(); got != want {
+		t.Fatalf("authenticated BaseURL %q, unauthenticated %q: a credential must not move the base", got, want)
+	}
+}
