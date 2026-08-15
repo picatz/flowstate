@@ -127,6 +127,17 @@ func editionList(editions []string) string {
 	return strings.Join(names, ", ")
 }
 
+// KnownEditionsList renders every edition this build recognises through
+// [editionName], in the same order [KnownEditions] returns them.
+//
+// Exported so that a surface outside this package — the LSP hover text is the
+// one that exists today — renders the same list the compiler's own diagnostics
+// do, through the one formatter, rather than joining [KnownEditions] itself and
+// arriving at a second spelling of the same set (#385).
+func KnownEditionsList() string {
+	return editionList(knownEditions)
+}
+
 // editionText reads a declared edition from the node it was written as.
 //
 // An edition is dated, and a date with one dot is a YAML float: `edition: 2026.1`
