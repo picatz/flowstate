@@ -1849,13 +1849,13 @@ func (c *compiler) loop(n ast.Node, path string, r ref) *v1.Loop {
 
 	if f, found := fields.get("init"); found {
 		initPath := fieldPath(path, "init")
-		loop.Initial = c.inputValue(f.value, initPath,
+		loop.Initial = c.loopStateValue(f.value, initPath,
 			ref{step: r.step, path: initPath, label: "loop init"})
 	}
 
 	if f, found := fields.get("update"); found {
 		updatePath := fieldPath(path, "update")
-		loop.Update = c.inputValue(f.value, updatePath,
+		loop.Update = c.loopStateValue(f.value, updatePath,
 			ref{step: r.step, path: updatePath, label: "loop update"})
 	}
 

@@ -311,6 +311,28 @@ steps:
             message: hi
 `,
 	"bad-http-method.yaml": brokenWorkflow,
+	"wait-outputs-secret.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approved
+      outputs:
+        token: ${secret('env:API_TOKEN')}
+`,
+	"loop-init-secret.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: accumulate
+    loop:
+      as: state
+      init: ${secret('env:API_TOKEN')}
+      until: ${true}
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
 
 	// old-edition-with-other-problems is the CLI-level regression for the
 	// second half of #385. `2026.1` is an edition this build knows and `flow

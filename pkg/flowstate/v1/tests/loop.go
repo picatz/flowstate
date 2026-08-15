@@ -193,5 +193,37 @@ func LoopCases() []Case {
 			},
 			ExpectFailure: true,
 		},
+		{
+			// #534's sibling: `init:`/`update:` are evaluated by the workflow
+			// the same way a wait's shaped `outputs:` is, and the compiler
+			// now refuses a bare `${secret(...)}` there — but a spec submitted
+			// straight to the Run RPC never goes through the compiler, so the
+			// runtime backstop is what actually protects it. [v1.EvalLoopValue]
+			// has no case for `*Value_SecretRef` in its switch, so it falls to
+			// the default arm and fails the run rather than leaking the
+			// resolved value into carried state or silently treating it as
+			// nothing.
+			Name:                  "loop state holding a secret reference fails the run rather than leaking it",
+			ExpectFailure:         true,
+			ExpectedErrorContains: "unsupported loop value kind",
+			Workflow: &v1.Workflow{
+				Name:    "loop-init-secret-ref",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					{
+						Id: "accumulate",
+						Kind: &v1.Node_Loop{Loop: &v1.Loop{
+							State: "n",
+							Initial: &v1.Value{Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{
+								Scheme: "env", Name: "API_TOKEN",
+							}}},
+							Until:         v1.NewExpr("true"),
+							MaxIterations: 100,
+							Body:          []*v1.Node{says("body", "runs once")},
+						}},
+					},
+				},
+			},
+		},
 	}
 }
