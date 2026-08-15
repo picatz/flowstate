@@ -448,7 +448,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 	// A bearer step only ever registers the revealed secret itself with the
 	// scrubber, so "Bearer <secret>" redacts to "Bearer [REDACTED]" — the
 	// prefix survives because it was never material. A credential step
-	// registers the whole rendered header too (see eval_task_library.go),
+	// registers the whole rendered header too (see eval_task_http_run.go),
 	// because the broker chooses the header's shape and the activity does
 	// not assume it always says "Bearer "; the longest match wins, so
 	// "Bearer <token>" collapses to a single [REDACTED] with no prefix left.
