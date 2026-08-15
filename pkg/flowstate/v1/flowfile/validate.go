@@ -2905,11 +2905,17 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 // [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
 func certainNames(node *v1.Node) []string {
 	entries, _ := v1.OutputNames(node, nil)
-	names := make([]string, 0, len(entries))
+	names := make([]string, 0, len(entries)+1)
 	for _, e := range entries {
 		if e.Name != "" {
 			names = append(names, e.Name)
 		}
+	}
+	// This output belongs to the step policy rather than its kind. Include it in
+	// every fixed set so the early compound-step checks agree with the generic
+	// task path below.
+	if node.GetPolicy().GetContinueOnError() {
+		names = append(names, toleratedErrorOutput)
 	}
 	return names
 }

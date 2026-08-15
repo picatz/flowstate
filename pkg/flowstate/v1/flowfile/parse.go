@@ -59,7 +59,7 @@ var (
 	// as names, not as keys.
 	inputKeys = []string{
 		"type", "required", "default", "description", "example", "sensitive",
-		"min_len", "max_len", "min_items", "max_items", "must",
+		"min_len", "max_len", "min_items", "max_items", "must", "values",
 	}
 	outputKeys = []string{"value", "description", "must", "sensitive"}
 
@@ -950,6 +950,25 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 		p := fieldPath(path, "must")
 		if v, ok := c.text(f.value, p, ref{path: p, label: "input " + e.name + " must"}); ok {
 			declaration.Must = proto.String(v)
+		}
+	}
+	if f, found := fields.get("values"); found {
+		p := fieldPath(path, "values")
+		n := c.resolve(f.value, p, ref{path: p, label: "input " + e.name + " values"})
+		if n != nil {
+			c.pos.record(p, spanOfNode(n))
+			sequence, ok := n.(*ast.SequenceNode)
+			if !ok {
+				c.report(spanOfNode(n), r, "`values:` must be a list of strings, but %s was written here", describeNode(n))
+			} else {
+				declaration.Values = make([]string, 0, len(sequence.Values))
+				for i, value := range sequence.Values {
+					valuePath := indexPath(p, i)
+					if text, ok := c.text(value, valuePath, ref{path: valuePath, label: "input " + e.name + " value"}); ok {
+						declaration.Values = append(declaration.Values, text)
+					}
+				}
+			}
 		}
 	}
 

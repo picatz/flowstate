@@ -960,6 +960,9 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 		if declaration.Must != nil {
 			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(declaration.GetMust())})
 		}
+		if len(declaration.GetValues()) > 0 {
+			entry = append(entry, yaml.MapItem{Key: "values", Value: declaration.GetValues()})
+		}
 
 		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
 	}
