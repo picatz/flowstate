@@ -446,6 +446,16 @@ func profileNames() []string {
 	return names
 }
 
+// ProfileNames returns every known language profile's name, sorted.
+//
+// Exported for the reference documentation in docs/reference/cel.md, which
+// says what each profile admits rather than only what the current one does —
+// see cmd/flow/internal/docsgen/cel.go for why that is written as a loop
+// over every profile even while there is only one to loop over.
+func ProfileNames() []string {
+	return profileNames()
+}
+
 // buildEnv constructs a CEL environment enabling the named extension libraries.
 func buildEnv(libs []string) (*cel.Env, error) {
 	opts := make([]cel.EnvOption, 0, len(libs)+len(durationLibrary())+1)

@@ -36,6 +36,11 @@ $ flow validate examples/hello-world/workflow.yaml
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
+| [optional-dispatch](optional-dispatch) | Why `.orValue(false)` on a three-way dispatch is a bug — `hasValue()` keeping "nobody answered" apart from "answered no" through a signal's payload, dispatched with `switch:` | no |
+| [string-utilities](string-utilities) | `trim()`, `startsWith()`, `substring()`, `lowerAscii()` and `split()` decomposed across named steps to strip a reply prefix and derive a routing key | no |
+| [list-comprehensions](list-comprehensions) | `all`, `exists`, `filter`, `map` and the `lists` library's `sort` classifying a batch of health checks as healthy, degraded, or down | no |
+| [feature-flags](feature-flags) | Map comprehension over a caller's flags (`filter` ranging over keys) beside `.?` reading one named key that might not be sent at all | no |
+| [usage-billing](usage-billing) | `math.greatest`, and `double()` before dividing so CEL's int-truncating division does not silently undercharge a partial block | no |
 | [interpolation](interpolation) | Text and expressions in one value: several `${...}` in a message, the `$${` escape, and the whole-value fence that keeps its type | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |

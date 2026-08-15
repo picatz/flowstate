@@ -1,0 +1,65 @@
+# Three cases, one per classification, so `all`/`exists` are proven to answer
+# each of the three ways the checks can come back rather than just the two
+# ends of the range.
+edition: v2026.3
+tests:
+  - name: every check passes and the report says so with no failing hosts
+    workflow: ./workflow.yaml
+    inputs:
+      checks:
+        - host: web-1
+          healthy: true
+        - host: web-2
+          healthy: true
+    stubs:
+      - task: log
+        where: inputs.message == 'every host passed its health check'
+        returns: {}
+    expect:
+      ran: [failing, status, report, all_good]
+      skipped: [some_down, outage]
+      outputs:
+        status: healthy
+        failing_hosts: []
+
+  - name: a mix of passing and failing checks is degraded, and failing hosts are sorted
+    workflow: ./workflow.yaml
+    inputs:
+      checks:
+        - host: web-2
+          healthy: false
+        - host: web-1
+          healthy: false
+        - host: web-3
+          healthy: true
+    stubs:
+      - task: log
+        where: "inputs.message == '2 host(s) failing: web-1, web-2'"
+        returns: {}
+    expect:
+      ran: [failing, status, report, some_down]
+      skipped: [all_good, outage]
+      outputs:
+        status: degraded
+        failing_hosts: [web-1, web-2]
+
+  - name: every check fails and the report treats it as an outage
+    workflow: ./workflow.yaml
+    inputs:
+      checks:
+        - host: web-1
+          healthy: false
+        - host: web-2
+          healthy: false
+    stubs:
+      - task: log
+        where: >-
+          inputs.message == 'every host failed its health check' &&
+          inputs.level == 'warn'
+        returns: {}
+    expect:
+      ran: [failing, status, report, outage]
+      skipped: [all_good, some_down]
+      outputs:
+        status: down
+        failing_hosts: [web-1, web-2]

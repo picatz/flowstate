@@ -250,6 +250,18 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 			"decision": v1.NewLiteral("renewed"),
 		}},
 	},
+
+	// optional-dispatch's own workflow.test.yaml covers all three outcomes —
+	// approved, rejected, and the lapse — through the local driver, where the
+	// deadline can be moved and a signal with no `approved` key can be sent at
+	// all. This table answers the approving case, the same shape approval-gate's
+	// entry above takes, so the gate is exercised on both drivers rather than
+	// only compared to itself unanswered.
+	"optional-dispatch": {
+		"decision-made": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
 }
 
 // exampleLapsingGates names an example whose gate is meant to go unanswered,
