@@ -78,9 +78,12 @@ steps:
       name: deploy-approved
       timeout: 24h
       outputs:
+        # `optMap`'s first argument names the value it binds — here `isApproved`,
+        # the payload's `approved` field once it is known to be present — and the
+        # second is the expression evaluated with that name in scope.
         outcome: >-
           ${payload.?approved
-              .optMap(approved, approved ? "deployed" : "rejected")
+              .optMap(isApproved, isApproved ? "deployed" : "rejected")
               .orValue("undecided")}
         sender: ${sender}
 
