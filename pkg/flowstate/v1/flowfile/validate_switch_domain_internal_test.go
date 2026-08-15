@@ -430,3 +430,410 @@ steps:
 		})
 	}
 }
+
+// The rest of this file covers issue #578's second slice: `optMap`,
+// `optFlatMap` and `orValue` extending the readable tier, with optionality
+// discharged only by `orValue`.
+//
+// `optMap`/`optFlatMap` are cel-go *macros* — expanded at parse time into a
+// comprehension over `@result`/`hasValue()` — so every fixture below is written
+// with the exact expectation that [switchDomain] resolves the stored tree back
+// through [resolveMacros] before walking it. A regression that starts walking
+// the raw AST again does not produce a wrong domain; it produces an open one,
+// because a bare `call.GetFunction() == "optMap"` check never fires against the
+// expanded form. That failure mode is silent by the rule this whole file
+// exists to guard (an open domain draws no diagnostics), which is what makes
+// the anti-vacuity guard below load-bearing rather than decorative.
+
+// optMapOrValueWait is a wait fixture whose shaped output is exactly the
+// `optMap`+`orValue` chain the issue specifies, dispatched by a switch with all
+// three of the chain's strings as cases.
+const optMapOrValueWait = `edition: v2026.3
+name: t
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+      outputs:
+        outcome: >-
+          ${payload.?approved.optMap(approved, approved ? "deployed" : "rejected").orValue("expired")}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: deployed
+          steps: []
+        - case: rejected
+          steps: []
+        - case: expired
+          steps: []
+`
+
+// TestOptMapOrValueDomainIsInferable is the positive case for the chain the
+// issue names: an `optMap` computing the present-value strings, discharged by
+// `orValue` into the absent-value string, all under a bare
+// `${steps.<id>.<name>}` discriminant.
+//
+// Order matters as much as membership: asserted in the order the expression
+// reads — the optional chain's two branches, walked receiver-first per
+// totalStringLeaves's `orValue` case, then the fallback — because that is the
+// order the diagnostics enumerate.
+func TestOptMapOrValueDomainIsInferable(t *testing.T) {
+	t.Parallel()
+
+	wf, err := Unmarshal([]byte(optMapOrValueWait))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	approval := nodeWithID("approval", wf)
+	require.NotNil(t, approval)
+	shaped := approval.GetWait().GetSignal().GetOutputs()["outcome"]
+	require.NotNil(t, shaped)
+
+	// The anti-vacuity guard: this fixture's shaping expression really does
+	// go through cel-go's macro expander, so the domain below is exercising
+	// [resolveMacros] and not silently reading the raw AST — which would also
+	// report an open domain, indistinguishable from this test doing nothing.
+	require.NotEmpty(t, shaped.GetExpr().GetSourceInfo().GetMacroCalls(),
+		"this fixture's `optMap` must still be tracked as a macro call; if a future parse path "+
+			"stops tracking macros, switchDomain's resolve-then-walk silently narrows to nothing, "+
+			"and this is the test meant to catch that as a red test rather than as no test at all")
+
+	domain, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	require.True(t, known, "an optMap/orValue chain is exactly the shape totalStringLeaves/optionalLeaves read")
+	assert.Equal(t, []string{"deployed", "rejected", "expired"}, domain,
+		"the domain in the order the chain reads: the optional's branches, then orValue's fallback")
+}
+
+// TestOptMapOrValueRefusesACaseItCannotProduce is the cost of the domain above
+// being known, the same pairing every other positive test in this file keeps:
+// a misspelled case is fatal, with a spelling suggestion.
+func TestOptMapOrValueRefusesACaseItCannotProduce(t *testing.T) {
+	t.Parallel()
+
+	require.Contains(t, optMapOrValueWait, "- case: expired",
+		"the fixture substitution below found nothing, so this test would assert against the file unmodified")
+	typo := strings.Replace(optMapOrValueWait, "- case: expired", "- case: expierd", 1)
+
+	ds, err := ValidateSource([]byte(typo))
+	require.NoError(t, err)
+
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.Contains(t, text, `case "expierd" is not a value`)
+	assert.Contains(t, text, `did you mean "expired"?`)
+	assert.Contains(t, text, `cases do not handle "expired"`)
+}
+
+// TestOptFlatMapDomainIsInferable covers `optFlatMap`, whose body is itself
+// optional-typed rather than total — an inner `optMap` chain under an outer
+// `orValue`, so [optionalLeaves] has to recurse into itself through
+// `optFlatMap` and not merely delegate to [totalStringLeaves].
+func TestOptFlatMapDomainIsInferable(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: probe
+    wait_for_signal:
+      name: config-reported
+      timeout: 24h
+      outputs:
+        outcome: >-
+          ${payload.?config.optFlatMap(v, dyn(v).?state.optMap(s, s ? "on" : "off")).orValue("unknown")}
+  - id: decision
+    switch:
+      value: ${steps.probe.outcome}
+      cases:
+        - case: "on"
+          steps: []
+        - case: "off"
+          steps: []
+        - case: unknown
+          steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	domain, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	require.True(t, known, "optFlatMap's body is itself optional-typed, which optionalLeaves must recurse through")
+	assert.Equal(t, []string{"on", "off", "unknown"}, domain)
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, ds, "the fixture validates clean: %v", ds)
+}
+
+// TestUndischargedOptMapOpensTheDomain is the trap the issue's correction #2
+// warns about, written out where a reader can see the cost: an `optMap` chain
+// with nothing discharging it can evaluate to `optional.none`, which matches
+// no string case and falls to `default:`. Reporting a closed domain here — the
+// mistake the two-function split exists to prevent — would draw the
+// unreachable-`default:` diagnostic on a `default:` that is genuinely
+// reachable whenever the signal never arrives with `approved` set.
+func TestUndischargedOptMapOpensTheDomain(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+      outputs:
+        outcome: >-
+          ${payload.?approved.optMap(approved, approved ? "deployed" : "rejected")}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: rejcted
+          steps: []
+      default:
+        steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	assert.False(t, known, "nothing discharges optionality here, so optional.none is a real outcome the domain must include")
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.NotContains(t, text, "is not a value",
+		"an open domain is deliberately silent, even over a misspelled case: %v", ds)
+}
+
+// TestOptMapReadingItsOwnVariableOpensTheDomain: `optMap(v, v)` puts the bound
+// identifier in leaf position. That is correctly *not* a string literal, so
+// the walk returns false — fail-safe, not a special case.
+func TestOptMapReadingItsOwnVariableOpensTheDomain(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+      outputs:
+        outcome: ${payload.?approved.optMap(v, v).orValue("expired")}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: rejcted
+          steps: []
+      default:
+        steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	assert.False(t, known, "optMap(v, v)'s body is the bound identifier, not a string literal")
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.NotContains(t, text, "is not a value", "an open domain is deliberately silent: %v", ds)
+}
+
+// TestValueDotValueOpensTheDomain covers `.value()`: it aborts evaluation on
+// `optional.none` rather than producing a value, so recognizing it would
+// encode a runtime claim the validator cannot check. Excluded on purpose; see
+// [optionalLeaves]'s doc comment.
+func TestValueDotValueOpensTheDomain(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+      outputs:
+        outcome: >-
+          ${payload.?approved.optMap(approved, approved ? "deployed" : "rejected").value()}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: rejcted
+          steps: []
+      default:
+        steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	assert.False(t, known, "value() is deliberately not recognized: see optionalLeaves's doc comment")
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.NotContains(t, text, "is not a value", "an open domain is deliberately silent: %v", ds)
+}
+
+// TestOrValueOfANonLiteralOpensTheDomain: `orValue`'s argument has to be a
+// string literal like every other leaf — a payload read is not knowable, so
+// the whole chain's domain is not either, even though the optMap half alone
+// would be.
+func TestOrValueOfANonLiteralOpensTheDomain(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+      outputs:
+        outcome: >-
+          ${payload.?approved.optMap(approved, approved ? "deployed" : "rejected").orValue(payload.fallback)}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: rejcted
+          steps: []
+      default:
+        steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	assert.False(t, known, "orValue's argument is a payload read, not a string literal")
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.NotContains(t, text, "is not a value", "an open domain is deliberately silent: %v", ds)
+}
+
+// TestHasValueInLeafPositionOpensTheDomain: `hasValue()` produces a bool, never
+// a string, so it is refused wherever a leaf is expected — as opposed to
+// deciding a conditional's *condition*, which the walk ignores regardless of
+// what it is.
+func TestHasValueInLeafPositionOpensTheDomain(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+      outputs:
+        outcome: >-
+          ${true ? payload.?approved.hasValue() : "b"}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: rejcted
+          steps: []
+      default:
+        steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	assert.False(t, known, "hasValue() in leaf position produces a bool, never a string")
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.NotContains(t, text, "is not a value", "an open domain is deliberately silent: %v", ds)
+}
+
+// TestValueStepOptMapChainDomainIsKnown is the join test CLAUDE.md asks for:
+// slice 1's tier (a `value:` step naming the discriminant) crossed with slice
+// 2's tier (the shaping expression being an optMap/orValue chain rather than a
+// bare ternary), both exercised at once rather than each in isolation.
+func TestValueStepOptMapChainDomainIsKnown(t *testing.T) {
+	t.Parallel()
+
+	src := `edition: v2026.3
+name: t
+inputs:
+  approved:
+    type: bool
+    required: false
+steps:
+  - id: outcome
+    value: >-
+      ${inputs.?approved.optMap(approved, approved ? "deployed" : "rejected").orValue("expired")}
+  - id: decision
+    switch:
+      value: ${steps.outcome.value}
+      cases:
+        - case: deployed
+          steps: []
+        - case: rejected
+          steps: []
+        - case: expired
+          steps: []
+`
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	domain, known := switchDomain(decision.GetSwitch().GetValue(), wf)
+	require.True(t, known, "a value: step's optMap/orValue chain is exactly slice 1's tier crossed with slice 2's")
+	assert.Equal(t, []string{"deployed", "rejected", "expired"}, domain)
+
+	ds, err := ValidateSource([]byte(src))
+	require.NoError(t, err)
+	assert.Empty(t, ds, "the fixture validates clean: %v", ds)
+}
