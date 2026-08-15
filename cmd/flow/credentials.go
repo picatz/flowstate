@@ -179,10 +179,20 @@ type authorizingTransport struct {
 	// first request instead, where every caller already handles an RPC
 	// error.
 	sourceErr error
+
+	// tlsConfigErr is set when [clientTLSConfig] itself failed — a
+	// misconfigured --tls-client-cert-file/--tls-client-key-file/--tls-ca-file
+	// triple (cmd/flow/clientcert.go). Carried the same way as sourceErr, and
+	// checked first: a client certificate this process cannot even load is a
+	// more fundamental refusal than which bearer credential to attach.
+	tlsConfigErr error
 }
 
 // RoundTrip implements [http.RoundTripper].
 func (t *authorizingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.tlsConfigErr != nil {
+		return nil, t.tlsConfigErr
+	}
 	if t.sourceErr != nil {
 		return nil, t.sourceErr
 	}
