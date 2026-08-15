@@ -1044,20 +1044,15 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	// author de-facto semantics the project will not stand behind; refusing is
 	// additive to lift once that slice lands.
 	//
-	// Same-scope only: the walk descends `for_each` bodies and `parallel` branches
-	// (a loop reached through those shares the outer loop's suspend scope) but not a
-	// `call:` — a callee is an isolated unit with its own frame handling, validated
-	// and executed as its own workflow, so a loop there is top-level within the
-	// callee. That is exactly why the remedy below points at `call:`: wrapping the
-	// inner loop in a called workflow is the supported way to nest one today, proven
-	// on both drivers by the "a loop may call a workflow that itself loops" case in
-	// tests.CallCases.
+	// The walk includes callees as well as same-scope containers. Although a callee
+	// has its own frame, it runs atomically at the outer loop's deeper suspend level.
+	// Allowing a loop there would multiply the two iteration ceilings without giving
+	// the durable driver an opportunity to Continue-As-New between inner iterations.
 	if bodyHasNestedLoop(loop.GetBody()) {
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "loop",
 			Message: "a loop inside a loop is not supported in this edition: the Continue-As-New " +
-				"interaction across two carried-state frames is not exercised yet; hoist the inner " +
-				"loop into a called workflow (`call:`) and loop over that, or flatten the two into one",
+				"interaction across two carried-state frames is not exercised yet; flatten the two into one",
 			Code: v1.DiagnosticCodePlacementRefusal,
 		})
 	}
@@ -1072,8 +1067,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
-// another `loop:` in the *same* suspend scope — through a `for_each` body or a
-// `parallel` branch, but not through a `call:`, whose callee is an isolated unit.
+// another `loop:`, including through a call boundary.
 func bodyHasNestedLoop(nodes []*v1.Node) bool {
 	for _, node := range nodes {
 		switch kind := node.GetKind().(type) {
@@ -1096,6 +1090,10 @@ func bodyHasNestedLoop(nodes []*v1.Node) bool {
 				if bodyHasNestedLoop(body) {
 					return true
 				}
+			}
+		case *v1.Node_Call:
+			if bodyHasNestedLoop(kind.Call.GetWorkflow().GetSteps()) {
+				return true
 			}
 		}
 	}

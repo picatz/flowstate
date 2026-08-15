@@ -39,68 +39,8 @@ func callNode(id string, callee *v1.Workflow, arguments map[string]*v1.Value) *v
 	}
 }
 
-// CallCases returns the shared cases for `call:`.
-// loopingCallee is a workflow whose single step is a `loop:` — a top-level loop,
-// which is the shape `flow validate` accepts. Used to prove that a loop reached
-// *through a call* runs on both drivers, which is the remedy `validateNamedLoop`
-// points a nested-loop author at.
-func loopingCallee(name string) *v1.Workflow {
-	return &v1.Workflow{
-		Name:    name,
-		Profile: v1.CurrentProfile,
-		Steps: []*v1.Node{
-			{
-				Id: "page",
-				Kind: &v1.Node_Loop{Loop: &v1.Loop{
-					State:         "n",
-					Initial:       v1.NewLiteral(int64(0)),
-					Update:        v1.NewExpr("n + 1"),
-					Until:         v1.NewExpr("n >= 2"),
-					MaxIterations: 10,
-					Body:          []*v1.Node{says("tick", "inner")},
-				}},
-			},
-		},
-	}
-}
-
 func CallCases() []Case {
 	return []Case{
-		{
-			// A loop may reach another loop *through a call*, which is the remedy
-			// validateNamedLoop names for a nested loop: the callee is an isolated
-			// unit with its own frame handling, so its loop is top-level within it and
-			// runs atomically inside each of the outer loop's iterations. Asserted on
-			// both drivers, because the diagnostic promising this works must not be a
-			// promise only the local driver keeps. Run by TestRunWorkflowCall in both
-			// the v1 (local) and engine (durable) packages.
-			Name: "a loop may call a workflow that itself loops",
-			Workflow: &v1.Workflow{
-				Name:    "loop-call-loop",
-				Profile: v1.CurrentProfile,
-				Steps: []*v1.Node{
-					{
-						Id: "rounds",
-						Kind: &v1.Node_Loop{Loop: &v1.Loop{
-							State:         "round",
-							Initial:       v1.NewLiteral(int64(0)),
-							Update:        v1.NewExpr("round + 1"),
-							Until:         v1.NewExpr("round >= 1"),
-							MaxIterations: 5,
-							Body:          []*v1.Node{callNode("sub", loopingCallee("inner-loop"), nil)},
-						}},
-					},
-				},
-			},
-			// Two outer rounds (round 0 and 1), each running the inner loop to
-			// completion. Asserted through a predicate: what matters is that the run
-			// completes — the harness's no-error check enforces that on both drivers —
-			// with the outer loop reporting both rounds.
-			ExpectedOutputsPredicate: func(out *v1.Workflow_StepOutputs) bool {
-				results := out.GetStepValues()["rounds"].GetNamedValues()["results"]
-				return len(results.GetLiteral().GetListValue().GetValues()) == 2
-			},
-		},
 		{
 			// The plain case: a call's declared outputs come back under the step's
 			// own id, exactly as a task's would, and an argument is resolved in the
