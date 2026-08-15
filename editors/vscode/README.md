@@ -58,10 +58,10 @@ Per #585 §2–3, left out of this first slice on purpose:
 
 | Setting | Default | Scope |
 | --- | --- | --- |
-| `flowstate.path` | `flow` | machine-overridable |
-| `flowstate.lsp.args` | `[]` | machine-overridable |
+| `flowstate.path` | `flow` | machine |
+| `flowstate.lsp.args` | `[]` | machine |
 
-Both are `machine-overridable`: VS Code ignores them when set in a
+Both are `machine`: VS Code ignores them when set in a
 workspace's `.vscode/settings.json`, so a repository you cloned to read
 cannot choose what your editor executes. This is the same argument
 `docs/EDITORS.md` makes about Neovim's `--plugin-dir`.
