@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -139,4 +141,144 @@ func diagnosticLinesOf(output string) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// diagnosticCorpus is a directory's worth of deliberately-broken Flowfiles, one
+// per mistake, chosen to walk different code paths through the compiler and the
+// validator rather than different phrasings of the same one: a parse-time
+// rejection (unknown key, retired key, unknown task, bad edition, CEL syntax
+// error) returns diagnostics as an *error*, and a compile-time rejection
+// (duplicate step id, unresolved reference, bad retry, bad switch case, a bad
+// wait_for_signal field, a bad for_each field) returns them as a slice — the two
+// branches #384 found spelling positions differently.
+var diagnosticCorpus = map[string]string{
+	"bad-edition.yaml": `edition: 2026.1
+name: too-old
+steps:
+  - id: s
+    log:
+      message: hi
+`,
+	"unknown-task.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: fetch
+    htttp:
+      url: https://example.com
+`,
+	"retired-key.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    task: log
+    log:
+      message: hi
+`,
+	"unknown-step-key.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    log:
+      message: hi
+    withh: nope
+`,
+	"cel-syntax-error.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    log:
+      message: ${vars.a +}
+`,
+	"duplicate-step-id.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: dup
+    log:
+      message: one
+  - id: dup
+    log:
+      message: two
+`,
+	"unresolved-reference.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    log:
+      message: ${steps.nope.result}
+`,
+	"bad-retry.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: greet
+    log:
+      message: hi
+    retry:
+      attempts: -1
+`,
+	"bad-switch-case.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: pick
+    switch:
+      value: ${vars.a}
+      cases:
+        - case: ${vars.a +}
+          steps:
+            - id: inner
+              log:
+                message: hi
+`,
+	"bad-wait-timeout.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: hold
+    wait_for_signal:
+      name: approved
+      timeout: ${vars.a +}
+`,
+	"bad-for-each-items.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: loop
+    for_each:
+      items: ${vars.a +}
+      steps:
+        - id: inner
+          log:
+            message: hi
+`,
+	"bad-http-method.yaml": brokenWorkflow,
+}
+
+// TestValidateCorpusAllDiagnosticsShareOneSpelling is the sweep #384 asked for:
+// a whole directory of deliberately-broken files, run through the same
+// `flow validate` a person or CI would run, with every rendered line checked
+// against the one canonical position spelling. A corpus beats one fixture per
+// branch because a *new* diagnostic call site, added anywhere in the validator
+// or the parser, lands in this walk automatically and fails here rather than
+// shipping a third spelling nobody wrote a test for.
+func TestValidateCorpusAllDiagnosticsShareOneSpelling(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range diagnosticCorpus {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+
+	out, err := validateOutput(t, dir)
+	require.Error(t, err, "every file in the corpus is broken; validate must fail")
+
+	assertLinkableDiagnostics(t, out)
+
+	lines := diagnosticLinesOf(out)
+
+	// Anti-vacuity: a sweep that silently collected nothing would pass this test
+	// for the same reason an empty corpus would, so require enough lines that a
+	// walk which stopped finding files, or a validator that stopped finding
+	// problems, cannot pass by accident.
+	require.GreaterOrEqual(t, len(lines), len(diagnosticCorpus),
+		"expected at least one diagnostic per broken file in the corpus, got:\n%s", out)
+
+	for _, line := range lines {
+		assert.Regexp(t, linkablePosition, line,
+			"every positioned diagnostic line must read file:line[:col]: message, got %q", line)
+	}
 }
