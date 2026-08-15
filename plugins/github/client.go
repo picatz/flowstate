@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -59,6 +60,22 @@ func egressClient() *http.Client {
 // this plugin built a bare *http.Client for it instead of reusing
 // egressClient.
 func newClient(token, baseURL string) (*github.Client, error) {
+	if token != "" {
+		configuredBaseURL := strings.TrimSuffix(os.Getenv(envAPIBaseURL), "/")
+		if configuredBaseURL == "" {
+			configuredBaseURL = defaultAPIBaseURL
+		}
+		if baseURL != "" && strings.TrimSuffix(baseURL, "/") != configuredBaseURL {
+			return nil, sdk.InvalidInput(
+				"base_url %q cannot receive this plugin's credential; the operator configured %q with %s",
+				baseURL, configuredBaseURL, envAPIBaseURL)
+		}
+		// A credential belongs only to the API origin selected by the
+		// operator. In particular, never attach it to a destination selected
+		// solely by a workflow author.
+		baseURL = configuredBaseURL
+	}
+
 	client := github.NewClient(egressClient())
 
 	if token != "" {

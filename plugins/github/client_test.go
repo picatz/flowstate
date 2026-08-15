@@ -60,3 +60,29 @@ func TestResolveSecretRefusesWhenNothingConfigured(t *testing.T) {
 		t.Fatal("resolving a credential with nothing configured: got no error, want one")
 	}
 }
+
+func TestAuthenticatedClientRefusesWorkflowSelectedBaseURL(t *testing.T) {
+	for _, configured := range []string{"", "https://github.example.com/api/v3"} {
+		t.Run(configured, func(t *testing.T) {
+			t.Setenv(envAPIBaseURL, configured)
+			if _, err := newClient("credential", "https://attacker.example/api/v3"); err == nil {
+				t.Fatal("newClient with credential and unconfigured base URL: got no error, want one")
+			}
+		})
+	}
+}
+
+func TestAuthenticatedClientUsesOperatorSelectedBaseURL(t *testing.T) {
+	t.Setenv(envAPIBaseURL, "https://github.example.com/api/v3")
+	if err := installEgressPolicy(); err != nil {
+		t.Fatalf("installEgressPolicy: %v", err)
+	}
+
+	client, err := newClient("credential", "")
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	if got, want := client.BaseURL.String(), "https://github.example.com/api/v3/"; got != want {
+		t.Fatalf("BaseURL: got %q, want %q", got, want)
+	}
+}

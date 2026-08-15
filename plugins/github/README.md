@@ -623,9 +623,11 @@ silently falling back to a PAT and running every request as the wrong
 identity without saying so.
 
 `GITHUB_API_BASE_URL` overrides the API base for GitHub Enterprise Server.
-It stays governed by the same egress policy as github.com - see
-`client.go` - so naming a GHES host does not open a hole the default policy
-would otherwise close.
+It is also the credential destination allowlist: an authenticated task uses
+this operator-selected base (or `https://api.github.com` when it is unset),
+and a task-provided `base_url` that names any other destination is refused.
+Unauthenticated reads may still select another public API base, subject to the
+egress policy in `client.go`.
 
 ### Why this is not "workload identity federation" in this repository's own sense
 
