@@ -600,7 +600,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	publicAddr := cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress)
+	// --listen defaults to $FLOWSTATE_ADDRESS (cmp.Or at registration, above in
+	// this file), so an operator who only ever set the environment variable
+	// sees no change; --listen is what lets them override it from the command
+	// line, which nothing did before.
+	publicAddr, _ := cmd.Flags().GetString("listen")
 	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.tlsTerminatedUpstream); err != nil {
 		return err
 	}
@@ -792,11 +796,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	)
 
 	httpServer := &http.Server{
-		// Where this server *listens*, which was the same package variable a client
-		// used to decide where to *connect*. One default served both, so nothing
-		// broke — but they are different facts, and `flow server` never declared an
-		// --address flag, so the variable it shared could only ever hold the
-		// environment's value anyway. Read directly, which is what it meant.
+		// Where this server *listens* (--listen / $FLOWSTATE_ADDRESS), which used
+		// to share a package variable with the address a client dials to
+		// *connect* — different facts that happened to share a default. --listen
+		// is this command's own flag for its own half of that; see its
+		// registration, above in this file, and cmd/flow/tls.go for why it is not
+		// spelled --address.
 		//
 		// The same value [refusePlaintextListener] already checked above, so a
 		// deployment cannot have this listener bind an address this function
@@ -1675,6 +1680,21 @@ flow server --verbose`,
 		"caller token claim to carry into each run's workload identity (repeatable), "+
 			"such as repository or email; only named claims are carried, and they are "+
 			"what workload.claims[...] policy rules read")
+
+	// The public listener's own address. Until now this was the one setting in
+	// the tree configured by environment variable with no flag beside it:
+	// FLOWSTATE_ADDRESS remains the default, so nothing that works today stops
+	// working, but `flow server --help` now says how to change it instead of
+	// sending an operator to the deployment docs. Named --listen rather than
+	// --address for the same reason `flow server dev` is: --address on this
+	// command already means Temporal's address (the loop two hundred lines up),
+	// and a bare host:port for net.Listen is not the client's --address either,
+	// which takes a URL and may carry a scheme.
+	serverCmd.Flags().String("listen", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
+		"address this server listens on, as a bare host:port for net.Listen (default "+
+			"$FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, "+
+			"refusePlaintextListener requires --tls-cert-file/--tls-key-file or "+
+			"--tls-terminated-upstream")
 
 	// The public listener's TLS configuration and the internal listener's own
 	// address — see cmd/flow/tls.go and cmd/flow/internallistener.go. Server
