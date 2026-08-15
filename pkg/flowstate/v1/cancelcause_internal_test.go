@@ -14,7 +14,7 @@ import (
 // messages, not merely two non-empty ones.
 func TestWithCancellationCauseDistinguishesReasons(t *testing.T) {
 	celCost := errors.New("cel cost limit of 1000000 exceeded")
-	undoBudget := errUndoBudgetExpired
+	undoBudget := ErrUndoBudgetExpired
 
 	ctxA, cancelA := context.WithCancelCause(context.Background())
 	cancelA(celCost)

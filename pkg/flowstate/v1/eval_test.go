@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/stretchr/testify/require"
 )
@@ -1033,6 +1036,90 @@ func TestRunWorkflowCancellationCauseIsDistinguishable(t *testing.T) {
 	require.ErrorContains(t, errB, "compensation budget for this cancelled run ran out")
 	require.NotEqual(t, errA.Error(), errB.Error(),
 		"two different cancellation reasons produced the same failure text")
+}
+
+// TestRunWorkflowCancellationCauseIsNotDoubled is the doubling the run-level
+// fallback ([eval.go]'s cancellation branch) could reintroduce once
+// [runStepWithPolicy] started enriching a cancellation with a cause of its
+// own: a run cancelled while a step is waiting out its retry backoff already
+// has a named cause by the time it reaches the fallback, and the fallback
+// must not name it a second time.
+//
+// The step is made to be waiting on its retry backoff, rather than mid-attempt,
+// because that is the deterministic half of "executing or waiting to retry" —
+// mid-attempt would race an in-flight HTTP request against the cancellation
+// with no signal to synchronize on. A five-second interval gives the
+// cancellation, sent the moment the first request is observed to have
+// arrived, a wide and reliable window to land inside the sleep.
+//
+// The exact text is asserted, not merely that "maintenance" appears once:
+// `require.Contains` would pass on the doubled "context canceled: maintenance:
+// maintenance" just as readily as on the single, correct rendering, since both
+// contain the substring once each without overlap being checked.
+func TestRunWorkflowCancellationCauseIsNotDoubled(t *testing.T) {
+	// Not parallel, for the reason TestAStepWithNoRetryBlockUsesTheSharedDefault
+	// gives: reaching a test server means swapping the http task's egress policy
+	// process-wide.
+	allowLoopback(t)
+
+	requested := make(chan struct{}, 1)
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(failing.Close)
+
+	workflow := &v1.Workflow{
+		Name:    "doubling-probe",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "a",
+			Kind: &v1.Node_Task{Task: &v1.Task{Name: "http", Inputs: map[string]*v1.Value{
+				"url": v1.NewLiteral(failing.URL),
+			}}},
+			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{
+				MaxAttempts:     3,
+				InitialInterval: durationpb.New(5 * time.Second),
+			}},
+		}},
+	}
+
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := v1.Run(ctx, workflow)
+		done <- err
+	}()
+
+	select {
+	case <-requested:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the step never made its first request, so cancelling never lands in its retry backoff")
+	}
+
+	// `flow cancel`, arriving while the step is asleep between attempts —
+	// [runStepWithPolicy]'s own withCancellationCause call already names this
+	// cause before the error ever reaches eval's run-level fallback.
+	cancel(errors.New("maintenance"))
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a cancelled run did not stop")
+	}
+
+	require.Error(t, err, "a cancelled run reported success")
+	require.ErrorIs(t, err, context.Canceled,
+		"a stopped run stopped reading as cancelled: %v", err)
+
+	require.Equal(t, `step "a": context canceled: maintenance`, err.Error(),
+		"the cancellation cause was named more than once")
 }
 
 // undoPlaceholderBase is a base URL used only to enumerate the shared saga cases.

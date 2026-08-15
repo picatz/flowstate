@@ -1494,7 +1494,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 		return nil
 	}
 
-	uctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), UndoBudget, errUndoBudgetExpired)
+	uctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), UndoBudget, ErrUndoBudgetExpired)
 	defer cancel()
 
 	deadline, _ := uctx.Deadline()
@@ -2191,6 +2191,19 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 // not a diagnostic. Nor is a cause appended to an err that is not itself a
 // cancellation: a step that failed for its own reason while an unrelated outer
 // deadline happened to be running is not that deadline's business.
+//
+// Idempotent by construction, which matters because this is called at more than
+// one layer on the same error as it propagates: [runStepWithPolicy] calls it
+// where a step attempt or its retry backoff observes cancellation, and eval's
+// run-level fallback calls it again on whatever came back, in case nothing more
+// specific was running (a run parked at a `wait:` when the stop arrives). Both
+// calls read from context.Cause of a context that, absent a narrower budget in
+// between, names the same reason — so without a check somewhere the fallback
+// would append it a second time, rendering "context canceled: maintenance:
+// maintenance" instead of naming the reason once. [WithCause], which this
+// calls to do the actual appending, is where that check lives:
+// [causeEnrichedError] marks an error already enriched, and appending to one is
+// a no-op rather than a second suffix.
 func withCancellationCause(ctx context.Context, err error) error {
 	if err == nil {
 		return err
@@ -2204,7 +2217,60 @@ func withCancellationCause(ctx context.Context, err error) error {
 		return err
 	}
 
-	return fmt.Errorf("%w: %s", err, cause)
+	return WithCause(err, cause)
+}
+
+// WithCause appends a fixed, named cause to err, in the same shape and with the
+// same idempotence [withCancellationCause] gives a context-derived one — see
+// [causeEnrichedError].
+//
+// Exported for the durable driver, which meets the equivalent of a cancellation
+// cause without a context to read one from: Temporal reports a compensation
+// activity cut off by [UndoBudget] as its own TimeoutError, wrapped in an
+// envelope this package's [StepErrorText] already knows how to shed (see
+// engine.recordedStepError), but with nothing resembling [context.Cause]
+// underneath for [withCancellationCause] to read. `engine.runUndoTask` calls
+// this directly once it has recognized that shape, naming the same
+// [ErrUndoBudgetExpired] the local driver's [runUndoOnCancel] attaches through
+// a context — one cause, spelled once here, read by both drivers, rather than
+// the durable driver inventing its own sentence for the same fact.
+func WithCause(err error, cause error) error {
+	if err == nil || cause == nil {
+		return err
+	}
+
+	var already *causeEnrichedError
+	if errors.As(err, &already) {
+		return err
+	}
+
+	return &causeEnrichedError{err: err, cause: cause}
+}
+
+// causeEnrichedError is what [withCancellationCause] and [WithCause] return
+// once a cause has been appended, and what both check for to avoid appending
+// a second one.
+//
+// A distinct type rather than a plain fmt.Errorf-built error, because
+// idempotence needs something to test for: a string check against the
+// rendered text would risk matching a cause's own wording that legitimately
+// recurs, where errors.As against this type can only ever match an error this
+// package itself produced.
+//
+// Renders identically to the fmt.Errorf("%w: %s", err, cause) this replaced —
+// same text, same errors.Is behavior through Unwrap — so no caller or test
+// observes the difference except the doubling this exists to prevent.
+type causeEnrichedError struct {
+	err   error
+	cause error
+}
+
+func (e *causeEnrichedError) Error() string {
+	return fmt.Sprintf("%s: %s", e.err, e.cause)
+}
+
+func (e *causeEnrichedError) Unwrap() error {
+	return e.err
 }
 
 // runStepAttempt performs one attempt, bounded by the per-attempt timeout.
