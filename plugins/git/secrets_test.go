@@ -59,6 +59,22 @@ func TestResolveSecretRefusesWhenUnset(t *testing.T) {
 	}
 }
 
+func TestResolveSecretRefusesAliasingNamesAndNamespaces(t *testing.T) {
+	t.Setenv("GIT_SECRET_TEAM_A_PROD_TOKEN", containmentSecret)
+
+	tests := []sdk.SecretRequest{
+		{Scheme: secretScheme, Name: "prod_token", Namespace: "team-a"},
+		{Scheme: secretScheme, Name: "prod/token", Namespace: "team-a"},
+		{Scheme: secretScheme, Name: "prod-token", Namespace: "team_a"},
+		{Scheme: secretScheme, Name: "PROD-TOKEN", Namespace: "team-a"},
+	}
+	for _, req := range tests {
+		if _, err := resolveSecret(context.Background(), req); err == nil {
+			t.Errorf("resolveSecret(%q, %q): got no error, want invalid input", req.Namespace, req.Name)
+		}
+	}
+}
+
 // TestCloneOptionsNeverPrintsItsToken is the containment-shape test
 // CLAUDE.md requires: %v, %+v, %#v, and %s, on the value itself, on a
 // struct holding it, and on a slice of those - the token lives in a closure

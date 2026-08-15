@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
@@ -35,13 +36,20 @@ const secretEnvPrefix = "GIT_SECRET_"
 // documented there, for one serving several tenants from a shared worker
 // pool.
 func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse, error) {
-	name := envSegment(req.Name)
+	name, err := envSegment(req.Name)
+	if err != nil {
+		return sdk.SecretResponse{}, sdk.InvalidInput("invalid secret name %q: %v", req.Name, err)
+	}
 	if name == "" {
 		return sdk.SecretResponse{}, sdk.InvalidInput("secret name is empty")
 	}
 
 	variable := secretEnvPrefix
-	if namespace := envSegment(req.Namespace); namespace != "" {
+	namespace, err := envSegment(req.Namespace)
+	if err != nil {
+		return sdk.SecretResponse{}, sdk.InvalidInput("invalid secret namespace %q: %v", req.Namespace, err)
+	}
+	if namespace != "" {
 		variable += namespace + "_"
 	}
 	variable += name
@@ -57,22 +65,25 @@ func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse
 	return sdk.SecretResponse{Value: []byte(value)}, nil
 }
 
-// envSegment renders part of a reference as part of an environment variable
-// name, so that a name from a workflow cannot construct a variable name of
-// its choosing.
-func envSegment(s string) string {
+// envSegment renders a lowercase DNS-label-shaped reference segment as part
+// of an environment variable name. Rejecting rather than replacing any other
+// character keeps this mapping injective: authorization is performed against
+// the original reference, so two references must never select the same variable.
+func envSegment(s string) (string, error) {
 	var b strings.Builder
 	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r - ('a' - 'A'))
-		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r >= '0' && r <= '9':
 			b.WriteRune(r)
-		default:
+		case r == '-':
 			b.WriteByte('_')
+		default:
+			return "", fmt.Errorf("must contain only lowercase ASCII letters, digits, and hyphens")
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // tokenFromValue extracts an HTTPS credential from a task's `token` input.
