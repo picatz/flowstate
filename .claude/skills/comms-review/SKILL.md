@@ -234,7 +234,12 @@ at a bounded resource produced a 500× misestimate of what was left.
   self-imposed. Direct `curl` also appears not to draw down the pool
   `rate_limit` reports (five calls left `core.used` unmoved), so treat
   that counter as a floor on what is left rather than a precise gauge,
-  and do not build a plan on its exact value.
+  and do not build a plan on its exact value. The same door does not open
+  onto GraphQL: the proxy serves only a pinned set of PR-review
+  operations there and answers anything else with a 403 telling you to
+  use REST, so hand-written or batched GraphQL is not a way around an
+  exhausted GraphQL pool. Resolving threads goes through the MCP tools
+  or it waits.
 - **Events beat polling.** Webhook activity already wakes a session on CI
   failures, review comments, and merges. The only legitimate polls are for
   state webhooks do not cover, and those get one deliberate check rather
