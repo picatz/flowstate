@@ -16,6 +16,23 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # A cooldown delays the pull request Dependabot opens for a *version bump*,
+    # not the separate security-alert mechanism this file's own header
+    # describes: GO-2026-6061 arrived as its own PR the moment the advisory
+    # was published, independent of this schedule, which is why waiting here
+    # costs nothing on the path that actually matters for a live
+    # vulnerability. What it buys is time for a compromised or hastily yanked
+    # release to be caught and pulled before this repository ever proposes
+    # building against it. Patch releases get the shortest wait because they
+    # are the highest-volume, lowest-review-value case this file already
+    # treats as background noise (see `minor-and-patch` above); major
+    # releases get the longest because they are reviewed carefully anyway,
+    # so a few extra days of the ecosystem finding problems first is pure
+    # upside.
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     groups:
       # Kept apart from everything else: these three move together, and a bump to
       # one that leaves the others behind is how a build breaks in a way that
@@ -79,6 +96,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    # Same reasoning and same values as the root module's cooldown above —
+    # these are separate go.mod graphs but the same threat (a compromised or
+    # hastily yanked release) and the same non-tradeoff against security
+    # fixes, which bypass this file entirely.
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     groups:
       plugin-modules:
         patterns:
@@ -94,18 +119,33 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    # github-actions supports `cooldown` too, but only `default-days` — the
+    # SemVer-specific keys (`semver-major-days` etc.) are gomod/npm-only and
+    # are silently unusable here, so this entry gets one number rather than
+    # three. 5 days: a compromised or force-pushed tag in the Actions
+    # marketplace (the tj-actions incident is the reference case) tends to be
+    # caught and yanked within hours to a couple of days once GitHub or the
+    # community notices, and this repo pins every `uses:` to a commit SHA
+    # already — this cooldown only delays the PR that would advance that SHA,
+    # never running unpinned in between. As with the gomod entries, a security
+    # fix for an action is not held back by this: Dependabot's security-alert
+    # path is separate from the scheduled-update path this file configures.
+    cooldown:
+      default-days: 5
 
-  # The VS Code extension's npm graph (#585). A `cooldown` is npm-specific
-  # here rather than repeated for gomod or github-actions above, because the
-  # threat it answers is npm-specific: a maintainer account or build machine
-  # compromise that ships a malicious *patch* release, caught within hours to
-  # days. Waiting seven days before Dependabot proposes a new release costs
-  # nothing real — this extension has no reason to run a dependency the day it
-  # ships — and it is the single cheapest defense in the supply-chain section
-  # of #585. `exclude-patterns` is not needed to keep the runtime surface
-  # small: package.json only has one runtime dependency to begin with
-  # (vscode-languageclient), and every proposed bump — runtime or dev — is
-  # still a reviewed pull request either way.
+  # The VS Code extension's npm graph (#585). `cooldown` is not npm-specific —
+  # gomod and github-actions above both support it too, and now use it — but
+  # the threat here is the sharpest version of the same story: a maintainer
+  # account or build machine compromise that ships a malicious *patch*
+  # release, caught within hours to days, on the ecosystem with the
+  # highest-volume history of exactly that. Waiting seven days before
+  # Dependabot proposes a new release costs nothing real — this extension has
+  # no reason to run a dependency the day it ships — and it is the single
+  # cheapest defense in the supply-chain section of #585. `exclude-patterns`
+  # is not needed to keep the runtime surface small: package.json only has
+  # one runtime dependency to begin with (vscode-languageclient), and every
+  # proposed bump — runtime or dev — is still a reviewed pull request either
+  # way.
   - package-ecosystem: npm
     directory: /editors/vscode
     schedule:

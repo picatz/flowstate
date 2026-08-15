@@ -78,9 +78,40 @@ cannot choose what your editor executes. This is the same argument
   runs `npm ci`, which fails rather than resolving when the lockfile and
   manifest disagree.
 - No postinstall scripts, no bundler, no publish tooling. Nothing here talks
-  to the network except `npm ci` itself.
+  to the network except `npm ci` itself. `.npmrc` sets `ignore-scripts=true`
+  as of the supply-chain depth pass, so even a compromised or typosquatted
+  future dependency cannot run an install-time lifecycle script — the
+  single most-used npm supply-chain vector — without that being a visible,
+  reviewed change to `.npmrc` itself. Verified against this exact dependency
+  set: `rm -rf node_modules && npm ci`, `npm run compile`, and `npm test`
+  all still pass with the setting on, and none of the four packages here
+  (`vscode-languageclient`, `typescript`, `@types/node`, `@types/vscode`)
+  ships one.
 - Dependency bumps arrive through `.github/dependabot.yml`'s npm entry, on a
   cooldown, same as the rest of this repo's supply-chain posture.
+- Three related settings considered and decided against, for now:
+  - `engine-strict=true` — the extension declares `engines.vscode`, not
+    `engines.node`. npm's engine-strict check enforces `engines.node` and
+    `engines.npm`; a `vscode` key isn't one it understands, so turning this
+    on today would have nothing to enforce and would protect nothing.
+    Revisit if a `node` engine constraint is ever added to `package.json`.
+  - `npm audit signatures` as a CI step — considered, not added. It runs in
+    about two seconds against this thirteen-package tree and would have
+    verified registry signatures/attestations for the whole install every
+    run, which is cheap. Left out because the `vscode` job's isolation
+    (no repository-write token, no Go cache reachable, `npm ci` pinned to an
+    exact lockfile — see `editors.yml`) already bounds what an unsigned or
+    unverifiable package could do here, and a step that can only ever
+    pass-or-warn on a thirteen-package devDependency-heavy tree wasn't worth
+    the extra CI minute on every PR touching this directory. Easy to add
+    later if the dependency count grows or a real signature gap surfaces.
+  - `provenance` — not applicable. There is deliberately no publish step
+    (see "What it deliberately does not do" below); provenance attestation
+    is something a `npm publish` step would set, and adding one now with
+    nothing publishing would be dead configuration. If this extension is
+    ever published to a marketplace, that PR should set
+    `--provenance`/`provenance: true` at the same time it adds the publish
+    step, not before.
 
 ## Verified, and not
 
