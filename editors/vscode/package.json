@@ -6,7 +6,7 @@
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.91.0"
   },
   "categories": [
     "Programming Languages"
@@ -42,7 +42,7 @@
         "flowstate.path": {
           "type": "string",
           "default": "flow",
-          "description": "Path to the flow binary. Ignored when set in workspace (.vscode) settings — a cloned repository must not choose what your editor executes.",
+          "description": "Path to the flow binary. Ignored when set in workspace (.vscode) settings \u2014 a cloned repository must not choose what your editor executes.",
           "scope": "machine-overridable"
         },
         "flowstate.lsp.args": {

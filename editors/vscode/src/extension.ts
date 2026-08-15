@@ -17,7 +17,7 @@ import { checkBinaryAvailable, resolveBinaryPath } from "./binary";
 import { commandTitle, flowCommandArgs, FlowCommandKind } from "./commandLine";
 
 let client: LanguageClient | undefined;
-let outputChannel: vscode.OutputChannel | undefined;
+let outputChannel: vscode.LogOutputChannel | undefined;
 
 function config(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration("flowstate");
@@ -44,7 +44,10 @@ async function warnBinaryMissing(bin: string, detail: string): Promise<void> {
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  outputChannel = vscode.window.createOutputChannel("Flowstate Language Server");
+  // `{ log: true }` makes this a LogOutputChannel, which is what
+  // vscode-languageclient 10 requires: it drives the channel's log level
+  // from the editor rather than from a trace setting the client owns.
+  outputChannel = vscode.window.createOutputChannel("Flowstate Language Server", { log: true });
   context.subscriptions.push(outputChannel);
 
   context.subscriptions.push(
