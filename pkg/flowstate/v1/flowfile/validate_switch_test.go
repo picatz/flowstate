@@ -16,7 +16,7 @@ import (
 
 // gateHeader is the closed-domain fixture the domain checks run against: the
 // approval gate's shape, whose ternary yields exactly deployed | rejected |
-// expired — the inferable tier the design names.
+// undecided — the inferable tier the design names.
 const gateHeader = `edition: v2026.3
 name: t
 steps:
@@ -27,7 +27,7 @@ steps:
       outputs:
         outcome: >-
           ${timed_out
-            ? "expired"
+            ? "undecided"
             : (has(payload.approved) && payload.approved ? "deployed" : "rejected")}
 `
 
@@ -59,23 +59,23 @@ func TestSwitchImpossibleCaseGetsNearestSpelling(t *testing.T) {
       cases:
         - case: deployed
           steps: []
-        - case: expird
+        - case: undecidd
           steps: []
       default:
         steps: []
 `)
 	require.NotEmpty(t, ds, "a case the domain cannot produce must be refused")
 	text := diagnosticMessages(ds)
-	assert.Contains(t, text, `case "expird" is not a value`)
-	assert.Contains(t, text, `"expired", "deployed", "rejected"`)
-	assert.Contains(t, text, `did you mean "expired"?`)
+	assert.Contains(t, text, `case "undecidd" is not a value`)
+	assert.Contains(t, text, `"undecided", "deployed", "rejected"`)
+	assert.Contains(t, text, `did you mean "undecided"?`)
 
 	// Positioned: the diagnostic lands on the case literal, not on line 1.
 	for _, d := range ds {
-		if strings.Contains(d.Message, "expird") {
+		if strings.Contains(d.Message, "undecidd") {
 			assert.Positive(t, d.Line, "the impossible-value diagnostic must carry a position")
 			assert.Equal(t, "after", d.Step)
-			assert.Equal(t, "expird", d.Value, "Value carries the offending literal")
+			assert.Equal(t, "undecidd", d.Value, "Value carries the offending literal")
 		}
 	}
 }
@@ -123,7 +123,7 @@ func TestSwitchExhaustivenessNamesTheMissingValues(t *testing.T) {
 `)
 	require.NotEmpty(t, ds, "an inexhaustive switch with no default must be refused")
 	text := diagnosticMessages(ds)
-	assert.Contains(t, text, `cases do not handle "expired", "rejected"`)
+	assert.Contains(t, text, `cases do not handle "undecided", "rejected"`)
 	assert.Contains(t, text, "default: {steps: []}")
 }
 
@@ -136,7 +136,7 @@ func TestSwitchUnreachableDefaultIsRefused(t *testing.T) {
     switch:
       value: ${steps.approval.outcome}
       cases:
-        - case: [deployed, rejected, expired]
+        - case: [deployed, rejected, undecided]
           steps: []
       default:
         steps: []

@@ -89,7 +89,7 @@ tests:
   # exactly, which is the point - `distinct_from_starter:` is the one clause a
   # correctly-claimed, correctly-named approver still cannot get past. The
   # signal never reaches the step, so the gate lapses at its own timeout and
-  # the run reports `expired`, the same answer nobody answering at all
+  # the run reports `undecided`, the same answer nobody answering at all
   # produces. That is what production does too: `FlowstateServer.Signal`
   # refuses with PermissionDenied and the workflow is never told anything was
   # sent.
@@ -103,10 +103,10 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, decision, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   # The same starter, refused for a different reason and from the other side:
@@ -127,10 +127,10 @@ tests:
           claims:
             team: release-managers
     expect:
-      ran: [request, settle, approval, decision, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   - name: "an approved payload from a sender signals: refuses never reaches the gate"
@@ -148,10 +148,10 @@ tests:
           claims:
             team: release-managers
     expect:
-      ran: [request, settle, approval, decision, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   - name: an approved payload is still refused without an attested sender
@@ -165,10 +165,10 @@ tests:
         # `sender:` and inheriting it.
         sender: {}
     expect:
-      ran: [request, settle, approval, decision, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   # The negated branch, which used to be a hand-expanded De Morgan copy of
@@ -194,10 +194,10 @@ tests:
   - name: nobody answers, and the gate lapses at its own timeout
     workflow: ./workflow.yaml
     expect:
-      ran: [request, settle, approval, decision, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   - name: a version that is not semver is refused before the first step runs
@@ -216,10 +216,13 @@ tests:
 
   # "answered" and "did not time out" are different questions, which is why the
   # gate's `outcome` has three states rather than two. A signal arrived here —
-  # so the wait did not time out — carrying no `approved` field at all, which is
-  # not a decision. It reports `expired`, exactly as `decision` always did, and
-  # now the `expired` branch actually runs: before the gate was named, this
-  # input produced an output naming a branch that had been skipped.
+  # so the wait did not time out, `timed_out` is false — carrying no `approved`
+  # field at all, which is not a decision either. It used to report `expired`
+  # here (#579): true of the branch that ran, false of what actually happened,
+  # since nothing timed out. `undecided` is true of both this case and a lapsed
+  # timeout, which is why it is the name and not a fourth state — `timed_out`
+  # on the gate above is what still tells the two apart for a reader who needs
+  # to.
   - name: a signal carrying no decision is not a rejection
     workflow: ./workflow.yaml
     signals:
@@ -227,8 +230,8 @@ tests:
         payload:
           note: looking into it
     expect:
-      ran: [request, settle, approval, decision, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""

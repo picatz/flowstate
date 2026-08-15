@@ -258,15 +258,19 @@ steps:
         #
         # Three states and not two: a payload is whatever the sender chose to
         # send, so one carrying no `approved` field at all is representable, and
-        # it is not a rejection. `!timed_out` would say it was.
+        # it is not a rejection. It is also not the same fact as the timer
+        # lapsing — a signal that arrives with no `approved` field releases the
+        # wait immediately, `timed_out` false — so this state is named for what
+        # is true in both sub-cases: nobody decided. `!timed_out` would claim
+        # the timer lapsed when it did not.
         outcome: >-
           ${has(payload.approved)
             ? (payload.approved ? "deployed" : "rejected")
-            : "expired"}
+            : "undecided"}
         # Re-exposed deliberately: `outputs:` replaces what the wait produces,
         # so these are gone unless a line puts them back. `sender` is read by
         # the log lines and by `approver_subject`; `timed_out` is what lets the
-        # `expired` branch say *why* nothing was decided.
+        # `undecided` branch say *why* nothing was decided.
         timed_out: ${timed_out}
         sender: ${sender}
 
@@ -285,7 +289,7 @@ steps:
   # this discriminant has a domain the validator can *infer*. `outcome` above is
   # shaped by conditionals over string literals all the way down, which is
   # precisely the form `switchDomain` reads, so `flow validate` knows this
-  # dispatch can only ever see "deployed", "rejected" or "expired" — and refuses
+  # dispatch can only ever see "deployed", "rejected" or "undecided" — and refuses
   # a case outside that set, by name, with the nearest legal spelling.
   #
   # Hence no `default:`, and deliberately so: the three cases exhaust the domain,
@@ -331,19 +335,21 @@ steps:
                       [steps.approval.sender.identity.subject, inputs.version])}
 
         # This branch is where naming the gate found a real disagreement. The
-        # `decision` output below has always reported "expired" for a signal that
+        # `decision` output below used to report "expired" for a signal that
         # arrived carrying no `approved` field, while this branch's old `if:`
         # asked only about the *timer* — so no branch ran and the output said one
         # had. Exactly the failure #207 is about, surviving in the one copy
-        # nobody thought to compare. Both are the same name now, and the
-        # exhaustiveness check means dropping this case is a validation error
-        # rather than a silent gap.
+        # nobody thought to compare. `undecided` (#579) is true in both
+        # sub-cases — nobody answered, or somebody answered without deciding —
+        # so the case and the output can finally agree without either one
+        # lying, and the exhaustiveness check means dropping this case is a
+        # validation error rather than a silent gap.
         #
         # `timed_out` is re-exposed by the gate above precisely so this line can
         # still tell the two apart in what it says.
-        - case: expired
+        - case: undecided
           steps:
-            - id: expired
+            - id: undecided
               log:
                 message: >-
                   ${steps.approval.timed_out

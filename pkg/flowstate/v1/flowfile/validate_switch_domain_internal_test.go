@@ -59,7 +59,7 @@ func approvalGateSwitch(t *testing.T) (*v1.Workflow, *v1.Switch) {
 //
 // Asserted on the values and their order, not merely on the boolean, because the
 // order is what the diagnostics enumerate: "the values are "deployed",
-// "rejected", "expired"" is the sentence an author reads, and it is first-
+// "rejected", "undecided"" is the sentence an author reads, and it is first-
 // appearance order in the gate's own ternary.
 func TestApprovalGateDomainIsInferable(t *testing.T) {
 	t.Parallel()
@@ -73,7 +73,7 @@ func TestApprovalGateDomainIsInferable(t *testing.T) {
 			"  an optMap, an orValue, or a value read from the payload computes the same strings and\n"+
 			"  silently disables the impossible-case, exhaustiveness, unreachable-default and\n"+
 			"  type-mismatch diagnostics for every switch reading it")
-	assert.Equal(t, []string{"deployed", "rejected", "expired"}, domain,
+	assert.Equal(t, []string{"deployed", "rejected", "undecided"}, domain,
 		"the domain the diagnostics enumerate, in the order the gate's own expression reads")
 }
 
@@ -122,11 +122,11 @@ func TestAShapingExpressionOutsideTheReadableFormOpensTheDomain(t *testing.T) {
 	}{
 		{
 			name:  "a computed string leaf",
-			shape: `${has(payload.approved) ? string(payload.approved) : "expired"}`,
+			shape: `${has(payload.approved) ? string(payload.approved) : "undecided"}`,
 		},
 		{
 			name:  "a leaf read from the payload",
-			shape: `${has(payload.outcome) ? payload.outcome : "expired"}`,
+			shape: `${has(payload.outcome) ? payload.outcome : "undecided"}`,
 		},
 		{
 			name:  "not a conditional at all",

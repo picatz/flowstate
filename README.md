@@ -76,14 +76,15 @@ steps:
         outcome: >-
           ${has(payload.approved)
             ? (payload.approved ? "deployed" : "rejected")
-            : "expired"}
+            : "undecided"}
         sender: ${sender}
 
   # One dispatch, not three sibling `if:`s. The validator knows this value is
-  # always one of "deployed", "rejected", "expired" — the gate's own expression
-  # above says so — so a typo'd case is refused by name and a case nobody wrote
-  # is reported as unhandled. No `default:` on purpose: the three cases exhaust
-  # the domain, and a `default:` beside them is dead code the validator refuses.
+  # always one of "deployed", "rejected", "undecided" — the gate's own
+  # expression above says so — so a typo'd case is refused by name and a case
+  # nobody wrote is reported as unhandled. No `default:` on purpose: the three
+  # cases exhaust the domain, and a `default:` beside them is dead code the
+  # validator refuses.
   - id: decision
     switch:
       value: ${steps.approval.outcome}
@@ -98,9 +99,9 @@ steps:
             - id: rejected
               log:
                 message: ${"%s declined the deploy".format([steps.approval.sender.identity.subject])}
-        - case: expired
+        - case: undecided
           steps:
-            - id: expired
+            - id: undecided
               log:
                 message: nobody decided in time
 ```
@@ -121,7 +122,7 @@ of the shaping expression and holds the branches to it:
 ```console
 $ flow validate examples/approval-gate/workflow.yaml     # with `- case: rejcted`
 case "rejcted" is not a value `steps.approval.outcome` can produce; the values are
-"deployed", "rejected", "expired"; did you mean "rejected"?
+"deployed", "rejected", "undecided"; did you mean "rejected"?
 cases do not handle "rejected", which `steps.approval.outcome` can produce; a switch
 with no `default:` claims to handle every value, so add the missing cases, or add a
 `default:` — an empty `default: {steps: []}` is how deliberately handling nothing

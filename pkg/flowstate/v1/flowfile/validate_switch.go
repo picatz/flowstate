@@ -26,7 +26,7 @@ import (
 // mismatch) fire only where the discriminant's domain is a property of the file:
 // a `${steps.<id>.<name>}` naming a wait's shaped output whose expression is
 // built from conditionals over string literals — the approval gate's ternary
-// yields exactly `deployed | rejected | expired`, which is inferable. An open
+// yields exactly `deployed | rejected | undecided`, which is inferable. An open
 // domain (a webhook field, an input, anything shaped by an expression the
 // validator cannot bound) is deliberately silent, per the report-what-the-file-
 // owns rule: the runtime half — the unmatched record in the step's outputs —
