@@ -614,6 +614,20 @@ func (s *parsedStep) kind() string {
 	}
 }
 
+// hasKey reports whether the step writes a top-level key with this name,
+// regardless of which form its value takes — the literal and expression
+// spellings of `sleep:` and the scalar and mapping spellings of
+// `wait_for_signal:` all show up here alike, where the dedicated *Entry
+// fields (populated only for the forms that carry an expression) do not.
+func (s *parsedStep) hasKey(name string) bool {
+	for _, e := range s.entries {
+		if e.key == name {
+			return true
+		}
+	}
+	return false
+}
+
 // input returns the step's input entry with the given name.
 func (s *parsedStep) input(name string) *entry {
 	for _, in := range s.inputs {
