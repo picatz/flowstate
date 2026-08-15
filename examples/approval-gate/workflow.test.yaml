@@ -1,8 +1,8 @@
 # `flow test` checks a scripted signal's optional `sender:` against this
 # workflow's `signals:` policy through the same `v1.SignalPolicyCheck`
 # `FlowstateServer.Signal` calls (#207 slice 2) — the seam that makes it safe
-# for `deploy`'s own `if:` to trust `signals:` for authorization rather than
-# restate it: a scripted signal with no `sender:`, or one that does not
+# for this workflow's own dispatch to trust `signals:` for authorization rather
+# than restate it: a scripted signal with no `sender:`, or one that does not
 # satisfy the policy, is refused before it ever reaches the waiting step,
 # exactly as a durable one would be. That is what makes the first case below
 # possible at all — this file's own history is the reason it did not use to
@@ -28,7 +28,7 @@
 # the `request` step's own log line here still names "an unattested caller".
 # The scripted `sender:` is the same kind of assertion - it stands in for an
 # approver, and the gate's `sender.local` output reads true to say so, which
-# is why `deploy`'s `if:` may never gate on attestation itself.
+# is why the dispatch below may never gate on attestation itself.
 edition: v2026.3
 defaults:
   # Every case ships the same build to the same environment and expects the
@@ -58,7 +58,7 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, deploy]
+      ran: [request, settle, approval, decision, deploy]
       others: skipped
       outputs:
         decision: deployed
@@ -78,7 +78,7 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, deploy]
+      ran: [request, settle, approval, decision, deploy]
       others: skipped
       outputs:
         decision: deployed
@@ -103,7 +103,7 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, expired]
       others: skipped
       outputs:
         decision: expired
@@ -127,7 +127,7 @@ tests:
           claims:
             team: release-managers
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, expired]
       others: skipped
       outputs:
         decision: expired
@@ -148,7 +148,7 @@ tests:
           claims:
             team: release-managers
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, expired]
       others: skipped
       outputs:
         decision: expired
@@ -165,18 +165,19 @@ tests:
         # `sender:` and inheriting it.
         sender: {}
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, expired]
       others: skipped
       outputs:
         decision: expired
         approver_subject: ""
 
   # The negated branch, which used to be a hand-expanded De Morgan copy of
-  # `deploy`'s own `if:` and is now `${steps.approval.outcome == "rejected"}`, an
-  # !steps.approval.approved}` — two names this file's gate decides once. The
+  # `deploy`'s own `if:`, then became `${steps.approval.outcome == "rejected"}`,
+  # and is now `- case: rejected` — a literal rather than a predicate at all. The
   # assertion that matters is the pair: the branch that ran and the `decision`
-  # output move together, because both read the same recorded output rather
-  # than each re-deriving the predicate.
+  # output move together, because both read the one recorded output rather than
+  # each re-deriving the predicate. `ran:` names `decision` before it because the
+  # dispatch is itself a step that runs.
   - name: an explicit rejection is honored
     workflow: ./workflow.yaml
     signals:
@@ -184,7 +185,7 @@ tests:
         payload:
           approved: false
     expect:
-      ran: [request, settle, approval, rejected]
+      ran: [request, settle, approval, decision, rejected]
       others: skipped
       outputs:
         decision: rejected
@@ -193,7 +194,7 @@ tests:
   - name: nobody answers, and the gate lapses at its own timeout
     workflow: ./workflow.yaml
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, expired]
       others: skipped
       outputs:
         decision: expired
@@ -226,7 +227,7 @@ tests:
         payload:
           note: looking into it
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, expired]
       others: skipped
       outputs:
         decision: expired
