@@ -270,12 +270,37 @@ func TestValidateCorpusAllDiagnosticsShareOneSpelling(t *testing.T) {
 
 	lines := diagnosticLinesOf(out)
 
-	// Anti-vacuity: a sweep that silently collected nothing would pass this test
-	// for the same reason an empty corpus would, so require enough lines that a
-	// walk which stopped finding files, or a validator that stopped finding
-	// problems, cannot pass by accident.
-	require.GreaterOrEqual(t, len(lines), len(diagnosticCorpus),
-		"expected at least one diagnostic per broken file in the corpus, got:\n%s", out)
+	// Anti-vacuity, per file rather than in aggregate — which is the correction
+	// both reviewers made on this PR, and they were right. A count comparison
+	// says nothing about *which* files were exercised: one fixture emitting
+	// three diagnostics keeps the total above the floor while another stops
+	// producing any, either because somebody fixed the validator's handling of
+	// that shape or because the fixture drifted into being valid. Worse, an
+	// emptied corpus writes no files, validate still fails on a directory with
+	// no Flowfiles in it, and the comparison becomes 0 >= 0 — so the guard
+	// against a vacuous sweep was itself vacuous.
+	//
+	// Naming every file instead means a fixture that stops carrying its defect
+	// fails here, with the filename in the message, rather than being absorbed
+	// by its neighbours.
+	require.NotEmpty(t, diagnosticCorpus, "the corpus is empty; this test would examine nothing")
+
+	for name := range diagnosticCorpus {
+		assert.Condition(t, func() bool {
+			for _, line := range lines {
+				// A diagnostic names the path it was given, which here is
+				// inside a temp directory, so the fixture is identified by the
+				// base name rather than by a prefix match.
+				path, _, ok := strings.Cut(line, ":")
+				if ok && filepath.Base(path) == name {
+					return true
+				}
+			}
+			return false
+		}, "%s produced no positioned diagnostic; it is no longer exercising the call site it was "+
+			"written for, either because the validator changed or because the fixture stopped being "+
+			"broken. Output was:\n%s", name, out)
+	}
 
 	for _, line := range lines {
 		assert.Regexp(t, linkablePosition, line,
