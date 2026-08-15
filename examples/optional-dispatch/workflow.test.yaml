@@ -1,0 +1,61 @@
+# Three cases, one per outcome, and each asserts both what ran and what did
+# not — a list of what ran can never see a branch not taken.
+edition: v2026.3
+tests:
+  - name: an approving signal takes the approved branch
+    workflow: ./workflow.yaml
+    signals:
+      - name: decision-made
+        payload:
+          approved: true
+    stubs:
+      - task: log
+        where: inputs.message == 'requesting a decision, and not waiting long'
+        returns: {}
+      - task: log
+        where: inputs.message == 'decision received - approved, publishing'
+        returns: {}
+    expect:
+      ran: [request, gate, outcome, report, publish]
+      skipped: [hold, escalate]
+      outputs:
+        outcome: approved
+
+  - name: a rejecting signal takes the rejected branch, not the no-response one
+    workflow: ./workflow.yaml
+    signals:
+      - name: decision-made
+        payload:
+          approved: false
+    stubs:
+      - task: log
+        where: inputs.message == 'requesting a decision, and not waiting long'
+        returns: {}
+      - task: log
+        where: inputs.message == 'decision received - rejected, holding back'
+        returns: {}
+    expect:
+      ran: [request, gate, outcome, report, hold]
+      skipped: [publish, escalate]
+      outputs:
+        outcome: rejected
+
+  # No signal arrives, so the wait's own timeout is what ends it: the case a
+  # defaulted `.orValue(false)` cannot tell apart from the one above, and the
+  # whole reason this example exists.
+  - name: nobody responds, and the gate's own timeout is what says so
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == 'requesting a decision, and not waiting long'
+        returns: {}
+      - task: log
+        where: >-
+          inputs.message == 'no response arrived before the deadline, escalating' &&
+          inputs.level == 'warn'
+        returns: {}
+    expect:
+      ran: [request, gate, outcome, report, escalate]
+      skipped: [publish, hold]
+      outputs:
+        outcome: no_response

@@ -90,9 +90,16 @@ var exemptSourceDirs = []string{
 // cmd/flow/internal/docsgen/cli.go reads whatever the table names, in order to
 // clear and restore it — a read of every documented variable and, necessarily,
 // of none that is not.
+// pkg/flowstate/v1/credentialsource/env.go reads whatever variable name its
+// caller configured (credentialsource.NewEnvSource(variable), or
+// credentialsource.Resolve's EnvVar). The default the CLI itself uses,
+// FLOWSTATE_TOKEN, is a literal one call site up in cmd/flow/credentials.go
+// and is documented there; a caller of the package with a different name
+// documents its own choice.
 var exemptDynamicReads = map[string]bool{
-	"pkg/flowstate/v1/secrets/env.go":  true,
-	"cmd/flow/internal/docsgen/cli.go": true,
+	"pkg/flowstate/v1/secrets/env.go":          true,
+	"cmd/flow/internal/docsgen/cli.go":         true,
+	"pkg/flowstate/v1/credentialsource/env.go": true,
 }
 
 // TestEveryEnvironmentReadIsDocumented is the drift test, and the point of the

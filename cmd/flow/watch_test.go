@@ -7,16 +7,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/credentialsource"
 )
 
 // observed is the moment a poll result is folded in, for the tests that state the
@@ -1283,4 +1287,128 @@ func TestWatchCountsAGateChangeAsAChange(t *testing.T) {
 	require.True(t, state.absorb(observed, parked(deadline, "right"), nil).Changed,
 		"a gate was released and the poll swallowed it, leaving the view naming a gate nobody holds")
 	require.False(t, state.absorb(observed, parked(deadline, "right"), nil).Changed)
+}
+
+// stubGitHubActionsRunner stands up a fake runner OIDC endpoint, counting how many
+// times it was asked to mint a token, and points ACTIONS_ID_TOKEN_REQUEST_URL /
+// ACTIONS_ID_TOKEN_REQUEST_TOKEN at it for the duration of the test — the two env
+// vars a job granted `id-token: write` finds set, and [credentialsource.NewGitHubActionsSource]
+// reads on every mint.
+//
+// The minted token's exp claim is an hour out, so a correctly-caching source never
+// has a reason to re-mint on its own; any request beyond the first is the source
+// itself being rebuilt with an empty cache, which is exactly the bug this exists to
+// catch.
+func stubGitHubActionsRunner(t *testing.T) *atomic.Int64 {
+	t.Helper()
+
+	var mints atomic.Int64
+
+	key := authtest.GenerateKey("gha-stub", jwa.RS256)
+	token := key.Sign(
+		map[string]any{"typ": "JWT", "alg": "RS256", "kid": key.ID()},
+		map[string]any{
+			"iss": "https://token.actions.githubusercontent.com",
+			"sub": "repo:acme/infra:ref:refs/heads/main",
+			"aud": "https://flowstate.example.com",
+			"exp": time.Now().Add(time.Hour).Unix(),
+			"iat": time.Now().Unix(),
+		},
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": token})
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
+
+	return &mints
+}
+
+// TestFollowMintsTheCredentialOnceAcrossManyPolls is the regression test for
+// reusing the credential source across a follow's whole life, not just its first
+// poll.
+//
+// clientPoller.Poll used to build a fresh client through newWorkflowServiceClient
+// on every tick, which resolved --credential-source fresh each time too — a new,
+// empty-cache [credentialsource.Source] every poll rather than one built once and
+// consulted repeatedly. Against a github-actions source that mints from a runner's
+// OIDC endpoint, that is a fresh mint on every single poll: at the default
+// one-second interval, an hour of `flow watch` mints thirty-six hundred tokens
+// instead of one. A test asserting a single poll works cannot see this, because a
+// fresh client on the first-and-only tick is indistinguishable from a cached one —
+// it has to watch across many polls and count what actually reached the runner.
+func TestFollowMintsTheCredentialOnceAcrossManyPolls(t *testing.T) {
+	mints := stubGitHubActionsRunner(t)
+
+	const polls = 5
+
+	fake := &fakeWorkflowService{
+		getResponse: response(v1.RunResponse_STATUS_RUNNING, "checkout"),
+	}
+	serveFake(t, fake)
+
+	cmd, _, _ := watchCommandForTest(t)
+	require.NoError(t, cmd.Flags().Set("credential-source", "github-actions"))
+	require.NoError(t, cmd.Flags().Set("audience", "https://flowstate.example.com"))
+	require.NoError(t, cmd.Flags().Set("plain", "true"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd.SetContext(ctx)
+
+	var seen int
+	fake.onGet = func() {
+		seen++
+		if seen >= polls {
+			cancel()
+		}
+	}
+
+	// Interrupted deliberately, once enough polls have happened to distinguish "built
+	// once" from "built every tick" — the run itself never finishes, which is the
+	// point: nothing here exercises whether a watch ends well, only how many times it
+	// asked for a credential while going.
+	require.NoError(t, runWatch(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	require.GreaterOrEqual(t, seen, polls, "the watch stopped before it polled enough times to tell")
+	require.Equal(t, int64(1), mints.Load(),
+		"the credential source was rebuilt on a poll after the first, minting again instead of reusing the cache")
+}
+
+// TestFollowRefusesAMisconfiguredCredentialSourceImmediately is the fail-fast
+// direction of the same fix: a --credential-source that can never succeed must
+// not be given thirty seconds of classifyPollError's outage allowance to fail in.
+//
+// github-actions with no --audience is refused by [credentialsource.Resolve] at
+// construction, before a token is ever asked for. The transport used to carry
+// that error forward and return it from the first RoundTrip, where connect-go
+// wraps any non-connect error as CodeUnavailable — the same code a genuinely
+// unreachable server produces, and one classifyPollError treats as worth asking
+// again. So the assertion here is not merely that this errors, but that it does
+// so having never entered the polling loop at all: the fake server records zero
+// Get calls and the failure carries no worthAskingAgain-style RPC code.
+func TestFollowRefusesAMisconfiguredCredentialSourceImmediately(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: response(v1.RunResponse_STATUS_RUNNING, "checkout"),
+	}
+	serveFake(t, fake)
+
+	cmd, _, _ := watchCommandForTest(t)
+	require.NoError(t, cmd.Flags().Set("credential-source", "github-actions"))
+	// --audience deliberately left unset.
+
+	err := runWatch(cmd, []string{"flowstate-workflow-3f7c"})
+	require.Error(t, err, "github-actions with no audience must be refused")
+
+	require.Nil(t, fake.gotGet,
+		"the poll loop was entered at all for a credential source that can never succeed")
+
+	var transient transientError
+	require.False(t, errors.As(err, &transient),
+		"a configuration error was classified as transient and would be retried for the outage allowance: %v", err)
+	require.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
 }

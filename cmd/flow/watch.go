@@ -13,6 +13,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
 
 // Watching a run is the one place this CLI has a reason to hold the terminal.
@@ -89,8 +90,17 @@ type clientPoller struct {
 
 	// server is carried rather than read at poll time, because a poller runs
 	// after its command has returned control to the follow loop and has no
-	// command to ask.
+	// command to ask. Still needed alongside client: [classifyPollError]
+	// reads it to explain a refusal (address, tenant) even though the client
+	// itself has already been built.
 	server serverFlags
+
+	// client is the transport this poller asks through, built once by
+	// [newFollowClient] before the follow loop starts rather than by Poll on
+	// every tick — see that function for why. Left nil in tests that
+	// construct a clientPoller directly and want the single-call default
+	// instead; see [clientPoller.Poll].
+	client flowstatev1connect.WorkflowServiceClient
 
 	// spec is the workflow specification this run was started from, when this
 	// poller's caller happens to hold one. `flow run` parsed the file and
@@ -114,7 +124,18 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 		request.RunId = &p.runID
 	}
 
-	response, err := newWorkflowServiceClient(p.server).Get(ctx, connect.NewRequest(request))
+	// A poller built by [newWatchCommand] or [runWorkflow] carries a client
+	// built once, before the follow loop started — see [newFollowClient] for
+	// why that matters. A poller built directly, the way this package's own
+	// tests do for a single Poll, falls back to building one inline: correct
+	// either way, and the difference only shows up over many polls, which
+	// those tests do not make.
+	client := p.client
+	if client == nil {
+		client = newWorkflowServiceClient(p.server)
+	}
+
+	response, err := client.Get(ctx, connect.NewRequest(request))
 	if err != nil {
 		return nil, classifyPollError(p.workflowID, p.server, err)
 	}
@@ -311,10 +332,22 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		noteRevealedSensitiveValues(surface)
 	}
 
+	server := serverFlagsOf(cmd)
+
+	// Built once, before the follow loop starts, and reused for every poll —
+	// see [newFollowClient]. An unknown --credential-source or a
+	// github-actions source with no --audience is refused right here, before
+	// a single poll happens, rather than surfacing thirty seconds into the
+	// follow loop's outage allowance the way a transport-level error would.
+	client, err := newFollowClient(server)
+	if err != nil {
+		return err
+	}
+
 	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
 	// first poll is the first thing it learns.
 	return watchRun(cmd.Context(), surface, format,
-		clientPoller{workflowID: workflowID, runID: runID, server: serverFlagsOf(cmd), reveal: reveal},
+		clientPoller{workflowID: workflowID, runID: runID, server: server, client: client, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, nil)
 }
 

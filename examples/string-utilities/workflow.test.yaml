@@ -1,0 +1,34 @@
+# Two cases: a subject carrying a reply prefix and padding, and one carrying
+# neither — proving the strip is conditional rather than always cutting the
+# first three characters off whatever it is given.
+edition: v2026.3
+tests:
+  - name: a padded, prefixed subject is trimmed, stripped, and routed by its first word
+    workflow: ./workflow.yaml
+    inputs:
+      subject: "  Re: Billing dispute #4521  "
+    stubs:
+      - task: log
+        where: >-
+          inputs.message == "routing 'Billing dispute #4521' to the billing queue"
+        returns: {}
+    expect:
+      ran: [clean, strip_prefix, route, announce]
+      outputs:
+        subject: "Billing dispute #4521"
+        routing_key: billing
+
+  - name: a subject with no reply prefix passes through unstripped
+    workflow: ./workflow.yaml
+    inputs:
+      subject: "Login trouble on the mobile app"
+    stubs:
+      - task: log
+        where: >-
+          inputs.message == "routing 'Login trouble on the mobile app' to the login queue"
+        returns: {}
+    expect:
+      ran: [clean, strip_prefix, route, announce]
+      outputs:
+        subject: "Login trouble on the mobile app"
+        routing_key: login

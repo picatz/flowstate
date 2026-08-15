@@ -503,10 +503,23 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	reason, _ := cmd.Flags().GetString("reason")
 
-	started, err := newWorkflowServiceClient(serverFlagsOf(cmd)).Run(cmd.Context(),
+	server := serverFlagsOf(cmd)
+
+	// Built once and used for both the request that starts the run and every
+	// poll of the follow phase below, rather than once per RPC — see
+	// [newFollowClient]. That also moves a misconfigured --credential-source
+	// ahead of the Flowfile being submitted at all: refused here, before
+	// anything has started, instead of surfacing from the transport on the
+	// first request the same as any other refusal.
+	client, err := newFollowClient(server)
+	if err != nil {
+		return err
+	}
+
+	started, err := client.Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
 	if err != nil {
-		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), serverFlagsOf(cmd), err)
+		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), server, err)
 	}
 
 	workflowID := started.Msg.GetWorkflowId()
@@ -541,7 +554,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	}
 
 	return watchRun(cmd.Context(), surface, format,
-		clientPoller{workflowID: workflowID, server: serverFlagsOf(cmd), spec: workflow, reveal: reveal},
+		clientPoller{workflowID: workflowID, server: server, client: client, spec: workflow, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
 

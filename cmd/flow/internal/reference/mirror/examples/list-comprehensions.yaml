@@ -1,0 +1,78 @@
+edition: v2026.3
+name: list-comprehensions
+description: >-
+  Classifies a batch of health checks as healthy, degraded, or down by asking
+  the list itself — `all`, `exists`, `filter`, `map` — instead of a `for_each`
+  that counts failures by hand.
+
+# `all` and `exists` answer "is every element like this" and "is any element
+# like this" in one read, which is what a healthy/degraded/down classification
+# actually is: nobody wants a loop with a counter to find out whether a
+# counter was needed at all. `filter` then `map` narrows to what matters and
+# reshapes it in one pass, read left to right: keep the failing checks, then
+# take just their host names.
+#
+#   flow run local examples/list-comprehensions/workflow.yaml \
+#     --input 'checks=[{"host":"web-1","healthy":true},{"host":"web-2","healthy":false}]'
+
+inputs:
+  checks:
+    type: list
+    required: true
+    example:
+      - host: web-1
+        healthy: true
+      - host: web-2
+        healthy: false
+    description: one entry per host, each a mapping with `host` and `healthy`
+
+steps:
+  # Which hosts failed, sorted so the report reads the same way twice in a
+  # row regardless of the order checks came back in — `filter` keeps only the
+  # failing entries, `map` reduces each to the one field the report needs,
+  # `sort` (the lists library, not a macro) orders the result.
+  - id: failing
+    value: ${inputs.checks.filter(c, !c.healthy).map(c, c.host).sort()}
+
+  # One classification from two questions the list answers about itself:
+  # every check passing is healthy, no check passing is down, anything
+  # between is degraded. Named once, so `report` below dispatches on a
+  # value instead of repeating both comprehensions in a condition.
+  - id: status
+    value: >-
+      ${inputs.checks.all(c, c.healthy)
+          ? "healthy"
+          : (inputs.checks.exists(c, c.healthy) ? "degraded" : "down")}
+
+  - id: report
+    switch:
+      value: ${steps.status.value}
+      cases:
+        - case: healthy
+          steps:
+            - id: all_good
+              log:
+                message: every host passed its health check
+
+        - case: degraded
+          steps:
+            - id: some_down
+              log:
+                message: >-
+                  ${"%d host(s) failing: %s".format([
+                      steps.failing.value.size(),
+                      steps.failing.value.join(", ")])}
+      default:
+        steps:
+          - id: outage
+            log:
+              level: warn
+              message: every host failed its health check
+
+outputs:
+  status:
+    value: ${steps.status.value}
+    description: healthy, degraded, or down
+  failing_hosts:
+    value: ${steps.failing.value}
+    description: the hosts that failed, sorted, empty when status is healthy
