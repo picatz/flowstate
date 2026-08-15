@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -1168,4 +1171,150 @@ func TestTheGetToolRevealsWithTheServerFlag(t *testing.T) {
 	require.False(t, result.IsError)
 
 	require.Contains(t, result.Content[0].(*mcp.TextContent).Text, secret)
+}
+
+// remoteOnlyTaskName is a task name that never appears in this binary's own
+// registry. It stands in for a plugin task a real deployment might have and
+// this build has never heard of — the fact TestTheGetCatalogToolDispatchesToAnAddressedDeployment
+// needs in order to tell "the deployment answered" from "the in-process
+// server answered" apart, rather than merely that a tool call returned
+// something.
+const remoteOnlyTaskName = "flowstate-test-remote-only-plugin-task"
+
+// connectMCPWithDeps is [connectMCP] with the full [flowmcp.Deps] under the
+// caller's control, for TestTheGetCatalogToolDispatchesToAnAddressedDeployment
+// and its unreachable-deployment sibling — both need Deps.RemoteCatalogAddress
+// set to something [connectMCP] and [connectRemoteMCP] have no way to pass.
+func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flowstatev1connect.WorkflowServiceClient, deps flowmcp.Deps) *mcp.ClientSession {
+	t.Helper()
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
+	flowmcp.AddCapabilities(srv, server.New(nil), remote, deps, mcpExtraToolsFor(posture)...)
+
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	go func() { _ = srv.Run(t.Context(), serverTransport) }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil)
+	session, err := client.Connect(t.Context(), clientTransport, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	return session
+}
+
+// TestTheGetCatalogToolDispatchesToAnAddressedDeployment is the joint #439
+// fixes: an in-process answer and a remote answer that each work standing
+// alone is exactly what shipped the defect, so what has to be proved is that
+// configuring an address changes *which* catalog comes back, distinguishably.
+//
+// The in-process server's own catalog is asserted not to contain
+// remoteOnlyTaskName first, so the assertion that the tool's answer does
+// contain it is not vacuously true of any non-empty catalog.
+func TestTheGetCatalogToolDispatchesToAnAddressedDeployment(t *testing.T) {
+	local := server.New(nil)
+	localResp, err := local.GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
+	require.NoError(t, err)
+	for _, task := range localResp.Msg.GetCatalog().GetTasks() {
+		require.NotEqual(t, remoteOnlyTaskName, task.GetName(),
+			"the fixture task name collides with this binary's own registry; pick another")
+	}
+
+	fake := &fakeWorkflowService{
+		getCatalogResponse: &v1.GetCatalogResponse{
+			Catalog: &v1.TaskCatalog{
+				Tasks: []*v1.TaskDescription{{Name: remoteOnlyTaskName, Summary: "a plugin task only the deployment has"}},
+			},
+		},
+	}
+	address := serveFake(t, fake)
+
+	posture := defaultLocalRunPosture()
+	session := connectMCPWithDeps(t, posture, func() flowstatev1connect.WorkflowServiceClient {
+		return newWorkflowServiceClient(serverFlags{address: address})
+	}, flowmcp.Deps{
+		Redact:               func(r *v1.GetResponse) *v1.GetResponse { return r },
+		RemoteCatalogAddress: address,
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      flowmcp.ToolName("GetCatalog"),
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "the tool reported an error: %v", result.Content)
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	require.Contains(t, text, remoteOnlyTaskName,
+		"the deployment's catalog was configured with --address but the tool answered with "+
+			"something else, which is #439's regression: %s", text)
+	require.NotNil(t, fake.gotGetCatalog, "the addressed deployment was never asked for its catalog")
+}
+
+// TestTheGetCatalogToolRefusesAnUnreachableDeployment is the fail-closed half
+// of the same decision: when --address names a deployment and that
+// deployment cannot be reached, the tool must refuse rather than silently
+// falling back to this binary's own build — a silent fallback here would be
+// the identical defect one level up, an answer that looks authoritative and
+// is not.
+func TestTheGetCatalogToolRefusesAnUnreachableDeployment(t *testing.T) {
+	// Stood up and immediately closed: an address nothing answers at, without
+	// depending on any particular port being free or reserved.
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	address := dead.URL
+	dead.Close()
+
+	posture := defaultLocalRunPosture()
+	session := connectMCPWithDeps(t, posture, func() flowstatev1connect.WorkflowServiceClient {
+		return newWorkflowServiceClient(serverFlags{address: address})
+	}, flowmcp.Deps{
+		Redact:               func(r *v1.GetResponse) *v1.GetResponse { return r },
+		RemoteCatalogAddress: address,
+	})
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      flowmcp.ToolName("GetCatalog"),
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError,
+		"an unreachable deployment must be refused, not answered from this binary's own build")
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.Contains(t, text, address,
+		"the refusal does not name which deployment was asked: %s", text)
+}
+
+// TestRemoteCatalogAddressForRespectsExplicitAddress pins the decision
+// [remoteCatalogAddressFor] makes: local by default (nothing else stood up
+// works, per CLAUDE.md's "a capability is not done until it is reachable"),
+// remote only once an operator has named a deployment either way --address
+// can be named.
+func TestRemoteCatalogAddressForRespectsExplicitAddress(t *testing.T) {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "mcp"}
+		addServerFlags(cmd)
+		return cmd
+	}
+
+	t.Run("default", func(t *testing.T) {
+		cmd := newCmd()
+		require.NoError(t, cmd.ParseFlags(nil))
+		assert.Equal(t, "", remoteCatalogAddressFor(cmd, serverFlagsOf(cmd)),
+			"with nothing configured, GetCatalog must answer locally")
+	})
+
+	t.Run("explicit flag", func(t *testing.T) {
+		cmd := newCmd()
+		require.NoError(t, cmd.ParseFlags([]string{"--address", "deploy.example:9233"}))
+		assert.Equal(t, "deploy.example:9233", remoteCatalogAddressFor(cmd, serverFlagsOf(cmd)),
+			"an explicit --address must be dispatched to")
+	})
+
+	t.Run("environment variable", func(t *testing.T) {
+		t.Setenv("FLOWSTATE_ADDRESS", "deploy.example:9233")
+		cmd := newCmd()
+		require.NoError(t, cmd.ParseFlags(nil))
+		assert.Equal(t, "deploy.example:9233", remoteCatalogAddressFor(cmd, serverFlagsOf(cmd)),
+			"FLOWSTATE_ADDRESS names a deployment exactly as --address does")
+	})
 }

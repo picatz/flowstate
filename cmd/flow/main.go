@@ -2021,8 +2021,11 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 		Short: "Serve Flowstate to an AI agent over the Model Context Protocol",
 		Long: "Serve every workflow-service RPC as an MCP tool over stdin and stdout, " +
 			"with input schemas derived from the same protobuf schema the API speaks. " +
-			"Validation, the task catalog and local execution answer in this process; " +
-			"the run-lifecycle tools call the configured server.\n\n" +
+			"Validation, compilation and local execution always answer in this process; " +
+			"the run-lifecycle tools call the configured server. The task catalog answers " +
+			"in this process too, unless --address (or FLOWSTATE_ADDRESS) explicitly names " +
+			"a deployment, in which case it answers from that deployment instead, and " +
+			"refuses rather than falling back here if it cannot be reached.\n\n" +
 			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
 			"does. What such a run may reach is decided by the flags this process is started " +
 			"with and by nothing a client sends: with no flags, egress is denied and no secret " +

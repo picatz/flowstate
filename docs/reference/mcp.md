@@ -66,9 +66,7 @@ The registry is the single source of truth for capability, and until this existe
 
 `TaskCatalog`'s own comment anticipated this RPC, and returning that message unchanged is the point: an editor, an agent, a documentation generator and `flow tasks --output json` all read one shape.
 
-On this surface the answer is this binary's own build (its task registry and any plugins this process started), not the deployment --address points at; a deployment with other plugins or another version may differ.
-
-Answers locally, in this process. No server and no Temporal needed.
+Without --address (and without FLOWSTATE_ADDRESS) this answers locally: this binary's own build (its task registry and any plugins this process started), no server or Temporal needed. With --address or FLOWSTATE_ADDRESS explicitly naming a deployment, this dispatches to that deployment's own GetCatalog instead — the deployment is what will actually run a submitted workflow, and may have plugins or a version this binary does not. If that deployment cannot be reached, the call is refused rather than silently answering from this binary's build.
 
 ## `flowstate_run`
 
