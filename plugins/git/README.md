@@ -88,11 +88,17 @@ difference is this one field being set - see `ls-remote-private.yaml`.
 accepts an anonymous push over HTTPS, so writing always needs a credential,
 whichever repository it targets - see `commit-push.yaml`.
 
-A reference's *name* is ignored; this plugin resolves the one credential its
-own environment names:
+A reference selects a credential by its namespace and name. Both segments use
+uppercase letters, digits, and underscores (a hyphen becomes an underscore),
+and the namespace's encoded length preserves the boundary between them. The
+default namespace has length zero and no namespace segment:
 
 ```
-GIT_SECRET_<NAME>=<https-password>
+GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME>=<https-password>
+# for ${secret('git:deploy-token')}:
+GIT_SECRET_0__DEPLOY_TOKEN=<https-password>
+# for namespace team-a and name deploy-token:
+GIT_SECRET_6_TEAM_A_DEPLOY_TOKEN=<https-password>
 ```
 
 Used, unconditionally, as the *password* half of HTTP Basic auth

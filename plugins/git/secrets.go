@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -44,15 +45,15 @@ func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse
 		return sdk.SecretResponse{}, sdk.InvalidInput("secret name is empty")
 	}
 
-	variable := secretEnvPrefix
 	namespace, err := envSegment(req.Namespace)
 	if err != nil {
 		return sdk.SecretResponse{}, sdk.InvalidInput("invalid secret namespace %q: %v", req.Namespace, err)
 	}
-	if namespace != "" {
-		variable += namespace + "_"
-	}
-	variable += name
+	// The namespace length is part of the key even for the default namespace.
+	// A delimiter alone is ambiguous because '_' can occur in either encoded
+	// segment (it represents '-'). The length makes the segment boundary
+	// explicit, so no namespace/name pair can alias another pair.
+	variable := secretEnvPrefix + strconv.Itoa(len(namespace)) + "_" + namespace + "_" + name
 
 	value, ok := os.LookupEnv(variable)
 	if !ok {
