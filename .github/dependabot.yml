@@ -29,6 +29,31 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # This one module fails the whole run, which is the reason it is worth a
+      # dozen lines of explanation rather than a silent entry.
+      #
+      # `charmtone` is a nested module: it lives at
+      # github.com/charmbracelet/x/exp/charmtone inside the
+      # github.com/charmbracelet/x repository but publishes its own versions,
+      # and we depend on it at a pseudo-version. Dependabot's Go updater
+      # resolves it to the parent module instead, asks for
+      # github.com/charmbracelet/x@v0.1.0, and reports that the version it
+      # picked "does not contain package github.com/charmbracelet/x/exp/charmtone"
+      # — which is true, and not a fact about this repository.
+      #
+      # An updater error is not scoped to the dependency that caused it. The
+      # run aborts, so the grouped bump above never opens, and the scheduled
+      # updates this file exists to produce stop arriving with nothing saying
+      # so. That is the failure mode described at the top of this file, with
+      # the alarm disabled instead of the alert missing.
+      #
+      # So the module is skipped and everything else keeps flowing. The cost is
+      # real and worth naming: charmtone no longer gets bumped automatically,
+      # so it needs updating by hand — `go get -u
+      # github.com/charmbracelet/x/exp/charmtone` — until upstream tags it in a
+      # way the updater can resolve, at which point this entry should go.
+      - dependency-name: github.com/charmbracelet/x/exp/charmtone
 
   # The workflows themselves, which are code that runs with a token and is
   # currently referenced by moving tags. Keeping this here is what makes pinning
