@@ -7,14 +7,18 @@
 // It computes the files changed against the merge-base with origin/main,
 // maps them to Go packages, expands to every package whose build or tests
 // can see a changed one, and runs the always tier: build, vet and bounded
-// -race tests for the affected set, plus gofmt on the changed files. The
-// conditional legs fire only when their inputs changed: the buf trio and the
-// descriptorset pin on proto/, the docs mirror and reference drift checks on
-// docs/DSL.md and the registry/cobra/MCP surfaces, example fix and coverage
-// checks on examples/, and the -cpu=1 ordering line when the flowtest
-// package is affected. Every leg prints one line saying it ran or why it was
-// skipped. PR CI remains the full gate; `make check` remains the full local
-// rehearsal. See CLAUDE.md's gate section.
+// -race tests for the affected set, plus gofmt on the changed files. A
+// change under examples/ additionally seeds the affected set with whichever
+// packages' test files actually read example workflows off disk at runtime
+// (see exampleDataDepPackages) — a data dependency the import graph alone
+// cannot see (#589). The conditional legs fire only when their inputs
+// changed: the buf trio and the descriptorset pin on proto/, the docs mirror
+// and reference drift checks on docs/DSL.md and the registry/cobra/MCP
+// surfaces, example fix and coverage checks on examples/, and the -cpu=1
+// ordering line when the flowtest package is affected. Every leg prints one
+// line saying it ran or why it was skipped. PR CI remains the full gate;
+// `make check` remains the full local rehearsal. See CLAUDE.md's gate
+// section.
 package main
 
 import (
@@ -25,6 +29,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -76,6 +81,7 @@ func run() error {
 	}
 
 	var affected []string
+	var exampleDataDeps []string
 	if p.moduleWide {
 		for _, m := range pkgs {
 			affected = append(affected, m.ImportPath)
@@ -85,6 +91,20 @@ func run() error {
 		for _, ip := range resolveDirs(p.fileDirs, byDir) {
 			changedSet[ip] = true
 		}
+
+		// A change under examples/ is a data dependency the import graph
+		// is blind to: several packages read example workflows off disk
+		// with os.ReadFile at test time rather than importing them (#589).
+		// Seed the changed set with whichever packages' test files
+		// actually reach into examples/, so affectedPackages' existing
+		// test-import expansion carries them the rest of the way.
+		if p.examples {
+			exampleDataDeps = exampleDataDepPackages(readTestSources(pkgs))
+			for _, ip := range exampleDataDeps {
+				changedSet[ip] = true
+			}
+		}
+
 		affected = affectedPackages(pkgs, changedSet)
 	}
 
@@ -111,6 +131,10 @@ func run() error {
 			commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-race", "-timeout", "900s", "./..."))
 	} else {
 		why := fmt.Sprintf("%d affected package(s)", len(affected))
+		if len(exampleDataDeps) > 0 {
+			why += fmt.Sprintf(" (%d via examples/ data dependency, not the import graph: %s)",
+				len(exampleDataDeps), strings.Join(trimModulePrefix(exampleDataDeps), ", "))
+		}
 		g.leg("vet", why, command("go", append([]string{"vet"}, affected...)...))
 		g.leg("test", why,
 			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", append([]string{"test", "-race", "-timeout", "300s"}, affected...)...))
@@ -204,9 +228,19 @@ func run() error {
 		g.skip("appearance", "no changes to styled output, help text, or the current edition")
 	}
 
-	// Plugin modules are separate Go modules this gate does not walk.
-	if len(p.plugins) > 0 {
-		g.skip("plugins", fmt.Sprintf("%s changed, but plugin modules are outside this gate; run `make test-plugins`", strings.Join(p.plugins, ", ")))
+	// Plugin modules are separate Go modules this gate does not walk. A
+	// change under examples/plugins/<name>/ is the same #589 data
+	// dependency one module further out: that plugin's own
+	// reachable_test.go reads its shipped example with os.ReadFile, so
+	// folded in here too when the name matches a real plugin module —
+	// distinguished from an ordinary plugins/ file change in the message,
+	// per the same "say why" rule the affected-set notice above follows.
+	pluginNotices := pluginSkipNotices(p, func(mod string) bool {
+		_, err := os.Stat(mod + "/go.mod")
+		return err == nil
+	})
+	if len(pluginNotices) > 0 {
+		g.skip("plugins", fmt.Sprintf("%s changed, but plugin modules are outside this gate; run `make test-plugins`", strings.Join(pluginNotices, ", ")))
 	}
 
 	return g.summary()
@@ -268,6 +302,47 @@ func goList() ([]pkgMeta, error) {
 		pkgs = append(pkgs, m)
 	}
 	return pkgs, nil
+}
+
+// readTestSources concatenates every "*_test.go" file's contents per
+// package directory, keyed by import path, for exampleDataDepPackages to
+// scan. A package with no test files is simply absent from the result; a
+// directory this run cannot read (deleted mid-diff) is skipped rather than
+// failing the whole gate, the same tolerance gofmtLeg gives a deleted file.
+func readTestSources(pkgs []pkgMeta) map[string][]byte {
+	out := make(map[string][]byte, len(pkgs))
+	for _, m := range pkgs {
+		entries, err := os.ReadDir(m.Dir)
+		if err != nil {
+			continue
+		}
+		var buf bytes.Buffer
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(m.Dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			buf.Write(data)
+		}
+		if buf.Len() > 0 {
+			out[m.ImportPath] = buf.Bytes()
+		}
+	}
+	return out
+}
+
+// trimModulePrefix shortens this module's import paths for a println,
+// consistent with how CLAUDE.md and this repository's own docs refer to
+// packages by their repo-relative path rather than their full import path.
+func trimModulePrefix(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = strings.TrimPrefix(p, modulePath+"/")
+	}
+	return out
 }
 
 // repoRelDir converts an absolute package directory to a repo-relative slash
