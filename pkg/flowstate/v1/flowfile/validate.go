@@ -2619,22 +2619,42 @@ func unknownTriggerKindLiteral(stepID, inputName, literal string) Diagnostic {
 
 // unknownStepOutput reports a reference to an output a step does not produce.
 //
-// Silent unless it is sure, which is most of the time and deliberately so. It answers
-// only for a step running a *task* whose outputs are declared as a message, which is
-// where the set is known in full — every other shape produces names this cannot
-// enumerate:
+// Silent unless it is sure, which is most of the time and deliberately so. Certainty
+// comes from one of two places, and both are covered:
+//
+//   - a step running a *task* whose outputs are declared as a message, where the set
+//     is known in full from the task descriptor, or a wait whose `outputs:` shapes
+//     them the same way;
+//   - a step whose *top-level* name set is fixed by the grammar rather than by a task,
+//     a sender, or an author's own shaping — a `value:`, a `switch:`, a `for_each`, a
+//     `call`, a `parallel`, and a loop's own `results`/`state` — which [v1.OutputNames]
+//     answers with the identical certainty, for the identical reason: none of those
+//     consult a registry an author's editor may not have loaded, or a scope only the
+//     task itself evaluates. "Top-level" matters: what a `for_each`'s `results`
+//     *contains* is not knowable from the file, but `ref.Output` never asks — it names
+//     one segment past `steps.<id>.` (see [stepRef]), and that segment is exactly what
+//     these kinds fix.
+//
+// Every other shape produces names this cannot enumerate:
 //
 //   - `http` with an `outputs:` input replaces its declared outputs with names the
 //     author chose, and the whole point of that input is that they are not fixed;
-//   - a `for_each` reports `results`, a `parallel` merges its branches, and a
-//     `wait_for_signal` carries whatever a sender sent — none of them a task, and each
-//     wanting knowledge this does not have yet;
-//   - a plugin may decline to describe its outputs at all.
+//   - an unshaped `wait_for_signal:` carries whatever a sender sent — and although its
+//     top-level names (`timed_out`, `payload`, `sender`) are just as fixed by the
+//     grammar as a loop's, checking them here was tried and reverted: it correctly
+//     reports `${steps.approval.approved}` as unknown, and `TestWaitOutputsAreReferenceable`
+//     and `TestValidateAcceptsWaits` pin that exact shape as legal. Reconciling the two
+//     is a separate investigation, so this one stays silent, inheriting the boundary
+//     rather than re-deciding it;
+//   - a plugin may decline to describe its outputs at all, or shape with a computed
+//     expression this cannot read statically.
 //
-// A false diagnostic is worse than a missing one, so every one of those is silence. The
-// case this does cover is the one that is never right: a step whose task declares a
-// fixed set, referenced by a name outside it — which `log`, declaring none, makes total
-// rather than occasional.
+// A false diagnostic is worse than a missing one, so every one of those stays silence —
+// and [v1.OutputNames] agrees: it answers those with an entry whose Name is empty
+// rather than a name, which [certainNames] reads as "nothing to check" for exactly the
+// same reason this function would otherwise have to. The case this does cover is the
+// one that is never right: a step whose kind declares a fixed set, referenced by a name
+// outside it — which `log`, declaring none, makes total rather than occasional.
 func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (Diagnostic, bool) {
 	if ref.Output == "" {
 		// The whole outputs mapping. Legal for any step, including one with nothing
@@ -2644,14 +2664,18 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 
 	node := nodeWithID(ref.ID, wf)
 
-	// A loop's outputs are `results` and, when it carries state, `state`. Its `as:`
-	// name binds *inside* the loop only — the body, `until:` and `update:` — so from
-	// outside, a reference to `steps.<loop>.<the as: name>` is naming the bound value
-	// by a name it does not have out here, which is the single most likely loop-output
-	// mistake. That one is named and pointed at `state`; every other reference to a
-	// loop's outputs is left unchecked, because a loop's output set is not knowable in
-	// full (a body step may produce anything, surfaced through `results`) — the same
-	// latitude a `for_each` reference gets.
+	// A loop's outputs are `results` and, when it carries state, `state` — fixed the
+	// moment the loop is written (`state` appears exactly when `state:` is set), the
+	// same certainty [v1.OutputNames] gives every other grammar-fixed kind below. Its
+	// `as:` name binds *inside* the loop only — the body, `until:` and `update:` — so
+	// from outside, a reference to `steps.<loop>.<the as: name>` is naming the bound
+	// value by a name it does not have out here, the single most likely loop-output
+	// mistake, and it earns its own message pointed at `state` rather than the generic
+	// "did you mean" the fallthrough below would give it. What this does *not* reach is
+	// one level deeper: a body step's own outputs, surfaced through `results`, are not
+	// knowable in full (a body step may produce anything) — the same latitude a
+	// `for_each`'s `results` gets below, and neither loop kind's certainty reaches past
+	// its own top-level name.
 	if loop := node.GetLoop(); loop != nil {
 		if state := loop.GetState(); state != "" && ref.Output == state {
 			return Diagnostic{
@@ -2662,7 +2686,39 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 				Code: v1.DiagnosticCodeUnresolvedReference,
 			}, true
 		}
-		return Diagnostic{}, false
+
+		return certainStepOutput(stepID, inputName, "loop", ref, certainNames(node),
+			fmt.Sprintf("a loop step's own id exposes nothing — its outputs are not read under `%s.%s.`", v1.StepsRoot, ref.ID))
+	}
+
+	// A switch, a for_each, a call, and a parallel all answer [v1.OutputNames] with the
+	// same certainty a `value:` step's output has below: none of them consult a
+	// registry, a sender, or an authored expression to decide what they expose, so the
+	// set is fixed the instant the step is written.
+	//
+	// Two of the four can be certain and *empty* at once, for two different reasons a
+	// reader should not have to guess between, which is why each names its own case
+	// rather than sharing [certainStepOutput]'s generic wording:
+	//
+	//   - a parallel's branches merge into the *enclosing* scope, so nothing is ever
+	//     reachable under the parallel step's own id — structural, true of every
+	//     parallel there is or will be;
+	//   - a call whose callee declares no `outputs:` produces nothing this run, the
+	//     same standing `log`'s empty descriptor has below — true of *this* callee,
+	//     and would read differently for one that declared even one.
+	switch node.GetKind().(type) {
+	case *v1.Node_Switch:
+		return certainStepOutput(stepID, inputName, "switch", ref, certainNames(node),
+			"a switch step's own id exposes nothing")
+	case *v1.Node_ForEach:
+		return certainStepOutput(stepID, inputName, "for_each", ref, certainNames(node),
+			"a for_each step's own id exposes nothing")
+	case *v1.Node_Call:
+		return certainStepOutput(stepID, inputName, "call", ref, certainNames(node),
+			"the called workflow declares no outputs")
+	case *v1.Node_Parallel:
+		return certainStepOutput(stepID, inputName, "parallel", ref, certainNames(node),
+			fmt.Sprintf("a parallel step's own id exposes nothing — its branches merge into the enclosing scope, not under `%s.%s.`", v1.StepsRoot, ref.ID))
 	}
 
 	// A `value:` answers for its outputs exactly, and is the only kind that can
@@ -2714,10 +2770,19 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	// it quietly takes the other arm. The shaped set is written in this file and
 	// knowable in full, so the diagnostic cannot be false.
 	//
-	// A wait that does *not* shape is left unchecked, as it always has been. Its
-	// output set is knowable too, but reporting it is a separate change with its
-	// own false-diagnostic surface (a `payload` key is whatever a sender sent),
-	// and this check exists for the names shaping removed.
+	// A wait that does *not* shape is left unchecked, as it always has been. This
+	// was tried during this change: [v1.OutputNames] answers an unshaped wait with
+	// the same top-level certainty a loop's `results`/`state` gets below
+	// (`timed_out`, `payload`, `sender`, fixed by the grammar), and reading it here
+	// reports `${steps.approval.approved}` as unknown, which is correct under
+	// [PayloadOutput]'s current rooting — a bare name outside those three never
+	// resolves. But `TestWaitOutputsAreReferenceable` and `TestValidateAcceptsWaits`
+	// pin the opposite: that exact reference, and others like it, must stay silent.
+	// Reconciling that is a separate change with its own investigation (do those
+	// tests encode a real exception, or are they simply stale against
+	// [PayloadOutput]'s rooting?), so this stays exactly as narrow as it was before
+	// this file started reading [v1.OutputNames] — silence here is inherited, not
+	// re-decided.
 	if shaped := node.GetWait().GetSignal().GetOutputs(); len(shaped) > 0 {
 		if _, produced := shaped[ref.Output]; produced {
 			return Diagnostic{}, false
@@ -2822,6 +2887,62 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	return Diagnostic{
 		Step: stepID, Field: inputName, Value: ref.Output, Message: message,
 		Code: v1.DiagnosticCodeUnresolvedReference,
+	}, true
+}
+
+// certainNames narrows [v1.OutputNames] to the names it is sure of, for a node kind
+// whose whole answer is fixed by the grammar.
+//
+// [v1.NamedOutput.Name] is empty in two cases OutputNames does not distinguish by
+// return value alone: it is not certain at all (an unregistered task, a shaping
+// expression it cannot read statically), or it is certain and the answer is *zero*
+// names (a call whose callee declares no `outputs:`, the same standing `log`'s empty
+// descriptor has). Filtering on Name here treats both alike — an empty result — which
+// is safe for every caller in this file: none of the five kinds below ever has an
+// uncertain arm in [OutputNames]'s switch, so an empty Name reaching here is always
+// the second case, never the first. A node kind added to that switch without also
+// being added here is the one way this stops being true, which is exactly what
+// [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
+func certainNames(node *v1.Node) []string {
+	entries, _ := v1.OutputNames(node, nil)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Name != "" {
+			names = append(names, e.Name)
+		}
+	}
+	return names
+}
+
+// certainStepOutput reports a reference outside a fixed output set — the shared
+// message for every node kind whose answer [v1.OutputNames] gives with certainty and
+// this file has no kind-specific wording for. kind names the step's flavor for the
+// message ("switch", "for_each", "call", "parallel", "loop"); produced is that kind's
+// exact name set. emptyMessage is used verbatim when produced is empty, because "why"
+// differs by kind (a parallel's branches merge elsewhere; a call's callee simply
+// declared none) and a caller who wrote the specific reason should not have it
+// discarded for a generic one.
+func certainStepOutput(stepID, inputName, kind string, ref stepRef, produced []string, emptyMessage string) (Diagnostic, bool) {
+	if slices.Contains(produced, ref.Output) {
+		return Diagnostic{}, false
+	}
+
+	message := fmt.Sprintf("step %q has no output %q", ref.ID, ref.Output)
+	switch {
+	case len(produced) == 0:
+		message += "; " + emptyMessage
+	default:
+		if suggestion, ok := nearest.Name(ref.Output, produced); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else {
+			message += fmt.Sprintf("; a %s step produces %s", kind, strings.Join(produced, ", "))
+		}
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: ref.Output,
+		Message: message,
+		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}, true
 }
 

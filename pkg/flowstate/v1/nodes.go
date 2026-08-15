@@ -423,6 +423,15 @@ func listElements(val ref.Val) ([]*Value, error) {
 // happens to also carry.
 const LoopResultsField = "results"
 
+// LoopStateField is the name a [Loop] reports its final carried state under,
+// when it carries one — `${steps.<id>.state}`.
+//
+// A constant for the reason [LoopResultsField] is one: [LoopStateOutputs] and
+// [LoopStateOutputsHonest] write it and [OutputNames] describes it, and a name
+// spelled at each site independently is a name that eventually differs in one
+// of them.
+const LoopStateField = "state"
+
 // LoopOutputs shapes a loop's per-iteration results into the loop's own outputs.
 //
 // The loop reports a `results` list, one element per iteration, each a map of body

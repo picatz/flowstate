@@ -16,8 +16,16 @@ type environmentVariable struct {
 	// purpose is what setting it does.
 	purpose string
 
-	// read is where the process reads it, as a package path or file — so a reader
-	// who doubts the sentence can go and check it.
+	// read is where the process reads it — the files calling os.Getenv or
+	// os.LookupEnv for this name, so a reader who doubts the sentence can go and
+	// check it.
+	//
+	// Read sites, not declaration sites, and the distinction is not pedantic:
+	// the five FLOWSTATE_PLUGIN_* entries pointed at the package declaring their
+	// names, which reads none of them, so anyone who followed the column found
+	// nothing and had no way to tell whether the document or their reading was
+	// wrong. TestEveryDocumentedReadLocationIsWhereItIsRead now compares this
+	// against the tree in both directions.
 	read string
 
 	// family marks an entry that stands for a *set* of variables rather than one
@@ -59,13 +67,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
-			read:    "cmd/flow/client.go, cmd/flow/main.go",
+			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
 			value:   "unset",
 			purpose: "Permit the `http` task to reach loopback addresses. Ignored while an `--egress-policy` file is in force: a policy that wants loopback says `allow_loopback: true`.",
-			read:    "pkg/flowstate/v1/eval_task_library.go",
+			read:    "pkg/flowstate/v1/eval_task_library.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_AUDIENCE",
@@ -77,7 +85,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_AUTH_POLICY",
 			value:   "unset",
 			purpose: "Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_BACKGROUND",
@@ -137,7 +145,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_IDENTITY_KEY",
 			value:   "unset",
 			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
@@ -167,31 +175,31 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_PLUGIN_HOST_FD",
 			value:   "unset",
 			purpose: "Handshake: the descriptor a plugin watches to learn its host has gone. Set by the host on the child process; never configured by an operator.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_MAGIC_COOKIE",
 			value:   "unset",
 			purpose: "Handshake: refuses to serve a plugin protocol to a process that did not mean to launch one. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_PROTOCOL_VERSIONS",
 			value:   "unset",
 			purpose: "Handshake: the protocol versions the host offers. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_SOCKET",
 			value:   "unset",
 			purpose: "Handshake: the socket path a plugin serves on. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_PLUGIN_TOKEN",
 			value:   "unset",
 			purpose: "Handshake: the per-launch token a plugin authenticates its host with. Set by the host on the child process.",
-			read:    "pkg/flowstate/v1/plugin/internal/protocol",
+			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
@@ -303,10 +311,52 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/internal/ui/ui.go",
 		},
 		{
+			name:    "FLOWSTATE_TLS_ACME_ACCEPT_TOS",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-accept-tos` on `flow server`: set (to anything) to agree to the ACME CA's subscriber agreement. Required to turn ACME automatic-certificate issuance on; not defaulted, because agreeing to a third party's terms on an operator's behalf is not this process's decision to make quietly.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_CACHE",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-cache` on `flow server`: the directory holding the ACME account key and issued certificates. Required when ACME is configured — an in-memory-only cache re-issues on every restart, which burns the CA's rate limit. Created with mode 0700 if missing, and refused if it exists but is readable or writable by anyone but its owner.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_DIRECTORY",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-directory` on `flow server`: the ACME directory URL to request certificates from. Unset means Let's Encrypt's production directory; point this at a staging or private directory (Pebble, an enterprise ACME server) for anything other than a real production certificate.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_EMAIL",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-email` on `flow server`: a contact email the ACME CA may use to warn about a problem with an issued certificate. Optional.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_ACME_HOSTS",
+			value:   "unset",
+			purpose: "Default for `--tls-acme-hosts` on `flow server`: comma-separated public DNS host(s) to obtain a certificate for automatically via ACME's TLS-ALPN-01 challenge. Required to turn ACME on, and the whole of what a certificate may be obtained for — refused empty rather than defaulting to issuing for whatever SNI a caller sends. Mutually exclusive with the explicit certificate flags and `--tls-terminated-upstream`, and refused together with `--internal-listen`.",
+			read:    "cmd/flow/acme.go",
+		},
+		{
 			name:    "FLOWSTATE_TLS_CERT_FILE",
 			value:   "unset",
 			purpose: "Default for `--tls-cert-file` on `flow server`: a PEM certificate (or chain) for the public listener. Unset serves plain HTTP, refused unless the listen address is loopback. Must be given with `FLOWSTATE_TLS_KEY_FILE`.",
 			read:    "cmd/flow/tls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CLIENT_AUTH",
+			value:   "off",
+			purpose: "Default for `--tls-client-auth` on `flow server`: `off` or `require`. `require` makes the public listener refuse a handshake with no client certificate, or one that does not chain to a `kind: mtls` issuer entry's `client_ca_file` in `--auth-policy` — there is no separate CA flag. Only these two values are ever offered.",
+			read:    "cmd/flow/mtls.go",
+		},
+		{
+			name:    "FLOWSTATE_TLS_CLIENT_AUTH_IDENTITY",
+			value:   "unset",
+			purpose: "Default for `--tls-client-auth-identity` on `flow server`: set (to anything) to also authenticate the caller from a verified client certificate, through the `kind: mtls` trust policy entry that admitted it. Requires `FLOWSTATE_TLS_CLIENT_AUTH=require`; without it a required certificate is a connection-level fence only and a caller still needs a bearer token.",
+			read:    "cmd/flow/mtls.go",
 		},
 		{
 			name:    "FLOWSTATE_TLS_KEY_FILE",
@@ -348,19 +398,19 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
-			read:    "cmd/flow/telemetry.go",
+			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 			value:   "unset",
 			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
-			read:    "cmd/flow/telemetry.go",
+			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 			value:   "unset",
 			purpose: "The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry.",
-			read:    "cmd/flow/telemetry.go",
+			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_*",

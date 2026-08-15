@@ -69,14 +69,59 @@ type TrustedIssuer struct {
 	// caller. Required.
 	Name string `json:"name" yaml:"name"`
 
-	// Issuer is the exact value a token's "iss" claim must have, and the base
-	// URL used for OpenID Connect discovery unless JWKSURL is set. It must be
-	// an absolute https URL, for example
+	// Kind selects what this entry trusts. "oidc" (the default when empty)
+	// verifies a bearer token against an OpenID Connect / workload-identity-
+	// federation issuer, as every OIDC-only field below describes. "mtls"
+	// instead admits a caller whose client certificate crypto/tls has already
+	// verified against ClientCAFile — see ClientCAFile and SubjectFrom, and
+	// mtls.go's package doc for what a kind: mtls entry may and may not say
+	// about itself.
+	//
+	// A client certificate is another issuer, not a parallel identity system:
+	// a kind: mtls entry is a row in this same list, admits through the same
+	// [Principal], and is subject to the same Namespace/NamespaceClaim
+	// consistency rule as every other entry.
+	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
+
+	// Issuer is, for kind: oidc, the exact value a token's "iss" claim must
+	// have, and the base URL used for OpenID Connect discovery unless JWKSURL
+	// is set. It must be an absolute https URL, for example
 	// "https://token.actions.githubusercontent.com". Required.
 	//
 	// The match is exact: no normalization, no trailing-slash tolerance, no
 	// prefix matching. Copy it from the issuer's discovery document.
+	//
+	// For kind: mtls, Issuer is this deployment's own name for the trusted CA
+	// — recorded as [Principal.Issuer] exactly as an OIDC "iss" claim would be
+	// — never a value read from the certificate: a certificate does not carry
+	// anything Flowstate should call its issuer identifier, and this is the
+	// policy's answer to what to call it instead. Still required, and any
+	// non-empty string is accepted; it is not a URL and is never dereferenced.
 	Issuer string `json:"issuer" yaml:"issuer"`
+
+	// ClientCAFile is the PEM file of CA certificates a kind: mtls entry
+	// trusts to have signed a client's leaf certificate. Required for
+	// kind: mtls; refused on any other kind. Read once at start-up and bounded
+	// in bytes ([maxClientCABytes]), the same way every other file this
+	// package loads is bounded, per CLAUDE.md's "bound anything that consumes
+	// untrusted input" — a certificate pool is not a place to discover an
+	// arbitrarily large file.
+	ClientCAFile string `json:"client_ca_file,omitempty" yaml:"client_ca_file,omitempty"`
+
+	// SubjectFrom names the one SAN field of a client leaf certificate that
+	// becomes [Principal.Subject] for a kind: mtls entry: "uri_san",
+	// "dns_san", or "email_san". Required for kind: mtls, with no default, and
+	// refused on any other kind.
+	//
+	// The certificate's Subject DN is never read for this or for any other
+	// purpose. CN-as-identity is the mistake every mTLS system regrets — a DN
+	// is unstructured, comparable only by convention, and was never designed
+	// to be an authorization key — where a SAN is typed and matches this
+	// package's OIDC subject exactly: one verified string. A URI SAN is the
+	// natural fit for a SPIFFE-issued mesh certificate
+	// ("spiffe://trust-domain/ns/flowstate/sa/runner"), which is why it is
+	// named first.
+	SubjectFrom string `json:"subject_from,omitempty" yaml:"subject_from,omitempty"`
 
 	// Audiences are the audience values Flowstate accepts from this issuer. A
 	// token is rejected unless its "aud" claim contains at least one of them.
@@ -384,10 +429,40 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 // so a claim rule on one of them is always a mistake.
 var timeClaims = []string{"exp", "nbf", "iat"}
 
+// kind returns the effective [TrustedIssuer.Kind], defaulting the unset value
+// to [IssuerKindOIDC] so every other method has one thing to switch on.
+func (t TrustedIssuer) kind() string {
+	if t.Kind == "" {
+		return IssuerKindOIDC
+	}
+	return t.Kind
+}
+
 // validate reports whether a single trusted issuer entry is usable.
 func (t TrustedIssuer) validate() error {
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
+	}
+
+	switch t.kind() {
+	case IssuerKindMTLS:
+		return t.validateMTLS()
+	case IssuerKindOIDC:
+		return t.validateOIDC()
+	default:
+		return fmt.Errorf("kind %q is not supported: use %q (the default) or %q", t.Kind, IssuerKindOIDC, IssuerKindMTLS)
+	}
+}
+
+// validateOIDC checks the fields a kind: oidc entry (the default) uses, and
+// refuses the mTLS-only fields, so a mistyped kind: cannot leave a
+// client_ca_file silently ignored.
+func (t TrustedIssuer) validateOIDC() error {
+	if t.ClientCAFile != "" {
+		return fmt.Errorf("client_ca_file is only meaningful for kind: %s entries", IssuerKindMTLS)
+	}
+	if t.SubjectFrom != "" {
+		return fmt.Errorf("subject_from is only meaningful for kind: %s entries", IssuerKindMTLS)
 	}
 
 	if err := validateIssuerURL(t.Issuer); err != nil {
@@ -414,31 +489,12 @@ func (t TrustedIssuer) validate() error {
 		}
 	}
 
-	for i, rule := range t.Require {
-		switch {
-		case rule.Claim == "":
-			return fmt.Errorf("require[%d]: claim is required", i)
-		case rule.Claim == "iss":
-			return fmt.Errorf("require[%d]: the %q claim is already matched exactly against the issuer", i, rule.Claim)
-		case slices.Contains(timeClaims, rule.Claim):
-			return fmt.Errorf("require[%d]: the %q claim is a timestamp validated by the verifier, not a value to match", i, rule.Claim)
-		case len(rule.AnyOf) == 0:
-			return fmt.Errorf("require[%d]: any_of needs at least one value", i)
-		}
-		for j, value := range rule.AnyOf {
-			if value == "" {
-				return fmt.Errorf("require[%d]: any_of[%d] is empty", i, j)
-			}
-		}
+	if err := t.validateRequire(); err != nil {
+		return err
 	}
 
-	if t.Namespace != "" && t.NamespaceClaim != "" {
-		return fmt.Errorf("namespace and namespace_claim are alternatives: name one tenant for every caller this issuer admits, or one claim to read it from")
-	}
-	if t.Namespace != "" {
-		if err := ValidateNamespace(t.Namespace); err != nil {
-			return fmt.Errorf("namespace: %w", err)
-		}
+	if err := t.validateNamespaceFields(); err != nil {
+		return err
 	}
 
 	if t.MaxTokenAge < 0 {
@@ -451,6 +507,103 @@ func (t TrustedIssuer) validate() error {
 		}
 	}
 
+	return nil
+}
+
+// validateMTLS checks the fields a kind: mtls entry uses, and refuses every
+// field that belongs to a bearer token rather than a certificate — an entry
+// that set one would have it silently ignored otherwise, which is exactly the
+// class of mistake CLAUDE.md's "one value, written down twice" warns about.
+func (t TrustedIssuer) validateMTLS() error {
+	if t.Issuer == "" {
+		return fmt.Errorf("issuer is required: this deployment's own name for the trusted CA, not a value read from the certificate")
+	}
+
+	if t.ClientCAFile == "" {
+		return fmt.Errorf("client_ca_file is required for kind: %s", IssuerKindMTLS)
+	}
+
+	switch t.SubjectFrom {
+	case SubjectFromURISAN, SubjectFromDNSSAN, SubjectFromEmailSAN:
+	case "":
+		return fmt.Errorf("subject_from is required for kind: %s: name which SAN field (%s, %s, or %s) "+
+			"becomes the caller's subject; a certificate's Subject DN is never read",
+			IssuerKindMTLS, SubjectFromURISAN, SubjectFromDNSSAN, SubjectFromEmailSAN)
+	default:
+		return fmt.Errorf("subject_from %q is not supported: use %s, %s, or %s",
+			t.SubjectFrom, SubjectFromURISAN, SubjectFromDNSSAN, SubjectFromEmailSAN)
+	}
+
+	if len(t.Audiences) > 0 {
+		return fmt.Errorf("audiences is not meaningful for kind: %s entries: a client certificate carries no audience claim", IssuerKindMTLS)
+	}
+	if len(t.Algorithms) > 0 {
+		return fmt.Errorf("algorithms is not meaningful for kind: %s entries: the certificate's signature is verified by crypto/tls before this policy is consulted", IssuerKindMTLS)
+	}
+	if t.JWKSURL != "" {
+		return fmt.Errorf("jwks_url is not meaningful for kind: %s entries: there is no key set to discover", IssuerKindMTLS)
+	}
+	if t.MaxTokenAge != 0 {
+		return fmt.Errorf("max_token_age is not meaningful for kind: %s entries: a client certificate carries no issued-at claim to age", IssuerKindMTLS)
+	}
+
+	if err := t.validateRequire(); err != nil {
+		return err
+	}
+
+	if t.NamespaceClaim != "" {
+		// The only claim a kind: mtls [Principal] ever carries is "subject",
+		// so a namespace_claim naming anything else can never resolve — and
+		// naming "subject" itself would make every caller's own identity its
+		// namespace, which is not tenancy. One entry per tenant, with a fixed
+		// Namespace, is the same answer this package already gives an OIDC
+		// claim whose shape does not fit the namespace grammar; see
+		// NamespaceClaim's own doc.
+		return fmt.Errorf("namespace_claim is not supported for kind: %s: a client certificate exposes no claim "+
+			"besides the subject SAN itself, so it cannot name a tenant. Give this entry a fixed namespace, "+
+			"and use one entry per tenant if several must share a CA", IssuerKindMTLS)
+	}
+	if err := t.validateNamespaceFields(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateRequire checks the claim rules common to every kind.
+func (t TrustedIssuer) validateRequire() error {
+	for i, rule := range t.Require {
+		switch {
+		case rule.Claim == "":
+			return fmt.Errorf("require[%d]: claim is required", i)
+		case t.kind() == IssuerKindOIDC && rule.Claim == "iss":
+			return fmt.Errorf("require[%d]: the %q claim is already matched exactly against the issuer", i, rule.Claim)
+		case t.kind() == IssuerKindOIDC && slices.Contains(timeClaims, rule.Claim):
+			return fmt.Errorf("require[%d]: the %q claim is a timestamp validated by the verifier, not a value to match", i, rule.Claim)
+		case len(rule.AnyOf) == 0:
+			return fmt.Errorf("require[%d]: any_of needs at least one value", i)
+		}
+		for j, value := range rule.AnyOf {
+			if value == "" {
+				return fmt.Errorf("require[%d]: any_of[%d] is empty", i, j)
+			}
+		}
+	}
+	return nil
+}
+
+// validateNamespaceFields checks the Namespace/NamespaceClaim pair common to
+// every kind; kind-specific extra rules (such as kind: mtls refusing
+// NamespaceClaim outright) are checked by the caller first.
+func (t TrustedIssuer) validateNamespaceFields() error {
+	if t.Namespace != "" && t.NamespaceClaim != "" {
+		return fmt.Errorf("namespace and namespace_claim are alternatives: name one tenant for every caller this issuer admits, or one claim to read it from")
+	}
+	if t.Namespace != "" {
+		if err := ValidateNamespace(t.Namespace); err != nil {
+			return fmt.Errorf("namespace: %w", err)
+		}
+	}
 	return nil
 }
 

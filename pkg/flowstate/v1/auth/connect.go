@@ -28,9 +28,16 @@ import (
 // unparseable token, an untrusted issuer, and a verifier that was never
 // configured, returns a [connect.CodeUnauthenticated] error. The zero
 // Authenticator rejects everything.
+//
+// A client certificate is consulted only when [WithPeerVerifier] configures
+// one, and only through [PeerVerifier] — never as a second [Verifier], and
+// never read from the request except through the chain crypto/tls has already
+// verified. See mtls.go's package doc for why that is the seam and not a
+// widened [Verifier] signature.
 type Authenticator struct {
-	verifier Verifier
-	observe  func(context.Context, *http.Request, error)
+	verifier     Verifier
+	peerVerifier PeerVerifier
+	observe      func(context.Context, *http.Request, error)
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -49,6 +56,22 @@ func WithFailureObserver(observe func(ctx context.Context, req *http.Request, er
 		if observe != nil {
 			a.observe = observe
 		}
+	}
+}
+
+// WithPeerVerifier registers a [PeerVerifier] consulted for a request whose
+// client certificate crypto/tls has already verified — see
+// [http.Request.TLS.VerifiedChains]. Its absence (the default) means a client
+// certificate, however the listener's tls.Config treated it at the connection
+// level, is never turned into a Principal: mTLS behaves purely as a transport
+// fence, and a caller still needs a bearer token this Authenticator's
+// [Verifier] accepts.
+//
+// A nil PeerVerifier, or a request with no verified chain, is treated as "no
+// certificate was in play" and falls back to the bearer-token path unchanged.
+func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.peerVerifier = p
 	}
 }
 
@@ -80,6 +103,17 @@ func NewAuthenticator(verifier Verifier, opts ...AuthenticatorOption) *Authentic
 // which may name the trust policy's expected audiences or claim values, goes to
 // the [WithFailureObserver] callback instead of to the caller, so an
 // unauthenticated caller cannot probe the configuration.
+//
+// # Client certificates
+//
+// When [WithPeerVerifier] configured one and req carries a verified client
+// certificate chain, that chain — never a raw, unverified certificate — is
+// handed to the [PeerVerifier]. A verification failure there denies the
+// request outright; it never falls back to the bearer token, because a
+// certificate that failed policy is a caller this Authenticator has already
+// formed an opinion about, not a caller with no opinion formed. A request
+// carrying both a verified certificate and a bearer token is accepted only
+// when both verify and agree on the same principal — see [ErrAmbiguousIdentity].
 func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (any, error) {
 	// Substituted here rather than in the constructor so that the zero
 	// Authenticator rejects requests too.
@@ -93,21 +127,65 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 	// the same path as requests with bad ones.
 	rawToken, _ := authn.BearerToken(req)
 
-	principal, err := verifier.Verify(ctx, rawToken)
-	if err == nil && principal.IsZero() {
+	tokenPrincipal, tokenErr := verifier.Verify(ctx, rawToken)
+	if tokenErr == nil && tokenPrincipal.IsZero() {
 		// A Verifier that vouches for nobody has not authenticated anyone,
 		// whatever it returned. Reaching a handler with an identity that reads as
 		// unauthenticated is worse than a rejection.
-		err = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
-	}
-	if err != nil {
-		if a.observe != nil {
-			a.observe(ctx, req, err)
-		}
-		return nil, unauthenticated(err)
+		tokenErr = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
 	}
 
-	return principal, nil
+	// req.TLS.VerifiedChains is set by crypto/tls itself, only once the peer's
+	// certificate has been verified against the listener's ClientCAs — nothing
+	// here re-verifies it or reads req.TLS.PeerCertificates instead. No peer
+	// verifier configured, or no verified chain on this connection, is "no
+	// certificate is in play", and the bearer-token outcome above stands
+	// unchanged — this is what keeps every deployment that never turns mTLS on
+	// seeing no behavior change at all.
+	if a.peerVerifier == nil || req.TLS == nil || len(req.TLS.VerifiedChains) == 0 {
+		if tokenErr != nil {
+			if a.observe != nil {
+				a.observe(ctx, req, tokenErr)
+			}
+			return nil, unauthenticated(tokenErr)
+		}
+		return tokenPrincipal, nil
+	}
+
+	peerPrincipal, peerErr := a.peerVerifier.VerifyPeer(ctx, req.TLS.VerifiedChains)
+	if peerErr == nil && peerPrincipal.IsZero() {
+		peerErr = fmt.Errorf("%w: peer verifier returned no identity", ErrNoToken)
+	}
+	if peerErr != nil {
+		if a.observe != nil {
+			a.observe(ctx, req, peerErr)
+		}
+		return nil, unauthenticated(peerErr)
+	}
+
+	if rawToken != "" {
+		// A bearer token arrived alongside a verified client certificate. Per
+		// CLAUDE.md's "fail closed": an ambiguous identity on a control plane
+		// that mints workload assertions is refused rather than resolved by a
+		// precedence rule, whichever the token or the certificate names an
+		// invalid principal or the two disagree.
+		if tokenErr != nil {
+			if a.observe != nil {
+				a.observe(ctx, req, tokenErr)
+			}
+			return nil, unauthenticated(tokenErr)
+		}
+		if tokenPrincipal.ID() != peerPrincipal.ID() {
+			err := fmt.Errorf("%w: certificate names %q, token names %q",
+				ErrAmbiguousIdentity, peerPrincipal.ID(), tokenPrincipal.ID())
+			if a.observe != nil {
+				a.observe(ctx, req, err)
+			}
+			return nil, unauthenticated(err)
+		}
+	}
+
+	return peerPrincipal, nil
 }
 
 // unauthenticated renders a verification failure as the error a caller sees: the

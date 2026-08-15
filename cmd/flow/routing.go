@@ -61,17 +61,25 @@ import (
 // did not has no such route at all, which is the fail-closed default this file's
 // per-route wrapping exists to keep.
 func serverHandler(
-	logger *slog.Logger, verifier auth.Verifier, broker *auth.Broker,
+	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, broker *auth.Broker,
 	rpc http.Handler, webhooks *server.WebhookReceiver,
 ) http.Handler {
-	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
+	authenticatorOpts := []auth.AuthenticatorOption{
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "rejected unauthenticated request",
 				"procedure", req.URL.Path,
 				"peer", req.RemoteAddr,
 				"reason", auth.PublicReason(err))
 		}),
-	).Authenticate)
+	}
+	// peerVerifier is nil unless --tls-client-auth-identity was given (see
+	// cmd/flow/mtls.go's resolveMTLS): every deployment that never turns mTLS
+	// identity on builds the exact same Authenticator this line always built.
+	if peerVerifier != nil {
+		authenticatorOpts = append(authenticatorOpts, auth.WithPeerVerifier(peerVerifier))
+	}
+
+	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier, authenticatorOpts...).Authenticate)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", authenticated.Wrap(rpc))

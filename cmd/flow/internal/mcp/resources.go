@@ -1,4 +1,4 @@
-package main
+package mcp
 
 import (
 	"context"
@@ -37,38 +37,38 @@ import (
 // does not have; a catalog alone gives it the names and not the grammar.
 
 const (
-	// mcpDSLResourceURI is the Flowfile language reference.
-	mcpDSLResourceURI = "flowstate://docs/dsl"
+	// DSLResourceURI is the Flowfile language reference.
+	DSLResourceURI = "flowstate://docs/dsl"
 
-	// mcpCatalogResourceURI is what this build can execute.
-	mcpCatalogResourceURI = "flowstate://catalog/tasks"
+	// CatalogResourceURI is what this build can execute.
+	CatalogResourceURI = "flowstate://catalog/tasks"
 
-	// mcpExamplePrefix is where a single example is addressed, and
-	// mcpExampleTemplate is the RFC 6570 template a client expands to reach one.
-	mcpExamplePrefix   = "flowstate://docs/examples/"
-	mcpExampleTemplate = mcpExamplePrefix + "{name}"
+	// ExamplePrefix is where a single example is addressed, and
+	// ExampleTemplate is the RFC 6570 template a client expands to reach one.
+	ExamplePrefix   = "flowstate://docs/examples/"
+	ExampleTemplate = ExamplePrefix + "{name}"
 )
 
 // MIME types, named once so a resource's declaration and its contents cannot
 // disagree about what was served.
 const (
-	mcpMarkdownMIME = "text/markdown"
-	mcpJSONMIME     = "application/json"
-	mcpYAMLMIME     = "application/yaml"
+	MarkdownMIME = "text/markdown"
+	JSONMIME     = "application/json"
+	YAMLMIME     = "application/yaml"
 )
 
-// addMCPResources registers the read-only half of the surface.
+// addResources registers the read-only half of the surface.
 //
 // local is the same in-process server the Validate, Compile and GetCatalog tools
 // answer from, passed in rather than constructed here for the reason this
 // repository states most often: two constructions are two catalogs, and the one
 // an agent reads would eventually stop being the one it is validated against.
-func addMCPResources(srv *mcp.Server, local *server.FlowstateServer) {
+func addResources(srv *mcp.Server, local *server.FlowstateServer) {
 	srv.AddResource(&mcp.Resource{
-		URI:      mcpDSLResourceURI,
+		URI:      DSLResourceURI,
 		Name:     "flowfile-dsl-reference",
 		Title:    "Flowfile DSL reference",
-		MIMEType: mcpMarkdownMIME,
+		MIMEType: MarkdownMIME,
 		Size:     int64(len(reference.DSL())),
 		Description: "The complete Flowfile language reference: the grammar, every step kind, " +
 			"expression scoping and the CEL roots in scope where, retries, timeouts, loops, " +
@@ -78,10 +78,10 @@ func addMCPResources(srv *mcp.Server, local *server.FlowstateServer) {
 	}, mcpDSLResourceHandler())
 
 	srv.AddResource(&mcp.Resource{
-		URI:      mcpCatalogResourceURI,
+		URI:      CatalogResourceURI,
 		Name:     "task-catalog",
 		Title:    "Task and function catalog",
-		MIMEType: mcpJSONMIME,
+		MIMEType: JSONMIME,
 		Description: "What this build can execute, as the JSON of a GetCatalogResponse: every task " +
 			"with its typed inputs and outputs, and every CEL function an expression may call. The " +
 			"same answer flowstate_get_catalog gives, without spending a tool call. Read it as a " +
@@ -93,10 +93,10 @@ func addMCPResources(srv *mcp.Server, local *server.FlowstateServer) {
 	// guessing. Both, because a template alone enumerates nothing and a listing
 	// alone says nothing about how it was addressed.
 	srv.AddResourceTemplate(&mcp.ResourceTemplate{
-		URITemplate: mcpExampleTemplate,
+		URITemplate: ExampleTemplate,
 		Name:        "flowfile-example",
 		Title:       "Example Flowfile",
-		MIMEType:    mcpYAMLMIME,
+		MIMEType:    YAMLMIME,
 		Description: "One example workflow from the repository's examples/ directory, by its " +
 			"directory name: flowstate://docs/examples/hello-world, flowstate://docs/examples/" +
 			"http-json. Each is a complete Flowfile that CI runs, so it is a working reference " +
@@ -111,10 +111,10 @@ func addMCPResources(srv *mcp.Server, local *server.FlowstateServer) {
 		}
 
 		srv.AddResource(&mcp.Resource{
-			URI:      mcpExamplePrefix + name,
+			URI:      ExamplePrefix + name,
 			Name:     "example-" + name,
 			Title:    "Example: " + name,
-			MIMEType: mcpYAMLMIME,
+			MIMEType: YAMLMIME,
 			Size:     int64(len(content)),
 			Description: fmt.Sprintf("The %s example: a complete, CI-run Flowfile you can read as a "+
 				"reference or adapt. Execute it as-is with flowstate_run_local to see what it does.", name),
@@ -142,7 +142,7 @@ func mcpDSLResourceHandler() mcp.ResourceHandler {
 		return &mcp.ReadResourceResult{
 			Contents: []*mcp.ResourceContents{{
 				URI:      req.Params.URI,
-				MIMEType: mcpMarkdownMIME,
+				MIMEType: MarkdownMIME,
 				Text:     reference.DSL(),
 			}},
 		}, nil
@@ -174,7 +174,7 @@ func mcpCatalogResourceHandler(local *server.FlowstateServer) mcp.ResourceHandle
 		return &mcp.ReadResourceResult{
 			Contents: []*mcp.ResourceContents{{
 				URI:      req.Params.URI,
-				MIMEType: mcpJSONMIME,
+				MIMEType: JSONMIME,
 				Text:     string(encoded),
 			}},
 		}, nil
@@ -194,7 +194,7 @@ func mcpExampleResourceHandler() mcp.ResourceHandler {
 	return func(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		uri := req.Params.URI
 
-		name, ok := strings.CutPrefix(uri, mcpExamplePrefix)
+		name, ok := strings.CutPrefix(uri, ExamplePrefix)
 		if !ok {
 			return nil, mcp.ResourceNotFoundError(uri)
 		}
@@ -207,7 +207,7 @@ func mcpExampleResourceHandler() mcp.ResourceHandler {
 		return &mcp.ReadResourceResult{
 			Contents: []*mcp.ResourceContents{{
 				URI:      uri,
-				MIMEType: mcpYAMLMIME,
+				MIMEType: YAMLMIME,
 				Text:     content,
 			}},
 		}, nil

@@ -1,8 +1,8 @@
 # `flow test` checks a scripted signal's optional `sender:` against this
 # workflow's `signals:` policy through the same `v1.SignalPolicyCheck`
 # `FlowstateServer.Signal` calls (#207 slice 2) — the seam that makes it safe
-# for `deploy`'s own `if:` to trust `signals:` for authorization rather than
-# restate it: a scripted signal with no `sender:`, or one that does not
+# for this workflow's own dispatch to trust `signals:` for authorization rather
+# than restate it: a scripted signal with no `sender:`, or one that does not
 # satisfy the policy, is refused before it ever reaches the waiting step,
 # exactly as a durable one would be. That is what makes the first case below
 # possible at all — this file's own history is the reason it did not use to
@@ -28,7 +28,7 @@
 # the `request` step's own log line here still names "an unattested caller".
 # The scripted `sender:` is the same kind of assertion - it stands in for an
 # approver, and the gate's `sender.local` output reads true to say so, which
-# is why `deploy`'s `if:` may never gate on attestation itself.
+# is why the dispatch below may never gate on attestation itself.
 edition: v2026.3
 defaults:
   # Every case ships the same build to the same environment and expects the
@@ -58,7 +58,7 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, deploy]
+      ran: [request, settle, approval, decision, deploy]
       others: skipped
       outputs:
         decision: deployed
@@ -78,7 +78,7 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, deploy]
+      ran: [request, settle, approval, decision, deploy]
       others: skipped
       outputs:
         decision: deployed
@@ -89,7 +89,7 @@ tests:
   # exactly, which is the point - `distinct_from_starter:` is the one clause a
   # correctly-claimed, correctly-named approver still cannot get past. The
   # signal never reaches the step, so the gate lapses at its own timeout and
-  # the run reports `expired`, the same answer nobody answering at all
+  # the run reports `undecided`, the same answer nobody answering at all
   # produces. That is what production does too: `FlowstateServer.Signal`
   # refuses with PermissionDenied and the workflow is never told anything was
   # sent.
@@ -103,10 +103,10 @@ tests:
         payload:
           approved: true
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   # The same starter, refused for a different reason and from the other side:
@@ -127,10 +127,10 @@ tests:
           claims:
             team: release-managers
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   - name: "an approved payload from a sender signals: refuses never reaches the gate"
@@ -148,10 +148,10 @@ tests:
           claims:
             team: release-managers
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   - name: an approved payload is still refused without an attested sender
@@ -165,18 +165,19 @@ tests:
         # `sender:` and inheriting it.
         sender: {}
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   # The negated branch, which used to be a hand-expanded De Morgan copy of
-  # `deploy`'s own `if:` and is now `${steps.approval.outcome == "rejected"}`, an
-  # !steps.approval.approved}` — two names this file's gate decides once. The
+  # `deploy`'s own `if:`, then became `${steps.approval.outcome == "rejected"}`,
+  # and is now `- case: rejected` — a literal rather than a predicate at all. The
   # assertion that matters is the pair: the branch that ran and the `decision`
-  # output move together, because both read the same recorded output rather
-  # than each re-deriving the predicate.
+  # output move together, because both read the one recorded output rather than
+  # each re-deriving the predicate. `ran:` names `decision` before it because the
+  # dispatch is itself a step that runs.
   - name: an explicit rejection is honored
     workflow: ./workflow.yaml
     signals:
@@ -184,7 +185,7 @@ tests:
         payload:
           approved: false
     expect:
-      ran: [request, settle, approval, rejected]
+      ran: [request, settle, approval, decision, rejected]
       others: skipped
       outputs:
         decision: rejected
@@ -193,10 +194,10 @@ tests:
   - name: nobody answers, and the gate lapses at its own timeout
     workflow: ./workflow.yaml
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
 
   - name: a version that is not semver is refused before the first step runs
@@ -215,10 +216,13 @@ tests:
 
   # "answered" and "did not time out" are different questions, which is why the
   # gate's `outcome` has three states rather than two. A signal arrived here —
-  # so the wait did not time out — carrying no `approved` field at all, which is
-  # not a decision. It reports `expired`, exactly as `decision` always did, and
-  # now the `expired` branch actually runs: before the gate was named, this
-  # input produced an output naming a branch that had been skipped.
+  # so the wait did not time out, `timed_out` is false — carrying no `approved`
+  # field at all, which is not a decision either. It used to report `expired`
+  # here (#579): true of the branch that ran, false of what actually happened,
+  # since nothing timed out. `undecided` is true of both this case and a lapsed
+  # timeout, which is why it is the name and not a fourth state — `timed_out`
+  # on the gate above is what still tells the two apart for a reader who needs
+  # to.
   - name: a signal carrying no decision is not a rejection
     workflow: ./workflow.yaml
     signals:
@@ -226,8 +230,8 @@ tests:
         payload:
           note: looking into it
     expect:
-      ran: [request, settle, approval, expired]
+      ran: [request, settle, approval, decision, undecided]
       others: skipped
       outputs:
-        decision: expired
+        decision: undecided
         approver_subject: ""
