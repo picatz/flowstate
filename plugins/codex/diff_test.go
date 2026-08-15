@@ -111,6 +111,35 @@ func TestComputePatchRendersAUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestComputePatchDoesNotRunRepositoryDiffHelper(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	dir := t.TempDir()
+	initRepoWithCommit(t, gitBin, dir)
+	marker := filepath.Join(t.TempDir(), "external-diff-ran")
+	helper := filepath.Join(dir, "external-diff.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch \""+marker+"\"\n"), 0o700); err != nil {
+		t.Fatalf("WriteFile helper: %v", err)
+	}
+	cmd := exec.Command(gitBin, "-C", dir, "config", "diff.external", helper)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("configure repository diff.external: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile change: %v", err)
+	}
+
+	patch, _, truncated := computePatch(context.Background(), dir, true, workspaceBaseline{observed: true},
+		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
+	if truncated || !strings.Contains(patch, "+changed") {
+		t.Fatalf("computePatch = (%q, truncated %v), want an ordinary unified diff", patch, truncated)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("repository-controlled diff.external ran outside the Codex sandbox: Stat marker error = %v", err)
+	}
+}
+
 func TestBoundedWriterCapsAtMaxBytes(t *testing.T) {
 	w := &boundedWriter{max: 5}
 	n, err := w.Write([]byte("hello world"))

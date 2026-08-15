@@ -77,7 +77,10 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 	// function: if it fails, the tracked changes still diff.
 	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "add", "--intent-to-add", "--", ".")
 
-	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "diff", "--no-color", "-M", "HEAD")
+	// The repository is controlled by the task and may configure diff helpers
+	// that execute as the worker, outside the Codex sandbox. Patch rendering
+	// must therefore refuse both external diff commands and textconv filters.
+	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M", "HEAD")
 	if !ok {
 		return "", filesChanged, false
 	}
