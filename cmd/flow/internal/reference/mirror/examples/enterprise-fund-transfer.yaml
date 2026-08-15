@@ -154,12 +154,16 @@ steps:
         # `expired`, so a signal that answered with no usable `approved` field
         # is `malformed`, never mistaken for a timeout - the exact bug
         # `refused_malformed_payload` exists to not repeat.
+        #
+        # `payload.?approved` is the optional select approval-gate reads the
+        # same way: present-and-true or present-and-false when the desk sent
+        # the field, absent when whatever they sent could not be made sense
+        # of. `.optMap` only ever sees an actual boolean; `.orValue` supplies
+        # the case nothing usable was sent.
         outcome: >-
           ${timed_out
             ? "expired"
-            : (has(payload.approved)
-                ? (payload.approved ? "approved" : "rejected")
-                : "malformed")}
+            : payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("malformed")}
 
   # Cleared to move: either the amount never needed a gate, or the gate was
   # answered yes. `signals:` above is what makes that a real check - an

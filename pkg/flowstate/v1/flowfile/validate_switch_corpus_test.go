@@ -53,6 +53,20 @@ var switchCorpusTable = map[string]switchCorpusEntry{
 	// output.
 	"optional-dispatch/report": closedDomain("no_response", "approved", "rejected"),
 
+	// `settle` dispatches on `outcome`, a `value:` step combining two wait
+	// gates' own shaped outcomes into the report's four endings — the same
+	// value-step tier as `optional-dispatch/report` above, over a nested
+	// conditional whose leaves are all string literals.
+	"expense-approval/settle": closedDomain("approved_by_manager", "approved_after_escalation",
+		"denied_no_response", "denied"),
+
+	// `report` dispatches on `outcome`, a `value:` step over `steps.decision`'s
+	// own `.payload.?accepted` — the identical `optMap`/`orValue` chain
+	// approval-gate's own gate uses, reached through a `value:` step rather
+	// than a wait's shaped `outputs:` because the wait itself carries no
+	// `outputs:` block to shape.
+	"callback-address/report": closedDomain("accepted", "rejected", "abandoned"),
+
 	// Pinned already by TestWebhookRoutingDomainStaysOpen
 	// (validate_switch_domain_internal_test.go, #590) — restated here rather
 	// than duplicated, so the corpus table has one entry per shipped switch.
