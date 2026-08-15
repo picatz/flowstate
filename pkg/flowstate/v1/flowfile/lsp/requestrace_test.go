@@ -167,20 +167,22 @@ func TestHoverThroughAChangeStormAnswersFromTheLatestVersion(t *testing.T) {
 		c.changeNoWait(uri, latest, i+1)
 	}
 
+	// Whether the answer came from in-memory state or from riding out a build,
+	// asked of the wait itself rather than of a stopwatch — the same instrument
+	// the test above uses, for the same reason. A wall-clock bound cannot
+	// separate the two: [documentBuildTimeout] is two seconds, so a hover that
+	// waited out the entire build still returns well inside any threshold loose
+	// enough to survive a contended box.
+	var boundExpired atomic.Bool
+	c.server.docs.setAwaitTrace(func(expired bool) { boundExpired.Store(expired) })
+
 	// Into the middle of the burst, with no wait of any kind. The position is the
 	// inner step's id, which every version of the document has in the same place.
 	at := positionOf(t, latest, "id: final_marker", 4)
-	start := time.Now()
 	got := c.hover(uri, at.Line, at.Character)
-	elapsed := time.Since(start)
 
 	require.NotNil(t, got, "hover answered null for a document in the middle of a change storm")
-	// A generous backstop rather than a tight one, matching the 5s bound this
-	// file already uses a few lines up for the same reason (issue #431): what
-	// this needs to distinguish is "hover answered from in-memory state" from
-	// "hover blocked on a build finishing", which differ by much more than a
-	// second of scheduling jitter on a contended box.
-	assert.Less(t, elapsed, 5*time.Second, "hover took %s, which is a wait that is not ending on a build", elapsed)
+	assert.False(t, boundExpired.Load(), "hover's wait ended because a build bound expired rather than because the document was found built, which is the blocking this test exists to exclude")
 	text := hoverText(got)
 	named := slices.ContainsFunc(append(names, "shout"), func(name string) bool {
 		return strings.Contains(text, "step `"+name+"`")
