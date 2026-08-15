@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -451,7 +452,16 @@ func projects(descriptor protoreflect.MessageDescriptor) bool {
 
 // projectionDecisions memoizes [projects]. A cold decision walks the schema; every
 // document this CLI writes then reuses it.
+//
+// One process may render more than one document concurrently — `flow run` writing
+// a transcript while a test in the same binary renders another — so the two maps
+// backing the memoization are guarded by mu rather than left bare. Unguarded, two
+// goroutines racing to decide the same message type is a concurrent map write:
+// TestAPipedRunStillWritesTheTranscript and TestTheRenderingStaysOutOfWellKnownTypes
+// running in parallel is exactly that race, caught by -race rather than by anything
+// that inspects the answer.
 type projectionDecisions struct {
+	mu       sync.Mutex
 	decided  map[protoreflect.FullName]bool
 	deciding map[protoreflect.FullName]bool
 }
@@ -461,7 +471,18 @@ var projectionCache = &projectionDecisions{
 	deciding: map[protoreflect.FullName]bool{},
 }
 
+// decide is the locked entry point: it takes mu once and holds it for the whole
+// recursive walk, since [projectionDecisions.walk] calls decideLocked on every
+// message-typed field rather than re-entering decide, and a [sync.Mutex] is not
+// reentrant.
 func (d *projectionDecisions) decide(descriptor protoreflect.MessageDescriptor) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.decideLocked(descriptor)
+}
+
+func (d *projectionDecisions) decideLocked(descriptor protoreflect.MessageDescriptor) bool {
 	name := descriptor.FullName()
 
 	if answer, ok := d.decided[name]; ok {
@@ -517,14 +538,14 @@ func (d *projectionDecisions) walk(descriptor protoreflect.MessageDescriptor) bo
 		}
 
 		if field.IsMap() {
-			if value := field.MapValue(); value.Message() != nil && d.decide(value.Message()) {
+			if value := field.MapValue(); value.Message() != nil && d.decideLocked(value.Message()) {
 				return true
 			}
 
 			continue
 		}
 
-		if field.Message() != nil && d.decide(field.Message()) {
+		if field.Message() != nil && d.decideLocked(field.Message()) {
 			return true
 		}
 	}
