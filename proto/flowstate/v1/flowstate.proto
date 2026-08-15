@@ -595,6 +595,11 @@ message InputDeclaration {
     TYPE_BOOL = 4;
     TYPE_STRUCT = 5;
     TYPE_LIST = 6;
+    // 7 and 8 are deliberately holes: on [Value.Type] those numbers are
+    // TYPE_EXPR and TYPE_ERROR, which are not data and so have no
+    // counterpart here (see above).
+    reserved 7, 8;
+    TYPE_ENUM = 9;
   }
 
   // Name is what the input is called, and how an expression reaches it:
@@ -803,6 +808,31 @@ message InputDeclaration {
   // the same way on every replay and at every one of this declaration's
   // enforcement points, which an expression reading the clock cannot promise.
   optional string must = 16;
+
+  // Values is the closed set of strings a `type: enum` value may be. Only the
+  // per-declaration shape lives here: that they are non-empty, bounded, and
+  // distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
+  // whether at least one is given, and whether `default`/`example` are
+  // themselves members are set-facts about this declaration, and per this
+  // message's own doc comment those belong to the compiler for a Flowfile and
+  // to [CheckInputConstraintShape] for a hand-built specification — not here.
+  //
+  // Bounded the way any set quoted into a diagnostic must be: an enum's
+  // declared choices are rendered into the "not one of" message a bad
+  // submission gets back, so an unbounded set is an unbounded response the
+  // caller controls the shape of.
+  repeated string values = 17 [
+    (buf.validate.field).repeated = {
+      max_items: 64
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+    }
+  ];
 }
 
 // OutputDeclaration is one value a finished run reports: a name, and the
