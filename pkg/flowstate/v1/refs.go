@@ -280,173 +280,89 @@ func CollectRefsFromParsedExpr(pe *expr.ParsedExpr, prev *Workflow_StepOutputs, 
 // CollectValueRefs records the step outputs one value references.
 //
 // Only an expression can reference anything; a literal carries no reference
-// regardless of what it happens to contain.
+// regardless of what it happens to contain — but an expression can be *inside* a
+// structure, so this descends into one.
+//
+// That arm is not defensive. A [Value_Structure] used to hold literals and secret
+// references and nothing else, so reading only the top level answered correctly
+// by accident; output shaping written as a mapping compiles per entry, and each
+// entry is an ordinary expression that may read `${steps.x.y}` or `${vars.n}`.
+// Without the descent, compaction at a Continue-As-New boundary would drop the
+// very output a shaped expression is about to read — a correctness failure, and
+// exactly the walk-misses-a-branch shape this repository keeps paying for.
+// The descent is depth-bounded for [maxStructureDepth]'s reason and not a
+// different one: a specification does not have to have come from a Flowfile, so
+// the depth of a structure is a number an outside party chooses, and this walk
+// is recursive.
+//
+// What lies below the bound is not recorded, and that is worth saying plainly
+// rather than implying it is free: an expression nested deeper than 32 levels of
+// structure could have an output it reads pruned at a Continue-As-New boundary.
+// No Flowfile can express one — a shaped mapping's entries are values, not
+// structures, and the compiler bounds nesting far below this — so the shape that
+// reaches the bound is a specification submitted directly, where the alternative
+// is a stack depth the peer decides.
 func CollectValueRefs(value *Value, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
-	if kind, isExpr := value.GetKind().(*Value_Expr); isExpr {
+	collectValueRefs(value, 0, prev, refs)
+}
+
+func collectValueRefs(value *Value, depth int, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
+	if depth > maxStructureDepth {
+		return
+	}
+
+	switch kind := value.GetKind().(type) {
+	case *Value_Expr:
 		CollectRefsFromParsedExpr(kind.Expr, prev, refs)
+	case *Value_Structure_:
+		switch structure := kind.Structure.GetKind().(type) {
+		case *Value_Structure_List_:
+			for _, element := range structure.List.GetValues() {
+				collectValueRefs(element, depth+1, prev, refs)
+			}
+		case *Value_Structure_Map_:
+			for _, entry := range structure.Map.GetEntries() {
+				collectValueRefs(entry, depth+1, prev, refs)
+			}
+		}
 	}
 }
 
 // CollectNodeRefs records every step output a node could still need.
 //
-// Every expression site in the node counts, not only a task's inputs: a
-// step's condition, a step's own `vars:`, a step's `undo:` inputs, a loop's
-// item list and everything in its body, every branch of a parallel block,
-// and a wait's own expression. Dropping an output one of those needs is a
-// correctness failure; keeping one it turns out not to need only costs
-// payload. So when in doubt this keeps more.
+// Every value position in the node counts, not only a task's inputs: a step's
+// condition, a step's own `vars:`, a step's `undo:` inputs, a loop's item list
+// and everything in its body, every branch of a parallel block, and a wait's
+// own expressions. Dropping an output one of those needs is a correctness
+// failure; keeping one it turns out not to need only costs payload. So when in
+// doubt this keeps more.
 //
-// A call's own body is deliberately excluded — only its arguments are
-// walked. An argument is resolved in the *caller's* scope, so a reference
-// there is exactly as live as one in a task's inputs; the callee's steps run
-// in the isolated scope [CallScope] builds, a different namespace than prev
-// entirely, and walking into it here would either find nothing or, worse,
-// collide with a caller step that happens to share an id. This is also what
-// makes a callee unable to keep a caller's loop's results alive by
-// referencing it: nothing inside a callee's own expressions is walked
-// against the caller's steps at all.
+// The positions come from [WalkNode] rather than from a list kept here, which is
+// what closes the failure this walk had: `Node.undo` landed in the schema after
+// this was written, nothing added it here, and a step whose compensation named an
+// outstanding async step joined nothing, ran, succeeded and then could not
+// resolve its own compensation (#492). All three callers had that blind spot
+// behind one omission — [AsyncJoinTargets], the durable driver's Continue-As-New
+// compaction, and [LoopResultsReferenced] — and each ended with an effect
+// performed and no compensation registered for it. Growing the schema now means
+// growing walk.go, and this gets the new position without being edited.
+//
+// A call's own body is deliberately excluded — only its arguments are walked, by
+// the traversal, for the reason [NodeRecursionEdges] records: an argument is
+// resolved in the *caller's* scope, so a reference there is exactly as live as
+// one in a task's inputs, while the callee's steps run in the isolated scope
+// [CallScope] builds, a different namespace than prev entirely. Walking into it
+// here would either find nothing or, worse, collide with a caller step that
+// happens to share an id. It is also what makes a callee unable to keep a
+// caller's loop's results alive by referencing it.
 func CollectNodeRefs(node *Node, prev *Workflow_StepOutputs, refs map[string]map[string]struct{}) {
-	if node == nil {
-		return
-	}
-
-	// A condition decides whether the step runs at all, so it is evaluated
-	// before anything else and its references are needed just as much.
-	CollectValueRefs(node.GetCondition(), prev, refs)
-
-	// Outside the switch, with the condition, because both are step
-	// *properties* rather than parts of one kind of work: a `for_each` and a
-	// `wait` carry `vars:` exactly as a task step does.
-	for _, value := range node.GetVars() {
-		CollectValueRefs(value, prev, refs)
-	}
-
-	// A compensation's inputs, which are a step property too, and the reference
-	// site this walk was missing.
-	//
-	// An `undo:` is resolved at the instant its step *succeeds*, in that step's
-	// own scope — see [UndoRegistrationFor] — so every output it names has to be
-	// there at that moment, exactly as a task's own inputs do. It is a later
-	// moment than the step's inputs but the same run and the same scope, which
-	// is what makes it belong here rather than anywhere special.
-	//
-	// All three callers of this walk had the same blind spot behind that
-	// omission, and each fails in a way that ends with an effect performed and no
-	// compensation registered for it:
-	//
-	//   - [AsyncJoinTargets]. A step whose body names nothing outstanding but
-	//     whose `undo:` names an async step joined nothing, ran, succeeded, and
-	//     then could not resolve its own compensation against an output that was
-	//     still in flight. #418 slice 1's first P1.
-	//   - Continue-As-New compaction (the durable driver's
-	//     `compactOutputsForFrames`). An output only a remaining step's `undo:`
-	//     names was pruned at the handover, and the step failed registering its
-	//     compensation in the next segment — the failure mode that schema comment
-	//     on [PendingUndo] predicts for "a fifth reference site that walk does
-	//     not know about", arriving by the one route resolution-at-registration
-	//     did not close.
-	//   - [LoopResultsReferenced]. A loop's `results` read only by a later step's
-	//     `undo:` was suppressed as unreferenced, with the same ending.
-	//
-	// One walk, so one fix. Growing [Compensation] means growing this.
-	for _, value := range node.GetUndo().GetTask().GetInputs() {
-		CollectValueRefs(value, prev, refs)
-	}
-
-	switch kind := node.GetKind().(type) {
-	case *Node_Task:
-		task := kind.Task
-		for _, value := range task.GetInputs() {
-			CollectValueRefs(value, prev, refs)
-		}
-
-	case *Node_ForEach:
-		CollectValueRefs(kind.ForEach.GetItems(), prev, refs)
-		for _, inner := range kind.ForEach.GetBody() {
-			CollectNodeRefs(inner, prev, refs)
-		}
-
-	case *Node_Loop:
-		// Every one of a loop's own expressions can name an outer step's
-		// output, and each has to survive the Continue-As-New a long loop
-		// suspends across. `init:` is evaluated once before the loop; `until:`
-		// and `update:` after every iteration's body; and the body's own nodes
-		// recurse the same way a `for_each`'s do.
-		CollectValueRefs(kind.Loop.GetInitial(), prev, refs)
-		CollectValueRefs(kind.Loop.GetUntil(), prev, refs)
-		CollectValueRefs(kind.Loop.GetUpdate(), prev, refs)
-		for _, inner := range kind.Loop.GetBody() {
-			CollectNodeRefs(inner, prev, refs)
-		}
-
-	case *Node_Parallel:
-		for _, branch := range kind.Parallel.GetBranches() {
-			for _, inner := range branch.GetSteps() {
-				CollectNodeRefs(inner, prev, refs)
-			}
-		}
-
-	case *Node_Switch:
-		// The discriminant is the switch's one expression, and it can name an
-		// outer step's output — the approval gate's `${steps.approval.outcome}`
-		// is the motivating spelling — so a run suspended before the switch
-		// needs that output to survive compaction. Case literals hold no
-		// references by construction; every body recurses, because which one
-		// runs is decided at execution and compaction has to keep them all
-		// honest.
-		CollectValueRefs(kind.Switch.GetValue(), prev, refs)
-		for _, body := range SwitchBodies(kind.Switch) {
-			for _, inner := range body {
-				CollectNodeRefs(inner, prev, refs)
-			}
-		}
-
-	case *Node_Wait:
-		// A `wait_until` expression can name a step's output — "wait until the
-		// deadline the previous step computed" — and a run that suspended
-		// before the wait needs that output to still be there when it resumes.
-		//
-		// The two computed durations are the same fact about the same node, and
-		// missing one would be worse than missing a diagnostic: compaction drops
-		// an output nothing appears to need, and the run fails on resume naming a
-		// step it can no longer see. Every expression a [Wait] can hold is read
-		// here, so growing the message means growing this.
-		CollectValueRefs(kind.Wait.GetUntil(), prev, refs)
-		CollectValueRefs(kind.Wait.GetDurationExpr(), prev, refs)
-		CollectValueRefs(kind.Wait.GetTimeoutExpr(), prev, refs)
-
-		// A `wait_for_signal:`'s own `outputs:` shaping — the fourth and last
-		// expression position a wait can hold, and the one whose omission would be
-		// hardest to see. These evaluate *after* the wait resolves, which is
-		// precisely when a run that suspended in the wait has already crossed a
-		// Continue-As-New: an output only this expression names would be compacted
-		// away while the run slept, and the gate would fail on resume naming a step
-		// that is no longer there. Growing the message means growing this.
-		for _, value := range kind.Wait.GetSignal().GetOutputs() {
-			CollectValueRefs(value, prev, refs)
-		}
-
-		// A `wait_for_signal:`'s own `prompt:` - the fifth expression position a
-		// wait can hold. It is evaluated when the wait *parks*, so unlike the
-		// shaping above it runs before any Continue-As-New the wait causes; a
-		// gate that lapses, is resumed and parks again on a later segment
-		// evaluates it a second time, on the far side of the compaction that
-		// would otherwise have dropped the step it names. Growing the message
-		// means growing this.
-		CollectValueRefs(kind.Wait.GetSignal().GetPrompt(), prev, refs)
-
-	case *Node_Call:
-		for _, value := range kind.Call.GetArguments() {
-			CollectValueRefs(value, prev, refs)
-		}
-
-	case *Node_Value:
-		// The step's whole content is one expression, and it is evaluated where
-		// the step sits, so a run that suspended before reaching it needs every
-		// output that expression names to still be there on the far side of the
-		// compaction the suspension caused. Missing this would drop an output
-		// nothing appears to need and fail the run on resume, naming a step it
-		// can no longer see.
-		CollectValueRefs(kind.Value, prev, refs)
-	}
+	WalkNode(node, Walk{
+		Value: func(site ValueSite) {
+			// Every position, with nothing filtered out. This walk has no reason
+			// to be selective: a reference is a reference wherever it is written,
+			// and the cost of reading one position too many is a payload byte
+			// while the cost of reading one too few is a failed run.
+			CollectValueRefs(site.Value, prev, refs)
+		},
+	})
 }

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/assert"
@@ -340,6 +342,93 @@ func TestTelemetryResourceNamesTheService(t *testing.T) {
 	require.Equal(t, version, attrs["service.version"],
 		"the version reported is the one the build stamped, not one invented here")
 	require.Contains(t, attrs, "telemetry.sdk.name", "the SDK's own attributes are kept")
+}
+
+// TestTelemetryResourceIdentifiesThisCopy covers what service.name cannot: two
+// workers in one Deployment have the same name, and everything downstream groups
+// by resource, so without these a spike on one pod averages into the other.
+func TestTelemetryResourceIdentifiesThisCopy(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	res, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+
+	attrs := resourceAttributes(res.Attributes())
+	require.NotEmpty(t, attrs["service.instance.id"],
+		"which copy of flowstate this is, without an operator wiring the downward API")
+	require.Contains(t, attrs, "host.name")
+	require.Contains(t, attrs, "process.pid")
+	require.Contains(t, attrs, "process.runtime.name")
+}
+
+// TestTheResourceCarriesNoCommandArguments is the negative direction, and it is
+// the reason the process detectors are named one by one instead of through
+// [resource.WithProcess].
+//
+// A resource attribute rides on every span, metric and log the process emits.
+// This binary is invoked as `flow run --input token=…`, so process.command_args
+// would put a credential on all of them at once — the widest reach any single
+// value in this program can have. Asserting the attributes we do want cannot see
+// that: it passes just as happily with the argument vector sitting beside them.
+func TestTheResourceCarriesNoCommandArguments(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	res, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+
+	attrs := resourceAttributes(res.Attributes())
+	require.NotContains(t, attrs, "process.command_args",
+		"an --input flag holding a secret must not become a resource attribute")
+	require.NotContains(t, attrs, "process.command_line")
+	require.NotContains(t, attrs, "process.executable.path",
+		"a path carries a username and a deployment's layout; the name answers the question")
+}
+
+// TestTheInstanceIDIsStableWithinTheProcess pins the property that makes the id
+// worth having. A process builds a provider per signal, each taking its own
+// resource, and an id that differed between them would split one process into
+// three services in the backend.
+func TestTheInstanceIDIsStableWithinTheProcess(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	first, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+	second, err := telemetryResource(t.Context())
+	require.NoError(t, err)
+
+	id := resourceAttributes(first.Attributes())["service.instance.id"]
+	require.NotEmpty(t, id)
+	require.Equal(t, id, resourceAttributes(second.Attributes())["service.instance.id"])
+}
+
+// TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand covers the path a
+// container with no usable entropy source takes.
+//
+// uuid.NewString is Must(NewRandom()), so reaching for the convenient spelling
+// would panic from inside a resource builder — past telemetryResource's error
+// return and past the client path that warns and continues without telemetry.
+// Telemetry describes the work and must never be the reason the work does not
+// happen, so the failure costs one attribute and a warning, exactly as a
+// partial detector does.
+func TestAnUnobtainableInstanceIDCostsTheAttributeNotTheCommand(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	previous := instanceID
+	t.Cleanup(func() { instanceID = previous })
+	instanceID = func() (uuid.UUID, error) { return uuid.Nil, errors.New("no entropy available") }
+
+	res, err := telemetryResource(t.Context())
+	require.NoError(t, err, "an unobtainable instance id must not fail the resource")
+
+	attrs := resourceAttributes(res.Attributes())
+	require.NotContains(t, attrs, "service.instance.id",
+		"a nil UUID reported as an instance id would collide across every copy that hit this path")
+	require.Equal(t, "flowstate", attrs["service.name"],
+		"the rest of the resource is unaffected")
 }
 
 // TestTelemetryResourceLetsTheEnvironmentWin is the direction that is easy to

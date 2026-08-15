@@ -133,7 +133,8 @@ steps:
               query:
                 service: ${inputs.service}
               parse_json: true
-              outputs: '${ {"summary": response.json.summary} }'
+              outputs:
+                summary: ${response.json.summary}
       - steps:
           - id: metrics
             continue_on_error: true
@@ -144,7 +145,8 @@ steps:
               query:
                 service: ${inputs.service}
               parse_json: true
-              outputs: '${ {"error_rate": response.json.error_rate} }'
+              outputs:
+                error_rate: ${response.json.error_rate}
       - steps:
           - id: recent_deploys
             continue_on_error: true
@@ -155,7 +157,8 @@ steps:
               query:
                 service: ${inputs.service}
               parse_json: true
-              outputs: '${ {"deployed_version": response.json.deployed_version} }'
+              outputs:
+                deployed_version: ${response.json.deployed_version}
 
   # Nobody claimed it in the first window - a real escalation, paged wider,
   # not a silent timeout somebody has to notice on a dashboard later.
@@ -224,10 +227,17 @@ steps:
         # is unreachable here by design (see the test's coverage note) and this
         # shapes to `refused` or `unremediated` in a rehearsal, never
         # `authorized`.
+        #
+        # `payload.?authorized.orValue(false)` reads the one field a defaulted
+        # optional can answer correctly here: this line ANDs it against three
+        # more conditions that only ask what the sender was attested to be, so
+        # collapsing presence-and-truth into one defaulted read costs nothing
+        # `has(payload.authorized) && payload.authorized` had - both are false
+        # exactly when the field was absent or explicitly false.
         outcome: >-
           ${timed_out
             ? "unremediated"
-            : ((has(payload.authorized) && payload.authorized &&
+            : ((payload.?authorized.orValue(false) &&
                 !sender.local && !run.local &&
                 sender.identity.subject != "" &&
                 !(sender.identity.subject == run.identity.subject &&

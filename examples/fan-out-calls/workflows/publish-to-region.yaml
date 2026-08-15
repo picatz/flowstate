@@ -41,9 +41,9 @@ steps:
       # exactly the shape a real 4xx would arrive in: permanent, about the
       # request itself, and never worth retrying.
       expect: ${inputs.region != 'quarantined' && response.status_code == 200}
-      outputs: >-
-        ${ {"url": "https://" + response.json.args.region + ".cdn.example.com",
-            "region": response.json.args.region} }
+      outputs:
+        url: ${"https://" + response.json.args.region + ".cdn.example.com"}
+        region: ${response.json.args.region}
 
 outputs:
   # The values the caller reads back, per iteration. A failed publish never

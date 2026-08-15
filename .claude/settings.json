@@ -16,6 +16,19 @@
           {
             "type": "command",
             "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/pidguard"
+          },
+          {
+            "type": "command",
+            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/mergeguard"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__github__merge_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "go -C \"${CLAUDE_PROJECT_DIR}\" run ./tools/hooks/mergeguard"
           }
         ]
       }

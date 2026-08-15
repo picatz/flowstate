@@ -191,6 +191,7 @@ func (g *Generator) Documents() []Document {
 		{Name: "mcp.md", Render: g.renderMCPReference},
 		{Name: "envvars.md", Render: g.renderEnvVarReference},
 		{Name: "diagnostics.md", Render: g.renderDiagnosticCodeReference},
+		{Name: "cel.md", Render: g.renderCELReference},
 	}
 }
 

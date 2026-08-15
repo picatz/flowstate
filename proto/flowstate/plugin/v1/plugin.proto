@@ -234,6 +234,28 @@ message TaskManifest {
   // cross into the plugin is refused rather than forwarded: the plugin
   // process must never see a [flowstate.v1.SecretRef], only the value.
   repeated string secret_inputs = 10 [(buf.validate.field).repeated = {max_items: 16}];
+
+  // ShapesOutputs declares that this task evaluates an `outputs:` input as a
+  // *replacement* for the outputs it declares above — the contract the built-in
+  // http task has, and the one a wait's `outputs:` has.
+  //
+  // Declared rather than inferred from the name, and that is the whole of why
+  // this field exists. The exemption used to key on the presence of an input
+  // called `outputs`, in the validator and mirrored in the language server, so
+  // a plugin declaring an ordinary input by that name had three authoring
+  // surfaces agree that its declared outputs were replaced while plugin
+  // execution returned exactly those declared outputs. Three surfaces agreeing
+  // with each other and disagreeing with execution is the worst arrangement,
+  // because nothing flags it.
+  //
+  // A plugin sets this only if its executor genuinely implements shaping:
+  // reading the input's mapping of name to expression, evaluating each against
+  // whatever scope the task provides, and returning those names as the step's
+  // outputs. Absent by default, which is the fail-closed direction: a task that
+  // does not say it shapes gets ordinary diagnostics against the outputs it
+  // declared, and an author who writes `outputs:` at one is told it is an
+  // unknown input rather than being quietly stood down from.
+  bool shapes_outputs = 11;
 }
 
 // PluginService is the capability handshake every plugin must implement.

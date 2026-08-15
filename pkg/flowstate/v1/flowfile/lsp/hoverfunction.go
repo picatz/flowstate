@@ -43,13 +43,13 @@ var functionIndex = sync.OnceValue(func() (out struct {
 // `${steps.web.value}` has to describe the output. The caller only reaches this once
 // the reference lookups have declined, and never for a `steps.`-rooted reference at
 // all — nothing inside one is a call.
-func hoverFunction(doc *document, v *value, cursor int) *lsp.Hover {
-	fn, span, ok := functionAt(v.expr, cursor)
+func hoverFunction(doc *document, v *value, f fence, cursor int) *lsp.Hover {
+	fn, span, ok := functionAt(f.source, cursor)
 	if !ok {
 		return nil
 	}
 
-	rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
+	rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 
 	if fn.Name == "" {
 		// A namespace rather than a function: the cursor is on `math` in

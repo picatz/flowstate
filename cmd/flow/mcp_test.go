@@ -18,12 +18,14 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
 
 // TestToolsMatchTheServiceDescriptor holds the tool list to the service
 // descriptor, in both directions.
 //
-// The dispatch table in workflowServiceMethods is written out — Go cannot range
+// The dispatch table in flowmcp.WorkflowServiceMethods is written out — Go cannot range
 // over connect's typed methods — so what keeps it honest is this: an RPC added
 // to the schema without a row here fails, and a row naming an RPC the schema no
 // longer has fails. The same pattern as the README's command table, for the
@@ -40,14 +42,14 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	t.Parallel()
 
 	table := map[string]bool{}
-	for _, m := range workflowServiceMethods() {
-		require.False(t, table[m.name], "the dispatch table lists %q twice", m.name)
-		table[m.name] = true
+	for _, m := range flowmcp.WorkflowServiceMethods() {
+		require.False(t, table[m.Name], "the dispatch table lists %q twice", m.Name)
+		table[m.Name] = true
 
 		// The schema each tool advertises is the schema of the RPC's own request
 		// message; a row pointing at the wrong descriptor would advertise fields
 		// the handler then refuses.
-		require.NotNil(t, m.input, "%q has no input descriptor", m.name)
+		require.NotNil(t, m.Input, "%q has no input descriptor", m.Name)
 	}
 
 	names := serviceMethodNames(t)
@@ -56,7 +58,7 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	for name := range names {
 		assert.True(t, table[name],
 			"the schema declares rpc %s and `flow mcp` serves no tool for it; add a row "+
-				"to workflowServiceMethods", name)
+				"to flowmcp.WorkflowServiceMethods", name)
 	}
 	for name := range table {
 		assert.True(t, names[name],
@@ -68,7 +70,7 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 	registered := registeredToolNames(t)
 
 	for name := range names {
-		assert.True(t, registered[mcpToolName(name)],
+		assert.True(t, registered[flowmcp.ToolName(name)],
 			"rpc %s has a dispatch row but no registered tool", name)
 	}
 	for name := range registered {
@@ -108,8 +110,8 @@ func TestToolsMatchTheServiceDescriptor(t *testing.T) {
 // set is the shape [runLocalArguments]'s own doc comment already rejected for
 // `vars`: an implicit mode a caller has to infer.
 var documentedLocalTools = map[string]bool{
-	runLocalToolName: true,
-	testToolName:     true,
+	flowmcp.RunLocalToolName: true,
+	flowmcp.TestToolName:     true,
 }
 
 func documentedLocalToolNames() []string {
@@ -121,11 +123,11 @@ func documentedLocalToolNames() []string {
 	return names
 }
 
-// rpcNameOfTool inverts mcpToolName, so a registered tool can be matched back to
+// rpcNameOfTool inverts flowmcp.ToolName, so a registered tool can be matched back to
 // the method it claims to serve.
 func rpcNameOfTool(tool string) string {
 	var b strings.Builder
-	for _, word := range strings.Split(strings.TrimPrefix(tool, mcpToolPrefix), "_") {
+	for _, word := range strings.Split(strings.TrimPrefix(tool, flowmcp.ToolPrefix), "_") {
 		if word == "" {
 			continue
 		}
@@ -145,7 +147,7 @@ func TestEveryToolHasADescription(t *testing.T) {
 	t.Parallel()
 
 	for name := range serviceMethodNames(t) {
-		assert.NotEmpty(t, mcpToolDescription(name),
+		assert.NotEmpty(t, flowmcp.ToolDescription(name),
 			"rpc %s has no description; a mute tool is one a model cannot choose", name)
 	}
 
@@ -176,13 +178,13 @@ func TestEveryToolDescriptionComesFromTheSchema(t *testing.T) {
 	t.Parallel()
 
 	for name := range serviceMethodNames(t) {
-		comment, ok := protodoc.Method(workflowServiceName, protoreflect.Name(name))
+		comment, ok := protodoc.Method(flowmcp.WorkflowServiceName, protoreflect.Name(name))
 		require.True(t, ok,
 			"rpc %s carries no leading comment in the schema; write one in "+
 				"proto/flowstate/v1/flowstate.proto, which is where this surface's prose lives", name)
 		require.NotEmpty(t, comment)
 
-		assert.True(t, strings.HasPrefix(mcpToolDescription(name), comment),
+		assert.True(t, strings.HasPrefix(flowmcp.ToolDescription(name), comment),
 			"flowstate_%s's description does not start with %s's own schema comment; a description "+
 				"written beside this code is a second copy of what the schema already says", name, name)
 	}
@@ -198,7 +200,7 @@ func TestEveryToolDescriptionComesFromTheSchema(t *testing.T) {
 func TestTheRunLocalToolDescribesWhatItDoesNotProve(t *testing.T) {
 	t.Parallel()
 
-	description := runLocalTool().Description
+	description := flowmcp.RunLocalTool().Description
 
 	for _, claim := range []string{
 		"no server",
@@ -260,6 +262,27 @@ func registeredToolNames(t *testing.T) map[string]bool {
 	return names
 }
 
+// mcpDepsFor builds the flowmcp.Deps a real server construction needs, from
+// posture: the one seam cmd/flow/internal/mcp takes back from this package,
+// exercised here with the same redaction `flow mcp` itself wires in mcp.go.
+func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
+	return flowmcp.Deps{
+		Redact: func(response *v1.GetResponse) *v1.GetResponse {
+			return redactGetResponse(response, nil, revealSensitiveRequested(posture))
+		},
+	}
+}
+
+// mcpExtraToolsFor builds the two tools that are not RPCs, the same pair
+// runMCP registers, so a test connects to the identical tool set an agent
+// does.
+func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
+	return []flowmcp.ToolRegistration{
+		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(posture)},
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
+	}
+}
+
 // connectMCP stands the server up over an in-memory transport and returns a
 // connected client session.
 //
@@ -269,13 +292,13 @@ func registeredToolNames(t *testing.T) map[string]bool {
 func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
 	t.Helper()
 
-	srv := newMCPServer("test")
+	srv := flowmcp.NewServer("test")
 
-	addMCPCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
-	}, posture)
+	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 
@@ -297,7 +320,7 @@ func TestTheValidateToolAnswersOverTheProtocol(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name: mcpToolName("Validate"),
+		Name: flowmcp.ToolName("Validate"),
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name": "broken.yaml",
@@ -380,7 +403,7 @@ func callRunLocal(t *testing.T, session *mcp.ClientSession, args map[string]any)
 	t.Helper()
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      runLocalToolName,
+		Name:      flowmcp.RunLocalToolName,
 		Arguments: args,
 	})
 	require.NoError(t, err)
@@ -728,14 +751,14 @@ func TestTheRunToolCarriesInputsThroughItsDerivedSchema(t *testing.T) {
 	t.Parallel()
 
 	var request protoreflect.MessageDescriptor
-	for _, method := range workflowServiceMethods() {
-		if method.name == "Run" {
-			request = method.input
+	for _, method := range flowmcp.WorkflowServiceMethods() {
+		if method.Name == "Run" {
+			request = method.Input
 		}
 	}
 	require.NotNil(t, request, "the service declares no Run method")
 
-	schema := schemaForMessage(request)
+	schema := flowmcp.SchemaForMessage(request)
 
 	properties, ok := schema["properties"].(map[string]any)
 	require.True(t, ok, "the derived schema has no properties")
@@ -846,7 +869,7 @@ func TestTheRunLocalAnswerIsBounded(t *testing.T) {
 
 	encoded, err := renderRunLocalResult(response, []runLocalLogRecord{{Level: "INFO", Message: "hi"}})
 	require.NoError(t, err)
-	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes,
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
 		"a run's outputs are the workflow's choice, and this one spent %d bytes of a model's context",
 		len(encoded))
 
@@ -887,7 +910,7 @@ func TestTheRunLocalAnswerIsBoundedByItsDeclaredOutputs(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes,
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
 		"a declared output is the workflow's choice too, and this one spent %d bytes of a model's context",
 		len(encoded))
 
@@ -928,7 +951,7 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 		[]runLocalLogRecord{{Level: "INFO", Message: "hi"}},
 	)
 	require.NoError(t, err)
-	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes)
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes)
 
 	var answer runLocalAnswer
 	require.NoError(t, json.Unmarshal(encoded, &answer))
@@ -975,7 +998,7 @@ func TestTheRunLocalToolRefusesUnknownArguments(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name: runLocalToolName,
+		Name: flowmcp.RunLocalToolName,
 		Arguments: map[string]any{
 			"source":        "edition: v2026.3\nname: x\nsteps:\n- id: a\n  log:\n    message: hi\n",
 			"egress_policy": "/tmp/anything.yaml",
@@ -1000,7 +1023,7 @@ func TestTheRunLocalToolNeedsASource(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      runLocalToolName,
+		Name:      flowmcp.RunLocalToolName,
 		Arguments: map[string]any{"source": "   "},
 	})
 	require.NoError(t, err)
@@ -1065,9 +1088,9 @@ func connectRemoteMCP(t *testing.T, posture *cobra.Command, fake *fakeWorkflowSe
 	address := serveFake(t, fake)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	addMCPCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
 		return newWorkflowServiceClient(serverFlags{address: address})
-	}, posture)
+	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
@@ -1103,7 +1126,7 @@ func TestTheGetToolFailsClosedWithNoSpecification(t *testing.T) {
 	session := connectRemoteMCP(t, defaultLocalRunPosture(), fake)
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      mcpToolName("Get"),
+		Name:      flowmcp.ToolName("Get"),
 		Arguments: map[string]any{"workflowId": "flowstate-workflow-3f7c"},
 	})
 	require.NoError(t, err)
@@ -1138,7 +1161,7 @@ func TestTheGetToolRevealsWithTheServerFlag(t *testing.T) {
 	session := connectRemoteMCP(t, posture, fake)
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      mcpToolName("Get"),
+		Name:      flowmcp.ToolName("Get"),
 		Arguments: map[string]any{"workflowId": "flowstate-workflow-3f7c"},
 	})
 	require.NoError(t, err)

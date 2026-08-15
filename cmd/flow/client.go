@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/credentialsource"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/spf13/cobra"
 )
@@ -69,6 +70,18 @@ var requestTimeout = 30 * time.Second
 type serverFlags struct {
 	address   string
 	tokenFile string
+
+	// credentialSource is --credential-source / FLOWSTATE_CREDENTIAL_SOURCE:
+	// which named [credentialsource.Source] to acquire a token from, rather
+	// than the CLI's original token-file-or-environment default. Empty means
+	// that default; see [credentialSourceFor].
+	credentialSource string
+
+	// audience is --audience / FLOWSTATE_AUDIENCE: the relying party a
+	// minted token, such as one from the "github-actions" source, is
+	// addressed to. Ignored by sources that present a token they did not
+	// mint.
+	audience string
 }
 
 // addServerFlags declares them on a verb that contacts a server.
@@ -90,6 +103,20 @@ func addServerFlags(cmd *cobra.Command) {
 		"file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); "+
 			"re-read per request, so a rotating token keeps working. "+
 			"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
+
+	// Names a credentialsource.Source explicitly. "github-actions" is what
+	// turns a CI job's ambient OIDC identity into a token without any
+	// hand-written curl; "file" and "env" force the same reading --token-file
+	// and FLOWSTATE_TOKEN already do, but as a refusal rather than silent
+	// anonymity when the named source turns out empty.
+	cmd.Flags().String("credential-source", os.Getenv("FLOWSTATE_CREDENTIAL_SOURCE"),
+		"acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN "+
+			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. "+
+			"An unknown or unusable source is an error, never anonymous")
+
+	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
+		"the relying party a minted credential should be addressed to (overrides "+
+			"FLOWSTATE_AUDIENCE); required by --credential-source=github-actions")
 }
 
 // defaultServerAddress is where a Flowstate server runs unless told otherwise.
@@ -104,11 +131,76 @@ const defaultServerAddress = "localhost:9233"
 func serverFlagsOf(cmd *cobra.Command) serverFlags {
 	address, _ := cmd.Flags().GetString("address")
 	tokenFile, _ := cmd.Flags().GetString("token-file")
+	credentialSource, _ := cmd.Flags().GetString("credential-source")
+	audience, _ := cmd.Flags().GetString("audience")
 
-	return serverFlags{address: address, tokenFile: tokenFile}
+	return serverFlags{
+		address:          address,
+		tokenFile:        tokenFile,
+		credentialSource: credentialSource,
+		audience:         audience,
+	}
 }
 
 func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowServiceClient {
+	// Resolving the source is local and cheap — no network call, just naming
+	// which one to build — so it happens once here rather than on every
+	// request. A failure (an unknown --credential-source, or one missing a
+	// required --audience) is a configuration error, not a transient one, so
+	// carrying it forward to be returned from the first RoundTrip is
+	// equivalent to failing now: nothing about a later request could make it
+	// succeed.
+	//
+	// Every caller of this function makes one RPC and reports whatever error
+	// comes back directly — nothing here retries — so surfacing the failure
+	// through the transport rather than as a second return value costs
+	// nothing and keeps every existing caller unchanged. A caller that polls
+	// on a loop, and so *would* retry, does not go through this function —
+	// see [newFollowClient].
+	source, sourceErr := credentialSourceFor(server)
+
+	return newWorkflowServiceClientWithSource(server, source, sourceErr)
+}
+
+// newFollowClient builds the client a follow polls through: `flow watch`, and
+// the follow phase of `flow run` once a workload has started.
+//
+// Built once and reused for every poll, unlike [newWorkflowServiceClient].
+// [clientPoller.Poll] used to call newWorkflowServiceClient itself on every
+// tick, which resolved the credential source fresh each time too — an empty
+// cache every poll, so `flow watch` and the follow phase of `flow run` minted
+// a new OIDC token roughly once a second (up to four times a second at the
+// allowed --interval floor) instead of retaining one until its own refresh
+// margin. A long-running CI job following a durable workload could mint
+// thousands of tokens over its life, which is the kind of thing a runner's
+// token endpoint throttles.
+//
+// The credential source's construction error is also returned directly here,
+// rather than carried into the transport the way newWorkflowServiceClient
+// does. That distinction is what keeps a misconfigured --credential-source
+// out of [classifyPollError]'s retry path: an unknown source name or a
+// github-actions source with no --audience can never succeed by being polled
+// again, so a caller of this function fails before the follow loop — and its
+// thirty-second outage allowance — ever starts, rather than exhausting that
+// allowance on an error a transport-level retry treats as an outage.
+func newFollowClient(server serverFlags) (flowstatev1connect.WorkflowServiceClient, error) {
+	source, err := credentialSourceFor(server)
+	if err != nil {
+		return nil, fmt.Errorf("%w\n  --credential-source names how this command should authenticate; "+
+			"omit it to use --token-file/FLOWSTATE_TOKEN instead", err)
+	}
+
+	return newWorkflowServiceClientWithSource(server, source, nil), nil
+}
+
+// newWorkflowServiceClientWithSource builds the client both constructors above
+// share, given a credential source already resolved (or its resolution error,
+// for [newWorkflowServiceClient]'s deferred-to-the-transport path).
+func newWorkflowServiceClientWithSource(
+	server serverFlags,
+	source credentialsource.Source,
+	sourceErr error,
+) flowstatev1connect.WorkflowServiceClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	baseURL := serverBaseURL(server.address)
 
@@ -149,7 +241,8 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 			Transport: &authorizingTransport{
 				base:      &boundedTransport{base: transport, max: maxResponseBytes},
 				baseURL:   baseURL,
-				tokenFile: server.tokenFile,
+				source:    source,
+				sourceErr: sourceErr,
 			},
 
 			// Bounded in time as well as in bytes, and for the same reason: the peer
@@ -190,10 +283,24 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 // serverBaseURL turns the configured address into a base URL.
 //
 // An explicit scheme is honored, so pointing the CLI at a TLS-terminated server is a
-// matter of saying so. A bare address keeps defaulting to http, because that is what
-// it has always done and a local development server does not speak TLS — but a bare
-// *remote* address earns a warning, because a request going somewhere else in the
-// clear is worth knowing about even when it carries nothing secret.
+// matter of saying so. A bare *loopback* address keeps defaulting to http, because
+// that is what it has always done and a local development server does not speak TLS.
+//
+// A bare *non-loopback* address defaults to https instead — this is the client's
+// half of [refusePlaintextListener] (cmd/flow/tls.go), which by now refuses to let
+// `flow server` listen plaintext on anything but loopback. FLOWSTATE_ADDRESS is both
+// the address the server binds and the one a client defaults to, so once the server
+// side of that pair is guaranteed encrypted, a client guessing "http" at the same
+// bare spelling is guessing the one scheme that address can no longer be serving:
+// it would open a TLS listener a plaintext request cannot complete a handshake
+// against, silently, since nothing here would say why the request hung or was
+// refused. Guessing https instead is not optimism; it is asking for what the far
+// end is now the *only* thing it is allowed to be.
+//
+// A loopback address keeps the old default because [refusePlaintextListener] still
+// allows plaintext there — a local `flow server dev` with no certificate configured
+// is deliberately supported, and defaulting it to https would refuse to talk to a
+// server this same binary just started in the ordinary case.
 //
 // The credential half of this is no longer a warning. [tokenFor] refuses to put a
 // token on a plaintext connection to anywhere but this machine, which is the same
@@ -204,12 +311,11 @@ func serverBaseURL(address string) string {
 		return address
 	}
 
-	if !isLoopbackAddress(address) {
-		log.Printf("WARNING: talking to %s over plain HTTP. Use https:// in --address "+
-			"(or FLOWSTATE_ADDRESS) to encrypt it.", address)
+	if isLoopbackAddress(address) {
+		return "http://" + address
 	}
 
-	return "http://" + address
+	return "https://" + address
 }
 
 // isLoopbackAddress reports whether an address names this machine.

@@ -58,7 +58,15 @@ jobs:
     # applies to a step's own timeout.
     timeout-minutes: 15
     steps:
+      # persist-credentials: false everywhere in this workflow (and deep.yml,
+      # and editors.yml): checkout otherwise leaves the job's GITHUB_TOKEN in
+      # .git/config for the rest of the job, readable by anything that later
+      # runs in this workspace. Nothing here needs git-authenticated network
+      # access after checkout, so there is no reason for that token to sit
+      # somewhere a compromised dependency could read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # go.mod pins a patched toolchain via its `toolchain` directive. Reading the
       # version from go.mod keeps CI on exactly what local builds use, so a
@@ -73,12 +81,27 @@ jobs:
       # whole budget is fifteen. A separate module is the point of a plugin; the
       # cost of that boundary is that its dependencies have to be cached
       # deliberately rather than by default.
+      #
+      # `cache:` below turns off *saving* to that cache for a fork PR's run,
+      # while leaving restore alone. setup-go's default caching issues a cache
+      # write token regardless of this job's `permissions:` block — cache
+      # scoping is a property of the ref, not of what the workflow declares —
+      # so contents: read does not touch it. Every job in this workflow runs
+      # `go test`, `go vet`, or a `go run pkg@pinned-version` that builds
+      # third-party code fresh, and a fork PR is the one context here where
+      # that third-party code is untrusted. A poisoned entry a fork PR's run
+      # planted would still need a same-repo run to *save* it before anything
+      # trusted could restore it, so gating the save is what closes the gap; a
+      # same-repo push or PR keeps a warm cache exactly as before, and a fork
+      # PR pays full build cost instead of getting a write path into it. Same
+      # fix on every setup-go step below. See #577.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: |
             go.sum
             plugins/*/go.sum
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       - name: Report toolchain
         run: go version
@@ -210,14 +233,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # persist-credentials: false — see the test job above; same reason here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # buf breaking compares against the base branch, which has to be present.
           fetch-depth: 0
+          persist-credentials: false
 
+      # cache: — see the test job above; fork PRs restore but don't save. #577.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Forty-three rules, all of them enforced everywhere.
       #
@@ -264,10 +291,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Separate from the test job so a newly disclosed vulnerability is reported
       # as its own failure rather than looking like a broken test. This checks
@@ -288,10 +319,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Same toolchain pin as govulncheck, and for the same reason: staticcheck's
       # own go.mod selects a toolchain older than go.mod's, so without the pin it
@@ -299,7 +334,7 @@ jobs:
       # library vendored into the newer toolchain's module cache — not a finding
       # about this tree at all.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+        run: GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 
   # The one job with a real identity provider on the other end. Everything in
   # pkg/flowstate/v1/auth verifies tokens from an in-process stand-in issuer,
@@ -335,10 +370,14 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # -run so this job is the real-issuer check and nothing else; the offline
       # auth tests already run in the test job, and running them twice would
@@ -352,11 +391,17 @@ jobs:
 
   # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
   # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target
-  # because that bounds time and not memory. Four targets now: the round-trip one
-  # that existed first, plus the three the roadmap called for — CEL compile,
-  # MCP tool-argument decode, plugin descriptor parsing — each its own step so one
-  # hanging does not hide the others' output. Four times 30s is still comfortably
-  # under this job's five-minute budget alongside checkout and setup. Required
+  # because that bounds time and not memory. Five targets now: the round-trip one
+  # that existed first, the three the roadmap called for — CEL compile, MCP
+  # tool-argument decode, plugin descriptor parsing — and the marshal round trip
+  # added with #513's escape, each its own step so one hanging does not hide the
+  # others' output. The last is not a duplicate of the first: FuzzRoundTrip
+  # explores whole documents and asserts the workflow survives, while this one
+  # varies one scalar in a fixed document and asserts the two things that failed
+  # independently of proto equality — that the bytes written still validate,
+  # which is `flow fmt`'s whole promise, and that marshalling twice is a fixed
+  # point. Five times 30s is still comfortably under this job's five-minute
+  # budget alongside checkout and setup. Required
   # since 2026-08-09: its 48h advisory window (the same one staticcheck had)
   # closed on 2026-08-04 and the job has run green since, so a failure here is
   # now a finding to triage, never flake to wave through. A crasher the fuzzer
@@ -366,10 +411,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # No corpus is committed, so `-fuzz` always runs against the seed corpus in
       # source plus whatever it generates this run; a runner-local checkout means
@@ -380,6 +429,9 @@ jobs:
 
       - name: Fuzz smoke (FuzzCELCompile)
         run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzMarshalRoundTrip)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMarshalRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
 
       - name: Fuzz smoke (FuzzMCPToolArguments)
         run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
@@ -417,10 +469,14 @@ jobs:
     timeout-minutes: 15
     continue-on-error: true
     steps:
+      # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # vhs refuses to start without ffmpeg, even for a text recording, so this
       # is a hard dependency rather than one only the GIF path needs.

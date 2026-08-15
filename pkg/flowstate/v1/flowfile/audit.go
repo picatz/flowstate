@@ -2,7 +2,6 @@ package flowfile
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -170,108 +169,106 @@ type auditCollector struct {
 
 // workflow walks every position the language puts an expression in.
 //
-// The traversal [checkExpressionTypes] makes, field for field, plus the two
-// positions that check deliberately leaves to other validators: a call's
-// `with:` arguments, which validate_call.go checks against the callee's own
-// declarations, and a signal rule's computed `subject:`, which signals.go
-// checks when it routes the expression to subject_from. A type-checker skips a
-// position something else already reports on; this walk answers what the
-// author wrote, so a position with an expression in it belongs here whichever
-// validator owns its diagnostics.
+// The positions come from [v1.WalkWorkflow], the one traversal of a document
+// (#508), rather than from a list kept here. The list this file used to keep was
+// missing `triggers:` for the same reason the type checker's was, and with the
+// same consequence one step further on: a rewriter that cannot see an expression
+// cannot rewrite it, and `flow fix` reads this report (#506).
+//
+// A type checker skips a position something else already reports on; this walk
+// answers what the author *wrote*, so a position with an expression in it belongs
+// here whichever validator owns its diagnostics. That is why nothing is filtered
+// out that the language allows an expression in — including the two the type
+// checker leaves to other validators, a call's `with:` arguments and a signal
+// rule's computed `subject:`. The only arms that drop a position are the three
+// where an expression is not legal in the first place.
+//
+// Three more slots need an arm of their own, not to be excluded but because the
+// *field* a site is reported under is not the traversal's default spelling:
+// a declared output's position was recorded a level deeper than its field name, a
+// call's argument is reported under `with.`, and a webhook's expressions are
+// addressed by the trigger's name rather than by its index. See
+// [auditCollector.trigger] for why the last of those matters.
 func (c *auditCollector) workflow(wf *v1.Workflow) {
-	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
-		c.site("", v1.VarsRoot+"."+name, wf.GetVars()[name])
-	}
+	v1.WalkWorkflow(wf, v1.Walk{
+		Value: func(site v1.ValueSite) {
+			switch site.Slot {
+			case v1.SlotDeclaredOutput:
+				// A declared output is a mapping whose expression sits under
+				// `value:`, so the field an author reads and the path the position
+				// was recorded under are not the same string. The field is the one
+				// that gets reported.
+				field := site.Field()
+				c.siteAt("", field, field+".value", site.Value)
 
-	c.nodes(wf.GetSteps())
+			case v1.SlotCallArgument:
+				// The arguments are this file's writing; the callee is another
+				// file's, embedded whole at compile time and audited when the walk
+				// reads that file itself. The traversal does not recurse into it,
+				// which is what stops a library workflow's expressions being
+				// counted against every caller.
+				c.site(site.Step, "with."+site.Name, site.Value)
 
-	for _, declaration := range wf.GetDeclaredOutputs() {
-		// A declared output is a mapping whose expression sits under `value:`, so
-		// the field an author reads and the path the position was recorded under
-		// are not the same string. The field is the one that gets reported.
-		name := "outputs." + declaration.GetName()
-		c.siteAt("", name, name+".value", declaration.GetValue())
-	}
+			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookArgument, v1.SlotWebhookVerify:
+				c.trigger(site)
 
-	for _, policy := range slices.Sorted(maps.Keys(wf.GetSignals())) {
-		for i, rule := range wf.GetSignals()[policy].GetAllow() {
-			// A computed subject is written under `subject:`; the parser routes
-			// it to subject_from when it interpolates, so the field reported is
-			// the one the author wrote and the value read is where it landed.
-			field := fmt.Sprintf("signals.%s.allow[%d].subject", policy, i)
-			c.site("", field, rule.GetSubjectFrom())
-		}
-	}
+			case v1.SlotInputDefault, v1.SlotInputExample, v1.SlotSwitchCaseValue:
+				// The three positions the language refuses an expression in: a
+				// declaration's `default:` and `example:` are values checked
+				// against the declaration's own type, and a case is a literal a
+				// switch matches by equality. [Validate] reports an expression
+				// written in any of them, so counting one here would measure a
+				// file that has already been refused, in a report whose whole
+				// output is a number somebody puts in a trend line.
+
+			default:
+				c.site(site.Step, site.Field(), site.Value)
+			}
+		},
+	})
 }
 
-// nodes walks every expression a list of steps carries, at any depth.
-func (c *auditCollector) nodes(nodes []*v1.Node) {
-	for _, node := range nodes {
-		id := node.GetId()
+// trigger records one expression a webhook trigger carries, addressed by the
+// trigger's name.
+//
+// [v1.Triggers.Webhooks] holds only webhook entries — a `- schedule:` entry sitting
+// among them in the file compiles into [v1.Triggers.Schedule] instead and leaves no
+// slot behind — so the traversal's index is not the entry's position in the
+// `triggers:` list the author wrote whenever a schedule sits before or between
+// webhooks. [Positions.TriggerPath] recovers the original position by name,
+// recorded when the compiler still had it; computing `triggers[i]` from the index,
+// the way this used to, addresses the wrong entry (#506's finding, r3769308758).
+//
+// The field is qualified by the trigger's name for the reason the signals sites are
+// qualified by their policy: a file with more than one webhook must not have two
+// sites read as the same one.
+func (c *auditCollector) trigger(site v1.ValueSite) {
+	if site.Slot == v1.SlotWebhookVerify {
+		// A `verify:` entry is a secret reference rather than an expression, so
+		// there is no sub-expression here to count and nothing an author could
+		// collapse into a named step.
+		return
+	}
 
-		c.site(id, "if", node.GetCondition())
+	at, ok := c.pos.TriggerPath(site.Owner)
+	if !ok {
+		// No positions at all (Audit(wf, nil)), or a name this walk cannot place —
+		// either way, nothing here can locate this trigger's expressions, and
+		// guessing at a path would risk landing on whichever entry happens to
+		// share that guessed index. c.siteAt degrades to Line: 0 on its own when
+		// pos is nil; skip explicitly rather than pass a path a non-nil pos might
+		// coincidentally match.
+		return
+	}
 
-		for _, name := range slices.Sorted(maps.Keys(node.GetVars())) {
-			c.site(id, v1.VarsRoot+"."+name, node.GetVars()[name])
-		}
+	field := fmt.Sprintf("triggers[%s]", site.Owner)
 
-		if task := node.GetTask(); task != nil {
-			for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
-				c.site(id, name, task.GetInputs()[name])
-			}
-		}
-
-		if undo := node.GetUndo(); undo != nil {
-			inputs := undo.GetTask().GetInputs()
-			for _, name := range slices.Sorted(maps.Keys(inputs)) {
-				c.site(id, "undo", inputs[name])
-			}
-		}
-
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_ForEach:
-			c.site(id, "items", kind.ForEach.GetItems())
-			c.nodes(kind.ForEach.GetBody())
-		case *v1.Node_Loop:
-			c.site(id, "until", kind.Loop.GetUntil())
-			c.site(id, "init", kind.Loop.GetInitial())
-			c.site(id, "update", kind.Loop.GetUpdate())
-			c.nodes(kind.Loop.GetBody())
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				c.nodes(branch.GetSteps())
-			}
-		case *v1.Node_Switch:
-			c.site(id, "value", kind.Switch.GetValue())
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				c.nodes(body)
-			}
-		case *v1.Node_Wait:
-			c.site(id, "wait_until", kind.Wait.GetUntil())
-			c.site(id, "sleep", kind.Wait.GetDurationExpr())
-			c.site(id, "timeout", kind.Wait.GetTimeoutExpr())
-			c.site(id, "prompt", kind.Wait.GetSignal().GetPrompt())
-			shaped := kind.Wait.GetSignal().GetOutputs()
-			for _, name := range slices.Sorted(maps.Keys(shaped)) {
-				c.site(id, "outputs."+name, shaped[name])
-			}
-		case *v1.Node_Value:
-			// The kind this measurement exists to have produced, which makes it
-			// the one an omission here is worst in: a file that adopts `value:`
-			// and then writes the same predicate into three of them would read as
-			// a file with nothing repeated at all, and the adoption assertions
-			// over the corpus would pass without looking at anything.
-			c.site(id, "value", kind.Value)
-		case *v1.Node_Call:
-			// The arguments are this file's writing; the callee under
-			// kind.Call.GetWorkflow() is another file's, embedded whole at
-			// compile time and audited when the walk reads that file itself.
-			// Recursing into it would count a library workflow's expressions
-			// against every caller.
-			for _, name := range slices.Sorted(maps.Keys(kind.Call.GetArguments())) {
-				c.site(id, "with."+name, kind.Call.GetArguments()[name])
-			}
-		}
+	switch site.Slot {
+	case v1.SlotWebhookIdempotencyKey:
+		c.siteAt("", field+".idempotency_key", fieldPath(at, "idempotency_key"), site.Value)
+	case v1.SlotWebhookArgument:
+		c.siteAt("", field+".with."+site.Name,
+			fieldPath(fieldPath(at, "with"), site.Name), site.Value)
 	}
 }
 
@@ -405,6 +402,23 @@ func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
 		// than against the expression under it, an `undo:` input being the one
 		// this corpus has, so the key's line is the answer there and the header
 		// adjustment below does not apply to it.
+		//
+		// `undo` is addressed exactly, the same way [validateParsed] routes a
+		// `Kind` through [Positions.LocateKind]: `<step>.undo` is a key of the
+		// step itself, and the step's own primary task may separately declare an
+		// input literally named `undo` — a plugin task's input names come from
+		// its own descriptor, so `undo` is not a reserved word there. The
+		// candidate search [Positions.Locate] does tries every registered task's
+		// `.undo` input before the step's own `<step>.undo`, so on a step whose
+		// task has such an input, Locate would resolve to that unrelated input
+		// instead of the compensation. LocateKind has no candidate search to go
+		// wrong.
+		if field == "undo" {
+			if span, ok := c.pos.LocateKind(step, "undo"); ok {
+				return span.Start.Line
+			}
+			return 0
+		}
 		if span, ok := c.pos.Locate(step, field); ok {
 			return span.Start.Line
 		}

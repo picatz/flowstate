@@ -1,0 +1,13 @@
+# A Flowfile with nothing wrong with it, so the smoke test can tell a real
+# diagnostic from a server that complains about everything.
+edition: v2026.3
+name: editorsmoke-good
+vars:
+  greeting: hello world
+steps:
+  - id: greet
+    log:
+      message: ${vars.greeting}
+  - id: shout
+    log:
+      message: ${vars.greeting.upperAscii()}

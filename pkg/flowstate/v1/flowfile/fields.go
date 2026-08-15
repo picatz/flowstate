@@ -419,16 +419,25 @@ func (c *compiler) text(n ast.Node, path string, r ref) (string, bool) {
 		return "", false
 	}
 
-	if _, fenced := SplitFence(value); fenced {
+	// Any expression at all, whether it is the whole value or interpolated among
+	// text. This field is read when the workflow is compiled, so there is nothing
+	// to evaluate it against — which is as true of one fence among words as it is
+	// of a value that is nothing but a fence.
+	segs, err := scanInterpolation(value)
+	if err != nil {
+		c.report(spanOfNode(n), r, "%s", err)
+		return "", false
+	}
+	if hasFence(segs) {
 		c.report(spanOfNode(n), r,
 			"cannot be an expression; it is read when the workflow is compiled, so write the value out")
 		return "", false
 	}
-	if err := fenceError(value); err != nil {
-		c.report(spanOfNode(n), r, "%s", err)
-		return "", false
-	}
-	return value, true
+
+	// Read through the scan rather than taken raw, so that an author who means a
+	// literal `${` here can write `$${` and be understood, exactly as they can in
+	// a value the engine evaluates.
+	return literalText(segs), true
 }
 
 // duration reads a duration, written the way durations are written everywhere else

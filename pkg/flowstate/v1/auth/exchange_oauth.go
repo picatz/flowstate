@@ -230,10 +230,22 @@ type clientCredentialsExchanger struct {
 	tokenURL string
 	clientID string
 	audience string
-	secret   string
-	scopes   []string
-	client   *exchangeClient
-	clock    func() time.Time
+
+	// secret is [Material] rather than a string, and it is the only field here
+	// that has to be. A string is reachable by reflection through the pointer a
+	// caller holds, so `%+v` on this exchanger printed the client secret in
+	// full — the leak class invariant 7 names, and the one this package's own
+	// redacting types exist to close. Material holds the value in a closure,
+	// which reflection cannot reach at all.
+	//
+	// Zero when no secret is configured, which is what NewSingleMaterial answers for
+	// an empty value, so the tests below read exactly as the `== ""` they
+	// replace.
+	secret Material
+
+	scopes []string
+	client *exchangeClient
+	clock  func() time.Time
 }
 
 // NewClientCredentialsExchanger returns an [Exchanger] that performs an OAuth 2.0
@@ -267,7 +279,7 @@ func NewClientCredentialsExchanger(cfg ClientCredentialsConfig) (Exchanger, erro
 		tokenURL: cfg.TokenURL,
 		clientID: cfg.ClientID,
 		audience: audience,
-		secret:   cfg.ClientSecret,
+		secret:   NewSingleMaterial(cfg.ClientSecret),
 		scopes:   cfg.Scopes,
 		client:   newExchangeClient(cfg.HTTPClient, cfg.Timeout),
 		clock:    clock,
@@ -284,7 +296,7 @@ func (e *clientCredentialsExchanger) Name() string { return e.name }
 // still described by the assertion's other claims.
 func (e *clientCredentialsExchanger) Requirement() Requirement {
 	requirement := Requirement{Audience: e.audience}
-	if e.secret == "" {
+	if e.secret.IsZero() {
 		requirement.Subject = e.clientID
 	}
 	return requirement
@@ -300,8 +312,8 @@ func (e *clientCredentialsExchanger) Exchange(ctx context.Context, assertion Ass
 		form.Set("scope", strings.Join(e.scopes, " "))
 	}
 
-	if e.secret != "" {
-		form.Set("client_secret", e.secret)
+	if secret, ok := e.secret.Single(); ok {
+		form.Set("client_secret", secret)
 	} else {
 		token := assertion.Token()
 		if token == "" {

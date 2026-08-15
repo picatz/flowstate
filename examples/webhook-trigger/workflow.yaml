@@ -1,0 +1,91 @@
+# A workflow another system starts by delivering to it — and that still runs on demand.
+#
+# `triggers:` written as a list is the *call-site* spelling: each entry names its
+# kind, and a webhook carries `with:`, exactly as a `call:` step does
+# (examples/pinned-call). That is the whole design in one line — `inputs:` below is
+# a signature, and a trigger is another caller of it, no different from
+# `flow run --input` or an MCP invocation. Several sources starting one workflow is
+# therefore not a problem to solve, it is several entries.
+#
+# What it buys is the diagnostic. Because a trigger is a call site, `flow validate`
+# checks every `with:` against the signature *statically*: bind an input this file
+# does not declare, or leave a required one unbound, and it says so with a line and
+# a column before anything is deployed. A per-trigger mapping block could not — it
+# would state what an input is a second time, with nothing forcing the two to agree.
+#
+# # Declaring is not serving
+#
+# Nothing in this file serves an HTTP endpoint. The block is a declaration; a
+# deployment decides whether *this* installation serves it, with
+#
+#     flow server --webhook examples/webhook-trigger/workflow.yaml
+#
+# which mounts it at POST /webhooks/webhook-trigger/stripe and resolves the
+# `verify:` key below at startup. Without that flag the declaration is checked when
+# the file compiles and replayed offline by `flow test` against a stored delivery
+# (see workflow.test.yaml and testdata/stripe-charge.json). Both execution drivers
+# ignore it, which is what keeps this example runnable in CI like every other one:
+#
+#     flow run local examples/webhook-trigger/workflow.yaml
+#
+# runs it once, now, with the defaults below.
+edition: v2026.3
+name: webhook-trigger
+
+# The signature. Both have defaults, so the file runs as written with no arguments
+# — the rule every example here follows — and both are bound by the trigger below
+# when a delivery starts the run.
+inputs:
+  order_id:
+    type: string
+    default: ord_local
+    description: the order this run is about
+
+  amount:
+    type: int
+    default: 0
+    description: the amount captured, in the smallest currency unit
+
+triggers:
+  - webhook: stripe
+    # How a delivery is proved genuine. Required, with at least one scheme: an
+    # unverifiable delivery is refused rather than accepted, so there is
+    # deliberately no spelling that means "allow anything" — a webhook with no
+    # `verify:` is not permissive, it is inert, and `flow validate` says so.
+    #
+    # The key is a reference, never a value written here. Nothing in this file
+    # resolves it: `flow validate` checks the shape and stays silent about whether
+    # this deployment has the secret, which is the standing rule about what a
+    # validator may report. The schemes are hmac_sha256 and stripe.
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+
+    # What names one delivery. Required rather than optional, because webhook
+    # delivery is at-least-once by nature: without a dedupe key every retried
+    # delivery is a second run, and "this integration will not retry" is not a
+    # thing a file may assume silently.
+    idempotency_key: ${event.headers["stripe-signature"]}
+
+    # The call site. `event` is the delivery — `event.headers` and `event.body` —
+    # and it is bound here and nowhere else in the language: a step that wants the
+    # payload reads it as `inputs.<name>`, because everything a workflow operates
+    # on arrives through this mapping into the signature above. A second input path
+    # would be one `flow validate` could not check.
+    with:
+      order_id: ${event.body.data.object.metadata.order_id}
+      amount: ${event.body.data.object.amount}
+
+steps:
+  - id: record
+    log:
+      message: ${'captured ' + string(inputs.amount) + ' for order ' + inputs.order_id}
+      level: info
+
+outputs:
+  order:
+    value: ${inputs.order_id}
+    description: the order this run was started for
+
+  amount:
+    value: ${inputs.amount}
+    description: the amount the delivery carried

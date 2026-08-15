@@ -595,6 +595,11 @@ message InputDeclaration {
     TYPE_BOOL = 4;
     TYPE_STRUCT = 5;
     TYPE_LIST = 6;
+    // 7 and 8 are deliberately holes: on [Value.Type] those numbers are
+    // TYPE_EXPR and TYPE_ERROR, which are not data and so have no
+    // counterpart here (see above).
+    reserved 7, 8;
+    TYPE_ENUM = 9;
   }
 
   // Name is what the input is called, and how an expression reaches it:
@@ -803,6 +808,31 @@ message InputDeclaration {
   // the same way on every replay and at every one of this declaration's
   // enforcement points, which an expression reading the clock cannot promise.
   optional string must = 16;
+
+  // Values is the closed set of strings a `type: enum` value may be. Only the
+  // per-declaration shape lives here: that they are non-empty, bounded, and
+  // distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
+  // whether at least one is given, and whether `default`/`example` are
+  // themselves members are set-facts about this declaration, and per this
+  // message's own doc comment those belong to the compiler for a Flowfile and
+  // to [CheckInputConstraintShape] for a hand-built specification — not here.
+  //
+  // Bounded the way any set quoted into a diagnostic must be: an enum's
+  // declared choices are rendered into the "not one of" message a bad
+  // submission gets back, so an unbounded set is an unbounded response the
+  // caller controls the shape of.
+  repeated string values = 17 [
+    (buf.validate.field).repeated = {
+      max_items: 64
+      unique: true
+      items: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+    }
+  ];
 }
 
 // OutputDeclaration is one value a finished run reports: a name, and the
@@ -905,6 +935,298 @@ message Triggers {
   // Optional and, when present, still inert until somebody creates it. See
   // [Workflow.triggers] for why the declaration and the act are separate.
   ScheduleTrigger schedule = 1 [(google.api.field_behavior) = OPTIONAL];
+
+  // Webhooks are the deliveries this workload is meant to start on, one entry
+  // per source.
+  //
+  // Repeated rather than singular because several sources starting one workload
+  // is the ordinary case rather than the exotic one — a payments provider and a
+  // storefront both reporting the same order — and each brings its own payload
+  // shape, its own signing scheme, and therefore its own mapping into
+  // [Workflow.declared_inputs]. That is what makes a webhook a *call site*
+  // rather than a second declaration of the inputs: `arguments` here is the same
+  // construct as [Call.arguments], checked against the same signature, so N
+  // sources are N callers instead of a keyed sub-language nobody asked for.
+  //
+  // Inert exactly as `schedule` is. Nothing in `Run` reads this, both execution
+  // drivers ignore it, and no HTTP endpoint in this repository serves a
+  // delivery yet: what a file declares here is checked by `flow validate` and
+  // replayed offline by `flow test`. See [WebhookTrigger] for what the receiver
+  // will be handed when it lands.
+  repeated WebhookTrigger webhooks = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 32}
+  ];
+
+  // Manual narrows the start that already works, and is the one entry in this
+  // message that does not enable anything.
+  //
+  // `flow run`, `flow run local`, the `Run` RPC and MCP all start a workflow
+  // today with no declaration at all, so `triggers:` is deliberately *not*
+  // exhaustive: adding a webhook must never silently stop `flow run` from
+  // working, or authoring and testing break together the first time somebody
+  // integrates a payment provider. Absent therefore means what it has always
+  // meant — a human may start this — and the field exists to say something
+  // narrower. See [ManualTrigger].
+  ManualTrigger manual = 3 [(google.api.field_behavior) = OPTIONAL];
+}
+
+// ManualTrigger is what a workload says about being started by a person.
+//
+// # Narrowing, never enabling
+//
+// Every field here removes something. A workflow with no `manual:` block may be
+// started by anyone who can reach the server; declaring one requires a recorded
+// reason, or restricts who may, or refuses the start outright. There is
+// deliberately no field that *grants* a manual start, because one already
+// exists in the absence of this message, and a grant-shaped spelling would make
+// "did somebody remember to write it" the difference between a runnable file
+// and an unrunnable one.
+//
+// # Where it is enforced, and where it deliberately is not
+//
+// [FlowstateServer.Run] enforces this, against the caller the server itself
+// attested, before Temporal sees anything — the same placement [SignalPolicy]
+// has and for the same reason. `flow run local` and `flow test` are never
+// gated: the author's machine is not a deployment, and a workflow that cannot
+// be developed locally is not one anybody will maintain. That is the rule that
+// already keeps egress policy out of the validator, applied to the one entry
+// path an author uses while writing.
+//
+// # Why this and not `if: ${trigger.principal == "admin"}`
+//
+// Authorization belongs on the trigger, decided when configuration loads,
+// where the validator can see it and a deployment owns it. The same test
+// written in the body is an expression a test can fake, one `flow validate`
+// cannot reason about, and one a later refactor can reorder past the step it
+// was guarding. [TriggerContext] is for behaviour; this message is for
+// authorization, and the two are kept apart on purpose.
+message ManualTrigger {
+  // Denied refuses manual starts outright: this workload is started by its
+  // other declared triggers and by nothing else.
+  //
+  // Explicit and greppable, which is the whole point. "Triggers are
+  // exhaustive" would have given the same refusal by inference — declare a
+  // webhook, lose `flow run` — and nobody discovers an inferred lock until
+  // they need it not to be there.
+  //
+  // Contradicts both fields below, and the compiler refuses the combination
+  // rather than resolving it by precedence: a refusal that also lists who may
+  // start the workload is two sentences that cannot both be true.
+  bool denied = 1 [(google.api.field_behavior) = OPTIONAL];
+
+  // RequireReason makes a manual start carry a reason, recorded on the run
+  // ([RunRequest.reason]).
+  //
+  // For the workload where "who ran this, and why" is asked after the fact —
+  // a break-glass rotation, a manual refund — and where the answer being
+  // absent is the failure. A start with no reason is refused while the person
+  // who has one is still present to give it.
+  bool require_reason = 2 [(google.api.field_behavior) = OPTIONAL];
+
+  // AllowedPrincipals restricts a manual start to these attested subjects,
+  // matched against [WorkloadIdentity.subject] — the caller the server
+  // authenticated, never anything the request asserts about itself.
+  //
+  // Empty means every authenticated caller, which is today's behavior and what
+  // a workflow with no `manual:` block keeps. Non-empty is a closed set: a
+  // subject that is not in it is refused, including the empty subject an
+  // unauthenticated deployment attests, because a policy that admits "nobody
+  // in particular" is a policy that admits everyone.
+  repeated string allowed_principals = 3 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {
+      max_items: 64
+      items: {
+        string: {
+          min_len: 1
+          max_len: 256
+        }
+      }
+    }
+  ];
+}
+
+// TriggerContext is how a run was started, as its own steps may read it:
+// `trigger.kind`, `trigger.name`, `trigger.principal`, `trigger.delivery_id`.
+//
+// # Safe for durable execution, and why that is not obvious
+//
+// Every field is fixed when the run starts and carried in [RunState], so it is
+// the same value on every replay and across every Continue-As-New. That is what
+// separates it from the two facts this language refuses to make ambiently
+// readable — the clock and randomness — which change underneath a run and would
+// make a replayed step take a different branch than the one history recorded.
+// A trigger cannot drift, so it can be read anywhere an ordinary expression is.
+//
+// # Metadata, never data
+//
+// The set is closed at these four fields on purpose. Everything a workflow
+// *operates on* arrives through a trigger's `with:` into [Workflow.declared_inputs],
+// checked against declarations `flow validate` can see. A payload field reachable
+// under `trigger` would be a second input path with no contract, invisible to
+// the validator — so there is no `trigger.payload`, no `trigger.headers`, and
+// none will be added.
+//
+// # Behaviour, never authorization
+//
+// `if: ${trigger.kind != "schedule"}` is what this is for: a nightly sweep that
+// does not page anyone, a human start that takes a second pair of eyes.
+// `if: ${trigger.principal == "admin"}` is the shape to refuse — see
+// [ManualTrigger] for where that decision belongs instead.
+//
+// # Nothing secret rides along
+//
+// These values are written to durable history, which is broadly readable, so
+// [principal] is an attested subject and [delivery_id] is a digest rather than
+// the idempotency key it names (a webhook's key is frequently a signature
+// header). Neither is material anything can authenticate with.
+message TriggerContext {
+  // Kind is how the run started: `manual`, `webhook`, or `schedule`.
+  //
+  // A string rather than an enum because it is read from a CEL expression, where
+  // an enum arrives as a number and `trigger.kind == 1` is not a sentence
+  // anybody wants to write or review. The set is closed all the same:
+  // `v1.TriggerKinds` names it, and the compiler refuses a comparison against a
+  // word that is not in it, so a misspelled `"schedual"` is a diagnostic rather
+  // than a branch that is never taken.
+  //
+  // Empty for a run started before this field existed, which reads as "no
+  // trigger recorded" and is the honest answer for one: see
+  // `v1.TriggerContextValue` for how that renders, and why every field is
+  // rendered rather than omitted.
+  string kind = 1 [(buf.validate.field).string = {max_len: 32}];
+
+  // Name identifies which trigger of that kind started the run: the webhook's
+  // declared name, or the schedule's. Empty for a manual start, which has no
+  // name to carry — a person is not a declared source.
+  string name = 2 [(buf.validate.field).string = {max_len: 64}];
+
+  // Principal is who or what started the run, as the server attested it: a
+  // caller's subject for a manual start, the trigger the delivery arrived at
+  // for a webhook, the schedule's owner for a scheduled firing.
+  //
+  // Never taken from a request. It is the same value [RunState.identity]
+  // carries, restated here because a step reading "how was I started" should
+  // not have to know that a webhook's principal is spelled one way under `run`
+  // and another under `trigger`.
+  string principal = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // DeliveryID names the one arrival that started this run, for correlating a
+  // run against the provider's own record of what it sent.
+  //
+  // A digest of the trigger's evaluated `idempotency_key`, never the key: the
+  // usual key is a signature header, and this is written to a memo and to
+  // history, both durable and broadly readable. Empty for every kind that has
+  // no delivery.
+  string delivery_id = 4 [(buf.validate.field).string = {max_len: 128}];
+}
+
+// WebhookTrigger is one source that may start this workload by delivering to it.
+//
+// # A call site, not a second declaration of the inputs
+//
+// `arguments` is the same construct a `call:` step writes as `with:`: the
+// workflow's `inputs:` is the signature, and a trigger is another caller of it,
+// exactly as `flow run --input` and an MCP invocation are. That choice is the
+// whole reason `flow validate` can say `webhook "stripe" does not supply
+// required input "amount"` with a line and a column, which a per-input `from:`
+// or a per-trigger mapping block could never say: with a mapping block the same
+// fact is written twice, in `inputs:` and beside it, with nothing forcing the
+// two to agree.
+//
+// The expressions in `arguments` and in `idempotency_key` are evaluated against
+// one bound name, `event`, holding the delivery — its headers and its decoded
+// body. That name is bound here and nowhere else in the language: a step body
+// that wants to know how the run started is a later slice (`trigger.kind` and
+// friends), and payload data must arrive through `arguments` into `inputs:` or
+// the file has grown a second input path with no contract.
+//
+// # Fail closed, declared rather than assumed
+//
+// Two fields are required by the shape of the problem rather than by taste, and
+// both are refused when the file is compiled rather than when a delivery
+// arrives:
+//
+//   - `verify` names at least one signing scheme. There is deliberately no
+//     spelling that means "accept anything": an unverifiable delivery is
+//     refused, never allowed because it could not be checked.
+//   - `idempotency_key` is required. Webhook delivery is at-least-once by
+//     nature, so a trigger with no dedupe key turns every retried delivery into
+//     a second run — a fact about the transport, not about this integration's
+//     luck.
+//
+// The remaining bound belongs to the receiver that does not exist yet: a
+// request body is attacker-chosen input and gets a byte bound *before* it is
+// read into memory. `v1.MaxWebhookPayloadBytes` is that number, and it is
+// already enforced by the one reader there is today — `flow test` reading a
+// stored delivery off disk — so the receiver inherits a bound rather than
+// introducing one.
+message WebhookTrigger {
+  // Name identifies this source, both in a diagnostic (`webhook "stripe" …`)
+  // and in a `flow test` case that replays a stored delivery against it. Unique
+  // within a file: two sources sharing a name are two mappings a reader cannot
+  // tell apart, and a test naming one of them addresses whichever came first.
+  string name = 1 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^[A-Za-z][A-Za-z0-9_-]*$"
+    }
+  ];
+
+  // Verify names the signing schemes a delivery must satisfy, each bound to the
+  // key it is checked with — written in a Flowfile as `${secret('...')}`, so the
+  // material is a reference the receiver resolves rather than a value in a
+  // repository.
+  //
+  // At least one entry, and the schemes are a closed set
+  // ([v1.WebhookVerificationSchemes]) checked when the file compiles: a scheme
+  // nobody implements is a delivery nobody can verify, which under the rule
+  // above means a delivery that is always refused — better said with a line and
+  // a column than discovered in production.
+  map<string, Value> verify = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).map = {
+      min_pairs: 1
+      max_pairs: 8
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 64
+        }
+      }
+    }
+  ];
+
+  // IdempotencyKey is the expression that names a delivery, so a redelivery of
+  // the same event is recognized as one rather than started again.
+  //
+  // Evaluated against `event`, like `arguments`. Required — see the message doc
+  // for why "this integration has no stable key" has to be something somebody
+  // writes down rather than something a default quietly assumes.
+  Value idempotency_key = 3 [(google.api.field_behavior) = REQUIRED];
+
+  // Arguments bind this source's payload to the workflow's declared inputs, one
+  // expression per input, over `event`.
+  //
+  // Named `arguments` rather than `with` for the reason [Call.arguments] is: the
+  // schema says what the field holds and the DSL says how it is spelled, and the
+  // two constructs are deliberately the same construct — checked against
+  // [Workflow.declared_inputs] by the same rules, in both directions.
+  map<string, Value> arguments = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      max_pairs: 64
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 64
+        }
+      }
+    }
+  ];
 }
 
 // ScheduleTrigger says when a workload should run.
@@ -1934,6 +2256,22 @@ message Scope {
   // that is stable for the whole run (see [RunAddress]), so there is no value
   // crossing the Continue-As-New seam and nothing for invariant 10 to protect.
   RunAddress address = 8;
+
+  // Trigger is how this run started, read under the `trigger` root. See
+  // [TriggerContext].
+  //
+  // Carried on the scope for the reason [Scope.inputs] and [Scope.address] are:
+  // a task declaring `needs_prev_outputs` evaluates its own expressions inside
+  // an activity, on a worker holding this message and nothing else, so without
+  // the field `${trigger.kind}` would resolve in a step's `if:` and be unbound
+  // in the http task's `outputs:` two lines below it — one spelling with two
+  // behaviours, decided by a property of the task an author has no reason to
+  // know.
+  //
+  // Unlike [Scope.address] this *is* carried in [RunState], because no
+  // substrate can answer the question: how a run started is a fact about the
+  // submission, known once, at the boundary that admitted it.
+  TriggerContext trigger = 9;
 }
 
 // RunAddress is a run's own address: the pair that identifies it to anything
@@ -3313,6 +3651,29 @@ message RunRequest {
     max_len: 128
     pattern: "^[a-z0-9][a-z0-9-]*$"
   }];
+
+  // Reason is why a person is starting this run, recorded on it.
+  //
+  // Optional here and required by the *workflow*: a specification declaring
+  // `manual: {require_reason: true}` is refused a start without one (see
+  // [ManualTrigger.require_reason]), while everything else ignores this field.
+  // That placement is deliberate — the requirement is a property of the
+  // workload, so it travels with the workload, and a caller cannot lift it by
+  // omitting the field.
+  //
+  // Recorded as a memo rather than reaching an expression. It is provenance for
+  // whoever reads the run afterwards, not an argument the workflow computes
+  // with: a value a caller writes freely and a step then branches on is an
+  // input, and an input goes through `inputs:` where declarations check it.
+  // That is also why it is absent from [TriggerContext], whose four fields are
+  // all attested rather than asserted.
+  //
+  // Free text, because the question it answers is one a person asks another
+  // person. Bounded like everything else a caller chooses the size of.
+  string reason = 4 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {max_len: 512}
+  ];
 }
 
 // RunResponse is the response message for a workflow run.
@@ -4421,6 +4782,22 @@ message RunState {
   // undo": the truth for such a run, since no specification it could be executing
   // had an `undo:` to register (invariant 10, with no compatibility arm needed).
   repeated PendingUndo pending_undo = 11;
+
+  // Trigger is how this run was started, established once at the boundary that
+  // admitted it and read by every step under the `trigger` root. See
+  // [TriggerContext].
+  //
+  // Carried rather than re-derived, for the reason [RunState.inputs] is: the
+  // fact is established once, by whichever entry path accepted the submission,
+  // and a later segment must see what the first one saw. It is also the reason
+  // reading it is replay-safe at all — a value fixed in state cannot drift the
+  // way a clock read would.
+  //
+  // Absent on a run started before this field existed, and on one started by a
+  // path that records nothing, which both read as every field empty. `flow
+  // validate` cannot tell those apart and neither can a workflow, which is
+  // correct: "no trigger recorded" is one fact, not two.
+  TriggerContext trigger = 12;
 }
 
 // SignalRequest delivers a signal to a waiting run.

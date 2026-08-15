@@ -483,6 +483,96 @@ func TestRunWorkflowValue(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowInterpolation covers a scalar mixing text with ${...} in the
+// local driver.
+//
+// The engine package runs the identical [tests.InterpolationCases] against the
+// durable driver. Interpolation itself is compiled away before either driver
+// sees a workflow, which is the design; what the pairing holds is the part that
+// is not compiled away, the `string()` each driver's own evaluator runs over
+// every fence. See the set's doc for why a rendering that differed between them
+// is invariant 3 broken in the direction an author would notice last.
+func TestRunWorkflowInterpolation(t *testing.T) {
+	for _, test := range tests.InterpolationCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowWebhookTrigger covers a declared `triggers:` webhook in the
+// local driver.
+//
+// The engine package runs the identical [tests.WebhookTriggerCases] against the
+// durable driver, and the pairing is the whole point of the set: what a trigger
+// declaration does to a run is *nothing*, on both drivers, and a rehearsal that
+// disagreed with production about that would be a rehearsal of a different file.
+func TestRunWorkflowWebhookTrigger(t *testing.T) {
+	for _, test := range tests.WebhookTriggerCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowTriggerContext covers reading `trigger` in the local driver.
+//
+// The engine package runs the identical [tests.TriggerContextCases] against the
+// durable driver, and the pairing is the substance of this feature rather than a
+// formality: here the context arrives on a context value and there it arrives in
+// [v1.RunState], crosses the wire and survives Continue-As-New. Two routes, one
+// answer, or `flow run local` is rehearsing a different file.
+func TestRunWorkflowTriggerContext(t *testing.T) {
+	for _, test := range tests.TriggerContextCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			ctx := t.Context()
+			if test.Trigger != nil {
+				ctx = v1.NewContextWithTrigger(ctx, test.Trigger)
+			}
+
+			out, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowWebhookDelivery covers a run started by a delivery in the local
+// driver.
+//
+// The engine package runs the identical [tests.WebhookDeliveryCases] against the
+// durable driver. What the pairing is for is the *values*: a delivery's inputs
+// come out of a JSON payload rather than off a command line, so they are the one
+// set of inputs whose Go types nobody wrote down, and a driver that read a
+// payload's number differently would refuse a run its rehearsal accepted.
+func TestRunWorkflowWebhookDelivery(t *testing.T) {
+	for _, test := range tests.WebhookDeliveryCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			require.NotNil(t, test.Inputs, "the delivery did not bind, so there is nothing to run")
+
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			if test.ExpectFailure {
+				require.Error(t, err, "the case expected the run to fail")
+				return
+			}
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowSwitch covers `switch:` in the local driver.
 //
 // The engine package runs the identical [tests.SwitchCases] against the durable
@@ -554,6 +644,25 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowOutputShaping covers a shaped `outputs:` mapping in the local
+// driver.
+//
+// Paired with the identically named test in the engine package, per the rule the
+// shared package exists for. The mapping form and the older fenced map literal
+// take different paths inside the http task, so "they are the same shaping" is a
+// claim about execution, and it has to be made on both drivers or it is a claim
+// about whichever one happened to be run.
+func TestRunWorkflowOutputShaping(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.OutputShapingCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			require.NoError(t, err)
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowResponseScope covers what an http step's `expect:` and `outputs:`
 // can see, in the local driver.
 //
@@ -566,7 +675,12 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 	baseURL := tests.NewHTTPServer(t)
 	for _, test := range tests.ResponseScopeCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
-			out, err := v1.Run(t.Context(), test.Workflow)
+			ctx := t.Context()
+			if test.Trigger != nil {
+				ctx = v1.NewContextWithTrigger(ctx, test.Trigger)
+			}
+
+			out, err := v1.Run(ctx, test.Workflow)
 			require.NoError(t, err)
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, out, protocmp.Transform()))
 		})

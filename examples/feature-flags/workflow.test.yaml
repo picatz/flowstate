@@ -1,0 +1,37 @@
+# Two cases: a caller that sends `beta_search`, and one that never mentions
+# it at all — proving `.?` defaults an absent key rather than only being
+# exercised on a present-but-false one, which a single case could not tell
+# apart from a bug that always returns the default.
+edition: v2026.3
+tests:
+  - name: a caller's flags are summarized, and beta_search reads what it sent
+    workflow: ./workflow.yaml
+    inputs:
+      flags:
+        beta_search: true
+        dark_mode: false
+        new_billing: true
+    stubs:
+      - task: log
+        where: "inputs.message == 'enabled: [beta_search, new_billing], beta search: true'"
+        returns: {}
+    expect:
+      ran: [enabled, search_enabled, report]
+      outputs:
+        enabled_flags: [beta_search, new_billing]
+        search_enabled: true
+
+  - name: a caller that never mentions beta_search gets the default, not an error
+    workflow: ./workflow.yaml
+    inputs:
+      flags:
+        dark_mode: true
+    stubs:
+      - task: log
+        where: "inputs.message == 'enabled: [dark_mode], beta search: false'"
+        returns: {}
+    expect:
+      ran: [enabled, search_enabled, report]
+      outputs:
+        enabled_flags: [dark_mode]
+        search_enabled: false

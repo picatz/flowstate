@@ -87,6 +87,41 @@ func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value
 		return nil, err
 	}
 
+	// And beside those two, for the third time the same reason applies. A
+	// `verify:` key written as a literal rather than as a secret reference
+	// satisfies the schema's map shape perfectly — protovalidate has nothing to
+	// say about which `Value.kind` a signing key is — so before this line a
+	// hand-built `RunRequest` carrying `verify: {hmac-sha256: "whsec_live_…"}`
+	// was accepted and the signing key was then written into Temporal history
+	// with the specification, which invariant 8 says is durable and broadly
+	// readable. `flow validate` refused it against a line and a column and a
+	// specification that never was a Flowfile went through untouched: the
+	// Flowfile path and the RPC path were enforcing different rules about a
+	// secret.
+	//
+	// The whole set-level checker rather than only the `verify:` half, because
+	// the rest of what it refuses is wrong on a hand-built specification for the
+	// identical reasons it is wrong in a file — a scheme nothing implements can
+	// never accept a delivery, a missing `idempotency_key` turns every
+	// redelivery into a second run, and two webhooks under one name are a
+	// mapping nothing can address unambiguously.
+	if err := CheckWebhookTriggers(wf.GetTriggers()); err != nil {
+		return nil, err
+	}
+
+	// And the fourth, for the fourth time the same reason applies. A `manual:`
+	// block that both refuses manual starts and narrows them satisfies the
+	// schema perfectly — protovalidate has nothing to say about two booleans
+	// that contradict — and it is a specification an author cannot write,
+	// because the compiler refuses it against a line and a column. Refused here
+	// so that a hand-built `RunRequest` cannot carry a contradiction into
+	// durable history, where [CheckManualStart] would then have to decide which
+	// half of it to believe. Fail closed at the boundary, once, rather than
+	// twice with a precedence rule.
+	if err := CheckManualTrigger(wf.GetTriggers().GetManual()); err != nil {
+		return nil, err
+	}
+
 	declared := make(map[string]*InputDeclaration, len(wf.GetDeclaredInputs()))
 	for _, declaration := range wf.GetDeclaredInputs() {
 		declared[declaration.GetName()] = declaration
@@ -248,6 +283,21 @@ func CheckInputValue(name string, declaration *InputDeclaration, value *Value) e
 		return fmt.Errorf("input %q is %s, which is not a kind of value an input can hold; "+
 			"it is declared %s", name, literalKindName(value.GetLiteral()), DeclaredTypeName(declaration.GetType()))
 	}
+
+	// TYPE_ENUM has no counterpart in [inputTypeOf]'s switch, deliberately:
+	// the wire shape a caller sends for an enum value is a string, the same
+	// shape TYPE_STRING sends, so the only rule this function checks is that
+	// shape. Which string is checked against the declaration's own `values:`
+	// is a set-fact about *this* declaration, and [CheckInputConstraints] is
+	// where set-facts are enforced.
+	if declaration.GetType() == InputDeclaration_TYPE_ENUM {
+		if got != InputDeclaration_TYPE_STRING {
+			return fmt.Errorf("input %q is declared %s but was given %s",
+				name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))
+		}
+		return nil
+	}
+
 	if got != declaration.GetType() {
 		return fmt.Errorf("input %q is declared %s but was given %s",
 			name, DeclaredTypeName(declaration.GetType()), DeclaredTypeName(got))

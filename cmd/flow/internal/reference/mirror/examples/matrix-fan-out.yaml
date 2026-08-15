@@ -44,7 +44,7 @@ outputs:
     description: how many matrix targets this run built
 
   summary:
-    value: ${"built %d of %d combinations".format([size(steps.build.results), size(vars.os) * size(vars.arch)])}
+    value: built ${size(steps.build.results)} of ${size(vars.os) * size(vars.arch)} combinations
     description: what the run did, in one sentence
 
 steps:
@@ -69,10 +69,10 @@ steps:
       steps:
         - id: compile
           log:
-            message: ${"building %s/%s".format([target.os, target.arch])}
+            message: building ${target.os}/${target.arch}
 
   # `results` outlives the block, so the count is readable from here. Five, not
   # six: the excluded combination never became an item.
   - id: report
     log:
-      message: ${"built %d target(s)".format([size(steps.build.results)])}
+      message: built ${size(steps.build.results)} target(s)

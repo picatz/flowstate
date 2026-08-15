@@ -639,11 +639,37 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		workflowID = entityID
 	}
 
-	_, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	// This is a manual start — the `Run` RPC is what `flow run`, an agent over
+	// MCP and any other caller reach — so the workflow's own `manual:` block
+	// decides whether it may happen, against the identity this server attested
+	// and the reason the caller gave. Refused here, at the boundary, while the
+	// caller is still present to be told: authorization belongs on the trigger
+	// and not in a step's `if:`, where it would be an expression the workflow
+	// evaluates about itself. See [v1.CheckManualStart].
+	//
+	// A workflow with no `manual:` block passes unchanged, which is every
+	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
+	// must never silently stop `flow run` from working.
+	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), req.Msg.GetReason()); err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	}
+
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
 	if err != nil {
 		return nil, err
 	}
 	options.ID = workflowID
+
+	// Provenance, in the same memo the tenant and the starter are recorded in and
+	// for the same reason: it is read afterwards, by whoever asks how this run
+	// came to happen. The reason is recorded only when there is one, because an
+	// entry that is always present says nothing, and this one is the answer to a
+	// question somebody asks after the fact.
+	memo[triggerMemoKey] = v1.TriggerKindManual
+	if reason := req.Msg.GetReason(); reason != "" {
+		memo[reasonMemoKey] = reason
+	}
+	options.Memo = memo
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    req.Msg.GetWorkflow(),
@@ -654,6 +680,12 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		// re-derives them, so every segment of the run sees what this submission
 		// established.
 		Inputs: inputs,
+
+		// And how this run started, established here because here is the only
+		// place that knows: a person asked, and this server attested who they
+		// are. Carried in state rather than derived, which is what makes
+		// `${trigger.kind}` the same value on every replay.
+		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
@@ -688,39 +720,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 // "May create" is therefore the floor for every call through that RPC, not
 // only the ones that end up creating.
 func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[string]*v1.Value) (map[string]*v1.Value, error) {
-	if err := s.pinPlugins(wf); err != nil {
+	if err := s.validateSpecification(wf); err != nil {
 		return nil, err
-	}
-	if s.credentialTargetsConfigured {
-		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-	}
-
-	// Rules compile at submit, not at signal-time. Everything [v1.Validate]
-	// cannot see because it is a fact about a *set* of declared policies rather
-	// than about one field — a policy for a signal name nothing waits for, a rule
-	// that matches every sender — is caught here, once, rather than discovered the
-	// first time a signal is actually delivered and denied for a reason the
-	// author never saw at submit.
-	if err := v1.CheckSignalPolicies(wf); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// Size is a separate question from validity, and it has to be asked here
-	// because here is where somebody is still listening.
-	//
-	// A specification under Temporal's blob limit is accepted and then carried,
-	// with everything the run accumulates, across every Continue-As-New. Past the
-	// limit Temporal refuses the Continue-As-New, which fails the workflow task,
-	// which is retried — so the run does not fail, it wedges: RUNNING forever, on
-	// an ever-climbing attempt count, occupying a worker each time. Measured at
-	// 1.2 MiB: submitted fine, ran a step, attempt 5 forty-five seconds later.
-	//
-	// Refusing at submit turns that into a sentence an author can act on. The
-	// engine keeps its own check for what this one cannot predict.
-	if err := v1.CheckSpecSize(wf); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// The caller's half of the input contract, refused here rather than discovered
@@ -748,6 +749,60 @@ func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[stri
 	}
 
 	return inputs, nil
+}
+
+// validateSpecification is the half of [FlowstateServer.validateSubmission] that
+// asks only about the specification: the deployment's plugin selection, the
+// credential targets it permits, the shape of the declared signal policies, and
+// the size of the specification itself. It writes the plugin pin onto wf.
+//
+// Split out because there is one caller that has a specification long before it
+// has a submission: [FlowstateServer.NewWebhookReceiver], which is handed the
+// workflows a deployment will serve deliveries for at startup. Every answer here
+// is already decided at that moment — a plugin below the declared minimum is not
+// installed any harder once a delivery arrives — so a receiver asks it then, and a
+// deployment that could not serve a webhook refuses to start rather than
+// advertising an endpoint whose every delivery is a 422 in a log nobody reads.
+//
+// What stays in validateSubmission is what a submission brings: the inputs, and
+// the size of the pair. Those cannot be asked without a delivery.
+func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
+	if err := s.pinPlugins(wf); err != nil {
+		return err
+	}
+	if s.credentialTargetsConfigured {
+		if err := v1.ValidateCredentialTargets(wf, s.credentialTargets); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
+
+	// Rules compile at submit, not at signal-time. Everything [v1.Validate]
+	// cannot see because it is a fact about a *set* of declared policies rather
+	// than about one field — a policy for a signal name nothing waits for, a rule
+	// that matches every sender — is caught here, once, rather than discovered the
+	// first time a signal is actually delivered and denied for a reason the
+	// author never saw at submit.
+	if err := v1.CheckSignalPolicies(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Size is a separate question from validity, and it has to be asked here
+	// because here is where somebody is still listening.
+	//
+	// A specification under Temporal's blob limit is accepted and then carried,
+	// with everything the run accumulates, across every Continue-As-New. Past the
+	// limit Temporal refuses the Continue-As-New, which fails the workflow task,
+	// which is retried — so the run does not fail, it wedges: RUNNING forever, on
+	// an ever-climbing attempt count, occupying a worker each time. Measured at
+	// 1.2 MiB: submitted fine, ran a step, attempt 5 forty-five seconds later.
+	//
+	// Refusing at submit turns that into a sentence an author can act on. The
+	// engine keeps its own check for what this one cannot predict.
+	if err := v1.CheckSpecSize(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	return nil
 }
 
 // pinPlugins records the deployment's plugin selection on a specification about

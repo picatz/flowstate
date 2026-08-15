@@ -323,3 +323,40 @@ steps:
 	assert.Equal(t, "has(inputs.x) && size(inputs.x) > 0", report.Files[0].Findings[0].Expr)
 	assert.Equal(t, 2, report.Files[0].Findings[0].Count)
 }
+
+// TestAuditJSONLIsOneCompactLine pins the picatz/flowstate#396 contract for this
+// verb: the audit report is one document, so jsonl is that document compacted to
+// one line rather than the pretty-printed multi-line form `-o json` writes.
+//
+// Mutation-proven: reverting audit.go's writeAuditJSON to always
+// json.MarshalIndent, regardless of format, makes this fail on line count.
+func TestAuditJSONLIsOneCompactLine(t *testing.T) {
+	path := writeWorkflow(t, "workflow.yaml", `edition: v2026.3
+name: repeats
+steps:
+  - id: one
+    if: ${vars.a == 1}
+    log:
+      message: one
+  - id: two
+    if: ${vars.a == 1}
+    log:
+      message: two
+`)
+
+	root := newRootCommand()
+	var out, errOut strings.Builder
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{"audit", "-o", "jsonl", path})
+	require.NoError(t, root.Execute(), errOut.String())
+
+	stdout := out.String()
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	require.Len(t, lines, 1, "jsonl wrote more than one line for the one audit report:\n%s", stdout)
+	require.True(t, json.Valid([]byte(lines[0])), "the line is not a single JSON value: %q", lines[0])
+
+	var report auditReport
+	require.NoError(t, json.Unmarshal([]byte(stdout), &report))
+	require.Len(t, report.Files, 1, "the finding was not carried into the jsonl form")
+}

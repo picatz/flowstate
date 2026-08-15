@@ -3,7 +3,6 @@ package flowfile
 import (
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -423,7 +422,7 @@ func Parse(data []byte) (*v1.Workflow, *Positions, error) {
 // package doc on `v1.Call` for why filesystem access belongs at the edge that
 // already has an author's files, and never at a worker.
 func ParseFile(path string) (*v1.Workflow, *Positions, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1607,12 +1606,114 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 	// an input by that name — reported as unknown, where it was written.
 	for _, e := range entries {
 		valuePath := fieldPath(path, e.name)
-		value := c.inputValue(e.value, valuePath,
-			ref{step: r.step, task: taskName, input: e.name, path: valuePath})
+		inputRef := ref{step: r.step, task: taskName, input: e.name, path: valuePath}
+
+		// The one input compiled by a rule of its own, and the rule is the wait's:
+		// a mapping written where a task shapes its outputs is compiled entry by
+		// entry, so the names survive into the specification instead of being
+		// erased into one expression that builds a map. See
+		// [compiler.shapedOutputs].
+		if e.name == v1.ShapingInput && v1.TaskShapesOutputs(taskName) {
+			if value := c.shapedOutputs(e.value, e.key, valuePath, inputRef); value != nil {
+				into[e.name] = value
+			}
+			continue
+		}
+
+		value := c.inputValue(e.value, valuePath, inputRef)
 		if value != nil {
 			into[e.name] = value
 		}
 	}
+}
+
+// shapedOutputs compiles a shaping task's `outputs:` input.
+//
+// Written as a mapping, it is compiled per entry — the same shape
+// [compiler.waitOutputs] produces for a `wait_for_signal:`, and for the same
+// reason: the names a step produces are the point of shaping, and a mapping run
+// through [compiler.composite] would arrive at the engine as a single expression
+// that happens to build a map, with its keys knowable only once it has run. Every
+// later question — does `${steps.web.titel}` name something this step produces,
+// what should the editor offer after `steps.web.` — is answerable exactly when
+// the keys survive compilation.
+//
+// Written any other way, it is an ordinary task input. The string-fenced map
+// (`'${ {"id": response.json.id} }'`) still compiles and still runs; what it
+// cannot do is say what it produces, so nothing downstream says anything about
+// it. That is the documented trade, and it is why the mapping form is the
+// spelling the docs and `flow fix` lead with.
+func (c *compiler) shapedOutputs(n, key ast.Node, path string, r ref) *v1.Value {
+	resolved := c.resolveQuiet(n)
+	switch resolved.(type) {
+	case *ast.MappingNode, *ast.MappingValueNode:
+	default:
+		// Not a mapping: a fenced expression, a literal, an alias this cannot
+		// follow. All of them are ordinary input values, decided by the rule every
+		// other input is decided by.
+		return c.inputValue(n, path, r)
+	}
+
+	// The mapping's own span, recorded before anything below can fail, so a
+	// diagnostic about the block — an empty one, a computed key — has a line to
+	// land on. [compiler.value] records this for every other input on the way
+	// past; this branch does not go through it.
+	//
+	// The key's span is the fallback, and it is not hypothetical: `outputs: {}`
+	// is a flow mapping holding no tokens at all, so the value has no position
+	// and the only thing on the line that does is the key.
+	at := spanOfNode(resolved)
+	if !at.IsValid() {
+		at = spanOfNode(key)
+	}
+	c.pos.record(path, at)
+
+	// A structure holding a `${secret(...)}` is refused here exactly as it is
+	// refused when this mapping is compiled as an ordinary input: shaping is
+	// evaluated against a response and recorded as a step output, which is
+	// durable history, and [compiler.structure] already says so with the position
+	// and the list of inputs that do carry one.
+	if c.holdsSecretMarker(resolved) {
+		return c.structure(resolved, path, r)
+	}
+
+	entries, ok := c.entries(resolved, path, r)
+	if !ok {
+		return nil
+	}
+
+	if len(entries) == 0 {
+		c.report(at, r,
+			"is empty, and `outputs:` replaces what the step produces, so this step would have no outputs at all; write the names it should produce, or remove the key")
+		return nil
+	}
+
+	compiled := make(map[string]*v1.Value, len(entries))
+	for _, e := range entries {
+		if fenceError(e.name) != nil || containsFence(e.name) {
+			// A key is a name, and a name is written down. A computed one would be
+			// a shaped set only the run knows, which is the one thing the mapping
+			// form exists to rule out — and the escape hatch is exactly the older
+			// spelling, so the refusal can name it.
+			c.report(spanOfNode(e.key), r,
+				"`%s` computes an output name, and the names a step produces have to be written down; "+
+					"write the name plainly, or shape with a single expression "+
+					"(`outputs: '${ {...} }'`), which is legal and deliberately unchecked",
+				e.name)
+			return nil
+		}
+
+		valuePath := fieldPath(path, e.name)
+		value := c.inputValue(e.value, valuePath,
+			ref{step: r.step, task: r.task, input: r.input, path: valuePath,
+				label: v1.ShapingInput + "." + e.name})
+		if value == nil {
+			return nil
+		}
+		compiled[e.name] = value
+	}
+
+	return v1.NewStructureMap(compiled)
 }
 
 // forEach compiles a loop and its body.

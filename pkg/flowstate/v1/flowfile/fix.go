@@ -1871,6 +1871,13 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 				// the wait resolves, and nowhere else.
 				steps = without(steps, waitShapingNames)
 			}
+			if named && name == triggersKey {
+				// `event` is bound throughout a trigger and nowhere else in the
+				// language. Subtracted for this subtree alone, the way `now` is below,
+				// because outside `triggers:` it is an ordinary name and a step may
+				// legitimately be called it. See [triggersKey].
+				steps = without(steps, map[string]bool{eventBinding: true})
+			}
 			if named && bindsNow[name] {
 				// `now` is bound inside a wait and nowhere else. Subtracted for
 				// this value alone rather than for the step, because outside a wait
@@ -1922,10 +1929,25 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 
 				return
 			}
+			if named && name == loopKey {
+				// A loop's carried state, written as a fenced map literal, is the
+				// same value one entry per line. Reached from the loop's own key
+				// rather than from `init:`/`update:` anywhere they appear, because
+				// those are ordinary words and a task may take an input called
+				// either.
+				f.mappingForm(node.Value, loopStateKeys)
+			}
 			// A task's key opens its inputs, so the names its own scope binds are
 			// known from here down and nowhere else.
 			if named {
 				if def, known := v1.LookupTask(name); known {
+					if def.ShapesOutputs {
+						// Promoted to the spelling that keeps its keys — the
+						// declared capability decides, so a task with an ordinary
+						// input called `outputs` is not rewritten into a shaping
+						// it does not perform.
+						f.mappingForm(node.Value, shapingOutputs)
+					}
 					walk(node.Value, taskScope{
 						name:     name,
 						deferred: deferredInputs(def),
@@ -2304,19 +2326,67 @@ func (f *fixer) rootResponseScalar(node *ast.StringNode) {
 	})
 }
 
-// rootScalar rewrites one fenced scalar in place.
+// rootScalar rewrites the fenced expressions in one scalar in place.
+//
+// Every fence, not the whole-value one: since #413 a scalar may hold text and
+// several expressions, and a rewriter that asked the whole-value question would
+// leave `hello ${who.result}` untouched while stamping the new edition onto the
+// file. That is not a silent corruption — the bare reference is refused by the
+// validator afterwards — but it is the other half of the same failure CLAUDE.md
+// records, `flow fix` exiting zero on a file the validator then rejects. A
+// rewriter has to know what the grammar holds, and the grammar now holds more
+// than one expression per value.
+//
+// The splice is located by the scanner's own offsets and not by searching the
+// line for each fence's text, because the text of a fence is not the same thing
+// as a fence. Two fences in a value may be written identically — in
+// `${who.result} then ${who.result}` a search from the value's start would
+// rewrite the first one twice and the second never — and, since `$${` is a
+// literal `${`, the bytes of a fence appear in text that is not one. In
+// `$${who.result} and ${who.result}` [Fences] correctly reports a single fence,
+// and a search for `${who.result}` finds the escaped lookalike first: `flow fix`
+// then exits zero having quietly changed what the value's *literal* half prints.
+// That is `flow fix` corrupting a valid file, which is the failure CLAUDE.md
+// records twice, in its third shape — the rewriter knowing less than the scanner
+// about where the language says a thing begins.
+//
+// So the value is anchored in its line once and every fence is spliced at
+// [Fence.Open], carrying the length change of the edits already made. Anchoring
+// is what the search was really doing right — a value's own column rules out a
+// fence written earlier on the same line, in a comment or in another value in
+// flow style — and it is done once rather than per fence.
 func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
-	inner, fenced := SplitFence(node.Value)
-	if !fenced {
+	fences := Fences(node.Value)
+	if len(fences) == 0 {
 		return
 	}
 
-	rooted, changed, err := rootedExpr(inner, steps)
-	if err != nil {
-		f.refuse(node, "%s", err.Error())
-		return
+	type rewrite struct {
+		open, end   int
+		want        string
+		replacement string
 	}
-	if !changed {
+	var rewrites []rewrite
+	for _, fence := range fences {
+		rooted, changed, err := rootedExpr(fence.Source, steps)
+		if err != nil {
+			f.refuse(node, "%s", err.Error())
+			return
+		}
+		if !changed {
+			continue
+		}
+		rewrites = append(rewrites, rewrite{
+			open: fence.Open,
+			end:  fence.End,
+			// The fence as the scanner delimited it, kept only to check that the
+			// line really holds it where the offsets say. It is the same bytes as
+			// node.Value[Open:End] by construction.
+			want:        fenceOpen + fence.Source + fenceClose,
+			replacement: fenceOpen + rooted + fenceClose,
+		})
+	}
+	if len(rewrites) == 0 {
 		return
 	}
 
@@ -2327,25 +2397,39 @@ func (f *fixer) rootScalar(node *ast.StringNode, steps map[string]bool) {
 		return
 	}
 
+	// Anchored from the value's own column rather than by searching the whole
+	// line, so a value written earlier on the same line cannot be the one
+	// rewritten.
 	line := f.line(span.Start.Line)
-	want, replacement := fenceOpen+inner+fenceClose, fenceOpen+rooted+fenceClose
-
-	// Located from the value's own column rather than by searching the line, so a
-	// fence written earlier on the same line — in a comment, or in another value in
-	// flow style — cannot be the one rewritten.
 	from, located := byteOffsetOfColumn(line, span.Start.Column)
 	if !located {
 		return
 	}
-	at := strings.Index(line[from:], want)
-	if at < 0 {
+	base := strings.Index(line[from:], node.Value)
+	if base < 0 {
 		f.refuse(node,
 			"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
 		return
 	}
-	at += from
+	base += from
 
-	f.lines[span.Start.Line-1] = line[:at] + replacement + line[at+len(want):]
+	// Built whole and assigned once, so a value whose fences cannot all be placed
+	// leaves the line exactly as it was. A half-rewritten line is the one outcome
+	// worse than an unrewritten one.
+	rewritten := line
+	delta := 0
+	for _, rw := range rewrites {
+		at, to := base+rw.open+delta, base+rw.end+delta
+		if to > len(rewritten) || rewritten[at:to] != rw.want {
+			f.refuse(node,
+				"this expression is not written on its line the way it was read, which happens with a block or folded scalar; root its step references by hand")
+			return
+		}
+		rewritten = rewritten[:at] + rw.replacement + rewritten[to:]
+		delta += len(rw.replacement) - (to - at)
+	}
+
+	f.lines[span.Start.Line-1] = rewritten
 	f.substituted = true
 	f.changes = append(f.changes, FixChange{
 		Line:    span.Start.Line,

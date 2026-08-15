@@ -56,20 +56,22 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		shaping := step.bindsWaitResult(in)
 		ls := step.loopScopeOf(in)
 		walkValues(in.value, func(v *value) {
-			// Being fenced is not enough: describing what is under the cursor
-			// means finding the cursor *in the expression source*, and whether a
-			// value can answer that depends on how the parser handed its text
-			// over. [value.exprCursor] is the one place that knows, and it
+			// Holding a fence is not enough: describing what is under the
+			// cursor means finding the cursor *in one fence's source*, and
+			// whether a value can answer that depends on how the parser handed
+			// its text over. [value.fenceAt] is the one place that knows, and it
 			// declines rather than compute a position from folded text — which
-			// would describe whatever name happened to sit at that byte.
-			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+			// would describe whatever name happened to sit at that byte. It also
+			// answers *which* fence, which is the question a value holding
+			// several has and a value holding one does not.
+			if found != nil {
 				return
 			}
-			cursor, ok := v.exprCursor(doc.index, pos)
+			f, cursor, ok := v.fenceAt(doc.index, pos)
 			if !ok {
 				return
 			}
-			found = hoverReference(doc, step, v, cursor, clock, shaping, ls)
+			found = hoverReference(doc, step, v, f, cursor, clock, shaping, ls)
 		})
 		if found != nil {
 			return found
@@ -348,24 +350,24 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 //
 // ls names which of a loop's own scopes the expression is evaluated in, and
 // loopScopeNone everywhere else — see [parsedStep.loopScopeOf].
-func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
-	ref := referenceAt(v.expr, cursor)
+func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
+	ref := referenceAt(f.source, cursor)
 	if ref.empty() {
 		// No reference here, which does not mean nothing is here. `referenceAt`
 		// treats a dot as part of a word, so the name in `[3,1,2].sortBy(v, v)`
 		// comes back as `.sortBy` — a first segment that is empty, and no
 		// reference. A function is still the thing under the cursor.
-		return hoverFunction(doc, v, cursor)
+		return hoverFunction(doc, v, f, cursor)
 	}
 
 	// A secret reference resolves to neither a step nor a binding, so it is
 	// described before either lookup.
-	if name, span, err := secretRefAt(v.expr, cursor); err == nil {
-		rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
+	if name, span, err := secretRefAt(f.source, cursor); err == nil {
+		rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 		return markdownHover(secretDoc(name), rng)
 	}
 
-	rng := v.exprSpanOrWhole(doc.index, ref.span[0], ref.span[1])
+	rng := v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[1])
 	if ref.step != "" && cursor <= ref.span[1] {
 		// A rooted reference, and the cursor is inside it. Nothing within one is a
 		// call — `${steps.web.value}` names an output, and `value` is also a function
@@ -387,7 +389,7 @@ func hoverReference(doc *document, from *parsedStep, v *value, cursor int, clock
 	// Nothing bound that name, so the cursor may be on a function. Second,
 	// deliberately: a binding is what the author wrote and a function of the same
 	// spelling is a coincidence.
-	return hoverFunction(doc, v, cursor)
+	return hoverFunction(doc, v, f, cursor)
 }
 
 // hoverDocumentExpression describes a reference inside one of the document's own
@@ -409,33 +411,33 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 		var found *lsp.Hover
 		walkValues(in.value, func(v *value) {
 			// No mappable cursor means no answer — see the walk in [hoverAt].
-			if found != nil || !v.fenced || !contains(v.exprRange, pos) {
+			if found != nil {
 				return
 			}
-			cursor, ok := v.exprCursor(doc.index, pos)
+			f, cursor, ok := v.fenceAt(doc.index, pos)
 			if !ok {
 				return
 			}
 
 			// A secret is the one reference that resolves here, because it is
 			// resolved by the worker rather than out of the run's state.
-			if name, span, err := secretRefAt(v.expr, cursor); err == nil {
-				rng := v.exprSpanOrWhole(doc.index, span[0], span[1])
+			if name, span, err := secretRefAt(f.source, cursor); err == nil {
+				rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 				found = markdownHover(secretDoc(name), rng)
 
 				return
 			}
 
-			ref := referenceAt(v.expr, cursor)
+			ref := referenceAt(f.source, cursor)
 			if ref.empty() {
 				// No reference, which does not mean nothing is here — see
 				// [hoverReference] for why a receiver-style call on a literal looks
 				// like this.
-				found = hoverFunction(doc, v, cursor)
+				found = hoverFunction(doc, v, f, cursor)
 
 				return
 			}
-			rng := v.exprSpanOrWhole(doc.index, ref.span[0], ref.span[1])
+			rng := v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[1])
 
 			switch {
 			case ref.step != "" || ref.local == v1.StepsRoot:
@@ -463,7 +465,7 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 				// is the same everywhere — and completion offers them, so hover
 				// answering nothing was the two surfaces disagreeing about whether
 				// a `vars:` value is an ordinary expression.
-				found = hoverFunction(doc, v, cursor)
+				found = hoverFunction(doc, v, f, cursor)
 			}
 		})
 		if found != nil {
@@ -700,7 +702,7 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	}
 	def, known := doc.tasks.Lookup(target.taskName)
 
-	shaping := target.shapingEntry()
+	shaping := target.shapingEntry(doc.tasks)
 
 	var b strings.Builder
 
@@ -765,6 +767,21 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 
 		return markdownHover(b.String(), rng)
 	}
+
+	// A `for_each:`, `loop:`, or a wait — `sleep:`, `wait_until:`, or
+	// `wait_for_signal:` in either spelling — runs no task either, so falling
+	// into the lookup below described every one of them as a step "whose task
+	// `` is not registered": true of the empty string and false of the step
+	// (#322). [v1.OutputNames] is the one place that answers what each of
+	// these actually produces — the wait's shaped names when it shapes, its
+	// three reserved names when it does not, and a loop's `results` plus
+	// `state` when it carries one — so this reads that rather than repeating
+	// it, which is also what makes the wait-shaped and loop-shaped answers
+	// agree with the validator and the engine by construction.
+	if constructKindNode := constructOutputNode(target); constructKindNode != nil {
+		return hoverConstructOutput(target, constructKindNode, ref, rng)
+	}
+
 	if ref.output == "" {
 		fmt.Fprintf(&b, "**`%s`** — step %d", rootedRef(target.id, ""), target.index+1)
 		if known {
@@ -833,6 +850,120 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	if cs := constraints(fd); len(cs) > 0 {
 		fmt.Fprintf(&b, "\n\nThe task guarantees: %s.", strings.Join(cs, "; "))
 	}
+	return markdownHover(b.String(), rng)
+}
+
+// constructOutputNode builds a minimal *v1.Node describing a for_each, loop,
+// or wait step from its syntactic model — enough for [v1.OutputNames] to
+// answer without the file needing to compile. nil for every other kind,
+// including a value: and switch: (handled above, before this is reached) and
+// call: (whose declared outputs live in another file this model does not
+// hold, a separate piece of work from #322's first slice).
+//
+// A wait's three spellings — `sleep:`, `wait_until:`, `wait_for_signal:` —
+// only sometimes populate a dedicated *entry field: the fenced/expression form
+// does, the literal and scalar forms do not (see sleepEntry's doc), so
+// [parsedStep.hasKey] is what catches every spelling alike. What
+// [v1.OutputNames] needs beyond "which of the three" is, for a signal,
+// whether it shapes: the shaped keys themselves, read from
+// waitShapingEntries. The placeholder values below are never read for their
+// content — OutputNames' wait branch only asks whether a shaping map is
+// non-empty and what its keys are — so a bare literal stands in for whatever
+// expression the author actually wrote.
+func constructOutputNode(target *parsedStep) *v1.Node {
+	switch {
+	case target.forEachEntry != nil:
+		return &v1.Node{Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{}}}
+
+	case target.loopEntry != nil:
+		// A loop carries state exactly when it names one with `as:` — the same
+		// key a `for_each` binds its iterator with, compiled into [Loop.State]
+		// by the parser (parse.go's compileLoop). It is not spelled `state:`
+		// anywhere in the grammar; [v1.LoopCarriesState] asks the same
+		// question of the compiled field, and this is that question asked of
+		// the syntax.
+		loop := &v1.Loop{}
+		if target.loopEntry.value != nil {
+			for _, le := range target.loopEntry.value.entries {
+				if le.key == "as" && le.value != nil {
+					loop.State = "bound"
+				}
+			}
+		}
+		return &v1.Node{Kind: &v1.Node_Loop{Loop: loop}}
+
+	case target.waitUntilEntry != nil || target.hasKey(waitUntilKey):
+		return &v1.Node{Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Until{}}}}
+
+	case target.sleepEntry != nil || target.hasKey(sleepKey):
+		return &v1.Node{Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_DurationExpr{}}}}
+
+	case target.waitForSignalEntry != nil || target.hasKey("wait_for_signal"):
+		signal := &v1.Signal{}
+		if len(target.waitShapingEntries) > 0 {
+			signal.Outputs = make(map[string]*v1.Value, len(target.waitShapingEntries))
+			for _, e := range target.waitShapingEntries {
+				signal.Outputs[e.key] = v1.NewLiteral(true)
+			}
+		}
+		return &v1.Node{Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Signal{Signal: signal}}}}
+
+	default:
+		return nil
+	}
+}
+
+// hoverConstructOutput renders hover text for a for_each, loop, or wait target
+// from [v1.OutputNames], the shared answer to what each of these produces.
+//
+// kind is what [constructOutputNode] built; the caller has already checked it
+// is non-nil.
+func hoverConstructOutput(target *parsedStep, kind *v1.Node, ref reference, rng lsp.Range) *lsp.Hover {
+	names, _ := v1.OutputNames(kind, nil)
+
+	label := target.kind()
+	if label == "" {
+		label = "wait"
+	}
+
+	var b strings.Builder
+	if ref.output == "" {
+		fmt.Fprintf(&b, "**`%s`** · step %d, a `%s`", rootedRef(target.id, ""), target.index+1, label)
+		var offered []string
+		for _, n := range names {
+			if n.Name != "" {
+				offered = append(offered, n.Name)
+			}
+		}
+		if len(offered) > 0 {
+			fmt.Fprintf(&b, "\n\nOutputs: `%s`", strings.Join(offered, "`, `"))
+		}
+		return markdownHover(b.String(), rng)
+	}
+
+	fmt.Fprintf(&b, "**`%s`**", rootedRef(target.id, ref.output))
+	for _, n := range names {
+		if n.Name == ref.output {
+			fmt.Fprintf(&b, "\n\n%s", n.Description)
+			return markdownHover(b.String(), rng)
+		}
+	}
+	if ref.output == v1.StepErrorOutput {
+		fmt.Fprintf(&b, "\n\nWhy step `%s` failed, recorded because the step carries `continue_on_error:`.", target.id)
+		return markdownHover(b.String(), rng)
+	}
+
+	var declared []string
+	for _, n := range names {
+		if n.Name != "" {
+			declared = append(declared, n.Name)
+		}
+	}
+	fmt.Fprintf(&b, "\n\nStep `%s` is a `%s`, which does not produce `%s`", target.id, label, ref.output)
+	if len(declared) > 0 {
+		fmt.Fprintf(&b, "; it produces `%s`", strings.Join(declared, "`, `"))
+	}
+	b.WriteString(".")
 	return markdownHover(b.String(), rng)
 }
 

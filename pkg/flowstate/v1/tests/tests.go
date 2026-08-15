@@ -34,6 +34,18 @@ type Case struct {
 	// `error` output) has no outputs to compare.
 	ExpectedOutputs *v1.Workflow_StepOutputs
 
+	// Trigger is how the run started, read by its steps under the `trigger`
+	// root. Nil means each driver's own default for a run nobody said anything
+	// about, which is a manual start on both — see [v1.TriggerFromContext] and
+	// the durable driver's empty [v1.RunState.trigger].
+	//
+	// A field on the case rather than something a driver's runner arranges,
+	// because the two arrange it through entirely different machinery — a context
+	// value locally, a field of the state message durably — and the whole claim
+	// worth pinning is that those two routes produce the same answer inside the
+	// run. See [TriggerContextCases].
+	Trigger *v1.TriggerContext
+
 	// ExpectFailure marks a case whose workflow must not complete at all — a
 	// depth refused, a placement the engine cannot honour — as distinct from a
 	// step failure tolerated via `continue_on_error`, which is an ordinary case

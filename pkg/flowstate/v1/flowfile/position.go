@@ -92,16 +92,18 @@ func (s Span) String() string {
 // A nil *Positions answers every question with false, so a caller that did not
 // ask for positions need not check.
 type Positions struct {
-	spans map[string]Span
-	exprs map[string]Span
-	steps map[string]string
+	spans    map[string]Span
+	exprs    map[string]Span
+	steps    map[string]string
+	triggers map[string]string
 }
 
 func newPositions() *Positions {
 	return &Positions{
-		spans: make(map[string]Span),
-		exprs: make(map[string]Span),
-		steps: make(map[string]string),
+		spans:    make(map[string]Span),
+		exprs:    make(map[string]Span),
+		steps:    make(map[string]string),
+		triggers: make(map[string]string),
 	}
 }
 
@@ -147,6 +149,32 @@ func (p *Positions) StepPath(id string) (string, bool) {
 		return "", false
 	}
 	path, ok := p.steps[id]
+	return path, ok
+}
+
+// TriggerPath returns the path of the webhook trigger with the given name, at
+// its original position in the `triggers:` list.
+//
+// The compiler folds `triggers:` into [v1.Triggers]: every `- webhook:` entry
+// lands in [v1.Triggers.Webhooks], in the order written, but a `- schedule:`
+// entry sitting among them compiles into [v1.Triggers.Schedule] instead and
+// leaves no slot in Webhooks behind. A caller that recomputes a webhook's
+// list position by ranging over Webhooks is therefore indexing a *different*,
+// compressed list than the one the author wrote — correct only when no
+// schedule entry sits before or between webhooks, and silently wrong
+// otherwise: entry 2 in the file reports as entry 1 because entry 0 was a
+// schedule. This returns the path recorded at parse time, when the original
+// index was still known, so a caller never has to reconstruct it.
+//
+// When two webhooks in one file share a name — a mistake [Validate] reports —
+// the first declaration wins, the same rule [Positions.StepPath] follows and
+// for the same reason: the diagnostic about the collision has to land
+// somewhere, and the first is where a reader meets it.
+func (p *Positions) TriggerPath(name string) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	path, ok := p.triggers[name]
 	return path, ok
 }
 
@@ -312,6 +340,19 @@ func (p *Positions) recordStep(id, path string) {
 	}
 }
 
+// recordTrigger associates a webhook trigger's name with its original
+// position in the `triggers:` list, keeping the first declaration so that a
+// duplicated name reports the one a reader reaches first — see
+// [Positions.TriggerPath].
+func (p *Positions) recordTrigger(name, path string) {
+	if name == "" {
+		return
+	}
+	if _, seen := p.triggers[name]; !seen {
+		p.triggers[name] = path
+	}
+}
+
 // fieldPath returns the path of a named field of base.
 func fieldPath(base, name string) string {
 	if base == "" {
@@ -452,4 +493,42 @@ func spanWithin(n ast.Node, inner string) Span {
 	}
 	start := advance(outer.Start, text[:i])
 	return Span{Start: start, End: advance(start, inner)}
+}
+
+// spanOfFence returns the span of one fence's expression source inside node,
+// where value is the scalar's decoded text and sg is one segment [scanInterpolation]
+// found in it.
+//
+// The offsets come from the scanner rather than from a search of the text, and
+// that is the whole of the difference between this and [spanWithin]. A search
+// answers "where does this text first appear", which is a different question from
+// "where is this fence" in two ways a scalar can now be written. Two fences may be
+// written identically — in `${who} and ${who}` a search would underline the first
+// for an error in the second — and, since `$${` is a literal `${`, the bytes of a
+// fence may appear where no fence is: in `$${ ] } then ${ ] }` the scanner reports
+// exactly one fence, and a search for `${ ] }` finds the escaped lookalike four
+// characters in and reports the real fence's CEL error on literal text. A
+// diagnostic pointing at the wrong span is the failure this package ranks worse
+// than a missing one, so the position is taken from the thing that already knows
+// it.
+//
+// The one arithmetic left is anchoring the decoded value in the document, done
+// once for the whole scalar rather than per fence. Where the decoded text is not a
+// slice of the document — a folded block scalar, a quoted scalar carrying a YAML
+// escape — there is no anchor and the node's whole span is the answer. That is the
+// honest one: a computed position would name a character the author did not write.
+func spanOfFence(n ast.Node, value string, sg segment) Span {
+	outer := spanOfNode(n)
+	if !outer.IsValid() {
+		return outer
+	}
+
+	text := tokenText(n.GetToken())
+	base := strings.Index(text, value)
+	if base < 0 || base+sg.end > len(text) {
+		return outer
+	}
+
+	start := advance(outer.Start, text[:base+sg.start])
+	return Span{Start: start, End: advance(start, sg.text)}
 }

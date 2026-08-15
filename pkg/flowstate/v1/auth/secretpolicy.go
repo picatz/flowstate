@@ -64,6 +64,7 @@ type SecretAccessPolicy struct {
 	// The attributes are the workload object, as in the assumption rules, plus a
 	// secret object with scheme and name:
 	//
+	//	# secret access policy
 	//	allow:
 	//	  - 'secret.scheme == "env" && workload.namespace == "acme"'
 	//	  - 'secret.name.startsWith(workload.namespace + "/")'
@@ -257,7 +258,8 @@ func (rs secretRules) evaluate(
 func newSecretEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeOf(workload{}), reflect.TypeOf(secret{})),
+			reflect.TypeOf(workload{}), reflect.TypeOf(callerIdentity{}), reflect.TypeOf(secret{})),
+		cel.Variable(attrIdentity, cel.ObjectType(callerTypeName)),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrSecret, cel.ObjectType(secretTypeName)),
 		ext.Strings(ext.StringsVersion(5)),

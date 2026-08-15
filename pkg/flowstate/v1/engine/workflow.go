@@ -355,6 +355,16 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, err
 	}
 
+	// And before any expression can read it: a trigger recorded with a kind this
+	// build cannot produce is refused rather than carried, because every
+	// `${trigger.kind == "..."}` in the file would then compare against a word
+	// nothing can ever answer with — an authorization-shaped hole opened by a
+	// value nobody checked. Deterministic and pure, so it is safe in workflow
+	// code and gives the same answer on replay.
+	if err := v1.CheckTriggerContext(st.GetTrigger()); err != nil {
+		return nil, &ErrRunFailed{Message: err.Error()}
+	}
+
 	// Initialize step outputs with carried-over minimal subset if present.
 	stepOutputs := st.Outputs
 	if stepOutputs == nil {
@@ -410,7 +420,7 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// the next task, and that worker must evaluate against the vocabulary the
 		// spec was compiled with rather than its own current one — otherwise a
 		// deployment mid-rollout runs one workload against two dialects.
-		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx)),
+		scope:  varsScope(st.GetWorkflow().GetProfile(), stepOutputs, vars, st.GetInputs(), st.GetIdentity(), runAddress(ctx), st.GetTrigger()),
 		budget: stepsBudget,
 		resume: resumeFrames(st),
 
@@ -504,6 +514,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 			// turn an authenticated workload into an anonymous one partway
 			// through.
 			Identity: st.Identity,
+
+			// How the run started must survive Continue-As-New for the reason
+			// Identity does, and for one that is specific to it: this field is what
+			// makes `${trigger.kind}` replay-safe at all. Dropping it at the seam
+			// would give a workload one answer before it suspended and another
+			// after — a nightly sweep that stopped being a nightly sweep halfway
+			// through, with nothing in the file to explain it, which is precisely
+			// the drift `now`'s placement exists to prevent for the clock.
+			Trigger: st.GetTrigger(),
 
 			// What the run has still to take back if it fails later. Carried rather
 			// than re-derived, because it *cannot* be re-derived: which steps
@@ -867,7 +886,7 @@ func compactOutputsForRemainingSteps(
 // same state through v1.EvalWorkflowVars; what must not differ between them is the
 // scope a first step sees, and that is easier to compare when each driver has exactly
 // one place that builds it.
-func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value, identity *v1.WorkloadIdentity, address *v1.RunAddress) *v1.Scope {
+func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs map[string]*v1.Value, identity *v1.WorkloadIdentity, address *v1.RunAddress, trigger *v1.TriggerContext) *v1.Scope {
 	scope := v1.NewScope(profile, outputs)
 	scope.AmbientVars = vars
 
@@ -895,6 +914,14 @@ func varsScope(profile string, outputs *v1.Workflow_StepOutputs, vars, inputs ma
 	// no benefit, because the substrate can always answer the question directly
 	// and answers it identically on every replay. See [runAddress].
 	scope.Address = address
+
+	// How the run started, taken from `RunState` rather than from the substrate,
+	// which is the one place this differs in kind from the address above: no
+	// cluster can answer "why is this run happening". It was established once, by
+	// whichever entry path admitted the submission, and is carried across every
+	// Continue-As-New — which is exactly what makes reading it replay-safe, and
+	// what separates it from a clock read (invariant 4).
+	scope.Trigger = trigger
 
 	return scope
 }

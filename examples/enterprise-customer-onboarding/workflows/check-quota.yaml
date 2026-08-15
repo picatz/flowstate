@@ -41,7 +41,8 @@ steps:
         plan: ${inputs.plan}
       parse_json: true
       expect: ${response.status_code == 200 && response.json.available}
-      outputs: '${ {"available": response.json.available} }'
+      outputs:
+        available: ${response.json.available}
 
 outputs:
   available:

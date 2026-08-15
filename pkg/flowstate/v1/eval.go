@@ -106,6 +106,12 @@ type StepsOutputActivation struct {
 	// is correct only for a run that predates them; see [runRootValue].
 	RunAddress *RunAddress
 
+	// Trigger is how the run started, answered whole under [TriggerRoot] exactly
+	// as [StepsOutputActivation.RunIdentity] is: nil reads as every field empty,
+	// which is correct both for a run that predates the field and for a path that
+	// records no trigger. See [TriggerContextValue].
+	Trigger *TriggerContext
+
 	// Ctx bounds evaluation of any stored expression encountered while
 	// resolving a name. A context is held here, rather than passed in,
 	// because ResolveName implements a fixed third-party interface that has
@@ -337,6 +343,15 @@ func (e *StepsOutputActivation) ambientRoot(name string) (any, bool) {
 
 	case RunRoot:
 		return runRootValue(e.RunIdentity, e.RunLocal, e.RunAddress), true
+
+	case TriggerRoot:
+		// The fifth root, answered whole for the reason the four above are, and
+		// answered *after* the step lookup for the reason they are: a
+		// specification compiled before this root existed may hold a step of that
+		// name, and a worker evaluates the stored AST out of `RunState` rather
+		// than re-parsing the file, so a run started on an older build keeps
+		// resolving the way it always did (invariant 10).
+		return TriggerContextValue(e.Trigger), true
 
 	default:
 		return nil, false
@@ -1014,6 +1029,12 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// filled in. See [LocalRunAddress].
 	scope.Address = NewLocalRunAddress()
 
+	// And how this run started, which is a manual start unless a caller said
+	// otherwise: `flow run local` is a person at a keyboard, and `flow test` sets
+	// a case's own so that a branch guarded on the trigger is exercisable without
+	// one. See [TriggerFromContext].
+	scope.Trigger = TriggerFromContext(ctx)
+
 	// The declarations a wait reports itself policed against, recorded once for
 	// the run and from the top-level workflow only: a delivery is authorized
 	// against the root's `signals:`, so a callee's own would be the wrong answer
@@ -1110,6 +1131,26 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 		held    = map[string]*asyncHeld{}
 	)
 
+	// A scope leaving on a failure still owes whatever it started. When the
+	// schedule held a step's work back ([SchedulePointAsyncLaunch]), returning
+	// without running it would not be a different *order*, it would be a
+	// different execution: work the file launched, that never happened, and a
+	// compensation for it that never registered. So the work finishes here,
+	// publishing nothing — the durable driver's asyncStep.wait is this same rule
+	// at this same point, and says why in the same words: a scope that is failing
+	// merges no outputs and raises no second failure.
+	//
+	// Nothing to do on the way out successfully, or on any path at all under
+	// written order: the scope's end has already joined everything it started,
+	// and an unheld step's work ran where it was written.
+	defer func() {
+		for _, id := range started {
+			if outcome, outstanding := held[id]; outstanding && outcome.run != nil {
+				_, _ = outcome.run()
+			}
+		}
+	}()
+
 	// join publishes one outstanding async step at the position that asked for
 	// it: its outputs become visible here, or its failure is reported here,
 	// through exactly the same [recordStepOutcome] a step written in order
@@ -1123,7 +1164,16 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 		delete(held, id)
 		started = slices.DeleteFunc(started, func(other string) bool { return other == id })
 
-		return recordStepOutcome(ctx, outcome.node, outcome.outputs, outcome.err, scope, tolerated)
+		// A step the schedule held back has not run yet; this is the moment it
+		// does. Either way what follows is the same [recordStepOutcome] on the
+		// same values, which is the point of the whole arrangement: where the
+		// work happened must not be visible in what the join reports.
+		outputs, err := outcome.outputs, outcome.err
+		if outcome.run != nil {
+			outputs, err = outcome.run()
+		}
+
+		return recordStepOutcome(ctx, outcome.node, outputs, err, scope, tolerated)
 	}
 
 	for _, node := range nodes {
@@ -1171,8 +1221,33 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// The slot is taken *here*, where the step is written, and filled when
 			// the step finishes. That is what keeps the unwind in reverse written
 			// order once joins can happen in an order the text does not have — see
-			// [UndoLog.Reserve].
+			// [UndoLog.Reserve]. Taken before the schedule gets a say, so a step
+			// held back until its join still lands where it was written.
 			slot := undo.Reserve()
+
+			// Where the work happens is the schedule's choice (issue #477): at the
+			// launch, which is what this driver always did, or at the join, which
+			// is nearer what the durable driver does. Both are rehearsals of one
+			// durable behaviour, and an author must not be able to tell which ran —
+			// that claim is the schedule-equivalence property, and this is the
+			// choice it is checked over.
+			//
+			// A held step's work runs against the outputs visible *at its launch*,
+			// frozen here. Anything else would not be a schedule at all: a step
+			// whose inputs saw later steps' outputs is a step that ran somewhere
+			// else in the file. Freezing is cheap and exact because `async:` is a
+			// task step only ([CheckAsyncPlacement]), so the work reads this scope
+			// and never writes to it.
+			if SchedulerFromContext(ctx).Interleave(SchedulePointAsyncLaunch, node.GetId()) {
+				launched := scope.WithOutputs(cloneStepOutputs(scope.GetOutputs()))
+				held[node.GetId()] = &asyncHeld{node: node, run: func() (*Node_Outputs, error) {
+					return runNodeWithVars(nodeCtx, node, launched, undo, placement, depth, slot, tolerated)
+				}}
+				started = append(started, node.GetId())
+
+				continue
+			}
+
 			outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth, slot, tolerated)
 			held[node.GetId()] = &asyncHeld{node: node, outputs: outputs, err: err}
 			started = append(started, node.GetId())
@@ -1212,10 +1287,31 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 // unwind in reverse written order. What it deliberately does not rehearse is
 // latency, which is the one thing `async:` is for and the one thing a local
 // rehearsal has never claimed to predict.
+//
+// A held step is one of two shapes, and never both: either the work already ran
+// and outputs/err are what it produced, or the schedule held it back and run is
+// the work itself, waiting for the join to call it once
+// ([SchedulePointAsyncLaunch]).
 type asyncHeld struct {
 	node    *Node
 	outputs *Node_Outputs
 	err     error
+	run     func() (*Node_Outputs, error)
+}
+
+// cloneStepOutputs copies the step-output map one level deep: a new map over the
+// same [Node_Outputs] values, which are never written through once recorded.
+//
+// The copy that makes a held async step's launch position meaningful. The scope's
+// own map is written to as later steps finish, so a closure holding the map
+// itself would read whatever had accumulated by the time the join called it.
+func cloneStepOutputs(outputs *Workflow_StepOutputs) *Workflow_StepOutputs {
+	clone := &Workflow_StepOutputs{StepValues: make(map[string]*Node_Outputs, len(outputs.GetStepValues()))}
+	for id, value := range outputs.GetStepValues() {
+		clone.StepValues[id] = value
+	}
+
+	return clone
 }
 
 // registerAtCompletion is the slot value meaning "this step is not async, so
@@ -1819,19 +1915,22 @@ func onlyBodyOutputs(body []*Node, scope *Workflow_StepOutputs) *Workflow_StepOu
 
 // runParallel runs each branch and merges their outputs.
 //
-// Branches run sequentially in the local driver for the same reason loop
+// Branches run one at a time in the local driver for the same reason loop
 // iterations do: determinism. Because branches may not depend on each other's
-// outputs, running them in order produces the same result the durable driver
-// reaches concurrently.
+// outputs, running them one at a time produces the same result the durable driver
+// reaches concurrently — and *which* one goes first is the schedule's choice
+// ([SchedulePointParallelBranches]), which by default is declaration order, the
+// order this driver has always taken.
+//
+// Everything an author can see is computed in declaration order regardless of
+// the order the branches ran in: the merge below, the first failure reported, and
+// the order each branch's private undo log joins the enclosing one. That last one
+// used to follow execution order, which was the same thing while execution order
+// was declaration order; under a schedule that is free to differ it is not, and a
+// compensation log ordered by who finished first is exactly the completion order
+// #418 promises is never observable.
 func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *UndoLog, depth int) error {
-	before := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-	for k, v := range scope.GetOutputs().GetStepValues() {
-		before.StepValues[k] = v
-	}
-
-	// The first failing branch by declaration index, reported only after every
-	// branch has run, because that is what the durable driver's join reports.
-	var firstErr error
+	before := cloneStepOutputs(scope.GetOutputs())
 
 	// Each branch's outputs, merged only at the join and only when every branch
 	// succeeded: the durable driver merges nothing into the enclosing scope on
@@ -1839,40 +1938,52 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 	// partial outputs visible here either.
 	branchResults := make([]*Workflow_StepOutputs, len(parallel.GetBranches()))
 
-	for i, branch := range parallel.GetBranches() {
+	// Kept per branch and consulted in declaration order once every branch has
+	// run, rather than recorded as the branches finish.
+	branchErrs := make([]error, len(parallel.GetBranches()))
+	branchUndos := make([]*UndoLog, len(parallel.GetBranches()))
+
+	for _, i := range ScheduleOrder(SchedulerFromContext(ctx), SchedulePointParallelBranches, len(parallel.GetBranches())) {
+		branch := parallel.GetBranches()[i]
 		// Every branch starts from the outputs that existed before the block, so
-		// a branch cannot observe a sibling's work even though they run in order
-		// here. A workflow that accidentally depended on that would behave
-		// differently under concurrent execution.
-		branchOutputs := &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}}
-		for k, v := range before.GetStepValues() {
-			branchOutputs.StepValues[k] = v
-		}
+		// a branch cannot observe a sibling's work even though they run one at a
+		// time here, in whatever order the schedule chose. A workflow that
+		// accidentally depended on that would behave differently under concurrent
+		// execution.
+		branchOutputs := cloneStepOutputs(before)
 
 		// Derived rather than rebuilt. A hand-built Scope here is how the profile
 		// went missing in the first place: it names the two fields somebody was
 		// thinking about, and silently omits every other one the type grows.
 		branchScope := scope.WithOutputs(branchOutputs)
 		branchUndo := NewUndoLog(nil)
+		branchUndos[i] = branchUndo
 		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
-			undo.Append(branchUndo)
 			// Branches are concurrent by declaration: the durable driver has
 			// launched every one of them before it can learn that any failed,
 			// then joins, merges every private log, and reports the first
 			// failure by branch index. This rehearsal does the same, or a
 			// failing first branch would hide both the work and the
 			// compensations of a second branch production runs regardless.
-			if firstErr == nil {
-				firstErr = fmt.Errorf("branch %d: %w", i, err)
-			}
+			branchErrs[i] = fmt.Errorf("branch %d: %w", i, err)
+
 			continue
 		}
-		undo.Append(branchUndo)
 		branchResults[i] = branchOutputs
 	}
 
-	if firstErr != nil {
-		return firstErr
+	// In declaration order, whatever order the branches ran in: this is the order
+	// the compensations unwind in, and it is a property of the file.
+	for _, branchUndo := range branchUndos {
+		undo.Append(branchUndo)
+	}
+
+	// The first failing branch by declaration index, reported only after every
+	// branch has run, because that is what the durable driver's join reports.
+	for _, err := range branchErrs {
+		if err != nil {
+			return err
+		}
 	}
 
 	// Merge at the join, in declaration order, exactly as the durable driver

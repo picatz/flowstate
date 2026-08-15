@@ -348,7 +348,7 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 	// step runs. Nothing about them is deferred, since there is no task to defer to.
 	for _, in := range doc.parsed.expressionEntries() {
 		walkValues(in.value, func(v *value) {
-			if v.fenced && reportCELErrors(doc, set, env, v.expr, v.exprMapper(doc.index), v.exprRange) {
+			if reportFenceCELErrors(doc, set, env, v) {
 				flagged = append(flagged, v.rng)
 			}
 		})
@@ -376,17 +376,22 @@ func checkExpressions(doc *document, set *diagnosticSet) []lsp.Range {
 			walkValues(in.value, func(v *value) {
 				var found bool
 				switch {
-				case v.fenced:
-					// Anything fenced is checked, valid or not: a broken
-					// expression is the case a precise position matters most for.
-					// How precise a position is available depends on how the
-					// fence was written, which is what the last argument carries.
-					found = reportCELErrors(doc, set, env, v.expr, v.exprMapper(doc.index), v.exprRange)
+				case len(v.fences) > 0:
+					// Every fence is checked, valid or not: a broken expression
+					// is the case a precise position matters most for. How
+					// precise a position is available depends on how the fence
+					// was written, which is what the mapper carries.
+					//
+					// Every one of them, rather than the whole-value one, since
+					// #413: `cost is ${a} or ${ ] }` holds one good expression
+					// and one broken one, and an editor that checked only a
+					// whole-value fence would say nothing about either.
+					found = reportFenceCELErrors(doc, set, env, v)
 
-				// A scalar containing a fence but not made of one — `${a} and ${b}`,
-				// or an unterminated `${` — is a mistake with no inner span to point
-				// at. The validator reports it with a message saying how to fix it,
-				// so it is left to that rather than guessed at here.
+				// A scalar whose fences cannot be scanned at all — an unterminated
+				// `${` — is a mistake with no inner span to point at. The validator
+				// reports it with a message saying how to fix it, so it is left to
+				// that rather than guessed at here.
 
 				case deferred && v.kind == kindScalar && v == in.value && v.text != "" &&
 					!strings.Contains(v.text, "${"):
@@ -615,6 +620,24 @@ func idSuspect(doc *document, step *parsedStep) bool {
 	return false
 }
 
+// reportFenceCELErrors checks every ${...} a value holds and reports what does
+// not parse, each against its own fence.
+//
+// Each fence separately rather than the desugared expression the compiler builds
+// out of them, because the desugaring is not what the author wrote: its offsets
+// are shifted by an added `string(` in front of every fence and by the string
+// literals standing in for the text between them, so a column taken from it
+// would land on the wrong character — or on a character the author never typed.
+func reportFenceCELErrors(doc *document, set *diagnosticSet, env *cel.Env, v *value) bool {
+	found := false
+	for _, f := range v.fences {
+		if reportCELErrors(doc, set, env, f.source, v.fenceMapper(doc.index, f), f.rng) {
+			found = true
+		}
+	}
+	return found
+}
+
 // rangeOfLiteral finds the scalar inside a value whose text is literal.
 //
 // It is how a diagnostic that names an element — Diagnostic.Value — gets placed on
@@ -631,7 +654,10 @@ func rangeOfLiteral(v *value, literal string) (lsp.Range, bool) {
 
 	var found []lsp.Range
 	walkValues(v, func(c *value) {
-		if c.kind == kindScalar && !c.fenced && c.text == literal {
+		// Holding no fence at all, rather than merely not being one: a scalar
+		// that interpolates is not a literal either, and its text — fences and
+		// all — is not the value the validator would have reported.
+		if c.kind == kindScalar && len(c.fences) == 0 && c.text == literal {
 			found = append(found, c.rng)
 		}
 	})
@@ -654,8 +680,8 @@ func narrowToExpression(fallback lsp.Range, v *value) lsp.Range {
 	}
 	var found []lsp.Range
 	walkValues(v, func(c *value) {
-		if c.fenced {
-			found = append(found, c.exprRange)
+		for _, f := range c.fences {
+			found = append(found, f.rng)
 		}
 	})
 	if len(found) == 1 {

@@ -108,9 +108,11 @@ func TestCatalogDigestIsTheLaunchedBytes(t *testing.T) {
 // check accepts it, and the digest is the only thing that can tell.
 //
 // The restart is provoked by killing the process rather than by using a plugin
-// that exits on its own: a fake that dies every 150ms can lose the race with its
-// own first Describe on a loaded machine, which fails the test at Open for a
-// reason that has nothing to do with what it asserts.
+// that exits on its own, which is also the more direct way to say what this
+// asserts. The original reason was that the short-lived fake could lose the race
+// with its own first Describe on a loaded machine and fail the test at Open; its
+// countdown now starts once it is reachable, so that hazard is gone, and killing
+// the process remains the clearer expression of "relaunch this exact plugin".
 func TestARelaunchFromDifferentBytesIsRefused(t *testing.T) {
 	t.Parallel()
 

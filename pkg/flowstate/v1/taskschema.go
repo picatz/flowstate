@@ -452,7 +452,7 @@ func Catalog() *TaskCatalog {
 		CelFunctions:  catalogFunctions(),
 		DurationUnits: DurationUnits(),
 		NowIdentifier: NowIdentifier,
-		ValueRoots:    []string{VarsRoot, StepsRoot, InputsRoot, RunRoot},
+		ValueRoots:    []string{VarsRoot, StepsRoot, InputsRoot, RunRoot, TriggerRoot},
 	}
 
 	for _, def := range defs {

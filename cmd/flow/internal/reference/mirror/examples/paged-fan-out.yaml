@@ -98,9 +98,9 @@ steps:
             # and where to carry on from. `next_cursor` is what `until:` and
             # `update:` read, so it has to be an output of this step rather
             # than something re-derived later.
-            outputs: >-
-              ${ {"records": response.json.records,
-                  "next_cursor": response.json.next_cursor} }
+            outputs:
+              records: ${response.json.records}
+              next_cursor: ${response.json.next_cursor}
 
         - id: index
           description: Fan out over this page's records, three at a time.
@@ -121,7 +121,8 @@ steps:
                     id: ${record.id}
                     title: ${record.title}
                   parse_json: true
-                  outputs: '${ {"id": record.id} }'
+                  outputs:
+                    id: ${record.id}
 
 outputs:
   pages_walked:

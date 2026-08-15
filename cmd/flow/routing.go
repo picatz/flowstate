@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 
 	"connectrpc.com/authn"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // serverHandler routes the server's HTTP surface, deciding what authentication
@@ -44,15 +46,40 @@ import (
 // cause can carry the wrapped text of a parse failure, and the token itself is
 // in the request's Authorization header, which is exactly why the observer logs
 // fields it chooses rather than the request.
-func serverHandler(logger *slog.Logger, verifier auth.Verifier, broker *auth.Broker, rpc http.Handler) http.Handler {
-	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier,
+//
+// # Why the webhook receiver sits outside authentication too
+//
+// A webhook sender holds no Flowstate credential and never will: a payments
+// provider POSTs to a URL and signs the body with a shared key. That signature
+// *is* the authentication, checked by the receiver against the key the trigger's
+// `verify:` names, and a delivery that does not verify is refused — so the route
+// is unauthenticated in the sense that no bearer token is required and in no other
+// sense. Wrapping it in the authenticator would make a webhook impossible to
+// deliver to rather than making it safer.
+//
+// It is mounted only when a deployment asked for it (--webhook). A deployment that
+// did not has no such route at all, which is the fail-closed default this file's
+// per-route wrapping exists to keep.
+func serverHandler(
+	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, broker *auth.Broker,
+	rpc http.Handler, webhooks *server.WebhookReceiver,
+) http.Handler {
+	authenticatorOpts := []auth.AuthenticatorOption{
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "rejected unauthenticated request",
 				"procedure", req.URL.Path,
 				"peer", req.RemoteAddr,
 				"reason", auth.PublicReason(err))
 		}),
-	).Authenticate)
+	}
+	// peerVerifier is nil unless --tls-client-auth-identity was given (see
+	// cmd/flow/mtls.go's resolveMTLS): every deployment that never turns mTLS
+	// identity on builds the exact same Authenticator this line always built.
+	if peerVerifier != nil {
+		authenticatorOpts = append(authenticatorOpts, auth.WithPeerVerifier(peerVerifier))
+	}
+
+	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier, authenticatorOpts...).Authenticate)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", authenticated.Wrap(rpc))
@@ -64,19 +91,84 @@ func serverHandler(logger *slog.Logger, verifier auth.Verifier, broker *auth.Bro
 	// no dependency states, because an unauthenticated endpoint that describes
 	// the deployment is reconnaissance served on request. GET and HEAD only,
 	// mirroring the identity documents' handler.
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
+	mux.HandleFunc("/healthz", healthzHandler())
+
+	// Typed rather than an [http.Handler], so that "this deployment configured
+	// no webhooks" is a nil pointer this can see: a nil handler in an interface
+	// is a non-nil interface, and mounting one would serve the route and panic on
+	// the first delivery.
+	if webhooks != nil {
+		mux.Handle(server.WebhookPathPrefix, webhooks)
+	}
 
 	if broker != nil {
 		issuer := broker.Issuer()
 		mux.Handle(auth.DiscoveryPath, issuer.Handler())
 		mux.Handle(issuer.JWKSPath(), issuer.Handler())
 	}
+
+	return mux
+}
+
+// healthzHandler answers a liveness probe with a status code and nothing
+// else, GET and HEAD only. Shared between the public mux above and the
+// internal one below: the check itself is one fact ("this process can
+// answer HTTP"), and duplicating the route is a judgement call explained on
+// [internalHandler] — the two must still agree on what it answers.
+func healthzHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// internalHandler routes the internal listener (cmd/flow/internallistener.go):
+// health and pprof, on a socket separate from the public one.
+//
+// # Why pprof is not on the public mux
+//
+// pprof's profile and trace endpoints can read this process's running
+// goroutines and a slice of its memory — reconnaissance considerably more
+// useful than the empty body [healthzHandler] deliberately limits itself to.
+// The public listener answers the internet, or at least whatever network
+// reaches it; pprof belongs on a socket an operator binds to somewhere
+// private instead, which is the internal listener's whole reason to exist as
+// a second bind rather than more routes here.
+//
+// No metrics endpoint yet: this deployment's telemetry is OTLP-push only
+// (see telemetry.go), and standing up a Prometheus-shaped `/metrics` scrape
+// target well means adding a registry and an exporter this tree does not
+// carry today — a second telemetry pipeline to keep in sync with the OTLP
+// one, not a route. Left for the slice that adds it deliberately rather than
+// folded in here because the socket happened to be free.
+//
+// # Why /healthz is duplicated rather than moved
+//
+// The public route predates this listener and existing infrastructure — a
+// load balancer, a readiness probe already pointed at the public port —
+// depends on it answering there; moving it would be a breaking change this
+// slice does not need to make. Duplicating it costs nothing (the same
+// contentless handler) and gives an operator who wants their prober off the
+// public listener entirely somewhere to point it. See serverHandler's own
+// doc for why the public copy stays unauthenticated and empty-handed.
+func internalHandler(logger *slog.Logger) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/healthz", healthzHandler())
+
+	// Wired by hand rather than importing net/http/pprof for its
+	// init-time registration onto http.DefaultServeMux: that global is
+	// reachable from any package that happens to import pprof transitively,
+	// which is exactly the kind of route nobody deliberately mounted that
+	// this file's own comments warn about elsewhere. This mux, and no other.
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	return mux
 }

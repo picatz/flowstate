@@ -34,8 +34,8 @@ check:
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate
 	go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
 	git diff --exit-code
-	GOTOOLCHAIN=go1.26.5 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-	GOTOOLCHAIN=go1.26.5 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+	GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+	GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
 # The four bounded fuzz smokes CI's fuzz-smoke job runs, verbatim, so the local
 # gate cannot pass a commit the required job rejects. Time-bounded, single
@@ -44,6 +44,7 @@ check:
 fuzz-smoke:
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMarshalRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
 
@@ -65,9 +66,30 @@ test-plugins:
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go build ./... && go vet ./... && \
-			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || exit 1; \
+			GOMEMLIMIT=2GiB go test -race -timeout 300s ./... ) || \
+			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\` — a root dependency bump moves shared versions out from under these modules' own pins"; exit 1; }; \
 		fmt_out="$$(gofmt -l $$module)"; \
 		if [ -n "$$fmt_out" ]; then echo "gofmt: $$fmt_out"; exit 1; fi; \
+	done
+
+# The other half of `test-plugins`, and the reason that target now names it.
+#
+# A bump to the root module moves shared dependencies — protobuf, cel-go, the
+# generated protovalidate module — out from under pins the plugin modules carry
+# separately, and `test-plugins` then fails with `updates to go.mod needed`.
+# That is a correct failure about a stale file, not about the bump, and it has
+# now arrived twice on Dependabot pull requests whose own diffs were fine
+# (#605, #611). A red check on a correct diff is how people learn to merge past
+# a failing job, so the fix is one command rather than five `cd`s.
+#
+# Deliberately not run by `test-plugins` itself: a check that repairs what it is
+# checking cannot fail, and the staleness is a fact about committed files that
+# somebody has to commit.
+tidy-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> $$module"; \
+		( cd "$$module" && go mod tidy ) || exit 1; \
 	done
 
 # The packages whose correctness is an *ordering* claim, run under a schedule

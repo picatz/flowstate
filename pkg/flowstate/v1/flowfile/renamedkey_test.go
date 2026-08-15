@@ -184,9 +184,16 @@ func TestFixRootsTheResponse(t *testing.T) {
 			want: "      expect: ${response.status_code == 200 || response.status_code == 404}\n",
 		},
 		{
-			name: "a quoted outputs expression",
+			// Two rewrites over one value, and the order they land in is the
+			// fixed-point loop's answer rather than either rule's: the first pass
+			// promotes the map literal into the mapping form, the re-parse roots
+			// the response names in the entries it produced. Asserted together,
+			// because a file that came out with one and not the other is the
+			// failure — the pre-promotion spelling rooted correctly and the
+			// promoted one has to as well.
+			name: "a quoted outputs expression becomes a mapping, rooted",
 			src:  "      outputs: \"${ {'status': status_code, 'title': json_parse(body)['t']} }\"\n",
-			want: "      outputs: \"${ {'status': response.status_code, 'title': json_parse(response.body)['t']} }\"\n",
+			want: "      outputs:\n        status: ${response.status_code}\n        title: ${json_parse(response.body)[\"t\"]}\n",
 		},
 		{
 			name: "a name inside a macro's argument",

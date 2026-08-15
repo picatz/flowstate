@@ -863,6 +863,40 @@ func TestRunWorkflowInputsAndOutputs(t *testing.T) {
 // drivers evaluate it in: workflow code, in written order. Nothing is scheduled,
 // so no activity mock stands between this and the answer, which is the whole
 // reason a value replays rather than being remembered.
+// TestRunWorkflowInterpolation is the durable half of #413's interpolation. See
+// the local driver's TestRunWorkflowInterpolation, which runs the identical
+// [tests.InterpolationCases].
+//
+// What it holds is the `string()` around every fence, since the interpolation
+// itself is gone by the time either driver reads the workflow. A durable run
+// evaluates that conversion in workflow code on replay, so a rendering that
+// depended on anything outside the expression — a local zone, a locale, the
+// moment it ran — would differ from the local driver's and, worse, from its own
+// earlier replay.
+func TestRunWorkflowInterpolation(t *testing.T) {
+	for _, test := range tests.InterpolationCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
 func TestRunWorkflowValue(t *testing.T) {
 	for _, test := range tests.ValueCases() {
 		t.Run(test.Name, func(t *testing.T) {
@@ -882,6 +916,87 @@ func TestRunWorkflowValue(t *testing.T) {
 			if test.ExpectFailure {
 				require.Error(t, env.GetWorkflowError(),
 					"reading a value that never ran was expected to fail the run")
+				return
+			}
+			require.NoError(t, env.GetWorkflowError())
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowWebhookTrigger covers a declared `triggers:` webhook against
+// the durable driver, pairing the local run of the identical
+// [tests.WebhookTriggerCases].
+//
+// The route differs in the way that makes the pairing worth having: here the
+// declaration crosses the wire inside [v1.RunState.Workflow], is written to
+// history, and is carried through every Continue-As-New — so a driver that read
+// it, or a compaction that dropped it into a run that then behaved differently,
+// would show up here and nowhere else.
+func TestRunWorkflowWebhookTrigger(t *testing.T) {
+	runTriggerCases(t, tests.WebhookTriggerCases())
+}
+
+// TestRunWorkflowWebhookDelivery covers a run started by a delivery against the
+// durable driver, pairing the local run of the identical
+// [tests.WebhookDeliveryCases].
+//
+// Here the mapped inputs cross the wire inside [v1.RunState.Inputs] and are
+// written to history, which is where a value that only *looked* like an integer
+// would stop looking like one.
+func TestRunWorkflowWebhookDelivery(t *testing.T) {
+	for _, test := range tests.WebhookDeliveryCases() {
+		require.NotNil(t, test.Inputs, "the delivery did not bind, so there is nothing to run")
+	}
+
+	runTriggerCases(t, tests.WebhookDeliveryCases())
+}
+
+// TestRunWorkflowTriggerContext covers reading `trigger` against the durable
+// driver, pairing the local run of the identical [tests.TriggerContextCases].
+//
+// The route is what makes the pairing worth having. Here the context is a field
+// of [v1.RunState]: it crosses the wire, is written to history, is handed to an
+// activity inside the compacted [v1.Scope], and is carried across every
+// Continue-As-New. Locally it is a value on a context. A field dropped anywhere
+// along that path shows up here and nowhere else.
+func TestRunWorkflowTriggerContext(t *testing.T) {
+	runTriggerCases(t, tests.TriggerContextCases())
+}
+
+// runTriggerCases runs one trigger corpus, so the three above cannot drift in how
+// they run what they were given.
+func runTriggerCases(t *testing.T, cases []tests.Case) {
+	t.Helper()
+
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
+			require.NoError(t, err, "the submission was refused")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{
+				Workflow: test.Workflow,
+				Inputs:   inputs,
+
+				// Where the durable driver's half of a trigger context lives: in
+				// the state message, not on a context value, which is the
+				// difference the shared set exists to prove does not matter.
+				Trigger: test.Trigger,
+			})
+			require.True(t, env.IsWorkflowCompleted())
+
+			if test.ExpectFailure {
+				require.Error(t, env.GetWorkflowError(), "the case expected the run to fail")
 				return
 			}
 			require.NoError(t, env.GetWorkflowError())
@@ -1154,13 +1269,30 @@ func TestRunWorkflowResponseScope(t *testing.T) {
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Trigger: test.Trigger})
 			require.True(t, env.IsWorkflowCompleted())
 			require.NoError(t, env.GetWorkflowError())
 
 			var out v1.Workflow_StepOutputs
 			require.NoError(t, env.GetWorkflowResult(&out))
 			require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
+		})
+	}
+}
+
+// TestRunWorkflowOutputShaping runs the shared shaping cases against the durable
+// driver.
+//
+// The durable half of the pair, and the half where the encoding matters most: a
+// shaped mapping is a structure inside the specification, so it crosses the
+// payload converter on its way to the activity that evaluates it, and one entry
+// of it reads an earlier step's output — which compaction is free to prune the
+// moment nothing appears to reference it.
+func TestRunWorkflowOutputShaping(t *testing.T) {
+	baseURL := tests.NewHTTPServer(t)
+	for _, test := range tests.OutputShapingCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			runWorkflow(t, test.Workflow, test.ExpectedOutputs)
 		})
 	}
 }

@@ -368,15 +368,15 @@ func stepScope(steps []*outlineStep, line0 int) (current *outlineStep, earlier [
 
 // openExpression returns the expression source between the last unclosed `${` and
 // the cursor.
+//
+// The rule is [flowfile.OpenFence], the compiler's own scanner, and not a search
+// for the last `${` — which was wrong twice over. It saw a fence in `$${`, the
+// escape for a literal `${`, so completing `write $${inputs.ver` offered inputs
+// and steps inside text the author means a reader to see. And it decided a fence
+// was closed by looking for any `}`, which CEL puts inside maps, string literals
+// and comments, so `${ {'k': 1}` read as closed and offered nothing.
 func openExpression(before string) (string, bool) {
-	open := strings.LastIndex(before, "${")
-	if open < 0 {
-		return "", false
-	}
-	if strings.Contains(before[open:], "}") {
-		return "", false
-	}
-	return before[open+len("${"):], true
+	return flowfile.OpenFence(before)
 }
 
 // A refCandidate is one name an expression at the cursor may reference, together
@@ -785,11 +785,12 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
 			// The line scan sees input keys but not their values, so a step
-			// that shapes — the same presence rule the validator and the model
-			// use — gets no output candidates here rather than the declared
-			// names its shaping removed. Offering too little is the scan's
-			// stated posture; offering a name nothing produces is the failure.
-			if !slices.Contains(s.inputKeys, taskShapingKey) {
+			// that shapes — the same rule the validator and the model use, now
+			// a declared capability rather than a name — gets no output
+			// candidates here rather than the declared names its shaping
+			// removed. Offering too little is the scan's stated posture;
+			// offering a name nothing produces is the failure.
+			if !s.shapes(tasks) {
 				c.outputs = taskOutputs(def)
 			}
 		}
@@ -819,6 +820,32 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 	case s.parallelEntry != nil:
 		c.detail = "parallel"
 		c.docs = "A parallel block. Its branches' step outputs merge into this scope once it joins, so name those steps under the root, not this one."
+
+	case s.loopEntry != nil, s.waitUntilEntry != nil, s.sleepEntry != nil,
+		s.waitForSignalEntry != nil, s.hasKey(waitUntilKey), s.hasKey(sleepKey), s.hasKey("wait_for_signal"):
+		// A `loop:` or a wait runs no task either, and stepCandidate had no
+		// branch for either — so completion fell into the default arm below,
+		// looked up an empty task name, and offered nothing after
+		// `${steps.paginate.}` or `${steps.gate.}` (#322, Codex's #320
+		// findings). [v1.OutputNames] is the same answer [hoverConstructOutput]
+		// reads, so accepting a candidate here and then hovering it cannot
+		// describe two different things.
+		if node := constructOutputNode(s); node != nil {
+			c.detail = s.kind()
+			if c.detail == "" {
+				c.detail = "wait"
+			}
+			names, _ := v1.OutputNames(node, tasks)
+			for _, n := range names {
+				if n.Name == "" {
+					continue
+				}
+				c.outputs = append(c.outputs, refOutput{
+					name: n.Name,
+					docs: n.Description,
+				})
+			}
+		}
 
 	case s.valueEntry != nil:
 		// The only candidate here whose output set is fixed by the *grammar*
@@ -859,14 +886,14 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 		if def, ok := tasks.Lookup(s.taskName); ok {
 			c.detail = def.Name
 			c.docs = fmt.Sprintf("Runs the %s task.", def.Name)
-			if shaping := s.shapingEntry(); shaping != nil {
+			if shaping := s.shapingEntry(tasks); shaping != nil {
 				// The declared outputs are exactly what shaping removed, so they
 				// are not candidates: accepting one would write a reference
 				// nothing produces. The shaping's own names are offered when
 				// they are statically knowable, and nothing is offered when they
 				// are not — a fabricated name is worse than an empty menu.
 				c.docs = fmt.Sprintf("Runs the %s task. Its %s: replaces the task's declared outputs with names of its own.", def.Name, taskShapingKey)
-				c.outputs = shapedOutputCandidates(s, def)
+				c.outputs = shapedOutputCandidates(s, def, tasks)
 			} else {
 				c.outputs = taskOutputs(def)
 			}
@@ -877,8 +904,8 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) refCandidate {
 
 // shapedOutputCandidates renders a shaped step's own output names, or nothing
 // when the shaping expression keeps them to itself.
-func shapedOutputCandidates(s *parsedStep, def v1.TaskDef) []refOutput {
-	names, ok := shapedOutputNames(s.shapingEntry())
+func shapedOutputCandidates(s *parsedStep, def v1.TaskDef, tasks *v1.Registry) []refOutput {
+	names, ok := shapedOutputNames(s.shapingEntry(tasks))
 	if !ok {
 		return nil
 	}

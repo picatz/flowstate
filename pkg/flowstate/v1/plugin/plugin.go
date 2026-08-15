@@ -14,11 +14,11 @@ import (
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
 
 // State is what a plugin is currently doing.
@@ -343,7 +343,7 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	if err != nil {
 		health := Health{Status: HealthUnreachable, CheckedAt: time.Now(), Err: err}
 		p.recordHealth(health)
-		p.telemetry.health.Add(ctx, 1, metric.WithAttributes(attribute.String("flowstate.plugin.name", p.name), attribute.String("flowstate.plugin.health.status", health.Status.String())))
+		p.telemetry.health.Add(ctx, 1, metricschema.WithAttributes(attribute.String(metricschema.PluginName, p.name), attribute.String(metricschema.PluginHealthStatus, health.Status.String())))
 		finish(err)
 		return health
 	}
@@ -375,7 +375,7 @@ func (p *Plugin) CheckHealth(ctx context.Context) Health {
 	}
 
 	p.recordHealth(health)
-	p.telemetry.health.Add(ctx, 1, metric.WithAttributes(attribute.String("flowstate.plugin.name", p.name), attribute.String("flowstate.plugin.health.status", health.Status.String())))
+	p.telemetry.health.Add(ctx, 1, metricschema.WithAttributes(attribute.String(metricschema.PluginName, p.name), attribute.String(metricschema.PluginHealthStatus, health.Status.String())))
 	finish(health.Err)
 	return health
 }

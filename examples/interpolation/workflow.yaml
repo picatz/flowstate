@@ -1,0 +1,75 @@
+# Text and expressions in one value.
+#
+# A `${...}` fence holds one expression, and a value may hold several of them
+# with ordinary text between. That is the whole of the feature: a spelling for
+# building a sentence out of values, and no capability that was not already
+# there — `${'a' + inputs.x + 'b'}` has always been legal, and this says the
+# same thing in the order a person reads it.
+#
+# It is deliberately not a template language. There is no conditional, no loop
+# and no filter in text; a fence holds an expression and nothing else. That is
+# the line Helm and Jinja crossed, and staying on this side of it is what keeps
+# a value readable as data at a glance.
+edition: v2026.3
+name: interpolation
+inputs:
+  version:
+    type: string
+    required: true
+  environment:
+    type: string
+    required: true
+vars:
+  requester: an unattested caller
+steps:
+  # The shape the whole feature exists for. As one expression this reads
+  # `${vars.requester + ' requests deploying ' + inputs.version + ' to ' + inputs.environment}`,
+  # which says the same thing with the words and the values interleaved by hand.
+  - id: announce
+    log:
+      message: ${vars.requester} requests deploying ${inputs.version} to ${inputs.environment}
+
+  # Every fence is rendered with CEL's own `string()`, so a number, a boolean
+  # and a duration all read the way `string()` renders them. `format()` remains
+  # the spelling for width and precision; this one is for concatenation, which
+  # is what nearly every message actually wants.
+  - id: kinds
+    log:
+      message: attempt ${1 + 1}, forced ${false}, budget ${duration('90s')}
+
+  # A block scalar interpolates identically — the fence rule belongs to the
+  # value, not to the quoting style it was written in.
+  - id: summary
+    log:
+      message: >-
+        deploying ${inputs.version}
+        to ${inputs.environment}
+
+  # `$${` is a literal `${`. It is needed only by a file that wants to *show*
+  # the syntax, since a value holding a literal `${` was refused before
+  # interpolation existed, so nothing older can contain one.
+  #
+  # The escape works in a field read when the workflow is compiled as readily as
+  # in one the engine evaluates — a `description:` is prose, and prose about this
+  # feature has to be able to spell it. That is a round trip as much as a parse:
+  # `flow fmt` writes the description back out, so the bytes it writes have to be
+  # the escaped ones or the file it just formatted would no longer compile.
+  - id: teach
+    description: shows how $${...} is written when you mean the characters
+    log:
+      message: write $${inputs.version} to interpolate it
+
+  # The boundary that keeps this additive: a value that is exactly one fence
+  # keeps whatever type its expression produced, so this is the integer 7 and
+  # not the text "7". Only a value mixing text with an expression becomes text.
+  - id: attempts
+    value: ${7}
+
+  - id: report
+    log:
+      message: budget ${steps.attempts.value} attempts
+
+outputs:
+  attempts:
+    value: ${steps.attempts.value}
+    description: the attempt budget, an integer because its value is exactly one fence

@@ -74,7 +74,7 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 		// its own `workflow:`, so this is what keeps two workflows' coverage
 		// apart within one file (Finding 3).
 		identity := WorkflowPath(path, &test)
-		result, spec, transcript := runCase(&test, func() (*v1.Workflow, error) {
+		result, spec, transcript := runCase(&test, DeliveryPath(path, &test), func() (*v1.Workflow, error) {
 			workflow, _, err := flowfile.ParseFile(identity)
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
@@ -124,7 +124,10 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 	}
 
 	for _, test := range file.Tests {
-		result, _, _ := runCase(&test, load)
+		// No delivery path: bytes have no directory to resolve a fixture against,
+		// which is why [checkTrigger] refuses a trigger case in this shape rather
+		// than letting one arrive here with nowhere to read from.
+		result, _, _ := runCase(&test, "", load)
 		report.Cases = append(report.Cases, result)
 	}
 
@@ -143,7 +146,10 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // nil only when the case never reached a run at all. Both are the same values the
 // verdict itself was reached against, so coverage counts a step reached on
 // exactly the evidence `expect.ran` counts on.
-func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
+// deliveryPath is where a `trigger:` case's stored delivery lives, already
+// resolved against the test file's own directory ([DeliveryPath]); empty for every
+// other case and for [RunSource], which has no directory at all.
+func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -211,6 +217,53 @@ func runCase(test *Test, load func() (*v1.Workflow, error)) (result *v1.TestCase
 	ctx = v1.NewContextWithRegistry(ctx, caseRegistry(stubs, v1.SensitiveInputNames(workflow)))
 
 	inputs := v1.NewNamedValues(test.Inputs)
+
+	// A trigger case's inputs are not stated, they are produced: the stored
+	// delivery is mapped through the workflow's own `with:` expressions by the
+	// same function a live receiver will call. Done here, before the clock, the
+	// registry and the signal machinery are built, because a refused delivery
+	// produces no run at all and none of that would be used.
+	// How this case's run started, which every case has: a manual start unless
+	// the case says otherwise, exactly as `flow run local` reports one. That
+	// default is what makes `if: ${trigger.kind == "manual"}` a branch a case can
+	// reach without arranging anything, and its opposite reachable by stating one
+	// line — the whole point of this being settable at all.
+	trigger := v1.NewManualTriggerContext("")
+
+	if test.Trigger != nil && !test.Trigger.Replays() {
+		// Stated outright, with no delivery involved. Checked against the closed
+		// set of kinds when the file loaded ([checkTriggerContext]).
+		trigger = test.Trigger.Context()
+	}
+
+	if test.Trigger != nil && test.Trigger.Replays() {
+		mapped, deliveryID, failures, err := replayDelivery(test, deliveryPath, workflow)
+		if err != nil {
+			result.Error = err.Error()
+			return
+		}
+		if len(failures) > 0 || mapped == nil {
+			// Either the delivery was refused — which is a verdict, not an error,
+			// and the whole of what a `refused: true` case asserts — or it was
+			// accepted by a case that expected otherwise. No run happens either way.
+			result.Failures = failures
+			result.Passed = len(failures) == 0
+			return
+		}
+		inputs = mapped
+
+		// Derived from the replay rather than stated by the case, so a case
+		// asserting on `${trigger.delivery_id}` asserts against the value the
+		// receiver would really have recorded — [v1.WebhookDeliveryID] over the
+		// same evaluated key, which is the function the receiver itself calls.
+		//
+		// The principal is left empty, honestly: a live receiver records the tenant
+		// the delivery was admitted under, and `flow test` has no tenant. Filling
+		// it with something invented is what would make a rehearsal lie.
+		trigger = v1.NewWebhookTriggerContext(test.Trigger.Webhook, "", deliveryID)
+	}
+
+	ctx = v1.NewContextWithTrigger(ctx, trigger)
 
 	// Resolved here, against the case's own inputs, the same way submit
 	// resolves a `subject: ${inputs.x}` rule to a literal before anything is

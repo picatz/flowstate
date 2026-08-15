@@ -36,6 +36,12 @@ $ flow validate examples/hello-world/workflow.yaml
 | [workflow-vars](workflow-vars) | `vars:` at the top of a file, read as `vars.<name>`, beside a loop's bare binding | no |
 | [step-vars](step-vars) | `vars:` on a step and on a loop, bare and private to what declares them | no |
 | [expressions](expressions) | Expressions as values: a step's own `vars:`, and one dialect an `if:` reaches too | no |
+| [optional-dispatch](optional-dispatch) | Why `.orValue(false)` on a three-way dispatch is a bug — `hasValue()` keeping "nobody answered" apart from "answered no" through a signal's payload, dispatched with `switch:` | no |
+| [string-utilities](string-utilities) | `trim()`, `startsWith()`, `substring()`, `lowerAscii()` and `split()` decomposed across named steps to strip a reply prefix and derive a routing key | no |
+| [list-comprehensions](list-comprehensions) | `all`, `exists`, `filter`, `map` and the `lists` library's `sort` classifying a batch of health checks as healthy, degraded, or down | no |
+| [feature-flags](feature-flags) | Map comprehension over a caller's flags (`filter` ranging over keys) beside `.?` reading one named key that might not be sent at all | no |
+| [usage-billing](usage-billing) | `math.greatest`, and `double()` before dividing so CEL's int-truncating division does not silently undercharge a partial block | no |
+| [interpolation](interpolation) | Text and expressions in one value: several `${...}` in a message, the `$${` escape, and the whole-value fence that keeps its type | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
@@ -65,6 +71,8 @@ $ flow validate examples/hello-world/workflow.yaml
 | [call-a-workflow](call-a-workflow) | `call:` — running another Flowfile as a step, isolated from the caller, with `with:` binding its declared inputs and its `outputs:` read back under the step id | no |
 | [pinned-call](pinned-call) | `digest:` on a `call:`, pinning the callee to the bytes the caller reviewed and verified when the file compiles, so a callee that changed since cannot reach a run without somebody reading the change | no |
 | [scheduled-report](scheduled-report) | `triggers:` — the cadence a file declares, which `flow schedule create` turns into a schedule and `flow run` ignores | no |
+| [webhook-trigger](webhook-trigger) | `triggers:` as a list of call sites — a `webhook:` binding a delivery's payload to `inputs:` through `with:`, checked against that signature by `flow validate`, and replayed offline from a stored delivery by `flow test` (including the delivery that does not verify) | no |
+| [trigger-context](trigger-context) | `trigger.kind`, `trigger.name`, `trigger.principal` and `trigger.delivery_id` read in a step's `if:` so a scheduled sweep does not page anyone, `manual:` narrowing who may start a run by hand and requiring a recorded reason, and `flow test` setting the context directly so both sides of a trigger-guarded branch are exercisable with no real trigger | no |
 | [observability](observability) | The docker-compose observability lab: one trace id from `flow run` through Grafana Tempo to the Temporal UI | no |
 | [embedding](embedding/README.md) | Flowstate as a Go library — `pkg/flowstate/embed`: compiling `flowfile/workflow.yaml` from bytes, a custom Go task registered with no `.proto` descriptor, and running it locally or (with `--durable`) against a real Temporal server. A Go program, not a `flow run`able Flowfile alone — read its README | no |
 | [operations/tenant-routing](operations/tenant-routing/) | Per-tenant worker routing — `flow server --task-queue-prefix` and `flow worker --tenant`, one fleet per tenant with that tenant's own secrets and egress policy, why the composed queue name cannot be forged, and the two half-configured command lines refused at startup. A two-process demo rather than a Flowfile, so read its README | no |

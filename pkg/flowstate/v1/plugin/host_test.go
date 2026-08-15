@@ -736,8 +736,9 @@ func TestRestartRecovers(t *testing.T) {
 	}
 	first := p.PID()
 
-	// It dies every 150ms, so a relaunch with a different pid proves the
-	// supervisor brought it back rather than leaving it dead.
+	// It dies a second after it becomes reachable, so a relaunch with a
+	// different pid proves the supervisor brought it back rather than leaving it
+	// dead.
 	if !waitFor(t, 15*time.Second, func() bool {
 		return p.Restarts() > 0 && p.State() == StateReady && p.PID() != first && p.PID() != 0
 	}) {

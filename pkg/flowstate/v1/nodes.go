@@ -81,7 +81,7 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 		locals[name] = v
 	}
 
-	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress())
+	return Activation(ctx, s.GetProfile(), s.StepOutputs(), refValues(s.GetAmbientVars()), locals, refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress(), s.GetTrigger())
 }
 
 // Activation returns the CEL activation for this scope.
@@ -92,10 +92,10 @@ func (s *Scope) ActivationWith(ctx context.Context, extra map[string]ref.Val) ce
 // evaluator names one for how it resolves. They disagree here and only here.
 func (s *Scope) Activation(ctx context.Context) cel.Activation {
 	if s == nil {
-		return Activation(ctx, "", nil, nil, nil, nil, nil, false, nil)
+		return Activation(ctx, "", nil, nil, nil, nil, nil, false, nil, nil)
 	}
 
-	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress())
+	return Activation(ctx, s.Profile, s.Outputs, refValues(s.GetAmbientVars()), refValues(s.GetVars()), refValues(s.GetInputs()), s.GetIdentity(), s.GetLocal(), s.GetAddress(), s.GetTrigger())
 }
 
 // refValues converts a map of schema values to CEL values.
@@ -145,6 +145,11 @@ func (s *Scope) WithLocal(name string, item *Value) *Scope {
 		// fixed for the whole run, and every one of these helpers is a place a
 		// field is silently dropped by being forgotten.
 		next.Address = s.Address
+
+		// And how the run started, shared for the identical reason: fixed for the
+		// whole run, and dropping it here would leave `${trigger.kind}` resolving
+		// in a step's own `if:` and empty inside a loop body two lines below it.
+		next.Trigger = s.Trigger
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -179,6 +184,11 @@ func (s *Scope) WithLocals(locals map[string]*Value) *Scope {
 		// fixed for the whole run, and every one of these helpers is a place a
 		// field is silently dropped by being forgotten.
 		next.Address = s.Address
+
+		// And how the run started, shared for the identical reason: fixed for the
+		// whole run, and dropping it here would leave `${trigger.kind}` resolving
+		// in a step's own `if:` and empty inside a loop body two lines below it.
+		next.Trigger = s.Trigger
 		for k, v := range s.Vars {
 			next.Vars[k] = v
 		}
@@ -213,6 +223,11 @@ func (s *Scope) WithAmbientVars(vars map[string]*Value) *Scope {
 		// fixed for the whole run, and every one of these helpers is a place a
 		// field is silently dropped by being forgotten.
 		next.Address = s.Address
+
+		// And how the run started, shared for the identical reason: fixed for the
+		// whole run, and dropping it here would leave `${trigger.kind}` resolving
+		// in a step's own `if:` and empty inside a loop body two lines below it.
+		next.Trigger = s.Trigger
 		for k, v := range s.AmbientVars {
 			next.AmbientVars[k] = v
 		}
@@ -407,6 +422,15 @@ func listElements(val ref.Val) ([]*Value, error) {
 // treats as "the accumulated history", or just some other named output the loop
 // happens to also carry.
 const LoopResultsField = "results"
+
+// LoopStateField is the name a [Loop] reports its final carried state under,
+// when it carries one — `${steps.<id>.state}`.
+//
+// A constant for the reason [LoopResultsField] is one: [LoopStateOutputs] and
+// [LoopStateOutputsHonest] write it and [OutputNames] describes it, and a name
+// spelled at each site independently is a name that eventually differs in one
+// of them.
+const LoopStateField = "state"
 
 // LoopOutputs shapes a loop's per-iteration results into the loop's own outputs.
 //
@@ -655,6 +679,7 @@ func Activation(
 	identity *WorkloadIdentity,
 	local bool,
 	address *RunAddress,
+	trigger *TriggerContext,
 ) cel.Activation {
 	return cel.Activation(&StepsOutputActivation{
 		Prev:        prev,
@@ -664,6 +689,7 @@ func Activation(
 		RunIdentity: identity,
 		RunLocal:    local,
 		RunAddress:  address,
+		Trigger:     trigger,
 		Ctx:         ctx,
 		Eval:        DefaultEvaluator(),
 		Profile:     profile,
@@ -728,6 +754,11 @@ func (s *Scope) WithOutputs(outputs *Workflow_StepOutputs) *Scope {
 		// fixed for the whole run, and every one of these helpers is a place a
 		// field is silently dropped by being forgotten.
 		next.Address = s.Address
+
+		// And how the run started, shared for the identical reason: fixed for the
+		// whole run, and dropping it here would leave `${trigger.kind}` resolving
+		// in a step's own `if:` and empty inside a loop body two lines below it.
+		next.Trigger = s.Trigger
 	}
 	return next
 }

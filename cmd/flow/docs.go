@@ -5,6 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+
 	"github.com/picatz/flowstate/cmd/flow/internal/docsgen"
 )
 
@@ -87,46 +89,36 @@ func newReferenceGenerator() (*docsgen.Generator, error) {
 	})
 }
 
-// mcpLocalTools names the tools that answer in this process.
-//
-// Hand-kept, and deliberately hard to add to. Which side a tool answers on is
-// carried by the dispatch closure in mcp.go — a Go func value, which nothing can
-// inspect from outside — so it is written down once here rather than guessed
-// from a description's wording. [TestEveryMCPToolHasALocality] holds this to the
-// registered tool set in both directions, so a tool added without a decision
-// about where it answers fails rather than being documented wrong.
-var mcpLocalTools = map[string]bool{
-	"Validate":   true,
-	"Compile":    true,
-	"GetCatalog": true,
-}
-
 // mcpToolDocs describes every tool `flow mcp` registers, in the order it
 // registers them.
 //
 // Here rather than in the generator because the derivation needs this package:
-// [workflowServiceMethods] is the registration itself, asserted against the
-// service descriptor in both directions by mcp_test.go, so walking it is what
-// makes the reference document exactly what an agent connects to.
+// [flowmcp.WorkflowServiceMethods] is the registration itself, asserted against
+// the service descriptor in both directions by cmd/flow/internal/mcp's own
+// tests, so walking it is what makes the reference document exactly what an
+// agent connects to. Which side a tool answers on is [flowmcp.LocalTools],
+// hand-kept there for the identical reason: the dispatch closure in
+// [flowmcp.WorkflowServiceMethods] is a Go func value nothing can inspect from
+// outside.
 func mcpToolDocs() []docsgen.MCPTool {
 	var tools []docsgen.MCPTool
-	for _, method := range workflowServiceMethods() {
+	for _, method := range flowmcp.WorkflowServiceMethods() {
 		tools = append(tools, docsgen.MCPTool{
-			Name:        mcpToolName(method.name),
-			Description: mcpToolDescription(method.name),
-			Request:     string(method.input.FullName()),
-			Local:       mcpLocalTools[method.name],
+			Name:        flowmcp.ToolName(method.Name),
+			Description: flowmcp.ToolDescription(method.Name),
+			Request:     string(method.Input.FullName()),
+			Local:       flowmcp.LocalTools[method.Name],
 		})
 	}
 
 	tools = append(tools, docsgen.MCPTool{
-		Name:        runLocalToolName,
-		Description: runLocalToolDescription,
+		Name:        flowmcp.RunLocalToolName,
+		Description: flowmcp.RunLocalToolDescription,
 		Local:       true,
 	})
 	tools = append(tools, docsgen.MCPTool{
-		Name:        testToolName,
-		Description: testToolDescription,
+		Name:        flowmcp.TestToolName,
+		Description: flowmcp.TestToolDescription,
 		Local:       true,
 	})
 

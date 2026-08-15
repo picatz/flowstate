@@ -320,14 +320,32 @@ func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
 // structureScalar compiles one entry of such a structure: a reference, or literal
 // text.
 func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Value {
-	inner, fenced := SplitFence(text)
+	segs, err := scanInterpolation(text)
+	if err != nil {
+		c.report(spanOfNode(n), r, "%s", err)
+		return nil
+	}
+
+	inner, fenced := wholeValueFence(segs, text)
 	if !fenced {
-		if err := fenceError(text); err != nil {
-			c.report(spanOfNode(n), r, "%s", err)
+		if hasFence(segs) {
+			// An interpolated scalar in a structure that holds a secret
+			// reference somewhere. Which of the two sentences it gets turns on
+			// whether *this* value is the one naming a secret, because the two
+			// mistakes have different fixes: a reference among text has to
+			// become the whole value, and an ordinary interpolation beside a
+			// reference has to move out of the structure.
+			//
+			// Reported here rather than left to [fenceError], which is what this
+			// branch used to reach. That sentence — "a ${...} expression must be
+			// the whole value" — describes a rule interpolation removed, so an
+			// author following it would rewrite a value that was never the
+			// problem and land on the same refusal again.
+			c.reportInterpolatedSecret(n, text, segs, r)
 			return nil
 		}
 		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
-			Kind: &expr.Value_StringValue{StringValue: text},
+			Kind: &expr.Value_StringValue{StringValue: literalText(segs)},
 		}}}
 	}
 
@@ -350,6 +368,30 @@ func (c *compiler) structureScalar(n ast.Node, text, path string, r ref) *v1.Val
 
 	c.report(span, r, "%s", mixedStructureHelp)
 	return nil
+}
+
+// reportInterpolatedSecret reports an interpolated scalar inside a structure
+// that holds a secret reference, naming the fence at fault where one of this
+// value's own fences is the reference.
+func (c *compiler) reportInterpolatedSecret(n ast.Node, text string, segs []segment, r ref) {
+	for _, sg := range segs {
+		if !sg.fence {
+			continue
+		}
+
+		span := spanOfFence(n, text, sg)
+
+		parsed := v1.NewExpr(sg.text)
+		if parsed.Error() != nil {
+			continue
+		}
+		if _, found := findSecretCall(parsed.GetExpr().GetExpr()); found {
+			c.report(span, r, "%s", notWholeValueHelp)
+			return
+		}
+	}
+
+	c.report(spanOfNode(n), r, "%s", mixedStructureHelp)
 }
 
 // holdsSecretMarker reports whether a structure has a ${secret(...)} anywhere
@@ -378,19 +420,32 @@ func (c *compiler) walkMarkers(n ast.Node, visit func(ast.Node, string) bool) bo
 	}
 	defer c.exit()
 
+	// Every fence in the scalar, not only a whole-value one. A scalar may now mix
+	// text with more than one expression, and a walk still asking the whole-value
+	// question would answer "no marker here" for `Bearer ${secret('env:T')}` —
+	// the exact shape this walk exists to find, and the one whose consequence is
+	// a secret compiled into an expression the workflow evaluates.
 	scalar := func(text string) bool {
-		inner, fenced := SplitFence(text)
-		if !fenced {
+		segs, err := scanInterpolation(text)
+		if err != nil {
 			return true
 		}
-		parsed := v1.NewExpr(inner)
-		if parsed.Error() != nil {
-			return true
+		for _, sg := range segs {
+			if !sg.fence {
+				continue
+			}
+			parsed := v1.NewExpr(sg.text)
+			if parsed.Error() != nil {
+				continue
+			}
+			if _, found := findSecretCall(parsed.GetExpr().GetExpr()); !found {
+				continue
+			}
+			if !visit(n, sg.text) {
+				return false
+			}
 		}
-		if _, found := findSecretCall(parsed.GetExpr().GetExpr()); !found {
-			return true
-		}
-		return visit(n, inner)
+		return true
 	}
 
 	switch node := n.(type) {

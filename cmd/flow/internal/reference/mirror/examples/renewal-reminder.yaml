@@ -117,7 +117,7 @@ steps:
           log:
             # Quoted because of YAML rather than because of the expression: a
             # plain scalar cannot contain a colon followed by a space.
-            message: '${"reminder %d for %s: the subscription renews soon".format([sent + 1, vars.customer])}'
+            message: 'reminder ${sent + 1} for ${vars.customer}: the subscription renews soon'
 
 outputs:
   reminders_sent:

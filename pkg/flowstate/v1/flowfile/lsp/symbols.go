@@ -106,14 +106,14 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 			// land on whatever name happens to sit at that byte, which is a worse
 			// answer than none: go-to-definition is trusted to be right when it
 			// moves at all.
-			if locations != nil || !v.fenced || !contains(v.exprRange, pos) {
+			if locations != nil {
 				return
 			}
-			cursor, ok := v.exprCursor(doc.index, pos)
+			f, cursor, ok := v.fenceAt(doc.index, pos)
 			if !ok {
 				return
 			}
-			ref := referenceAt(v.expr, cursor)
+			ref := referenceAt(f.source, cursor)
 
 			if ref.step == "" {
 				// A bare name is a binding, and the only binding with a

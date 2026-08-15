@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // What protovalidate calls a standard-rule vocabulary — min_len, min,
@@ -61,6 +65,14 @@ func constraintCELType(t InputDeclaration_Type) *cel.Type {
 		return cel.ListType(cel.DynType)
 	case InputDeclaration_TYPE_STRUCT:
 		return cel.MapType(cel.StringType, cel.DynType)
+	case InputDeclaration_TYPE_ENUM:
+		// An enum value's wire shape is a string, the same shape TYPE_STRING
+		// sends (see [InputDeclaration_values]'s own doc and [CheckInputValue]),
+		// so `must:` binds `this` as a string exactly as it would for a
+		// declared string input. Membership itself is checked separately, by
+		// [checkEnumConstraint]; `must:` stays legal alongside `values:`,
+		// redundant-but-legal, ANDed after the typed check.
+		return cel.StringType
 	default:
 		return cel.DynType
 	}
@@ -372,6 +384,17 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 			name, decl.GetMinItems(), maxListElements, maxListElements)
 	}
 
+	if len(decl.Values) > 0 && t != InputDeclaration_TYPE_ENUM {
+		return fmt.Errorf(
+			"input %q declares values but is declared %s; values apply only to an enum input",
+			name, DeclaredTypeName(t))
+	}
+	if t == InputDeclaration_TYPE_ENUM && len(decl.Values) == 0 {
+		return fmt.Errorf(
+			"input %q is declared enum but declares no values; an enum needs at least one member "+
+				"to be a closed set of anything", name)
+	}
+
 	if decl.Must != nil {
 		if _, err := CompileMustExpression(decl.GetMust(), t); err != nil {
 			return fmt.Errorf("input %q %w", name, err)
@@ -413,6 +436,9 @@ func CheckInputConstraints(name string, decl *InputDeclaration, value *Value) er
 		return err
 	}
 	if err := checkListConstraints(name, decl, lit); err != nil {
+		return err
+	}
+	if err := checkEnumConstraint(name, decl, lit); err != nil {
 		return err
 	}
 
@@ -927,6 +953,55 @@ func checkHTTPResponseElementBound(url string, parsedJSON *expr.Value) error {
 			"response, not anything the workflow wrote — narrow the query, page the request, or ask "+
 			"the endpoint to filter server-side before `expect:`/`outputs:` examines it",
 		url, v.ElementCount, maxListElements))
+}
+
+// checkEnumConstraint refuses a value that is not one of a `type: enum`
+// declaration's own `values`.
+//
+// Silently returns for a value [inputTypeOf] does not read as a string, or
+// for a declaration that is not TYPE_ENUM — [CheckInputValue] already refused
+// a type mismatch, and [CheckInputConstraintShape] already refuses `values:`
+// declared on anything but an enum, per this file's own doc on where set-facts
+// about *this* declaration belong.
+//
+// The refusal names the declaration's own choices verbatim, in the style
+// established for a `case:` value against a `switch:` domain
+// (`flowfile/validate_switch.go`), and offers the nearest spelling through
+// [nearest.Name] — the one did-you-mean rule this repository keeps in one
+// place rather than four.
+func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) error {
+	if decl.GetType() != InputDeclaration_TYPE_ENUM {
+		return nil
+	}
+	s, ok := lit.GetKind().(*expr.Value_StringValue)
+	if !ok {
+		return nil
+	}
+	got := s.StringValue
+
+	for _, choice := range decl.GetValues() {
+		if choice == got {
+			return nil
+		}
+	}
+
+	message := fmt.Sprintf("input %q is %s, which is not one of the values %s declares: %s",
+		name, strconv.Quote(got), name, quotedStrings(decl.GetValues()))
+	if suggestion, ok := nearest.Name(got, decl.GetValues()); ok {
+		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	}
+
+	return fmt.Errorf("%s", message)
+}
+
+// quotedStrings renders a list of strings the way a diagnostic quotes a
+// declaration's own choices, matching [flowfile]'s `quotedList`.
+func quotedStrings(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = strconv.Quote(v)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // checkListConstraints applies min_items and max_items to a list literal.

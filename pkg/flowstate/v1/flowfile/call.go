@@ -3,7 +3,6 @@ package flowfile
 import (
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -243,7 +242,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		}
 	}
 
-	data, err := os.ReadFile(resolved)
+	data, err := readBoundedSource(resolved)
 	if err != nil {
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, which could not be read: %s", target, err.Error())

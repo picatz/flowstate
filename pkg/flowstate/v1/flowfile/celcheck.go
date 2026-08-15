@@ -79,103 +79,89 @@ import (
 //
 // Walked here in one pass rather than threaded through the per-position reference
 // checks, because this needs none of what they carry — no scope, no step index, no
-// workflow. A position added to the language gets this for free, or it does not get
-// it at all and the gap is in one visible place.
+// workflow.
+//
+// The positions come from [v1.WalkWorkflow], which is the whole of #508's point.
+// "A position added to the language gets this for free, or it does not get it at
+// all and the gap is in one visible place" is what this said before, and the gap
+// was neither free nor visible: #491 added a webhook's `with:` arguments and its
+// `idempotency_key`, nothing added them here, and `${nosuchfunc(event.body)}` in a
+// trigger validated clean and then failed at three in the morning when a delivery
+// arrived (#502). Now every position arrives here whether or not this file knows
+// about it, and the `default` arm below type-checks it — so the direction a new
+// schema branch fails in is "checked", not "silently skipped".
+//
+// The named arms are therefore the whole of what this check does *not* look at,
+// each with its reason. They are what makes the omissions readable: before this, a
+// position missing from the walk and a position deliberately left to another
+// validator looked exactly alike, because both were simply absent.
 func checkExpressionTypes(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
-	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
-		ds = append(ds, typeErrors("", v1.VarsRoot+"."+name, wf.GetVars()[name])...)
-	}
+	v1.WalkWorkflow(wf, v1.Walk{
+		Value: func(site v1.ValueSite) {
+			switch site.Slot {
+			case v1.SlotInputDefault, v1.SlotInputExample:
+				// A declaration's own value is judged against the type the
+				// declaration states, by [v1.CheckInputValue] and
+				// [v1.CheckInputConstraints], which is a sharper answer than
+				// cel-go's and is already reported when the file loads.
 
-	ds = append(ds, checkNodeExpressions(wf.GetSteps())...)
+			case v1.SlotSignalSubject:
+				// signals.go owns a computed `subject:`: it decides where the
+				// expression is routed and narrows what a rule shaped that way may
+				// match, and a second reporter here would say a weaker version of
+				// the same thing on the same line.
 
-	// A declared output is an expression like any other, and this is the one check
-	// that has to know about a *position* rather than about a scope — so a position
-	// the language grows either appears here or is never type-checked at all.
-	for _, declaration := range wf.GetDeclaredOutputs() {
-		ds = append(ds, typeErrors("", "outputs."+declaration.GetName(), declaration.GetValue())...)
-	}
+			case v1.SlotWebhookVerify:
+				// A `verify:` entry is a secret reference rather than an
+				// expression, and resolving one is not something a validator does.
+
+			case v1.SlotSwitchCaseValue:
+				// A case value must be a literal, and validate_switch.go already
+				// refuses a computed one with the sentence that says why cases are
+				// literals. Type-checking it too would report one mistake twice, in
+				// two voices.
+
+			case v1.SlotCallArgument:
+				// validate_call.go checks a `with:` argument against the callee's
+				// own declarations, which is the check that can be specific about
+				// it.
+
+			default:
+				ds = append(ds, typeErrors(site.Step, site.Field(), site.Value)...)
+			}
+		},
+	})
 
 	return ds
 }
 
 // checkNodeExpressions checks every expression a step carries, at any depth.
+//
+// The same rule [checkExpressionTypes] applies, over a subtree rather than a whole
+// document: every position arrives, and the two this does not judge are named with
+// their reasons rather than absent.
 func checkNodeExpressions(nodes []*v1.Node) Diagnostics {
 	var ds Diagnostics
 
-	for _, node := range nodes {
-		id := node.GetId()
+	v1.WalkNodes(nodes, v1.Walk{
+		Value: func(site v1.ValueSite) {
+			switch site.Slot {
+			case v1.SlotSwitchCaseValue, v1.SlotCallArgument:
+				// See [checkExpressionTypes] for both.
 
-		ds = append(ds, typeErrors(id, "if", node.GetCondition())...)
-
-		for _, name := range slices.Sorted(maps.Keys(node.GetVars())) {
-			ds = append(ds, typeErrors(id, v1.VarsRoot+"."+name, node.GetVars()[name])...)
-		}
-
-		if task := node.GetTask(); task != nil {
-			// Every input, including the ones a task evaluates itself. The
-			// reference walk skips those because it cannot model their scope; this
-			// does not model any scope, so there is nothing to skip.
-			for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
-				ds = append(ds, typeErrors(id, name, task.GetInputs()[name])...)
+			default:
+				// Every input, including the ones a task evaluates itself. The
+				// reference walk skips those because it cannot model their scope;
+				// this does not model any scope, so there is nothing to skip. An
+				// `undo:` input arrives under the `undo:` key rather than the
+				// input's name, for the reason [validateUndoInputs] gives: an input
+				// name here would be looked up among the *step's* inputs.
+				ds = append(ds, typeErrors(site.Step, site.Field(), site.Value)...)
 			}
-		}
-
-		// A compensation's inputs are expressions like any others, and an operator
-		// with no overload is as wrong there as anywhere else. Reported against the
-		// `undo:` key rather than the input's name, for the reason [validateUndoInputs]
-		// gives: an input name here would be looked up among the *step's* inputs.
-		if undo := node.GetUndo(); undo != nil {
-			inputs := undo.GetTask().GetInputs()
-			for _, name := range slices.Sorted(maps.Keys(inputs)) {
-				ds = append(ds, typeErrors(id, "undo", inputs[name])...)
-			}
-		}
-
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_ForEach:
-			ds = append(ds, typeErrors(id, "items", kind.ForEach.GetItems())...)
-			ds = append(ds, checkNodeExpressions(kind.ForEach.GetBody())...)
-		case *v1.Node_Loop:
-			// Every loop expression is type-checked, so `until: ${1 + true}`, a bad
-			// operator in `init:`/`update:`, or one anywhere in the body is a
-			// validate-time diagnostic rather than a runtime failure that only lands
-			// after the body's side effects have already run.
-			ds = append(ds, typeErrors(id, "until", kind.Loop.GetUntil())...)
-			ds = append(ds, typeErrors(id, "init", kind.Loop.GetInitial())...)
-			ds = append(ds, typeErrors(id, "update", kind.Loop.GetUpdate())...)
-			ds = append(ds, checkNodeExpressions(kind.Loop.GetBody())...)
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				ds = append(ds, checkNodeExpressions(branch.GetSteps())...)
-			}
-		case *v1.Node_Switch:
-			// The discriminant is the switch's one expression; case literals hold
-			// none by construction, and every body — the default's included — is
-			// checked whichever branch a run would take.
-			ds = append(ds, typeErrors(id, "value", kind.Switch.GetValue())...)
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				ds = append(ds, checkNodeExpressions(body)...)
-			}
-		case *v1.Node_Value:
-			// The step's whole content is one expression, so an operator with no
-			// overload here is the entire step being wrong, and it is the kind
-			// where saying nothing costs most: a `value:` exists to be read by
-			// several later steps, so one that fails at run time fails everything
-			// built on it at once.
-			ds = append(ds, typeErrors(id, "value", kind.Value)...)
-		case *v1.Node_Wait:
-			ds = append(ds, typeErrors(id, "wait_until", kind.Wait.GetUntil())...)
-			ds = append(ds, typeErrors(id, "sleep", kind.Wait.GetDurationExpr())...)
-			ds = append(ds, typeErrors(id, "timeout", kind.Wait.GetTimeoutExpr())...)
-			ds = append(ds, typeErrors(id, "prompt", kind.Wait.GetSignal().GetPrompt())...)
-			shaped := kind.Wait.GetSignal().GetOutputs()
-			for _, name := range slices.Sorted(maps.Keys(shaped)) {
-				ds = append(ds, typeErrors(id, "outputs."+name, shaped[name])...)
-			}
-		}
-	}
+		},
+	})
 
 	return ds
 }
@@ -462,7 +448,14 @@ var unknownFunction = regexp.MustCompile(`^undeclared reference to '([^']+)'`)
 // nothing downstream can parse it back. A `fields:` value is read by a log sink, and
 // `{"a":1,"b":["x","y"]}` is the one of the two it can do something with. `format`
 // is for putting a *scalar* into a sentence.
-var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list)\(`)
+// A null is matched alongside them because #413 made this reachable from a value
+// that never calls `string()` in its source at all: interpolation desugars each
+// fence to `string(<fence>)`, so `deployed by ${inputs.who}` on an input that can
+// be absent arrives here as this message about a call the author did not write.
+// The advice has to fit what they *did* write, which is why the null case gets a
+// sentence about saying what a missing value should read as rather than one about
+// rendering a structure.
+var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list|null_type)`)
 
 // forAnAuthor turns one of cel-go's sentences into one written for the person who
 // typed the expression.
@@ -480,7 +473,11 @@ func forAnAuthor(message string) string {
 			match[1])
 	}
 
-	if stringOfAStructure.MatchString(message) {
+	if match := stringOfAStructure.FindStringSubmatch(message); match != nil {
+		if match[1] == "null_type" {
+			return message + "; string() takes a value, and a null has none to render, " +
+				"so say what a missing one should read as — `${x.orValue('unknown')}`, or a conditional"
+		}
 		return message + "; string() takes a scalar, so render a map or a list with json.encode(value)"
 	}
 

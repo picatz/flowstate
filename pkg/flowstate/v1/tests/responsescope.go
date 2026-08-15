@@ -71,6 +71,48 @@ func ResponseScopeCases(httpBaseURL string) []Case {
 			}},
 		},
 		{
+			// How the run started, from the same position, and it is here rather
+			// than in [TriggerContextCases] for the reason the whole set is here:
+			// this is the one activation in the language that a *task* builds, in
+			// an activity, on a worker holding a compacted scope and nothing else.
+			// Every other root was dropped there once. A `${trigger.kind}` that
+			// resolved in a step's `if:` and was unbound in the http task's
+			// `outputs:` two lines below it would be one spelling with two
+			// behaviours, decided by a property of the task an author has no
+			// reason to know.
+			//
+			// The context is stated, because a stated one is the only thing both
+			// drivers can be held to — see [TriggerContextCases].
+			Name: "outputs reads how the run started",
+			Workflow: &v1.Workflow{
+				Name:    "outputs-reads-trigger",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{shaped("call", httpBaseURL,
+					`{"said": trigger.kind + "/" + trigger.name}`)},
+			},
+			Trigger: v1.NewScheduleTriggerContext("nightly-sweep", "ops"),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": said("schedule/nightly-sweep"),
+			}},
+		},
+		{
+			// And the other position, which runs before `outputs:` and on a
+			// different code path — so one being right says nothing about the
+			// other, which is how these two came to be two halves of one feature
+			// with only one of them working.
+			Name: "expect reads how the run started",
+			Workflow: &v1.Workflow{
+				Name:    "expect-reads-trigger",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{expects("call", httpBaseURL,
+					`response.status_code == 200 && trigger.kind == "webhook"`)},
+			},
+			Trigger: v1.NewWebhookTriggerContext("storefront", "webhook", "6b1f0c"),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": said("ok"),
+			}},
+		},
+		{
 			// A loop's iterator, which is a bare name rather than a rooted one and so
 			// travels by a different field — [v1.Scope.Vars] rather than
 			// [v1.Scope.AmbientVars]. Both were dropped, but only one of them said so:

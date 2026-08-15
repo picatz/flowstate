@@ -122,6 +122,11 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		// it here would have made `flow validate` refuse a workflow the engine runs,
 		// which is this rule's own failure mode pointed the other way.
 		ExpressionInputs: []string{"expect"},
+		// This task reads `outputs:` as a replacement for the outputs it
+		// declares, which is the capability every other surface used to infer
+		// from the input's name. Declared here so the inference can stop: see
+		// [TaskDef.ShapesOutputs].
+		ShapesOutputs:    true,
 		NeedsPrevOutputs: true,
 		AuthorityInputs:  []string{"bearer", "credential"},
 		CredentialInputs: []string{"credential"},
@@ -451,6 +456,17 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				if len(converted) > 0 {
 					taskInputs.Outputs = converted
 				}
+			case *Value_Structure_:
+				// The mapping form, compiled entry by entry so its names survive
+				// into the specification. Each entry lands in the same field a
+				// literal map lands in and is evaluated by the same loop below —
+				// the shape the schema always had for this input, now reachable
+				// from a spelling that keeps its keys.
+				mapped := kind.Structure.GetMap()
+				if mapped == nil {
+					return nil, fmt.Errorf("outputs must be a mapping of names to values, not a list")
+				}
+				taskInputs.Outputs = mapped.GetEntries()
 			case *Value_Expr:
 				outputsExpr = kind.Expr
 			case *Value_Error_:

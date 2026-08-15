@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
+	"github.com/google/cel-go/common/operators"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -504,7 +504,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		field := v1.VarsRoot + "." + name
-		rooted, vars, inputs, run, bare := referencedIdentifiers(parsed)
+		rooted, vars, inputs, run, trigger, bare := referencedIdentifiers(parsed)
 
 		for _, ref := range inputs {
 			// A run's arguments *are* known before the first step, so this refusal is
@@ -551,6 +551,22 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 			})
 		}
 
+		// `trigger` fails for the same reason `run` does below, and it is worth its
+		// own loop for the same reason: the field may be perfectly spelled, and the
+		// mistake is reading it from `vars:` at all. A var is evaluated once before
+		// the first step, in an activity under the durable driver, against a scope
+		// deliberately holding nothing about the run — see the sentence below.
+		for range trigger {
+			ds = append(ds, Diagnostic{
+				Field: field, Value: v1.TriggerRoot,
+				Message: fmt.Sprintf(
+					"a var may not read `%s`: `%s:` is evaluated before the first step runs, "+
+						"against a scope holding literals, operators and the profile's functions "+
+						"and nothing else. Read it in a step's `if:`, its own `vars:`, or a task input",
+					v1.TriggerRoot, v1.VarsRoot),
+			})
+		}
+
 		// `run` fails the same way `inputs` does, for the same reason: both are
 		// known only once the run's arguments are — after this block has already
 		// been evaluated (see the loop over inputs above). Reported here rather
@@ -568,7 +584,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		for _, ref := range bare {
-			if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot || ref == v1.RunRoot {
+			if isDeclarationRoot(ref) {
 				// A root as an operand, which fails here for the same reason a
 				// selection through it does — and is described by the two loops
 				// above, not by the general "unknown name" sentence.
@@ -1384,21 +1400,30 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 
 	var ds Diagnostics
 
+	// Kind is set alongside Field on every diagnostic below, wherever it names
+	// the `undo:` key itself, so [validateParsed] positions it through
+	// [Positions.LocateKind] rather than the candidate search
+	// [Positions.Locate] does. The step's own primary task may declare an
+	// input literally named `undo` — a plugin task's input names come from
+	// its own descriptor, so `undo` is not reserved — and Locate's candidate
+	// search tries every registered task's `.undo` input before the step's
+	// own `<step>.undo`, which would misplace these on that unrelated input.
 	if err := v1.CheckUndoPlacement(node, placement); err != nil {
 		return append(ds, Diagnostic{
-			Step: id, Field: "undo", Message: err.Error(),
+			Step: id, Field: "undo", Kind: "undo", Message: err.Error(),
 			Code: v1.DiagnosticCodePlacementRefusal,
 		})
 	}
 
 	task := undo.GetTask()
 	if task.GetName() == "" {
-		return append(ds, Diagnostic{Step: id, Field: "undo", Message: "compensation has no task"})
+		return append(ds, Diagnostic{Step: id, Field: "undo", Kind: "undo", Message: "compensation has no task"})
 	}
 	if _, known := v1.LookupTask(task.GetName()); !known {
 		return append(ds, Diagnostic{
 			Step:    id,
 			Field:   "undo",
+			Kind:    "undo",
 			Message: unknownTaskMessage(task.GetName()),
 			Code:    v1.DiagnosticCodeUnknownTask,
 		})
@@ -1439,7 +1464,7 @@ func validateUndoInputs(id string, task *v1.Task) Diagnostics {
 		if d.Field != "" {
 			message = fmt.Sprintf("input %q: %s", d.Field, message)
 		}
-		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Value: d.Value, Message: message, Code: d.Code})
+		ds = append(ds, Diagnostic{Step: d.Step, Field: "undo", Kind: "undo", Value: d.Value, Message: message, Code: d.Code})
 	}
 
 	return ds
@@ -1456,7 +1481,30 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		return ds
 	}
 
-	rooted, vars, inputs, run, bare := referencedIdentifiers(parsed)
+	rooted, vars, inputs, run, trigger, bare := referencedIdentifiers(parsed)
+
+	// `trigger`'s shape is statically known and closed — four strings — for the
+	// reason `run`'s is, and with one extra consequence: the closure is what keeps
+	// a payload field from becoming reachable here. See [unknownTriggerField].
+	for _, ref := range trigger {
+		if d, wrong := unknownTriggerField(stepID, inputName, ref); wrong {
+			ds = append(ds, d)
+		}
+	}
+
+	// `trigger.kind` is a field this walk already resolves, above — the check
+	// there is that the *name* is one of the four the engine renders. It says
+	// nothing about a comparison's other side: `${trigger.kind == "schedual"}`
+	// names a real field and is therefore invisible to that loop, compiles,
+	// evaluates false on both drivers forever, and silently takes whichever
+	// branch the author did not intend. The kinds are as closed as the fields
+	// are ([v1.KnownTriggerKind]), so this is checked the same way and with the
+	// same one-sided caution: only a string literal on the other side of `==`
+	// or `!=` is judged, never a variable, an input, or another field, because
+	// those are values this validator cannot know.
+	for _, literal := range unknownTriggerKindLiterals(parsed.GetExpr(), map[string]struct{}{}) {
+		ds = append(ds, unknownTriggerKindLiteral(stepID, inputName, literal))
+	}
 
 	// An input can only fail one way — nothing declared it — for the reason a var
 	// can: every declaration exists before the run starts, so there is no forward
@@ -1509,7 +1557,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if scope.locals[ref] {
 			continue
 		}
-		if ref == v1.StepsRoot || ref == v1.VarsRoot || ref == v1.InputsRoot || ref == v1.RunRoot {
+		if isDeclarationRoot(ref) {
 			// A root written as an operand rather than selected through:
 			// `size(steps)`, or `vars["region"]` where the key is computed. Both
 			// resolve — the activation answers a root whole — so reporting either as
@@ -1550,6 +1598,23 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		// `flow fix` — after which they resolve as rooted references and get the
 		// right message from unresolvedStep. Keeping the two branches here would
 		// have been code that cannot run, which is the kind that rots unnoticed.
+		if ref == v1.EventRoot {
+			// Reported as what it is rather than as an unknown step, for the reason
+			// `now` is below: `event` does exist, and an author has read about it or
+			// copied a trigger's `with:`, so "unknown step" sends them looking for a
+			// step they never wrote. What they need is where the name is bound and
+			// what to do instead — which is the design's own rule, not an
+			// implementation limit: everything a workflow operates on arrives
+			// through `with:` into `inputs:`, so a step reading the payload directly
+			// would be a second input path `flow validate` could not check.
+			ds = append(ds, Diagnostic{
+				Step: stepID, Field: inputName,
+				Message: "`" + v1.EventRoot + "` is the delivery a trigger was started by, bound inside a " +
+					"webhook's `with:` and `idempotency_key:` and nowhere else; bind what this step needs " +
+					"under that `with:` and read it here as `" + v1.InputsRoot + ".<name>`",
+			})
+			continue
+		}
 		if ref == v1.NowIdentifier {
 			// Reported as what it is rather than as an unknown step. `now` does
 			// exist — an author has read about it, or copied a `wait_until:` — so
@@ -1647,30 +1712,34 @@ func unresolvedInput(stepID, inputName, ref string, scope refScope) Diagnostic {
 	return Diagnostic{Step: stepID, Field: inputName, Value: ref, Message: message, Code: v1.DiagnosticCodeUnresolvedReference}
 }
 
-// referencedIdentifiers returns the names an expression references, in five groups:
+// referencedIdentifiers returns the names an expression references, in six groups:
 // steps reached under the `steps.` root, vars reached under the `vars.` root, inputs
-// reached under the `inputs.` root, fields reached under the `run.` root, and whatever
-// is written bare.
+// reached under the `inputs.` root, fields reached under the `run.` root, fields
+// reached under the `trigger.` root, and whatever is written bare.
 //
-// Four groups rather than one because each fails differently and so wants a different
+// Six groups rather than one because each fails differently and so wants a different
 // diagnostic. An unknown step may be a forward reference, a typo, or a step that exists
 // outside this scope; an unknown var can only be a typo, since every var exists before
 // the first step runs; a field under `run` can only be a typo too, because unlike
 // `steps` and `inputs` its shape does not depend on the file — `identity{subject,
-// issuer,namespace,claims}` and `local` are the whole of it; a bare name may be a
+// issuer,namespace,claims}` and `local` are the whole of it; a field under `trigger`
+// is the same case with a shorter list and one more rule, since a trigger is metadata
+// and never data (see [v1.TriggerContextFields]); a bare name may be a
 // local, `now`, or a reference in the spelling this grammar retired. Merging them and
 // sorting it out afterwards loses exactly the distinction the caller needs.
 //
 // Identifiers bound by a comprehension are excluded: in `items.map(x, x + 1)`
 // the name `x` is introduced by the expression itself and is not a step
 // reference. Reporting those would make every use of a comprehension look broken.
-func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs []string, run []runRef, bare []string) {
+func referencedIdentifiers(parsed *expr.ParsedExpr) (rooted []stepRef, vars, inputs []string, run []runRef, trigger, bare []string) {
 	roots := map[stepRef]struct{}{}
 	varNames, inputNames, free := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	runFields := map[runRef]struct{}{}
-	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, runFields, free)
+	triggerFields := map[string]struct{}{}
+	collectReferences(parsed.GetExpr(), map[string]struct{}{}, roots, varNames, inputNames, runFields, triggerFields, free)
 
-	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(inputNames), sortedRunRefs(runFields), sortedNames(free)
+	return sortedStepRefs(roots), sortedNames(varNames), sortedNames(inputNames), sortedRunRefs(runFields),
+		sortedNames(triggerFields), sortedNames(free)
 }
 
 // A stepRef is one reference to a step: which step, and which of its outputs.
@@ -1764,7 +1833,7 @@ func sortedNames(set map[string]struct{}) []string {
 // the spelling this grammar retired, and those want different diagnostics. They
 // are collected apart rather than merged and sorted out afterwards, because the
 // distinction is exactly what the caller needs and is lost by then.
-func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs map[string]struct{}, run map[runRef]struct{}, free map[string]struct{}) {
+func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepRef]struct{}, vars, inputs map[string]struct{}, run map[runRef]struct{}, trigger, free map[string]struct{}) {
 	if e == nil {
 		return
 	}
@@ -1791,6 +1860,15 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				run[runRef{Field: name, Under: under}] = struct{}{}
 
 				return
+			case v1.TriggerRoot:
+				// No `under`: `trigger` is one level deep by construction, because
+				// its fields are four strings. A selection *into* one of them —
+				// `trigger.kind.foo` — is CEL's own error on a string, which is a
+				// better sentence than anything this walk could invent, so it is
+				// deliberately not reported here.
+				trigger[name] = struct{}{}
+
+				return
 			}
 		}
 	}
@@ -1801,28 +1879,28 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 			free[name] = struct{}{}
 		}
 	case *expr.Expr_SelectExpr:
-		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, run, free)
+		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, run, trigger, free)
 	case *expr.Expr_CallExpr:
-		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, free)
+		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, trigger, free)
 		for _, arg := range kind.CallExpr.GetArgs() {
-			collectReferences(arg, bound, rooted, vars, inputs, run, free)
+			collectReferences(arg, bound, rooted, vars, inputs, run, trigger, free)
 		}
 	case *expr.Expr_ListExpr:
 		for _, el := range kind.ListExpr.GetElements() {
-			collectReferences(el, bound, rooted, vars, inputs, run, free)
+			collectReferences(el, bound, rooted, vars, inputs, run, trigger, free)
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, run, free)
-			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, run, free)
+			collectReferences(entry.GetMapKey(), bound, rooted, vars, inputs, run, trigger, free)
+			collectReferences(entry.GetValue(), bound, rooted, vars, inputs, run, trigger, free)
 		}
 	case *expr.Expr_ComprehensionExpr:
 		c := kind.ComprehensionExpr
 
 		// The range and the accumulator's start are evaluated outside the
 		// comprehension's own scope.
-		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, run, free)
-		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, run, free)
+		collectReferences(c.GetIterRange(), bound, rooted, vars, inputs, run, trigger, free)
+		collectReferences(c.GetAccuInit(), bound, rooted, vars, inputs, run, trigger, free)
 
 		inner := make(map[string]struct{}, len(bound)+3)
 		for name := range bound {
@@ -1833,9 +1911,9 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 				inner[name] = struct{}{}
 			}
 		}
-		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, run, free)
-		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, run, free)
-		collectReferences(c.GetResult(), inner, rooted, vars, inputs, run, free)
+		collectReferences(c.GetLoopCondition(), inner, rooted, vars, inputs, run, trigger, free)
+		collectReferences(c.GetLoopStep(), inner, rooted, vars, inputs, run, trigger, free)
+		collectReferences(c.GetResult(), inner, rooted, vars, inputs, run, trigger, free)
 	}
 }
 
@@ -1931,7 +2009,7 @@ func ValidateSource(data []byte) (Diagnostics, error) {
 // ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
 // resolving any `call:` step relative to path's own directory — see [ParseFile].
 func ValidateSourceFile(path string) (Diagnostics, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, err
 	}
@@ -2366,24 +2444,217 @@ func unknownRunField(stepID, inputName string, ref runRef) (Diagnostic, bool) {
 	}, true
 }
 
+// unknownTriggerField reports a reference to a field `trigger` does not have.
+//
+// Never silent, exactly as [unknownRunField] is never silent, and for the same
+// reason: `trigger`'s shape is fixed by the engine ([v1.TriggerContextValue]
+// renders these four fields and no others, on every run, on both drivers), so an
+// unknown one is always a mistake rather than a shape this validator lacks the
+// knowledge to judge.
+//
+// What is different here is *why* the set is closed, and it is worth the extra
+// sentence in the diagnostic. `trigger` is metadata and never data: everything a
+// workflow operates on arrives through a trigger's `with:` into `inputs:`, where
+// declarations exist for this validator to check against. So `${trigger.body}` is
+// not a field somebody forgot to add — it is the second input path this design
+// exists to refuse, and an author reaching for it is told where the value they want
+// actually comes from rather than only that the name is wrong.
+func unknownTriggerField(stepID, inputName, field string) (Diagnostic, bool) {
+	fields := v1.TriggerContextFields()
+	if slices.Contains(fields, field) {
+		return Diagnostic{}, false
+	}
+
+	message := fmt.Sprintf("references unknown field %q of `%s`", field, v1.TriggerRoot)
+	if suggestion, ok := nearest.Name(field, fields); ok {
+		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	} else {
+		message += fmt.Sprintf("; `%s` has %s", v1.TriggerRoot, strings.Join(fields, ", "))
+	}
+	message += fmt.Sprintf(". It says how the run started and nothing about what it carries: a delivery's "+
+		"payload reaches the run through the trigger's `with:` into `%s:`, and is read as `%s.<name>`",
+		v1.InputsRoot, v1.InputsRoot)
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: v1.TriggerRoot + "." + field, Message: message,
+		Code: v1.DiagnosticCodeUnresolvedReference,
+	}, true
+}
+
+// unknownTriggerKindLiterals returns, in first-reached order and with
+// duplicates removed, every string literal `e` compares `trigger.kind` to
+// with `==` or `!=` that is not one of [v1.KnownTriggerKind]'s kinds.
+//
+// A comparison is judged only when the other side is a string constant.
+// `${trigger.kind == vars.expected}` or `${trigger.kind == inputs.want}`
+// compares against a value this validator cannot see at authoring time, and
+// reporting one would be exactly the false diagnostic CLAUDE.md ranks worse
+// than a missing one — the same restraint [unknownTriggerField] already
+// applies to a field name it cannot resolve. A use of `trigger.kind` that is
+// not a comparison at all — bare, interpolated into a message, passed to a
+// function — is not visited by the walk below in any way that reports it,
+// for the same reason.
+//
+// bound tracks names a comprehension has rebound, exactly as
+// [collectReferences] tracks it, so that `["schedual"].exists(trigger,
+// trigger.kind == "schedual")` — vanishingly unlikely, but the language
+// allows it — does not misread the macro's own iteration variable as the
+// root.
+func unknownTriggerKindLiterals(e *expr.Expr, bound map[string]struct{}) []string {
+	seen := map[string]struct{}{}
+	var literals []string
+
+	report := func(literal string) {
+		if v1.KnownTriggerKind(literal) {
+			return
+		}
+		if _, dup := seen[literal]; dup {
+			return
+		}
+		seen[literal] = struct{}{}
+		literals = append(literals, literal)
+	}
+
+	var walk func(e *expr.Expr, bound map[string]struct{})
+	walk = func(e *expr.Expr, bound map[string]struct{}) {
+		if e == nil {
+			return
+		}
+		switch kind := e.GetExprKind().(type) {
+		case *expr.Expr_SelectExpr:
+			walk(kind.SelectExpr.GetOperand(), bound)
+		case *expr.Expr_CallExpr:
+			call := kind.CallExpr
+			if args := call.GetArgs(); len(args) == 2 {
+				switch call.GetFunction() {
+				case operators.Equals, operators.NotEquals:
+					checkTriggerKindComparand(args[0], args[1], bound, report)
+					checkTriggerKindComparand(args[1], args[0], bound, report)
+				}
+			}
+			walk(call.GetTarget(), bound)
+			for _, arg := range call.GetArgs() {
+				walk(arg, bound)
+			}
+		case *expr.Expr_ListExpr:
+			for _, el := range kind.ListExpr.GetElements() {
+				walk(el, bound)
+			}
+		case *expr.Expr_StructExpr:
+			for _, entry := range kind.StructExpr.GetEntries() {
+				walk(entry.GetMapKey(), bound)
+				walk(entry.GetValue(), bound)
+			}
+		case *expr.Expr_ComprehensionExpr:
+			c := kind.ComprehensionExpr
+
+			walk(c.GetIterRange(), bound)
+			walk(c.GetAccuInit(), bound)
+
+			inner := make(map[string]struct{}, len(bound)+3)
+			for name := range bound {
+				inner[name] = struct{}{}
+			}
+			for _, name := range []string{c.GetIterVar(), c.GetIterVar2(), c.GetAccuVar()} {
+				if name != "" {
+					inner[name] = struct{}{}
+				}
+			}
+			walk(c.GetLoopCondition(), inner)
+			walk(c.GetLoopStep(), inner)
+			walk(c.GetResult(), inner)
+		}
+	}
+
+	walk(e, bound)
+
+	return literals
+}
+
+// checkTriggerKindComparand reports the literal other is compared against
+// when field is a reference to `trigger.kind` and other is a string
+// constant — one side of one `==`/`!=` call, checked by
+// [unknownTriggerKindLiterals] in both orders so the literal may sit on
+// either side of the operator.
+func checkTriggerKindComparand(field, other *expr.Expr, bound map[string]struct{}, report func(string)) {
+	sel := field.GetSelectExpr()
+	if sel == nil {
+		return
+	}
+	root, name, _, ok := rootedName(sel, bound)
+	if !ok || root != v1.TriggerRoot || name != "kind" {
+		return
+	}
+	sv, ok := other.GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
+	if !ok {
+		return
+	}
+	report(sv.StringValue)
+}
+
+// unknownTriggerKindLiteral reports a `trigger.kind` comparison against a
+// string literal that names no kind this build can start a run with.
+//
+// The wording echoes [v1.CheckTriggerContext]'s runtime refusal on purpose:
+// the same fact — this string is not a trigger kind — is worth saying
+// identically whether it is caught while authoring or, absent this check,
+// discovered in a run's history after both drivers evaluated the comparison
+// as false and skipped the branch it guarded.
+func unknownTriggerKindLiteral(stepID, inputName, literal string) Diagnostic {
+	kinds := v1.TriggerKinds()
+
+	message := fmt.Sprintf("compares `%s.kind` to %q, which is not a kind Flowstate starts runs with",
+		v1.TriggerRoot, literal)
+	if suggestion, ok := nearest.Name(literal, kinds); ok {
+		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	} else {
+		message += fmt.Sprintf("; the kinds are %s", strings.Join(kinds, ", "))
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: v1.TriggerRoot + ".kind", Message: message,
+		Code: v1.DiagnosticCodeUnresolvedReference,
+	}
+}
+
 // unknownStepOutput reports a reference to an output a step does not produce.
 //
-// Silent unless it is sure, which is most of the time and deliberately so. It answers
-// only for a step running a *task* whose outputs are declared as a message, which is
-// where the set is known in full — every other shape produces names this cannot
-// enumerate:
+// Silent unless it is sure, which is most of the time and deliberately so. Certainty
+// comes from one of two places, and both are covered:
+//
+//   - a step running a *task* whose outputs are declared as a message, where the set
+//     is known in full from the task descriptor, or a wait whose `outputs:` shapes
+//     them the same way;
+//   - a step whose *top-level* name set is fixed by the grammar rather than by a task,
+//     a sender, or an author's own shaping — a `value:`, a `switch:`, a `for_each`, a
+//     `call`, a `parallel`, and a loop's own `results`/`state` — which [v1.OutputNames]
+//     answers with the identical certainty, for the identical reason: none of those
+//     consult a registry an author's editor may not have loaded, or a scope only the
+//     task itself evaluates. "Top-level" matters: what a `for_each`'s `results`
+//     *contains* is not knowable from the file, but `ref.Output` never asks — it names
+//     one segment past `steps.<id>.` (see [stepRef]), and that segment is exactly what
+//     these kinds fix.
+//
+// Every other shape produces names this cannot enumerate:
 //
 //   - `http` with an `outputs:` input replaces its declared outputs with names the
 //     author chose, and the whole point of that input is that they are not fixed;
-//   - a `for_each` reports `results`, a `parallel` merges its branches, and a
-//     `wait_for_signal` carries whatever a sender sent — none of them a task, and each
-//     wanting knowledge this does not have yet;
-//   - a plugin may decline to describe its outputs at all.
+//   - an unshaped `wait_for_signal:` carries whatever a sender sent — and although its
+//     top-level names (`timed_out`, `payload`, `sender`) are just as fixed by the
+//     grammar as a loop's, checking them here was tried and reverted: it correctly
+//     reports `${steps.approval.approved}` as unknown, and `TestWaitOutputsAreReferenceable`
+//     and `TestValidateAcceptsWaits` pin that exact shape as legal. Reconciling the two
+//     is a separate investigation, so this one stays silent, inheriting the boundary
+//     rather than re-deciding it;
+//   - a plugin may decline to describe its outputs at all, or shape with a computed
+//     expression this cannot read statically.
 //
-// A false diagnostic is worse than a missing one, so every one of those is silence. The
-// case this does cover is the one that is never right: a step whose task declares a
-// fixed set, referenced by a name outside it — which `log`, declaring none, makes total
-// rather than occasional.
+// A false diagnostic is worse than a missing one, so every one of those stays silence —
+// and [v1.OutputNames] agrees: it answers those with an entry whose Name is empty
+// rather than a name, which [certainNames] reads as "nothing to check" for exactly the
+// same reason this function would otherwise have to. The case this does cover is the
+// one that is never right: a step whose kind declares a fixed set, referenced by a name
+// outside it — which `log`, declaring none, makes total rather than occasional.
 func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (Diagnostic, bool) {
 	if ref.Output == "" {
 		// The whole outputs mapping. Legal for any step, including one with nothing
@@ -2393,14 +2664,18 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 
 	node := nodeWithID(ref.ID, wf)
 
-	// A loop's outputs are `results` and, when it carries state, `state`. Its `as:`
-	// name binds *inside* the loop only — the body, `until:` and `update:` — so from
-	// outside, a reference to `steps.<loop>.<the as: name>` is naming the bound value
-	// by a name it does not have out here, which is the single most likely loop-output
-	// mistake. That one is named and pointed at `state`; every other reference to a
-	// loop's outputs is left unchecked, because a loop's output set is not knowable in
-	// full (a body step may produce anything, surfaced through `results`) — the same
-	// latitude a `for_each` reference gets.
+	// A loop's outputs are `results` and, when it carries state, `state` — fixed the
+	// moment the loop is written (`state` appears exactly when `state:` is set), the
+	// same certainty [v1.OutputNames] gives every other grammar-fixed kind below. Its
+	// `as:` name binds *inside* the loop only — the body, `until:` and `update:` — so
+	// from outside, a reference to `steps.<loop>.<the as: name>` is naming the bound
+	// value by a name it does not have out here, the single most likely loop-output
+	// mistake, and it earns its own message pointed at `state` rather than the generic
+	// "did you mean" the fallthrough below would give it. What this does *not* reach is
+	// one level deeper: a body step's own outputs, surfaced through `results`, are not
+	// knowable in full (a body step may produce anything) — the same latitude a
+	// `for_each`'s `results` gets below, and neither loop kind's certainty reaches past
+	// its own top-level name.
 	if loop := node.GetLoop(); loop != nil {
 		if state := loop.GetState(); state != "" && ref.Output == state {
 			return Diagnostic{
@@ -2411,7 +2686,39 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 				Code: v1.DiagnosticCodeUnresolvedReference,
 			}, true
 		}
-		return Diagnostic{}, false
+
+		return certainStepOutput(stepID, inputName, "loop", ref, certainNames(node),
+			fmt.Sprintf("a loop step's own id exposes nothing — its outputs are not read under `%s.%s.`", v1.StepsRoot, ref.ID))
+	}
+
+	// A switch, a for_each, a call, and a parallel all answer [v1.OutputNames] with the
+	// same certainty a `value:` step's output has below: none of them consult a
+	// registry, a sender, or an authored expression to decide what they expose, so the
+	// set is fixed the instant the step is written.
+	//
+	// Two of the four can be certain and *empty* at once, for two different reasons a
+	// reader should not have to guess between, which is why each names its own case
+	// rather than sharing [certainStepOutput]'s generic wording:
+	//
+	//   - a parallel's branches merge into the *enclosing* scope, so nothing is ever
+	//     reachable under the parallel step's own id — structural, true of every
+	//     parallel there is or will be;
+	//   - a call whose callee declares no `outputs:` produces nothing this run, the
+	//     same standing `log`'s empty descriptor has below — true of *this* callee,
+	//     and would read differently for one that declared even one.
+	switch node.GetKind().(type) {
+	case *v1.Node_Switch:
+		return certainStepOutput(stepID, inputName, "switch", ref, certainNames(node),
+			"a switch step's own id exposes nothing")
+	case *v1.Node_ForEach:
+		return certainStepOutput(stepID, inputName, "for_each", ref, certainNames(node),
+			"a for_each step's own id exposes nothing")
+	case *v1.Node_Call:
+		return certainStepOutput(stepID, inputName, "call", ref, certainNames(node),
+			"the called workflow declares no outputs")
+	case *v1.Node_Parallel:
+		return certainStepOutput(stepID, inputName, "parallel", ref, certainNames(node),
+			fmt.Sprintf("a parallel step's own id exposes nothing — its branches merge into the enclosing scope, not under `%s.%s.`", v1.StepsRoot, ref.ID))
 	}
 
 	// A `value:` answers for its outputs exactly, and is the only kind that can
@@ -2463,10 +2770,19 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	// it quietly takes the other arm. The shaped set is written in this file and
 	// knowable in full, so the diagnostic cannot be false.
 	//
-	// A wait that does *not* shape is left unchecked, as it always has been. Its
-	// output set is knowable too, but reporting it is a separate change with its
-	// own false-diagnostic surface (a `payload` key is whatever a sender sent),
-	// and this check exists for the names shaping removed.
+	// A wait that does *not* shape is left unchecked, as it always has been. This
+	// was tried during this change: [v1.OutputNames] answers an unshaped wait with
+	// the same top-level certainty a loop's `results`/`state` gets below
+	// (`timed_out`, `payload`, `sender`, fixed by the grammar), and reading it here
+	// reports `${steps.approval.approved}` as unknown, which is correct under
+	// [PayloadOutput]'s current rooting — a bare name outside those three never
+	// resolves. But `TestWaitOutputsAreReferenceable` and `TestValidateAcceptsWaits`
+	// pin the opposite: that exact reference, and others like it, must stay silent.
+	// Reconciling that is a separate change with its own investigation (do those
+	// tests encode a real exception, or are they simply stale against
+	// [PayloadOutput]'s rooting?), so this stays exactly as narrow as it was before
+	// this file started reading [v1.OutputNames] — silence here is inherited, not
+	// re-decided.
 	if shaped := node.GetWait().GetSignal().GetOutputs(); len(shaped) > 0 {
 		if _, produced := shaped[ref.Output]; produced {
 			return Diagnostic{}, false
@@ -2508,14 +2824,29 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	}
 
 	def, known := v1.LookupTask(task.GetName())
-	if !known || def.Outputs == nil {
+	if !known {
 		return Diagnostic{}, false
 	}
 
-	// A task that names its own outputs answers for them. Checked by presence of the
-	// input rather than by task name, so a plugin adopting the same shape inherits the
-	// exemption rather than being reported against a set it replaced.
-	if _, replaced := task.GetInputs()["outputs"]; replaced {
+	// A task that shapes its outputs answers for them, and answers exactly when
+	// the names it shaped are knowable — which is the same standing a shaping wait
+	// has, reached by the same route, and the reason the mapping form is the
+	// documented spelling.
+	//
+	// Whether this task shapes at all is *declared* (see [v1.TaskDef.ShapesOutputs]).
+	// It used to be decided by the presence of an input called `outputs`, which
+	// stood this check down for any plugin that happened to name an input that —
+	// while its executor returned exactly the outputs its descriptor declared. The
+	// validator, the editor and the runtime disagreed, and nothing could flag it
+	// because the two that agreed were the two doing the reporting (#324).
+	if shaping, replaced := shapedTaskOutputs(task); replaced {
+		if d, report := unknownShapedOutput(stepID, inputName, ref, shaping, def); report {
+			return d, true
+		}
+		return Diagnostic{}, false
+	}
+
+	if def.Outputs == nil {
 		return Diagnostic{}, false
 	}
 
@@ -2556,6 +2887,132 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	return Diagnostic{
 		Step: stepID, Field: inputName, Value: ref.Output, Message: message,
 		Code: v1.DiagnosticCodeUnresolvedReference,
+	}, true
+}
+
+// certainNames narrows [v1.OutputNames] to the names it is sure of, for a node kind
+// whose whole answer is fixed by the grammar.
+//
+// [v1.NamedOutput.Name] is empty in two cases OutputNames does not distinguish by
+// return value alone: it is not certain at all (an unregistered task, a shaping
+// expression it cannot read statically), or it is certain and the answer is *zero*
+// names (a call whose callee declares no `outputs:`, the same standing `log`'s empty
+// descriptor has). Filtering on Name here treats both alike — an empty result — which
+// is safe for every caller in this file: none of the five kinds below ever has an
+// uncertain arm in [OutputNames]'s switch, so an empty Name reaching here is always
+// the second case, never the first. A node kind added to that switch without also
+// being added here is the one way this stops being true, which is exactly what
+// [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
+func certainNames(node *v1.Node) []string {
+	entries, _ := v1.OutputNames(node, nil)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Name != "" {
+			names = append(names, e.Name)
+		}
+	}
+	return names
+}
+
+// certainStepOutput reports a reference outside a fixed output set — the shared
+// message for every node kind whose answer [v1.OutputNames] gives with certainty and
+// this file has no kind-specific wording for. kind names the step's flavor for the
+// message ("switch", "for_each", "call", "parallel", "loop"); produced is that kind's
+// exact name set. emptyMessage is used verbatim when produced is empty, because "why"
+// differs by kind (a parallel's branches merge elsewhere; a call's callee simply
+// declared none) and a caller who wrote the specific reason should not have it
+// discarded for a generic one.
+func certainStepOutput(stepID, inputName, kind string, ref stepRef, produced []string, emptyMessage string) (Diagnostic, bool) {
+	if slices.Contains(produced, ref.Output) {
+		return Diagnostic{}, false
+	}
+
+	message := fmt.Sprintf("step %q has no output %q", ref.ID, ref.Output)
+	switch {
+	case len(produced) == 0:
+		message += "; " + emptyMessage
+	default:
+		if suggestion, ok := nearest.Name(ref.Output, produced); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		} else {
+			message += fmt.Sprintf("; a %s step produces %s", kind, strings.Join(produced, ", "))
+		}
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: ref.Output,
+		Message: message,
+		Code:    v1.DiagnosticCodeUnresolvedReference,
+	}, true
+}
+
+// shapedTaskOutputs returns a task step's shaping value, and reports whether the
+// step shapes its outputs at all.
+//
+// Two questions, both of which have to be yes: the task declares that it reads
+// [v1.ShapingInput] as a replacement, and this invocation writes one. A task that
+// shapes and a step that did not ask it to is an ordinary step producing what the
+// task declares.
+func shapedTaskOutputs(task *v1.Task) (*v1.Value, bool) {
+	if !v1.TaskShapesOutputs(task.GetName()) {
+		return nil, false
+	}
+	value, written := task.GetInputs()[v1.ShapingInput]
+	return value, written
+}
+
+// unknownShapedOutput reports a reference to a name a shaping step does not
+// produce.
+//
+// The wait's diagnostic, word for word where the words are still true, because it
+// is the same mistake: `outputs:` *replaces*, so a reference to a name that was
+// dropped reads nothing at all and every branch built on it quietly takes the
+// other arm. What makes it safe to report is that the shaped set is written in
+// the file — so this is silent, and has to be, wherever it is not.
+//
+// The one sentence that is not the wait's is the re-exposure suggestion. A wait
+// can offer the exact line to write (`payload: ${payload}`) because it binds its
+// own result bare and the validator knows those three names. A shaping task's
+// expressions are evaluated by the task, in a scope no validator has, so the
+// honest offer is the name and the place to put it rather than an expression that
+// might not resolve there.
+func unknownShapedOutput(stepID, inputName string, ref stepRef, shaping *v1.Value, def v1.TaskDef) (Diagnostic, bool) {
+	names, knowable := v1.ShapedOutputNames(shaping)
+	if !knowable {
+		// A map built by an expression has no keys until it has run. Deliberately
+		// unchecked rather than guessed at: this is what the string-fenced spelling
+		// costs, and it is the trade the docs state.
+		return Diagnostic{}, false
+	}
+	if slices.Contains(names, ref.Output) {
+		return Diagnostic{}, false
+	}
+
+	message := fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the %s task produces, and it produces %s",
+		ref.ID, ref.Output, def.Name, strings.Join(names, ", "))
+
+	// A name the task itself declares is answered first, and not by a
+	// did-you-mean. It is the one case where what happened is *known* rather than
+	// guessed — the author is reading a real output of this task that shaping
+	// dropped — and the nearest-name search will happily offer a shaped name in
+	// its place, which sends them to rewrite the reference instead of the
+	// shaping. `body` against a shaping that produced `code` is exactly that
+	// mistake, and it is close enough to match.
+	switch {
+	case def.Outputs != nil && def.Outputs.Fields().ByName(protoreflect.Name(ref.Output)) != nil:
+		message += fmt.Sprintf("; `%s` is one of the %s task's own outputs, which shaping dropped; re-expose it by naming it in `outputs:`",
+			ref.Output, def.Name)
+	default:
+		if suggestion, ok := nearest.Name(ref.Output, names); ok {
+			message = fmt.Sprintf("step %q has no output %q; its `outputs:` replaces what the %s task produces; did you mean %q?",
+				ref.ID, ref.Output, def.Name, suggestion)
+		}
+	}
+
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: ref.Output,
+		Message: message,
+		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}, true
 }
 

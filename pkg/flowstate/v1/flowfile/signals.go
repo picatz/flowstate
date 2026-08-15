@@ -368,7 +368,7 @@ func signalPolicyRuleToYAML(rule *v1.SignalPolicyRule) (yaml.MapSlice, error) {
 	}
 
 	if namespace := rule.GetNamespace(); namespace != "" {
-		doc = append(doc, yaml.MapItem{Key: "namespace", Value: namespace})
+		doc = append(doc, yaml.MapItem{Key: "namespace", Value: textToYAML(namespace)})
 	}
 	if claims := rule.GetClaims(); len(claims) > 0 {
 		claimsDoc := yaml.MapSlice{}

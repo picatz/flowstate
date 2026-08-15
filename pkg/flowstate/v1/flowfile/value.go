@@ -57,9 +57,18 @@ func SplitFence(s string) (inner string, fenced bool) {
 // taken at face value as literal text.
 func containsFence(s string) bool { return strings.Contains(s, fenceOpen) }
 
-// interpolationHelp is the fix for a value that tried to interpolate: say it as
-// one expression, since CEL can concatenate.
-const interpolationHelp = "a ${...} expression must be the whole value; " +
+// interpolationHelp is the fix for a value that tried to interpolate somewhere
+// that cannot: say it as one expression, since CEL can concatenate.
+//
+// "here" is doing real work in that sentence since #413. A Flowfile value
+// interpolates, so a message saying an expression *must* be the whole value
+// would now be a plain falsehood about the language. What is left are the
+// surfaces that are not Flowfile values and keep the older, narrower rule — a
+// stub's `returns:` in a test document, a `--input` on the command line — and
+// there the rule is true of the position rather than of the syntax. Naming the
+// position is what keeps the sentence honest, and keeps an author from
+// concluding that the spelling they just used in a workflow does not exist.
+const interpolationHelp = "a ${...} expression has to be the whole value here; " +
 	"write it as one expression instead, like ${'total: ' + count.result}"
 
 // ExprSource returns the expression source inside a whole-value ${...} fence, and
@@ -197,29 +206,120 @@ func blockText(n *ast.LiteralNode) string {
 }
 
 // scalarString applies the expression rule to a string scalar.
+//
+// The order of the three questions is the whole of the compatibility argument,
+// and exprCtx changes only the last of them.
+//
+// A scalar that is exactly one fence is asked about first, and answered exactly
+// as it always was, so `init: ${0}` is still the integer zero and a
+// `${secret(...)}` is still a reference. A scalar holding a fence *and* anything
+// else is interpolation — text built from its expressions — which is a set the
+// old rule refused entirely, so nothing that used to mean something means
+// something else now. Only a scalar with no fence at all reaches the last
+// question, and that is the one the two contexts answer differently: where the
+// schema types a field as an expression, a bare string is expression source
+// (`if: a > 1`), and everywhere else it is literal text.
+//
+// Interpolation reaches both contexts rather than task inputs alone. It is
+// tempting to stop at inputs, on the ground that a condition wants a boolean and
+// a loop's `items:` wants a list, so text is no use to either — but a declared
+// output's `value:` is expression-typed too, and a run's answer document is
+// exactly where an author writes a sentence. Refusing there would leave the
+// language with two rules about what a `${` means, decided by which field it is
+// in, and an author with no way to predict which they were in. A condition that
+// interpolates is a type error, which the type checker reports as a type error;
+// that is a better thing to be told than that the syntax is wrong.
 func (c *compiler) scalarString(n ast.Node, text, path string, r ref, exprCtx bool) *v1.Value {
-	// A whole scalar is the one place a secret reference can go, and only when the
-	// scalar is a task input: a field the workflow evaluates itself cannot hold one.
+	// A whole scalar is the one place a secret reference can go, and only when
+	// the scalar is a task input: a field the workflow evaluates itself cannot
+	// hold one.
 	placement := secretAllowed
 	if exprCtx {
 		placement = secretNotEvaluable
 	}
 
-	if inner, fenced := SplitFence(text); fenced {
-		return c.expression(n, inner, path, r, placement)
-	}
-
-	if err := fenceError(text); err != nil {
+	segs, err := scanInterpolation(text)
+	if err != nil {
 		c.report(spanOfNode(n), r, "%s", err)
 		return nil
 	}
 
+	if inner, ok := wholeValueFence(segs, text); ok {
+		return c.expression(n, inner, path, r, placement)
+	}
+
+	if hasFence(segs) {
+		// A reference among text is refused by whichever rule already covers the
+		// position: in a field the workflow evaluates, because nothing there may
+		// hold one at all; elsewhere, because a reference has to be the whole
+		// value rather than part of a sentence built from it.
+		misplaced := secretNotWholeValue
+		if exprCtx {
+			misplaced = secretNotEvaluable
+		}
+		return c.interpolation(n, text, segs, path, r, misplaced)
+	}
+
 	if exprCtx {
+		// The raw text rather than the scan's, because `$${` is the escape a
+		// *value* spells a literal fence with, and this is not a value — it is
+		// CEL source, where those characters are already CEL's to interpret.
 		return c.expression(n, text, path, r, placement)
 	}
+
 	return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{
-		Kind: &expr.Value_StringValue{StringValue: text},
+		Kind: &expr.Value_StringValue{StringValue: literalText(segs)},
 	}}}
+}
+
+// interpolation compiles a scalar mixing literal text with one or more fences
+// into the single expression that builds the text.
+//
+// Each fence is compiled on its own first, before the desugaring, for two
+// reasons that both come down to reporting the truth about what the author
+// wrote. A CEL error belongs at the character it is on *inside its own fence*,
+// which is only knowable while the fence is still a fence — the desugared source
+// has different offsets and an added `string(` in front of every one of them.
+// And a `${secret(...)}` in mixed position has to be refused rather than
+// desugared: the desugaring would evaluate it, which is the one thing a secret
+// reference must never be.
+func (c *compiler) interpolation(n ast.Node, text string, segs []segment, path string, r ref, misplaced secretPlacement) *v1.Value {
+	for _, sg := range segs {
+		if !sg.fence {
+			continue
+		}
+
+		span := spanOfFence(n, text, sg)
+		val := v1.NewExpr(sg.text)
+		if err := val.Error(); err != nil {
+			at, msg := celFailure(err, span, sg.text)
+			c.report(at, r, "is not a valid expression: %s", msg)
+			return nil
+		}
+
+		// Refused rather than compiled: a reference is resolved by the worker
+		// that needs the value, and text built from one is a value the workflow
+		// holds. The caller chooses which of the two sentences fits the position
+		// the value is in.
+		if _, isSecret := c.secret(val.GetExpr(), sg.text, span, r, misplaced); isSecret {
+			return nil
+		}
+	}
+
+	src := interpolationSource(segs)
+	c.recordExpr(path, spanOfNode(n))
+
+	val := v1.NewExpr(src)
+	if err := val.Error(); err != nil {
+		// Unreachable while every fence parses and every literal is quoted, and
+		// so reported against the whole value rather than guessed at: a position
+		// invented for an impossible case is the wrong-position failure one
+		// surface over from `flow fix` corruption.
+		_, msg := celFailure(err, spanOfNode(n), src)
+		c.report(spanOfNode(n), r, "is not a valid expression: %s", msg)
+		return nil
+	}
+	return normalizeExpr(val)
 }
 
 // expression compiles expression source written at n into a Value, recording the
@@ -305,6 +405,27 @@ func (c *compiler) composite(n ast.Node, path string, r ref) *v1.Value {
 	return &v1.Value{Kind: &v1.Value_Literal{Literal: lit}}
 }
 
+// scalarHoldsFence reports whether one scalar holds an expression anywhere in
+// it, whether as the whole value or interpolated among text.
+//
+// It is the question [compiler.containsExpr] asks of each leaf, and it asks it
+// through the scanner rather than through [SplitFence] deliberately: a walk that
+// still asked the whole-value question would answer "no expression here" for
+// `a ${b}` nested in a mapping, and the structure would then be compiled as
+// literal data with the fence shipped as characters. That is the walk-misses-a-
+// new-branch defect this repository has now had four of, and the fix is that
+// every walk asks one function.
+func scalarHoldsFence(text string) bool {
+	segs, err := scanInterpolation(text)
+	if err != nil {
+		// A malformed fence is not literal text either. Saying so here routes the
+		// value to the path that reports the error with a position, rather than
+		// letting it be quietly carried as data.
+		return true
+	}
+	return hasFence(segs)
+}
+
 // containsExpr reports whether a node holds a fenced expression anywhere inside
 // it.
 func (c *compiler) containsExpr(n ast.Node) bool {
@@ -316,11 +437,9 @@ func (c *compiler) containsExpr(n ast.Node) bool {
 
 	switch node := n.(type) {
 	case *ast.StringNode:
-		_, fenced := SplitFence(node.Value)
-		return fenced
+		return scalarHoldsFence(node.Value)
 	case *ast.LiteralNode:
-		_, fenced := SplitFence(blockText(node))
-		return fenced
+		return scalarHoldsFence(blockText(node))
 	case *ast.SequenceNode:
 		for _, v := range node.Values {
 			if c.containsExpr(v) {
@@ -349,11 +468,7 @@ func (c *compiler) literal(n ast.Node, path string, r ref) *expr.Value {
 
 	switch node := n.(type) {
 	case *ast.StringNode:
-		if err := fenceError(node.Value); err != nil {
-			c.report(spanOfNode(n), r, "%s", err)
-			return nil
-		}
-		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: node.Value}}
+		return c.literalString(n, node.Value, r)
 	case *ast.LiteralNode:
 		// A block scalar is a string like any other, so it carries the same rule:
 		// text that opens a fence is not literal text, whatever it is nested in.
@@ -362,11 +477,7 @@ func (c *compiler) literal(n ast.Node, path string, r ref) *expr.Value {
 		// level down — a `note: |` inside a `json:` mapping — ships the `${...}`
 		// as characters and says nothing, which leaves the author no reason to
 		// doubt the file.
-		if err := fenceError(blockText(node)); err != nil {
-			c.report(spanOfNode(n), r, "%s", err)
-			return nil
-		}
-		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: blockText(node)}}
+		return c.literalString(n, blockText(node), r)
 	case *ast.IntegerNode:
 		switch v := node.Value.(type) {
 		case int64:
@@ -425,6 +536,32 @@ func (c *compiler) literal(n ast.Node, path string, r ref) *expr.Value {
 		c.report(spanOfNode(n), r, "%s cannot be used as a value", describeNode(n))
 		return nil
 	}
+}
+
+// literalString builds the literal for a scalar that holds no expression,
+// resolving the `$${` escape into the `${` it stands for.
+//
+// The escape is resolved here and not only where a value is interpolated,
+// because a value written entirely as text is exactly where an author needs to
+// say `${` and mean it. Reached only after [compiler.containsExpr] has answered
+// that the scalar holds no fence, so the remaining errors are the malformed
+// ones — an unterminated `${`, which is still no more literal text than it ever
+// was.
+func (c *compiler) literalString(n ast.Node, text string, r ref) *expr.Value {
+	segs, err := scanInterpolation(text)
+	if err != nil {
+		c.report(spanOfNode(n), r, "%s", err)
+		return nil
+	}
+	if hasFence(segs) {
+		// Unreachable: every caller reaches a string through containsExpr, which
+		// answers through the same scan. Kept as a refusal rather than a silent
+		// pass-through, because the direction of a disagreement between two walks
+		// matters — this is the half that does not ship a fence as characters.
+		c.report(spanOfNode(n), r, "%s", fenceError(text))
+		return nil
+	}
+	return &expr.Value{Kind: &expr.Value_StringValue{StringValue: literalText(segs)}}
 }
 
 // celText builds the CEL source for a structure containing expressions.
@@ -499,22 +636,60 @@ func (c *compiler) celText(n ast.Node, path string, r ref) (string, bool) {
 }
 
 // celTextString renders one string inside a structure: a fenced value is the
-// expression it fences, and anything else is a CEL string literal.
+// expression it fences, an interpolated one is the expression that builds its
+// text, and anything else is a CEL string literal.
+//
+// It answers with the same three-way split [compiler.scalarString] uses in a
+// task input, and for the reason that split exists at all: a scalar one level
+// down inside a `fields:` mapping or a list is the same kind of position as one
+// written directly, so `fields: {msg: "a ${b}"}` has to mean what `msg: a ${b}`
+// means. Two rules here would be two spellings of one concept, which is the
+// shape every driver disagreement in this repository has had.
 func (c *compiler) celTextString(n ast.Node, text string, r ref) (string, bool) {
-	if inner, fenced := SplitFence(text); fenced {
-		return inner, true
-	}
-	if err := fenceError(text); err != nil {
+	segs, err := scanInterpolation(text)
+	if err != nil {
 		c.report(spanOfNode(n), r, "%s", err)
 		return "", false
 	}
-	return quoteCELString(text), true
+
+	if inner, ok := wholeValueFence(segs, text); ok {
+		return inner, true
+	}
+
+	if hasFence(segs) {
+		for _, sg := range segs {
+			if !sg.fence {
+				continue
+			}
+			span := spanOfFence(n, text, sg)
+			if val := v1.NewExpr(sg.text); val.Error() != nil {
+				at, msg := celFailure(val.Error(), span, sg.text)
+				c.report(at, r, "is not a valid expression: %s", msg)
+				return "", false
+			}
+		}
+		return "(" + interpolationSource(segs) + ")", true
+	}
+
+	return quoteCELString(literalText(segs)), true
 }
 
 // quoteCELString renders a Go string as a CEL string literal.
+//
+// The line breaks are escaped, not only the backslash and the quote, because a
+// single-quoted CEL string cannot span a line: a text holding one would close
+// nothing and the expression built around it would not parse. That is not
+// hypothetical since #413 — a block scalar is the natural place to write a long
+// message, `|` and `>` both keep a trailing newline, and interpolating one puts
+// that newline inside a literal here.
 func quoteCELString(s string) string {
-	esc := strings.ReplaceAll(s, "\\", "\\\\")
-	esc = strings.ReplaceAll(esc, "'", "\\'")
+	esc := strings.NewReplacer(
+		`\`, `\\`,
+		`'`, `\'`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	).Replace(s)
 	return "'" + esc + "'"
 }
 

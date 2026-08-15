@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/docsgen"
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
 
 // referenceDir is the committed reference, from this package's directory.
@@ -139,22 +140,23 @@ func TestEnvironmentMirrorsAreDerived(t *testing.T) {
 // to the tools that are actually registered.
 //
 // Where a tool answers — in this process or against a server — is carried by a Go
-// func value in mcp.go's dispatch table, which nothing outside can inspect. So it
-// is written down, and written down once; this is what stops it being written
-// down wrongly. Both directions, because each fails differently: a method with no
-// entry is documented as needing a server when it does not, and an entry for a
-// method that is gone is a line about a tool nobody can call.
+// func value in [flowmcp.WorkflowServiceMethods]'s dispatch table, which nothing
+// outside can inspect. So it is written down, and written down once, in
+// [flowmcp.LocalTools]; this is what stops it being written down wrongly. Both
+// directions, because each fails differently: a method with no entry is
+// documented as needing a server when it does not, and an entry for a method
+// that is gone is a line about a tool nobody can call.
 func TestEveryMCPToolHasALocality(t *testing.T) {
 	t.Parallel()
 
 	methods := map[string]bool{}
-	for _, method := range workflowServiceMethods() {
-		methods[method.name] = true
+	for _, method := range flowmcp.WorkflowServiceMethods() {
+		methods[method.Name] = true
 	}
 
-	for name := range mcpLocalTools {
+	for name := range flowmcp.LocalTools {
 		assert.True(t, methods[name],
-			"mcpLocalTools names %q, which is not a service method any more", name)
+			"flowmcp.LocalTools names %q, which is not a service method any more", name)
 	}
 
 	// The other direction is not "every method is local" — most are not — but that
@@ -166,9 +168,9 @@ func TestEveryMCPToolHasALocality(t *testing.T) {
 	for _, tool := range mcpToolDocs() {
 		documented[tool.Name] = true
 	}
-	for _, method := range workflowServiceMethods() {
-		assert.True(t, documented[mcpToolName(method.name)],
-			"the MCP reference does not document %q", mcpToolName(method.name))
+	for _, method := range flowmcp.WorkflowServiceMethods() {
+		assert.True(t, documented[flowmcp.ToolName(method.Name)],
+			"the MCP reference does not document %q", flowmcp.ToolName(method.Name))
 	}
 	// Both of this surface's non-RPC tools, individually — not just any local
 	// tool — so a third one added the way flowstate_test was (#241) and left

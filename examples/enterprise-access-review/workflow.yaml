@@ -123,13 +123,11 @@ steps:
             # shapes its own result. `reviewed_grants` used to rebuild this
             # exact object with its own `.map()`, re-deriving the missing-data
             # fallback a second time; now it reads the shaped record as-is.
-            outputs: >-
-              ${ {"grantee": grant.grantee,
-                  "resource": grant.resource,
-                  "role": grant.role,
-                  "last_used_days_ago": has(response.json.last_used_days_ago)
-                    ? response.json.last_used_days_ago
-                    : -1} }
+            outputs:
+              grantee: ${grant.grantee}
+              resource: ${grant.resource}
+              role: ${grant.role}
+              last_used_days_ago: '${response.json.?last_used_days_ago.orValue(-1)}'
 
   # The gate. A compliance review that auto-closes itself is not a review -
   # this is where a person has to have actually looked. Three days is a real
@@ -151,8 +149,14 @@ steps:
         # Three states, not two: a signal that arrived but does not clear the
         # test is `unattested`, and a gate that lapsed is `expired`. `timed_out`
         # tells those apart, and only a timeout ever produces `expired`.
+        #
+        # `payload.?attested.orValue(false)` replaces `has(payload.attested) &&
+        # payload.attested` - the rest of the line still asks what the sender
+        # was attested to be, so a defaulted read answers the presence-and-truth
+        # half exactly as the guarded read did, false whether the field was
+        # missing or explicitly false.
         outcome: >-
-          ${(has(payload.attested) && payload.attested &&
+          ${(payload.?attested.orValue(false) &&
               !sender.local && !run.local &&
               sender.identity.subject != "" &&
               sender.identity.subject == inputs.expected_reviewer)

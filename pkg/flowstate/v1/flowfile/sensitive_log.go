@@ -80,35 +80,53 @@ func checkSensitiveLog(wf *v1.Workflow) Diagnostics {
 	return sensitiveLogInNodes(wf.GetSteps(), sensitive)
 }
 
-// sensitiveLogInNodes walks a list of sibling steps and, on its own, every
-// for_each/loop body and parallel branch — the same recursion negation.go uses,
-// and for the same reason: `inputs.<name>` means the same workflow input at any
-// nesting depth, so one walk from the top covers the whole tree. A call is not
-// followed: a callee is a different workflow with its own declared inputs and is
-// validated in its own right.
+// sensitiveLogInNodes reports every `log:` in a tree of steps that surfaces a
+// sensitive input, its own and its compensations'.
+//
+// The tree comes from [v1.WalkNodes], the one traversal (#508). This lint is one
+// of the five walks that motivated it, and the one whose omission had the sharpest
+// consequence: `Node.undo` landed after this was written, nothing added it here,
+// and a compensation's `log:` could print a value the declaration exists to keep
+// out of the clear — in the position where it matters most, since compensation
+// runs when something has already gone wrong, which is when logs get read closely
+// (#509).
+//
+// `inputs.<name>` means the same workflow input at any nesting depth, so one walk
+// from the top covers the whole tree. A callee is not followed: it is a different
+// workflow with its own declared inputs, validated in its own right.
 func sensitiveLogInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostics {
 	var ds Diagnostics
 
-	for _, node := range nodes {
-		if d, ok := sensitiveLogInTask(node.GetId(), node.GetTask(), sensitive); ok {
-			ds = append(ds, d)
-		}
+	v1.WalkNodes(nodes, v1.Walk{
+		Node: func(node *v1.Node) {
+			if d, ok := sensitiveLogInTask(node.GetId(), node.GetTask(), sensitive); ok {
+				ds = append(ds, d)
+			}
 
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_ForEach:
-			ds = append(ds, sensitiveLogInNodes(kind.ForEach.GetBody(), sensitive)...)
-		case *v1.Node_Loop:
-			ds = append(ds, sensitiveLogInNodes(kind.Loop.GetBody(), sensitive)...)
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				ds = append(ds, sensitiveLogInNodes(branch.GetSteps(), sensitive)...)
+			// A compensation runs the same tasks a step runs, so a `log:` that
+			// surfaces a sensitive input is the same mistake written in the `undo:`
+			// position. The field is the `undo:` key rather than `message` for the
+			// reason validateUndoInputs documents — a field naming the inner input
+			// would be looked up against the step's own task — so the inner field
+			// moves into the sentence instead.
+			//
+			// Kind is set alongside Field so [validateParsed] routes the position
+			// through [Positions.LocateKind] rather than [Positions.Locate]: the
+			// step's own primary task may declare an input literally named `undo`
+			// (a plugin task's input names come from its own descriptor, so `undo`
+			// is not reserved), and Locate's candidate search tries every registered
+			// task's `.undo` input before the step's own `<step>.undo`. On such a
+			// step, Field alone would underline that unrelated primary-task input
+			// instead of the compensation. LocateKind addresses `<step>.undo`
+			// exactly, with no candidate search to go wrong.
+			if d, ok := sensitiveLogInTask(node.GetId(), node.GetUndo().GetTask(), sensitive); ok {
+				d.Field = "undo"
+				d.Kind = "undo"
+				d.Message = "in this step's compensation: " + d.Message
+				ds = append(ds, d)
 			}
-		case *v1.Node_Switch:
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				ds = append(ds, sensitiveLogInNodes(body, sensitive)...)
-			}
-		}
-	}
+		},
+	})
 
 	return ds
 }
@@ -203,15 +221,47 @@ func isStringConcat(e *expr.Expr) bool {
 
 // flattenConcat unwraps a `+` chain into its operands, left to right. An operand
 // that is not itself a `+` is returned whole — so `"a" + inputs.token + "b"`
-// yields the three leaves, and `string(inputs.token)` is returned as the one
+// yields the three leaves, and a call other than the one below is returned as the
 // call it is, never descended into: a value inside a call is derived, and this
 // reports only what a `+` puts in the clear.
+//
+// The one exception is `string(x)` in an operand position, which is unwrapped to
+// x. That is not a softening of the derived rule; it is what keeps the rule
+// meaning the same thing after #413. A message written `token: ${inputs.token}`
+// is interpolation, and interpolation desugars to `'token: ' + string(inputs.token)`
+// — the `string()` is the compiler's, put there because CEL's `+` needs two
+// strings, not the author's. Reading it as a derivation would mean the plainest
+// possible spelling of this leak, the one the lint exists to catch, stopped being
+// caught the moment the language grew a nicer way to write it.
+//
+// It follows that the same unwrapping applies to a `string()` an author typed
+// inside a concatenation, since after compilation the two are the same
+// expression and nothing can tell them apart. That is the right answer anyway:
+// `${'token: ' + string(inputs.token)}` does put the value in the log verbatim.
+// What is deliberately unchanged is `${string(inputs.token)}` written as the
+// whole message, with no concatenation at all — the known, accepted gap this
+// file's doc records — because that one never reaches here.
 func flattenConcat(e *expr.Expr) []*expr.Expr {
 	if isStringConcat(e) {
 		args := e.GetExprKind().(*expr.Expr_CallExpr).CallExpr.GetArgs()
 		return append(flattenConcat(args[0]), flattenConcat(args[1])...)
 	}
-	return []*expr.Expr{e}
+	return []*expr.Expr{unwrapStringConversion(e)}
+}
+
+// unwrapStringConversion returns the argument of a global `string(x)` call, and e
+// itself for anything else. See [flattenConcat] for why one call, and only in an
+// operand position, is transparent here.
+func unwrapStringConversion(e *expr.Expr) *expr.Expr {
+	call, ok := e.GetExprKind().(*expr.Expr_CallExpr)
+	if !ok {
+		return e
+	}
+	c := call.CallExpr
+	if c.GetTarget() != nil || c.GetFunction() != "string" || len(c.GetArgs()) != 1 {
+		return e
+	}
+	return c.GetArgs()[0]
 }
 
 // identName returns the name of e when it is a bare identifier, empty otherwise.

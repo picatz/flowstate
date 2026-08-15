@@ -11,6 +11,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
 
 // testAnswer is the v1.TestReport an agent reads, by field name — the same
@@ -37,7 +39,7 @@ func callTest(t *testing.T, session *mcp.ClientSession, args map[string]any) (*m
 	t.Helper()
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      testToolName,
+		Name:      flowmcp.TestToolName,
 		Arguments: args,
 	})
 	require.NoError(t, err)
@@ -177,7 +179,7 @@ steps:
 }
 
 // TestTheTestToolStubsMakeNoRequest is the load-bearing safety claim in
-// [testToolDescription]: a stubbed task never invokes a real implementation,
+// [flowmcp.TestToolDescription]: a stubbed task never invokes a real implementation,
 // so an http step never reaches the network regardless of what this process
 // was started with. Proven against a real listener rather than argued: the
 // workflow names a live loopback server capable of answering, the test
@@ -284,7 +286,7 @@ func TestTheTestToolRequiresWorkflowAndTests(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      testToolName,
+		Name:      flowmcp.TestToolName,
 		Arguments: map[string]any{"tests": "tests:\n  - name: x\n    expect: {}"},
 	})
 	require.NoError(t, err)
@@ -292,7 +294,7 @@ func TestTheTestToolRequiresWorkflowAndTests(t *testing.T) {
 	assert.Contains(t, result.Content[0].(*mcp.TextContent).Text, "workflow is required")
 
 	result, err = session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      testToolName,
+		Name:      flowmcp.TestToolName,
 		Arguments: map[string]any{"workflow": "edition: v2026.3\nname: x\nsteps: []"},
 	})
 	require.NoError(t, err)
@@ -309,7 +311,7 @@ func TestTheTestToolRefusesUnknownArguments(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name: testToolName,
+		Name: flowmcp.TestToolName,
 		Arguments: map[string]any{
 			"workflow": "edition: v2026.3\nname: x\nsteps: []",
 			"tests":    "tests:\n  - name: x\n    expect: {}",
@@ -345,13 +347,13 @@ func TestTheTestToolRefusesUnparseableSources(t *testing.T) {
 //
 // The bound is asserted reached, not merely respected (CLAUDE.md): the
 // unbounded message is built first and checked to actually exceed
-// maxMCPResultBytes, so a cap that silently never engaged would fail
+// flowmcp.MaxResultBytes, so a cap that silently never engaged would fail
 // this test rather than pass it by accident.
 func TestTheTestToolAnswerIsBounded(t *testing.T) {
 	t.Parallel()
 
-	huge := strings.Repeat("x", 2<<20) // 2 MiB, well past maxMCPResultBytes.
-	require.Greater(t, len(huge), maxMCPResultBytes,
+	huge := strings.Repeat("x", 2<<20) // 2 MiB, well past flowmcp.MaxResultBytes.
+	require.Greater(t, len(huge), flowmcp.MaxResultBytes,
 		"the fixture is not actually large enough to force renderTestResult to shrink anything")
 
 	session := connectMCP(t, defaultLocalRunPosture())
@@ -380,7 +382,7 @@ outputs:
 	require.True(t, result.IsError)
 
 	encoded := result.Content[0].(*mcp.TextContent).Text
-	assert.LessOrEqual(t, len(encoded), maxMCPResultBytes,
+	assert.LessOrEqual(t, len(encoded), flowmcp.MaxResultBytes,
 		"a case's own comparison spent %d bytes of a model's context", len(encoded))
 
 	require.Len(t, answer.Cases, 1)

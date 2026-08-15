@@ -266,6 +266,27 @@ type Task struct {
 	// than the plugin asking it to.
 	SecretInputs []string
 
+	// ShapesOutputs declares that this task reads an input named `outputs` as a
+	// mapping of output name to expression, and returns those names as the
+	// step's outputs in place of the ones its descriptor declares.
+	//
+	// Set it only if Fn genuinely does that. It is a claim about the executor,
+	// and three host surfaces believe it: the compiler keeps the mapping's
+	// entries so the shaped names are statically visible, the validator checks a
+	// later `${steps.x.name}` against them rather than against this task's
+	// declared outputs, and the language server offers them. A task that sets
+	// this and returns its declared outputs anyway gets all three describing a
+	// step that produces something else.
+	//
+	// False is the fail-closed default and the right one for every ordinary
+	// task, including one that happens to have an input called `outputs`: that
+	// used to be the whole rule, and a plugin declaring an ordinary input by
+	// that name had its declared outputs stood down from across all three
+	// surfaces while its executor returned exactly what it promised (#324).
+	//
+	// Becomes `TaskManifest.shapes_outputs` on the wire.
+	ShapesOutputs bool
+
 	// Fn executes the task.
 	Fn TaskFunc
 }
@@ -717,6 +738,7 @@ func (t Task) manifest() (*pluginv1.TaskManifest, error) {
 		ExpressionInputs: slices.Clone(t.ExpressionInputs),
 		NeedsScope:       t.NeedsScope,
 		SecretInputs:     slices.Clone(t.SecretInputs),
+		ShapesOutputs:    t.ShapesOutputs,
 	}, nil
 }
 

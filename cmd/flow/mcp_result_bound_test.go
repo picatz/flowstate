@@ -9,11 +9,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
 
 // TestAnRPCToolAnswerIsBounded is the direction #300 found missing.
 //
-// Three tests already assert that `run_local` stays under [maxMCPResultBytes].
+// Three tests already assert that `run_local` stays under [flowmcp.MaxResultBytes].
 // None asserted it of the tools that answer over [mcpHandler] — which is every
 // other tool — and that was exactly where the bound was absent. The untested
 // direction and the unbounded one were the same direction, so this test is the
@@ -47,7 +49,7 @@ func TestAnRPCToolAnswerIsBounded(t *testing.T) {
 	}
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name:      mcpToolName("Validate"),
+		Name:      flowmcp.ToolName("Validate"),
 		Arguments: map[string]any{"files": files},
 	})
 	require.NoError(t, err, "the call itself must succeed; the answer is what is bounded")
@@ -58,15 +60,15 @@ func TestAnRPCToolAnswerIsBounded(t *testing.T) {
 	// Both halves together, which is the pair the run_local tests already
 	// assert and the reason neither is enough alone: an answer that is small
 	// because it was cut in half is not a bounded answer, it is a broken one.
-	assert.LessOrEqual(t, len(text), maxMCPResultBytes,
+	assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes,
 		"an RPC-backed tool answered over the surface's ceiling")
 	assert.True(t, result.IsError,
 		"an answer that could not be given within the ceiling has to say so, not look like a small result")
 
 	// The refusal has to be actionable: an agent that cannot tell why it got
 	// nothing will ask the same question again.
-	assert.Contains(t, text, mcpToolName("Validate"), "the refusal should name the tool that overflowed")
-	assert.Contains(t, text, fmt.Sprint(maxMCPResultBytes), "the refusal should name the limit")
+	assert.Contains(t, text, flowmcp.ToolName("Validate"), "the refusal should name the tool that overflowed")
+	assert.Contains(t, text, fmt.Sprint(flowmcp.MaxResultBytes), "the refusal should name the limit")
 	assert.Contains(t, text, "ask for less", "the refusal should say what to do instead")
 }
 
@@ -81,7 +83,7 @@ func TestAnRPCToolAnswerUnderTheCeilingIsUnchanged(t *testing.T) {
 	session := connectMCP(t, defaultLocalRunPosture())
 
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
-		Name: mcpToolName("Validate"),
+		Name: flowmcp.ToolName("Validate"),
 		Arguments: map[string]any{
 			"files": []map[string]any{{
 				"name":   "ok.yaml",
@@ -93,7 +95,7 @@ func TestAnRPCToolAnswerUnderTheCeilingIsUnchanged(t *testing.T) {
 	require.False(t, result.IsError, "a small answer must not be refused: %v", result.Content)
 
 	text := result.Content[0].(*mcp.TextContent).Text
-	assert.LessOrEqual(t, len(text), maxMCPResultBytes)
+	assert.LessOrEqual(t, len(text), flowmcp.MaxResultBytes)
 
 	var document map[string]any
 	require.NoError(t, json.Unmarshal([]byte(text), &document),

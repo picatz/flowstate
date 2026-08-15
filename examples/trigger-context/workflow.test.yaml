@@ -1,0 +1,73 @@
+# Both sides of a trigger-guarded branch, with no real trigger anywhere.
+#
+# This is the half of the feature that decides whether it is worth having. A
+# workflow that behaves differently depending on how it started is only trustworthy
+# if an author can see it behave *both* ways before it ships — otherwise `if:
+# ${trigger.kind == "schedule"}` is conditional behaviour that only manifests in
+# production, which is the thing everybody hates about trigger-aware workflows
+# elsewhere.
+#
+# So a case states how the run started, in one line, and the run reads it exactly as
+# a real one would: `trigger: {kind: schedule, name: nightly-sweep}`. No webhook, no
+# payload, no signature arithmetic, no cluster.
+#
+# The last case is the other kind of `trigger:` stanza — a replayed delivery — and
+# it is here to show the join: a replay does not *state* a context, it derives one,
+# from the trigger it replayed against and the delivery id the receiver itself would
+# have computed. Stating one and replaying one are refused together, because the two
+# could disagree about the same run.
+#
+# What no case here can do is fake authorization, and that is deliberate. A case can
+# say `principal: anyone@example.com` and the run believes it — which is precisely
+# why the workflow's `manual:` block is where "who may start this" is written, and
+# why a step gating a destructive action on `${trigger.principal}` would be a
+# control this file could switch off in one line.
+edition: v2026.3
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a manual start pages, and records who asked
+    workflow: ./workflow.yaml
+    trigger:
+      kind: manual
+      principal: oncall@example.com
+    expect:
+      ran: [notify, correlate]
+      outputs:
+        started_by: manual
+        # Empty, and correct: a person is not a declared source, so there is no
+        # name to carry. Asserted rather than left unsaid — a blank that nobody
+        # asserts is a blank nobody notices going wrong.
+        source: ""
+
+  - name: a scheduled sweep does not page
+    workflow: ./workflow.yaml
+    trigger:
+      kind: schedule
+      name: nightly-sweep
+      principal: ops@example.com
+    expect:
+      # The whole claim, in the one form that proves the branch is real: `notify`
+      # is skipped rather than merely producing something different.
+      ran: [correlate]
+      skipped: [notify]
+      outputs:
+        started_by: schedule
+        source: nightly-sweep
+
+  - name: a delivery derives its own context from the trigger it arrived at
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: payments
+      payload: ./testdata/payments-capture.json
+    expect:
+      # Mapped by the webhook's `with:`, exactly as examples/webhook-trigger
+      # asserts it — the trigger context does not change what a delivery binds.
+      inputs:
+        order_id: ord_H1x9
+      ran: [notify, correlate]
+      outputs:
+        started_by: webhook
+        source: payments

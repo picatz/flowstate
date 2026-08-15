@@ -89,6 +89,15 @@ name, and `now` is bound only inside a wait precisely so that a task cannot read
 (see [ARCHITECTURE.md](ARCHITECTURE.md)'s execution model); an attempt count is a fact
 about the substrate's scheduling that changes underneath a run.
 
+*Since written:* `trigger.*` joined them, and it is a fifth root rather than a field of
+`run` because it answers a different question with a different lifetime: `run` is which
+run this is (an address the substrate mints, an identity the server attested), and
+`trigger` is why the run is happening (established by whichever entry path admitted the
+submission). `trigger.kind`, `trigger.name`, `trigger.principal` and
+`trigger.delivery_id`, closed exactly as `run` is, and readable everywhere an ordinary
+expression is — see [`manual:` narrows, and the body can read how a run
+started](#manual-narrows-and-the-body-can-read-how-a-run-started).
+
 *Since written:* the reason this section gave for accepting it was checked against the
 code and was half wrong, so it is replaced here rather than left to be rediscovered.
 
@@ -1258,15 +1267,287 @@ excludes it, and the fix is to write the start a moment earlier. Each range may 
 its own `overlap` to say what recovered work does when it meets a run already going;
 without one the schedule's own policy applies.
 
+### `triggers:` as a list of call sites — `webhook:` *(landed)*
+
+A trigger has to get an outside payload into the workflow's declared `inputs:`, and
+the DSL already had the construct for that. `inputs:` is a signature; `with:` on a
+`call:` step is a call site. A trigger is not a second declaration of an input, it is
+another caller — no different from `flow run --input` or an MCP invocation — so
+`triggers:` may also be written as a **list**, one entry per source, each naming its
+kind first:
+
+```yaml
+inputs:
+  order_id: { type: string, required: true }
+  amount:   { type: int, required: true }
+
+triggers:
+  - webhook: stripe
+    verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with:
+      order_id: ${event.body.data.object.metadata.order_id}
+      amount:   ${event.body.data.object.amount}
+
+  - webhook: shopify
+    verify: { hmac_sha256: ${secret('env:SHOPIFY_WEBHOOK_SECRET')} }
+    idempotency_key: ${event.headers["x-shopify-webhook-id"]}
+    with:
+      order_id: ${event.body.order.id}
+      amount:   ${event.body.order.total_cents}
+
+  - schedule:
+      cron: "0 2 * * *"
+```
+
+Nothing is written twice, several webhooks coexist with a schedule, and the CLI needs
+no entry because it passes arguments directly. The mapping spelling
+(`triggers: {schedule: ...}`) still means exactly what it meant, and a file that only
+declares a cadence keeps it — `flow fmt` does not migrate one for no reason its author
+can see.
+
+**The payoff is a diagnostic.** Because a trigger is a call site, `flow validate`
+checks every `with:` against the signature *statically*, in both directions, and says
+so with a line and a column:
+
+```
+webhook "shopify" does not supply required input "amount"
+webhook "stripe" binds "amount_cents", which this workflow declares no input named
+```
+
+That is the whole reason `with:` was chosen over a per-trigger mapping block or a
+per-input `from:` expression. A mapping block states what an input is a second time,
+next to `inputs:` which already states it, with nothing forcing the two to agree —
+add an input, forget the mapping, get a silent absent value. A `from:` reads well for
+one source and cannot express several coexisting origins without growing a keyed
+sub-language.
+
+**`event` is the delivery, and it is bound in a trigger only.** `event.headers` (whose
+names are matched without regard to case) and `event.body` (the decoded payload) are
+in scope in `with:` and `idempotency_key:` and nowhere else in the language. A step
+naming it is a positioned diagnostic, not a silent nil: everything a workflow operates
+on arrives through `with:` into `inputs:` and is read as `inputs.<name>`, because a
+second input path is one `flow validate` could not check. A step *called* `event` is
+still legal — the name is not reserved, since inside a trigger there is no step scope
+for it to shadow — and `flow fix` knows the binding, so it will not root it.
+
+**Two keys are required, and fail closed.** `verify:` names at least one signing
+scheme (`hmac_sha256` or `stripe`) bound to a `${secret(...)}` reference: there is
+deliberately no spelling that means "accept anything", so an unverifiable delivery is
+refused rather than allowed on the grounds that it could not be checked, and a webhook
+with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
+and is required because webhook delivery is at-least-once by nature — without it every
+retried delivery is a second run. What the validator does *not* do is resolve
+anything: whether the secret exists and whether this deployment has that scheme
+configured are a deployment's answers.
+
+**Declaring is not serving.** A file declares a webhook; a deployment decides whether
+*this* installation serves it, because staging must not fire the production webhook.
+`flow server --webhook ./workflow.yaml` mounts the declaration at
+
+```
+POST /webhooks/<workflow>/<trigger>
+```
+
+unauthenticated in one sense only: a sender presents a signature over the body rather
+than a bearer token, which is the credential a webhook has. Everything decidable
+before a request arrives is decided when that flag is read — the file is compiled, the
+schemes are checked against what this build can verify, and every `verify:` key is
+resolved through the deployment's `--secret-*` providers — so a deployment that cannot
+serve a webhook fails to start rather than refusing deliveries at three in the morning.
+The generic `hmac_sha256` scheme reads `X-Flowstate-Signature` (hex, optionally
+`sha256=`-prefixed, over the raw body); `stripe` reads `Stripe-Signature` with its own
+five-minute replay window. A delivery that verifies starts a run whose id is derived
+from `idempotency_key:`, so a redelivery joins that run instead of starting a second
+one, and both drivers ignore the block entirely — `flow run local` still runs a file
+with a webhook on it once, now.
+
+The mapping is the part a file controls, and it is the part `flow test` replays
+offline from a stored delivery, with no network and no receiver:
+
+```yaml
+tests:
+  - name: a stripe delivery starts a run with the mapped inputs
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./testdata/stripe-charge.json   # one JSON document: headers and body
+    expect:
+      inputs: { order_id: ord_H1x9, amount: 4200 }
+      idempotency_key: t=1755043200,v1=6f0b…
+
+  - name: an unverifiable delivery is refused, and no run happens
+    workflow: ./workflow.yaml
+    trigger:
+      webhook: stripe
+      payload: ./testdata/stripe-charge.json
+      signature: invalid
+    expect:
+      refused: true
+```
+
+No network, deterministic, and it turns the argument mapping into a unit test — the
+one part of a workflow that would otherwise be debuggable only in production. The
+mapping is real; the verification *outcome* is declared rather than computed, so a
+case can assert what happens to a delivery that does not verify without holding a
+signing key. `examples/webhook-trigger` is the worked example, and it runs in CI like
+the rest.
+
+### `manual:` narrows, and the body can read how a run started
+
+Two halves of one decision, and the line between them is the most important sentence in
+this section: **trigger context is for behaviour, never authorization.**
+
+**`manual:` narrows; it does not enable.** `flow run`, `flow run local`, the `Run` RPC
+and MCP all start a workflow today with no declaration at all, so `triggers:` is
+deliberately *not* exhaustive. If declaring a webhook silently meant "and nothing else
+may start this", adding an integration would take `flow run` away from the author who
+added it, and testability would go with it. Declaring `manual:` therefore *constrains* a
+start that already works:
+
+```yaml
+triggers:
+  - webhook: payments
+    verify: { stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')} }
+    idempotency_key: ${event.headers["stripe-signature"]}
+    with: { order_id: ${event.body.id} }
+
+  - manual:
+      require_reason: true                    # a start must say why, recorded on the run
+      allowed_principals: [oncall@example.com] # and be made by one of these attested subjects
+```
+
+and refusal is something you write down, on one line:
+
+```yaml
+  - manual: denied      # explicit, greppable; nobody discovers this by surprise
+```
+
+`denied` is a scalar rather than a `denied: true` key, and that is the whole reason it is
+spelled that way: a lock nobody can `grep` for is a lock nobody knows about, and two
+spellings of one refusal would mean a search for the greppable one misses half the files
+that have it. The two cannot be combined — a block that refuses manual starts *and* names
+who may make one is two sentences that cannot both be true, so it is refused with a
+position rather than resolved by precedence. A refusal in a file that declares no other
+trigger is refused too: nothing could start that workload at all.
+
+**`flow run local` is never gated**, whatever this block says. The author's machine is
+not a deployment, it has nothing to attest a principal with, and a workflow that cannot
+be developed locally is not one anybody will maintain. Enforcement is the server's, at
+the boundary, against an identity it authenticated and the `--reason` the caller gave —
+the same placement `signals:` policy already has, and the same rule that keeps egress
+policy out of the validator.
+
+**Trigger context is readable for behaviour.** A run reads how it started under a root of
+its own:
+
+```yaml
+steps:
+  - id: notify
+    if: ${trigger.kind != "schedule"}        # nightly sweeps do not page anyone
+    http: { ... }
+
+  - id: extra_approval
+    if: ${trigger.kind == "manual"}          # a human start gets a second pair of eyes
+    wait_for_signal: { ... }
+```
+
+`trigger.kind` is `manual`, `webhook` or `schedule`; `trigger.name` is the declared
+trigger that started the run (empty for a manual start, since a person is not a declared
+source); `trigger.principal` is the subject the server attested; `trigger.delivery_id`
+names one arrival, as a digest rather than the idempotency key itself, because the usual
+key is a signature header and this value is written to durable history. The set is closed
+and `flow validate` reports an unknown field under it, exactly as it does for `run`.
+
+This is safe to read anywhere, and the reason is worth stating: every field is fixed when
+the run starts and carried in the run's own state, so it reads identically on every
+replay and after every Continue-As-New. That is precisely what a clock and a random
+number are not, and it is why `now` is bound only inside a wait while this is not bound
+anywhere in particular — a value that cannot drift can be read everywhere.
+
+**The line: behaviour, never authorization.** This is tempting and wrong:
+
+```yaml
+  - id: delete_everything
+    if: ${trigger.principal == "admin"}      # NO
+```
+
+In the body that is an expression a test can fake, one `flow validate` cannot reason
+about, and one a later refactor can reorder past the step it was guarding. Authorization
+belongs on the trigger — `manual: {allowed_principals: [...]}`, or `manual: denied` —
+where a deployment owns it, the validator can see it, and a server enforces it before the
+run exists. Each decision lives where the thing that owns it lives.
+
+**`trigger` is metadata, never data.** Everything a workflow operates on arrives through
+a trigger's `with:` into `inputs:`, where declarations exist for `flow validate` to check
+it against. There is no `trigger.body` and there will not be: a payload field reachable
+that way would be a second input path with no contract, which the validator would be
+blind to. `${trigger.body}` is therefore a positioned diagnostic that names where the
+value actually comes from, rather than a silent blank.
+
+**And it is settable in a test**, which is what stops this shipping conditional behaviour
+that only manifests in production:
+
+```yaml
+tests:
+  - name: a scheduled run does not page
+    workflow: ./workflow.yaml
+    trigger: { kind: schedule, name: nightly-sweep }
+    expect:
+      ran: [correlate]
+      skipped: [notify]
+```
+
+No webhook, no payload, no cluster: the case says how the run started and the run reads
+it exactly as a real one would. A `trigger:` stanza either states a context this way or
+replays a stored delivery (`webhook:` with a `payload:`), never both — a replay *derives*
+its context, from the trigger it arrived at and the delivery id the receiver itself would
+have computed, so the two could otherwise disagree about one run. What a case cannot do
+is make `principal:` mean anything: it is settable, freely, which is exactly why
+authorization must not be written where a test file can switch it off in one line.
+`examples/trigger-context` is the worked example, and it runs in CI like the rest.
+
 ### `${...}` stays; `!expr` is refused
 
 The fence survives two challenges on its merits.
 
-**Interpolation stays refused.** `"deployed ${a} to ${b}"` is two languages in one
-scalar — a template language containing CEL fragments — and it is the direct
-mechanism of the injection class that string-splicing CI systems keep shipping.
-A value is one literal or one expression, never a string with holes; `format()` and
-concatenation are the answer, and the diagnostic already teaches them.
+**Interpolation was refused, and now is not** (#413). The refusal read: `"deployed
+${a} to ${b}"` is two languages in one scalar, and it is the direct mechanism of the
+injection class that string-splicing CI systems keep shipping. Both halves of that
+fail on inspection.
+
+The injection argument is void because `${'deployed ' + a + ' to ' + b}` was always
+legal. Interpolation grants a *spelling*, not a capability: whatever a multi-fence
+scalar can say, one fence could already say, less readably. There is no splicing
+step anywhere — each fence is parsed as CEL on its own, and what a run carries is
+one compiled expression, never text assembled and re-read.
+
+The two-languages argument fails at the scope the fence is held to. What Helm and
+Jinja put in strings is *control flow*: conditionals, loops, filters, a second
+evaluation order living inside the document. A fence holds one CEL expression and
+nothing else, and that is not relaxed here — there is no `${if ...}`, no `${for
+...}`, no pipeline, and no plan for one. A value made of text and expressions is
+still a value.
+
+So a scalar may mix literal text with expressions:
+
+```yaml
+message: ${run.identity.subject} requests deploying ${inputs.version} to ${inputs.environment}
+```
+
+Four rules make it additive rather than a reinterpretation. A scalar that is
+*exactly* one fence keeps whole-value typing, so `init: ${0}` is still an integer and
+only a mixed scalar becomes text. Each fence is rendered with CEL's own `string()`,
+which is defined on string, int, uint, double, bool, duration and timestamp; a map,
+a list or a null has no text form, and the diagnostic says to name the rendering you
+want (`json.encode`). `$${` is a literal `${`. And every scalar this now accepts was
+*refused* before, with a position and a message, so no file an older build accepts
+means anything different — which is why it needed no edition boundary.
+
+`format()` keeps the job interpolation does not do: width, precision, and positional
+reuse. `flow fix` does not rewrite one into the other, because proving two spellings
+render identically is per-argument judgment (`%d` on a double truncates where
+`string()` does not) and `flow fix` must not exercise judgment.
 
 **A YAML `!expr` tag is refused.** It looks structurally cleaner — the AST would
 know literal from expression without delimiter scanning — but it fails on the case
@@ -1374,14 +1655,25 @@ two spellings of "refuse to proceed" is one too many.
 
 ### `switch:` landed — the word buys the checks, not the branch (#357)
 
-The branching was always expressible: three sibling `if:` steps against one value,
-which `examples/approval-gate` defends well. What was inexpressible was the
-*checking*. Nothing ties three equalities together, so a validator cannot see that
-they intend a total dispatch over one value — it cannot catch the typo'd literal
-that is legal CEL and silently never matches, cannot notice a value nobody handles,
-and the run cannot record that an unhandled value arrived. Grouping the cases under
-one construct is the precondition for every one of those, and that is what earned
-the word.
+The branching was always expressible: three sibling `if:` steps against one value.
+What was inexpressible was the *checking*. Nothing ties three equalities together,
+so a validator cannot see that they intend a total dispatch over one value — it
+cannot catch the typo'd literal that is legal CEL and silently never matches,
+cannot notice a value nobody handles, and the run cannot record that an unhandled
+value arrived. Grouping the cases under one construct is the precondition for every
+one of those, and that is what earned the word.
+
+`examples/approval-gate` is where that trade is visible, because it is the case
+where the payoff is largest: its discriminant is a wait outcome whose domain the
+validator can *infer*, so all five domain diagnostics below apply to it. Written as
+three `if:`s — which is how it shipped until this construct landed — `- case:
+rejcted` is a branch that never runs and a dropped branch is a run that quietly
+does nothing; written as one `switch:`, both are `flow validate` failures naming
+the value. That is also why the gate's `outcome:` stays a shaping expression built
+from string literals, a conditional, and the read-side optional idioms
+(`optMap`, `orValue`): that shape is exactly what `switchDomain` reads a domain
+out of, so a rewrite into `value()` or anything else would compute the same
+three strings and silently take every check with it.
 
 ```yaml
 - id: on_event
@@ -1441,10 +1733,15 @@ domain is checkable — Rust's `_ => {}`, both times. A switch that is only a
 
 #### The diagnostics, where the domain is the file's to know
 
-Where the discriminant's domain is a property of the file — today, a wait outcome
-whose shaping expression is conditionals over string literals, the approval gate's
-ternary; enum-typed inputs extend the tier when they land — the validator checks
-the whole dispatch, every diagnostic fatal like every other in this language:
+Where the discriminant's domain is a property of the file — today, a wait's
+shaped output or a `value:` step whose shaping expression is built from string
+literals through conditionals and the read-side optional idioms (`optMap`,
+`optFlatMap`, `orValue`), the approval gate's own expression among them;
+enum-typed inputs extend the tier when they land — the validator checks the
+whole dispatch, every diagnostic fatal like every other in this language. A
+shaping expression that reaches for `value()`, or for anything else the walk
+does not read, still validates — it simply drops back to an open domain, silent
+per the report-what-the-file-owns rule below:
 
 - an impossible case value, with the nearest legal spelling;
 - a duplicate case after list-flattening (the second occurrence can never match);
@@ -1467,8 +1764,121 @@ six-site change and this construct does not need one. The switch is never a
 suspension position; its bodies may contain waits, and the container machinery
 handles them as it does a parallel branch's.
 
-`examples/webhook-routing` is the construct end to end, its `default:` logging the
-unexpected action — which doubles as the documentation for why the slot exists.
+`examples/webhook-routing` is the construct end to end over an *open* domain, its
+`default:` logging the unexpected action — which doubles as the documentation for
+why the slot exists. `examples/approval-gate` is the same construct over a closed
+one, and carries no `default:` for the mirror-image reason: the validator knows the
+three outcomes, the cases exhaust them, and a `default:` there can never run.
+
+### `async:` landed — the departure from written order is one word (#418)
+
+Sequential steps plus `parallel:` express every series-parallel graph. The one
+shape they cannot is the crossing dependency — the N-graph, where `test` needs
+only the build and `deploy` needs only the machine. Written as two barriers,
+`test` waits for the machine for no reason. The loss is latency and never
+correctness, which is what bounds how urgent this is and what shapes the fix: it
+must cost nothing unless a file opts in.
+
+Every previous engine answered with explicit graph syntax — `needs:`, `>>`,
+`Next:` pointers — and all of them share one sin: the flow is stated somewhere
+other than where the work is written, so reading a file means reconstructing a
+graph, and the graph drifts from the steps unreviewably. That is disqualifying
+here, because written order is load-bearing across this language (first-match
+`if:`, `vars:` shadowing, `switch:`'s first-match cases) and `fmt`/`fix` would
+inherit an unanswerable canonical-ordering question. `needs` stays reserved
+permanently.
+
+The observation that makes a better answer possible: this language already
+contains every dependency edge, in the most natural position there is.
+`${steps.build.tag}` *is* the edge, written at the point of use. So the design
+question was never how an author states edges — they already do — but **when
+execution may depart from written order**. Structured concurrency's answer, which
+postdates every engine above: departure is opt-in and visibly marked, joins
+happen where data is read, and no scope ends with work in flight.
+
+```yaml
+- id: build
+  async: true
+  http: { url: https://ci.example.com/build, method: POST }
+- id: provision
+  async: true
+  http: { url: https://infra.example.com/machines, method: POST }
+- id: test                       # joins build here; provision still running
+  http:
+    url: https://ci.example.com/test
+    body: ${steps.build.tag}
+- id: deploy                     # joins provision here
+  http:
+    url: https://infra.example.com/deploy
+    body: ${steps.provision.host}
+```
+
+Three rules carry it:
+
+1. **Default unchanged.** A step without `async:` runs in written order. No file
+   that predates the word changes meaning.
+2. **A reference is a join.** The first step reading an async step's outputs waits
+   for it there. Edge and join are the same visible token, in the consuming step.
+3. **A scope's end joins what it started.** A workflow, a callee's body, a loop
+   body, a switch case. There is no fire-and-forget, only fire-and-definitely-
+   collect-before-leaving — including on the failing path, so an effect that
+   happened is always an effect whose `undo:` was registered.
+
+**Every mention joins, including `has()`.** Rule 2 is total: any syntactic mention
+of an async step's outputs — in `if:`, `vars:`, a task input, a `value:`, a
+`has()` guard, a call's arguments — joins it first. A presence check that could
+answer "not finished yet" would make completion order observable through a guard,
+which is select/first-of-N wearing a guard's clothes; it is foreclosed here and
+belongs in the refusals ledger. One consequence is worth stating because it
+surprises: `if:` is evaluated before a step runs, so a condition naming an async
+step joins it *even when the condition then skips the step*. That is correct — the
+data is what decided the skip.
+
+**Determinism survives, and that is the point.** Completion order is never
+observable: data becomes visible only at joins, at fixed textual positions, so two
+runs whose steps finished in different orders record the same thing. The
+compensation stack is where that promise is easiest to break, and it does not:
+`undo:` unwinds in reverse *written* order, because an async step takes its slot
+in the undo log where it is written and fills it when it succeeds
+([`UndoLog.Reserve`](../pkg/flowstate/v1/undo.go)). A log appended at the *join*
+would read in join order, and joins need not happen in the order a scope started
+things — a step reading the second async step before another reads the first is
+enough to unwind an earlier-written step before a later-written one.
+
+**What may carry it, and what is refused with a position.** A task step, at a
+sequential placement. Refused, each in the author's editor rather than at run
+time: a wait (a parked step joined only at scope end is a deadlock nothing in the
+file shows), a `value:` (a pure expression has nothing to overlap), a block (a
+`for_each`, `parallel:`, `loop:`, `switch:` or `call:` has no work of its own to
+overlap — mark the tasks inside), and any step inside a `for_each` body or a
+`parallel:` branch (that scope is already concurrent, and how wide the product
+should be is the question async `call:` answers rather than this slice).
+`retry:`/`timeout:` mean exactly what they mean on the same step unmarked, which
+keeps [#286](https://github.com/picatz/flowstate/issues/286)'s question
+orthogonal. Width is bounded per scope by `MaxAsyncInFlight`, counted as work is
+launched, because outstanding activities are the resource rather than steps in a
+file.
+
+**The drivers agree about everything except the latency.** The durable driver runs
+each async step on its own coroutine, so the overlap is real. The local driver
+runs the work where it is written and holds the result until the join — the same
+rehearsal `parallel:` already gets, whose branches run in order locally and
+concurrently in production. Everything an author can *see* is identical either
+way, which is what `pkg/flowstate/v1/tests/async.go` holds both to; the overlap
+itself is a claim about a scheduler and is proved against the durable one.
+
+`examples/crossing-dependencies` is the N-graph end to end, with the barrier
+version it replaces written in the file's own comment for contrast.
+
+Two things are deliberately **not** in this slice.
+[#418](https://github.com/picatz/flowstate/issues/418)'s design pass proposed
+cancelling in-flight siblings when one fails; a scope that is failing here *joins*
+them instead, because whether a cancelled sibling's compensation was registered
+would depend on whether it happened to finish first — completion order leaking
+into the failure path, which is precisely what the rest of this design forecloses.
+And `async:` on `call:`, the fan-out payoff, is its own slice: cancellation across
+a call boundary needs cases of its own for cancel-before-start, cancel-mid-flight
+and cancel-after-complete-before-join.
 
 ### `async:` landed — the departure from written order is one word (#418)
 
@@ -1662,8 +2072,11 @@ sharper knife. And it takes **`argv` as a list, never a shell string**:
 ```
 
 A shell-string form with expressions producing pieces of it is command injection by
-construction — the same reasoning that refused `${...}` interpolation, with higher
-stakes. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
+construction. Note what separates it from the interpolation #413 landed: there, the
+result is a *value* the workflow holds, and the fences are parsed as CEL before
+anything is joined; here, the result would be handed to a shell that parses it
+again, so a value could become syntax. Splicing into a language that will re-parse
+the result is the thing refused, not splicing. An author who wants shell semantics writes `argv: [bash, -c, "..."]` and
 owns it visibly. There is no `shell:` task. Outputs are `exit_code` and
 byte-bounded `stdout`/`stderr` (principle 9: the process, not the worker, decides
 what it prints, so the worker bounds what it keeps). The full input surface —
@@ -2516,7 +2929,8 @@ reference an undo almost always wants:
   http:
     method: POST
     url: https://api.example.com/networks
-    outputs: '${ {"id": response.json.id} }'
+    outputs:
+      id: ${response.json.id}
   undo:
     http:
       method: DELETE
@@ -4051,6 +4465,61 @@ A condition derived from *several* steps' outputs still has no single home. This
 the name on the step that owns the data, which covers the approval-gate class — one
 gate, one source — and nothing here forecloses a broader answer if the corpus grows
 one.
+
+### *Since written:* the wait's spelling is now the only one *(landed)*
+
+This section says the wait borrows the http task's key "meaning the same thing", and
+that was true of the meaning and false of the spelling. A task's shaping was written
+as a CEL map literal smuggled through a quoted string, because a `: ` in a plain YAML
+scalar is mapping syntax:
+
+```yaml
+outputs: '${ {"reference": response.json.reference} }'
+```
+
+Twenty sites in thirteen files, and four of them stopped to apologise for the quoting
+in a comment. Four independent apologies for one syntax collision is a corpus saying
+the spelling is wrong. So a shaping task's `outputs:` takes the mapping form the wait
+already had, one name per line, each value an ordinary value position where the fence
+decides:
+
+```yaml
+outputs:
+  reference: ${response.json.reference}
+```
+
+**Ergonomics is the smaller half.** The mapping form is what makes shaping
+*checkable*: the compiler keeps its entries rather than composing them into one
+expression that builds a map, so the shaped names survive into the specification and
+`${steps.pay.referance}` is the diagnostic quoted above rather than an empty value
+that branches the wrong way. A map built by an expression has no keys until it has
+run, which is why that spelling stays legal, stays compiling, and stays deliberately
+unchecked — it is the escape hatch for a genuinely dynamic shape, and a computed key
+inside the *mapping* form is refused with a position that names it.
+
+A loop's `init:` and `update:` take the mapping form for the readability half alone,
+and with it the promise `!expr`'s refusal made: these positions hold values by
+declaration, so a constant needs no fence. `init: "${ {'n': 1, 'sum': 0} }"` is now
+`init:` with `n: 1` and `sum: 0` under it.
+
+**No edition boundary.** Nothing retires and nothing is reinterpreted: both spellings
+were legal before and are legal after, and a file written at any edition means today
+what it meant yesterday. `flow fix` still does the sweep, because the transformation
+is exact where the keys are written down — it promotes a literal-keyed map literal,
+leaves a computed-key one alone silently, and leaves alone anything it cannot render
+back without guessing (a key needing quotes, a comment inside the value it would have
+to delete). The fix-and-stamp precedent stays reserved for meaning changes; spending
+an edition on a style preference would teach the boundary to mean less.
+
+**And shaping became a declared capability rather than a name** (#324). The exemption
+used to key on an input called `outputs` being present, in the validator and mirrored
+in the language server — so a plugin declaring an ordinary input by that name had two
+authoring surfaces agreeing that its declared outputs were replaced while its executor
+returned exactly those declared outputs. Three surfaces, two of them the reporting
+ones, agreeing with each other and disagreeing with the run. `TaskDef.ShapesOutputs`
+and `TaskManifest.shapes_outputs` say it instead; the built-in http task sets it, a
+plugin sets it when its executor really does read `outputs:` as a replacement, and
+absence is ordinary diagnostics against the outputs a task declares.
 
 ## The ninth round: a gate says what it is asking for
 

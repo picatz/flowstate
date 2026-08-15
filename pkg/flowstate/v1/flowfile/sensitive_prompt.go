@@ -63,39 +63,28 @@ func checkSensitivePrompt(wf *v1.Workflow) Diagnostics {
 	return sensitivePromptInNodes(wf.GetSteps(), v1.SensitiveInputNames(wf))
 }
 
-// sensitivePromptInNodes walks a list of sibling steps and, on its own, every
-// for_each/loop body and parallel branch, the same recursion
-// [sensitiveLogInNodes] does, for the same reason: `inputs.<name>` means the
-// same workflow input at any nesting depth.
+// sensitivePromptInNodes reports every `wait_for_signal:` in a tree of steps whose
+// `prompt:` the shared rule refuses.
 //
-// A `call:` is not followed. A callee is a different workflow with its own
-// declared inputs, compiled and validated in its own right, and its own author
-// is the one who should be told about its own prompt. The submit boundary does
-// descend into an inlined callee, because by then there is no separate file left
-// to have been validated.
+// The tree comes from [v1.WalkNodes], the one traversal (#508), for the reason
+// [sensitiveLogInNodes] gives: `inputs.<name>` means the same workflow input at any
+// nesting depth, so one walk from the top covers the whole tree.
+//
+// A `call:` is not followed, because the traversal does not follow one. A callee is
+// a different workflow with its own declared inputs, compiled and validated in its
+// own right, and its own author is the one who should be told about its own prompt.
+// The submit boundary does descend into an inlined callee, because by then there is
+// no separate file left to have been validated.
 func sensitivePromptInNodes(nodes []*v1.Node, sensitive map[string]bool) Diagnostics {
 	var ds Diagnostics
 
-	for _, node := range nodes {
-		if d, ok := sensitivePromptInStep(node, sensitive); ok {
-			ds = append(ds, d)
-		}
-
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_ForEach:
-			ds = append(ds, sensitivePromptInNodes(kind.ForEach.GetBody(), sensitive)...)
-		case *v1.Node_Loop:
-			ds = append(ds, sensitivePromptInNodes(kind.Loop.GetBody(), sensitive)...)
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				ds = append(ds, sensitivePromptInNodes(branch.GetSteps(), sensitive)...)
+	v1.WalkNodes(nodes, v1.Walk{
+		Node: func(node *v1.Node) {
+			if d, ok := sensitivePromptInStep(node, sensitive); ok {
+				ds = append(ds, d)
 			}
-		case *v1.Node_Switch:
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				ds = append(ds, sensitivePromptInNodes(body, sensitive)...)
-			}
-		}
-	}
+		},
+	})
 
 	return ds
 }
