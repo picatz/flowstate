@@ -143,7 +143,7 @@ func TestRefusePlaintextListenerRefusesNonLoopback(t *testing.T) {
 	t.Parallel()
 
 	for _, addr := range []string{"0.0.0.0:9233", ":9233", "example.com:9233", "10.0.0.5:9233"} {
-		err := refusePlaintextListener(addr, nil)
+		err := refusePlaintextListener(addr, nil, false)
 		require.Errorf(t, err, "plaintext on %s must be refused, not merely warned about", addr)
 	}
 }
@@ -152,15 +152,30 @@ func TestRefusePlaintextListenerAllowsLoopback(t *testing.T) {
 	t.Parallel()
 
 	for _, addr := range []string{"127.0.0.1:9233", "localhost:9233", "[::1]:9233"} {
-		require.NoErrorf(t, refusePlaintextListener(addr, nil), "loopback address %s must be allowed plaintext", addr)
+		require.NoErrorf(t, refusePlaintextListener(addr, nil, false), "loopback address %s must be allowed plaintext", addr)
 	}
 }
 
-// TestRefusePlaintextListenerAllowsNonLoopbackWithTLS confirms the escape
-// hatch is TLS and nothing else: a certificate configured makes any address
-// acceptable.
+// TestRefusePlaintextListenerAllowsNonLoopbackWithTLS confirms one escape
+// hatch is TLS: a certificate configured makes any address acceptable.
 func TestRefusePlaintextListenerAllowsNonLoopbackWithTLS(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, refusePlaintextListener("0.0.0.0:443", &tls.Config{}))
+	require.NoError(t, refusePlaintextListener("0.0.0.0:443", &tls.Config{}, false))
+}
+
+// TestRefusePlaintextListenerAllowsNonLoopbackWithExplicitOptIn pins the
+// second escape hatch: --insecure-allow-plaintext-listener, said out loud,
+// same as TLS. Without either, the same address is still refused — this is
+// the negative half that makes the positive case mean something, since a
+// flag that always let everything through would not be an opt-in at all.
+func TestRefusePlaintextListenerAllowsNonLoopbackWithExplicitOptIn(t *testing.T) {
+	t.Parallel()
+
+	const addr = "0.0.0.0:9233"
+
+	require.Error(t, refusePlaintextListener(addr, nil, false),
+		"without the flag, plaintext on a non-loopback address must still be refused")
+	require.NoError(t, refusePlaintextListener(addr, nil, true),
+		"with --insecure-allow-plaintext-listener, the same address must be allowed")
 }

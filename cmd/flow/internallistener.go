@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,20 +24,30 @@ import (
 // of the protection; there is no authentication in front of it, so it must
 // never be reachable from wherever the public listener is.
 
-// defaultInternalListenAddress is loopback, so a deployment that never
-// touches the flag still gets an internal listener it can reach from the
-// same host and nothing else can reach at all.
-const defaultInternalListenAddress = "127.0.0.1:9090"
+// exampleInternalListenAddress is the loopback address named in help text and
+// error messages as what turning the internal listener *on* looks like. It is
+// not a default: [addInternalListenerFlags] leaves the flag empty unless an
+// operator sets it, per CLAUDE.md's "fail closed" — a listener nobody asked
+// for is a surface every deployment carries whether or not anyone decided to
+// have it, and pprof behind it is a worse thing to expose by omission than
+// the RPC surface the public listener already requires an explicit choice
+// for.
+const exampleInternalListenAddress = "127.0.0.1:9090"
 
 // addInternalListenerFlags declares the internal listener's address flag on
 // cmd.
+//
+// The zero value is empty, which [startInternalListener] reads as "bind
+// nothing" — an operator opts in by naming a loopback address, most commonly
+// [exampleInternalListenAddress], rather than opting out of a default that
+// was there whether they read this flag's help or not.
 func addInternalListenerFlags(cmd *cobra.Command) {
-	cmd.Flags().String("internal-listen",
-		cmp.Or(os.Getenv("FLOWSTATE_INTERNAL_ADDRESS"), defaultInternalListenAddress),
+	cmd.Flags().String("internal-listen", os.Getenv("FLOWSTATE_INTERNAL_ADDRESS"),
 		"address for health and pprof, on a socket separate from the public listener; "+
-			"empty disables it. Refused unless it is loopback: this listener carries no "+
-			"authentication and no TLS configuration of its own, so reach it over a private "+
-			"network rather than exposing it")
+			"empty (the default) means no internal listener at all. Pass a loopback address, "+
+			"such as --internal-listen "+exampleInternalListenAddress+", to turn it on — "+
+			"nothing else is accepted: this listener carries no authentication and no TLS "+
+			"configuration of its own, so reach it over a private network rather than exposing it")
 }
 
 // internalListenerFlags is what an operator asked for, read once before
@@ -75,9 +84,10 @@ func checkInternalListenAddress(addr string) error {
 	return fmt.Errorf("refusing to bind the internal listener on %s: it serves "+
 		"pprof, which can read this process's memory and goroutines through its profile "+
 		"endpoints, and this release gives it no TLS configuration of its own. Bind loopback "+
-		"(the default, %s) and reach it over a private network — a service mesh, an SSH "+
-		"tunnel, a sidecar — rather than exposing it, or pass --internal-listen= to disable it",
-		addr, defaultInternalListenAddress)
+		"(for example, --internal-listen %s) and reach it over a private network — a service "+
+		"mesh, an SSH tunnel, a sidecar — rather than exposing it, or leave --internal-listen "+
+		"unset (the default) to disable it entirely",
+		addr, exampleInternalListenAddress)
 }
 
 // startInternalListener binds the internal listener and builds the server

@@ -582,12 +582,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// process cannot load, or a non-loopback address with none configured, is
 	// a start-up failure rather than something discovered after Temporal has
 	// been dialed and a policy file parsed. See cmd/flow/tls.go.
-	tlsCfg, err := serverTLSConfig(tlsFlagsOf(cmd))
+	tlsListenerFlags := tlsFlagsOf(cmd)
+	tlsCfg, err := serverTLSConfig(tlsListenerFlags)
 	if err != nil {
 		return err
 	}
 	publicAddr := cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress)
-	if err := refusePlaintextListener(publicAddr, tlsCfg); err != nil {
+	if err := refusePlaintextListener(publicAddr, tlsCfg, tlsListenerFlags.allowPlaintext); err != nil {
 		return err
 	}
 
@@ -830,8 +831,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// known good — see [checkInternalListenAddress] above for why its address
 	// was already validated, and this file's package comment on
 	// cmd/flow/internallistener.go for what it carries. internalServer is nil
-	// when the operator disabled it (--internal-listen=), which every branch
-	// below treats as "nothing more to do".
+	// when the operator never opted into it (--internal-listen unset, the
+	// default), which every branch below treats as "nothing more to do".
 	internalServer, internalListener, err := startInternalListener(logger, internalFlags.address)
 	if err != nil {
 		publicListener.Close()

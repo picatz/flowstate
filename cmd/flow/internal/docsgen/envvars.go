@@ -116,6 +116,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go, cmd/flow/mcp.go",
 		},
 		{
+			name:    "FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER",
+			value:   "unset",
+			purpose: "Default for `--insecure-allow-plaintext-listener` on `flow server`: set (to anything) to permit the public listener to serve plain HTTP on a non-loopback address with no certificate configured. A refusal by default; only for a deployment whose reachability is already bounded another way, such as a container published to loopback alone.",
+			read:    "cmd/flow/tls.go",
+		},
+		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
 			value:   "false",
 			purpose: "Set to `true` to permit sending a bearer token over plain HTTP to somewhere that is not loopback. A refusal by default, because a token on the wire in the clear belongs to whatever is between here and there.",
@@ -123,8 +129,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		},
 		{
 			name:    "FLOWSTATE_INTERNAL_ADDRESS",
-			value:   "127.0.0.1:9090",
-			purpose: "Default for `--internal-listen` on `flow server`: a socket separate from the public listener, carrying health and pprof. Refused unless it is loopback or empty (which disables it); this listener has no TLS configuration of its own.",
+			value:   "unset",
+			purpose: "Default for `--internal-listen` on `flow server`: a socket separate from the public listener, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback; this listener has no TLS configuration of its own.",
 			read:    "cmd/flow/internallistener.go",
 		},
 		{

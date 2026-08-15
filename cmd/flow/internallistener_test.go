@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,6 +32,34 @@ func TestCheckInternalListenAddressRefusesNonLoopback(t *testing.T) {
 		require.Errorf(t, checkInternalListenAddress(addr),
 			"the internal listener must refuse to bind %s: it serves pprof with no TLS option", addr)
 	}
+}
+
+// TestInternalListenerIsOffByDefault is the negative direction CLAUDE.md's
+// "fail closed" asks for: not that the listener works once configured, which
+// TestInternalListenerServesHealthAndPprofButNotTheRPCSurface below already
+// covers, but that an operator who never touches --internal-listen at all —
+// no flag, no FLOWSTATE_INTERNAL_ADDRESS — ends up with no socket bound, and
+// specifically not the old default of 127.0.0.1:9090. A test that only
+// exercises an explicitly-configured address cannot see a default that
+// silently opened a port.
+func TestInternalListenerIsOffByDefault(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids it.
+	t.Setenv("FLOWSTATE_INTERNAL_ADDRESS", "")
+
+	cmd := &cobra.Command{}
+	addInternalListenerFlags(cmd)
+
+	flags := internalListenerFlagsOf(cmd)
+	require.Empty(t, flags.address,
+		"the internal listener's address must default to empty; a deployment that never "+
+			"read --internal-listen's help must not end up with an extra port bound")
+
+	require.NoError(t, checkInternalListenAddress(flags.address))
+
+	server, listener, err := startInternalListener(discardLogger(), flags.address)
+	require.NoError(t, err)
+	require.Nil(t, server, "no --internal-listen means no internal HTTP server built")
+	require.Nil(t, listener, "no --internal-listen means nothing bound, not even loopback")
 }
 
 func TestStartInternalListenerDisabledWhenEmpty(t *testing.T) {

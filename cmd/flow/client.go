@@ -190,10 +190,24 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 // serverBaseURL turns the configured address into a base URL.
 //
 // An explicit scheme is honored, so pointing the CLI at a TLS-terminated server is a
-// matter of saying so. A bare address keeps defaulting to http, because that is what
-// it has always done and a local development server does not speak TLS — but a bare
-// *remote* address earns a warning, because a request going somewhere else in the
-// clear is worth knowing about even when it carries nothing secret.
+// matter of saying so. A bare *loopback* address keeps defaulting to http, because
+// that is what it has always done and a local development server does not speak TLS.
+//
+// A bare *non-loopback* address defaults to https instead — this is the client's
+// half of [refusePlaintextListener] (cmd/flow/tls.go), which by now refuses to let
+// `flow server` listen plaintext on anything but loopback. FLOWSTATE_ADDRESS is both
+// the address the server binds and the one a client defaults to, so once the server
+// side of that pair is guaranteed encrypted, a client guessing "http" at the same
+// bare spelling is guessing the one scheme that address can no longer be serving:
+// it would open a TLS listener a plaintext request cannot complete a handshake
+// against, silently, since nothing here would say why the request hung or was
+// refused. Guessing https instead is not optimism; it is asking for what the far
+// end is now the *only* thing it is allowed to be.
+//
+// A loopback address keeps the old default because [refusePlaintextListener] still
+// allows plaintext there — a local `flow server dev` with no certificate configured
+// is deliberately supported, and defaulting it to https would refuse to talk to a
+// server this same binary just started in the ordinary case.
 //
 // The credential half of this is no longer a warning. [tokenFor] refuses to put a
 // token on a plaintext connection to anywhere but this machine, which is the same
@@ -204,12 +218,11 @@ func serverBaseURL(address string) string {
 		return address
 	}
 
-	if !isLoopbackAddress(address) {
-		log.Printf("WARNING: talking to %s over plain HTTP. Use https:// in --address "+
-			"(or FLOWSTATE_ADDRESS) to encrypt it.", address)
+	if isLoopbackAddress(address) {
+		return "http://" + address
 	}
 
-	return "http://" + address
+	return "https://" + address
 }
 
 // isLoopbackAddress reports whether an address names this machine.

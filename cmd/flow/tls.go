@@ -39,13 +39,34 @@ func addTLSFlags(cmd *cobra.Command) {
 		"PEM private key matching --tls-cert-file")
 	cmd.Flags().String("tls-min-version", cmp.Or(os.Getenv("FLOWSTATE_TLS_MIN_VERSION"), "1.2"),
 		`minimum TLS protocol version to accept: "1.2" (the default and the floor) or "1.3"`)
+
+	// The one way around refusePlaintextListener, and it works the same way
+	// --insecure-no-auth does: off by default, and only on because an operator
+	// said so, never because a deployment forgot to configure a certificate.
+	//
+	// It exists for a shape refusePlaintextListener cannot see: a process that
+	// binds a non-loopback address only because something *else* enforces the
+	// boundary it would otherwise be enforcing itself — a container publishing
+	// its port to 127.0.0.1 alone, where 0.0.0.0 inside the container is not
+	// "reachable past this machine" the way it would be on bare metal, it is the
+	// only address Docker's NAT can deliver a published port to. See
+	// examples/observability/docker-compose.yaml, which sets this alongside
+	// --insecure-no-auth for the identical reason and says so in its own
+	// comments.
+	cmd.Flags().Bool("insecure-allow-plaintext-listener",
+		os.Getenv("FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER") != "",
+		"allow the public listener to serve plain HTTP on a non-loopback address with no "+
+			"certificate configured (overrides FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER); "+
+			"for a deployment whose reachability is already bounded another way. Never a fallback "+
+			"for a missing certificate — say it out loud, the way --insecure-no-auth is said out loud")
 }
 
 // tlsFlags is what an operator asked for, read once before anything binds.
 type tlsFlags struct {
-	certFile   string
-	keyFile    string
-	minVersion string
+	certFile       string
+	keyFile        string
+	minVersion     string
+	allowPlaintext bool
 }
 
 // tlsFlagsOf reads them off the command being run.
@@ -53,8 +74,14 @@ func tlsFlagsOf(cmd *cobra.Command) tlsFlags {
 	certFile, _ := cmd.Flags().GetString("tls-cert-file")
 	keyFile, _ := cmd.Flags().GetString("tls-key-file")
 	minVersion, _ := cmd.Flags().GetString("tls-min-version")
+	allowPlaintext, _ := cmd.Flags().GetBool("insecure-allow-plaintext-listener")
 
-	return tlsFlags{certFile: certFile, keyFile: keyFile, minVersion: minVersion}
+	return tlsFlags{
+		certFile:       certFile,
+		keyFile:        keyFile,
+		minVersion:     minVersion,
+		allowPlaintext: allowPlaintext,
+	}
 }
 
 // serverTLSConfig loads the public listener's certificate, or reports that
@@ -120,11 +147,22 @@ func tlsMinVersion(v string) (uint16, error) {
 // to decide whether to send a credential at all, reused rather than
 // reimplemented so the two sides cannot drift into disagreeing about what
 // counts as "this machine".
-func refusePlaintextListener(addr string, tlsConfig *tls.Config) error {
+//
+// allowPlaintext is --insecure-allow-plaintext-listener, said out loud: the
+// one way this refusal does not apply. It exists for a deployment where
+// "reaches past this machine" is not actually true of addr even though
+// [isLoopbackAddress] cannot tell — a container that must bind 0.0.0.0 for
+// Docker's published-port NAT to reach it at all, where the real boundary is
+// enforced by publishing that port to 127.0.0.1 alone. Off by default, same
+// as every other fail-closed refusal in this command.
+func refusePlaintextListener(addr string, tlsConfig *tls.Config, allowPlaintext bool) error {
 	if tlsConfig != nil {
 		return nil
 	}
 	if isLoopbackAddress(addr) {
+		return nil
+	}
+	if allowPlaintext {
 		return nil
 	}
 
@@ -132,5 +170,7 @@ func refusePlaintextListener(addr string, tlsConfig *tls.Config) error {
 		"machine, and cmd/flow/credentials.go already refuses to send a bearer token to a "+
 		"plaintext address that is not loopback — the server takes the same position now. "+
 		"Configure --tls-cert-file and --tls-key-file (or FLOWSTATE_TLS_CERT_FILE and "+
-		"FLOWSTATE_TLS_KEY_FILE), or bind loopback for local development", addr)
+		"FLOWSTATE_TLS_KEY_FILE); bind loopback for local development; or, only when this "+
+		"address's real reachability is already bounded another way, say so with "+
+		"--insecure-allow-plaintext-listener (or FLOWSTATE_INSECURE_ALLOW_PLAINTEXT_LISTENER)", addr)
 }
