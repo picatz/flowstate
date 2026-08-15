@@ -302,12 +302,19 @@ func switchCaseField(caseIndex, valueCount, valueIndex int) string {
 // switchDomain reports the set of values a switch's discriminant can produce,
 // where that is a property of the file.
 //
-// The one inferable tier today: the discriminant is `${steps.<id>.<name>}`, the
-// step is a `wait_for_signal:` shaping `<name>` in its `outputs:`, and the
-// shaping expression is conditionals over string literals all the way down —
-// the approval gate's ternary. Enum-typed workflow inputs extend this tier when
-// they land. A `must:` constraint is deliberately *not* mined for a domain: a
-// constraint expression is not a type.
+// The inferable tiers today: the discriminant is `${steps.<id>.<name>}`, and
+// either the step is a `wait_for_signal:` shaping `<name>` in its `outputs:`,
+// or the step is a `value:` step and `<name>` is [v1.ValueOutput] — the only
+// name a `value:` step ever produces. Either way, the shaping expression must
+// be conditionals over string literals all the way down (through the read-side
+// optional idioms `literalStringLeaves` also recognizes) — the approval gate's
+// ternary, or `examples/optional-dispatch`'s named `outcome`. Enum-typed
+// workflow inputs extend this tier when they land. A `must:` constraint is
+// deliberately *not* mined for a domain: a constraint expression is not a
+// type. A `value:` step holding a literal rather than an expression is
+// deliberately refused too — a switch over a constant is degenerate, and
+// inventing a singleton domain would fire the exhaustiveness checks on a file
+// whose real mistake is the dispatch itself.
 func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
 	parsed := value.GetExpr()
 	if parsed == nil {
@@ -325,11 +332,16 @@ func switchDomain(value *v1.Value, wf *v1.Workflow) ([]string, bool) {
 	}
 	stepID, outputName := inner.GetField(), outer.GetField()
 
-	signal := nodeWithID(stepID, wf).GetWait().GetSignal()
-	if signal == nil {
+	node := nodeWithID(stepID, wf)
+
+	var shaped *v1.Value
+	if signal := node.GetWait().GetSignal(); signal != nil {
+		shaped = signal.GetOutputs()[outputName]
+	} else if valueNode := node.GetValue(); valueNode != nil && outputName == v1.ValueOutput {
+		shaped = valueNode
+	} else {
 		return nil, false
 	}
-	shaped := signal.GetOutputs()[outputName]
 	if shaped.GetExpr() == nil {
 		return nil, false
 	}
