@@ -82,14 +82,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # persist-credentials: false, for the same reason ci.yml and deep.yml
+      # give: checkout otherwise leaves the job's GITHUB_TOKEN in
+      # .git/config for the rest of the job, and nothing here needs it after
+      # checkout. See #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           # Deliberately uncached — see the isolation note at the top of this
           # file. This job must not share a build cache with the jobs that gate
-          # Go code.
+          # Go code. Stricter than #577's fork-PR cache fix: this is never
+          # cached at all, on every trigger, not only gated for a fork PR.
           cache: false
 
       - name: Report toolchain

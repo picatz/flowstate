@@ -57,7 +57,18 @@ jobs:
       contents: read
       issues: write
     steps:
+      # persist-credentials: false, for the same reason ci.yml gives at
+      # length: checkout otherwise leaves the job's GITHUB_TOKEN in
+      # .git/config, readable for the rest of the job by anything that runs
+      # in this workspace, and nothing here needs it after checkout.
+      #
+      # No `cache:` gating here, unlike ci.yml: this workflow only fires on
+      # `schedule` and `workflow_dispatch` (see the `on:` block above), so a
+      # fork PR never runs it and there is no untrusted-context save to gate.
+      # See #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -216,7 +227,10 @@ jobs:
       contents: read
       issues: write
     steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -324,7 +338,10 @@ jobs:
       contents: read
       issues: write
     steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -436,7 +453,10 @@ jobs:
       contents: read
       issues: write
     steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -525,7 +545,10 @@ jobs:
       contents: read
       issues: write
     steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -591,7 +614,10 @@ jobs:
       contents: read
       issues: write
     steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
