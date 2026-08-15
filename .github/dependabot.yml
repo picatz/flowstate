@@ -40,3 +40,22 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+
+  # The VS Code extension's npm graph (#585). A `cooldown` is npm-specific
+  # here rather than repeated for gomod or github-actions above, because the
+  # threat it answers is npm-specific: a maintainer account or build machine
+  # compromise that ships a malicious *patch* release, caught within hours to
+  # days. Waiting seven days before Dependabot proposes a new release costs
+  # nothing real — this extension has no reason to run a dependency the day it
+  # ships — and it is the single cheapest defense in the supply-chain section
+  # of #585. `exclude-patterns` is not needed to keep the runtime surface
+  # small: package.json only has one runtime dependency to begin with
+  # (vscode-languageclient), and every proposed bump — runtime or dev — is
+  # still a reviewed pull request either way.
+  - package-ecosystem: npm
+    directory: /editors/vscode
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7

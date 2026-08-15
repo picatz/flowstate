@@ -357,106 +357,29 @@ filetype does not have to be `flowfile`:
 
 ## Visual Studio Code
 
-There is no published extension. [#585](https://github.com/picatz/flowstate/issues/585)
-is the design for one. Until it exists, a minimal client is about twenty lines.
+`editors/vscode/` in this repository is a thin client over `flow lsp`, built to
+the design in [#585](https://github.com/picatz/flowstate/issues/585): the
+language client, the same filename/pattern association as the table above, and
+palette commands (`Flowstate: Validate/Test/Fix/Run Local`) that shell out to the
+matching subcommand and show its own output. See `editors/vscode/README.md` for
+what it does, what it deliberately leaves out (a workflow tree view and a
+step-graph webview are both designed but not shipped yet), and exactly what has
+been compiled and unit-tested here versus what still needs a human with a real
+editor window — this repository's CI has no display to open one on.
 
-> **Untested.** Nothing in this section has been run by CI or by anyone writing it
-> down: VS Code is a GUI application and the container these instructions are
-> verified in has no display. It is written from the `vscode-languageclient` API
-> and is plausible rather than proven. The `flow lsp` half of it is solid — that is
-> the part CI drives every pull request — so if something here misbehaves, suspect
-> the client wiring first.
-
-Create a folder, then `package.json`:
-
-```json
-{
-  "name": "flowstate",
-  "displayName": "Flowstate Flowfile",
-  "version": "0.0.1",
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Programming Languages"],
-  "activationEvents": ["onLanguage:flowfile"],
-  "main": "./extension.js",
-  "contributes": {
-    "languages": [
-      {
-        "id": "flowfile",
-        "aliases": ["Flowfile"],
-        "filenames": ["Flowfile", "Flowfile.yaml"],
-        "filenamePatterns": ["**/workflow.yaml", "**/workflow.yml", "**/workflows/*.yaml"],
-        "configuration": "./language-configuration.json"
-      }
-    ],
-    "grammars": [
-      {
-        "language": "flowfile",
-        "scopeName": "source.yaml",
-        "path": "./syntaxes/empty.tmLanguage.json"
-      }
-    ]
-  },
-  "dependencies": { "vscode-languageclient": "^9.0.1" }
-}
-```
-
-`language-configuration.json`, so comments and indentation behave like YAML:
-
-```json
-{
-  "comments": { "lineComment": "#" },
-  "brackets": [["{", "}"], ["[", "]"]],
-  "indentationRules": {
-    "increaseIndentPattern": "^\\s*[-\\w\"']+\\s*:\\s*$",
-    "decreaseIndentPattern": "^\\s+\\}"
-  }
-}
-```
-
-`extension.js`:
-
-```javascript
-const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
-
-let client;
-
-function activate(context) {
-  client = new LanguageClient(
-    'flowstate',
-    'Flowstate Flowfile',
-    // `flow` must be on the PATH, or give an absolute path here.
-    { command: 'flow', args: ['lsp'], transport: TransportKind.stdio },
-    { documentSelector: [{ scheme: 'file', language: 'flowfile' }] },
-  );
-  context.subscriptions.push(client);
-  client.start();
-}
-
-function deactivate() {
-  return client && client.stop();
-}
-
-module.exports = { activate, deactivate };
-```
-
-Then:
+**It is not published to any marketplace.** Install it from source:
 
 ```console
-$ npm install
-$ code --extensionDevelopmentPath="$PWD" .
+$ cd editors/vscode
+$ npm ci
+$ npm run compile
+$ code --extensionDevelopmentPath="$PWD" /path/to/a/repo/with/flowfiles
 ```
 
-Package it with `npx @vscode/vsce package` and install the `.vsix` when you are
-happy with it.
-
-To reuse YAML's syntax highlighting rather than shipping a grammar, drop the
-`grammars` block and instead map the language to YAML's tokenizer in your settings:
-
-```json
-{
-  "files.associations": { "**/workflow.yaml": "flowfile" }
-}
-```
+`flow` must be on your `PATH`, or point `flowstate.path` at it in your *user*
+settings. That setting and `flowstate.lsp.args` are `machine-overridable`, so a
+workspace's own `.vscode/settings.json` cannot choose what your editor executes —
+the same argument this page makes about Neovim's `--plugin-dir` above.
 
 ### Without writing an extension
 
@@ -704,10 +627,16 @@ $ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/pro
 the missing-queries finding above) and GNU Emacs 29.3 (eglot connects). Both are
 recorded in their own sections with the part that was *not* reached.
 
-**Not verified at all:** Visual Studio Code and Zed. Both are GUI applications with
-no headless mode worth scripting, and neither section below has been run by anyone.
-They are marked as such where they appear rather than here, so nobody reads a
-confident paragraph without the caveat attached to it.
+**Not verified inside a real editor:** Visual Studio Code and Zed. Both are GUI
+applications with no headless mode worth scripting. The VS Code extension under
+`editors/vscode/` compiles (`tsc`, `strict: true`) and its unit tests pass under
+Node's built-in test runner — argv construction for each palette command, and
+binary-resolution and availability-probe behavior — but nothing has confirmed the
+extension actually activates in a VS Code window, that diagnostics appear as you
+type, or that a palette command's task renders as expected; see
+`editors/vscode/README.md`'s "Verified, and not" section. Zed's section below has
+not been run by anyone. Both are marked as such where they appear rather than
+here, so nobody reads a confident paragraph without the caveat attached to it.
 
 The asymmetry is deliberate rather than lazy. The load-bearing half of every one of
 these configurations is `flow lsp` itself, and that half is exercised by the Neovim

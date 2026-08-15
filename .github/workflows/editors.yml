@@ -18,35 +18,54 @@ name: Editors
 #
 # ── Why this is a separate workflow, and not a job in ci.yml ──────────────────
 #
-# This job installs a third-party editor and, once a VS Code extension exists
-# (#585), will install npm packages. Neither belongs anywhere near a Go build,
-# and "separate job in the same workflow" is not enough separation, because jobs
-# in one workflow share the caches keyed by that workflow's own conventions. The
+# This job installs a third-party editor, and the `vscode` job below installs
+# npm packages to compile and test the VS Code extension in `editors/vscode/`
+# (#585). Neither belongs anywhere near a Go build, and "separate job in the
+# same workflow" is not enough separation on its own, because jobs in one
+# workflow share the caches keyed by that workflow's own conventions. The
 # isolation here is four things, each of which is a way the boundary could leak:
 #
 #   1. Its own workflow file, its own `permissions: contents: read`, and no job
 #      here ever needs more. Nothing in this file can write to the repository,
 #      publish a package, or touch a release.
-#   2. `cache: false` on setup-go. This job builds `flow` as a *test fixture*,
-#      not as a release artifact, and it must not read or write the module and
-#      build caches ci.yml's jobs use. A shared build cache is a channel: a
-#      compromised dependency of an editor plugin that could write into it would
-#      be writing into the inputs of the jobs that decide whether Go code merges.
-#      The cost is one uncached module download per run, on a job that runs in
-#      about a minute. That is the right trade for a boundary.
+#   2. `cache: false` on setup-go, and no setup-go at all in the `vscode` job.
+#      The `neovim` job builds `flow` as a *test fixture*, not as a release
+#      artifact, and it must not read or write the module and build caches
+#      ci.yml's jobs use. A shared build cache is a channel: a compromised
+#      dependency of an editor plugin that could write into it would be
+#      writing into the inputs of the jobs that decide whether Go code merges.
+#      The `vscode` job never runs `go build` at all — it has no reason to
+#      touch a Go cache in the first place, which is a stronger guarantee than
+#      an unused one. The cost of the `neovim` job's uncached module download
+#      is one download per run, on a job that runs in about a minute. That is
+#      the right trade for a boundary.
 #   3. Its own toolchain pin, read from go.mod like everywhere else, so it cannot
 #      be the job that quietly builds `flow` with something different — but read
-#      independently rather than inherited from another job's setup.
+#      independently rather than inherited from another job's setup. The
+#      `vscode` job pins Node the same way: a fixed major version in this file,
+#      not inherited from anything else.
 #   4. Every download pinned by digest. The actions are pinned to commit SHAs for
 #      the reason ci.yml gives at length, and the Neovim tarball is pinned to a
 #      release *and* verified against a recorded SHA-256 before anything in it is
 #      executed. `releases/latest/download/…` is convenient and is exactly the
 #      thing this workflow exists to argue against: it makes what runs in our
-#      repository, with our token, a decision somebody else takes tomorrow.
+#      repository, with our token, a decision somebody else takes tomorrow. The
+#      `vscode` job's npm install is bounded the same way this repo bounds its
+#      Go module graph: `npm ci` against a committed, exact-pinned lockfile
+#      (`editors/vscode/package-lock.json`, `save-exact=true` in `.npmrc`)
+#      rather than `npm install`, which would let a range resolve to whatever a
+#      compromised patch release publishes today.
+#
+# Concretely, the boundary this buys: the `vscode` job must never run `go
+# build`, `go test`, or anything else that touches the Go toolchain or its
+# caches, and the Go jobs in ci.yml must never run `npm`. A postinstall script
+# is arbitrary code execution on whatever runs `npm ci`; the only defense that
+# survives it is that the runner it executes on can reach nothing worth having
+# — no repository write, no Go cache, no other job's secrets.
 #
 # Consequently this workflow is not required to merge and does not gate Go code.
-# A red run here means the *instructions* are wrong, which is worth fixing and is
-# not worth blocking an unrelated engine change on.
+# A red run here means the *instructions* (or the extension) are wrong, which is
+# worth fixing and is not worth blocking an unrelated engine change on.
 
 on:
   push:
@@ -60,6 +79,7 @@ on:
       - 'tools/editorsmoke/**'
       - 'pkg/flowstate/v1/flowfile/**'
       - 'cmd/flow/**'
+      - 'editors/vscode/**'
       - '.github/workflows/editors.yml'
 
 permissions:
@@ -127,3 +147,41 @@ jobs:
 
       - name: Drive flow lsp through Neovim
         run: nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
+
+  vscode:
+    name: VS Code extension
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      # persist-credentials: false — see the same note on the neovim job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          # No `cache: npm`. setup-node's npm cache is keyed off this job's own
+          # package-lock.json and would not reach ci.yml's Go jobs even if it
+          # were enabled — but the isolation note at the top of this file is
+          # "no shared cache with the Go jobs", stated as a property to hold
+          # rather than a specific cache key to avoid, so this job carries no
+          # cache of any kind. The lockfile is small and `npm ci` is fast.
+
+      - name: Report toolchain
+        run: node --version && npm --version
+
+      # Fails rather than resolving when package.json and package-lock.json
+      # disagree — see .npmrc's save-exact and the supply-chain section of
+      # editors/vscode/README.md. Never `npm install` here.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run compile
+
+      - name: Unit test
+        run: npm test
