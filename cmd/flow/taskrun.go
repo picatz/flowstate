@@ -163,7 +163,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 		// recover the reason by parsing prose off stderr. The text shape writes
 		// nothing, because there an empty stdout is the meaningful value: the
 		// answer is the outputs, and a task that failed produced none.
-		if format.Machine() {
+		if rendering.WantsDocument() {
 			if err := writeRunJSON(surface, rendering, response); err != nil {
 				return err
 			}
@@ -772,7 +772,7 @@ func writeTaskInvocation(surface *ui.UI, def v1.TaskDef, written map[string]stri
 // is the thing the machine formats exist to avoid; when #328's projection lands,
 // this changes with the two drivers rather than beside them.
 func writeTaskOutputs(surface *ui.UI, rendering runRendering, def v1.TaskDef, response *v1.GetResponse) error {
-	if rendering.Machine() {
+	if rendering.WantsDocument() {
 		return writeRunJSON(surface, rendering, response)
 	}
 

@@ -377,7 +377,7 @@ func watchRun(
 	// explicitly and a terminal was not, so drawing a view over somebody's requested
 	// JSON would be this command guessing against a flag — which is the mistake
 	// --output exists to prevent, and --plain is the same rule said out loud.
-	if plain || rendering.Machine() || !surface.ErrCaps.TTY {
+	if plain || rendering.WantsDocument() || !surface.ErrCaps.TTY {
 		return followPlainly(ctx, surface, rendering, poller, interval, workflowID, known)
 	}
 

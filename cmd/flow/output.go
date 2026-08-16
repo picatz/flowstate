@@ -223,6 +223,16 @@ type runRendering struct {
 // Machine reports whether a program is on the other end, per [OutputFormat.Machine].
 func (r runRendering) Machine() bool { return r.format.Machine() }
 
+// WantsDocument reports whether this invocation is owed the run document —
+// either because a program is on the other end ([runRendering.Machine]), or
+// because --raw asked for the schema's protojson explicitly. --raw's own help
+// says "instead of the run document", which is a request for a document, not
+// for the rendering; a caller who set it and got the text or table shape
+// instead — because the format stayed the default and nothing here checked
+// raw on its own — got silence indistinguishable from having asked for
+// nothing. See writeRun and writeTaskOutputs, the two answers this decides.
+func (r runRendering) WantsDocument() bool { return r.Machine() || r.raw }
+
 // renderingOf is a rendering that asks for one format and nothing else.
 //
 // The plain-format case, named rather than written out: a caller that has a format
@@ -407,8 +417,13 @@ const runDocumentHelp = "\n\nThe run document on stdout is written for a program
 // reach. Piped or redirected, the bytes are the run document. On a terminal
 // there is provably no parser, the narration on stderr is the whole answer, and
 // [writeRunOutputs] has already said what the run produced (#551).
+//
+// --raw overrides the destination the same way `-o json`/`-o jsonl` already do,
+// through [runRendering.WantsDocument]: it is an explicit request for a document,
+// not for the rendering, and honouring it only when the caller also happened to
+// redirect stdout would make the flag work by accident rather than by asking.
 func writeRun(surface *ui.UI, rendering runRendering, response *v1.GetResponse) error {
-	if rendering.Machine() {
+	if rendering.WantsDocument() {
 		return writeRunJSON(surface, rendering, response)
 	}
 

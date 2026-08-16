@@ -97,6 +97,29 @@ func TestATerminalRunWritesNothingToStdout(t *testing.T) {
 		"a person got a machine document: %q", out.String())
 }
 
+// TestARawTerminalRunStillWritesTheDocument is the regression for the gap
+// Codex's review found: --raw's own help says "instead of the run document",
+// which is a request for a document. Before runRendering.WantsDocument
+// existed, writeRun asked only rendering.Machine() (--output json/jsonl), so
+// --raw with the default text format on a terminal fell through to the same
+// silence TestATerminalRunWritesNothingToStdout asserts is correct for a
+// person who asked for nothing — leaving --raw indistinguishable from a flag
+// that does nothing unless -o json was also given.
+func TestARawTerminalRunStillWritesTheDocument(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut bytes.Buffer
+	terminal := ui.Capabilities{Width: 80, TTY: true}
+	surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
+
+	rendering := runRendering{format: FormatText, raw: true}
+	require.NoError(t, writeRun(surface, rendering, runForOutput(t)))
+
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &document),
+		"--raw on a terminal must still write the schema's protojson, not silence: %q", out.String())
+}
+
 // TestATerminalRunStillReportsDeclaredOutputs is the other half, and the one
 // that would make this change a loss rather than a gain if it broke: the answer
 // a workflow promised still reaches the person, on the stream this CLI puts its
