@@ -248,8 +248,13 @@ func collectComments(n ast.Node, path string, depth int, out map[commentAnchor]*
 		// silent deletion rather than a refusal.
 		record(commentContainerHead, x.GetComment())
 		record(commentContainerFoot, x.FootComment)
+		// A mapping and its entries are one level of nesting, not two: the
+		// compiler's own walk (parse.go's recordTree) goes straight from a
+		// *ast.MappingNode to each entry's value without an intermediate
+		// enter/exit, so this must not increment depth here or this walk's
+		// ceiling ends up half the compiler's (#691).
 		for _, value := range x.Values {
-			if err := collectComments(value, path, depth+1, out); err != nil {
+			if err := collectComments(value, path, depth, out); err != nil {
 				return err
 			}
 		}
@@ -326,8 +331,10 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 		if group := take(commentContainerFoot); group != nil {
 			x.FootComment = group
 		}
+		// Same accounting as [collectComments]: a mapping and its entries are
+		// one level, not two (#691).
 		for _, value := range x.Values {
-			if err := placeComments(value, path, depth+1, in, placed); err != nil {
+			if err := placeComments(value, path, depth, in, placed); err != nil {
 				return err
 			}
 		}
@@ -535,8 +542,10 @@ func (c *pinCollector) collectAnchors(n ast.Node, depth int) error {
 		// failure on a file that compiles, caused solely by the `&a`.
 		return c.collectAnchors(node.Value, depth)
 	case *ast.MappingNode:
+		// A mapping and its entries are one level, not two — the same
+		// accounting [collectComments] uses, for the same reason (#691).
 		for _, value := range node.Values {
-			if err := c.collectAnchors(value, depth+1); err != nil {
+			if err := c.collectAnchors(value, depth); err != nil {
 				return err
 			}
 		}
@@ -619,8 +628,10 @@ func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
 				return fmt.Errorf("%sdigest: pins the call here, but its value could not be read as text; write the digest as a scalar, or as an alias of one", where)
 			}
 		}
+		// Same accounting as [collectComments]: a mapping and its entries are
+		// one level, not two (#691).
 		for _, value := range x.Values {
-			if err := c.collect(value, path, depth+1); err != nil {
+			if err := c.collect(value, path, depth); err != nil {
 				return err
 			}
 		}
@@ -666,8 +677,10 @@ func placePins(n ast.Node, path string, depth int, in map[string]sourcePin, plac
 				placed[path] = true
 			}
 		}
+		// Same accounting as [collectComments]: a mapping and its entries are
+		// one level, not two (#691).
 		for _, value := range x.Values {
-			if err := placePins(value, path, depth+1, in, placed); err != nil {
+			if err := placePins(value, path, depth, in, placed); err != nil {
 				return err
 			}
 		}
