@@ -550,9 +550,15 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 	return nil, false, nil, err
 }
 
-// logMetadataBytes validates and charges every variable-length piece of commit
-// metadata other than the message before collectLogCommits copies it. Hash text
-// has a fixed encoded width, but its count is controlled by the repository.
+// logMetadataBytes validates and charges the commit metadata whose size the
+// repository controls, before collectLogCommits copies it: the four identity
+// strings, and the parent hashes, whose encoded width is fixed but whose count
+// is not.
+//
+// What it deliberately does not charge is the per-commit fields of fixed size -
+// the sha, and the timestamps in each signature. Those cannot be made larger by
+// a repository, so they are bounded by maxCommits alone and adding them would
+// only shift the budget by a constant per entry.
 //
 // The parent count is charged here and bounded in [multiRootCommitIter.Next],
 // which is the last point before the walk expands it - by the time a commit
@@ -568,8 +574,14 @@ func logMetadataBytes(c *object.Commit) (int, error) {
 		}
 		total += len(identity)
 	}
-	return total + len(c.ParentHashes)*len(plumbing.ZeroHash.String()), nil
+	return total + len(c.ParentHashes)*hashTextBytes, nil
 }
+
+// hashTextBytes is the width of a hash once [plumbing.Hash.String] has encoded
+// it: two hex characters per byte. A constant rather than
+// `len(plumbing.ZeroHash.String())`, which builds and throws away a string on
+// every commit of every page to learn a number that cannot change.
+const hashTextBytes = 2 * len(plumbing.ZeroHash)
 
 // repoHasShallowBoundary reports whether repo's own object store recorded any
 // shallow-boundary commits - go-git's own bookkeeping (equivalent to git's
