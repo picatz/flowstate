@@ -108,9 +108,24 @@ func analyse() (analysis, error) {
 		}
 	}
 
+	// A changed .go file whose own directory is not a key in byDir means `go
+	// list` cannot find a package there on the tree as checked out — almost
+	// always because this diff deleted the last source file a package had,
+	// so the directory holds none any more. resolveDirs cannot see that: it
+	// walks upward looking for the nearest package ancestor, which finds
+	// whatever package happens to sit above an emptied directory (or nothing
+	// at all) and silently drops the file rather than reporting that its own
+	// package vanished. The risk is not the deleted package itself — it is
+	// gone, so it has nothing left to test — it is whatever else in the tree
+	// still imports it: that importer is now broken, but nothing changed in
+	// *its* files, so affectedPackages alone would never flag it. Treated the
+	// same conservative way p.moduleWide already is: every package affected,
+	// so the widest job it could possibly reach still runs.
+	unresolvedGoDir := hasUnresolvedGoDir(p.goFiles, byDir)
+
 	var affected []string
 	var exampleDataDeps []string
-	if p.moduleWide {
+	if p.moduleWide || unresolvedGoDir {
 		for _, m := range pkgs {
 			affected = append(affected, m.ImportPath)
 		}

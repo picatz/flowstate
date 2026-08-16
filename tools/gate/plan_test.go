@@ -312,6 +312,59 @@ func TestResolveDirs(t *testing.T) {
 	}
 }
 
+// TestHasUnresolvedGoDir is the regression for a Codex P1 on #688: a diff
+// that deletes the last .go file a package had leaves that package's
+// directory absent from `go list`'s output entirely, which resolveDirs
+// (walking upward for the nearest ancestor) cannot distinguish from a file
+// that was never part of a package at all — both silently drop out of the
+// changed set, and whatever else in the tree still imports the now-vanished
+// package would build broken with the test job never having run.
+func TestHasUnresolvedGoDir(t *testing.T) {
+	t.Parallel()
+
+	index := map[string]string{
+		"pkg/flowstate/v1":          modulePath + "/pkg/flowstate/v1",
+		"pkg/flowstate/v1/flowfile": modulePath + "/pkg/flowstate/v1/flowfile",
+		"cmd/flow":                  modulePath + "/cmd/flow",
+	}
+
+	tests := []struct {
+		name string
+		go_  []string
+		want bool
+	}{
+		{
+			name: "every changed .go file's own directory is still a package",
+			go_:  []string{"cmd/flow/main.go", "pkg/flowstate/v1/flowfile/parse.go"},
+			want: false,
+		},
+		{
+			name: "a deleted package's last file leaves its directory unresolved",
+			go_:  []string{"pkg/flowstate/v1/deleted/last.go"},
+			want: true,
+		},
+		{
+			name: "one resolvable file alongside one unresolvable one still reports true",
+			go_:  []string{"cmd/flow/main.go", "pkg/flowstate/v1/deleted/last.go"},
+			want: true,
+		},
+		{
+			name: "no changed .go files resolves to nothing missing",
+			go_:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasUnresolvedGoDir(tt.go_, index); got != tt.want {
+				t.Errorf("hasUnresolvedGoDir(%v) = %v, want %v", tt.go_, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestAffectedPackages checks the reverse-dependency expansion on a small
 // injected graph, including the two directions that matter: test imports
 // reach a change (affected), and importing an affected package's code does

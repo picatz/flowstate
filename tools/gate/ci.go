@@ -68,8 +68,14 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 	// nothing else in this workflow walks a plugin module at all — was
 	// skipped, and verdict accepted the skip: a plugin that does not compile
 	// could merge on a PR whose only change was to that plugin.
-	testRun := goAffected || p.examples || p.docs || p.proto || len(p.plugins) > 0
-	testWhy := "no Go package is affected, and nothing under examples/ or proto/, none of the derived-docs sources, and no plugin module changed"
+	// p.repoTestData is in the OR for the same #589 shape p.examples already
+	// covers, one file further out: README.md and docs/ARCHITECTURE.md are
+	// read directly by cmd/flow/commands_test.go and
+	// pkg/flowstate/v1/flowfile/readme_test.go with os.ReadFile rather than
+	// imported, so a change to either can make one of those tests fail or go
+	// stale without moving a Go file, examples/, or proto/.
+	testRun := goAffected || p.examples || p.docs || p.proto || len(p.plugins) > 0 || p.repoTestData
+	testWhy := "no Go package is affected, and nothing under examples/ or proto/, none of the derived-docs sources or repository-level test data, and no plugin module changed"
 	switch {
 	case goAffected:
 		testWhy = fmt.Sprintf("%d affected package(s)", len(affected))
@@ -81,6 +87,8 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		testWhy = p.reasons["docs"] + " changed"
 	case len(p.plugins) > 0:
 		testWhy = strings.Join(p.plugins, ", ") + " changed, and make test-plugins is the only thing that builds/vets/tests it"
+	case p.repoTestData:
+		testWhy = p.reasons["test"] + " changed, and it is read directly by tests rather than imported"
 	}
 
 	decisions := []decision{

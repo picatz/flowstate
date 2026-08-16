@@ -106,6 +106,25 @@ func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
 }
 
+// TestReadmeOrArchitectureOnlyStillReachesTheTestJob is the regression for a
+// Codex P2 on #688: cmd/flow/commands_test.go reads README.md's command table
+// and pkg/flowstate/v1/flowfile/readme_test.go compiles the Flowfiles
+// embedded in both README.md and docs/ARCHITECTURE.md, all three with
+// os.ReadFile rather than an import — so a diff touching only one of those
+// two files moved neither a Go package, examples/, nor proto/, and reached no
+// job at all before p.repoTestData existed. A PR could introduce stale
+// command documentation or an invalid embedded Flowfile while verdict
+// accepted the skip.
+func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
+	for _, f := range []string{"README.md", "docs/ARCHITECTURE.md"} {
+		t.Run(f, func(t *testing.T) {
+			ds := decide(t, []string{f}, nil, "pull_request")
+			mustRun(t, ds, "test")
+			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+		})
+	}
+}
+
 // TestTheNarrowJobsFollowTheAffectedSet pins the three jobs whose trigger is a
 // package rather than a path: federation runs one test in one package,
 // fuzz-smoke's targets live in three, and the appearance goldens record what

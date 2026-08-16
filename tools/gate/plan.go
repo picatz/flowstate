@@ -54,6 +54,20 @@ type plan struct {
 	docs     bool // reference mirror + generated docs drift
 	examples bool // flow fix --check, flow test, flow breaking
 
+	// repoTestData means README.md or docs/ARCHITECTURE.md changed. Neither
+	// is a Go source file and neither is under examples/, so nothing above
+	// puts them in front of the import graph or the #589 data-dependency
+	// seeding — but cmd/flow/commands_test.go reads README.md's command
+	// table with os.ReadFile, and pkg/flowstate/v1/flowfile/readme_test.go
+	// compiles the Flowfiles embedded in both documents the same way. A
+	// change to either can make a test that reads it fail or go stale
+	// without moving a single Go file, the same shape #589 already named for
+	// examples/, one file further out than that fix reached. It only widens
+	// ciDecisions' testRun — the CI job wide enough to run both tests — not
+	// a local gate leg of its own, since there is no package for the local
+	// tier's affected-package scoping to add.
+	repoTestData bool
+
 	// appearance means the diff could move a recorded golden: styled
 	// output and help text live in cmd/flow, and the goldens embed a
 	// sample Flowfile stamped with CurrentEdition, so an edition bump
@@ -189,6 +203,14 @@ func buildPlan(changed []string) plan {
 			reason("docs", f)
 		}
 
+		// README.md and docs/ARCHITECTURE.md: read directly by tests rather
+		// than imported, the same #589 shape examples/ has — see
+		// p.repoTestData's doc.
+		if f == "README.md" || f == "docs/ARCHITECTURE.md" {
+			p.repoTestData = true
+			reason("test", f)
+		}
+
 		if strings.HasPrefix(f, "examples/") {
 			p.examples = true
 			reason("examples", f)
@@ -248,6 +270,28 @@ func resolveDirs(dirs []string, pkgByDir map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hasUnresolvedGoDir reports whether any of goFiles' own directories is
+// missing from byDir — a changed .go file whose package `go list` cannot find
+// on the tree as it was checked out.
+//
+// Deliberately narrower than [resolveDirs]: that function walks upward from a
+// changed path looking for the nearest package ancestor, which is right for a
+// file under testdata/ but wrong for asking whether *this exact directory* is
+// still a package. A .go file's own directory has to be its package's
+// directory — Go does not let one recurse into a subdirectory — so a direct,
+// non-walking lookup is what actually answers "did this file's package
+// disappear," most often because this diff deleted the last source file a
+// directory had. See the caller in analyse() for why that case is treated the
+// same conservative way p.moduleWide already is.
+func hasUnresolvedGoDir(goFiles []string, byDir map[string]string) bool {
+	for _, f := range goFiles {
+		if _, ok := byDir[path.Dir(f)]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // pkgMeta is the slice of `go list -json` this gate reads.

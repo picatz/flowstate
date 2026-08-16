@@ -334,10 +334,17 @@ jobs run beneath them.
 Stated plainly, because a CI change that claims more verification than it had is
 the same category of mistake as a gate that passes without looking.
 
-- **No workflow was executed.** `act` is not available in the authoring
-  environment. The YAML parses, `tools/gate -ci` was run against real diffs, and
-  the `verdict` script was executed by `tools/gate/verdict_test.go` under `bash`
-  and `jq` with synthetic inputs — but no GitHub runner has run this file.
+- **The `pull_request` path has run; the merge queue has not.** `act` is not
+  available in the authoring environment, so nothing here was executed locally
+  — the YAML parses, `tools/gate -ci` was run against real diffs, and the
+  `verdict` script was executed by `tools/gate/verdict_test.go` under `bash`
+  and `jq` with synthetic inputs. But this PR's own `pull_request` runs have
+  since exercised the real thing: `plan`, all seven conditional jobs, and
+  `verdict` have each executed successfully on GitHub's runners. What remains
+  unverified is specifically the `merge_group` path — the full, unconditional
+  set the force branch in `ciForceReason` selects — since nothing merges
+  through a queue until this repository's branch protection is configured to
+  require one.
 - **The `after` numbers are computed, not observed.** They multiply *measured*
   per-job durations from runs `31912978683` and `31909221065` by the plan's
   decisions on *real* diffs. What is modelled is the `plan` job's own cost
