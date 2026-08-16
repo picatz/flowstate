@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+option go_package = "flowstatev1";
+
+// RunState is the durable workflow state used by the Temporal Run entrypoint.
+// It allows the workflow to continue-as-new while carrying only the minimal
+// required subset of previously produced outputs for the remaining steps.
+// WorkloadIdentity describes who a run acts as.
+//
+// A running workload has two identities at once, and both matter. It is a
+// specific workload (this workflow, this run, this step) and it is acting on
+// behalf of whoever asked for the work. Downstream systems need both to make an
+// authorization decision: "the nightly-reconcile workflow" and "started by the
+// deploy pipeline" answer different questions, and a system granting access
+// usually cares about the pair.
+//
+// This is carried through the run so that every step knows what it is acting as,
+// and so an assertion presented to an external system states something true
+// rather than something assumed. It holds identity, never credentials: it is
+// persisted in workflow history, which is durable and broadly readable, so
+// nothing secret may appear here.
+message WorkloadIdentity {
+  // Subject identifies the caller that requested the run, as established by
+  // authenticating their request. Empty when the run was started without
+  // authentication, which is only possible in development.
+  string subject = 1;
+
+  // Issuer is the identity provider that vouched for the subject.
+  string issuer = 2;
+
+  // Claims carries additional non-secret claims from the caller's token that
+  // authorization decisions may key on, such as a repository, environment, or
+  // team. Only claims an operator has configured as relevant are copied here,
+  // so this does not become a dumping ground for whole tokens.
+  map<string, string> claims = 3;
+
+  // Namespace is the tenant, and it is the boundary every authorization decision
+  // about a run turns on: the caller's namespace is compared against the one
+  // recorded on the run, and a mismatch is answered "no such run".
+  //
+  // Worth stating outright, because this field used to be described alongside
+  // `deployment` as identifying "which Flowstate installation is running the
+  // workload". That is what `deployment` is for. Reading the two as a pair
+  // suggests both are labels for telling environments apart, and one of them
+  // decides who may act on what.
+  string namespace = 4;
+
+  // Deployment identifies which Flowstate installation is running the workload,
+  // so an assertion from a staging deployment is distinguishable from a
+  // production one.
+  //
+  // Not the tenant, and not what run access turns on: that is `namespace`
+  // above. But not decorative either: an outbound authorization policy sees it as
+  // `workload.deployment` and may key on it, which is how a rule like
+  // `target == "internal" && workload.deployment == "prod"` keeps a staging
+  // installation from assuming a production role.
+  //
+  // So the two are load-bearing for different decisions. `namespace` decides who
+  // may act on a run; `deployment` is one of the attributes a policy may use to
+  // decide what a run may reach.
+  string deployment = 5;
+}

@@ -7,6 +7,36 @@ breaking:
     - FILE
     - WIRE
 
+  # TEMPORARY, and removed by the PR that follows this one onto main.
+  #
+  # Not "the next commit on this branch", which is what this said and could not
+  # be done: until the split is on main, `buf breaking --against origin/main`
+  # compares to a baseline that still contains flowstate/v1/flowstate.proto, so
+  # a branch with the suppression removed necessarily reports that file as
+  # deleted. The removal is therefore a follow-up PR rather than a follow-up
+  # commit — the same one-commit lifetime this file asks for, measured in the
+  # only place it can be.
+  #
+  # flowstate/v1/flowstate.proto was split into twelve files (#658) — value,
+  # identity, task, trigger, signal, workflow, run, catalog, diagnostics,
+  # reports, schedule, service. Same `package flowstate.v1`, same `go_package`,
+  # so one Go package and no renamed message, renumbered field, or nested type:
+  # every message moved file and nothing else changed. WIRE is untouched and
+  # stays armed, which is the category that guards plugins and Temporal
+  # histories.
+  #
+  # What is suppressed is one FILE-category rule, scoped to the one file that no
+  # longer exists: FILE_NO_DELETE, "Previously present file
+  # flowstate/v1/flowstate.proto was deleted". #658 budgeted for
+  # MESSAGE_NO_DELETE beside it, and buf v1.72.0 does not need it — a file that
+  # is gone is reported as a deleted file and its messages are not walked again
+  # — so the narrower suppression is the one that landed. That single line is
+  # the complete expected output; any other rule firing here would mean a
+  # message was edited rather than moved.
+  ignore_only:
+    FILE_NO_DELETE:
+      - flowstate/v1/flowstate.proto
+
   # Nothing suppressed, which is the only state this file should be found in
   # for longer than one commit.
   #
