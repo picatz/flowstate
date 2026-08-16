@@ -435,7 +435,7 @@ func followPlainly(
 		progress := state.Absorb(time.Now(), response, err)
 
 		if progress.Changed {
-			if err := reportChange(surface, rendering, state); err != nil {
+			if err := reportChange(surface, rendering, state, response); err != nil {
 				return err
 			}
 		}
@@ -533,12 +533,22 @@ func interrupted(surface *ui.UI, rendering runRendering, state *watchState) erro
 }
 
 // reportChange writes one change, in the shape the format asks for.
-func reportChange(surface *ui.UI, rendering runRendering, state *watchState) error {
+//
+// response is this poll's own answer, not state.Response(): the two agree after a
+// successful poll, but a transient refusal is a change too — the outage itself,
+// [State.Absorb]'s reasoning for why it must not go unreported — and that poll's
+// response is nil. Reading state.Response() there would resend the last answer the
+// server actually gave, stale and a second time, as though the server had just
+// repeated itself; a caller reading the event stream for what changed would see a
+// duplicate transition rather than the "nothing new, the server went quiet" this
+// change means. Passed the raw poll response keeps this shape doing the one thing
+// the event stream promises: one document per change, in the change's own words.
+func reportChange(surface *ui.UI, rendering runRendering, state *watchState, response *v1.GetResponse) error {
 	switch rendering.format {
 	case FormatJSONL:
 		// The server's own message, so a reader is indexing documented fields
 		// rather than a shape invented here for the occasion.
-		return writeRunJSON(surface, rendering, state.Response())
+		return writeRunJSON(surface, rendering, response)
 
 	case FormatJSON:
 		// One document per invocation, so nothing is written until the last change

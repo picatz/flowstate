@@ -674,6 +674,39 @@ func TestWatchJSONLIsOneDocumentPerChange(t *testing.T) {
 		"prose was written alongside a machine format, which a reader would have to parse")
 }
 
+// TestWatchJSONLDoesNotResendStaleDataOnAnOutage is the regression test for a
+// review finding on this PR: reportChange used to read state.Response() for the
+// document it writes, which is the last response the server actually gave — and a
+// transient refusal is a change too (see [watch.State.Absorb]), reported with no
+// fresh response of its own. Reading the retained one there would resend the
+// previous poll's document a second time, indistinguishable to a reader from the
+// server repeating itself, on the one shape whose whole promise is one document
+// per change in the change's own words.
+func TestWatchJSONLDoesNotResendStaleDataOnAnOutage(t *testing.T) {
+	poller := &scriptedPoller{answers: []pollAnswer{
+		runningPoll("checkout"),
+		{err: transientRefusal()},
+		finishedPoll("checkout", "build"),
+	}}
+	surface, out, _ := plainSurface()
+
+	require.NoError(t, followPlainly(t.Context(), surface, renderingOf(FormatJSONL), poller, time.Millisecond,
+		"flowstate-workflow-3f7c", nil))
+
+	lines := reportedLines(out.String())
+	require.Len(t, lines, 3, "one document per change:\n%s", out.String())
+
+	var outage map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &outage), "not a document: %q", lines[1])
+	// The zero-value document a nil response marshals as, not the previous poll's
+	// answer repeated: an empty workflow id and an unspecified status say "nothing
+	// new arrived" rather than claiming the server just said this again.
+	require.Equal(t, "", outage["workflowId"],
+		"the outage's document repeated the previous poll's workflow id instead of reporting that nothing new arrived")
+	require.Equal(t, "STATUS_UNSPECIFIED", outage["status"],
+		"the outage's document repeated the previous poll's status instead of reporting that nothing new arrived")
+}
+
 // TestWatchJSONIsOneDocumentAtTheEnd checks that the single-document form writes
 // nothing until the last change is known.
 func TestWatchJSONIsOneDocumentAtTheEnd(t *testing.T) {
