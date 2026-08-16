@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 // FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, so a developer's shell — or a
 // CI job that sets a build id for something else entirely — would otherwise decide
 // whether these tests are exercising a versioned worker or an unversioned one.
+// FLOWSTATE_WORKER_IDENTITY is cleared for the identical reason (#752).
 //
 // Not parallel, and neither is anything below: newRootCommand binds flags to
 // process state, which help_test.go already runs serially for the same reason.
@@ -23,6 +25,7 @@ func workerCommand(t *testing.T) *cobra.Command {
 
 	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
+	t.Setenv("FLOWSTATE_WORKER_IDENTITY", "")
 
 	cmd, _, err := newRootCommand().Find([]string{"worker"})
 	require.NoError(t, err)
@@ -190,4 +193,100 @@ func TestWorkerVersioningFlagsDefaultFromTheEnvironment(t *testing.T) {
 	require.True(t, deployment.UseVersioning)
 	require.Equal(t, "flowstate", deployment.Version.DeploymentName)
 	require.Equal(t, "deadbeef", deployment.Version.BuildID)
+}
+
+// TestWorkerIdentityOverride is #752's escape hatch: an operator with a
+// platform-native identifier (a Kubernetes pod name from the downward API)
+// wants it used verbatim, not folded into a composed default.
+func TestWorkerIdentityOverride(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set(allowUnversionedFlag, "true"))
+	require.NoError(t, cmd.Flags().Set("identity", "pod/flowstate-worker-7f9c-abcde"))
+
+	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
+	require.NoError(t, err)
+
+	require.Equal(t, "pod/flowstate-worker-7f9c-abcde",
+		workerIdentity(cmd, deployment, temporalFlagsOf(cmd)))
+}
+
+// TestWorkerIdentityOverrideFromEnvironment covers FLOWSTATE_WORKER_IDENTITY,
+// the flag's default source — the shape an operator setting it through a
+// container's environment rather than its command line actually uses.
+func TestWorkerIdentityOverrideFromEnvironment(t *testing.T) {
+	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_BUILD_ID", "")
+	t.Setenv("FLOWSTATE_WORKER_IDENTITY", "pod/flowstate-worker-7f9c-abcde")
+
+	cmd, _, err := newRootCommand().Find([]string{"worker"})
+	require.NoError(t, err)
+	require.NoError(t, cmd.Flags().Set(allowUnversionedFlag, "true"))
+
+	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
+	require.NoError(t, err)
+
+	require.Equal(t, "pod/flowstate-worker-7f9c-abcde",
+		workerIdentity(cmd, deployment, temporalFlagsOf(cmd)))
+}
+
+// TestWorkerIdentityDefaultIsMoreSpecificThanTheSDKs is the un-overridden
+// case: no platform identifier was given, so the default is built from what
+// this worker already knows about its own versioning and tenant
+// restriction, plus the hostname the SDK's own default would have used
+// unchanged — still an improvement, per #752, because the versioned prefix
+// disambiguates a stuck task's Event History entry without any lookup at
+// all, and the hostname still disambiguates replicas of that same pair.
+func TestWorkerIdentityDefaultIsMoreSpecificThanTheSDKs(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("deployment-name", "flowstate"))
+	require.NoError(t, cmd.Flags().Set("build-id", "abc123"))
+
+	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
+	require.NoError(t, err)
+
+	host, hostErr := os.Hostname()
+	require.NoError(t, hostErr)
+
+	identity := workerIdentity(cmd, deployment, temporalFlagsOf(cmd))
+
+	require.Equal(t, "flowstate/abc123@"+host, identity)
+}
+
+// TestWorkerIdentityDefaultNamesTheTenant covers the composition's other
+// half: a worker restricted to one tenant (--tenant) records that
+// restriction in its own identity too, since a run misrouted to the wrong
+// tenant's worker is exactly the kind of thing #752 exists to make
+// traceable.
+func TestWorkerIdentityDefaultNamesTheTenant(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("deployment-name", "flowstate"))
+	require.NoError(t, cmd.Flags().Set("build-id", "abc123"))
+	require.NoError(t, cmd.Flags().Set("tenant", "team-a"))
+
+	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
+	require.NoError(t, err)
+
+	identity := workerIdentity(cmd, deployment, temporalFlagsOf(cmd))
+
+	require.Contains(t, identity, "flowstate/abc123")
+	require.Contains(t, identity, "tenant=team-a")
+}
+
+// TestWorkerIdentityDefaultTenantIsNamedExplicitly covers `--tenant=`
+// (the empty string), which selects the default tenant of an untenanted
+// deployment rather than meaning "no tenant declared" — the same
+// distinction temporalFlags.tenantSet exists for. The identity has to spell
+// this the same unambiguous way, rather than rendering an empty segment
+// that reads as though --tenant were never passed at all.
+func TestWorkerIdentityDefaultTenantIsNamedExplicitly(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set(allowUnversionedFlag, "true"))
+	require.NoError(t, cmd.Flags().Set("tenant", ""))
+
+	deployment, err := workerDeployment(cmd, temporalFlagsOf(cmd))
+	require.NoError(t, err)
+
+	identity := workerIdentity(cmd, deployment, temporalFlagsOf(cmd))
+
+	require.Contains(t, identity, "tenant=_default")
 }

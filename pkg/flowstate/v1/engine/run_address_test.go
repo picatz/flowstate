@@ -26,7 +26,7 @@ func TestRunAddressShapeDurable(t *testing.T) {
 	env := suite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
 		Workflow: tests.RunAddressWorkflow(),

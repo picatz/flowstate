@@ -57,8 +57,8 @@ func TestRunUndoTaskNamesUndoBudgetExpiry(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(probe)
-	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, _ *v1.Task, _ *v1.WorkloadIdentity) (*v1.Node_Outputs, error) {
+	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, _ *v1.Task, _ *v1.WorkloadIdentity, _ bool) (*v1.Node_Outputs, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		})
@@ -101,9 +101,9 @@ func TestRunUndoTaskDoesNotNameUndoBudgetExpiryForAnOrdinaryFailure(t *testing.T
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(probe)
-	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(context.Context, *v1.Task, *v1.WorkloadIdentity) (*v1.Node_Outputs, error) {
-			return nil, activityError("log", v1.NewTaskError("log", v1.ErrorKindInvalidInput, errors.New("bad input")))
+	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(context.Context, *v1.Task, *v1.WorkloadIdentity, bool) (*v1.Node_Outputs, error) {
+			return nil, activityError("log", v1.NewTaskError("log", v1.ErrorKindInvalidInput, errors.New("bad input")), false)
 		})
 
 	// Narrowed exactly as the budget-expiry case is (well under the defaults),

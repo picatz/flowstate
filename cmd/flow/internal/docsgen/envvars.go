@@ -413,6 +413,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_WORKER_IDENTITY",
+			value:   "unset",
+			purpose: "Default for `--identity`: how this worker identifies itself to Temporal, shown in Event History and a Task Queue's poller list (#752). Unset builds one from `--deployment-name`/`--build-id`, `--tenant` if set, and this process's hostname — more specific than the SDK's own `pid@hostname` default, but a platform-native identifier (a Kubernetes pod name, an ECS task id) is worth setting explicitly.",
+			read:    "cmd/flow/main.go",
+		},
+		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",

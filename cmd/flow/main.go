@@ -309,6 +309,58 @@ func workerDeployment(cmd *cobra.Command, flags temporalFlags) (worker.Deploymen
 		allowUnversionedFlag)
 }
 
+// workerIdentity is what this worker calls itself to Temporal — the string an
+// operator sees in Event History and in a Task Queue's poller list when
+// tracing a stuck task back to the process that owns it (#752).
+//
+// Left unset, the SDK falls back to "pid@hostname@taskqueue", and Temporal's
+// own worker documentation calls that out as weak in exactly the deployment
+// shapes docs/DEPLOYMENT.md documents: a container's PID 1 is always `1`, and
+// a Kubernetes-assigned or Docker-assigned hostname is not something an
+// operator can act on without first looking up which pod or container it
+// belongs to. Several replicas of the same worker Deployment differ, under
+// the SDK default, only by that hostname fragment.
+//
+// So the default here is built from what this process already knows is
+// stable and meaningful: the Worker Deployment version (--deployment-name/
+// --build-id), which is the same identity the worker already logs at
+// startup, and the tenant restriction when --tenant is set, since a run
+// misrouted to the wrong tenant's worker is exactly the kind of thing this
+// string exists to make traceable. The hostname is appended last, unchanged
+// from what the SDK would have used — it still disambiguates replicas of the
+// identical deployment/tenant pair sharing a task queue, which the versioned
+// prefix alone cannot.
+//
+// --identity (or FLOWSTATE_WORKER_IDENTITY) overrides all of this outright,
+// for an operator with a platform-native identifier worth using directly —
+// a Kubernetes pod name from the downward API, an ECS task id — rather than
+// composed from what this binary can see of its own configuration.
+func workerIdentity(cmd *cobra.Command, deployment worker.DeploymentOptions, flags temporalFlags) string {
+	if override, _ := cmd.Flags().GetString("identity"); override != "" {
+		return override
+	}
+
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown-host"
+	}
+
+	var parts []string
+	if deployment.UseVersioning {
+		parts = append(parts, deployment.Version.DeploymentName+"/"+deployment.Version.BuildID)
+	}
+	if flags.tenantSet {
+		tenant := flags.tenant
+		if tenant == "" {
+			tenant = "_default"
+		}
+		parts = append(parts, "tenant="+tenant)
+	}
+	parts = append(parts, host)
+
+	return strings.Join(parts, "@")
+}
+
 // runWorker implements the worker sub-command to start a Temporal worker
 // to process Flowstate workflows and activities.
 func runWorker(cmd *cobra.Command, args []string) error {
@@ -400,10 +452,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		interceptors = append(interceptors, engine.TenantInterceptor(flags.tenant))
 	}
 
+	identity := workerIdentity(cmd, deployment, flags)
+
 	w := worker.New(c, taskQueue, worker.Options{
 		DeploymentOptions:        deployment,
 		Interceptors:             interceptors,
 		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
+		Identity:                 identity,
 	})
 
 	engine.Register(w, runtime)
@@ -421,7 +476,8 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		infraLogger().Info("starting worker",
 			"task_queue", taskQueue,
 			"deployment", deployment.Version.DeploymentName,
-			"build_id", deployment.Version.BuildID)
+			"build_id", deployment.Version.BuildID,
+			"identity", identity)
 	} else {
 		// Reached only with --allow-unversioned-interpreter, since workerDeployment
 		// refuses otherwise. Still said out loud on every start rather than only at
@@ -430,6 +486,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		infraLogger().Warn("starting worker unversioned; deploying this binary changes every run in flight",
 			"task_queue", taskQueue,
 			"accepted_with", "--"+allowUnversionedFlag,
+			"identity", identity,
 			"fix", "set FLOWSTATE_DEPLOYMENT_NAME and FLOWSTATE_BUILD_ID, or --deployment-name and --build-id")
 	}
 
@@ -1742,6 +1799,13 @@ flow server --verbose`,
 	workerCmd.Flags().Bool(allowUnversionedFlag, false,
 		"start without a Worker Deployment version, accepting that deploying a different binary "+
 			"changes what runs already in flight compute; for local development")
+
+	workerCmd.Flags().String("identity", os.Getenv("FLOWSTATE_WORKER_IDENTITY"),
+		"how this worker identifies itself to Temporal, shown in Event History and a Task Queue's "+
+			"poller list (#752); a platform-native identifier (a Kubernetes pod name from the "+
+			"downward API, an ECS task id) is the most useful value here. Unset builds one from "+
+			"--deployment-name/--build-id, --tenant if set, and this process's hostname — still more "+
+			"specific than the SDK's own pid@hostname default, but a real platform identifier beats it")
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)

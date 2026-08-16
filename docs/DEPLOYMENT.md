@@ -444,6 +444,25 @@ long as that directory isn't writable by other users — group or world (see
 Secrets mount as files (`--secret-dir`) or environment (`--secret-env`) the
 ordinary Kubernetes way — Secret volumes or `envFrom`.
 
+**Set `--identity` (or `FLOWSTATE_WORKER_IDENTITY`) to the pod name.** Left
+unset, a worker's identity in Temporal's Event History and Task Queue poller
+list is built from `--deployment-name`/`--build-id`, `--tenant` if set, and
+this process's hostname — better than the SDK's own `pid@hostname` default
+(every container's PID 1 is `1`), but a pod hostname is still a hash an
+operator has to cross-reference against `kubectl get pods`. Wire the
+downward API's pod name straight through instead:
+
+```yaml
+env:
+  - name: FLOWSTATE_WORKER_IDENTITY
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+```
+
+so a stuck task in Temporal's UI names the exact pod to `kubectl exec` into,
+with nothing to look up.
+
 **The pod's `FLOWSTATE_ADDRESS` needs a flag alongside it, and which one
 depends on where TLS actually ends.** A pod almost always sets
 `FLOWSTATE_ADDRESS=0.0.0.0:9233` (or lets the default resolve to it): the
