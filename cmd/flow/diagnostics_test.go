@@ -334,6 +334,25 @@ steps:
             message: hi
 `,
 
+	// retry-on-for-each exercises checkPolicyPlacement (flowstate#286): `retry:`
+	// compiles onto every step kind's `StepPolicy`, but a for_each schedules a
+	// fan-out rather than one activity, so neither driver ever reads it. Same
+	// diagnostic class the wait arms already had; this is the interim refusal
+	// for the five kinds the charter's R6 found still accepting and ignoring it.
+	"retry-on-for-each.yaml": `edition: v2026.3
+name: broken
+steps:
+  - id: fan
+    for_each:
+      items: ${[1, 2, 3]}
+      steps:
+        - id: inner
+          log:
+            message: hi
+    retry:
+      attempts: 3
+`,
+
 	// old-edition-with-other-problems is the CLI-level regression for the
 	// second half of #385. `2026.1` is an edition this build knows and `flow
 	// fix` can rewrite from, so the gate is no longer absolute for it — the
