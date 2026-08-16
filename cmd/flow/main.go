@@ -368,12 +368,24 @@ func workerIdentity(cmd *cobra.Command, deployment worker.DeploymentOptions, fla
 // `flow docs generate`'s environment-mirror detection. Parsed with
 // [v1.ParseDuration], the same grammar the DSL itself accepts, so a value that is
 // legal in a Flowfile's `sleep:` is legal here too.
+//
+// A negative value is refused rather than passed through: [v1.ParseDuration]
+// accepts one (`-1s`), and the SDK's own Stop treats a negative stopTimeout the
+// same as a zero one — its shutdown timer fires immediately, so the drain this
+// whole flag exists to configure would silently not happen. That is exactly the
+// in-flight-work loss #751 reports, reintroduced through the fix for it.
 func workerStopTimeout(cmd *cobra.Command) (time.Duration, error) {
 	raw, _ := cmd.Flags().GetString("worker-stop-timeout")
 
 	stopTimeout, err := v1.ParseDuration(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid --worker-stop-timeout %q: %w", raw, err)
+	}
+
+	if stopTimeout < 0 {
+		return 0, fmt.Errorf(
+			"invalid --worker-stop-timeout %q: must not be negative; a negative value "+
+				"disables the drain instead of shortening it", raw)
 	}
 
 	return stopTimeout, nil
@@ -2397,6 +2409,27 @@ func main() {
 	// context never had.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// signal.NotifyContext keeps intercepting SIGINT/SIGTERM until cancel is
+	// called — that is the whole point while ctx is still live, so the first
+	// signal is the one that actually cancels it rather than being swallowed.
+	// But a plain `defer cancel()` only runs once execute (and whatever it
+	// blocked on) returns, and `flow worker` blocks exactly here: the first
+	// signal cancels cmd.Context(), which sends w.Stop() into a drain that can
+	// legitimately take up to --worker-stop-timeout. Every signal an operator
+	// sends during that drain would otherwise be caught and silently
+	// discarded by this same context — canceling it again is a no-op — leaving
+	// SIGKILL as the only way to force an unresponsive drain down, which is
+	// the exact hard-kill outcome this whole context exists to give an
+	// alternative to. So cancel is called the moment the first signal lands,
+	// not only at process exit: everything already reading ctx sees exactly
+	// the same cancellation it would have anyway, and every signal after the
+	// first reaches the process's default disposition (terminate) instead of
+	// this handler.
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
 
 	// The help and every error report are drawn by this binary, in the same palette
 	// as everything else it prints. A binary whose help is one colour and whose

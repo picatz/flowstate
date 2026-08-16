@@ -371,3 +371,24 @@ func TestWorkerStopTimeoutRefusesAnUnparsableValue(t *testing.T) {
 	require.Contains(t, err.Error(), "--worker-stop-timeout")
 	require.Contains(t, err.Error(), "not-a-duration")
 }
+
+// TestWorkerStopTimeoutRefusesANegativeValue is the fix for a review finding on
+// #757's PR: v1.ParseDuration parses a negative value like "-1s" without error,
+// and the SDK's own Stop treats a negative (or zero) stopTimeout as "don't wait" —
+// its internal timer fires immediately. Passed through unchecked, a negative
+// --worker-stop-timeout or FLOWSTATE_WORKER_STOP_TIMEOUT would silently disable
+// the drain this whole flag exists to configure, reintroducing the exact
+// in-flight-work loss #751 reports through the fix for it. So this is refused
+// explicitly, at the same point the unparsable case above is, before Temporal is
+// dialed.
+func TestWorkerStopTimeoutRefusesANegativeValue(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("worker-stop-timeout", "-1s"))
+
+	_, err := workerStopTimeout(cmd)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--worker-stop-timeout")
+	require.Contains(t, err.Error(), "-1s")
+	require.Contains(t, err.Error(), "negative")
+}

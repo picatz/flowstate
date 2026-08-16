@@ -342,7 +342,7 @@ const WorkerDeadlockDetectionTimeout = 5 * time.Second
 
 // DefaultWorkerStopTimeout is how long `flow worker` gives the Temporal SDK to
 // drain in-flight activities and workflow tasks after a shutdown signal before
-// it returns from Stop, unset by `--worker-stop-timeout`/
+// it returns from Stop, overridden by `--worker-stop-timeout`/
 // FLOWSTATE_WORKER_STOP_TIMEOUT.
 //
 // The SDK's own zero value is 0s: Stop's internal wait races a timer against
