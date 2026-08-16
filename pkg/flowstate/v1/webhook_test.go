@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // The mapping from a delivery to a run's inputs is the whole of what a webhook
@@ -31,6 +33,36 @@ func stripeTrigger() *v1.WebhookTrigger {
 			"amount":   v1.NewExpr(`event.body.data.object.amount`),
 		},
 	}
+}
+
+func TestCheckWebhookIdempotencyKeyRejectsConstantExpression(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWebhookIdempotencyKey("constant", v1.NewExpr(`"all-events"`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not depend on the delivery")
+	require.NoError(t, v1.CheckWebhookIdempotencyKey("derived", v1.NewExpr(`event.body.id`)))
+}
+
+// TestCheckWebhookIdempotencyKeyRejectsAConstantShadowedByAComprehension is the
+// scope-aware half of the check above: a comprehension can bind an iteration
+// variable named `event`, and every occurrence inside that comprehension's own
+// body then refers to *that* binding, not to the delivery root. Left
+// scope-naive, `[1].map(event, string(event))[0]` type-checks to the constant
+// `"1"` and would pass as though it depended on the delivery — so every
+// delivery would still be named alike, and no redelivery would ever be
+// recognized as one.
+func TestCheckWebhookIdempotencyKeyRejectsAConstantShadowedByAComprehension(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWebhookIdempotencyKey("shadowed", v1.NewExpr(`[1].map(event, string(event))[0]`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not depend on the delivery")
+
+	// The same shape, genuinely depending on the delivery outside the
+	// comprehension's own scope, must still be accepted.
+	require.NoError(t, v1.CheckWebhookIdempotencyKey("derived",
+		v1.NewExpr(`event.body.id + string([1].map(event, string(event))[0])`)))
 }
 
 // orderWorkflow declares the signature the trigger above is a call site of.
@@ -274,4 +306,115 @@ func TestAWebhookIsFoundByName(t *testing.T) {
 	_, ok = v1.FindWebhookTrigger(workflow, "shopify")
 	assert.False(t, ok)
 	assert.Equal(t, []string{"stripe"}, v1.WebhookTriggerNames(workflow))
+}
+
+// TestAnIdempotencyKeyWalkIsBoundedInDepth covers the resource an attacker
+// controls here, which is neither bytes nor time. The submit path accepts a
+// hand-built `RunRequest` carrying a `ParsedExpr` that never went through the
+// CEL parser, so the specification's 1 MiB cap is the only upstream limit and
+// it bounds size rather than nesting: compact nodes buy thousands of levels
+// inside it. The walk is recursive, so what runs out is the stack.
+//
+// Built as protobuf rather than parsed, deliberately. Going through NewExpr
+// would test cel-go's parser nesting limit instead, and the whole premise of
+// this path is a specification that never met the parser.
+//
+// Nested past the bound, the answer must be the refusing one. Reading the key
+// as delivery-dependent on an expression the walk gave up on is the open
+// direction, and CLAUDE.md's rule is that a component which allows when it
+// cannot decide eventually allows everything.
+func TestAnIdempotencyKeyWalkIsBoundedInDepth(t *testing.T) {
+	t.Parallel()
+
+	// Deeper than the bound by a wide margin, and deep enough that a walk
+	// copying its binding set at every level would be doing millions of map
+	// insertions rather than thousands of comparisons.
+	const depth = 5000
+
+	// The innermost expression genuinely names the delivery root, so nothing
+	// but the depth bound can be what refuses this.
+	inner := &expr.Expr{ExprKind: &expr.Expr_IdentExpr{
+		IdentExpr: &expr.Expr_Ident{Name: v1.EventRoot},
+	}}
+
+	// Each level binds a *distinct* iterator name, which is the shape that
+	// made the old set-copying walk quadratic: nothing is ever shadowed, so
+	// the set only grew.
+	for i := range depth {
+		inner = &expr.Expr{ExprKind: &expr.Expr_ComprehensionExpr{
+			ComprehensionExpr: &expr.Expr_Comprehension{
+				IterVar: "v" + strconv.Itoa(i),
+				AccuVar: "a" + strconv.Itoa(i),
+				IterRange: &expr.Expr{ExprKind: &expr.Expr_ListExpr{
+					ListExpr: &expr.Expr_CreateList{},
+				}},
+				AccuInit: &expr.Expr{ExprKind: &expr.Expr_ListExpr{
+					ListExpr: &expr.Expr_CreateList{},
+				}},
+				LoopCondition: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+				LoopStep: inner,
+				Result: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+			},
+		}}
+	}
+
+	key := &v1.Value{Kind: &v1.Value_Expr{
+		Expr: &expr.ParsedExpr{Expr: inner},
+	}}
+
+	assert.Error(t, v1.CheckWebhookIdempotencyKey("deep", key),
+		"a key nested past the walk's depth bound was accepted as delivery-dependent")
+}
+
+// TestAnIdempotencyKeyMayNameTheDeliveryInAComprehensionResult is the false
+// diagnostic the shadowing rule can produce if it is applied too widely.
+//
+// A comprehension's result is not evaluated in the loop's scope. The iteration
+// has ended by then and only the accumulator is still bound, so an `event` in
+// the result names the delivery root even when the comprehension iterates over
+// a variable of that same name. Treating the iterator as still shadowing it
+// refuses a key that does depend on the delivery — and CLAUDE.md rates a false
+// diagnostic worse than a missing one, because the author is told their correct
+// file is wrong and has nothing to fix.
+func TestAnIdempotencyKeyMayNameTheDeliveryInAComprehensionResult(t *testing.T) {
+	t.Parallel()
+
+	// Iterating over `event` — so inside loop_step, `event` is the iterator —
+	// while the result names the outer `event` that the iteration left in
+	// scope again.
+	key := &v1.Value{Kind: &v1.Value_Expr{Expr: &expr.ParsedExpr{
+		Expr: &expr.Expr{ExprKind: &expr.Expr_ComprehensionExpr{
+			ComprehensionExpr: &expr.Expr_Comprehension{
+				IterVar:   v1.EventRoot,
+				AccuVar:   "__result__",
+				IterRange: &expr.Expr{ExprKind: &expr.Expr_ListExpr{ListExpr: &expr.Expr_CreateList{}}},
+				AccuInit: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+				LoopCondition: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+				// The iterator, which is shadowed here and must not count.
+				LoopStep: &expr.Expr{ExprKind: &expr.Expr_IdentExpr{
+					IdentExpr: &expr.Expr_Ident{Name: v1.EventRoot},
+				}},
+				// The delivery root, which is not shadowed here and must.
+				Result: &expr.Expr{ExprKind: &expr.Expr_SelectExpr{
+					SelectExpr: &expr.Expr_Select{
+						Operand: &expr.Expr{ExprKind: &expr.Expr_IdentExpr{
+							IdentExpr: &expr.Expr_Ident{Name: v1.EventRoot},
+						}},
+						Field: "id",
+					},
+				}},
+			},
+		}},
+	}}}
+
+	assert.NoError(t, v1.CheckWebhookIdempotencyKey("result-scope", key),
+		"a key naming the delivery in a comprehension result was refused as constant")
 }
