@@ -954,11 +954,8 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 //
 // [FlowstateServer.SignalWithStart] runs this unconditionally — even when the
 // entity it addresses turns out to already exist and this validation's result
-// is then unused — because which branch Temporal's own
-// SignalWithStartWorkflow takes is not knowable at the moment this handler
-// commits to it (see that RPC's own doc comment for the race this closes).
-// "May create" is therefore the floor for every call through that RPC, not
-// only the ones that end up creating.
+// is then unused. "May create" is the floor for every call through that RPC,
+// not only the ones that end up creating.
 func (s *FlowstateServer) validateSubmission(wf *v1.Workflow, rawInputs map[string]*v1.Value) (map[string]*v1.Value, error) {
 	if err := s.validateSpecification(wf); err != nil {
 		return nil, err
