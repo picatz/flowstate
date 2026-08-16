@@ -9,7 +9,10 @@ import (
 )
 
 func describedPlugin(name, version, schema string) *v1.PluginDescription {
-	return &v1.PluginDescription{Name: name, Version: version, ProtocolVersion: 2, TaskSchemaDigest: schema, DistributionDigest: "sha256:binary"}
+	return &v1.PluginDescription{
+		Name: name, Version: version, ProtocolVersion: 2,
+		TaskSchemaDigest: schema, DistributionDigest: "sha256:binary", ClaimsDigest: "sha256:claims",
+	}
 }
 
 // catalogOf is a deployment holding exactly these plugins.
@@ -334,4 +337,55 @@ func TestPluginWalksAreBounded(t *testing.T) {
 
 	_, err := v1.PinnedPlugins(deep)
 	require.ErrorContains(t, err, "past what a specification is checked to")
+}
+
+// TestReplayGuardAcceptsALegacyPinWithNoClaimsDigest is #763's P1: an
+// in-flight durable run pinned before ClaimsDigest existed carries an empty
+// one, and a worker on this commit must accept it for an otherwise-unchanged
+// plugin rather than refusing the run — the old-writer/new-reader direction,
+// not just new-writer/new-reader.
+//
+// Built by hand rather than through ResolvePlugins, because that is exactly
+// the point: ResolvePlugins today always produces a ClaimsDigest (see
+// pinOf), so the only way to get the shape an old pin actually has is to
+// construct it directly, the way protojson.Unmarshal would reading it back
+// out of a workflow history recorded before this field existed.
+func TestReplayGuardAcceptsALegacyPinWithNoClaimsDigest(t *testing.T) {
+	t.Parallel()
+
+	legacyPin := []*v1.ResolvedPlugin{{
+		Name: "slack", Version: "v2.1.0", ProtocolVersion: 2,
+		TaskSchemaDigest:   "sha256:schema",
+		DistributionDigest: "sha256:binary",
+		// ClaimsDigest deliberately unset: this is what a pin recorded before
+		// #712's ClaimsDigest field existed decodes as.
+	}}
+
+	// The worker's live catalog: same descriptors, same distribution — an
+	// unchanged plugin — but it now reports a ClaimsDigest, because every
+	// worker built from this commit computes one.
+	worker := catalogOf(describedPlugin("slack", "v2.1.0", "sha256:schema"))
+
+	require.NoError(t, v1.CheckPluginsAvailable(legacyPin, worker),
+		"a run pinned before ClaimsDigest existed was refused by a worker reporting one for an unchanged plugin")
+}
+
+// TestReplayGuardStillRefusesAClaimsDigestMismatchOnANewPin is the positive
+// direction beside it: once a pin has recorded a claims digest, the guard
+// enforces it exactly like every other field in the tuple.
+func TestReplayGuardStillRefusesAClaimsDigestMismatchOnANewPin(t *testing.T) {
+	t.Parallel()
+
+	wf := requires("slack", "v2.1.0")
+	require.NoError(t, v1.ResolvePlugins(wf, catalogOf(describedPlugin("slack", "v2.1.0", "sha256:schema"))))
+
+	worker := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{
+		Name: "slack", Version: "v2.1.0", ProtocolVersion: 2,
+		TaskSchemaDigest: "sha256:schema", DistributionDigest: "sha256:binary",
+		ClaimsDigest: "sha256:different-claims",
+	}}}
+
+	err := v1.CheckResolvedPlugins(wf, worker)
+	require.ErrorContains(t, err, "claims digest",
+		"the run was pinned with a claims digest and a worker reporting a different one was not refused")
 }

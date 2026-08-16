@@ -192,10 +192,11 @@ func resolveOne(wf *Workflow, available map[string]*PluginDescription) ([]*Resol
 			return nil, fmt.Errorf("plugin %q is %s on this deployment, below the %s the file requires",
 				p.GetName(), p.GetVersion(), requirement.GetMinimumVersion())
 		}
-		if p.GetProtocolVersion() == 0 || p.GetTaskSchemaDigest() == "" || p.GetDistributionDigest() == "" {
+		if p.GetProtocolVersion() == 0 || p.GetTaskSchemaDigest() == "" || p.GetDistributionDigest() == "" || p.GetClaimsDigest() == "" {
 			return nil, fmt.Errorf("plugin %q catalog entry is incomplete, so there is nothing to pin: "+
-				"a run is pinned to a protocol version, a task schema digest and a distribution digest, "+
-				"and this deployment reported %q at protocol %d", p.GetName(), p.GetVersion(), p.GetProtocolVersion())
+				"a run is pinned to a protocol version, a task schema digest, a claims digest and a "+
+				"distribution digest, and this deployment reported %q at protocol %d",
+				p.GetName(), p.GetVersion(), p.GetProtocolVersion())
 		}
 		resolved = append(resolved, pinOf(p))
 	}
@@ -206,8 +207,14 @@ func resolveOne(wf *Workflow, available map[string]*PluginDescription) ([]*Resol
 // pinOf is the one place a catalog entry becomes a replay contract.
 //
 // One function because the selection made at submit and the tuple a worker
-// compares against have to be the same five fields read the same way: two copies
+// compares against have to be the same fields read the same way: two copies
 // of this is how a field added to the contract ends up checked on one side only.
+//
+// A submission always resolves against a *live* catalog — the deployment it is
+// submitted to, right now — so ClaimsDigest is always populated here even
+// though [sameResolvedPlugin] treats an empty one as "not asserted": that
+// leniency exists only for a pin already durable when this field was added,
+// never for a new one.
 func pinOf(p *PluginDescription) *ResolvedPlugin {
 	return &ResolvedPlugin{
 		Name:               p.GetName(),
@@ -215,6 +222,7 @@ func pinOf(p *PluginDescription) *ResolvedPlugin {
 		ProtocolVersion:    p.GetProtocolVersion(),
 		TaskSchemaDigest:   p.GetTaskSchemaDigest(),
 		DistributionDigest: p.GetDistributionDigest(),
+		ClaimsDigest:       p.GetClaimsDigest(),
 	}
 }
 
@@ -358,6 +366,20 @@ func sameResolvedPlugin(want, have *ResolvedPlugin) error {
 
 		return fmt.Errorf("plugin %q does not match the run's replay contract: %s is %s here and the run is pinned to %s",
 			want.GetName(), field.name, field.have, field.want)
+	}
+
+	// ClaimsDigest is checked only when the pin asserts one. Empty means the
+	// run was resolved before this field existed — there is nothing recorded
+	// to compare a worker's claims digest against, and treating that as a
+	// mismatch would turn a routine worker upgrade into a non-retryable
+	// failure for every already-durable run touching a plugin with a
+	// non-default claim, for a property that pin never promised to track
+	// (#763 review). A pin resolved after this field existed always carries
+	// one — see [pinOf] — so this is a one-way door: once a run is pinned
+	// with a claims digest, it is enforced for that run for good.
+	if want.GetClaimsDigest() != "" && want.GetClaimsDigest() != have.GetClaimsDigest() {
+		return fmt.Errorf("plugin %q does not match the run's replay contract: claims digest is %s here and the run is pinned to %s",
+			want.GetName(), have.GetClaimsDigest(), want.GetClaimsDigest())
 	}
 
 	return nil

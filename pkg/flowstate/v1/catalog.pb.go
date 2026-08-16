@@ -558,25 +558,33 @@ type PluginDescription struct {
 	// task is.
 	Tasks           []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
 	ProtocolVersion uint32             `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	// TaskSchemaDigest is computed over Tasks as this host reconstructed them,
-	// deterministically marshaled — the case it exists to catch is a plugin
-	// whose descriptors changed shape while its version stood still.
+	// TaskSchemaDigest is computed over Tasks' descriptor shape — name,
+	// summary, inputs, outputs — deterministically marshaled: the case it
+	// exists to catch is a plugin whose descriptors changed shape while its
+	// version stood still.
 	//
-	// Semantic change: TaskDescription.needs_scope, secret_inputs,
-	// shapes_outputs, deferred_inputs and expression_inputs now travel inside
-	// the marshaled TaskDescription this digest is computed over, so a plugin
-	// that flips needs_scope or adds a name to secret_inputs without changing
-	// any descriptor shape now changes this digest where it previously did
-	// not. That is the fix for the gap this field existed to catch (#712): the
-	// fields with the most security weight in a plugin's contract were
-	// computable and simply excluded from it. Every digest pinned before this
-	// change is a digest of a narrower contract and will not match one
-	// recomputed after it, for every plugin, whether its claims changed or not
-	// — a one-time rollout cost, paid once per pin.
+	// Deliberately not computed over NeedsScope, SecretInputs, ShapesOutputs,
+	// DeferredInputs or ExpressionInputs, even though those travel on the same
+	// TaskDescription — see ClaimsDigest below for why they get their own
+	// digest instead of folding into this one. This field is embedded in every
+	// in-flight run's ResolvedPlugin the moment a run is submitted, replayed
+	// against a worker's freshly computed catalog at every segment boundary,
+	// and a mismatch is a non-retryable failure: a run already durable when
+	// this field's *meaning* changed must still see the same digest for a
+	// plugin whose descriptors did not change.
 	TaskSchemaDigest   string `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
 	DistributionDigest string `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
+	// ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
+	// with security weight (#712) — kept apart from task_schema_digest so it
+	// can change on its own without disturbing the replay contract every
+	// already-durable run is pinned to. See
+	// [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
+	// old pin that predates this field (#763 review): it is not compared, not
+	// assumed safe, simply not asked.
+	ClaimsDigest  string `protobuf:"bytes,10,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PluginDescription) Reset() {
@@ -668,6 +676,13 @@ func (x *PluginDescription) GetTaskSchemaDigest() string {
 func (x *PluginDescription) GetDistributionDigest() string {
 	if x != nil {
 		return x.DistributionDigest
+	}
+	return ""
+}
+
+func (x *PluginDescription) GetClaimsDigest() string {
+	if x != nil {
+		return x.ClaimsDigest
 	}
 	return ""
 }
@@ -811,7 +826,7 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
-	"searchPath\"\xdd\x02\n" +
+	"searchPath\"\x82\x03\n" +
 	"\x11PluginDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -821,7 +836,9 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x05tasks\x18\x06 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12)\n" +
 	"\x10protocol_version\x18\a \x01(\rR\x0fprotocolVersion\x12,\n" +
 	"\x12task_schema_digest\x18\b \x01(\tR\x10taskSchemaDigest\x12/\n" +
-	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\"\x8d\x01\n" +
+	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\x12#\n" +
+	"\rclaims_digest\x18\n" +
+	" \x01(\tR\fclaimsDigest\"\x8d\x01\n" +
 	"\tTaskField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +

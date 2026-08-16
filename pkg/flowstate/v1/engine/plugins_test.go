@@ -24,6 +24,7 @@ func pluginCatalog(digest string) *v1.PluginCatalog {
 		ProtocolVersion:    2,
 		TaskSchemaDigest:   digest,
 		DistributionDigest: "sha256:binary",
+		ClaimsDigest:       "sha256:claims",
 	}}}
 }
 

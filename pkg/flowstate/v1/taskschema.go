@@ -519,16 +519,17 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		Outputs: taskFields(Outputs(def)),
 
 		// The five claims with security weight (#712): invisible here before,
-		// which meant invisible in the catalog and outside TaskSchemaDigest,
-		// which is computed over exactly this message. Read straight off the
-		// definition rather than re-derived, for the same reason every other
-		// field above is: one definition of what a task does, described.
+		// which meant invisible in the catalog and outside ClaimsDigest (see
+		// [TaskDescriptionClaimsOnly]), which is computed over exactly these
+		// five fields. Read straight off the definition rather than
+		// re-derived, for the same reason every other field above is: one
+		// definition of what a task does, described.
 		//
 		// The three lists are canonicalized rather than cloned as-is: to the
 		// engine they are membership sets (MustBeExpression, IsDeferred and
 		// resolvePluginSecretInputs all ask "does this list contain X", never
 		// "in what order"), but the manifest schema bounds them only by size,
-		// not by order. TaskSchemaDigest hashes this message with deterministic
+		// not by order. ClaimsDigest hashes them with deterministic
 		// marshaling, which fixes *field* order and says nothing about the
 		// *contents* of a repeated string field — so two launches of one
 		// unchanged plugin binary declaring the same set in a different order
@@ -555,6 +556,50 @@ func canonicalStrings(names []string) []string {
 	out := slices.Sorted(slices.Values(names))
 
 	return slices.Compact(out)
+}
+
+// TaskDescriptionSansClaims returns a copy of t carrying only what
+// TaskSchemaDigest hashes: name, summary, inputs and outputs. Used to build
+// that digest so it stays stable across a change to the five claim fields —
+// see [TaskDescriptionClaimsOnly] for the digest that covers those, and
+// PluginDescription.task_schema_digest's doc comment for why the split
+// exists (#763 review: an in-flight durable run's pinned digest must not
+// disagree with itself for a plugin whose descriptors did not change).
+//
+// A shallow copy: Inputs and Outputs are shared with t rather than deep
+// cloned, which is safe because both this function's callers only marshal
+// the result.
+func TaskDescriptionSansClaims(t *TaskDescription) *TaskDescription {
+	if t == nil {
+		return nil
+	}
+
+	return &TaskDescription{
+		Name:    t.GetName(),
+		Summary: t.GetSummary(),
+		Inputs:  t.GetInputs(),
+		Outputs: t.GetOutputs(),
+	}
+}
+
+// TaskDescriptionClaimsOnly returns a copy of t carrying only its name and
+// the five claim fields with security weight (#712): NeedsScope,
+// SecretInputs, ShapesOutputs, DeferredInputs, ExpressionInputs. Used to
+// build ClaimsDigest apart from TaskSchemaDigest — see
+// [TaskDescriptionSansClaims] for the reverse split and why both exist.
+func TaskDescriptionClaimsOnly(t *TaskDescription) *TaskDescription {
+	if t == nil {
+		return nil
+	}
+
+	return &TaskDescription{
+		Name:             t.GetName(),
+		NeedsScope:       t.GetNeedsScope(),
+		SecretInputs:     t.GetSecretInputs(),
+		ShapesOutputs:    t.GetShapesOutputs(),
+		DeferredInputs:   t.GetDeferredInputs(),
+		ExpressionInputs: t.GetExpressionInputs(),
+	}
 }
 
 // catalogFunctions renders the profile's functions into their schema form.

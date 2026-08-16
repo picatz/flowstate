@@ -136,49 +136,77 @@ func TestDescribeTaskCarriesTheClaimsWithSecurityWeight(t *testing.T) {
 		"SecretInputs on the TaskDef is not reaching TaskDescription")
 }
 
-// TestTaskSchemaDigestChangesWithNeedsScope reproduces the marshaling
-// [pkg/flowstate/v1/plugin.Host.Catalog] does — a deterministic marshal of a
-// PluginDescription holding the plugin's TaskDescriptions — and checks that
-// flipping needs_scope changes the digest.
-//
-// Before #712 it did not: the field existed on TaskManifest and on TaskDef and
-// was enforced, but DescribeTask never wrote it into TaskDescription, so it was
-// bytes the digest never saw. A plugin update turning needs_scope from false to
-// true — the largest quiet privilege escalation the protocol allows — pinned
-// clean.
-func TestTaskSchemaDigestChangesWithNeedsScope(t *testing.T) {
-	t.Parallel()
+// digestOf reproduces the marshaling [pkg/flowstate/v1/plugin.Host.Catalog]
+// does over a slice of TaskDescriptions — a deterministic marshal of a
+// PluginDescription holding them.
+func digestOf(t *testing.T, tasks ...*v1.TaskDescription) string {
+	t.Helper()
 
-	before := v1.DescribeTask(v1.TaskDef{Name: "commit_push"})
-	after := v1.DescribeTask(v1.TaskDef{Name: "commit_push", NeedsPrevOutputs: true})
+	bytes, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&v1.PluginDescription{Tasks: tasks})
+	require.NoError(t, err)
 
-	digestOf := func(tasks ...*v1.TaskDescription) string {
-		bytes, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&v1.PluginDescription{Tasks: tasks})
-		require.NoError(t, err)
-		return v1.ContentDigest(bytes)
-	}
-
-	require.NotEqual(t, digestOf(before), digestOf(after),
-		"needs_scope flipped and the task schema digest did not change")
+	return v1.ContentDigest(bytes)
 }
 
-// TestTaskSchemaDigestChangesWithSecretInputs is the same claim for the other
-// field with security weight: which inputs the host will resolve a secret
-// reference into before it crosses into the plugin.
-func TestTaskSchemaDigestChangesWithSecretInputs(t *testing.T) {
+// TestClaimsDigestChangesWithNeedsScope covers the claim-only digest —
+// [v1.TaskDescriptionClaimsOnly] — flipping needs_scope changes it.
+//
+// Before #712 nothing did: the field existed on TaskManifest and on TaskDef
+// and was enforced, but DescribeTask never wrote it into TaskDescription, so
+// it was bytes no digest ever saw. A plugin update turning needs_scope from
+// false to true — the largest quiet privilege escalation the protocol allows
+// — pinned clean.
+func TestClaimsDigestChangesWithNeedsScope(t *testing.T) {
 	t.Parallel()
 
-	before := v1.DescribeTask(v1.TaskDef{Name: "commit_push"})
-	after := v1.DescribeTask(v1.TaskDef{Name: "commit_push", SecretInputs: []string{"token"}})
+	before := v1.TaskDescriptionClaimsOnly(v1.DescribeTask(v1.TaskDef{Name: "commit_push"}))
+	after := v1.TaskDescriptionClaimsOnly(v1.DescribeTask(v1.TaskDef{Name: "commit_push", NeedsPrevOutputs: true}))
 
-	digestOf := func(tasks ...*v1.TaskDescription) string {
-		bytes, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&v1.PluginDescription{Tasks: tasks})
-		require.NoError(t, err)
-		return v1.ContentDigest(bytes)
-	}
+	require.NotEqual(t, digestOf(t, before), digestOf(t, after),
+		"needs_scope flipped and the claims-only digest did not change")
+}
 
-	require.NotEqual(t, digestOf(before), digestOf(after),
-		"secret_inputs gained an entry and the task schema digest did not change")
+// TestClaimsDigestChangesWithSecretInputs is the same claim for the other
+// field with security weight: which inputs the host will resolve a secret
+// reference into before it crosses into the plugin.
+func TestClaimsDigestChangesWithSecretInputs(t *testing.T) {
+	t.Parallel()
+
+	before := v1.TaskDescriptionClaimsOnly(v1.DescribeTask(v1.TaskDef{Name: "commit_push"}))
+	after := v1.TaskDescriptionClaimsOnly(v1.DescribeTask(v1.TaskDef{Name: "commit_push", SecretInputs: []string{"token"}}))
+
+	require.NotEqual(t, digestOf(t, before), digestOf(t, after),
+		"secret_inputs gained an entry and the claims-only digest did not change")
+}
+
+// TestTaskSchemaDigestIsStableAcrossAClaimsChange is the P1 a Codex review on
+// #763 named: an in-flight durable run's ResolvedPlugin embeds
+// TaskSchemaDigest at submission, and the worker admission check compares it
+// exactly at every segment boundary, non-retryably. If TaskSchemaDigest moved
+// whenever a claim field did, a routine worker upgrade to this commit would
+// permanently fail every already-durable run touching a plugin with a
+// non-default claim — including the shipped SQL and Codex plugins'
+// secret_inputs — for a plugin whose behavior never changed. So
+// TaskSchemaDigest ([v1.TaskDescriptionSansClaims]) must not move when only
+// the claim fields do; [TestClaimsDigestChangesWithNeedsScope] above is where
+// that change is supposed to be visible instead.
+func TestTaskSchemaDigestIsStableAcrossAClaimsChange(t *testing.T) {
+	t.Parallel()
+
+	before := v1.TaskDescriptionSansClaims(v1.DescribeTask(v1.TaskDef{Name: "commit_push"}))
+	after := v1.TaskDescriptionSansClaims(v1.DescribeTask(v1.TaskDef{
+		Name:             "commit_push",
+		NeedsPrevOutputs: true,
+		SecretInputs:     []string{"token"},
+		ShapesOutputs:    true,
+		DeferredInputs:   []string{"outputs"},
+		ExpressionInputs: []string{"expect"},
+	}))
+
+	require.Equal(t, digestOf(t, before), digestOf(t, after),
+		"every claim field changed and the task schema digest moved anyway; an in-flight run "+
+			"pinned to the old digest would be permanently refused by a worker upgraded to this code, "+
+			"for a plugin whose descriptors never changed")
 }
 
 // TestClaimsSchemaVersionDistinguishesUnknownFromFalse is the fail-closed

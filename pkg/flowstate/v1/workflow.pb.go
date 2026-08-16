@@ -541,8 +541,17 @@ type ResolvedPlugin struct {
 	ProtocolVersion    uint32                 `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	TaskSchemaDigest   string                 `protobuf:"bytes,4,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
 	DistributionDigest string                 `protobuf:"bytes,5,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// ClaimsDigest is the pinned answer to [flowstatev1.PluginDescription]'s
+	// field of the same name — the security-weight claims, hashed apart from
+	// task_schema_digest so the two can move independently (#712, #763
+	// review). Empty on a run resolved before this field existed: a worker
+	// checking this pin skips comparing it rather than refusing the run, since
+	// there is nothing recorded to compare against and the alternative is a
+	// routine host upgrade permanently failing every already-durable run
+	// touching a plugin with a non-default claim.
+	ClaimsDigest  string `protobuf:"bytes,6,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResolvedPlugin) Reset() {
@@ -606,6 +615,13 @@ func (x *ResolvedPlugin) GetTaskSchemaDigest() string {
 func (x *ResolvedPlugin) GetDistributionDigest() string {
 	if x != nil {
 		return x.DistributionDigest
+	}
+	return ""
+}
+
+func (x *ResolvedPlugin) GetClaimsDigest() string {
+	if x != nil {
+		return x.ClaimsDigest
 	}
 	return ""
 }
@@ -2849,13 +2865,14 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\x8d\x01\n" +
 	"\x11PluginRequirement\x12-\n" +
 	"\x04name\x18\x01 \x01(\tB\x19\xbaH\x16r\x142\x12^[a-z][a-z0-9_-]*$R\x04name\x12I\n" +
-	"\x0fminimum_version\x18\x02 \x01(\tB \xbaH\x1dr\x1b2\x19^v[0-9]+\\.[0-9]+\\.[0-9]+$R\x0eminimumVersion\"\xc8\x01\n" +
+	"\x0fminimum_version\x18\x02 \x01(\tB \xbaH\x1dr\x1b2\x19^v[0-9]+\\.[0-9]+\\.[0-9]+$R\x0eminimumVersion\"\xed\x01\n" +
 	"\x0eResolvedPlugin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\rR\x0fprotocolVersion\x12,\n" +
 	"\x12task_schema_digest\x18\x04 \x01(\tR\x10taskSchemaDigest\x12/\n" +
-	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\"\xc6\x06\n" +
+	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\x12#\n" +
+	"\rclaims_digest\x18\x06 \x01(\tR\fclaimsDigest\"\xc6\x06\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +

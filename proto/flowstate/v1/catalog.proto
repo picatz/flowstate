@@ -277,23 +277,32 @@ message PluginDescription {
   repeated TaskDescription tasks = 6;
   uint32 protocol_version = 7;
 
-  // TaskSchemaDigest is computed over Tasks as this host reconstructed them,
-  // deterministically marshaled — the case it exists to catch is a plugin
-  // whose descriptors changed shape while its version stood still.
+  // TaskSchemaDigest is computed over Tasks' descriptor shape — name,
+  // summary, inputs, outputs — deterministically marshaled: the case it
+  // exists to catch is a plugin whose descriptors changed shape while its
+  // version stood still.
   //
-  // Semantic change: TaskDescription.needs_scope, secret_inputs,
-  // shapes_outputs, deferred_inputs and expression_inputs now travel inside
-  // the marshaled TaskDescription this digest is computed over, so a plugin
-  // that flips needs_scope or adds a name to secret_inputs without changing
-  // any descriptor shape now changes this digest where it previously did
-  // not. That is the fix for the gap this field existed to catch (#712): the
-  // fields with the most security weight in a plugin's contract were
-  // computable and simply excluded from it. Every digest pinned before this
-  // change is a digest of a narrower contract and will not match one
-  // recomputed after it, for every plugin, whether its claims changed or not
-  // — a one-time rollout cost, paid once per pin.
+  // Deliberately not computed over NeedsScope, SecretInputs, ShapesOutputs,
+  // DeferredInputs or ExpressionInputs, even though those travel on the same
+  // TaskDescription — see ClaimsDigest below for why they get their own
+  // digest instead of folding into this one. This field is embedded in every
+  // in-flight run's ResolvedPlugin the moment a run is submitted, replayed
+  // against a worker's freshly computed catalog at every segment boundary,
+  // and a mismatch is a non-retryable failure: a run already durable when
+  // this field's *meaning* changed must still see the same digest for a
+  // plugin whose descriptors did not change.
   string task_schema_digest = 8;
   string distribution_digest = 9;
+
+  // ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
+  // ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
+  // with security weight (#712) — kept apart from task_schema_digest so it
+  // can change on its own without disturbing the replay contract every
+  // already-durable run is pinned to. See
+  // [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
+  // old pin that predates this field (#763 review): it is not compared, not
+  // assumed safe, simply not asked.
+  string claims_digest = 10;
 }
 
 // TaskField is one input or output, described in the DSL's vocabulary.
