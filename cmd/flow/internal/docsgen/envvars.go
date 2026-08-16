@@ -419,6 +419,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_WORKER_STOP_TIMEOUT",
+			value:   "2m0s",
+			purpose: "Default for `--worker-stop-timeout` on `flow worker`: how long a shutdown (SIGINT or SIGTERM) waits for in-flight activities and workflow tasks to finish before the worker exits regardless. Parsed with v1.ParseDuration, the same grammar the DSL itself accepts (Go's duration syntax plus days); an unparsable value refuses to start rather than silently keep the default. Keep it under whatever grace period the deployment shape actually gives the process — see docs/DEPLOYMENT.md.",
+			read:    "cmd/flow/main.go",
+		},
+		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",

@@ -339,3 +339,19 @@ func CheckRunResultSize(outputs *Workflow_StepOutputs) error {
 // bound fits with margin on a busy host, small enough that a genuinely
 // wedged workflow goroutine is still caught quickly (#431).
 const WorkerDeadlockDetectionTimeout = 5 * time.Second
+
+// DefaultWorkerStopTimeout is how long `flow worker` gives the Temporal SDK to
+// drain in-flight activities and workflow tasks after a shutdown signal before
+// it returns from Stop, overridden by `--worker-stop-timeout`/
+// FLOWSTATE_WORKER_STOP_TIMEOUT.
+//
+// The SDK's own zero value is 0s: Stop's internal wait races a timer against
+// the in-flight WaitGroup, and a zero timer fires immediately, so an unset
+// value does not mean "wait forever" — it means "don't wait at all," which is
+// silent data loss dressed up as a default. Two minutes is generous rather
+// than tight because this repository's activities are documented as
+// legitimately long-running (see the heartbeat discussion in CLAUDE.md); an
+// operator whose deployment's own grace period is shorter than this (Docker's
+// default stop grace is 10s) has to raise it or the container's SIGKILL will
+// still land before the drain finishes — see docs/DEPLOYMENT.md.
+const DefaultWorkerStopTimeout = 2 * time.Minute

@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -361,6 +362,35 @@ func workerIdentity(cmd *cobra.Command, deployment worker.DeploymentOptions, fla
 	return strings.Join(parts, "@")
 }
 
+// workerStopTimeout reads --worker-stop-timeout, which arrives as a string flag
+// rather than cobra's Duration type for the reason explained where the flag is
+// registered: pflag's own Duration formatting would hide the flag from
+// `flow docs generate`'s environment-mirror detection. Parsed with
+// [v1.ParseDuration], the same grammar the DSL itself accepts, so a value that is
+// legal in a Flowfile's `sleep:` is legal here too.
+//
+// A negative value is refused rather than passed through: [v1.ParseDuration]
+// accepts one (`-1s`), and the SDK's own Stop treats a negative stopTimeout the
+// same as a zero one — its shutdown timer fires immediately, so the drain this
+// whole flag exists to configure would silently not happen. That is exactly the
+// in-flight-work loss #751 reports, reintroduced through the fix for it.
+func workerStopTimeout(cmd *cobra.Command) (time.Duration, error) {
+	raw, _ := cmd.Flags().GetString("worker-stop-timeout")
+
+	stopTimeout, err := v1.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --worker-stop-timeout %q: %w", raw, err)
+	}
+
+	if stopTimeout < 0 {
+		return 0, fmt.Errorf(
+			"invalid --worker-stop-timeout %q: must not be negative; a negative value "+
+				"disables the drain instead of shortening it", raw)
+	}
+
+	return stopTimeout, nil
+}
+
 // runWorker implements the worker sub-command to start a Temporal worker
 // to process Flowstate workflows and activities.
 func runWorker(cmd *cobra.Command, args []string) error {
@@ -395,6 +425,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// anyway would dispatch every task unrestricted while its operator
 	// believes the file governs them.
 	if err := applyTaskPolicy(cmd); err != nil {
+		return err
+	}
+
+	// Same reasoning again: an unparsable --worker-stop-timeout is a mistake in
+	// the command line, not something that should wait until Temporal is dialed,
+	// a plugin is launched, and a secret provider is opened to surface.
+	stopTimeout, err := workerStopTimeout(cmd)
+	if err != nil {
 		return err
 	}
 
@@ -459,6 +497,7 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		Interceptors:             interceptors,
 		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
 		Identity:                 identity,
+		WorkerStopTimeout:        stopTimeout,
 	})
 
 	engine.Register(w, runtime)
@@ -497,9 +536,13 @@ func runWorker(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unable to start worker: %w", err)
 	}
 
-	// Listen for shutdown signals to gracefully stop the worker.
+	// Listen for shutdown signals to gracefully stop the worker. Stop() itself
+	// does the draining: it stops polling for new work immediately, then blocks
+	// until every in-flight activity and workflow task finishes or
+	// stopTimeout elapses, whichever comes first (WorkerStopTimeout above).
 	<-cmd.Context().Done()
-	infraLogger().Info("shutting down worker")
+	infraLogger().Info("shutting down worker, draining in-flight work",
+		"worker_stop_timeout", stopTimeout)
 	w.Stop()
 
 	// After the worker has stopped, so the last activity's spans and the last
@@ -1807,6 +1850,28 @@ flow server --verbose`,
 			"--deployment-name/--build-id, --tenant if set, and this process's hostname — still more "+
 			"specific than the SDK's own pid@hostname default, but a real platform identifier beats it")
 
+	// How long Stop() gives an in-flight activity or workflow task to finish
+	// once SIGINT/SIGTERM arrives, before the SDK gives up waiting and returns.
+	// Keep it under whatever grace period the deployment shape actually gives
+	// this process (Docker's `stop` default is 10s; Kubernetes'
+	// terminationGracePeriodSeconds is commonly 30s) — a drain window longer
+	// than the grace period never finishes; it just moves where the hard kill
+	// lands. See docs/DEPLOYMENT.md.
+	//
+	// A string flag rather than cobra's Duration type, matching every other
+	// FLOWSTATE_*-defaulted flag in this file: pflag reprints a Duration
+	// default in its own canonical form, which is indistinguishable from a
+	// literal constant, so `flow docs generate`'s environment-mirror detection
+	// (cmd/flow/internal/docsgen/cli.go) — which works by setting a variable to
+	// a sentinel string and checking whether it survives unchanged into a
+	// flag's default — could never see this one. A plain string default passes
+	// the sentinel through untouched. Parsed once in runWorker, with
+	// v1.ParseDuration for the same duration grammar the DSL itself accepts.
+	workerCmd.Flags().String("worker-stop-timeout",
+		cmp.Or(os.Getenv("FLOWSTATE_WORKER_STOP_TIMEOUT"), v1.DefaultWorkerStopTimeout.String()),
+		"how long to wait for in-flight activities and workflow tasks to finish once a shutdown "+
+			"signal (SIGINT or SIGTERM) arrives, before this worker exits regardless")
+
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
 	addSecretFlags(serverCmd)
@@ -2335,9 +2400,36 @@ flow lsp --plugin-dir ./plugins`,
 func main() {
 	rootCmd := newRootCommand()
 
-	// We can use a context to handle OS signals like Ctrl+C gracefully.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	// We can use a context to handle OS signals like Ctrl+C gracefully, and —
+	// this is the one every documented deployment shape actually sends —
+	// SIGTERM: what `docker stop`, a Kubernetes pod termination, and
+	// `systemctl stop` all send before SIGKILL. os.Kill (SIGKILL) used to be
+	// listed here too; the kernel handles it directly, so no process can ever
+	// catch it, and registering for it was a no-op that read as coverage this
+	// context never had.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// signal.NotifyContext keeps intercepting SIGINT/SIGTERM until cancel is
+	// called — that is the whole point while ctx is still live, so the first
+	// signal is the one that actually cancels it rather than being swallowed.
+	// But a plain `defer cancel()` only runs once execute (and whatever it
+	// blocked on) returns, and `flow worker` blocks exactly here: the first
+	// signal cancels cmd.Context(), which sends w.Stop() into a drain that can
+	// legitimately take up to --worker-stop-timeout. Every signal an operator
+	// sends during that drain would otherwise be caught and silently
+	// discarded by this same context — canceling it again is a no-op — leaving
+	// SIGKILL as the only way to force an unresponsive drain down, which is
+	// the exact hard-kill outcome this whole context exists to give an
+	// alternative to. So cancel is called the moment the first signal lands,
+	// not only at process exit: everything already reading ctx sees exactly
+	// the same cancellation it would have anyway, and every signal after the
+	// first reaches the process's default disposition (terminate) instead of
+	// this handler.
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
 
 	// The help and every error report are drawn by this binary, in the same palette
 	// as everything else it prints. A binary whose help is one colour and whose

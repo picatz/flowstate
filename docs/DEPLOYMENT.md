@@ -493,6 +493,36 @@ in front of it: that is exactly the plaintext-to-the-internet case the flag's
 help text tells you not to use it for, and the cluster network is not a
 substitute boundary the way a container's published-port binding is.
 
+### Graceful shutdown
+
+`flow worker` catches SIGINT and SIGTERM — the signal every recipe above
+actually sends: `docker stop`, `systemctl stop`, and a Kubernetes pod
+termination all send SIGTERM first and SIGKILL only after a grace period. On
+either signal it stops polling for new work immediately, then gives in-flight
+activities and workflow tasks up to `--worker-stop-timeout`
+(`FLOWSTATE_WORKER_STOP_TIMEOUT`, default `2m`) to finish before exiting
+regardless.
+
+That timeout only does its job if the deployment's own grace period is at
+least as long, or the platform's hard kill lands first and the wait was for
+nothing:
+
+- **systemd** — add `TimeoutStopSec=` to the `[Service]` block in the unit
+  above, at least as large as `--worker-stop-timeout` (systemd's own default
+  is 90s, shorter than this document's 2-minute worker default).
+- **Docker / Docker Compose** — `docker stop` defaults to a 10-second grace
+  period; pass `--time` (or `stop_grace_period:` in Compose) to raise it, or
+  lower `--worker-stop-timeout` to fit inside the default if 10s is enough for
+  your activities.
+- **Kubernetes** — set the worker `Deployment`'s pod
+  `terminationGracePeriodSeconds` (default 30s) to at least
+  `--worker-stop-timeout`'s value; the kubelet sends SIGKILL the moment that
+  elapses; it does not wait on the container.
+
+Size `--worker-stop-timeout` to the longest activity you expect in flight, not
+to the platform default — the platform default is not a fact about your
+workflows, and the two are independently configured on purpose.
+
 ### Cloud Run / fly.io
 
 These need attention before they're a good fit, not because they can't work:
