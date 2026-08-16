@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // What a declared webhook can be wrong about, and how a delivery becomes a run's
@@ -235,7 +236,8 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	// be named alike, so either all of them dedupe against each other or none does.
 	// Refused where it is written rather than at the first redelivery, which is the
 	// one moment nobody is watching.
-	if _, computed := key.GetKind().(*Value_Expr); !computed {
+	expression, computed := key.GetKind().(*Value_Expr)
+	if !computed || !celExprReferencesIdentifier(expression.Expr.GetExpr(), EventRoot) {
 		return fmt.Errorf("webhook %q writes an `idempotency_key:` that does not depend on the delivery, so "+
 			"every delivery would be named alike; write an expression over `%s`, such as "+
 			"`${%s.%s[\"stripe-signature\"]}` or an id from the body",
@@ -243,6 +245,88 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	}
 
 	return nil
+}
+
+// celExprReferencesIdentifier reports whether an expression has a *free*
+// occurrence of name — one not shadowed by an enclosing comprehension's own
+// bound variable. Trigger expressions are already type-checked separately;
+// this walk exists to distinguish a delivery-derived key from a CEL
+// expression that merely wraps a constant.
+//
+// Scope-aware for the same reason [collectFreeIdentifiers] is: a
+// comprehension can bind an iteration variable of the same name it is asked
+// about, and once it does, every occurrence inside the comprehension's
+// loop_condition, loop_step and result refers to that local binding, not to
+// the identifier this is checking for. `[1].map(event, string(event))[0]`
+// type-checks to the constant `"1"` — its `event` is the comprehension's own
+// loop variable, never the delivery root — and treating it as a reference to
+// the outer `event` would accept an idempotency key that names the same
+// value on every delivery.
+func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
+	return celExprReferencesFreeIdentifier(expression, name, nil)
+}
+
+// celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk,
+// carrying the set of names an enclosing comprehension has bound so far.
+func celExprReferencesFreeIdentifier(expression *expr.Expr, name string, bound map[string]struct{}) bool {
+	if expression == nil {
+		return false
+	}
+	switch kind := expression.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		if _, shadowed := bound[kind.IdentExpr.GetName()]; shadowed {
+			return false
+		}
+		return kind.IdentExpr.GetName() == name
+	case *expr.Expr_SelectExpr:
+		return celExprReferencesFreeIdentifier(kind.SelectExpr.GetOperand(), name, bound)
+	case *expr.Expr_CallExpr:
+		if celExprReferencesFreeIdentifier(kind.CallExpr.GetTarget(), name, bound) {
+			return true
+		}
+		for _, argument := range kind.CallExpr.GetArgs() {
+			if celExprReferencesFreeIdentifier(argument, name, bound) {
+				return true
+			}
+		}
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			if celExprReferencesFreeIdentifier(element, name, bound) {
+				return true
+			}
+		}
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			if celExprReferencesFreeIdentifier(entry.GetMapKey(), name, bound) ||
+				celExprReferencesFreeIdentifier(entry.GetValue(), name, bound) {
+				return true
+			}
+		}
+	case *expr.Expr_ComprehensionExpr:
+		comprehension := kind.ComprehensionExpr
+
+		// iter_range and accu_init are evaluated in the *outer* scope — the
+		// comprehension's own variables are not bound yet when either runs.
+		if celExprReferencesFreeIdentifier(comprehension.GetIterRange(), name, bound) ||
+			celExprReferencesFreeIdentifier(comprehension.GetAccuInit(), name, bound) {
+			return true
+		}
+
+		inner := make(map[string]struct{}, len(bound)+3)
+		for existing := range bound {
+			inner[existing] = struct{}{}
+		}
+		for _, iterName := range []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()} {
+			if iterName != "" {
+				inner[iterName] = struct{}{}
+			}
+		}
+
+		return celExprReferencesFreeIdentifier(comprehension.GetLoopCondition(), name, inner) ||
+			celExprReferencesFreeIdentifier(comprehension.GetLoopStep(), name, inner) ||
+			celExprReferencesFreeIdentifier(comprehension.GetResult(), name, inner)
+	}
+	return false
 }
 
 // CheckWebhookTriggers reports what is wrong across a workflow's whole set of

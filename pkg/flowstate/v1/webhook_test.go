@@ -33,6 +33,36 @@ func stripeTrigger() *v1.WebhookTrigger {
 	}
 }
 
+func TestCheckWebhookIdempotencyKeyRejectsConstantExpression(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWebhookIdempotencyKey("constant", v1.NewExpr(`"all-events"`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not depend on the delivery")
+	require.NoError(t, v1.CheckWebhookIdempotencyKey("derived", v1.NewExpr(`event.body.id`)))
+}
+
+// TestCheckWebhookIdempotencyKeyRejectsAConstantShadowedByAComprehension is the
+// scope-aware half of the check above: a comprehension can bind an iteration
+// variable named `event`, and every occurrence inside that comprehension's own
+// body then refers to *that* binding, not to the delivery root. Left
+// scope-naive, `[1].map(event, string(event))[0]` type-checks to the constant
+// `"1"` and would pass as though it depended on the delivery — so every
+// delivery would still be named alike, and no redelivery would ever be
+// recognized as one.
+func TestCheckWebhookIdempotencyKeyRejectsAConstantShadowedByAComprehension(t *testing.T) {
+	t.Parallel()
+
+	err := v1.CheckWebhookIdempotencyKey("shadowed", v1.NewExpr(`[1].map(event, string(event))[0]`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not depend on the delivery")
+
+	// The same shape, genuinely depending on the delivery outside the
+	// comprehension's own scope, must still be accepted.
+	require.NoError(t, v1.CheckWebhookIdempotencyKey("derived",
+		v1.NewExpr(`event.body.id + string([1].map(event, string(event))[0])`)))
+}
+
 // orderWorkflow declares the signature the trigger above is a call site of.
 func orderWorkflow() *v1.Workflow {
 	return &v1.Workflow{
