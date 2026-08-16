@@ -235,7 +235,19 @@ func (p *Policy) newClient() *http.Client {
 	// Connection-scoped rules are evaluated by the dialer. Do not let a later
 	// request bypass that evaluation by reusing a connection established for a
 	// different request (and potentially a different workload identity).
-	transport.DisableKeepAlives = !p.connRules.empty()
+	//
+	// Self-administration is the same hazard wearing different clothes and has to
+	// be named separately, because it is decided at dial time too without being a
+	// CEL rule: [Policy.checkControlPlane] reads the run identity off the
+	// *request's* context, so a request carrying one could open a connection to
+	// the control plane that a later request carrying none then reuses — never
+	// entering controlDial, and so never meeting the denial that exists precisely
+	// to stop a workflow acting with the worker's authority.
+	//
+	// Without self-administration the control-plane answer is a flat refusal that
+	// does not read the request at all, so no connection to one can exist to be
+	// reused, and reuse stays safe.
+	transport.DisableKeepAlives = !p.connRules.empty() || p.cfg.selfAdministration
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
