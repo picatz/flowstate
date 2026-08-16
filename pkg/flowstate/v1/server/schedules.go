@@ -265,12 +265,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		Memo: scheduleMemo,
 
 		Action: &client.ScheduleWorkflowAction{
-			// A readable id rather than a uuid, because unlike a run this workload
-			// has a name in advance: every firing is `<schedule>`, and Temporal
-			// appends the scheduled time to keep them distinct. An operator reading
-			// `flow list` can then see which schedule a run came from without asking
-			// anything else.
-			ID:        schedulePrefix + name,
+			// Use the schedule object's tenant-scoped id as the readable base for
+			// every firing. Temporal appends the scheduled time to keep firings
+			// distinct; including the tenant keeps same-named schedules in a shared
+			// Temporal namespace distinct too.
+			ID:        scheduleIDFor(namespace, name),
 			Workflow:  engine.Run,
 			TaskQueue: taskQueue,
 

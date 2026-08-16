@@ -3,7 +3,11 @@ syntax = "proto3";
 package flowstate.plugin.v1;
 
 import "buf/validate/validate.proto";
-import "flowstate/v1/flowstate.proto";
+import "flowstate/v1/identity.proto";
+import "flowstate/v1/run.proto";
+import "flowstate/v1/task.proto";
+import "flowstate/v1/value.proto";
+import "flowstate/v1/workflow.proto";
 import "google/api/field_behavior.proto";
 import "google/protobuf/duration.proto";
 

@@ -23,7 +23,7 @@ func (g *Generator) renderDiagnosticCodeReference() string {
 
 	b.WriteString(generatedNotice + "\n\n")
 	b.WriteString("# Diagnostic code reference\n\n")
-	b.WriteString("Every stable `code` a [`Diagnostic`](../../proto/flowstate/v1/flowstate.proto)\n")
+	b.WriteString("Every stable `code` a [`Diagnostic`](../../proto/flowstate/v1/diagnostics.proto)\n")
 	b.WriteString("carries, so a program can decide what a validation failure *is* without parsing\n")
 	b.WriteString("`message`, which this project reserves the right to reword. Deliberately small:\n")
 	b.WriteString("only the classes an agent is actually expected to branch on have their own code,\n")
