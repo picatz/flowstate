@@ -527,7 +527,10 @@ tenant, so without a fairness key the queue is first-come-first-served and a ten
 large workload away from everybody else's work sitting behind theirs — not deliberately,
 which is what makes it likely, since a five-thousand-iteration loop is an ordinary thing to
 write. A run therefore carries a Temporal fairness key taken from its authenticated tenant,
-which dispatches each tenant a share in proportion to weight rather than to volume.
+which dispatches each tenant a share in proportion to weight rather than to volume — setting
+the key is verified and correctly wired; whether it is *enforced* is a property of your
+Temporal server version and configuration, since Temporal marks `Priority`/fairness as an
+experimental SDK feature (see [DEPLOYMENT.md's "Noisy neighbor"](DEPLOYMENT.md#noisy-neighbor)).
 Activities inherit it from the run, so it covers every task the run goes on to schedule,
 and Temporal carries it across Continue-As-New — which matters, because the workloads that
 suspend are exactly the ones that crowd a queue.
