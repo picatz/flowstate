@@ -294,6 +294,20 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			Memo:     actionMemo,
 			Priority: fairnessFor(namespace),
 
+			// Through [runStaticSummary], the exact function
+			// [FlowstateServer.prepareCreate] uses — see that function's doc
+			// for why one function is what keeps a scheduled run's fired
+			// execution and a direct run's execution legible the same way in
+			// the Temporal Web workflow list (#753).
+			StaticSummary: runStaticSummary(namespace, workflow.GetName()),
+
+			// Unlike prepareCreate's call site, a fired schedule execution has
+			// a natural longer-form description on hand: which schedule fired
+			// it. Schedule names share the workflow name's grammar
+			// (`^[A-Za-z0-9-_]+$`, schedule.proto), so this is exactly as safe
+			// to render as [runStaticSummary]'s backticks.
+			StaticDetails: fmt.Sprintf("Fired by schedule `%s`.", name),
+
 			// Through the exact function [FlowstateServer.Run] uses — see
 			// [runSearchAttributes] — for the identical reason signalEntry
 			// above is: a scheduled run's fired execution and a direct run's

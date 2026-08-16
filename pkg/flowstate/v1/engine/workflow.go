@@ -320,6 +320,13 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
+	// Captured before any of the reassignments below, for [executor.detailsCtx]'s
+	// reason: this is the SDK's own root context, the one whose WorkflowOptions
+	// pointer the built-in `__temporal_workflow_metadata` query reads — and
+	// `withSignalDeliveryCompat` two lines down forks a new one, which
+	// [workflow.SetCurrentDetails] would then write to invisibly.
+	detailsCtx := ctx
+
 	ctx = workflow.WithActivityOptions(ctx, defaultActivityOptions())
 
 	// Every signal channel this run ever opens — here and for the rest of the
@@ -434,9 +441,10 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
-		signals:  &signalCarry{pending: st.GetPendingSignals()},
-		progress: position,
-		waits:    parked,
+		signals:    &signalCarry{pending: st.GetPendingSignals()},
+		progress:   position,
+		detailsCtx: detailsCtx,
+		waits:      parked,
 
 		// The compensations registered by segments that already ran, oldest first.
 		// A saga is exactly the workload that outlives one segment — provision,
