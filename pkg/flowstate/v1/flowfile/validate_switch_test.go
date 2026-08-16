@@ -557,3 +557,37 @@ steps:
 	require.NotEmpty(t, ds)
 	assert.Contains(t, diagnosticMessages(ds), "null, which is not a value to dispatch on")
 }
+
+// TestSwitchDuplicateAcrossCelNumericRounding pins the pair the bucketing can
+// get wrong in the silent direction.
+//
+// cel-go compares an integer against a double by converting the integer to
+// double, so 9007199254740993 and 9007199254740992.0 are equal to CEL and the
+// second arm can never be reached. A bucket key finer than that equality -- an
+// exact rational, say -- files them separately, finds no candidate to compare
+// against, and accepts the unreachable arm without a word. The duplicate check
+// exists precisely to refuse it.
+func TestSwitchDuplicateAcrossCelNumericRounding(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, `edition: v2026.3
+name: t
+inputs:
+  n:
+    type: int
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.n}
+      cases:
+        - case: 9007199254740992.0
+          steps: []
+        - case: 9007199254740993
+          steps: []
+      default:
+        steps: []
+`)
+	require.NotEmpty(t, ds, "an arm CEL can never reach must be refused as a duplicate")
+	assert.Contains(t, diagnosticMessages(ds), "is already handled by")
+}

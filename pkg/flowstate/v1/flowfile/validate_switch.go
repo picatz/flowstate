@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -569,28 +568,45 @@ func switchLiteralText(lit *expr.Value) string {
 // switchLiteralEqualityKey puts values that can be equal under
 // [v1.SwitchLiteralsEqual] in the same bucket. The equality check remains the
 // final authority inside a bucket; the key only makes finding candidates
-// constant-time. In particular, a rational key preserves CEL's cross-type
-// numeric equality without rounding large integers through float64.
+// constant-time.
+//
+// The key must therefore be *coarser* than equality, never finer, and for
+// numbers that rules out an exact one. cel-go compares an integer against a
+// double by converting the integer to double, so `9007199254740993` equals
+// `9007199254740992.0` — mathematically distinct values that CEL calls the
+// same, and that a rational key filed under different rationals. The second
+// case would then be accepted as new when runtime dispatch can only ever take
+// the first: an unreachable arm, admitted silently, which is the mistake this
+// diagnostic exists to catch.
+//
+// So numbers are keyed by the double they compare *as*. That is coarse — two
+// integers a double cannot tell apart share a bucket without being equal — and
+// coarse is the safe direction, because [v1.SwitchLiteralsEqual] then settles
+// it exactly. Equality here is not transitive (those two integers are equal to
+// the same double and not to each other), which is a second reason the key
+// cannot be an equivalence class and the confirmation inside the bucket is not
+// optional.
 func switchLiteralEqualityKey(lit *expr.Value) string {
-	switch kind := lit.GetKind().(type) {
-	case *expr.Value_Int64Value:
-		return "number:" + new(big.Rat).SetInt64(kind.Int64Value).RatString()
-	case *expr.Value_Uint64Value:
-		integer := new(big.Int).SetUint64(kind.Uint64Value)
-		return "number:" + new(big.Rat).SetInt(integer).RatString()
-	case *expr.Value_DoubleValue:
-		switch {
-		case math.IsNaN(kind.DoubleValue):
+	numeric := func(f float64) string {
+		if math.IsNaN(f) {
 			// NaN is unequal to every value, including itself, so it need not be
 			// retained as a future duplicate candidate.
 			return ""
-		case math.IsInf(kind.DoubleValue, 1):
-			return "number:+inf"
-		case math.IsInf(kind.DoubleValue, -1):
-			return "number:-inf"
-		default:
-			return "number:" + new(big.Rat).SetFloat64(kind.DoubleValue).RatString()
 		}
+		if f == 0 {
+			// Negative zero equals zero, and its bits do not.
+			f = 0
+		}
+		return "number:" + strconv.FormatUint(math.Float64bits(f), 16)
+	}
+
+	switch kind := lit.GetKind().(type) {
+	case *expr.Value_Int64Value:
+		return numeric(float64(kind.Int64Value))
+	case *expr.Value_Uint64Value:
+		return numeric(float64(kind.Uint64Value))
+	case *expr.Value_DoubleValue:
+		return numeric(kind.DoubleValue)
 	case *expr.Value_StringValue:
 		return "string:" + kind.StringValue
 	case *expr.Value_BoolValue:
