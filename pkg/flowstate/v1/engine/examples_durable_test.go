@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -298,11 +297,7 @@ var exampleDurableSkips = map[string]string{}
 // TestEveryExampleRunsDurably runs every example through the durable driver, across
 // Continue-As-New, and checks the answer against the local driver's.
 func TestEveryExampleRunsDurably(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: starts a real Temporal dev server; CI runs the full suite")
-	}
-
-	// One stand-in and one dev server for the whole corpus. Starting either per
+	// One stand-in and one namespace for the whole corpus. Starting either per
 	// example would dominate the wall time — the server takes seconds to boot and
 	// the examples take a second or two each — and neither has per-example state.
 	base, unserved := tests.NewExamplesHTTPServer(t)
@@ -334,16 +329,9 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 		secretStore, authority.Policy(t), authority.Broker(t))
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
+	temporal := newTemporalNamespace(t)
 
-	devServer, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
-		ClientOptions: &client.Options{},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
+	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
 	engine.Register(w, runtime)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
@@ -496,7 +484,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// `RunState.pending_undo` is the field that makes it work, and a run that
 			// never suspends never reads it.
 			if want, fails := tests.ExampleFailure(name); fails {
-				assertFailingExampleAgrees(t, devServer.Client(), "example-failing-"+name, name, want,
+				assertFailingExampleAgrees(t, temporal, "example-failing-"+name, name, want,
 					localSpec, suspendingSpec, inputs, authority, secretStore, signals)
 
 				mu.Lock()
@@ -516,7 +504,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// handed over, so nothing was compacted away, and any difference is a real
 			// disagreement between the drivers rather than carryover trimming.
 			whole, wholeCrossings := runExampleDurably(t,
-				devServer.Client(), "example-whole-"+name, name, wholeSpec, inputs, signals, 0)
+				temporal, "example-whole-"+name, name, wholeSpec, inputs, signals, 0)
 			assert.Zero(t, wholeCrossings,
 				"%s continued as new on the default budget, so the comparison below is against a "+
 					"compacted answer rather than a whole one", name)
@@ -537,7 +525,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// handover, which is how the output-declaration pruning bug survived
 			// examples CI.
 			suspended, crossings := runExampleDurably(t,
-				devServer.Client(), "example-"+name, name, suspendingSpec, inputs, signals, 1)
+				temporal, "example-"+name, name, suspendingSpec, inputs, signals, 1)
 
 			mu.Lock()
 			crossed[name] = crossings
@@ -580,7 +568,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			t.Run(name+"/"+variant.Name, func(t *testing.T) {
 				t.Parallel()
 
-				runVariantDurably(t, devServer.Client(), name, variant,
+				runVariantDurably(t, temporal, name, variant,
 					cloneSpec(t, wf), cloneSpec(t, wf), inputs, authority, secretStore, signals)
 			})
 		}

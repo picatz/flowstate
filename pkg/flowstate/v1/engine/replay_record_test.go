@@ -14,7 +14,6 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/temporalproto"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -71,7 +70,7 @@ const recorderIdentity = "flowstate-replay-recorder"
 // TestRecordReplayCorpus records the histories [TestReplayCorpus] replays.
 func TestRecordReplayCorpus(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping: starts a real Temporal dev server")
+		t.Skip("skipping: needs the shared Temporal dev server")
 	}
 	if os.Getenv(replayRecordEnv) == "" {
 		t.Skipf("skipping: set %s=1 to record the replay corpus (see testdata/replay/README.md)", replayRecordEnv)
@@ -84,13 +83,9 @@ func TestRecordReplayCorpus(t *testing.T) {
 	target := filepath.Join(replayCorpusDir, dir)
 	require.NoError(t, os.MkdirAll(target, 0o755))
 
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{Identity: recorderIdentity},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
+	temporal := newTemporalNamespaceWithIdentity(t, recorderIdentity)
 
-	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{Identity: recorderIdentity})
+	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{Identity: recorderIdentity})
 	engine.Register(w)
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
@@ -100,7 +95,7 @@ func TestRecordReplayCorpus(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), exampleRunTimeout)
 			defer cancel()
 
-			run, err := devServer.Client().ExecuteWorkflow(ctx,
+			run, err := temporal.ExecuteWorkflow(ctx,
 				client.StartWorkflowOptions{
 					// The scenario's own name, so the workflow id in the
 					// recorded history says what the history is of.
@@ -132,7 +127,7 @@ func TestRecordReplayCorpus(t *testing.T) {
 				require.NoError(t, runErr)
 			}
 
-			histories := recordRunChain(ctx, t, devServer.Client(), run.GetID(), firstRunID)
+			histories := recordRunChain(ctx, t, temporal, run.GetID(), firstRunID)
 			require.NotEmpty(t, histories)
 
 			for i, history := range histories {

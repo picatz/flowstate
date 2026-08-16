@@ -2,18 +2,13 @@ package main
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/log"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/types/known/durationpb"
 
@@ -68,11 +63,7 @@ const releaseFirstSignal = "release-first"
 // from a step being slower than an RPC. Nothing about what is asserted changes; what
 // changes is that the first position is now guaranteed instead of likely.
 func TestWatchFollowsARealRunningExecution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: needs a Temporal dev server; CI runs the full suite")
-	}
-
-	temporal := startTemporalForTest(t)
+	temporal := newTemporalNamespace(t)
 
 	w := worker.New(temporal, engine.RunTaskQueueName, worker.Options{})
 	engine.Register(w)
@@ -257,32 +248,4 @@ func (p *movedOn) distinct() []string {
 	}
 
 	return seen
-}
-
-// startTemporalForTest boots a dev server for one test and returns a client for it.
-//
-// One server for the one test that needs it, unlike the server package — which shares
-// a server across a whole package of them and pays for it with a TestMain. A second
-// test here that needs Temporal is the point at which that trade changes.
-func startTemporalForTest(t *testing.T) client.Client {
-	t.Helper()
-
-	// Bounds startup only: the SDK uses this context to download the executable if it
-	// is not cached and to wait for the server to answer. The process it starts
-	// outlives the context and is stopped by the cleanup below.
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-
-	devServer, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
-		ClientOptions: &client.Options{
-			// Warnings and errors only: a server that comes up wrong says so, and
-			// everything below that is noise in the log of a test that passed.
-			Logger: log.NewStructuredLogger(slog.New(slog.NewTextHandler(
-				os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))),
-		},
-	})
-	require.NoError(t, err, "starting a Temporal dev server")
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	return devServer.Client()
 }
