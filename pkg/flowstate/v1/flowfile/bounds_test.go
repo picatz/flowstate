@@ -83,6 +83,38 @@ func TestMergeExpansionIsBounded(t *testing.T) {
 		"the expansion bound is what should have stopped this")
 }
 
+// TestEnumValuesAliasExpansionIsBounded covers a sequence-expansion path that
+// does not use the generic recursive value reader. Reusing one anchored enum
+// list for many declarations must still charge every expanded member.
+func TestEnumValuesAliasExpansionIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const values, inputs = 200, 501
+
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: bomb\ninputs:\n  first:\n    type: enum\n    values: &values [")
+	for i := range values {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("v" + strconv.Itoa(i))
+	}
+	b.WriteString("]\n")
+	for i := 1; i < inputs; i++ {
+		b.WriteString("  input" + strconv.Itoa(i) + ":\n    type: enum\n    values: *values\n")
+	}
+	b.WriteString("steps:\n  - id: done\n    log:\n      message: done\n")
+
+	src := []byte(b.String())
+	require.Less(t, len(src), 1<<20, "premise: the file is inside the size limit")
+
+	_, _, err := flowfile.Parse(src)
+	var ds flowfile.Diagnostics
+	require.ErrorAs(t, err, &ds)
+	assert.Contains(t, ds.Error(), "once aliases are expanded",
+		"the expansion bound is what should have stopped this")
+}
+
 // TestMergeExpansionWithinTheBoundStillWorks is the other half, and the reason
 // the bound is a count rather than a refusal.
 //
