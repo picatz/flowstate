@@ -454,6 +454,64 @@ the thing rather than from where it is written. And test by comparing bytes or b
 compiling the result: asserting the output still validates is what let all of this
 through.
 
+## A design sketch names the spelling it already has
+
+The most expensive mistakes in this repository have not been wrong code. They have
+been *proposals written without reading the thing they propose to change* — and they
+are expensive because a sketch that looks coherent gets discussed, refined, and
+sometimes built before anybody notices it re-invents something three files away.
+
+The shape is always the same. Someone reasons from the domain rather than from the
+tree, produces a design that is internally sensible, and lands it beside an existing
+answer to the same question. The result is invariant 1's violation arriving as a
+*new feature* instead of as legacy debt: two hand-maintained shapes of one thing,
+both current, both defensible.
+
+Worked example, because the general statement is too easy to nod at. A sketch on
+#726 proposed a `ClaimRequirement` message — `{claim, one_of_values}` — to annotate
+which claims gate an RPC. It reads well. It is also the *third* spelling of "this
+claim must carry this value" in a tree that already had two, one of them in the
+schema and gating an RPC:
+
+- `SignalPolicyRule.claims` (`proto/flowstate/v1/signal.proto:95`) — a structured
+  `map<string, string>` of exact-match claim requirements, checked against the
+  sender the server attested, and the thing that decides who may signal a run.
+- `auth.ClaimRule` (`auth/policy.go:215`) — the same idea at token admission,
+  hand-written rather than schema-defined.
+- CEL, where the rest of policy lives: `SecretAccessPolicy` takes CEL strings
+  (`auth/secretpolicy.go:61`), and `netpolicy` evaluates CEL over an identity
+  activation already exposing `subject`, `issuer`, `namespace` and `claims`
+  (`netpolicy/identity.go:27-30`).
+
+Note what the grep changes, and that this section was itself corrected by one
+(#730). Without `SignalPolicyRule` the sketch looks like it mirrors a lone legacy
+struct, and "just use CEL" is the obvious answer. With it, the repository already
+has a schema-defined structured claims map gating an RPC — so the live question is
+whether the new surface should *be* that message rather than a fourth shape beside
+it, and the strongest argument against the sketch is not "CEL exists" but "this
+message exists, five files away, doing exactly this". Five minutes of grep, before
+the sketch rather than after it, would have produced a better design and no
+discussion.
+
+So, before proposing a schema addition, a config surface, a policy shape, or a new
+keyword:
+
+- **Find how the repo already spells this, and cite it with `file:line`.** If the
+  answer is "it doesn't", say that explicitly — that is a finding, and a reviewer
+  can check it. An uncited sketch is a claim of novelty nobody can falsify.
+- **Check the neighbours.** If three surfaces answer one question, the odd one out is
+  usually the oldest, not the best. Do not mirror the odd one out.
+- **State the cost you are choosing to pay.** Every real design loses something. A
+  sketch with no stated cost has not been compared against anything.
+- **Prefer deriving to duplicating.** A view computed from the source of truth cannot
+  drift; a parallel declaration of the same facts always eventually does.
+
+The rule generalizes past design. It is the same failure as a "confident, wrong
+finding" from a stale checkout (#647), and the same failure as a review comment that
+describes code the author has already changed: **reasoning about this repository from
+memory or from first principles, when the file is right there.** Read it first. The
+tree is the only thing that is authoritative about the tree.
+
 ## Opening pull requests and issues
 
 Use `gh` — `gh pr create`, `gh issue create` — rather than an MCP or API call that
