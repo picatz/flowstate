@@ -45,8 +45,24 @@ func initRepoWithCommit(t *testing.T, gitBin, dir string) {
 	run("commit", "-q", "-m", "initial")
 }
 
+// prepareForTest runs prepareHardenedGit the same way codexExec does, and
+// registers its cleanup - callers get back what computePatch and
+// observeWorkspace actually receive in production, rather than a fixture
+// that only approximates the shape of those parameters.
+func prepareForTest(t *testing.T, dir string) (gitBin string, hardened []string) {
+	t.Helper()
+	gitBin, hardened, cleanup, ok := prepareHardenedGit(context.Background(), dir)
+	if cleanup != nil {
+		t.Cleanup(cleanup)
+	}
+	if !ok {
+		return "", nil
+	}
+	return gitBin, hardened
+}
+
 func TestComputePatchSkipsWhenNotMutating(t *testing.T) {
-	patch, files, truncated := computePatch(context.Background(), t.TempDir(), false, workspaceBaseline{observed: true},
+	patch, files, truncated := computePatch(context.Background(), "", nil, t.TempDir(), false, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if patch != "" || truncated {
 		t.Fatalf("computePatch with mutating=false = (%q, %v), want (\"\", false)", patch, truncated)
@@ -57,7 +73,7 @@ func TestComputePatchSkipsWhenNotMutating(t *testing.T) {
 }
 
 func TestComputePatchSkipsWithNoFilesChanged(t *testing.T) {
-	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, workspaceBaseline{observed: true}, nil)
+	patch, _, _ := computePatch(context.Background(), "", nil, t.TempDir(), true, workspaceBaseline{observed: true}, nil)
 	if patch != "" {
 		t.Fatalf("computePatch with no files_changed = %q, want empty", patch)
 	}
@@ -65,7 +81,9 @@ func TestComputePatchSkipsWithNoFilesChanged(t *testing.T) {
 
 func TestComputePatchSkipsWithNoGitBinaryConfigured(t *testing.T) {
 	t.Setenv(gitBinaryEnv, "")
-	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, workspaceBaseline{observed: true},
+	dir := t.TempDir()
+	gitBin, hardened := prepareForTest(t, dir)
+	patch, _, _ := computePatch(context.Background(), gitBin, hardened, dir, true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if patch != "" {
 		t.Fatalf("computePatch with no git binary configured = %q, want empty (best-effort, not an error)", patch)
@@ -76,7 +94,9 @@ func TestComputePatchSkipsWhenDirIsNotAGitRepo(t *testing.T) {
 	gitBin := realGitBinary(t)
 	t.Setenv(gitBinaryEnv, gitBin)
 
-	patch, _, _ := computePatch(context.Background(), t.TempDir(), true, workspaceBaseline{observed: true},
+	dir := t.TempDir()
+	preparedBin, hardened := prepareForTest(t, dir)
+	patch, _, _ := computePatch(context.Background(), preparedBin, hardened, dir, true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if patch != "" {
 		t.Fatalf("computePatch against a plain directory = %q, want empty", patch)
@@ -98,7 +118,8 @@ func TestComputePatchRendersAUnifiedDiff(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	patch, files, truncated := computePatch(context.Background(), dir, true, workspaceBaseline{observed: true},
+	gitBin, hardened := prepareForTest(t, dir)
+	patch, files, truncated := computePatch(context.Background(), gitBin, hardened, dir, true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if truncated {
 		t.Fatal("computePatch reported truncated for a tiny diff")
@@ -174,13 +195,63 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 		t.Fatalf("WriteFile untracked: %v", err)
 	}
 
-	patch, _, truncated := computePatch(context.Background(), dir, true, workspaceBaseline{observed: true},
+	// Mirrors codexExec's own ordering: hardening is prepared once, the
+	// baseline is read with it before anything else runs, and only then does
+	// computePatch touch the repository again. observeWorkspace used to run
+	// unhardened - see prepareHardenedGit's doc comment - so this checks the
+	// marker after *that* call too, not only after computePatch, to prove the
+	// baseline read no longer gets there first.
+	gitBin, hardened := prepareForTest(t, dir)
+	baseline := observeWorkspace(context.Background(), gitBin, hardened, dir, true)
+	if !baseline.observed {
+		t.Fatalf("observeWorkspace = %+v, want observed=true (a real repo, hardened successfully)", baseline)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("repository-controlled helper ran during observeWorkspace, before the run even started: Stat marker error = %v", err)
+	}
+
+	// The test files above are already dirty edits, standing in for the run's
+	// own changes - computePatch is exercised the same way the other tests in
+	// this file exercise it, with an observed-clean synthetic baseline, since
+	// what this test cares about is that neither call ran a helper, not
+	// whether this fixture's own pre-populated dirt would itself be honest to
+	// commit.
+	patch, _, truncated := computePatch(context.Background(), gitBin, hardened, dir, true, workspaceBaseline{observed: true},
 		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
 	if truncated || !strings.Contains(patch, "+changed") {
 		t.Fatalf("computePatch = (%q, truncated %v), want an ordinary unified diff", patch, truncated)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("repository-controlled diff or content-filter helper ran outside the Codex sandbox: Stat marker error = %v", err)
+	}
+}
+
+// TestHardenedGitConfigRejectsUnsafeFilterKeys proves the fail-closed
+// response to a filter name that cannot be safely disabled via `-c
+// NAME=VALUE`: Git parses that argument by splitting at the first `=`, and a
+// quoted config subsection may itself legally contain one, so a key such as
+// `filter.evil=driver.clean` does not mean what `key + "="` would assume.
+// Appending `=` to it sets `filter.evil` (to a garbage value) rather than
+// disabling the attacker's actual driver, `filter.evil=driver`. There is no
+// override spelling that closes that gap, so hardenedGitConfig has to refuse
+// the whole listing rather than silently leave that one filter enabled.
+func TestHardenedGitConfigRejectsUnsafeFilterKeys(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	dir := t.TempDir()
+	initRepoWithCommit(t, gitBin, dir)
+
+	// A quoted subsection is the only way to put "=" or other unusual bytes
+	// into a config subsection name.
+	cmd := exec.Command(gitBin, "-C", dir, "config", `filter."evil=driver".clean`, "true")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("configure repository filter.\"evil=driver\".clean: %v: %s", err, out)
+	}
+
+	_, _, ok := hardenedGitConfig(context.Background(), gitBin, dir)
+	if ok {
+		t.Fatal("hardenedGitConfig succeeded with a filter key containing \"=\" in its subsection, want fail-closed (ok=false)")
 	}
 }
 
