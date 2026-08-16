@@ -238,9 +238,17 @@ plugin are byte-bounded at the RoundTripper, below the RPC library, so no error 
 the library treats specially can miss the cap
 (`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`). The distribution digest a
 run is pinned to is taken from the same open descriptor the process is executed
-through, on Linux via `/proc/self/fd`, so a binary replaced between the hash and the
-exec cannot make the recorded provenance describe bytes that never ran
-(`pkg/flowstate/v1/plugin/image.go`).
+through, on Linux via `/proc/self/fd`, so a binary *replaced* between the hash and
+the exec — written beside and renamed over, which is how software on disk ordinarily
+replaces itself — cannot make the recorded provenance describe bytes that never ran
+(`pkg/flowstate/v1/plugin/image.go`). The descriptor pins the inode rather than its
+contents, so a writer who modifies that inode *in place* in the same window can still
+part the digest from what runs; this admits no new principal, because both the search
+path and each binary in it are refused when they are writable by group or world
+(`discover.go:75,111`), which leaves only the owner — the party who already chooses
+what this worker executes. Sealing a private copy would close it and is not done: the
+image is hashed as a stream precisely so that one very large plugin file cannot stop a
+worker from starting, and copying it into memory to seal it reintroduces that.
 
 **Limits.** Pinning the digest to the executed image is a Linux guarantee, and
 not one it makes about every plugin. A platform with no way to execute an

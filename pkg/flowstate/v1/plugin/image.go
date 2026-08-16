@@ -27,6 +27,16 @@ import (
 // hashed and the bytes executed are the same inode by construction rather than
 // by timing; where it cannot, [execImage.pinned] is false and the weaker
 // guarantee is stated rather than implied. See [openExecImage].
+//
+// What this pins is the inode, not its contents, so it answers replacement and
+// not in-place modification: a writer who truncates and rewrites this same inode
+// between the digest and the exec still parts the two. That admits no principal
+// who did not already have one, because [Discover] refuses a search path entry
+// and a binary alike when either is writable by group or world, which leaves the
+// owner — who chooses what this worker executes regardless. Copying the image
+// into a sealed memfd would close it, and would undo the reason [execImage.digest]
+// streams: a worker must not be stoppable by one very large file in a discovery
+// directory.
 type execImage struct {
 	// file is the open handle the digest is taken from, and — when pinned — the
 	// thing execPath names. It stays open until the child has exec'd.
