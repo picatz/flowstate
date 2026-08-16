@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/covbuild"
 )
 
 // docs/CLI.md promises a three-value exit status: 0 succeeded, 1 the command ran
@@ -234,6 +236,11 @@ func TestCobraFlagGroupErrorsMatchIsUsageError(t *testing.T) {
 // Skipped under -short: compiling a binary is the one thing in this package that
 // is not free, and the unit-level tests above already pin the classification
 // exitCodeFor performs.
+//
+// Instrumented with -cover when GOCOVERDIR is set (see internal/covbuild), so
+// `make coverage` can see what this subprocess actually executes — otherwise
+// invisible to `go test -cover`, which only instruments the package it compiles
+// (#519).
 func buildFlowBinary(t *testing.T) string {
 	t.Helper()
 
@@ -243,12 +250,30 @@ func buildFlowBinary(t *testing.T) string {
 
 	bin := filepath.Join(t.TempDir(), "flow")
 
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", bin, ".")
+
+	cmd := exec.Command("go", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("building flow for the golden exit-code tests: %v\n%s", err, out)
 	}
 
 	return bin
+}
+
+// runFlowBin builds an *exec.Cmd for the built binary with GOCOVERDIR set
+// explicitly (see internal/covbuild) so an instrumented build actually
+// writes its counters where `make coverage` reads them back from. Every
+// golden-path test below runs the binary through this rather than a bare
+// exec.Command, because leaving Cmd.Env nil would inherit whatever GOCOVERDIR
+// `go test -cover` itself is using internally for this process — a directory
+// coverage counters land in but a merge never reads back out of. Named
+// distinctly from runFlow in init_test.go, which runs the command tree
+// in-process rather than as a subprocess.
+func runFlowBin(bin string, args ...string) *exec.Cmd {
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), covbuild.Env()...)
+	return cmd
 }
 
 // TestExitCodeGoldenPaths runs the actual built binary through the three branches
@@ -258,7 +283,7 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 	bin := buildFlowBinary(t)
 
 	t.Run("a usage error exits 2", func(t *testing.T) {
-		cmd := exec.Command(bin, "--this-flag-does-not-exist")
+		cmd := runFlowBin(bin, "--this-flag-does-not-exist")
 		err := cmd.Run()
 
 		exitErr, ok := err.(*exec.ExitError)
@@ -271,7 +296,7 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "broken.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(brokenWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "validate", path)
+		cmd := runFlowBin(bin, "validate", path)
 		err := cmd.Run()
 
 		exitErr, ok := err.(*exec.ExitError)
@@ -284,7 +309,7 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "fine.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "validate", path)
+		cmd := runFlowBin(bin, "validate", path)
 		err := cmd.Run()
 
 		assert.NoError(t, err, "a valid workflow did not exit zero")
@@ -303,7 +328,7 @@ func TestSuggestionsAppearForNearMissesAndNotForGarbage(t *testing.T) {
 	bin := buildFlowBinary(t)
 
 	t.Run("a near-miss command gets a ranked suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "lst")
+		cmd := runFlowBin(bin, "lst")
 		out, err := cmd.CombinedOutput()
 
 		exitErr, ok := err.(*exec.ExitError)
@@ -316,7 +341,7 @@ func TestSuggestionsAppearForNearMissesAndNotForGarbage(t *testing.T) {
 	})
 
 	t.Run("a command sharing nothing with the tree gets no suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "zzzzzqqqq123")
+		cmd := runFlowBin(bin, "zzzzzqqqq123")
 		out, err := cmd.CombinedOutput()
 
 		_, ok := err.(*exec.ExitError)
@@ -326,7 +351,7 @@ func TestSuggestionsAppearForNearMissesAndNotForGarbage(t *testing.T) {
 	})
 
 	t.Run("a near-miss flag gets a ranked suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "list", "--adress", "x")
+		cmd := runFlowBin(bin, "list", "--adress", "x")
 		out, err := cmd.CombinedOutput()
 
 		exitErr, ok := err.(*exec.ExitError)
@@ -337,7 +362,7 @@ func TestSuggestionsAppearForNearMissesAndNotForGarbage(t *testing.T) {
 	})
 
 	t.Run("a flag sharing nothing with the command's flag set gets no suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "list", "--zzzzzqqqq123", "x")
+		cmd := runFlowBin(bin, "list", "--zzzzzqqqq123", "x")
 		out, err := cmd.CombinedOutput()
 
 		_, ok := err.(*exec.ExitError)
@@ -366,7 +391,7 @@ func TestExitCodeGoldenPathsForSelfValidatedFlags(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "fine.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "fmt", "-o", "yaml", path)
+		cmd := runFlowBin(bin, "fmt", "-o", "yaml", path)
 		err := cmd.Run()
 
 		exitErr, ok := err.(*exec.ExitError)
@@ -379,7 +404,7 @@ func TestExitCodeGoldenPathsForSelfValidatedFlags(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "fine.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "fix", "--stdout", "--check", path)
+		cmd := runFlowBin(bin, "fix", "--stdout", "--check", path)
 		err := cmd.Run()
 
 		exitErr, ok := err.(*exec.ExitError)
@@ -395,7 +420,7 @@ func TestExitCodeGoldenPathsForSelfValidatedFlags(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "broken.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(brokenWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "validate", "-o", "json", path)
+		cmd := runFlowBin(bin, "validate", "-o", "json", path)
 		err := cmd.Run()
 
 		exitErr, ok := err.(*exec.ExitError)

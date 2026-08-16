@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update coverage
 
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
@@ -159,3 +159,55 @@ appearance:
 # appearance the CLI has never produced.
 appearance-update:
 	GOMEMLIMIT=2GiB go test -timeout 900s -count=1 -run TestAppearance ./cmd/flow/internal/appearance/ -update
+
+# Coverage across the process boundary `go test -cover` cannot see (#519).
+#
+# At least seven test files drive the `flow` binary or a plugin as a real
+# subprocess — exec.Command on a separately compiled binary — rather than
+# calling into the package under test directly: cmd/flow/execute_test.go,
+# nocolor_test.go, mcp_plugin_test.go, cmd/flow/internal/appearance's
+# appearance_test.go, and pkg/flowstate/v1/plugin/example_test.go among them.
+# `go test -cover` only instruments the package it is compiling, so every one
+# of those lines is invisible to it: a CLI verb whose only coverage comes
+# from a subprocess test looks identical to one with no test at all.
+#
+# GOCOVERDIR exported below is read two ways at once. Go's own toolchain
+# reads it directly: `go test -cover -args -test.gocoverdir=...` makes this
+# process's own in-process test binaries write their counters there. And
+# internal/covbuild reads the same variable to decide, for every test file
+# above, whether to build its subprocess binary with -cover and to carry
+# GOCOVERDIR into the environments built from scratch that would not
+# otherwise inherit it — so an instrumented `flow` or example-plugin binary,
+# run as a real subprocess, writes its counters into the same directory.
+# `go tool covdata` then merges every process's counters, however many ran,
+# into one profile — that merge is the whole point of the mechanism; nothing
+# here computes coverage from a single process the way -coverprofile does.
+#
+# This is a map, not a gate, per #519: nothing in CI or `make check` reads
+# .coverage/, and no percentage is enforced anywhere, here or anywhere else.
+# Run it locally, open .coverage/coverage.html, and look for a path nothing
+# reached — that reading is the deliverable, not the number.
+#
+# Scope: this covers everything `go test ./...` reaches, including every
+# subprocess-driven test file named above. It does NOT cover plugins/* — git,
+# github, sql, vcs and codex are separate Go modules (make test-plugins builds
+# and tests them one module at a time) outside this module's build graph, so
+# there is nothing from them for covdata to merge here. Extending this
+# mechanism to the plugin modules, and wiring a merged report into the weekly
+# deep tier per #519's own suggestion, are tracked as follow-ups rather than
+# landed in this target.
+coverage:
+	rm -rf .coverage
+	mkdir -p .coverage/raw
+	( GOCOVERDIR=$(CURDIR)/.coverage/raw GOMEMLIMIT=2GiB go test -cover -timeout 1800s ./... -args -test.gocoverdir=$(CURDIR)/.coverage/raw ; echo $$? > .coverage/status ) 2>&1 | tee .coverage/test.log; \
+	status=$$(cat .coverage/status); \
+	go tool covdata percent -i=.coverage/raw | tee .coverage/percent.txt; \
+	go tool covdata textfmt -i=.coverage/raw -o .coverage/coverage.out; \
+	go tool cover -html=.coverage/coverage.out -o .coverage/coverage.html; \
+	echo "coverage HTML: .coverage/coverage.html"; \
+	echo "per-package summary: .coverage/percent.txt"; \
+	echo "raw counters: .coverage/raw/ (merge more processes into it with: go tool covdata merge -i=... -o=.coverage/raw)"; \
+	if [ $$status -ne 0 ]; then \
+		echo "go test exited non-zero; see .coverage/test.log. The merge above still ran — a failing run's coverage is still worth reading, since it shows what the failure itself reached."; \
+	fi; \
+	exit $$status

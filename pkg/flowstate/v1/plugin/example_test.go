@@ -14,6 +14,7 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/picatz/flowstate/internal/covbuild"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -64,7 +65,15 @@ var buildExample = sync.OnceValues(func() (string, error) {
 
 	// Built from this package's own directory, which is inside the module, so
 	// the module context is whatever the test is running under.
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", output, examplePackage)
+	//
+	// Instrumented with -cover when GOCOVERDIR is set (see internal/covbuild):
+	// this plugin is the worked example that proves the SDK and host agree, and
+	// this boundary is the one #519 calls out as the worst blind spot — a
+	// separately compiled binary reached over Connect RPC that `go test -cover`
+	// cannot see into at all.
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", output, examplePackage)
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = packageDir()
 
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -98,7 +107,10 @@ func exampleHost(t *testing.T, extraEnv ...string) *Host {
 	}
 
 	cfg := testConfig(t, dir)
-	cfg.Env = extraEnv
+	// pluginEnv strips a launched plugin down to the protocol variables plus
+	// whatever is named here, by design — so GOCOVERDIR must be added back in
+	// explicitly for an instrumented example plugin to write anything.
+	cfg.Env = append(append([]string{}, extraEnv...), covbuild.Env()...)
 
 	return openHost(t, cfg)
 }
