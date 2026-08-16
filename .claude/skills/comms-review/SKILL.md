@@ -226,7 +226,7 @@ this section exists to prevent.
    it nor `get_reviews` returns a top-level issue comment or its database
    ID. Fetch them separately, paginated, before deleting anything:
 
-       gh api --paginate repos/{owner}/{repo}/issues/{number}/comments
+       gh api --paginate repos/{owner}/{repo}/issues/$number/comments
 
    REST deletes them, and that is the right answer *for this class only*.
    `{id}` is the database ID each comment carries in that listing — bind it
@@ -244,29 +244,40 @@ this section exists to prevent.
    What qualifies is narrow and testable: the comment carries **no claim
    about the diff**. A rate-limit notice, a "try again later", a bot
    announcing it is starting. If you have to think about whether it carries
-   signal, it does — resolve it, or leave it and say so.
+   signal, it does — leave it, react to it if a reaction applies, or reply if
+   it needs one, and say so in your own report. Not "resolve it": a top-level
+   comment has no resolve mechanism, which is the fact this whole item opened
+   with — resolution is for review threads only.
 
    If `minimizeComment` becomes reachable, prefer it: hiding preserves the
    record where deleting does not, and the narrowness of this rule is a
    consequence of only having the destructive tool.
-9. **Read threads over REST, resolve over GraphQL.** This is the single
-   biggest budget lever and it was found the expensive way: one wave of 27
-   PRs burned 10,757 GraphQL points and exhausted the pool, almost all of it
-   on *reading* threads rather than resolving them.
+9. **Triage over REST, resolve over GraphQL — once per PR, at resolve time.**
+   This is the single biggest budget lever and it was found the expensive
+   way: one wave of 27 PRs burned 10,757 GraphQL points and exhausted the
+   pool, almost all of it on *reading* threads over and over rather than
+   resolving them.
 
    `GET /repos/{owner}/{repo}/pulls/{n}/comments` is REST, costs the core
    budget (15,000/hour, rarely the constraint), and returns every review
    comment with its id, author, path, line and `in_reply_to_id` — enough to
-   group comments into threads and decide what to act on. What REST does
-   *not* return is resolution state; there is no `isResolved` on that
-   payload, verified.
+   group comments into threads and decide what to act on: triage the whole
+   set, fix or accept each finding, and post every reaction over REST. None
+   of that needs GraphQL.
 
-   So: sweep with REST, act with REST (reactions, replies, deletes are all
-   REST), and spend GraphQL only on `resolve_review_thread` itself — one
-   call per thread you actually resolve. Track what you resolved in your own
-   notes rather than re-reading to confirm it; a resolve that returned
-   success succeeded, and re-reading to check costs the budget the sweep was
-   trying to save.
+   What REST cannot give you is the thread's own identity.
+   `resolve_review_thread` takes a review-thread node ID (`PRRT_…`), and
+   that ID exists only in the GraphQL schema — REST's comment listing has no
+   field for it, and no amount of grouping REST's comment IDs manufactures
+   one. So resolving is unavoidably a GraphQL operation; the lever is
+   *when* you pay for it, not whether. Finish triage and every fix first,
+   entirely over REST. Only once a PR is otherwise done, make **one**
+   `get_review_comments` call for that PR to read off every thread's node ID
+   together with its `isResolved` state, and drive every `resolve_review_thread`
+   call for that PR from that single read. One GraphQL read per PR at the
+   end, not one per finding throughout the sweep, and never a second one
+   to confirm — a resolve that returned success succeeded, and re-reading
+   to check costs the budget the batching was trying to save.
 
    The failure mode this prevents is not slowness. With GraphQL exhausted,
    threads cannot be resolved at all, and the rule that nothing merges with
