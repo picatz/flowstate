@@ -601,11 +601,18 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version2})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version3})
 	if !ok {
+		// Say what to do, not only what is wrong. This refusal is the whole
+		// point of the version bump: it is reached by whichever side is older,
+		// at startup, instead of a descriptor failing to reconstruct later —
+		// and an operator reading it needs to know the two builds must move
+		// together, which is not something they can infer from two numbers.
 		return environment{}, fmt.Errorf(
-			"%w: it offered %s, this plugin speaks %d",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version2,
+			"%w: the host offered %s and this plugin speaks %d; "+
+				"a host and its plugins must be upgraded together across this change, "+
+				"so upgrade whichever of the two is older",
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version3,
 		)
 	}
 

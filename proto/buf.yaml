@@ -7,7 +7,15 @@ breaking:
     - FILE
     - WIRE
 
-  # TEMPORARY, and removed in the very next commit on this branch.
+  # TEMPORARY, and removed by the PR that follows this one onto main.
+  #
+  # Not "the next commit on this branch", which is what this said and could not
+  # be done: until the split is on main, `buf breaking --against origin/main`
+  # compares to a baseline that still contains flowstate/v1/flowstate.proto, so
+  # a branch with the suppression removed necessarily reports that file as
+  # deleted. The removal is therefore a follow-up PR rather than a follow-up
+  # commit — the same one-commit lifetime this file asks for, measured in the
+  # only place it can be.
   #
   # flowstate/v1/flowstate.proto was split into twelve files (#658) — value,
   # identity, task, trigger, signal, workflow, run, catalog, diagnostics,

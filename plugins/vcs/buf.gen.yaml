@@ -10,9 +10,9 @@ managed:
       flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
 # Generated with the locally installed protoc-gen-go rather than a remote
 # plugin, so regenerating needs no network - the same choice
-# flowstate-plugin-example makes and for the same reason. flowstate.proto
-# itself is not regenerated here: it is included only so buf can resolve the
-# import, and this plugin never emits Go types for the engine's own schema.
+# flowstate-plugin-example makes and for the same reason. value.proto itself
+# is not regenerated here: it is included only so buf can resolve the import,
+# and this plugin never emits Go types for the engine's own schema.
 #
 # # Regenerating
 #

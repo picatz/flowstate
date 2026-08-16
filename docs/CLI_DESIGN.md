@@ -453,7 +453,7 @@ three sections say where they do not.
 
 ## 4. Other surfaces derive from the same structure
 
-The protobuf messages under the schema under `proto/flowstate/v1/` **are** the view
+The protobuf messages in the schema under `proto/flowstate/v1/` **are** the view
 model. `flow get`'s text form and `flow get -o json`'s document are two renderings
 of one `GetResponse`; a web dashboard, a VS Code extension, or an MCP-served UI
 rendering the same run is a third, fourth, and fifth renderer of the identical
@@ -582,7 +582,7 @@ a graph is the moment a non-Go consumer needs one, with every field renamed by
 hand to match. The graph shape is schema from the start, exactly like
 `RunProgress` and `Diagnostic` already are.
 
-the schema under `proto/flowstate/v1/` gains three additive messages (new
+The schema under `proto/flowstate/v1/` gains three additive messages (new
 messages, no changes to anything existing — safe under `buf breaking` the way
 every other addition in this schema is):
 
