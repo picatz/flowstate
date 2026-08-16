@@ -182,13 +182,31 @@ func TestLoopReachedThroughCallIsRefused(t *testing.T) {
 			Kind: &v1.Node_Loop{Loop: &v1.Loop{
 				State: "a", Initial: v1.NewLiteral(int64(0)), Update: v1.NewExpr("a + 1"),
 				Until: v1.NewExpr("a >= 1"), MaxIterations: 3,
-				Body: []*v1.Node{{Id: "callee", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: inner}}}},
+				Body: []*v1.Node{{Id: "callee", Kind: &v1.Node_Call{Call: &v1.Call{
+					Workflow: inner,
+					Source:   "./workflows/inner.yaml",
+				}}}},
 			}},
 		}},
 	}
 
 	ds := flowfile.Validate(outer)
 	require.Truef(t, containsMessage(ds, nestedLoopRefusal), "expected refusal, got %v", ds)
+
+	// Descending through a call means the offending loop sits in a file the author
+	// of this one may not have written, so the diagnostic has to say which file and
+	// which step of theirs reaches it. Positioned at the call site, naming the
+	// callee — neither half is useful alone.
+	require.Truef(t, containsMessage(ds, `"./workflows/inner.yaml"`),
+		"the refusal must name the callee holding the inner loop, got %v", ds)
+	require.Truef(t, containsMessage(ds, `step "callee"`),
+		"the refusal must name the call site in this file, got %v", ds)
+	for _, d := range ds {
+		if strings.Contains(d.Message, nestedLoopRefusal) {
+			require.Equalf(t, "outer-loop", d.Step,
+				"the diagnostic must be positioned on the caller's own step, never inside the callee: %v", d)
+		}
+	}
 }
 
 // TestLoopAsNameOutputReferenceIsCaught covers ask #3's diagnostic: a reference to a

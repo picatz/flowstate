@@ -1048,12 +1048,22 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	// has its own frame, it runs atomically at the outer loop's deeper suspend level.
 	// Allowing a loop there would multiply the two iteration ceilings without giving
 	// the durable driver an opportunity to Continue-As-New between inner iterations.
-	if bodyHasNestedLoop(loop.GetBody()) {
+	if nested, through := bodyHasNestedLoop(loop.GetBody()); nested {
+		message := "a loop inside a loop is not supported in this edition: the Continue-As-New " +
+			"interaction across two carried-state frames is not exercised yet; flatten the two into one"
+		if through != "" {
+			// The inner loop is in a file this author may not have written, and a
+			// position there would name a line they cannot see from here. So the
+			// diagnostic stays on the call site — a place in *this* file — and names
+			// the callee it descended into, which is the pair an author needs to act:
+			// which step of theirs reaches it, and which file to look in.
+			message += fmt.Sprintf("; the inner loop is inside %s, which cannot hold one while it is "+
+				"called from a loop body", through)
+		}
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "loop",
-			Message: "a loop inside a loop is not supported in this edition: the Continue-As-New " +
-				"interaction across two carried-state frames is not exercised yet; flatten the two into one",
-			Code: v1.DiagnosticCodePlacementRefusal,
+			Message: message,
+			Code:    v1.DiagnosticCodePlacementRefusal,
 		})
 	}
 
@@ -1067,37 +1077,67 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 }
 
 // bodyHasNestedLoop reports whether a loop body directly or transitively contains
-// another `loop:`, including through a call boundary.
-func bodyHasNestedLoop(nodes []*v1.Node) bool {
+// another `loop:`, including through a call boundary. When the loop was reached
+// through one or more `call:` steps, the second result describes the outermost
+// call crossed — the call site in *this* file and the callee it names — for the
+// diagnostic to quote; it is empty when the inner loop is in this file.
+//
+// A `call:` is transparent here for the reason docs/DSL.md gives: the callee's
+// specification is resolved at compile time and carried whole, so what is walked
+// is the specification that will actually run. Isolation is a runtime scoping
+// property, not an analysis boundary.
+//
+// This recursion carries no depth bound of its own, unlike [v1.CheckPolicyPlacement],
+// which walks a hand-built Workflow arriving over the RPC path and must therefore
+// bound both its depth ([v1.CheckCallDepth]) and its node count. The difference is
+// where the tree came from: this walk only ever runs over a Workflow that
+// [Unmarshal] has already built, and the call expansion that produced these
+// embedded callees is itself bounded — by depth at expansion and by
+// `maxCallExpansionNodes` in total — so the tree is finite and shallow before this
+// function sees it. The bound is real but inherited; if this walk ever gains a
+// caller that did not come through [Unmarshal], it needs its own.
+func bodyHasNestedLoop(nodes []*v1.Node) (bool, string) {
 	for _, node := range nodes {
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Loop:
-			return true
+			return true, ""
 		case *v1.Node_ForEach:
-			if bodyHasNestedLoop(kind.ForEach.GetBody()) {
-				return true
+			if nested, through := bodyHasNestedLoop(kind.ForEach.GetBody()); nested {
+				return true, through
 			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
-				if bodyHasNestedLoop(branch.GetSteps()) {
-					return true
+				if nested, through := bodyHasNestedLoop(branch.GetSteps()); nested {
+					return true, through
 				}
 			}
 		case *v1.Node_Switch:
 			// A switch body shares its enclosing suspend scope — a `loop:` in a
 			// case body inside a loop body is the same unexercised nesting.
 			for _, body := range v1.SwitchBodies(kind.Switch) {
-				if bodyHasNestedLoop(body) {
-					return true
+				if nested, through := bodyHasNestedLoop(body); nested {
+					return true, through
 				}
 			}
 		case *v1.Node_Call:
-			if bodyHasNestedLoop(kind.Call.GetWorkflow().GetSteps()) {
-				return true
+			if nested, _ := bodyHasNestedLoop(kind.Call.GetWorkflow().GetSteps()); nested {
+				// The outermost call crossed is the one an author can act on: it is
+				// the step in the file they are editing. A deeper call's site is in
+				// the callee, so it is dropped in favour of this one.
+				return true, describeCallSite(node, kind.Call)
 			}
 		}
 	}
-	return false
+	return false, ""
+}
+
+// describeCallSite names a `call:` step and the callee it names, for a diagnostic
+// reporting something found on the other side of it.
+func describeCallSite(node *v1.Node, call *v1.Call) string {
+	if source := call.GetSource(); source != "" {
+		return fmt.Sprintf("%q, called by step %q", source, node.GetId())
+	}
+	return fmt.Sprintf("the workflow called by step %q", node.GetId())
 }
 
 // validateLoopStateName refuses a loop's carried-state name that could not be read
