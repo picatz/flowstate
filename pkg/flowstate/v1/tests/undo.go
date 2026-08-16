@@ -325,6 +325,34 @@ func UndoCases(base string) []UndoCase {
 			Recorded: []string{"a", "b"},
 		},
 		{
+			// A run can still fail after its last step succeeded: the declared
+			// outputs are evaluated at the end, and a run that cannot produce the
+			// answer it promised has not succeeded. Every other case here fails
+			// *during* a step, which is the path both drivers already reached
+			// compensation through — so this is the one that says the moment a
+			// failure arrives does not decide whether the world gets put back.
+			//
+			// Neither driver compensated here before: a FAILED run with every
+			// resource it created still standing, which is the outcome the
+			// feature exists to prevent. The completion-time payload bound
+			// returns on this same path, which is why it is the same case.
+			Name: "a run that fails after its last step still compensates",
+			Workflow: &v1.Workflow{
+				Name:    "undo-outputs",
+				Profile: v1.CurrentProfile,
+				Steps: []*v1.Node{
+					undoing(records("first", base, "a"), base, "/do/undo"),
+					undoing(records("second", base, "b"), base, "/do/undo"),
+				},
+				DeclaredOutputs: []*v1.OutputDeclaration{
+					{Name: "answer", Value: v1.NewExpr(`1 / 0`)},
+				},
+			},
+			Fails:    true,
+			Summary:  `; compensation ran in reverse order: undid "second", undid "first"`,
+			Recorded: []string{"a", "b", "undo-b", "undo-a"},
+		},
+		{
 			Name: "for_each compensations use reverse input order rather than completion order",
 			Workflow: &v1.Workflow{Name: "undo-for-each-order", Profile: v1.CurrentProfile, Steps: []*v1.Node{
 				{Id: "fan", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{

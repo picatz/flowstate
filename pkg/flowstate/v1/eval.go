@@ -1072,21 +1072,24 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// then nothing below this line does anything.
 	undo := NewUndoLog(nil)
 
-	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
-		// The run cannot continue, so whatever already happened is taken back —
-		// reverse order, every entry attempted, one summary appended to the failure.
-		// [RunUndoLog] owns all three of those rules and the durable driver reaches
-		// them through the same call.
-		//
-		// A cancellation compensates too, and it is the one case that cannot use the
-		// context it arrived on. Every call made with a cancelled context fails
-		// immediately, so compensating on `ctx` would attempt each entry, have each
-		// refused by its own transport before it left the process, and report a run
-		// that "could not undo" everything it had in fact never tried to. The scope
-		// therefore has to survive the cancellation — [context.WithoutCancel] here,
-		// `workflow.NewDisconnectedContext` in the durable driver — and be given a
-		// deadline of its own, because an operator who asked a run to stop is
-		// waiting for it. That deadline is [UndoBudget], read by both drivers.
+	// How this run fails, wherever it fails: the compensations run, their
+	// summary is appended, and a cancellation takes the one path that can still
+	// perform them. One function because a run has two places it can fail —
+	// during a step, and after the last one while computing its declared
+	// outputs — and the difference between those is *when*, which is not
+	// something the saga contract turns on. Written twice, the second copy is
+	// where the cancellation arm goes missing.
+	failRun := func(err error) (*Workflow_StepOutputs, error) {
+		// A cancellation compensates too, and it is the one case that cannot use
+		// the context it arrived on. Every call made with a cancelled context
+		// fails immediately, so compensating on `ctx` would attempt each entry,
+		// have each refused by its own transport before it left the process, and
+		// report a run that "could not undo" everything it had in fact never
+		// tried to. The scope therefore has to survive the cancellation —
+		// [context.WithoutCancel] here, `workflow.NewDisconnectedContext` in the
+		// durable driver — and be given a deadline of its own, because an
+		// operator who asked a run to stop is waiting for it. That deadline is
+		// [UndoBudget], read by both drivers.
 		//
 		// The cancellation itself is returned, wrapped: `errors.Is(err,
 		// context.Canceled)` still answers yes, so a caller that distinguishes a
@@ -1096,15 +1099,35 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// [RunWithInputs] for what a caller may read from it. Built from the same
 		// `scope.Outputs` the successful path returns, so there is one accumulated
 		// record per run rather than a second one assembled for failures.
-		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			// withCancellationCause reads context.Cause(ctx) here, at the run's own
-			// context — the one a caller like `flow run local` attaches a signal's
-			// or a `flow cancel`'s reason to (see cmd/flow/main.go). Whatever ran
-			// underneath already had its own chance to name a narrower cause (a
-			// step's schedule-to-close budget, the compensation budget below); this
-			// is the fallback for the cases nothing more specific was running, most
-			// visibly a run parked at a `wait:` when the stop arrives.
-			return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), runUndoOnCancel(ctx, w, undo))
+		// Two decisions, and they are not the same question, which is the trap
+		// in writing this as one condition. *Which context compensates* turns
+		// only on whether this one is already cancelled — a dead context
+		// refuses every entry whatever the run failed of. *What the run
+		// reports* turns on whether the cancellation is the failure. Conflating
+		// them compensates on the dead context whenever the failure is anything
+		// but the cancellation itself: a run whose last step raced a `flow
+		// cancel` and then produced an oversized transcript fails with a size
+		// error that cannot wrap ctx.Err(), and every undo is refused by its
+		// transport before it is attempted.
+		if ctx.Err() != nil {
+			results := runUndoOnCancel(ctx, w, undo)
+			if errors.Is(err, ctx.Err()) {
+				// withCancellationCause reads context.Cause(ctx) here, at the run's
+				// own context — the one a caller like `flow run local` attaches a
+				// signal's or a `flow cancel`'s reason to (see cmd/flow/main.go).
+				// Whatever ran underneath already had its own chance to name a
+				// narrower cause (a step's schedule-to-close budget, the
+				// compensation budget); this is the fallback for the cases nothing
+				// more specific was running, most visibly a run parked at a `wait:`
+				// when the stop arrives.
+				return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), results)
+			}
+
+			// Compensated on the surviving scope, but reported as what actually
+			// went wrong: a run that failed on its own terms while a stop was
+			// arriving did not fail *because* of the stop, and saying so would
+			// lose the only account of why.
+			return PartialTranscript(stepOutputs), UndoRunError(err, results)
 		}
 
 		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
@@ -1112,18 +1135,48 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		}))
 	}
 
+	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
+		// The run cannot continue, so whatever already happened is taken back —
+		// reverse order, every entry attempted, one summary appended to the
+		// failure, and a cancellation compensated on a context that survives it.
+		// All four belong to [failRun] above, which the completion path below
+		// reaches for the same reasons.
+		return failRun(err)
+	}
+
 	// Evaluated once, after the last step, against the scope the run finished in —
 	// the same moment and the same scope the durable driver uses. See
 	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
 	// workflow code is written down.
 	outputs, err := EvalRunOutputs(ctx, w, scope)
-	if err != nil {
-		// A run that cannot produce its declared outputs has not succeeded, and it
-		// gets the same accompanying transcript every other failure gets: every step
-		// did run, which is precisely why the outputs were reachable to evaluate.
-		return PartialTranscript(stepOutputs), err
+	if err == nil {
+		stepOutputs.RunOutputs = outputs
+		err = CheckRunResultSize(stepOutputs)
 	}
-	stepOutputs.RunOutputs = outputs
+	if err != nil {
+		// A run that cannot produce its declared outputs — because an expression
+		// failed, or because the transcript it computed is too large to record —
+		// has not succeeded, and it gets the same accompanying transcript every
+		// other failure gets: every step did run, which is precisely why the
+		// outputs were reachable to evaluate.
+		//
+		// And it takes back what it did, through the very same call the step
+		// failure above makes. A saga that reports FAILED with entries still
+		// pending has left the world holding resources nobody will come back
+		// for; that the failure arrived after the last step rather than during
+		// one changes nothing about it. The durable driver reaches its own
+		// [compensate] on this path for the same reason, which is what keeps
+		// the two answering alike (invariant 3).
+		//
+		// Through the shared function rather than by spelling the undo call out
+		// again, because the cancellation arm is precisely the half a second
+		// spelling drops: evaluating the declared outputs takes `ctx`, so a run
+		// cancelled while computing them arrives here with a cancelled context,
+		// and compensating on that context would have every entry refused by its
+		// own transport before it was ever attempted — a run reporting it could
+		// not undo work it never tried to undo.
+		return failRun(err)
+	}
 
 	return stepOutputs, nil
 }

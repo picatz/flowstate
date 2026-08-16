@@ -477,10 +477,24 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// is the answer the caller asked for, and a run that cannot produce it has not
 		// succeeded.
 		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
-		if outputsErr != nil {
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: outputsErr.Error()}
+		if outputsErr == nil {
+			stepOutputs.RunOutputs = runOutputs
+			if sizeErr := v1.CheckRunResultSize(stepOutputs); sizeErr != nil {
+				logger.Error("cannot complete run", "error", sizeErr.Error())
+				outputsErr = sizeErr
+			}
 		}
-		stepOutputs.RunOutputs = runOutputs
+		if outputsErr != nil {
+			// Out through [compensate], the way every other failure leaves this
+			// function. A run that executed every step and then could not report
+			// them has failed, and a failed saga takes back what it did:
+			// reporting FAILED while leaving in place every resource those steps
+			// created is the outcome compensation exists to prevent, and it does
+			// not become acceptable because the failure arrived after the last
+			// step rather than during one.
+			return v1.PartialTranscript(stepOutputs),
+				compensate(ctx, exec, &ErrRunFailed{Message: outputsErr.Error()})
+		}
 
 		return stepOutputs, nil
 
@@ -560,7 +574,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// are the part that grew.
 		if err := v1.CheckRunStateSize(next); err != nil {
 			logger.Error("cannot continue as new", "error", err.Error())
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: err.Error()}
+			// Out through [compensate], the identical reason the completion-time
+			// size failure above does: a run whose carried state cannot fit is a
+			// failed run, and a failed saga takes back what it did. Returning
+			// ErrRunFailed directly here would report FAILED while leaving every
+			// effect this segment's steps performed in place — the saga-contract
+			// violation the original fix on this path existed to close, reopened
+			// by measuring the bound correctly and hitting it on a run this exact
+			// check used to let through.
+			return v1.PartialTranscript(stepOutputs), compensate(ctx, exec, &ErrRunFailed{Message: err.Error()})
 		}
 
 		logger.Info("continuing as new",
@@ -652,12 +674,27 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 		return compensateCancelled(ctx, exec)
 	}
 
-	workflow.GetLogger(ctx).Info("compensating a failed run",
-		"pending", exec.undo.Len(), "error", err.Error())
+	// Two decisions, and they are not the same question — the trap eval.go's
+	// local driver documents at [failRun]. *Which context compensates* turns
+	// only on whether ctx is already done: a dead context refuses every entry
+	// regardless of what the run failed of. *What the run reports* turns on
+	// what err actually is. Reaching this line with a non-cancellation err and
+	// an already-cancelled ctx is completion racing a stop: the last activity
+	// returned, output evaluation or [v1.CheckRunResultSize] failed afterward,
+	// and only then does ctx.Err() read as done. Compensating on ctx in that
+	// case has Temporal refuse every entry before it is attempted — a run that
+	// reports it could not undo work it never tried to.
+	var results []v1.UndoResult
+	if ctx.Err() != nil {
+		results = compensateOnDisconnectedContext(ctx, exec)
+	} else {
+		workflow.GetLogger(ctx).Info("compensating a failed run",
+			"pending", exec.undo.Len(), "error", err.Error())
 
-	results := v1.RunUndoLog(exec.undo, func(entry *v1.PendingUndo) error {
-		return exec.runUndoTask(ctx, entry, 0)
-	})
+		results = v1.RunUndoLog(exec.undo, func(entry *v1.PendingUndo) error {
+			return exec.runUndoTask(ctx, entry, 0)
+		})
+	}
 
 	// Composed from the inner failure's own message, exactly as failedAt does, so
 	// the run's failure reads as one sentence rather than restating this driver's
@@ -695,18 +732,7 @@ func compensateCancelled(ctx workflow.Context, exec *executor) error {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("compensating a cancelled run", "pending", exec.undo.Len())
 
-	// The scope the cancellation does not reach. The cancel func is deliberately
-	// discarded: nothing here should be able to cancel this context, and the
-	// deadline below is what ends it.
-	uctx, _ := workflow.NewDisconnectedContext(ctx)
-	deadline := workflow.Now(uctx).Add(v1.UndoBudget)
-
-	results := v1.RunUndoLogWithin(exec.undo,
-		func() time.Duration { return deadline.Sub(workflow.Now(uctx)) },
-		func(entry *v1.PendingUndo, within time.Duration) error {
-			return exec.runUndoTask(uctx, entry, within)
-		})
-
+	results := compensateOnDisconnectedContext(ctx, exec)
 	summary := v1.UndoSummary(results)
 	logger.Info("compensated a cancelled run", "summary", summary)
 
@@ -715,6 +741,31 @@ func compensateCancelled(ctx workflow.Context, exec *executor) error {
 	// here. The run still closes CANCELED, which is decided by `errors.As` finding
 	// a `*temporal.CanceledError`, and this is one.
 	return temporal.NewCanceledError(summary)
+}
+
+// compensateOnDisconnectedContext runs every pending undo on a context the
+// cancellation that triggered it does not reach, bounded by [v1.UndoBudget].
+//
+// Factored out of [compensateCancelled] because it is not only that function's
+// scenario: [compensate] reaches here too, whenever the run's context is
+// already done but the *error being reported* is not itself a cancellation —
+// the last activity completing just as a stop arrives, with output evaluation
+// or the size check failing afterward. Both callers need the identical
+// disconnected, budgeted context Temporal will actually schedule the undo
+// activities on; only what each caller does with the resulting summary
+// differs.
+func compensateOnDisconnectedContext(ctx workflow.Context, exec *executor) []v1.UndoResult {
+	// The scope the cancellation does not reach. The cancel func is deliberately
+	// discarded: nothing here should be able to cancel this context, and the
+	// deadline below is what ends it.
+	uctx, _ := workflow.NewDisconnectedContext(ctx)
+	deadline := workflow.Now(uctx).Add(v1.UndoBudget)
+
+	return v1.RunUndoLogWithin(exec.undo,
+		func() time.Duration { return deadline.Sub(workflow.Now(uctx)) },
+		func(entry *v1.PendingUndo, within time.Duration) error {
+			return exec.runUndoTask(uctx, entry, within)
+		})
 }
 
 // resumeFrames returns the position a run resumes from.

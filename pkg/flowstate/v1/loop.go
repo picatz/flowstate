@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/google/cel-go/cel"
-	"google.golang.org/protobuf/proto"
 )
 
 // This file holds the parts of the `loop:` primitive that both execution drivers
@@ -538,8 +537,33 @@ func LoopResultsSizeError(size, max int) error {
 		size, max)
 }
 
+// resultsElementFramingBytes is a safe per-element charge for the ProtoJSON
+// array framing that summing each iteration's own [encodedPayloadSize] alone
+// misses: `results` is a repeated field, so its encoding is not the
+// concatenation of its elements' own encodings but `"results":[` + those
+// elements joined by `,` + `]` — the field name, the colon, both brackets,
+// and one comma between every pair of elements, none of which belongs to any
+// one element's own marshaled bytes.
+//
+// Charged on *every* element rather than reserved once for the field as a
+// whole, so [LoopResultsSize] and [accumulateResults] stay simple sums —
+// exactly the shape a caller adding one iteration at a time can update in
+// O(1) without re-marshaling everything accumulated so far, which is what
+// running this on every loop iteration requires. That charges every element
+// its own copy of the fixed array overhead, which is more than the true
+// total once there is more than one element; the true total for n elements
+// is len(`"results":[]`) + (n-1) commas, and n instances of this constant
+// covers that for every n >= 1 (checked at n=1, the tightest case, where the
+// true cost is exactly this constant and every additional element can only
+// need less than a full copy of it). Over-charging is the safe direction —
+// see the package doc's rule for every bound here — so a modest surplus on
+// the running total is preferred over a scheme that could under-charge a
+// large iteration count for less arithmetic.
+const resultsElementFramingBytes = len(`"results":[]`)
+
 // LoopResultsSize sums the wire size of every iteration recorded in results so
-// far, in the same encoding [CheckRunStateSize] weighs it in.
+// far, in the same encoding [CheckRunStateSize] weighs it in, plus the
+// repeated-field framing [resultsElementFramingBytes] documents.
 //
 // Used once per loop invocation to seed the running byte count on a resumed
 // segment — results arriving from [Frame.Results] were accumulated by a
@@ -549,7 +573,7 @@ func LoopResultsSizeError(size, max int) error {
 func LoopResultsSize(results []*Workflow_StepOutputs) int {
 	total := 0
 	for _, r := range results {
-		total += proto.Size(r)
+		total += encodedPayloadSize(r) + resultsElementFramingBytes
 	}
 	return total
 }
@@ -613,7 +637,10 @@ func AccumulateLoopResult(results []*Workflow_StepOutputs, resultsBytes int, ite
 // holds to be worse than a missing one.
 func accumulateResults(results []*Workflow_StepOutputs, resultsBytes int, iteration *Workflow_StepOutputs, tooBig func(size, max int) error) ([]*Workflow_StepOutputs, int, error) {
 	results = append(results, iteration)
-	resultsBytes += proto.Size(iteration)
+	// Plus resultsElementFramingBytes — see its doc comment for why this and
+	// [LoopResultsSize] both charge it per element rather than once for the
+	// field as a whole.
+	resultsBytes += encodedPayloadSize(iteration) + resultsElementFramingBytes
 	if resultsBytes > MaxLoopResultsBytes {
 		return results, resultsBytes, tooBig(resultsBytes, MaxLoopResultsBytes)
 	}
