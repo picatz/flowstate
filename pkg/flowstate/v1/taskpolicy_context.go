@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 )
 
@@ -101,9 +102,27 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // between retries of the same step, so evaluating this once is not an
 // optimization so much as it is the accurate description of what the policy
 // governs: one dispatch, one decision.
-func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentity) error {
-	if err := TaskPolicyIn(ctx).Check(ctx, task, identity); err != nil {
-		return NewTaskError(task, ErrorKindPolicyDenied, err)
+//
+// local is [Scope.GetLocal] — true only for `flow run local`'s own
+// rehearsal, never for the durable driver (see engine/workflow.go's
+// varsScope, "Never Local: the durable driver always has a server in front
+// of it"). It reaches nothing here but [TaskPolicyDeniedError.Local]: the
+// decision above — which policy governs, which rule matches, allow versus
+// deny — is made by [TaskPolicy.Check] before this ever runs, entirely from
+// task and identity. This parameter is set on the resulting error, if any,
+// strictly *after* that decision, so it has no path to become the thing
+// #652 warns about — a value that exists to be informational and ends up
+// load-bearing. See [TestLocalOnlyChangesTheMessageNotTheDecision].
+func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentity, local bool) error {
+	err := TaskPolicyIn(ctx).Check(ctx, task, identity)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	var denied *TaskPolicyDeniedError
+	if errors.As(err, &denied) {
+		denied.Local = local
+	}
+
+	return NewTaskError(task, ErrorKindPolicyDenied, err)
 }

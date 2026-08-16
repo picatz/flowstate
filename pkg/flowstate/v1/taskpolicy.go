@@ -104,16 +104,39 @@ type TaskPolicyDeniedError struct {
 	// Err is the underlying cause when the denial came from a rule failing to
 	// evaluate rather than from a rule matching.
 	Err error
+
+	// Local records whether this dispatch was a local rehearsal
+	// (`flow run local`) rather than a production one, purely so [Error] can
+	// say so. Set by [CheckTaskPolicy] after the decision is already made —
+	// nothing in this package, or in [taskPolicyRuleSet.evaluate], ever reads
+	// this field, and it can never change which rule matched or whether the
+	// dispatch is denied. CLAUDE.md's "a value that exists to be
+	// informational and then becomes load-bearing" is the failure this field
+	// is deliberately built to be unable to have: it reaches nothing but this
+	// struct's own Error() string.
+	Local bool
 }
 
 // Error implements the error interface. The message names what to do about
 // it — the task and the policy source — because a denial an author cannot
 // act on is worse than no diagnostic at all.
+//
+// After #651, a local denial and a production denial for the same identity
+// are the same *decision* — correctly so, since a rehearsal exercising a
+// deployment's policy is the whole point. Local exists only to keep an
+// author reading this message from mistaking the two for the same *cause*:
+// a policy file passed to `flow run local` and forgotten about reads as a
+// deployment refusal with no hint that the run was ever a rehearsal.
 func (e *TaskPolicyDeniedError) Error() string {
-	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy (%s: %s); "+
+	rehearsal := ""
+	if e.Local {
+		rehearsal = " during a local rehearsal (`flow run local`) — check the " +
+			"--task-policy file passed to this run, not just the deployment's"
+	}
+	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy%s (%s: %s); "+
 		"this is not a mistake in the workflow file — contact the operator who configured "+
 		"the task-shape policy if this dispatch should be permitted",
-		ErrTaskPolicyDenied, e.Task, e.Reason, e.Detail)
+		ErrTaskPolicyDenied, e.Task, rehearsal, e.Reason, e.Detail)
 }
 
 // Unwrap returns [ErrTaskPolicyDenied], and the underlying cause when there
