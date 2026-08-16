@@ -544,6 +544,25 @@ off loopback (`checkInternalListenAddress`,
 didn't originate in the same network namespace — which rules it out for a
 `httpGet` probe target, not just as a matter of style. So:
 
+The `httpGet` probes below assume the **upstream-terminated-TLS** shape from
+the [Kubernetes](#kubernetes) section above (`--tls-terminated-upstream`,
+Ingress does the TLS): the pod's public listener speaks plain HTTP, and
+`httpGet`'s `scheme` defaults to `HTTP`, so it needs no `scheme:` field to
+line up. If the pod terminates TLS itself
+(`FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE` instead), `/healthz`
+shares that listener with everything else `flow server` serves
+(`healthzHandler` is mounted on the same mux the TLS-wrapped `http.Server`
+answers — `cmd/flow/main.go:974`, `:1032-1033`) and comes back over HTTPS
+only; an `httpGet` probe with no `scheme:` then dials plaintext against a
+TLS port and every probe fails, which reads as a healthy pod stuck in a
+restart loop, not as a TLS error anywhere the kubelet reports. Setting
+`scheme: HTTPS` gets the handshake started, but does not finish it if the
+pod also requires client certificates (`--tls-client-auth` /
+`client_certificate_required`, `cmd/flow/main.go:996`) — the kubelet's probe
+client presents none, and a `Kubernetes` probe has no field to give it one.
+When the pod terminates TLS itself, point the probes at the loopback `exec`
+probe below instead of `httpGet`.
+
 ```yaml
         # startupProbe: gives Temporal-dial-plus-policy-load startup room
         # before liveness/readiness get a vote, without lowering their own
@@ -574,11 +593,15 @@ didn't originate in the same network namespace — which rules it out for a
           failureThreshold: 3
 ```
 
-If credential-free probe traffic on the RPC port is a concern, the internal
-listener is still useful here — just not through `httpGet`. Set
-`--internal-listen 127.0.0.1:9090` and point an **`exec` probe** at it
-instead, since `exec` runs the command inside the container's own network
-namespace, which loopback is reachable from:
+The internal listener is also the fix for server-terminated TLS, and not
+only a way to keep credential-free probe traffic off the RPC port when that
+is a concern on the upstream-terminated shape above — either way it works
+the same, just not through `httpGet`. Set `--internal-listen
+127.0.0.1:9090` and point an **`exec` probe** at it instead, since `exec`
+runs the command inside the container's own network namespace, which
+loopback is reachable from, and the internal listener never carries TLS or
+client-cert requirements of its own (`internalHandler`,
+`cmd/flow/routing.go:160`) regardless of what the public listener demands:
 
 ```yaml
         livenessProbe:
@@ -805,7 +828,7 @@ same module.)
 
 | Metric | Type | Unit | Labels | Meaning |
 | --- | --- | --- | --- | --- |
-| `flowstate.plugin.operation.duration` | histogram | s | `flowstate.plugin.name`, `flowstate.plugin.operation`, `flowstate.task.name` (when the operation is task-scoped), `flowstate.plugin.outcome` | Duration of one host-to-plugin operation (`start`, `health`, `execute`) |
+| `flowstate.plugin.operation.duration` | histogram | s | `flowstate.plugin.name`, `flowstate.plugin.operation`, `flowstate.task.name` (when the operation is task-scoped), `flowstate.plugin.outcome` | Duration of one host-to-plugin operation (`launch`, `start`, `health`, `execute`) |
 | `flowstate.plugin.calls` | counter | — | same as above | One increment per operation, same attribute set as the duration it accompanies |
 | `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, `unreachable`, or `unknown` — `plugin.go:87-99`) | One increment per health poll result (`plugin.go:353`, `plugin.go:385`) |
 | `flowstate.plugin.restarts` | counter | — | none | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`plugin.go:732`) |
