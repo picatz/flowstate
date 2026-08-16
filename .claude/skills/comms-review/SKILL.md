@@ -60,6 +60,16 @@ the evidence, done.
 
 ## Merging
 
+If `gh api repos/{owner}/{repo}/pulls/{n}/merge -X PUT` is refused with a
+platform/session-type message ("not permitted for this session type"),
+that is a restriction on that one entry point, not on merging as an
+action — the `mcp__github__merge_pull_request` MCP tool is the sanctioned
+path for the sessions that hit it, and using it is not a workaround. Use
+it directly. It is worth stating this explicitly because a refusal that
+*sounds* like a hard boundary deserves a pause the first time it is seen,
+not a permanent one: verify once whether an alternate first-party tool
+covers the same action before treating every future instance as blocked.
+
 Never merge pull requests back to back. Each PR's CI proves exactly one
 tree: that branch merged with whatever main existed when the run started.
 It says nothing about a tree that includes a second PR merged a minute
@@ -100,6 +110,61 @@ what stops its diff from reverting whatever landed in between. Diff the
 branch against `main` and read the stat line before opening anything —
 three of those four would have deleted a PR merged an hour earlier, and
 the diff said so plainly.
+
+### Verified-green is not a stable state under active review
+
+CI going green and a human (or agent) deciding a PR is ready are two
+different moments, and on a PR under active bot review the gap between
+them is where findings land. On the night of 2026-08-16, three separate
+PRs had a new Codex P1 or P2 arrive *after* CI had already gone green and
+a merge was being composed — one at the 03:08 mark, another at 03:14, a
+third at 03:27 on the same PR. Two of the three were in code an agent had
+just written minutes earlier. Codex was also throttling that night
+("usage limits for security reviews"), which is the mechanism: findings
+do not arrive steadily as a diff changes, they arrive in *bursts* once a
+review job gets its turn, and that turn can land well after a PR looks
+settled.
+
+So a "ready" determination has a timestamp, and it expires the moment a
+new comment lands. Re-read threads at the point you are about to act —
+merge time, not the time you first checked — and treat a `head_sha` that
+has moved since your last read as a sign to re-check rather than a
+cosmetic detail. The cheap version of this check, worth doing on every
+merge regardless of how recently a PR was reviewed: confirm the sha you
+are about to merge is the exact sha the readiness claim was made against.
+
+### A bot can locate a real problem and misname the mechanism
+
+Three times in one night, a review finding pointed at something genuinely
+broken and was wrong about *why* — and in each case the suggested fix
+would itself have been a defect if applied without checking:
+
+- An HTTP/2 "stream-reservation race" (#675) did not exist: the agent
+  wrote the exact concurrent test the finding described, watched it pass
+  with the proposed fix reverted, traced the real mechanism
+  (`DisableKeepAlives` forcing every request through its own dial), and
+  shipped the negative test instead of a fix for nothing.
+- A YAML round-trip bug (#728) was blamed on `quoteScalar`'s indicator
+  set. The actual defect was one layer over: `literalToYAML` was handing
+  the emitter a bare string for exactly one scalar position instead of
+  routing it through the same `textToYAML` every other position already
+  used. The bot's suggested fix — widen `quoteScalar`'s character set —
+  would have added quoting noise to every description containing a
+  hyphen or comma, a real regression in the name of fixing a bug that
+  wasn't there.
+- A "passwordless user" finding on a ClickHouse compose lab (#698) named
+  the compose file as broken. The compose file was fine — a specific env
+  var already took the branch that made the setup work. The *test* was
+  the actual defect, connecting through a different code path than the
+  one the finding described.
+
+The fix in each case depended on distinguishing "this is broken" (often
+right) from "this is broken because X" (independently checkable, and
+wrong in all three cases). Verify the named mechanism against the code —
+reproduce it, or write the test the finding implies and watch it pass or
+fail — before applying the suggested fix. A fix for a misdiagnosed cause
+either does nothing or introduces the regression the finding warned about
+while leaving the real defect in place.
 
 ## The bot-review loop
 
