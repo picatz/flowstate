@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -231,14 +232,64 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 		size, MaxSignalPayloadBytes)
 }
 
+// encodedPayloadSize reports the byte length flowstate's payload converter
+// actually produces for m — not proto.Size's binary-protobuf estimate.
+//
+// The SDK's default DataConverter (payloadcodec.Config.DataConverter, when no
+// codec is configured) is a composite whose own comment says the order is
+// deliberate: ProtoJSONPayloadConverter is checked before the binary one and
+// wins the match for every proto.Message flowstate hands it, so every RunState
+// and every completed run's Workflow_StepOutputs is serialized as ProtoJSON,
+// never as binary protobuf. proto.Size measures a payload nothing here ever
+// writes.
+//
+// The gap is not academic. Field names are spelled out per occurrence instead
+// of a one-or-two-byte tag, map entries carry a key and a value name each, and
+// every number and bytes value becomes text — bytes as base64, one third
+// larger before the framing around it. A transcript with many small values or
+// many map entries, the exact shape a run with many steps produces, can
+// measure comfortably under the binary bound and exceed it as JSON. Measured
+// against real transcripts, ProtoJSON output ran 1.03x-1.32x of proto.Size's
+// estimate — against a bound that reserved 3.1% over the blob limit, so at the
+// low end of that range the reserve was already roughly half spent by the
+// measurement error alone (#716).
+//
+// This calls protojson.Marshal directly with zero-value MarshalOptions rather
+// than going through go.temporal.io/sdk/converter: that is byte-for-byte what
+// ProtoJSONPayloadConverter.ToPayload does for a standard proto.Message (see
+// its source — `c.protoMarshalOptions.Marshal(valueProto)` with
+// protojson.MarshalOptions{}), so the measurement matches the encoding
+// exactly, without this determinism-sensitive package taking on a dependency
+// on the Temporal SDK or on whatever payload codec a deployment has
+// configured. A codec's own expansion is a separate, already-reserved budget —
+// see [MaxCodecExpansionBytes] — because this function measures the payload a
+// codec would be handed, not what the codec does to it.
+//
+// A marshal failure is treated as over the bound rather than propagated or
+// ignored: fail closed, per the invariant every other bound in this package
+// follows. proto.Size cannot fail, which is why every caller below still
+// checks it for context even when protojson does the enforcing.
+func encodedPayloadSize(m proto.Message) int {
+	b, err := protojson.Marshal(m)
+	if err != nil {
+		return MaxRunStateBytes + 1
+	}
+	return len(b)
+}
+
 // CheckRunStateSize reports whether a run's state can be carried forward.
 //
 // Called where a run suspends, which is the one place the answer is a fact rather
 // than an estimate. A run that cannot be carried forward has to fail here: the
 // alternative is not "carry on", it is Temporal refusing the Continue-As-New and
 // retrying the workflow task until somebody notices.
+//
+// Measured by [encodedPayloadSize], not proto.Size — see its doc comment. This
+// is also the Continue-As-New path #716 asked whether the fix covered:
+// [CheckRunStateSize] is the only check on that path, so fixing it here is the
+// whole of that answer.
 func CheckRunStateSize(st *RunState) error {
-	size := proto.Size(st)
+	size := encodedPayloadSize(st)
 	if size <= MaxRunStateBytes {
 		return nil
 	}
@@ -258,8 +309,13 @@ func CheckRunStateSize(st *RunState) error {
 // Continue-As-New check above, and repeated outputs can make its transcript
 // larger than the inputs from which they were computed. Letting Temporal find
 // that out would fail and retry the workflow task instead of closing the run.
+//
+// Measured by [encodedPayloadSize], not proto.Size — see its doc comment. A
+// completed run's result is a Workflow_StepOutputs handed to the same
+// DataConverter as a suspended run's RunState, so it is serialized the same
+// way and has to be measured the same way.
 func CheckRunResultSize(outputs *Workflow_StepOutputs) error {
-	size := proto.Size(outputs)
+	size := encodedPayloadSize(outputs)
 	if size <= MaxRunStateBytes {
 		return nil
 	}
