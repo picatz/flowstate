@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,7 +111,7 @@ func TestStderrRelayFuncNegativeDisablesTheBound(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{MaxStderrLinesPerMinute: -1, Logger: testLogger(t)}
-	relay := stderrRelayFunc(cfg, cfg.logger())
+	relay, _ := stderrRelayFunc(cfg, cfg.logger())
 
 	for range 10_000 {
 		relay("line", false)
@@ -118,4 +119,35 @@ func TestStderrRelayFuncNegativeDisablesTheBound(t *testing.T) {
 	// Nothing to assert beyond "this ran 10,000 lines without blocking or
 	// panicking": the point of a disabled bound is the absence of any limit,
 	// and a bound with nothing that could trip it is what "disabled" means.
+}
+
+// TestStderrLimiterFlushReportsPendingSuppressionOnce checks flush directly:
+// it returns the current window's suppressed count exactly once, and returns
+// nothing when there is nothing pending — the pump calls it unconditionally
+// at EOF, so it must never risk a duplicate or an empty report (#714's
+// flood-then-quiet follow-up: allow only reports on the next window's first
+// call, which never arrives for a plugin that stops writing).
+func TestStderrLimiterFlushReportsPendingSuppressionOnce(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(0, 0)
+	l := newStderrLimiter(2, time.Minute, func() time.Time { return now })
+
+	for range 5 {
+		l.allow()
+	}
+	// max=2, so 3 of the 5 lines above were suppressed.
+
+	summary := l.flush()
+	if !strings.Contains(summary, "3 lines") {
+		t.Errorf("flush summary = %q, want it to name 3 suppressed lines", summary)
+	}
+
+	if second := l.flush(); second != "" {
+		t.Errorf("second flush = %q, want empty: a report must not be issued twice", second)
+	}
+
+	if empty := newStderrLimiter(2, time.Minute, func() time.Time { return now }).flush(); empty != "" {
+		t.Errorf("flush on a limiter with nothing suppressed = %q, want empty", empty)
+	}
 }

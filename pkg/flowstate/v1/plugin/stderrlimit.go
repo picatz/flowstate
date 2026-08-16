@@ -73,3 +73,25 @@ func (l *stderrLimiter) allow() (ok bool, summary string) {
 	l.suppressed++
 	return false, summary
 }
+
+// flush returns the summary for whatever the current window has suppressed
+// so far, as if its window had just rolled over, and resets the count so a
+// caller cannot double-report it.
+//
+// allow only reports a window's suppression total when another line arrives
+// to roll the window over — a plugin that floods and then goes quiet (the
+// crash this limiter exists to survive is a common cause) leaves its last
+// window's count stranded with nothing left to trigger the report. The pump
+// calls this once, when it sees EOF, so the flood a plugin's exit is often
+// diagnosing is never the one line this limiter drops.
+func (l *stderrLimiter) flush() (summary string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.suppressed == 0 {
+		return ""
+	}
+	summary = fmt.Sprintf("plugin log suppressed: %d lines in the last %s", l.suppressed, l.window)
+	l.suppressed = 0
+	return summary
+}

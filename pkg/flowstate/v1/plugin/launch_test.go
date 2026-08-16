@@ -316,10 +316,25 @@ func TestStderrFloodIsRateLimited(t *testing.T) {
 		t.Fatalf("health = %v, want serving: %v", health.Status, health.Err)
 	}
 
-	// Give the flood time to run its course and the pump time to drain it.
-	// The plugin writes as fast as it can and exits its goroutine well under
-	// a second; this waits generously rather than racing it.
+	// Give the flood time to run its course. The fake plugin's flood loop
+	// finishes well under a second, but the plugin process then keeps
+	// serving rather than exiting — see stderr-flood's source — so nothing
+	// here bounds the pump, only the flood.
 	time.Sleep(500 * time.Millisecond)
+
+	// Stop the plugin before reading logged: the pump goroutine writes to it
+	// concurrently for as long as the plugin's stderr pipe stays open, so any
+	// read before this point (relayed count included) races the write. Close
+	// waits for the pumps (i.pumps.Wait()), which is also what lets the
+	// limiter's owed summary appear at all — the window this test runs in is
+	// real-clock minutes long, so it never rolls over on its own, and only
+	// closing the host stops the plugin, reaches EOF, and flushes the
+	// pending count rather than stranding it (#714's flood-then-quiet
+	// follow-up: a crash is a common reason a flooding plugin goes silent,
+	// and it is exactly the count an operator most needs to see). Closed
+	// explicitly here, ahead of openHost's own t.Cleanup, so every assertion
+	// below observes the final log rather than racing it.
+	host.Close(t.Context())
 
 	relayed := strings.Count(logged.String(), `msg="plugin log"`)
 	if relayed == 0 {
@@ -329,12 +344,8 @@ func TestStderrFloodIsRateLimited(t *testing.T) {
 		t.Errorf("relayed %d stderr lines, want at most the configured budget of %d", relayed, cfg.MaxStderrLinesPerMinute)
 	}
 
-	// The window this test runs in is real-clock minutes long and the test
-	// itself takes well under a second, so it never rolls over — meaning the
-	// summary line the limiter owes on rollover must not have fired yet, and
-	// every line past the budget was silently counted rather than relayed.
-	if strings.Contains(logged.String(), "plugin log suppressed") {
-		t.Error(`log contains "plugin log suppressed" before the rate window has rolled over`)
+	if !strings.Contains(logged.String(), "plugin log suppressed") {
+		t.Error(`log does not contain "plugin log suppressed" after the plugin was stopped with lines still pending`)
 	}
 }
 
