@@ -369,3 +369,52 @@ func TestAnIdempotencyKeyWalkIsBoundedInDepth(t *testing.T) {
 	assert.Error(t, v1.CheckWebhookIdempotencyKey("deep", key),
 		"a key nested past the walk's depth bound was accepted as delivery-dependent")
 }
+
+// TestAnIdempotencyKeyMayNameTheDeliveryInAComprehensionResult is the false
+// diagnostic the shadowing rule can produce if it is applied too widely.
+//
+// A comprehension's result is not evaluated in the loop's scope. The iteration
+// has ended by then and only the accumulator is still bound, so an `event` in
+// the result names the delivery root even when the comprehension iterates over
+// a variable of that same name. Treating the iterator as still shadowing it
+// refuses a key that does depend on the delivery — and CLAUDE.md rates a false
+// diagnostic worse than a missing one, because the author is told their correct
+// file is wrong and has nothing to fix.
+func TestAnIdempotencyKeyMayNameTheDeliveryInAComprehensionResult(t *testing.T) {
+	t.Parallel()
+
+	// Iterating over `event` — so inside loop_step, `event` is the iterator —
+	// while the result names the outer `event` that the iteration left in
+	// scope again.
+	key := &v1.Value{Kind: &v1.Value_Expr{Expr: &expr.ParsedExpr{
+		Expr: &expr.Expr{ExprKind: &expr.Expr_ComprehensionExpr{
+			ComprehensionExpr: &expr.Expr_Comprehension{
+				IterVar:   v1.EventRoot,
+				AccuVar:   "__result__",
+				IterRange: &expr.Expr{ExprKind: &expr.Expr_ListExpr{ListExpr: &expr.Expr_CreateList{}}},
+				AccuInit: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+				LoopCondition: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+				// The iterator, which is shadowed here and must not count.
+				LoopStep: &expr.Expr{ExprKind: &expr.Expr_IdentExpr{
+					IdentExpr: &expr.Expr_Ident{Name: v1.EventRoot},
+				}},
+				// The delivery root, which is not shadowed here and must.
+				Result: &expr.Expr{ExprKind: &expr.Expr_SelectExpr{
+					SelectExpr: &expr.Expr_Select{
+						Operand: &expr.Expr{ExprKind: &expr.Expr_IdentExpr{
+							IdentExpr: &expr.Expr_Ident{Name: v1.EventRoot},
+						}},
+						Field: "id",
+					},
+				}},
+			},
+		}},
+	}}}
+
+	assert.NoError(t, v1.CheckWebhookIdempotencyKey("result-scope", key),
+		"a key naming the delivery in a comprehension result was refused as constant")
+}

@@ -341,16 +341,33 @@ func celExprReferencesFreeIdentifier(expression *expr.Expr, name string, shadowe
 			return true
 		}
 
-		inner := shadowed
-		for _, iterName := range []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()} {
-			if iterName != "" && iterName == name {
-				inner = true
+		// The loop's own scope: iteration variables and the accumulator are
+		// all bound while loop_condition and loop_step run.
+		loop := shadowed
+		for _, bound := range []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()} {
+			if bound == name && bound != "" {
+				loop = true
 			}
 		}
 
-		return celExprReferencesFreeIdentifier(comprehension.GetLoopCondition(), name, inner, depth) ||
-			celExprReferencesFreeIdentifier(comprehension.GetLoopStep(), name, inner, depth) ||
-			celExprReferencesFreeIdentifier(comprehension.GetResult(), name, inner, depth)
+		// The result's scope is *not* the loop's. It is evaluated once the
+		// iteration has ended, with only the accumulator still bound — so an
+		// expression that names `event` in a comprehension's result names the
+		// delivery root, even when the comprehension iterates over a variable
+		// of that same name.
+		//
+		// Carrying the loop's shadowing into the result would refuse a key
+		// that genuinely does depend on the delivery, and CLAUDE.md rates a
+		// false diagnostic worse than a missing one: a refusal an author
+		// cannot act on, about a file that is right.
+		result := shadowed
+		if comprehension.GetAccuVar() == name && name != "" {
+			result = true
+		}
+
+		return celExprReferencesFreeIdentifier(comprehension.GetLoopCondition(), name, loop, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetLoopStep(), name, loop, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetResult(), name, result, depth)
 	}
 	return false
 }
