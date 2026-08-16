@@ -469,8 +469,8 @@ both current, both defensible.
 
 Worked example, because the general statement is too easy to nod at. A sketch on
 #726 proposed a `ClaimRequirement` message — `{claim, one_of_values}` — to annotate
-which claims gate an RPC. It reads well. It is also the *third* spelling of "this
-claim must carry this value" in a tree that already had two, one of them in the
+which claims gate an RPC. It reads well. It is also the *fourth* spelling of "this
+claim must carry this value" in a tree that already had three, one of them in the
 schema and gating an RPC:
 
 - `SignalPolicyRule.claims` (`proto/flowstate/v1/signal.proto:95`) — a structured

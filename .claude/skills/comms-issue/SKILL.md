@@ -76,10 +76,15 @@ So grep before you sketch, and put the result in the comment:
   drift; a second copy of the same facts always eventually does.
 
 Worked example: a `ClaimRequirement` message proposed for #726 mirrored
-`auth.ClaimRule` (`auth/policy.go:215`) — the one policy surface here that
-is *not* CEL, while `SecretAccessPolicy` (`auth/secretpolicy.go:61`) and
-`netpolicy` (`netpolicy/identity.go:27-30`) both are. It would have
-canonized the legacy spelling into the schema as a third copy. Five
+`auth.ClaimRule` (`auth/policy.go:215`), one of three existing spellings
+of "this claim must carry this value" — the other two being
+`SignalPolicyRule.claims` (`proto/flowstate/v1/signal.proto:95`), a
+schema-defined structured claims map already gating an RPC, and CEL,
+where `SecretAccessPolicy` (`auth/secretpolicy.go:61`) and `netpolicy`
+(`netpolicy/identity.go:27-30`) both live. The first draft of this very
+example missed `SignalPolicyRule` and undercounted by one — the mistake
+this section warns against, made while writing the warning. It would have
+canonized the legacy spelling into the schema as a fourth copy. Five
 minutes of grep before the sketch, rather than after it, produces the
 better design and skips the discussion.
 
