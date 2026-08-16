@@ -2,6 +2,8 @@ package flowstatev1_test
 
 import (
 	"math"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -787,6 +789,57 @@ func TestScheduleBackfillNamedZoneAffectsOrdinaryCronFields(t *testing.T) {
 		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Cron: []string{"0 * * * * *"}}, backfill),
 		"more than 100000 firings",
 		"the six-field form must fall back the same way the five-field form does")
+}
+
+// TestWallClockCadencePeriodsAreNeverReturnedBare is a structural guard
+// against the exact class of bug that surfaced one call site at a time
+// across several review rounds: a cadence coarser than a second is a
+// wall-clock assumption, and this package can bound a wall-clock gap only in
+// UTC (see wallClockCadencePeriod's own doc — a named zone can undergo an
+// offset change of arbitrary size). Every one of those findings looked
+// identical in the diff: a `return` naming the nominal period (a minute, an
+// hour, a day or a multiple of one) directly, instead of routing it through
+// the one function that knows to fall back for a named zone. A test
+// asserting each individual call site's behavior cannot see a new call site
+// added next year, so this greps the source instead: no line in
+// schedule.go may `return` one of those literals bare. time.Second is
+// exempt — it is already this package's finest assumed resolution, and no
+// offset change can undercut it.
+func TestWallClockCadencePeriodsAreNeverReturnedBare(t *testing.T) {
+	t.Parallel()
+
+	source, err := os.ReadFile("schedule.go")
+	require.NoError(t, err)
+
+	forbidden := []string{
+		"time.Minute", "time.Hour", "24*time.Hour", "7*24*time.Hour", "28*24*time.Hour", "365*24*time.Hour",
+	}
+
+	sawReturn := false
+	sawGuardedCall := false
+	for _, line := range strings.Split(string(source), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "return ") {
+			continue
+		}
+		sawReturn = true
+		if strings.Contains(trimmed, "wallClockCadencePeriod") {
+			sawGuardedCall = true
+			continue
+		}
+		for _, literal := range forbidden {
+			if trimmed == "return "+literal {
+				t.Errorf("schedule.go: %q returns a wall-clock period bare, outside "+
+					"wallClockCadencePeriod: a named time_zone or CRON_TZ can undercut this floor by an "+
+					"offset change of arbitrary size, the same undercount already fixed at every other "+
+					"cadence resolution in this file. Route it through wallClockCadencePeriod instead.",
+					trimmed)
+			}
+		}
+	}
+	require.True(t, sawReturn, "this guard found no return statement at all, so it proves nothing")
+	require.True(t, sawGuardedCall, "this guard found no call to wallClockCadencePeriod at all, so it "+
+		"cannot be verifying that the routing it requires actually exists")
 }
 
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
