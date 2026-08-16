@@ -803,6 +803,47 @@ func TestParseYAMLSyntaxErrorsUseTheDiagnosticGrammar(t *testing.T) {
 	}
 }
 
+// TestParseYAMLSyntaxErrorPreservesKeyTextThatLooksLikeACoordinate is the
+// regression for the finding on #654's own PR: [yamlCoordinate] must rewrite
+// only the parser-generated `at [line:col]` suffix a duplicate-key message
+// carries, not any bracket-shaped run inside it. goccy quotes the offending
+// key verbatim ahead of that suffix, so a mapping key literally spelled
+// `[1:2]` produces `mapping key "[1:2]" already defined at [1:1]` — and a
+// global rewrite would turn the author's own key spelling into "line 1, column
+// 1" alongside the real position, reporting a diagnostic about text that is
+// not in the file.
+func TestParseYAMLSyntaxErrorPreservesKeyTextThatLooksLikeACoordinate(t *testing.T) {
+	src := "\"[1:2]\": a\n\"[1:2]\": b\n"
+
+	_, _, err := flowfile.Parse([]byte(src))
+	if err == nil {
+		t.Fatal("Parse() succeeded, want a diagnostic")
+	}
+
+	var ds flowfile.Diagnostics
+	if !asDiagnostics(err, &ds) {
+		t.Fatalf("Parse() error is %T, want Diagnostics: %v", err, err)
+	}
+	if len(ds) != 1 {
+		t.Fatalf("expected exactly one diagnostic, got %d:\n%s", len(ds), ds.Error())
+	}
+
+	got := ds[0]
+	if got.Line != 2 || got.Column != 1 {
+		t.Errorf("position = %d:%d, want 2:1\nreported: %s", got.Line, got.Column, got.Error())
+	}
+	// The key's own text survives untouched, brackets and all...
+	if !strings.Contains(got.Message, `"[1:2]"`) {
+		t.Errorf("diagnostic lost the offending key's own text; got:\n%s", got.Error())
+	}
+	// ...while the parser's *own* trailing position is still translated out of
+	// goccy's bracket spelling.
+	if !strings.Contains(got.Message, "already defined at line 1, column 1") {
+		t.Errorf("diagnostic did not translate the parser's own position; got:\n%s", got.Error())
+	}
+	t.Logf("reported: %s", got.Error())
+}
+
 // TestExamplesCompile checks every workflow shipped as an example, because they are
 // the DSL's documentation: one that does not compile is a lie in the README.
 func TestExamplesCompile(t *testing.T) {
