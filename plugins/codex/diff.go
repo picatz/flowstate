@@ -121,7 +121,7 @@ func hardenedGitConfig() []string {
 // command disabled. Git config keys cannot contain NUL, so --name-only --null
 // gives an unambiguous list even when a task-controlled value contains newlines.
 func safeDiffArgs(ctx context.Context, gitBin, workDir string) ([]string, bool) {
-	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
+	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, maxGitConfigBytes,
 		append(hardenedGitConfig(), "config", "--list", "--name-only", "--null")...)
 	if !ok || truncated {
 		return nil, false

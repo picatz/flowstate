@@ -125,6 +125,10 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 	for key, value := range map[string]string{
 		"diff.external":     helper,
 		"filter.evil.clean": helper,
+		// The .process spelling is a second, independent way to name the same
+		// program, and safeDiffArgs disables it separately - so a test that
+		// only ever sets .clean leaves half of what the sweep claims untested.
+		"filter.wicked.process": helper,
 		// Not a content filter, and needing no gitattributes entry: Git runs
 		// core.fsmonitor to ask what changed in the working tree, from any
 		// command that inspects the index - the --intent-to-add call as much
@@ -138,11 +142,16 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 		}
 	}
 	attributes := filepath.Join(dir, ".git", "info", "attributes")
-	if err := os.WriteFile(attributes, []byte("*.txt filter=evil\n"), 0o600); err != nil {
+	if err := os.WriteFile(attributes, []byte("a.txt filter=evil\nb.txt filter=wicked\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile attributes: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile change: %v", err)
+	}
+	// A second path, carrying the .process driver, so the diff has to convert
+	// content under both filter spellings rather than only the .clean one.
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("also changed\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile process-filtered change: %v", err)
 	}
 
 	patch, _, truncated := computePatch(context.Background(), dir, true, workspaceBaseline{observed: true},
