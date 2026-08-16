@@ -216,30 +216,40 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 
 		var firings int64
 		for _, period := range cadences {
-			// Temporal's interval is (start, end], which holds one more evenly
-			// spaced firing than the floor of its length when the range is
-			// aligned that way: an aligned 300001s range at a 3s cadence holds
-			// 100,001 firings, and rounding down would have called it 100,000
-			// and let it past the ceiling. Round up, so what is compared
-			// against the limit is a number the range can never exceed.
-			//
-			// By quotient and remainder rather than by (span+period-1)/period,
-			// which is the same arithmetic only while the sum fits: `@every` is
-			// an accepted spelling for a period near the top of time.Duration,
-			// and that sum overflows to a negative firing count, subtracting
-			// from a total another cadence was contributing honestly.
-			firings += int64(span / period)
-			if span%period != 0 {
-				firings++
-			}
-			if startInclusive {
-				// The trigger's own inclusive start can itself be a firing
-				// instant, one this cadence's span/period estimate — built
-				// for a half-open (start, end] range — does not otherwise
-				// count. Charged unconditionally, once per cadence, for the
-				// identical reason the remainder bump above is
-				// unconditional: an over-count here is the safe direction.
-				firings++
+			quotient := int64(span / period)
+			switch {
+			case startInclusive:
+				// [start, end] is closed at both ends now, and the tight upper
+				// bound on evenly spaced points in a closed interval of length
+				// L, at an unknown phase, is floor(L/period)+1 — always,
+				// regardless of whether L divides evenly: place one point
+				// exactly at the closed start, then one every period until the
+				// next would exceed L. That is exactly one more than the
+				// half-open bound below when L is an exact multiple of period,
+				// and identical to it otherwise — so this must never also
+				// apply the remainder bump below it, or an inexact L (span
+				// 99999s1ns at a 1s period, say) is charged 100,001 for a
+				// range that can hold at most 100,000, an over-count that
+				// refuses a legitimate backfill.
+				firings += quotient + 1
+			case span%period != 0:
+				// Temporal's interval is (start, end], which holds one more
+				// evenly spaced firing than the floor of its length when the
+				// range is aligned that way: an aligned 300001s range at a 3s
+				// cadence holds 100,001 firings, and rounding down would have
+				// called it 100,000 and let it past the ceiling. Round up, so
+				// what is compared against the limit is a number the range
+				// can never exceed.
+				//
+				// By quotient and remainder rather than by
+				// (span+period-1)/period, which is the same arithmetic only
+				// while the sum fits: `@every` is an accepted spelling for a
+				// period near the top of time.Duration, and that sum
+				// overflows to a negative firing count, subtracting from a
+				// total another cadence was contributing honestly.
+				firings += quotient + 1
+			default:
+				firings += quotient
 			}
 			if firings > remaining {
 				return fmt.Errorf("the backfill can produce more than %d firings at this cadence; "+
@@ -280,13 +290,28 @@ func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) (tim
 		}
 	}
 
-	if !start.Before(end) {
-		// The trigger's window and the requested range do not overlap at all —
-		// nothing in this range can ever fire, so it contributes nothing to
-		// charge against the limit rather than a negative or wrapped span.
+	switch {
+	case start.After(end):
+		// The trigger's window and the requested range do not overlap at
+		// all — nothing in this range can ever fire, so it contributes
+		// nothing to charge against the limit rather than a negative span.
 		return 0, false
+	case start.Equal(end):
+		// Not the same as "no overlap": if start came from the trigger's own
+		// inclusive start_at, that single instant is both the trigger's
+		// first possible firing and inside the requested range's inclusive
+		// end, so it can itself be a real firing — one this function's
+		// caller charges through startInclusive rather than through span,
+		// since a zero-length span carries no duration for span/period to
+		// divide. If start did not come from the trigger, this coincidence
+		// is the requested range's own exclusive start meeting its own
+		// inclusive end after end_at clipped down to it — genuinely empty,
+		// since the request's own start was never a firing this recovery
+		// asked for in the first place.
+		return 0, startFromTrigger
+	default:
+		return end.Sub(start), startFromTrigger
 	}
-	return end.Sub(start), startFromTrigger
 }
 
 // cronDedupeKey normalizes a cron expression to the same form
@@ -298,13 +323,21 @@ func cronDedupeKey(expression string) string {
 	return strings.TrimSpace(stripCronComment(expression))
 }
 
-// calendarsEqual reports whether two calendar specifications describe exactly
-// the same set of fields, which is the one condition under which they are
-// guaranteed to fire at exactly the same instants. proto.Equal compares field
-// values structurally rather than by pointer, which is what "the identical
-// calendar written twice" means here.
+// calendarsEqual reports whether two calendar specifications fire at exactly
+// the same instants — every field that decides *when* a calendar matches, not
+// necessarily byte-for-byte identical messages. Comment is excluded on
+// purpose: Temporal reads it as documentation, never as part of what a
+// calendar matches, so two calendars whose ranges agree fire identically
+// regardless of what their comments say, and comparing it would refuse a
+// dedup two otherwise-identical calendars are entitled to. Cloned and cleared
+// rather than compared field by field, so a schema field added to this
+// message later is picked up here automatically instead of silently being
+// left out of the comparison.
 func calendarsEqual(a, b *ScheduleTrigger_Calendar) bool {
-	return proto.Equal(a, b)
+	ac, _ := proto.Clone(a).(*ScheduleTrigger_Calendar)
+	bc, _ := proto.Clone(b).(*ScheduleTrigger_Calendar)
+	ac.Comment, bc.Comment = "", ""
+	return proto.Equal(ac, bc)
 }
 
 // stripCronComment removes a trailing comment, and only a trailing one.

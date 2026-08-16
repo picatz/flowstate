@@ -481,6 +481,108 @@ func TestScheduleBackfillIntersectedStartIsInclusive(t *testing.T) {
 			"the ceiling, not one over it")
 }
 
+// TestScheduleBackfillIntersectedStartExactAtRequestedEnd is the regression
+// for the finding on [TestScheduleBackfillIntersectedStartIsInclusive]'s own
+// fix: when a requested range's end lands exactly on the trigger's start_at,
+// the two clip to a zero-length span and the old code read that as "no
+// overlap" — but both boundaries are inclusive at that single instant, so it
+// can still be one real firing, and the old code charged it as zero.
+func TestScheduleBackfillIntersectedStartExactAtRequestedEnd(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+
+	trigger := &v1.ScheduleTrigger{
+		Every:   durationpb.New(time.Second),
+		StartAt: timestamppb.New(start),
+	}
+	// The second range's own start is exclusive (per this file's (start,
+	// end] convention for a request the trigger doesn't also clip), so on
+	// its own it holds exactly 100,000 firings — start+1s through
+	// start+100000s — never claiming the instant at start itself. The first
+	// range's end lands exactly on the trigger's start_at, so the clip
+	// collapses it to zero length — but that single instant is still a real
+	// firing the second range never claimed, so together they must be
+	// refused at 100,001.
+	backfills := []*v1.ScheduleBackfill{
+		{StartAt: timestamppb.New(start.Add(-time.Hour)), EndAt: timestamppb.New(start)},
+		{StartAt: timestamppb.New(start), EndAt: timestamppb.New(start.Add(100_000 * time.Second))},
+	}
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfills), "more than 100000 firings",
+		"the zero-length range coincident with the trigger's own inclusive start_at is still one real "+
+			"firing, which the second range's own exclusive start never claims, reaching 100,001 together")
+
+	// The same pair, with the first range's end one nanosecond short of
+	// start_at, has no coincident instant at all and must be accepted at
+	// exactly the ceiling: 100,000 from the second range, zero from the first.
+	backfills[0].EndAt = timestamppb.New(start.Add(-time.Nanosecond))
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfills),
+		"without the coincident instant, the two ranges hold exactly 100,000 firings between the first "+
+			"(none, entirely before start_at) and the second, exactly the ceiling and not one over it")
+}
+
+// TestScheduleBackfillInclusiveStartDoesNotDoubleCountTheRemainder is the
+// regression for the second finding on the same fix: the closed-interval
+// bound (floor(span/period)+1) and the half-open remainder bump
+// (span%period!=0 -> +1) both add one firing for a boundary instant, but
+// they are the *same* boundary instant when the trigger's start_at is the
+// effective left edge — applying both, as the first version of the fix did,
+// over-counts by one and refuses a backfill that fits exactly.
+func TestScheduleBackfillInclusiveStartDoesNotDoubleCountTheRemainder(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+
+	trigger := &v1.ScheduleTrigger{
+		Every:   durationpb.New(time.Second),
+		StartAt: timestamppb.New(start),
+	}
+	// A span of 99999s and 1ns holds exactly 100,000 firing instants in a
+	// closed [start, end] one-second grid (0 through 99999 inclusive) — the
+	// 1ns is what makes the span not an exact multiple of the period, which
+	// is precisely the case the old code's extra unconditional bump got
+	// wrong by charging 100,001.
+	requested := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(start.Add(-time.Hour)),
+		EndAt:   timestamppb.New(start.Add(99_999*time.Second + time.Nanosecond)),
+	}}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, requested),
+		"a closed one-second grid over 99999s1ns holds exactly 100,000 instants, at the ceiling, "+
+			"not one over it")
+
+	// One nanosecond more crosses into a real 100,001st instant and must be refused.
+	requested[0].EndAt = timestamppb.New(start.Add(100_000 * time.Second))
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, requested), "more than 100000 firings",
+		"an exact 100,000-second span closed at both ends holds 100,001 instants, one over the ceiling")
+}
+
+// TestScheduleBackfillCalendarDedupeIgnoresComment is the regression for the
+// finding that calendarsEqual compared every field, including comment — pure
+// documentation Temporal never reads when matching a calendar, so two
+// calendars whose ranges are identical still fire at exactly the same
+// instants regardless of what their comments say, and failing to dedupe them
+// double-charges one set of firings as if it were two.
+func TestScheduleBackfillCalendarDedupeIgnoresComment(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	secondly := func(comment string) *v1.ScheduleTrigger_Calendar {
+		return &v1.ScheduleTrigger_Calendar{
+			Second:  []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}},
+			Comment: comment,
+		}
+	}
+	window := (v1.MaxScheduleBackfillFirings * 3 / 4) * time.Second // 75,000s: under the limit alone, over it doubled.
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-window)),
+		EndAt:   timestamppb.New(now),
+	}}
+
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{secondly("primary"), secondly("backup")}},
+		backfill),
+		"two calendars identical but for their comment must dedupe the same way two byte-identical "+
+			"calendars do — a naive sum would refuse a window this cadence alone accepts")
+}
+
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
 // values that cannot be right on any cluster.
 //
