@@ -729,6 +729,121 @@ steps: &loop
 	}
 }
 
+// TestParseYAMLSyntaxErrorsUseTheDiagnosticGrammar is the regression for #654: a
+// failure at the YAML layer, before the compiler ever sees a document tree, used
+// to bypass the [Diagnostic] grammar entirely and come back as goccy's own
+// error, in goccy's own format (`[3:1] mapping key already defined`) rather than
+// this tool's (`workflow.yaml:3:1: ...`). Every kind of YAML-level failure below
+// must now come back as [Diagnostics] with a real line and column, the same
+// shape every other failure in this package uses.
+func TestParseYAMLSyntaxErrorsUseTheDiagnosticGrammar(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		line int
+		col  int
+		want string
+	}{
+		{
+			// The mistake most likely to be an author's first YAML error: an
+			// editor that indents with a tab rather than converting to spaces.
+			// YAML's grammar refuses a tab in indentation outright.
+			name: "tab indentation",
+			src:  "edition: v2026.3\nname: t\nsteps:\n\t- id: a\n",
+			line: 4, col: 1,
+			want: "cannot start any token",
+		},
+		{
+			name: "duplicate mapping key",
+			src:  "edition: v2026.3\nname: t\nname: t\nsteps:\n  - id: a\n    log:\n",
+			line: 3, col: 1,
+			want: "already defined",
+		},
+		{
+			name: "unterminated flow sequence",
+			src:  "edition: v2026.3\nname: t\nsteps: [a, b\n",
+			line: 3, col: 8,
+			want: "sequence end token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wf, pos, err := flowfile.Parse([]byte(tt.src))
+			if err == nil {
+				t.Fatal("Parse() succeeded, want a diagnostic")
+			}
+			if wf != nil || pos != nil {
+				t.Fatalf("Parse() returned a workflow/positions alongside an error: %v / %v", wf, pos)
+			}
+
+			var ds flowfile.Diagnostics
+			if !asDiagnostics(err, &ds) {
+				t.Fatalf("Parse() error is %T, want Diagnostics: %v", err, err)
+			}
+			if len(ds) != 1 {
+				t.Fatalf("expected exactly one diagnostic, got %d:\n%s", len(ds), ds.Error())
+			}
+
+			got := ds[0]
+			if got.Line != tt.line || got.Column != tt.col {
+				t.Errorf("position = %d:%d, want %d:%d\nreported: %s",
+					got.Line, got.Column, tt.line, tt.col, got.Error())
+			}
+			if !strings.Contains(got.Error(), tt.want) {
+				t.Errorf("diagnostic does not mention %q; got:\n%s", tt.want, got.Error())
+			}
+			// The rendered line must open with the position, not with goccy's own
+			// `[line:col]` bracket spelling — the exact defect #654 reported.
+			if strings.Contains(got.Error(), "[") {
+				t.Errorf("diagnostic still carries goccy's own bracket position: %s", got.Error())
+			}
+			t.Logf("reported: %s", got.Error())
+		})
+	}
+}
+
+// TestParseYAMLSyntaxErrorPreservesKeyTextThatLooksLikeACoordinate is the
+// regression for the finding on #654's own PR: [yamlCoordinate] must rewrite
+// only the parser-generated `at [line:col]` suffix a duplicate-key message
+// carries, not any bracket-shaped run inside it. goccy quotes the offending
+// key verbatim ahead of that suffix, so a mapping key literally spelled
+// `[1:2]` produces `mapping key "[1:2]" already defined at [1:1]` — and a
+// global rewrite would turn the author's own key spelling into "line 1, column
+// 1" alongside the real position, reporting a diagnostic about text that is
+// not in the file.
+func TestParseYAMLSyntaxErrorPreservesKeyTextThatLooksLikeACoordinate(t *testing.T) {
+	src := "\"[1:2]\": a\n\"[1:2]\": b\n"
+
+	_, _, err := flowfile.Parse([]byte(src))
+	if err == nil {
+		t.Fatal("Parse() succeeded, want a diagnostic")
+	}
+
+	var ds flowfile.Diagnostics
+	if !asDiagnostics(err, &ds) {
+		t.Fatalf("Parse() error is %T, want Diagnostics: %v", err, err)
+	}
+	if len(ds) != 1 {
+		t.Fatalf("expected exactly one diagnostic, got %d:\n%s", len(ds), ds.Error())
+	}
+
+	got := ds[0]
+	if got.Line != 2 || got.Column != 1 {
+		t.Errorf("position = %d:%d, want 2:1\nreported: %s", got.Line, got.Column, got.Error())
+	}
+	// The key's own text survives untouched, brackets and all...
+	if !strings.Contains(got.Message, `"[1:2]"`) {
+		t.Errorf("diagnostic lost the offending key's own text; got:\n%s", got.Error())
+	}
+	// ...while the parser's *own* trailing position is still translated out of
+	// goccy's bracket spelling.
+	if !strings.Contains(got.Message, "already defined at line 1, column 1") {
+		t.Errorf("diagnostic did not translate the parser's own position; got:\n%s", got.Error())
+	}
+	t.Logf("reported: %s", got.Error())
+}
+
 // TestExamplesCompile checks every workflow shipped as an example, because they are
 // the DSL's documentation: one that does not compile is a lie in the README.
 func TestExamplesCompile(t *testing.T) {

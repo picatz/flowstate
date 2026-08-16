@@ -315,15 +315,18 @@ is one rule with consequences — the fuller reasoning lives in
   here, rendered by the same protojson encoder, because a document scripts index
   by name is a contract and this project describes its contracts in the schema.
   Only its *values* come from the calling process rather than from the server.
-  `result` is `applied` for an act that is true once the server answers,
-  `requested` for one it has accepted and not yet performed, and `delivered` for
-  a signal the server has taken, which is a claim about the server and not about
-  the workflow: a signal held for a gate the run has not reached is dropped if
-  the run continues as new with the pending set full, so a workflow that never
-  observes it is a possible ending of a delivery that succeeded. The envelope
-  carries only what this process knows for certain, because inventing a
-  resulting state out of an empty response is exactly the claim the prose has
-  always refused to make. That emptiness is the real defect
+  What each `result` value means is canonical in one place — the `--help` text
+  every mutation verb ends with, `mutationFlagHelp` in `cmd/flow/output.go`,
+  mirrored generated in [docs/reference/cli.md](reference/cli.md) — rather than
+  restated here, so there is one wording to keep current instead of two that
+  can drift apart. The one fact worth adding here, because it is about the
+  design rather than about a flag: `delivered` is a claim about the server and
+  not about the workflow. A signal held for a gate the run has not reached is
+  dropped if the run continues as new with the pending set full, so a workflow
+  that never observes it is a possible ending of a delivery that succeeded.
+  The envelope carries only what this process knows for certain, because
+  inventing a resulting state out of an empty response is exactly the claim
+  the prose has always refused to make. That emptiness is the real defect
   (picatz/flowstate#374): when those responses gain fields, the envelope stops
   being the whole answer and the response's own protojson carries the rest.
 - **Exit status is a contract with three values.** `0`: the command succeeded

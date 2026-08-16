@@ -86,7 +86,13 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 // file and runtime.go, and every activity in versioning.go's [Register], to
 // confirm each task-executing one calls this before evaluating the task.
 func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task, identity *v1.WorkloadIdentity) error {
-	if err := v1.CheckTaskPolicy(ctx, task.GetName(), identity); err != nil {
+	// local is always false here: the durable driver always has a server in
+	// front of it, even one attesting an anonymous caller, so a dispatch
+	// through this activity is never the rehearsal `local` is meant to name
+	// — see engine/workflow.go's varsScope, "Never Local", and
+	// [v1.CheckTaskPolicy]'s own doc for what this parameter can and cannot
+	// affect.
+	if err := v1.CheckTaskPolicy(ctx, task.GetName(), identity, false); err != nil {
 		recordTaskOutcome(span, err)
 		// Never benign: a deployment's task-shape policy denying dispatch is
 		// not the failure `continue_on_error:` describes — it is the

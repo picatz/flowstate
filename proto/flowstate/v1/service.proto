@@ -713,6 +713,9 @@ service WorkflowService {
   // of it: the same signal name, the same outputs, the same expressions reading
   // them. That is the part that has to match for a local run to tell an author
   // what production will do.
+  //
+  // [SignalResponse] is empty: it says the signal was accepted, not what the run
+  // did with it. Call [Get] afterward to see whether a waiting step consumed it.
   rpc Signal(SignalRequest) returns (SignalResponse) {}
 
   // SignalWithStart delivers a signal to the entity holding a business key, an
@@ -746,10 +749,16 @@ service WorkflowService {
   rpc List(ListRequest) returns (ListResponse) {}
 
   // Cancel asks a run to stop and lets it clean up on the way out.
+  //
+  // [CancelResponse] is empty: it says the stop request was accepted, not that
+  // the run has stopped. Call [Get] afterward to see the run's final status.
   rpc Cancel(CancelRequest) returns (CancelResponse) {}
 
   // Terminate stops a run immediately, running none of its cleanup. Prefer
   // Cancel; see CancelRequest for when this is the right answer anyway.
+  //
+  // [TerminateResponse] is empty: the run is already stopped by the time this
+  // returns, so a follow-up call to [Get] confirms status rather than awaiting it.
   rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
 
   // Validate checks Flowfiles and returns their diagnostics, executing nothing.

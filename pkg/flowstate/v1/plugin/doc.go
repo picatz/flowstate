@@ -134,7 +134,7 @@
 // Use the SDK in [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk],
 // which does the handshake, the socket, the server, the token check, and the
 // signal handling, so that a plugin is a manifest and its implementations. The
-// worked example under examples/flowstate-plugin-example advertises both
+// worked example under pkg/flowstate/v1/plugin/examples/flowstate-plugin-example advertises both
 // capabilities. A plugin in another language implements what is described above;
 // the format is documented here so it can be, and the SDK is a convenience
 // rather than a requirement.

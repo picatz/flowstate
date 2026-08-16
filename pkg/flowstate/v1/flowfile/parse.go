@@ -1,11 +1,14 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
+	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
@@ -403,8 +406,12 @@ func StepTaskKeys(keys []string) []string {
 //
 // A failure to compile is returned as [Diagnostics], one per problem found, so a
 // caller can report all of them at once. A failure to parse the YAML itself is
-// returned as the parser's own error, which already carries a position and an
-// excerpt of the offending line.
+// returned the same way — one [Diagnostic], translated from the parser's own
+// error so an author meets one error language regardless of which layer of the
+// file rejected it (#654). goccy's errors carry the token they failed on, which
+// is where the position comes from; an error that carries none reports with the
+// position left at zero, [Diagnostic]'s own honest answer for a problem with the
+// document as a whole.
 //
 // Compiled from bytes with no file identity, so a `call:` step in this file
 // cannot be resolved — there is no directory to resolve it relative to — and is
@@ -459,7 +466,7 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 
 	file, err := parser.ParseBytes(data, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, yamlSyntaxDiagnostics(err)
 	}
 
 	c := &compiler{
@@ -474,6 +481,64 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 		return nil, nil, c.sorted()
 	}
 	return workflow, c.pos, nil
+}
+
+// yamlCoordinate matches the `at [line:column]` goccy's parser appends to a
+// duplicate-key message to name the earlier definition — see
+// parser.go's `"mapping key %q already defined at [%d:%d]"`. It is goccy's own
+// bracket spelling, not this package's `line:column` one, so left untranslated
+// it would put a second, differently-punctuated position inside a message this
+// package otherwise renders through exactly one convention (see position.go and
+// #384's positionLine). Rewritten to prose rather than dropped, because the
+// position it names is still the information an author needs to resolve a
+// duplicate key.
+//
+// Anchored on the literal `at ` prefix and the end of the string — the exact
+// shape the parser generates — rather than matching any `[N:M]`-shaped run
+// wherever it occurs. A looser match would also rewrite a key whose own name is
+// spelled that way: goccy quotes the key verbatim into the message ahead of
+// this suffix, so a mapping key literally named `[1:2]` produces `mapping key
+// "[1:2]" already defined at [3:4]`, and only the trailing, unquoted occurrence
+// is the parser's own position rather than the author's text.
+var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
+
+// yamlSyntaxDiagnostics translates a failure from the YAML parser into the
+// [Diagnostic] grammar every other failure in this package speaks (#654).
+//
+// Before this, a YAML-level failure — a duplicate key, a tab used for
+// indentation, an unterminated quote — bypassed the grammar entirely and
+// returned goccy's own error, unpositioned as far as this package's callers
+// could tell and rendered in goccy's own format (`[3:1] mapping key already
+// defined`) rather than this tool's (`workflow.yaml:3:1: ...`). Every caller of
+// [Parse] already widens a non-[Diagnostics] error into one unpositioned
+// diagnostic naming the whole document — see cmd/flow's errDiagnosticsOf and
+// the server's Validate and Compile handlers — so a YAML syntax error used to
+// take that fallback and lose its position on the way, even though goccy had
+// one to give.
+//
+// goccy's errors implement [yaml.Error], which carries the token the parser
+// failed on, so the position is recovered from there rather than reimplemented.
+// A future error that does not implement it — there is no such case in this
+// version of goccy — still gets the standard shape, with the position left
+// unset the way [Diagnostic] already reports "a problem with the document as a
+// whole" everywhere else in this package.
+func yamlSyntaxDiagnostics(err error) Diagnostics {
+	d := Diagnostic{Message: err.Error()}
+
+	var yamlErr yaml.Error
+	if errors.As(err, &yamlErr) {
+		if msg := yamlErr.GetMessage(); msg != "" {
+			d.Message = msg
+		}
+		if tok := yamlErr.GetToken(); tok != nil && tok.Position != nil {
+			d.Line = tok.Position.Line
+			d.Column = tok.Position.Column
+		}
+	}
+
+	d.Message = yamlCoordinate.ReplaceAllString(d.Message, " at line $1, column $2")
+
+	return Diagnostics{d}
 }
 
 // A compiler walks one document tree, building the workflow and collecting every

@@ -21,7 +21,7 @@ func TestTaskPolicyZeroCase(t *testing.T) {
 	err := v1.CheckTaskPolicy(context.Background(), "codex.exec", &v1.WorkloadIdentity{
 		Subject:   "anyone@example.com",
 		Namespace: "any-namespace",
-	})
+	}, false)
 	require.NoError(t, err, "no policy configured must permit every dispatch")
 }
 
@@ -193,18 +193,18 @@ func TestTaskPolicyContextOverridesDefault(t *testing.T) {
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
 	// The process default denies everything.
-	require.Error(t, v1.CheckTaskPolicy(context.Background(), "log", &v1.WorkloadIdentity{}))
+	require.Error(t, v1.CheckTaskPolicy(context.Background(), "log", &v1.WorkloadIdentity{}, false))
 
 	// A context carrying nil overrides it back to unrestricted for this call.
 	ctx := v1.NewContextWithTaskPolicy(context.Background(), nil)
-	require.NoError(t, v1.CheckTaskPolicy(ctx, "log", &v1.WorkloadIdentity{}))
+	require.NoError(t, v1.CheckTaskPolicy(ctx, "log", &v1.WorkloadIdentity{}, false))
 
 	// A context carrying its own permissive policy also overrides the
 	// restrictive default.
 	permissive, err := v1.TaskPolicyConfig{Allow: []string{"true"}}.Policy()
 	require.NoError(t, err)
 	ctx = v1.NewContextWithTaskPolicy(context.Background(), permissive)
-	require.NoError(t, v1.CheckTaskPolicy(ctx, "log", &v1.WorkloadIdentity{}))
+	require.NoError(t, v1.CheckTaskPolicy(ctx, "log", &v1.WorkloadIdentity{}, false))
 }
 
 // TestTaskPolicyNilIdentityReadsEmpty checks that a nil identity — what a
@@ -235,8 +235,56 @@ func TestTaskPolicyClassifiedNonRetryable(t *testing.T) {
 	v1.SetDefaultTaskPolicy(policy)
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	err = v1.CheckTaskPolicy(context.Background(), "log", &v1.WorkloadIdentity{})
+	err = v1.CheckTaskPolicy(context.Background(), "log", &v1.WorkloadIdentity{}, false)
 	require.Error(t, err)
 	require.Equal(t, v1.ErrorKindPolicyDenied, v1.ClassifyError(err))
 	require.False(t, v1.ClassifyError(err).Retryable())
+}
+
+// TestLocalOnlyChangesTheMessageNotTheDecision is the test #652 item 3 asks
+// for by name: the same identity against the same policy, once with
+// local:true and once with local:false, must produce the identical
+// allow/deny decision — same [TaskPolicyReason], same rule [Detail] — with
+// only [TaskPolicyDeniedError.Error]'s string differing. Proves
+// [CheckTaskPolicy]'s local parameter is exactly what its doc comment claims
+// and nothing more: informational, never load-bearing.
+func TestLocalOnlyChangesTheMessageNotTheDecision(t *testing.T) {
+	cfg := v1.TaskPolicyConfig{
+		Deny: []string{`task == "codex.exec" && identity.namespace != "platform"`},
+	}
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+	v1.SetDefaultTaskPolicy(policy)
+	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+	identity := &v1.WorkloadIdentity{Namespace: "not-platform"}
+
+	rehearsalErr := v1.CheckTaskPolicy(context.Background(), "codex.exec", identity, true)
+	productionErr := v1.CheckTaskPolicy(context.Background(), "codex.exec", identity, false)
+
+	require.Error(t, rehearsalErr)
+	require.Error(t, productionErr)
+
+	// Same classification on both — a rehearsal denial is exactly as
+	// non-retryable as a production one.
+	require.Equal(t, v1.ClassifyError(productionErr), v1.ClassifyError(rehearsalErr))
+
+	var rehearsalDenied, productionDenied *v1.TaskPolicyDeniedError
+	require.True(t, errors.As(rehearsalErr, &rehearsalDenied))
+	require.True(t, errors.As(productionErr, &productionDenied))
+
+	// Same decision: identical task, reason, and the rule responsible.
+	require.Equal(t, productionDenied.Task, rehearsalDenied.Task)
+	require.Equal(t, productionDenied.Reason, rehearsalDenied.Reason)
+	require.Equal(t, productionDenied.Detail, rehearsalDenied.Detail)
+
+	// Only Local, and therefore only the message, differs.
+	require.True(t, rehearsalDenied.Local)
+	require.False(t, productionDenied.Local)
+	require.NotEqual(t, rehearsalErr.Error(), productionErr.Error(),
+		"a rehearsal denial must read differently from a production one")
+	require.Contains(t, rehearsalErr.Error(), "local rehearsal",
+		"a rehearsal denial must say it came from a rehearsal")
+	require.NotContains(t, productionErr.Error(), "local rehearsal",
+		"a production denial must not claim to be a rehearsal")
 }
