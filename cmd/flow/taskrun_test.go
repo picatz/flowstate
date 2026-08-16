@@ -102,6 +102,26 @@ func TestTheAnswerIsOneLinePerOutput(t *testing.T) {
 		"a body with newlines in it was not written as one line")
 }
 
+// TestRawWritesTheDocumentWithoutDashOJSON is the regression for the gap
+// Codex's review found: --raw's own help promises the schema's protojson
+// "instead of the run document", which is a request for a document on its
+// own, not a modifier that only takes effect once -o json is also given.
+// Before writeTaskOutputs asked runRendering.WantsDocument instead of just
+// Machine(), --raw with the default text format wrote the ordinary
+// tab-separated line-per-output shape here — silently ignoring the flag a
+// caller who wanted the schema's own encoding had just set.
+func TestRawWritesTheDocumentWithoutDashOJSON(t *testing.T) {
+	stdout, stderr, err := taskRun(t, "log", "--input", "message=hi", "--raw")
+	require.NoError(t, err, stderr)
+
+	var document struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &document),
+		"--raw without -o json must still write a JSON document, not the tab-separated shape:\n%s", stdout)
+	assert.Equal(t, "STATUS_COMPLETED", document.Status)
+}
+
 // TestTheMachineShapeIsTheDocumentTheLocalDriverWrites is the both-drivers rule
 // applied to this verb's output.
 //
@@ -115,9 +135,7 @@ func TestTheMachineShapeIsTheDocumentTheLocalDriverWrites(t *testing.T) {
 	var document struct {
 		Status  string `json:"status"`
 		Outputs struct {
-			StepValues map[string]struct {
-				NamedValues map[string]any `json:"namedValues"`
-			} `json:"stepValues"`
+			Steps map[string]map[string]any `json:"steps"`
 		} `json:"outputs"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &document),
@@ -125,7 +143,7 @@ func TestTheMachineShapeIsTheDocumentTheLocalDriverWrites(t *testing.T) {
 
 	assert.Equal(t, "STATUS_COMPLETED", document.Status,
 		"the machine shape does not carry the status the local driver's document carries")
-	assert.Contains(t, document.Outputs.StepValues, "log",
+	assert.Contains(t, document.Outputs.Steps, "log",
 		"the transcript is not keyed by the step id a Flowfile would have written")
 }
 

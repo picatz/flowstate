@@ -57,7 +57,7 @@ import (
 //
 // The live view draws to *stderr*, which is what makes the two shapes compose
 // rather than compete. The answer — the outputs the run produced — goes to stdout
-// exactly as `flow get` writes it, so `flow watch x | jq .stepValues` shows a live
+// exactly as `flow get` writes it, so `flow watch x | jq .steps` shows a live
 // view on the terminal and pipes the answer to jq from one invocation. --output
 // json or jsonl suppresses the view entirely, because somebody who asked for a
 // document asked for a document.
@@ -269,7 +269,7 @@ func newWatchCommand() *cobra.Command {
 			"stream a program can read as it arrives.\n\n" +
 			"The exit code reports the run: 0 when it completed, non-zero when it failed, " +
 			"was canceled, terminated, or timed out, so `flow watch` can gate a pipeline " +
-			"without anything having to parse its output.",
+			"without anything having to parse its output." + runDocumentHelp,
 		Example: `# Follow a run on a terminal.
 flow watch flowstate-workflow-3f7c
 
@@ -277,10 +277,10 @@ flow watch flowstate-workflow-3f7c
 flow watch flowstate-workflow-3f7c --run-id 0198f1c4-8f0e-7d3a-9b21-6c1f4a2e5d77
 
 # Live view on the terminal, the outputs into jq, from one invocation.
-flow watch flowstate-workflow-3f7c | jq .stepValues
+flow watch flowstate-workflow-3f7c | jq .steps
 
 # As an event stream, for a script or an agent: one document per change.
-flow watch flowstate-workflow-3f7c -o jsonl | jq -c '{status, steps: (.outputs.stepValues // {} | keys)}'
+flow watch flowstate-workflow-3f7c -o jsonl | jq -c '{status, steps: (.outputs.steps // {} | keys)}'
 
 # Gate on the outcome; the exit code is the run's.
 flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh`,
@@ -290,6 +290,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh`,
 	}
 
 	addOutputFlag(cmd)
+	addRawOutputFlag(cmd)
 	addFollowFlags(cmd)
 
 	cmd.Flags().String("run-id", "",
@@ -303,7 +304,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	interval, _ := cmd.Flags().GetDuration("interval")
 	plain, _ := cmd.Flags().GetBool("plain")
 
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
@@ -346,7 +347,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 
 	// Nothing known yet: `flow watch` is asked about a run it did not start, so the
 	// first poll is the first thing it learns.
-	return watchRun(cmd.Context(), surface, format,
+	return watchRun(cmd.Context(), surface, rendering,
 		clientPoller{workflowID: workflowID, runID: runID, server: server, client: client, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, nil)
 }
@@ -365,7 +366,7 @@ func clampWatchInterval(interval time.Duration) time.Duration {
 func watchRun(
 	ctx context.Context,
 	surface *ui.UI,
-	format OutputFormat,
+	rendering runRendering,
 	poller watchPoller,
 	interval time.Duration,
 	plain bool,
@@ -376,11 +377,11 @@ func watchRun(
 	// explicitly and a terminal was not, so drawing a view over somebody's requested
 	// JSON would be this command guessing against a flag — which is the mistake
 	// --output exists to prevent, and --plain is the same rule said out loud.
-	if plain || format.Machine() || !surface.ErrCaps.TTY {
-		return followPlainly(ctx, surface, format, poller, interval, workflowID, known)
+	if plain || rendering.WantsDocument() || !surface.ErrCaps.TTY {
+		return followPlainly(ctx, surface, rendering, poller, interval, workflowID, known)
 	}
 
-	return followLive(ctx, surface, poller, interval, workflowID, known)
+	return followLive(ctx, surface, rendering, poller, interval, workflowID, known)
 }
 
 // followPlainly is the shape a script, a CI job, and a program each receive.
@@ -391,7 +392,7 @@ func watchRun(
 func followPlainly(
 	ctx context.Context,
 	surface *ui.UI,
-	format OutputFormat,
+	rendering runRendering,
 	poller watchPoller,
 	interval time.Duration,
 	workflowID string,
@@ -414,7 +415,7 @@ func followPlainly(
 		// The exit code would then say a run failed when what actually happened is
 		// that somebody stopped watching it.
 		if ctx.Err() != nil {
-			return interrupted(surface, format, state)
+			return interrupted(surface, rendering, state)
 		}
 
 		// The clock is read here rather than inside absorb, so the state machine is a
@@ -425,18 +426,18 @@ func followPlainly(
 		progress := state.absorb(time.Now(), response, err)
 
 		if progress.Changed {
-			if err := reportChange(surface, format, state, response); err != nil {
+			if err := reportChange(surface, rendering, state, response); err != nil {
 				return err
 			}
 		}
 
 		if progress.Done {
-			return finishWatch(surface, format, state)
+			return finishWatch(surface, rendering, state)
 		}
 
 		select {
 		case <-ctx.Done():
-			return interrupted(surface, format, state)
+			return interrupted(surface, rendering, state)
 		case <-ticker.C:
 		}
 	}
@@ -454,23 +455,32 @@ func followPlainly(
 // at all, leaving a caller with no machine-readable name for a run that is still
 // going — unwatchable, uncancellable, and unterminatable except by hand. What it gets
 // now is the last state known, which is at worst the run as it was started.
-func interrupted(surface *ui.UI, format OutputFormat, state *watchState) error {
-	if format != FormatJSON || state.response == nil {
-		// jsonl has already emitted every change including the last, and the text
-		// shapes have said what they knew on stderr as they went.
+//
+// rendering.WantsDocument(), not a bare `format == FormatJSON`, is what decides
+// whether this owes a document at all: `--raw` on the default text format asked
+// for one explicitly, through [runRendering.WantsDocument], exactly as
+// followLive/followPlainly's own routing decision already honours it — an
+// interrupted raw watch owes its reader the same last-known-state document a
+// `-o json` watch does, not the silence the text shape gets when nothing was
+// asked for.
+func interrupted(surface *ui.UI, rendering runRendering, state *watchState) error {
+	if rendering.format == FormatJSONL || !rendering.WantsDocument() || state.response == nil {
+		// jsonl has already emitted every change including the last, the text
+		// shapes have said what they knew on stderr as they went, and nothing
+		// asked for a document owes nobody one.
 		return nil
 	}
 
-	return writeJSON(surface, format, state.response)
+	return writeRunJSON(surface, rendering, state.response)
 }
 
 // reportChange writes one change, in the shape the format asks for.
-func reportChange(surface *ui.UI, format OutputFormat, state *watchState, response *v1.GetResponse) error {
-	switch format {
+func reportChange(surface *ui.UI, rendering runRendering, state *watchState, response *v1.GetResponse) error {
+	switch rendering.format {
 	case FormatJSONL:
 		// The server's own message, so a reader is indexing documented fields
 		// rather than a shape invented here for the occasion.
-		return writeJSON(surface, format, response)
+		return writeRunJSON(surface, rendering, response)
 
 	case FormatJSON:
 		// One document per invocation, so nothing is written until the last change
@@ -489,7 +499,7 @@ func reportChange(surface *ui.UI, format OutputFormat, state *watchState, respon
 
 // finishWatch writes whatever the shape owes a reader at the end, then reports the
 // run's outcome as this command's exit status.
-func finishWatch(surface *ui.UI, format OutputFormat, state *watchState) error {
+func finishWatch(surface *ui.UI, rendering runRendering, state *watchState) error {
 	// A watch that gave up knows nothing final about the run, so it writes nothing
 	// final about it. Emitting the last state it happened to see as though it were
 	// the answer is how a program concludes a run is still RUNNING for good.
@@ -502,8 +512,8 @@ func finishWatch(surface *ui.UI, format OutputFormat, state *watchState) error {
 	// document, and [writeRun] is the one that writes it — the same function
 	// `flow run local` finishes through, which is what keeps a caller reading
 	// `.outputs.stepValues` reading the same field from both drivers.
-	if format != FormatJSONL {
-		if err := writeRun(surface, format, state.response); err != nil {
+	if rendering.format != FormatJSONL {
+		if err := writeRun(surface, rendering, state.response); err != nil {
 			return err
 		}
 	}

@@ -661,7 +661,7 @@ func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 		folded := fold(t, model, watchStateMsg{response: response(v1.RunResponse_STATUS_COMPLETED, "greet")})
 
 		require.NoError(t, watchEnding(surface, folded))
-		require.Contains(t, out.String(), "stepValues",
+		require.Contains(t, out.String(), `"steps"`,
 			"the live shape did not write the outputs a pipe would have received")
 	})
 

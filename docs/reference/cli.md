@@ -274,6 +274,12 @@ flow get [workflow-id] [flags]
 
 Report the status of a run, and its outputs if it has finished. The status is written to stderr and the outputs to stdout, so the outputs can be piped. A run that failed is reported as a failure, so `flow get id && ...` behaves as expected.
 
+The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
+
+This document is a contract. Its field names and shape are treated as a public interface: they are pinned by tests, and changing one is a breaking change announced in the release notes, exactly as a change to the schema would be. Fields are added, never renamed or removed in place, and an empty value is written rather than omitted so an expression that resolves against one run resolves against the next.
+
+`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
+
 Examples:
 
 ```sh
@@ -281,7 +287,7 @@ Examples:
 flow get flowstate-workflow-3f7c
 
 # Keep only the outputs:
-flow get flowstate-workflow-3f7c | jq .stepValues
+flow get flowstate-workflow-3f7c | jq .steps
 
 # Ask about one attempt rather than the current one:
 flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
@@ -293,6 +299,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | ask about one attempt of the workload; unset asks about whichever is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
@@ -678,6 +685,12 @@ Stopping watching does not stop the run. The workflow id is printed as soon as t
 
 A workflow that declares `inputs:` is given them with --input name=value or --input-file inputs.json. The declaration decides how a value is read, so an argument that does not fit is refused here, before the run starts.
 
+The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
+
+This document is a contract. Its field names and shape are treated as a public interface: they are pinned by tests, and changing one is a breaking change announced in the release notes, exactly as a change to the schema would be. Fields are added, never renamed or removed in place, and an empty value is written rather than omitted so an expression that resolves against one run resolves against the next.
+
+`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
+
 Examples:
 
 ```sh
@@ -691,7 +704,7 @@ flow run examples/parameterized-deploy/workflow.yaml --input service=checkout --
 flow run examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
 
 # Run it and pipe the outputs, with the live view still on the terminal:
-flow run examples/hello-world/workflow.yaml | jq .stepValues
+flow run examples/hello-world/workflow.yaml | jq .steps
 
 # In CI: one line per change, exit code reports the outcome.
 flow run examples/hello-world/workflow.yaml >/dev/null
@@ -710,6 +723,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
+| `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reason <string>` | `string` | — | — | why this run is being started, recorded on it; required by a workflow whose `manual:` block asks for one |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
@@ -741,6 +755,12 @@ What that does not do is make the run attested. Nothing verified these flags - t
 
 A gate is the one place that limit is lifted, because a gate is the thing worth rehearsing. --signal-as-subject and its siblings name the approver a --signal delivery stands in for, and the workflow's own `signals:` policy is then checked here by the same function the server checks it with - so an approver a rule admits in production opens the gate here, one it refuses is refused here, and an approver who is this run's own starter is refused by `distinct_from_starter:` on both. It remains a rehearsal, and says so: nothing attested it, and the gate's own `sender.local` output reads true.
 
+The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
+
+This document is a contract. Its field names and shape are treated as a public interface: they are pinned by tests, and changing one is a breaking change announced in the release notes, exactly as a change to the schema would be. Fields are added, never renamed or removed in place, and an empty value is written rather than omitted so an expression that resolves against one run resolves against the next.
+
+`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
+
 Examples:
 
 ```sh
@@ -751,7 +771,7 @@ flow run local examples/hello-world/workflow.yaml
 flow run local examples/hello-world-multi-step/workflow.yaml
 
 # Take one step's output, the same way you would from a durable run:
-flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedValues
+flow run local examples/hello-world/workflow.yaml | jq .steps.hello
 
 # Ask for the whole run as one document, including how it went:
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
@@ -786,6 +806,7 @@ flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --sec
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
@@ -1295,6 +1316,12 @@ Arguments are given the way `flow run` takes them (--input name=value or --input
 
 stdout is the answer and stderr is the account of it, so a task invocation pipes. --output json writes the same document `flow run local -o json` writes for a finished run.
 
+The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
+
+This document is a contract. Its field names and shape are treated as a public interface: they are pinned by tests, and changing one is a breaking change announced in the release notes, exactly as a change to the schema would be. Fields are added, never renamed or removed in place, and an empty value is written rather than omitted so an expression that resolves against one run resolves against the next.
+
+`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
+
 There is no state between invocations and no session, on purpose. Composition is a pipe and then a file: the moment two invocations need to share memory, the answer is `flow run local`.
 
 Examples:
@@ -1304,7 +1331,7 @@ Examples:
 flow task run log --input message='hello from a task'
 
 # Fetch something, and read one output:
-flow task run http --input url=https://example.com --output json | jq -r .outputs.stepValues.http.namedValues.status_code.literal.int64Value
+flow task run http --input url=https://example.com --output json | jq .outputs.steps.http.status_code
 
 # Say what a good response looks like, the way a step's expect: does:
 flow task run http --input url=https://example.com --input expect='${response.status_code == 200}'
@@ -1333,6 +1360,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
@@ -1533,6 +1561,12 @@ Where there is a terminal this draws a live view of the run, on stderr, so the o
 
 The exit code reports the run: 0 when it completed, non-zero when it failed, was canceled, terminated, or timed out, so `flow watch` can gate a pipeline without anything having to parse its output.
 
+The run document on stdout is written for a program. A step's outputs are `.steps.<id>.<output>` — the path the file itself writes as `${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` are `.runOutputs.<name>`, each a plain JSON value rather than a tagged union: `.runOutputs.replicas` is `3`. With `-o json` the same document is wrapped in the run's own state, so the transcript is `.outputs.steps` and the answer stays `.runOutputs`.
+
+This document is a contract. Its field names and shape are treated as a public interface: they are pinned by tests, and changing one is a breaking change announced in the release notes, exactly as a change to the schema would be. Fields are added, never renamed or removed in place, and an empty value is written rather than omitted so an expression that resolves against one run resolves against the next.
+
+`--raw` writes the schema's own protojson instead — `stepValues`, `namedValues` and CEL's tagged encoding of every value — which is the shape to read if you are generating a consumer against `flowstate.v1` rather than writing a `jq` expression by hand.
+
 Examples:
 
 ```sh
@@ -1543,10 +1577,10 @@ flow watch flowstate-workflow-3f7c
 flow watch flowstate-workflow-3f7c --run-id 0198f1c4-8f0e-7d3a-9b21-6c1f4a2e5d77
 
 # Live view on the terminal, the outputs into jq, from one invocation.
-flow watch flowstate-workflow-3f7c | jq .stepValues
+flow watch flowstate-workflow-3f7c | jq .steps
 
 # As an event stream, for a script or an agent: one document per change.
-flow watch flowstate-workflow-3f7c -o jsonl | jq -c '{status, steps: (.outputs.stepValues // {} | keys)}'
+flow watch flowstate-workflow-3f7c -o jsonl | jq -c '{status, steps: (.outputs.steps // {} | keys)}'
 
 # Gate on the outcome; the exit code is the run's.
 flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
@@ -1560,6 +1594,7 @@ flow watch flowstate-workflow-3f7c >/dev/null && ./promote.sh
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
+| `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-id <string>` | `string` | — | — | pin the watch to one run of the workload; unset follows whichever run is current |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |

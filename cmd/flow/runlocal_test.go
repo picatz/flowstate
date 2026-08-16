@@ -81,7 +81,7 @@ func TestALocalRunWritesOneDocumentToStdout(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &outputs),
 		"stdout is not a single JSON document:\n%s", stdout)
 
-	assert.Contains(t, outputs, "stepValues",
+	assert.Contains(t, outputs, "steps",
 		"the document on stdout is not the run's outputs")
 	assert.NotContains(t, stdout, "hello from the workload",
 		"what the workload logged reached the stream a pipe reads")

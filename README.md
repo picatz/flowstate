@@ -271,9 +271,9 @@ NEXT
   flow test my-pipeline
 
 $ go run ./cmd/flow run local my-pipeline/workflow.yaml
+running locally
 INFO hello, world
 COMPLETED workflow my-pipeline
-{"stepValues":{"greet":{"namedValues":{}}}, "runOutputs":null}
 
 $ go run ./cmd/flow test my-pipeline
 PASS  my-pipeline/workflow.test.yaml: the greeting uses the input it was given
@@ -282,6 +282,45 @@ PASS  my-pipeline/workflow.test.yaml: the greeting uses the input it was given
 That is the whole of the local loop, and it is worth rehearsing with: the two drivers
 are one execution model, so conditions, retries, timeouts, loops and waits behave
 here the way they behave in production.
+
+### What a run answers with
+
+On a terminal a run says what happened, in words, and stops there. Pipe it and stdout
+carries a document instead — the same document either driver writes, in the vocabulary
+the file is already written in. A step's outputs are `.steps.<id>`, and the values a
+workflow declared under `outputs:` are `.runOutputs.<name>`:
+
+```console
+$ go run ./cmd/flow run local ./examples/computed-outputs/workflow.yaml --input release=2026.9.0 | jq
+{
+  "steps": {
+    "report": {},
+    "roll_out": {
+      "results": [
+        { "place": {} },
+        { "place": {} },
+        { "place": {} }
+      ]
+    }
+  },
+  "runOutputs": {
+    "hosts_placed": 3,
+    "release": "2026.9.0",
+    "summary": "placed 2026.9.0 on 3 host(s)"
+  }
+}
+
+$ go run ./cmd/flow run local ./examples/computed-outputs/workflow.yaml -o json | jq -r '.status, .runOutputs.summary'
+STATUS_COMPLETED
+placed 2026.8.1 on 3 host(s)
+```
+
+A value is a value: `.runOutputs.hosts_placed` is `3`, not a tagged union you have to
+unwrap. That document is a contract — field names and shape are treated as a public
+interface, and every field is present even when empty, so an expression that resolves
+against one run resolves against the next. `--raw` writes the schema's own protojson
+(`stepValues`, `namedValues`, CEL's own encoding of a value) for a consumer generated
+against `flowstate.v1` rather than written by hand.
 
 ### Durably, on Temporal
 
@@ -318,11 +357,12 @@ Then run a workflow durably, through the server:
 $ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
 started flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2; come back to it with `flow watch flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2`
 COMPLETED workflow flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2 run 019fe297-35dc-743c-b8c0-2a3c65e64f8a after greet, shout
-{"stepValues":{"greet":{"namedValues":{}}, "shout":{"namedValues":{}}}, "runOutputs":null}
 ```
 
-The same file run with `flow run local` prints the same steps and the same final
-document; the difference is that this one survives its worker being restarted.
+The same file run with `flow run local` prints the same steps and, piped, the same
+final document; the difference is that this one survives its worker being restarted.
+That is why the document is worth having one of rather than two: `.runOutputs.summary`
+is the same expression against a rehearsal and against production.
 
 `go install ./cmd/flow` puts `flow` on your `PATH` (at `$(go env GOPATH)/bin/flow`)
 once you'd rather not type `go run` every time. Everything above also has a `--help`,
