@@ -1,0 +1,344 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/trigger.proto";
+import "flowstate/v1/value.proto";
+import "flowstate/v1/workflow.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// Schedules are a control plane over Temporal's, and the messages below are
+// deliberately thin.
+//
+// Temporal owns when a schedule fires, what it does about a firing that overlaps
+// the last, and what it remembers about the ones already taken. What Flowstate
+// owns is a *name within a tenant*, the specification and arguments a firing
+// starts a run with, and the rule that one tenant cannot see or touch another's.
+// Everything else these carry is a projection of what Temporal already answered.
+//
+// # A schedule is named, where a run is identified
+//
+// A run gets a generated id, because a run is an event: nobody chooses it in
+// advance and nobody needs to say it twice. A schedule is the opposite: it is a
+// standing thing an operator refers to across months, in a runbook and in a
+// change request, so it carries a name somebody chose, defaulting to the
+// workflow's own.
+//
+// The name is scoped to the caller's tenant, which is what makes it usable: two
+// teams may both have a `nightly-report` and neither has to discover the other's
+// existence to pick a name. The Temporal schedule id it maps to encodes the
+// tenant, and the tenant is *also* recorded on the schedule as a memo and checked
+// on every request. See server/schedules.go, which explains why both.
+
+// ScheduleActionResult is one firing that happened.
+message ScheduleActionResult {
+  // ScheduleTime is the moment the firing was due, including any jitter.
+  google.protobuf.Timestamp schedule_time = 1;
+
+  // ActualTime is when the run was actually started.
+  google.protobuf.Timestamp actual_time = 2;
+
+  // WorkflowId is the run the firing started, which `flow get` takes.
+  string workflow_id = 3;
+
+  // RunId is the first execution of that workload. A run that continues as new
+  // has later executions this does not name; see RunResponse for why a workflow
+  // id is the durable handle and a run id is a position.
+  string run_id = 4;
+}
+
+// ScheduleSummary describes one schedule in a listing.
+//
+// Deliberately not the whole description: a listing answers which schedules exist
+// and whether they are live, and reading what one is configured to pass a run is
+// DescribeSchedule: one schedule and one authorization decision, the same split
+// [RunSummary] makes for runs.
+message ScheduleSummary {
+  // Name is what this tenant calls the schedule.
+  string name = 1;
+
+  // Paused is whether firings are currently suppressed.
+  bool paused = 2;
+
+  // Note is the human-readable message carried on the schedule, which is where
+  // the reason for a pause is written: by whoever paused it, or by Temporal when
+  // a failure paused it.
+  string note = 3;
+
+  // NextRunTime is when this would next fire, unset when it is paused or when
+  // the cluster has no next time for it.
+  google.protobuf.Timestamp next_run_time = 4;
+}
+
+// ScheduleDescription is one schedule in full.
+message ScheduleDescription {
+  // Name is what this tenant calls the schedule.
+  string name = 1;
+
+  // WorkflowName is the workflow a firing runs, read back out of the
+  // specification the schedule carries.
+  string workflow_name = 2;
+
+  // Trigger is the cadence, as it was created: the same message a Flowfile's
+  // `triggers.schedule` compiles to, so what comes back out reads like what went
+  // in.
+  //
+  // Read back out of the specification the schedule stores, which is where the
+  // author's own words survive. Temporal translates a cron expression into a
+  // calendar spec when it stores one, so asking the cluster what the cadence is
+  // answers `0 9 * * MON-FRI` as a set of calendar ranges: true, and not what
+  // anybody wrote or would recognise.
+  //
+  // The two cannot disagree, because CreateSchedule is the only thing that writes
+  // either and writes them from one value. What can diverge is a schedule edited
+  // out from under Flowstate with the `temporal` CLI; that is visible there, and
+  // `flow schedule describe` does not pretend to be the cluster's own view of its
+  // own object.
+  ScheduleTrigger trigger = 3;
+
+  // Paused is whether firings are currently suppressed.
+  bool paused = 4;
+
+  // Note is the message carried on the schedule; see [ScheduleSummary.note].
+  string note = 5;
+
+  // NumActions is how many firings this schedule has taken, including manual
+  // ones.
+  int64 num_actions = 6;
+
+  // NextRunTimes are the next few moments this is due to fire. Empty while
+  // paused.
+  repeated google.protobuf.Timestamp next_run_times = 7;
+
+  // RecentRuns are the last few firings, oldest first.
+  repeated ScheduleActionResult recent_runs = 8;
+
+  // Inputs are the arguments every firing starts its run with, bound and
+  // type-checked when the schedule was created.
+  //
+  // Reported because a schedule that has been running for a month is a thing
+  // somebody eventually has to explain, and "what is it passing" is the first
+  // question. Absent rather than empty when the stored specification cannot be
+  // read back: a schedule created by a build whose message shape has since moved
+  // is describable in every other respect, and failing the whole description over
+  // one field would take away the answer along with the doubt.
+  map<string, Value> inputs = 9;
+}
+
+// CreateScheduleRequest asks for a schedule that runs a workflow on a cadence.
+message CreateScheduleRequest {
+  // Workflow is the specification every firing runs, exactly as [RunRequest]
+  // takes it: the same compiled artifact, validated and size-checked the same
+  // way.
+  //
+  // The whole specification rather than a reference to one stored elsewhere,
+  // because there is nowhere else: Flowstate has no workflow registry, and a
+  // schedule that named a file would be a schedule that breaks when somebody
+  // moves it. What fires a year from now is what was created, which is also what
+  // makes a schedule reviewable.
+  Workflow workflow = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Inputs are the arguments every firing starts its run with.
+  //
+  // Bound and type-checked *here*, once, while whoever is creating the schedule
+  // is still present to be told (invariant 6). The alternative, checking at each
+  // firing, puts the refusal at three in the morning in a worker's log, for a
+  // mistake made at a keyboard weeks earlier, which is the failure this whole
+  // repository's fail-closed rule is about.
+  //
+  // Same contract as [RunRequest.inputs] and through the same
+  // `v1.BindRunInputs`: values and never expressions, no undeclared name, every
+  // required input present, defaults filled in. What is stored is the bound map,
+  // so a declaration edited later does not change what a schedule already created
+  // passes.
+  map<string, Value> inputs = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).map = {
+      keys: {string: {min_len: 1}}
+      max_pairs: 64
+    }
+  ];
+
+  // Name is what this tenant will call the schedule. Empty takes the workflow's
+  // own name, which is the right default and usually the only name anybody wants.
+  //
+  // Given explicitly when one workflow wants two cadences (a report that runs
+  // hourly for one region and nightly for another is one file and two schedules),
+  // which is exactly when a generated id would be useless.
+  string name = 3 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {
+      max_len: 128
+      pattern: "^$|^[A-Za-z0-9-_]+$"
+    }
+  ];
+
+  // Paused creates the schedule without letting it fire.
+  //
+  // A property of the act and not of the file, which is why it is here rather
+  // than on [ScheduleTrigger]: the file says what the cadence is, and whether this
+  // deployment is currently honouring it is the deployment's answer. It is also
+  // what makes creating one safe to rehearse: create paused, describe it, and
+  // resume when the next firing time is one somebody meant.
+  bool paused = 4 [(google.api.field_behavior) = OPTIONAL];
+
+  // Backfill is deliberately creation-only: it is an operator request, not a
+  // perpetual property of the workload, which is why it is here and not in the
+  // Flowfile's `triggers.schedule` block. At most 10 intervals spanning no more
+  // than 31 days in total are accepted, and both bounds are enforced by
+  // `v1.CheckScheduleBackfill` on every path that can create a schedule.
+  repeated ScheduleBackfill backfill = 5 [(buf.validate.field).repeated = {max_items: 10}];
+}
+
+// CreateScheduleResponse confirms the schedule and describes what was created.
+message CreateScheduleResponse {
+  // Schedule is the created schedule as the cluster now holds it, so a caller
+  // sees the next firing times without a second request, which is the one fact
+  // that most often reveals a cadence meaning something other than what was
+  // intended.
+  ScheduleDescription schedule = 1;
+}
+
+// ListSchedulesRequest asks for the caller's schedules. It takes nothing today.
+//
+// # No paging, deliberately, and what that costs
+//
+// `List` pages runs because a namespace holds them by the hundred thousand and
+// the tenant filter is a memo Temporal cannot query, so an unbounded listing is a
+// denial of service waiting to be written. Schedules are not that: they are
+// created one at a time by people, and a deployment with a thousand of them has a
+// different problem.
+//
+// The scan is still bounded (see `maxScheduleScan`) and when the bound stops it
+// the response says so rather than presenting a partial listing as the whole of
+// it. That is a smaller promise than `List` makes, and it is stated instead of
+// implied. A `page_token` is a field 1 and 2 away on either message the day a
+// deployment needs it, with nothing existing to break.
+message ListSchedulesRequest {}
+
+// ListSchedulesResponse returns the caller's schedules.
+message ListSchedulesResponse {
+  // Schedules are the caller's, in whatever order the cluster returned them.
+  repeated ScheduleSummary schedules = 1;
+
+  // Truncated reports that the scan stopped at its bound with schedules still
+  // unexamined, so this listing is not the whole of it.
+  //
+  // Said rather than hidden, on the same reasoning as [ListResponse.next_page_token]:
+  // a caller concluding from a short answer that they have seen everything is the
+  // failure worth preventing, and it is worse than an answer that admits its own
+  // limit.
+  bool truncated = 2;
+}
+
+// DescribeScheduleRequest asks about one of the caller's schedules by name.
+message DescribeScheduleRequest {
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$"
+    }
+  ];
+}
+
+// DescribeScheduleResponse is the schedule in full.
+message DescribeScheduleResponse {
+  ScheduleDescription schedule = 1;
+}
+
+// DeleteScheduleRequest removes one of the caller's schedules.
+message DeleteScheduleRequest {
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$"
+    }
+  ];
+}
+
+// DeleteScheduleResponse is empty: a deleted schedule has nothing to report.
+message DeleteScheduleResponse {}
+
+// PauseScheduleRequest stops a schedule firing without removing it.
+message PauseScheduleRequest {
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$"
+    }
+  ];
+
+  // Note is recorded on the schedule and shown by list and describe.
+  //
+  // Worth writing, because a paused schedule found by somebody else is a thing
+  // with no explanation attached: the same reason [TerminateRequest] carries a
+  // reason.
+  string note = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {max_len: 256}
+  ];
+}
+
+// PauseScheduleResponse is empty.
+message PauseScheduleResponse {}
+
+// ResumeScheduleRequest lets a paused schedule fire again.
+message ResumeScheduleRequest {
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$"
+    }
+  ];
+
+  // Note replaces the message on the schedule, which is usually where the reason
+  // it was paused is still written.
+  string note = 2 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).string = {max_len: 256}
+  ];
+}
+
+// ResumeScheduleResponse is empty.
+message ResumeScheduleResponse {}
+
+// TriggerScheduleRequest fires a schedule now, without waiting for its cadence.
+message TriggerScheduleRequest {
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9-_]+$"
+    }
+  ];
+}
+
+// TriggerScheduleResponse is empty.
+//
+// Not the run it started, and that is Temporal's shape rather than a choice: a
+// trigger is asynchronous (the cluster takes the action and the schedule's own
+// history records it), so there is no execution to name by the time this returns.
+// `DescribeSchedule` reports it as a recent run once it has been taken, which is
+// what the CLI points at.
+message TriggerScheduleResponse {}

@@ -38,14 +38,14 @@ func TestBuildPlan(t *testing.T) {
 			// the proto leg here would let the gate pass with
 			// stale docs/reference/.
 			name:    "a proto-only edit fires the proto leg AND the docs leg",
-			changed: []string{"proto/flowstate/v1/flowstate.proto"},
+			changed: []string{"proto/flowstate/v1/workflow.proto"},
 			want: plan{
 				fileDirs: []string{"proto/flowstate/v1"},
 				proto:    true,
 				docs:     true,
 				reasons: map[string]string{
-					"proto": "proto/flowstate/v1/flowstate.proto",
-					"docs":  "proto/flowstate/v1/flowstate.proto",
+					"proto": "proto/flowstate/v1/workflow.proto",
+					"docs":  "proto/flowstate/v1/workflow.proto",
 				},
 			},
 		},
@@ -221,7 +221,7 @@ func TestBuildPlan(t *testing.T) {
 		{
 			name: "a mixed diff fires each leg once with the first trigger recorded",
 			changed: []string{
-				"proto/flowstate/v1/flowstate.proto",
+				"proto/flowstate/v1/workflow.proto",
 				"proto/flowstate/v1/plugin.proto",
 				"docs/DSL.md",
 				"examples/hello/workflow.yaml",
@@ -241,11 +241,11 @@ func TestBuildPlan(t *testing.T) {
 				docs:     true,
 				examples: true,
 				reasons: map[string]string{
-					"proto": "proto/flowstate/v1/flowstate.proto",
+					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
 					// is first in this diff, so it is the
 					// trigger recorded rather than DSL.md.
-					"docs":     "proto/flowstate/v1/flowstate.proto",
+					"docs":     "proto/flowstate/v1/workflow.proto",
 					"examples": "examples/hello/workflow.yaml",
 				},
 			},

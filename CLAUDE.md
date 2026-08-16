@@ -9,7 +9,7 @@ a change that violates one is a bug even when the tests pass.
 
 ## Proto-first
 
-Types describing the system live in `proto/flowstate/v1/flowstate.proto`, not as
+Types describing the system live in the schema under `proto/flowstate/v1/`, not as
 hand-written Go structs. Regenerate with `buf generate`. Behavior attaches to
 generated types as methods in hand-written files; the shape comes from the schema.
 
