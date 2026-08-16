@@ -1,0 +1,8 @@
+RUNNING flowstate-workflow-3f7c                                                 
+run 0198f1e2-0000-7000-8000-000000000000                                        
+on deploy                                                                       
+watching                                                                        
+△ retrying, attempt 4: connection refused                                       
+                                                                                
+q stops watching, not the run                                                   
+                                                                                

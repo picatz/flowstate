@@ -1,0 +1,11 @@
+COMPLETED flowstate-workflow-3f7c       
+run 0198f1e2-0000-7000-8000-000000000000
+watching for 0s                         
+                                        
+✓ build                                 
+✓ checkout                              
+✓ deploy                                
+3 step(s) done                          
+                                        
+q stops watching, not the run           
+                                        
