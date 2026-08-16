@@ -74,6 +74,50 @@ behaves oddly, check:
 
     ps -Ao pid,rss,args | grep -E '\.test|-fuzz' | grep -v grep
 
+### Coverage across a subprocess (`make coverage`)
+
+`go test -cover` only instruments the package it is compiling. At least seven
+test files drive the `flow` binary or a plugin as a real subprocess —
+`cmd/flow/execute_test.go`, `nocolor_test.go`, `breaking_test.go`,
+`browser_test.go`, `mcp_plugin_test.go`,
+`cmd/flow/internal/appearance/appearance_test.go`, and
+`pkg/flowstate/v1/plugin/example_test.go` — and every line those exercise is
+invisible to it, because it runs in a process the harness never instrumented.
+A CLI verb whose only coverage comes from a subprocess test looks identical to
+one with no test at all (#519).
+
+    make coverage
+
+builds every subprocess binary those tests launch with Go's `-cover`
+instrumentation, runs the full suite, and merges every process's counters —
+however many ran — with `go tool covdata` into `.coverage/coverage.html`
+(browsable) and `.coverage/percent.txt` (a per-package summary). Read the
+HTML output and look for a path nothing reached; that reading is the point.
+
+This is a map, not a gate: nothing in CI or `make check` reads `.coverage/`,
+and no percentage is enforced anywhere. A percentage rewards a test that
+executes lines without asserting anything, which is the "green by not
+running" failure this file already legislates against elsewhere, wearing a
+different hat.
+
+The mechanism is `internal/covbuild`, keyed off `FLOWSTATE_COVERDIR` rather
+than Go's own `GOCOVERDIR` — deliberately a different name. `go test -cover
+-args -test.gocoverdir=X` points the running test process's own `GOCOVERDIR`
+at a scratch directory of its own and copies only the counters *it* wrote
+into `X` afterward; a subprocess that merely inherited that scratch
+`GOCOVERDIR` writes real counters into a directory the merge then discards,
+which is coverage that silently vanishes rather than coverage that is
+visibly missing. `covbuild.Env()` threads the real destination through every
+subprocess's `Cmd.Env` explicitly instead.
+
+Known gaps, tracked as follow-ups rather than landed here: `plugins/*`
+(`git`, `github`, `sql`, `vcs`, `codex`) are separate Go modules outside this
+module's build graph, so nothing from them merges into `.coverage/`; and
+`make coverage` is not wired into CI (`ci.yml` or `deep.yml`) — running it is
+a local, on-demand read, not an automated one, on the same "leave CI wiring
+as a named follow-up" reasoning that keeps `make check` itself the full local
+rehearsal rather than something CI second-guesses.
+
 ## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
 
 Three tiers over one list of checks, and — this is the part worth holding on to

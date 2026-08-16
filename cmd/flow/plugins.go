@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/internal/covbuild"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -128,6 +129,16 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 		PermittedSchemes:        f.schemes,
 		HostVersion:             version,
 		Logger:                  logger,
+		// pluginEnv (pkg/flowstate/v1/plugin/launch.go) deliberately strips a
+		// launched plugin down to the protocol variables plus whatever an
+		// operator names here — GOCOVERDIR is not ambient by design. Forward
+		// it only when it is set on this process, which is only ever true
+		// under `make coverage` (see internal/covbuild); an ordinary `flow
+		// worker` or `flow mcp` run never sets GOCOVERDIR and this is a no-op.
+		// Without it, a coverage-instrumented plugin binary launched through
+		// this host writes nothing, and #519's plugin blind spot stays closed
+		// only for the tests that build their own Config.Env by hand.
+		Env: covbuild.Env(),
 	})
 }
 

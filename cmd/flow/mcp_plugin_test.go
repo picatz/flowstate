@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+	"github.com/picatz/flowstate/internal/covbuild"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
@@ -54,8 +55,11 @@ func buildExamplePluginDir(t *testing.T) string {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, plugin.BinaryPrefix+"example")
 
-	cmd := exec.Command("go", "build", "-o", bin,
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", bin,
 		"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example")
+
+	cmd := exec.Command("go", args...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "building the example plugin: %s", out)
 

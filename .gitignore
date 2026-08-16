@@ -40,3 +40,8 @@ go.work
 .claude/worktrees/
 
 .worktrees/
+
+# `make coverage`'s output (#519): raw GOCOVERDIR counters, the merged
+# profile, the HTML report and the per-package summary. Generated fresh by
+# every run and never a statement about a specific commit worth committing.
+.coverage/
