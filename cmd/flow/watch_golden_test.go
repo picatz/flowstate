@@ -30,7 +30,7 @@ import (
 // run and a run stuck retrying). The rest of the matrix — the 100-column
 // clamp, NO_COLOR, FLOWSTATE_SYMBOLS=ascii — and converting the fold()-based
 // tests above to the same pin are follow-up work, tracked so the convention
-// does not stop at two cases: see #768.
+// does not stop at two cases: see #774.
 func TestWatchViewGoldenCompletedRun(t *testing.T) {
 	surface, _, _ := terminalSurface(80, 24, colorprofile.NoTTY)
 
