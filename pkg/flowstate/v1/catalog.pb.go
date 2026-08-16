@@ -104,6 +104,13 @@ type TaskCatalog struct {
 	// upgrade. A reader comparing this against zero, not the individual claim
 	// fields, is what tells "unknown" from "false": see
 	// [flowstatev1.TaskDescriptionClaimsKnown].
+	//
+	// Bounded above as well as below, and for the identical reason: a version
+	// *greater* than the reading client's own [flowstatev1.CurrentClaimsSchemaVersion]
+	// names a future redefinition that client was not compiled against, which
+	// is the same "I do not know what this means" as the zero case, arriving
+	// from the other direction — an older client must not treat a newer
+	// catalog's claims as known just because the version is nonzero.
 	ClaimsSchemaVersion uint32 `protobuf:"varint,7,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
@@ -332,6 +339,12 @@ type TaskDescription struct {
 	// secret *reference itself* is a legal thing to write, which is a claim
 	// about trust: naming an input here is the plugin asking to receive a value
 	// the workflow author never wrote in the clear.
+	//
+	// A membership set, not a sequence — sorted and deduplicated by whichever
+	// server produces this message, regardless of what order a plugin manifest
+	// declared it in. What matters to every reader is which names are present;
+	// an order that varied between two launches of one unchanged plugin binary
+	// would otherwise change TaskSchemaDigest for no behavioral reason.
 	SecretInputs []string `protobuf:"bytes,6,rep,name=secret_inputs,json=secretInputs,proto3" json:"secret_inputs,omitempty"`
 	// ShapesOutputs reports whether the task evaluates an `outputs:` input as a
 	// replacement for the outputs it declares above, rather than the outputs
@@ -341,9 +354,13 @@ type TaskDescription struct {
 	// against a scope the workflow does not have. Mirrors TaskField.deferred at
 	// the task level, so a consumer that wants the list rather than a per-field
 	// scan does not have to walk every field.
+	//
+	// Sorted and deduplicated, for the same reason secret_inputs above is.
 	DeferredInputs []string `protobuf:"bytes,8,rep,name=deferred_inputs,json=deferredInputs,proto3" json:"deferred_inputs,omitempty"`
 	// ExpressionInputs names inputs that must be written as `${...}` rather
 	// than as a literal.
+	//
+	// Sorted and deduplicated, for the same reason secret_inputs above is.
 	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache

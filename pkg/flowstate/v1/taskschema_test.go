@@ -3,6 +3,7 @@ package flowstatev1_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -204,4 +205,77 @@ func TestClaimsSchemaVersionDistinguishesUnknownFromFalse(t *testing.T) {
 	require.False(t, v1.TaskDescriptionClaimsKnown(old),
 		"a catalog with no ClaimsSchemaVersion reads as known, so a remote GetCatalog "+
 			"caller talking to an old deployment would trust its zero-valued needs_scope as an explicit no")
+}
+
+// TestClaimsSchemaVersionRejectsAFutureVersionToo is the same review's second
+// finding: "known" bounded only below (nonzero) still fails open going
+// forward. A client built against ClaimsSchemaVersion 1 reading a catalog
+// stamped with a version it has never heard of cannot know what a future
+// redefinition of these fields means, and must not treat that catalog's
+// claims as trustworthy just because the version is nonzero.
+func TestClaimsSchemaVersionRejectsAFutureVersionToo(t *testing.T) {
+	t.Parallel()
+
+	future := &v1.TaskCatalog{
+		Tasks:               v1.Catalog().Tasks,
+		ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion + 1,
+	}
+
+	require.False(t, v1.TaskDescriptionClaimsKnown(future),
+		"a claims schema version newer than this build understands reads as known, "+
+			"so an older client reading a newer deployment's catalog would trust claim fields it cannot interpret")
+
+	// The positive direction beside it, so the test above is not simply
+	// asserting the check always fails: the version this build actually
+	// produces is accepted.
+	require.True(t, v1.TaskDescriptionClaimsKnown(&v1.TaskCatalog{
+		Tasks:               v1.Catalog().Tasks,
+		ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion,
+	}))
+}
+
+// TestClaimListsCanonicalizeRegardlessOfManifestOrder is the review's third
+// finding: secret_inputs, deferred_inputs and expression_inputs are
+// membership sets to every engine reader (MustBeExpression, IsDeferred,
+// resolvePluginSecretInputs all ask "does this list contain X"), but the
+// manifest schema bounds them only by size, so nothing stops two launches of
+// one unchanged plugin binary from declaring the same set in a different
+// order. TaskSchemaDigest hashes TaskDescription with deterministic
+// marshaling, which fixes field order and nothing about a repeated string
+// field's contents — so without this, reordering alone could change the
+// digest and fail CheckPluginsAvailable's exact-match replay guard for a
+// plugin that has not actually changed.
+func TestClaimListsCanonicalizeRegardlessOfManifestOrder(t *testing.T) {
+	t.Parallel()
+
+	forward := v1.DescribeTask(v1.TaskDef{
+		Name:             "commit_push",
+		SecretInputs:     []string{"token", "webhook_secret"},
+		DeferredInputs:   []string{"outputs", "body"},
+		ExpressionInputs: []string{"expect", "auth"},
+	})
+	reversed := v1.DescribeTask(v1.TaskDef{
+		Name:             "commit_push",
+		SecretInputs:     []string{"webhook_secret", "token"},
+		DeferredInputs:   []string{"body", "outputs"},
+		ExpressionInputs: []string{"auth", "expect"},
+	})
+
+	digestOf := func(described *v1.TaskDescription) string {
+		bytes, err := (proto.MarshalOptions{Deterministic: true}).Marshal(
+			&v1.PluginDescription{Tasks: []*v1.TaskDescription{described}})
+		require.NoError(t, err)
+		return v1.ContentDigest(bytes)
+	}
+
+	require.Equal(t, digestOf(forward), digestOf(reversed),
+		"the same plugin declaring the same set of claim inputs in a different order "+
+			"produced a different task schema digest, which would fail an unchanged plugin's replay check")
+
+	// The lists themselves are equal too, not merely their digests — a
+	// consumer reading GetSecretInputs() directly should see one canonical
+	// order rather than needing to know to sort before comparing.
+	assert.Equal(t, forward.GetSecretInputs(), reversed.GetSecretInputs())
+	assert.Equal(t, forward.GetDeferredInputs(), reversed.GetDeferredInputs())
+	assert.Equal(t, forward.GetExpressionInputs(), reversed.GetExpressionInputs())
 }

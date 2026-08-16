@@ -463,8 +463,19 @@ const CurrentClaimsSchemaVersion uint32 = 1
 // new server's honest "this task claims nothing" decode identically. Callers
 // deciding whether to trust a plugin must check this before reading either
 // field, and must treat false here as "unknown", never as "no" (#712).
+//
+// Bounded above as well as below: a version greater than
+// [CurrentClaimsSchemaVersion] is a *future* redefinition this build was not
+// compiled against, which is the same failure shape the zero case is — this
+// reader does not know what changed — just arriving from the other
+// direction. Treating "known" as "no larger than what I understand" rather
+// than "nonzero" is what keeps forward skew failing closed too: an older
+// client reading a newer catalog must not assume it can interpret whatever
+// the version bump introduced (#763 review).
 func TaskDescriptionClaimsKnown(catalog *TaskCatalog) bool {
-	return catalog.GetClaimsSchemaVersion() > 0
+	version := catalog.GetClaimsSchemaVersion()
+
+	return version > 0 && version <= CurrentClaimsSchemaVersion
 }
 
 // Catalog describes everything this build can execute.
@@ -512,12 +523,38 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		// which is computed over exactly this message. Read straight off the
 		// definition rather than re-derived, for the same reason every other
 		// field above is: one definition of what a task does, described.
+		//
+		// The three lists are canonicalized rather than cloned as-is: to the
+		// engine they are membership sets (MustBeExpression, IsDeferred and
+		// resolvePluginSecretInputs all ask "does this list contain X", never
+		// "in what order"), but the manifest schema bounds them only by size,
+		// not by order. TaskSchemaDigest hashes this message with deterministic
+		// marshaling, which fixes *field* order and says nothing about the
+		// *contents* of a repeated string field — so two launches of one
+		// unchanged plugin binary declaring the same set in a different order
+		// (map iteration in the plugin's own code, say) would otherwise digest
+		// differently and fail CheckPluginsAvailable's exact-match replay guard
+		// for a run that plugin can execute unchanged (#763 review).
 		NeedsScope:       def.NeedsPrevOutputs,
-		SecretInputs:     slices.Clone(def.SecretInputs),
+		SecretInputs:     canonicalStrings(def.SecretInputs),
 		ShapesOutputs:    def.ShapesOutputs,
-		DeferredInputs:   slices.Clone(def.DeferredInputs),
-		ExpressionInputs: slices.Clone(def.ExpressionInputs),
+		DeferredInputs:   canonicalStrings(def.DeferredInputs),
+		ExpressionInputs: canonicalStrings(def.ExpressionInputs),
 	}
+}
+
+// canonicalStrings sorts and deduplicates a membership set before it enters a
+// hashed description, so its wire form depends on its contents and not on
+// whatever order it happened to be declared in. See the comment at its call
+// site in [DescribeTask].
+func canonicalStrings(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+
+	out := slices.Sorted(slices.Values(names))
+
+	return slices.Compact(out)
 }
 
 // catalogFunctions renders the profile's functions into their schema form.
