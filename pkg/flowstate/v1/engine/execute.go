@@ -500,6 +500,11 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		if err := workflow.ExecuteActivity(e.ctx, WorkflowVars, &v1.Scope{
 			AmbientVars: callee.GetVars(),
 			Profile:     v1.CalleeProfile(e.scope, callee),
+
+			// The calling run's identity, for the reason the other WorkflowVars
+			// dispatch carries it: a called workflow's vars are still this run's
+			// work, and the scope has to say so for the tenant guard to check it.
+			Identity: e.identity,
 		}).Get(e.ctx, &evaluated); err != nil {
 			return nodeFailed(err)
 		}
