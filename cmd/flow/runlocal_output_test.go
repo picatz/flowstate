@@ -221,6 +221,24 @@ func TestALocalRunThatFailsWritesNoDocumentForAPerson(t *testing.T) {
 		"a run that produced no answer wrote something to the stream a pipe reads")
 }
 
+// TestALocalRunThatFailsHonoursRawWithoutDashOJSON is the regression for a
+// Codex follow-on on #666: the failure-path guard in runLocal still asked
+// format.Machine() alone after the success and task-run failure paths moved
+// to runRendering.WantsDocument(), so --raw on a failed local run with the
+// default text format wrote nothing, exactly the gap --raw's own help
+// promises not to have.
+func TestALocalRunThatFailsHonoursRawWithoutDashOJSON(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, deniedWorkflow, "--raw")
+	require.Error(t, err, "a run the egress policy stopped was reported as having succeeded")
+
+	var run map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &run),
+		"--raw without -o json on a failed local run wrote nothing a program could parse:\n%s", stdout)
+	assert.Equal(t, "STATUS_FAILED", run["status"])
+}
+
 // TestARunSomebodyStoppedIsNotReportedAsAFault is the distinction a machine
 // consumer has only one field to make.
 //

@@ -794,6 +794,29 @@ func TestWatchInterruptedStillNamesTheRunForAMachine(t *testing.T) {
 
 		require.Empty(t, out.String(), "a run still going wrote outputs it does not have")
 	})
+
+	t.Run("--raw asked for a document explicitly, even on the text format", func(t *testing.T) {
+		// The regression for a Codex follow-on on #666: interrupted used to gate
+		// on a bare `format == FormatJSON`, so a --raw watch on the default text
+		// format was silently treated as the "nothing was asked for" case above
+		// rather than the "a document was asked for" case this whole function
+		// exists for.
+		surface, out, _ := plainSurface()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		started := response(v1.RunResponse_STATUS_RUNNING)
+		rendering := runRendering{format: FormatText, raw: true}
+		require.NoError(t, followPlainly(ctx, surface, rendering,
+			&scriptedPoller{answers: []pollAnswer{{err: transientRefusal()}}},
+			time.Millisecond, "flowstate-workflow-3f7c", started))
+
+		var document map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
+			"--raw interrupted on the text format wrote %q, not the last-known document", out.String())
+		require.Equal(t, "flowstate-workflow-3f7c", document["workflowId"])
+	})
 }
 
 // TestRunNamesTheStartedRunToAMachine is the same property through the command that

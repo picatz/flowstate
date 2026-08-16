@@ -455,10 +455,19 @@ func followPlainly(
 // at all, leaving a caller with no machine-readable name for a run that is still
 // going — unwatchable, uncancellable, and unterminatable except by hand. What it gets
 // now is the last state known, which is at worst the run as it was started.
+//
+// rendering.WantsDocument(), not a bare `format == FormatJSON`, is what decides
+// whether this owes a document at all: `--raw` on the default text format asked
+// for one explicitly, through [runRendering.WantsDocument], exactly as
+// followLive/followPlainly's own routing decision already honours it — an
+// interrupted raw watch owes its reader the same last-known-state document a
+// `-o json` watch does, not the silence the text shape gets when nothing was
+// asked for.
 func interrupted(surface *ui.UI, rendering runRendering, state *watchState) error {
-	if rendering.format != FormatJSON || state.response == nil {
-		// jsonl has already emitted every change including the last, and the text
-		// shapes have said what they knew on stderr as they went.
+	if rendering.format == FormatJSONL || !rendering.WantsDocument() || state.response == nil {
+		// jsonl has already emitted every change including the last, the text
+		// shapes have said what they knew on stderr as they went, and nothing
+		// asked for a document owes nobody one.
 		return nil
 	}
 

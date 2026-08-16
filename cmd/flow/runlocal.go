@@ -195,7 +195,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// The text shape still writes nothing, and that is not an inconsistency: an
 		// empty stdout is a meaningful value there, because the answer is the outputs
 		// and a failed run has none. `{}` would claim it produced none *successfully*.
-		if format.Machine() {
+		//
+		// rendering.WantsDocument() rather than format.Machine() alone, so --raw with
+		// the default text format is honoured on a failed local run the same way the
+		// success and task-failure paths already honour it.
+		if rendering.WantsDocument() {
 			if err := writeRunJSON(surface, rendering, response); err != nil {
 				return err
 			}
