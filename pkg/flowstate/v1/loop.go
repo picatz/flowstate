@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/google/cel-go/cel"
-	"google.golang.org/protobuf/proto"
 )
 
 // This file holds the parts of the `loop:` primitive that both execution drivers
@@ -549,7 +548,7 @@ func LoopResultsSizeError(size, max int) error {
 func LoopResultsSize(results []*Workflow_StepOutputs) int {
 	total := 0
 	for _, r := range results {
-		total += proto.Size(r)
+		total += encodedPayloadSize(r)
 	}
 	return total
 }
@@ -613,7 +612,7 @@ func AccumulateLoopResult(results []*Workflow_StepOutputs, resultsBytes int, ite
 // holds to be worse than a missing one.
 func accumulateResults(results []*Workflow_StepOutputs, resultsBytes int, iteration *Workflow_StepOutputs, tooBig func(size, max int) error) ([]*Workflow_StepOutputs, int, error) {
 	results = append(results, iteration)
-	resultsBytes += proto.Size(iteration)
+	resultsBytes += encodedPayloadSize(iteration)
 	if resultsBytes > MaxLoopResultsBytes {
 		return results, resultsBytes, tooBig(resultsBytes, MaxLoopResultsBytes)
 	}
