@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // What a schedule can be wrong about before a cluster ever sees it.
@@ -136,6 +138,18 @@ const (
 // not twice the faster of the two. Charging the fastest one to all of them
 // refuses schedules whose actual fan-out is nowhere near the limit, which is
 // the other way a bound can be wrong.
+//
+// That sum is a safe upper bound in general — two cadences with independent
+// phases can, worst case, share no firing instant at all, so nothing shy of
+// evaluating the real fire times can prove less than their sum without risking
+// an undercount, which is the direction this check must never be wrong in.
+// The one case it *can* prove less than the sum without evaluating anything is
+// an exact duplicate: two entries that are the identical cron expression, or
+// the identical calendar, fire at exactly the same instants by construction,
+// so charging the duplicate a second time double-counts one set of firings as
+// if it were two. cronDedupeKey and calendarsEqual below charge each distinct
+// cadence once; anything short of a literal duplicate is still summed, which
+// stays the safe direction (#716).
 func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*ScheduleBackfill) error {
 	if err := CheckScheduleBackfill(backfills); err != nil {
 		return err
@@ -150,19 +164,46 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 			cadences = append(cadences, period)
 		}
 	}
+
+	seenCron := make(map[string]bool, len(trigger.GetCron()))
 	for _, expression := range trigger.GetCron() {
+		key := cronDedupeKey(expression)
+		if seenCron[key] {
+			continue
+		}
+		seenCron[key] = true
 		cadences = append(cadences, cronMinimumPeriod(expression))
 	}
-	for _, calendar := range trigger.GetCalendars() {
+
+	calendars := trigger.GetCalendars()
+	for i, calendar := range calendars {
+		duplicate := false
+		for _, earlier := range calendars[:i] {
+			if calendarsEqual(calendar, earlier) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
 		cadences = append(cadences, calendarMinimumPeriod(calendar))
 	}
+
 	if len(cadences) == 0 {
 		return fmt.Errorf("a backfill needs a schedule cadence whose firing count can be bounded")
 	}
 
 	remaining := int64(MaxScheduleBackfillFirings)
 	for i, b := range backfills {
-		span := b.GetEndAt().AsTime().Sub(b.GetStartAt().AsTime())
+		// The estimate bounds what the *cadence* can produce inside a window,
+		// so the window has to be the one the cadence is actually allowed to
+		// fire in. A requested range wider than the trigger's own start_at/
+		// end_at cannot produce a single firing outside that window — Temporal
+		// will not schedule one — so charging the full requested range here
+		// counts firings that can never happen, over-estimating exactly the
+		// schedules a narrow start_at/end_at was written to keep small.
+		span := intersectedBackfillSpan(trigger, b)
 
 		var firings int64
 		for _, period := range cadences {
@@ -190,6 +231,56 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		remaining -= firings
 	}
 	return nil
+}
+
+// intersectedBackfillSpan reports how much of a requested backfill range falls
+// inside the trigger's own start_at/end_at window, saturating rather than
+// wrapping for the same reason [CheckScheduleBackfill] does: `Time.Sub` clamps
+// at the maximum duration rather than overflowing, so a clamped span is
+// refused elsewhere instead of being carried into arithmetic that could wrap.
+//
+// A trigger without a start_at or an end_at is unbounded on that side, so the
+// requested range's own edge stands; both unset reduces to the requested
+// range untouched, which is the behavior before this bound existed.
+func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) time.Duration {
+	start, end := b.GetStartAt().AsTime(), b.GetEndAt().AsTime()
+
+	if ts := trigger.GetStartAt(); ts != nil {
+		if t := ts.AsTime(); t.After(start) {
+			start = t
+		}
+	}
+	if ts := trigger.GetEndAt(); ts != nil {
+		if t := ts.AsTime(); t.Before(end) {
+			end = t
+		}
+	}
+
+	if !start.Before(end) {
+		// The trigger's window and the requested range do not overlap at all —
+		// nothing in this range can ever fire, so it contributes nothing to
+		// charge against the limit rather than a negative or wrapped span.
+		return 0
+	}
+	return end.Sub(start)
+}
+
+// cronDedupeKey normalizes a cron expression to the same form
+// [cronMinimumPeriod] classifies it by, so two spellings that are the
+// identical schedule — differing only in a trailing comment or surrounding
+// whitespace — are recognized as the one duplicate they are, and anything
+// short of that stays distinct.
+func cronDedupeKey(expression string) string {
+	return strings.TrimSpace(stripCronComment(expression))
+}
+
+// calendarsEqual reports whether two calendar specifications describe exactly
+// the same set of fields, which is the one condition under which they are
+// guaranteed to fire at exactly the same instants. proto.Equal compares field
+// values structurally rather than by pointer, which is what "the identical
+// calendar written twice" means here.
+func calendarsEqual(a, b *ScheduleTrigger_Calendar) bool {
+	return proto.Equal(a, b)
 }
 
 // stripCronComment removes a trailing comment, and only a trailing one.

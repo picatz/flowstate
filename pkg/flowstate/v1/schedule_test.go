@@ -235,6 +235,112 @@ func TestScheduleBackfillIsBoundedByCadence(t *testing.T) {
 		"needs a schedule cadence")
 }
 
+// TestScheduleBackfillCadenceSourcesAreUnionedNotSummed is the regression for
+// #716's first Codex finding: two entries that are the identical cron
+// expression, or the identical calendar, fire at exactly the same instants —
+// their union is the size of either one alone, not their sum. Charging the
+// duplicate a second time is a false refusal: it reports a fan-out twice the
+// real one for a schedule that never asked for two cadences, only wrote one
+// twice.
+func TestScheduleBackfillCadenceSourcesAreUnionedNotSummed(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	backfill := func(d time.Duration) []*v1.ScheduleBackfill {
+		return []*v1.ScheduleBackfill{{StartAt: timestamppb.New(now.Add(-d)), EndAt: timestamppb.New(now)}}
+	}
+
+	// One second cadence, doubled: the naive sum would charge it twice, which
+	// crosses the ceiling at a window this cadence alone stays well under.
+	window := (v1.MaxScheduleBackfillFirings * 3 / 4) * time.Second // 75,000s: under the limit alone, over it doubled.
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"* * * * * * *", "* * * * * * *"}}, backfill(window)),
+		"the same seconds-resolution cron listed twice is one cadence, not two — "+
+			"a naive sum would refuse a window this cadence alone accepts")
+
+	// A trailing comment is the same expression underneath, so it dedupes with
+	// the bare form the same way — [cronDedupeKey] normalizes both.
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"* * * * * * *", "* * * * * * * # every second"}}, backfill(window)),
+		"a comment does not make an otherwise-identical cron expression a second cadence")
+
+	// Two structurally distinct one-second cadences legitimately double the
+	// count: the fix must not conflate "same period" with "same schedule".
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Every: durationpb.New(time.Second), Cron: []string{"* * * * * * *"}}, backfill(window)),
+		"more than 100000 firings",
+		"a genuinely distinct second cadence must still be charged its own count")
+
+	// The identical calendar, listed twice, dedupes the same way a duplicate
+	// cron does.
+	secondly := &v1.ScheduleTrigger_Calendar{Second: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{secondly, secondly}}, backfill(window)),
+		"the identical calendar listed twice is one cadence, not two")
+
+	// Two calendars that are not identical values are not proven to overlap,
+	// so both are still charged — the safe direction this fix must not give up.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{
+			secondly,
+			{Second: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 58}}},
+		}}, backfill(window)),
+		"more than 100000 firings")
+}
+
+// TestScheduleBackfillIsChargedOnlyInsideTheTriggersOwnWindow is the
+// regression for #716's second Codex finding: the firing estimate charged the
+// full requested backfill range even when the trigger's own start_at/end_at
+// left only a sliver of it reachable. Temporal will not fire a schedule
+// outside its own window, so a requested range wider than that window cannot
+// produce a single firing beyond its edge — charging the unreachable part
+// over-estimates exactly the schedules a narrow window was written to keep
+// small, and refuses them for a fan-out that can never happen.
+func TestScheduleBackfillIsChargedOnlyInsideTheTriggersOwnWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	// A one-second cadence over the full 31-day window would be refused on its
+	// own (2,678,400 firings, over the 100,000 ceiling) — but the trigger's own
+	// end_at closed the schedule's window a day into the requested 31-day
+	// range, so only that first day's firings can ever have happened.
+	requested := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-v1.MaxScheduleBackfillSpan)),
+		EndAt:   timestamppb.New(now),
+	}}
+	trigger := &v1.ScheduleTrigger{
+		Every: durationpb.New(time.Second),
+		EndAt: timestamppb.New(now.Add(-v1.MaxScheduleBackfillSpan + 24*time.Hour)),
+	}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, requested),
+		"the trigger's own end_at closes the schedule's window a day into the requested 31-day range; "+
+			"charging the whole 31 days over-estimates a schedule that cannot fire past its own window")
+
+	// start_at intersects from the other side the same way: only the last hour
+	// of the requested range falls after it.
+	trigger = &v1.ScheduleTrigger{
+		Every:   durationpb.New(time.Second),
+		StartAt: timestamppb.New(now.Add(-time.Hour)),
+	}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, requested),
+		"the trigger's own start_at closes off all but the last hour of the requested range")
+
+	// A window that does not overlap the requested range at all charges
+	// nothing — not a negative span, not a wrapped one.
+	trigger = &v1.ScheduleTrigger{
+		Every: durationpb.New(time.Second),
+		EndAt: timestamppb.New(now.Add(-v1.MaxScheduleBackfillSpan - time.Hour)),
+	}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, requested),
+		"a trigger window entirely before the requested range can never fire inside it")
+
+	// Without a start_at/end_at, the full requested range is still charged —
+	// unchanged behavior for the common case of an unbounded schedule.
+	trigger = &v1.ScheduleTrigger{Every: durationpb.New(time.Second)}
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, requested),
+		"more than 100000 firings",
+		"a trigger with no start_at/end_at is charged the full requested range, as before")
+}
+
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
 // values that cannot be right on any cluster.
 //
