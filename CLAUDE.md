@@ -454,6 +454,49 @@ the thing rather than from where it is written. And test by comparing bytes or b
 compiling the result: asserting the output still validates is what let all of this
 through.
 
+## A design sketch names the spelling it already has
+
+The most expensive mistakes in this repository have not been wrong code. They have
+been *proposals written without reading the thing they propose to change* — and they
+are expensive because a sketch that looks coherent gets discussed, refined, and
+sometimes built before anybody notices it re-invents something three files away.
+
+The shape is always the same. Someone reasons from the domain rather than from the
+tree, produces a design that is internally sensible, and lands it beside an existing
+answer to the same question. The result is invariant 1's violation arriving as a
+*new feature* instead of as legacy debt: two hand-maintained shapes of one thing,
+both current, both defensible.
+
+Worked example, because the general statement is too easy to nod at. A sketch on
+#726 proposed a `ClaimRequirement` message — `{claim, one_of_values}` — to annotate
+which claims gate an RPC. It reads well. It also mirrored `auth.ClaimRule`
+(`auth/policy.go:215`), the *one* policy surface in this repo that is not CEL:
+`SecretAccessPolicy` takes CEL strings (`auth/secretpolicy.go:61`), `netpolicy`
+evaluates CEL over an identity activation that already exposes `subject`, `issuer`,
+`namespace` and `claims` (`netpolicy/identity.go:27-30`). So the sketch proposed to
+canonize the legacy spelling into the schema, as a third copy, while the repo was
+already two-thirds of the way to the other answer. Five minutes of grep, before the
+sketch rather than after it, would have produced a better design and no discussion.
+
+So, before proposing a schema addition, a config surface, a policy shape, or a new
+keyword:
+
+- **Find how the repo already spells this, and cite it with `file:line`.** If the
+  answer is "it doesn't", say that explicitly — that is a finding, and a reviewer
+  can check it. An uncited sketch is a claim of novelty nobody can falsify.
+- **Check the neighbours.** If three surfaces answer one question, the odd one out is
+  usually the oldest, not the best. Do not mirror the odd one out.
+- **State the cost you are choosing to pay.** Every real design loses something. A
+  sketch with no stated cost has not been compared against anything.
+- **Prefer deriving to duplicating.** A view computed from the source of truth cannot
+  drift; a parallel declaration of the same facts always eventually does.
+
+The rule generalizes past design. It is the same failure as a "confident, wrong
+finding" from a stale checkout (#647), and the same failure as a review comment that
+describes code the author has already changed: **reasoning about this repository from
+memory or from first principles, when the file is right there.** Read it first. The
+tree is the only thing that is authoritative about the tree.
+
 ## Opening pull requests and issues
 
 Use `gh` — `gh pr create`, `gh issue create` — rather than an MCP or API call that
