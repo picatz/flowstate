@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // scheduledWorkflow is a workload that finishes on its own, which is what makes it
@@ -570,4 +571,72 @@ func TestABackfillBeyondItsBoundsIsRefusedByTheServer(t *testing.T) {
 	listed, err := fixture.teamA.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
 	require.NoError(t, err)
 	assert.Empty(t, listed.Msg.GetSchedules(), "a refused creation left a schedule behind")
+}
+
+// trustedScheduledWorkflow and attackerScheduledWorkflow share a name and a
+// cadence, and differ only in what their one step produces — which is exactly
+// what lets [TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne] tell
+// which specification actually ran.
+func trustedScheduledWorkflow(name string) *v1.Workflow {
+	wf := scheduledWorkflow(name)
+	wf.Steps = []*v1.Node{{Id: "report", Kind: &v1.Node_Value{Value: v1.NewLiteral("trusted")}}}
+	return wf
+}
+
+func attackerScheduledWorkflow(name string) *v1.Workflow {
+	wf := scheduledWorkflow(name)
+	wf.Steps = []*v1.Node{{Id: "report", Kind: &v1.Node_Value{Value: v1.NewLiteral("attacker")}}}
+	return wf
+}
+
+// TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne is CreateSchedule's
+// half of the trust boundary [server.WithTrustedWorkflows] establishes: a
+// caller naming a registered workflow must have their submission replaced by the
+// deployment's own copy, the same as [FlowstateServer.Run] and
+// [FlowstateServer.SignalWithStart] already are. Without it, a caller could
+// register a schedule trigger on their own copy of a trusted, `manual: denied`
+// workflow and have this handler create — and eventually fire — the
+// caller-controlled specification under the trusted name.
+func TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	trusted := trustedScheduledWorkflow("rotate-keys")
+	flowstate := server.New(temporal, server.WithTrustedWorkflows("", trusted))
+
+	created, err := flowstate.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+		// The caller's own copy: same name, same cadence, a step that would
+		// prove the caller's specification ran rather than the deployment's.
+		Workflow: attackerScheduledWorkflow("rotate-keys"),
+		Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+		Paused:   true,
+	}))
+	require.NoError(t, err)
+	require.Equal(t, "rotate-keys", created.Msg.GetSchedule().GetName())
+
+	_, err = flowstate.TriggerSchedule(t.Context(),
+		connect.NewRequest(&v1.TriggerScheduleRequest{Name: "rotate-keys"}))
+	require.NoError(t, err)
+
+	var workflowID string
+	require.Eventually(t, func() bool {
+		described, err := flowstate.DescribeSchedule(t.Context(),
+			connect.NewRequest(&v1.DescribeScheduleRequest{Name: "rotate-keys"}))
+		if err != nil || len(described.Msg.GetSchedule().GetRecentRuns()) == 0 {
+			return false
+		}
+		workflowID = described.Msg.GetSchedule().GetRecentRuns()[0].GetWorkflowId()
+		return workflowID != ""
+	}, 60*time.Second, 200*time.Millisecond, "the schedule never took an action")
+
+	var out v1.Workflow_StepOutputs
+	require.Eventually(t, func() bool {
+		return temporal.GetWorkflow(t.Context(), workflowID, "").Get(t.Context(), &out) == nil
+	}, 60*time.Second, 200*time.Millisecond, "the run the schedule started never completed")
+
+	assert.Equal(t, "trusted",
+		out.GetStepValues()["report"].GetNamedValues()[v1.ValueOutput].GetLiteral().GetStringValue(),
+		"CreateSchedule executed the caller's submitted copy instead of the deployment's trusted one")
 }
