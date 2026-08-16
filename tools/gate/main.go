@@ -322,8 +322,18 @@ func run() error {
 // changedFiles is the diff against the merge-base (committed, staged and
 // unstaged tracked changes) plus untracked files, which a plain diff cannot
 // see and which a new package arrives as.
+//
+// --no-renames, because a plain `git diff --name-only` on a detected rename
+// prints only the destination path — verified against git 2.43.0, and the
+// reason hasUnresolvedGoDir could still miss a deleted package: renaming a
+// package's last .go file to a non-Go extension is indistinguishable, in
+// --name-only output with rename detection on, from a file that was never
+// there. With --no-renames a rename reports as a delete plus an add, the same
+// two name-only entries either operation produces on its own, so the old
+// path still lands in p.goFiles and still trips hasUnresolvedGoDir when
+// whatever it named disappears.
 func changedFiles(base string) ([]string, error) {
-	diff, err := gitOutput("diff", "--name-only", base)
+	diff, err := gitOutput("diff", "--no-renames", "--name-only", base)
 	if err != nil {
 		return nil, err
 	}

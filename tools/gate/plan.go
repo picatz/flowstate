@@ -54,18 +54,22 @@ type plan struct {
 	docs     bool // reference mirror + generated docs drift
 	examples bool // flow fix --check, flow test, flow breaking
 
-	// repoTestData means README.md or docs/ARCHITECTURE.md changed. Neither
-	// is a Go source file and neither is under examples/, so nothing above
-	// puts them in front of the import graph or the #589 data-dependency
-	// seeding — but cmd/flow/commands_test.go reads README.md's command
-	// table with os.ReadFile, and pkg/flowstate/v1/flowfile/readme_test.go
-	// compiles the Flowfiles embedded in both documents the same way. A
-	// change to either can make a test that reads it fail or go stale
-	// without moving a single Go file, the same shape #589 already named for
-	// examples/, one file further out than that fix reached. It only widens
-	// ciDecisions' testRun — the CI job wide enough to run both tests — not
-	// a local gate leg of its own, since there is no package for the local
-	// tier's affected-package scoping to add.
+	// repoTestData means a repository-level file some test reads with
+	// os.ReadFile, rather than imports, changed: README.md,
+	// docs/ARCHITECTURE.md, AGENTS.md, or anything under docs/reference/.
+	// None is a Go source file and none is under examples/, so nothing above
+	// puts any of them in front of the import graph or the #589
+	// data-dependency seeding — but cmd/flow/commands_test.go reads
+	// README.md's command table, pkg/flowstate/v1/flowfile/readme_test.go
+	// compiles the Flowfiles embedded in README.md and docs/ARCHITECTURE.md,
+	// pkg/flowstate/v1/agentsmd_test.go reads AGENTS.md, and
+	// cmd/flow/docs_test.go reads and validates every file under
+	// docs/reference/. A change to any of them can make the test that reads
+	// it fail or go stale without moving a single Go file, the same shape
+	// #589 already named for examples/, one file further out than that fix
+	// reached. It only widens ciDecisions' testRun — the CI job wide enough
+	// to run all of these — not a local gate leg of its own, since there is
+	// no package for the local tier's affected-package scoping to add.
 	repoTestData bool
 
 	// appearance means the diff could move a recorded golden: styled
@@ -203,10 +207,10 @@ func buildPlan(changed []string) plan {
 			reason("docs", f)
 		}
 
-		// README.md and docs/ARCHITECTURE.md: read directly by tests rather
-		// than imported, the same #589 shape examples/ has — see
+		// Repository-level files read directly by tests rather than
+		// imported, the same #589 shape examples/ has — see
 		// p.repoTestData's doc.
-		if f == "README.md" || f == "docs/ARCHITECTURE.md" {
+		if f == "README.md" || f == "docs/ARCHITECTURE.md" || f == "AGENTS.md" || strings.HasPrefix(f, "docs/reference/") {
 			p.repoTestData = true
 			reason("test", f)
 		}
