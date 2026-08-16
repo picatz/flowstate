@@ -1170,8 +1170,17 @@ func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) e
 
 	message := fmt.Sprintf("input %q is %s, which is not one of the values %s declares: %s",
 		name, strconv.Quote(got), name, quotedStrings(decl.GetValues()))
-	if suggestion, ok := nearest.Name(got, decl.GetValues()); ok {
-		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	// Distance is at least the difference between the two rune counts. Avoid
+	// its O(len(got)*len(choice)) work when got is too long to be within the
+	// repository-wide suggestion limit of even the longest declared choice.
+	maxChoiceRunes := 0
+	for _, choice := range decl.GetValues() {
+		maxChoiceRunes = max(maxChoiceRunes, utf8.RuneCountInString(choice))
+	}
+	if utf8.RuneCountInString(got) <= maxChoiceRunes+nearest.MaxDistance {
+		if suggestion, ok := nearest.Name(got, decl.GetValues()); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		}
 	}
 
 	return fmt.Errorf("%s", message)
