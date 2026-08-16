@@ -787,7 +787,17 @@ func literalToYAML(literal *expr.Value) (any, error) {
 		// Go holding one could not be written out at all and saying so was the
 		// only honest answer. `$${` is that spelling, and reading the result back
 		// produces this string again — which is what Marshal owes.
-		return escapeFences(kind.StringValue), nil
+		//
+		// Through [textToYAML] and not [escapeFences] alone, which is the whole
+		// of #728. Handing the emitter a bare string leaves the quoting to it,
+		// and it writes a scalar opening with `? ` plain — so `message: ?
+		// 0000000` reads back as an explicit key and the document Marshal just
+		// produced does not parse. A literal is text like any other text here;
+		// the same question ("does the emitter's rendering read back as this
+		// string?") has one answer, so it is asked in one place. Every other
+		// scalar position already went through it, which is why the fuzzer
+		// reached this one and not those.
+		return textToYAML(kind.StringValue), nil
 	case *expr.Value_Int64Value:
 		return kind.Int64Value, nil
 	case *expr.Value_Uint64Value:
