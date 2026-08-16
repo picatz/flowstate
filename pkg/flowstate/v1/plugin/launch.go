@@ -211,12 +211,15 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// stderr is a plugin's only diagnostic channel, so it is captured from
 	// before the handshake: the most valuable thing a plugin ever writes there
 	// is the reason it is about to fail to hand shake.
+	//
+	// The pump drains every line regardless of the limiter below: a full pipe
+	// looks like a hung plugin, and only what gets *relayed* into the host's
+	// own log is bounded.
 	inst.pumps.Add(1)
 	go func() {
 		defer inst.pumps.Done()
-		pumpPluginLog(stderrR, cfg.MaxStderrLine, func(line string, truncated bool) {
-			log.Info("plugin log", "line", line, "truncated", truncated)
-		})
+		relay := stderrRelayFunc(cfg, log)
+		pumpPluginLog(stderrR, cfg.MaxStderrLine, relay)
 	}()
 
 	handshake, err := inst.handshake(cfg, stdoutR, log)
@@ -563,6 +566,30 @@ func isProtocolEnv(entry string) bool {
 		}
 	}
 	return false
+}
+
+// stderrRelayFunc returns the callback pumpPluginLog invokes per stderr line,
+// rate-limited to cfg.MaxStderrLinesPerMinute so that the volume the host
+// relays into its own log is bounded independently of how long any one line
+// is. A negative MaxStderrLinesPerMinute disables the bound: every line is
+// relayed, as before this existed.
+func stderrRelayFunc(cfg Config, log *slog.Logger) func(line string, truncated bool) {
+	if cfg.MaxStderrLinesPerMinute < 0 {
+		return func(line string, truncated bool) {
+			log.Info("plugin log", "line", line, "truncated", truncated)
+		}
+	}
+
+	limiter := newStderrLimiter(cfg.MaxStderrLinesPerMinute, stderrRateWindow, cfg.stderrClock)
+	return func(line string, truncated bool) {
+		ok, summary := limiter.allow()
+		if summary != "" {
+			log.Warn(summary)
+		}
+		if ok {
+			log.Info("plugin log", "line", line, "truncated", truncated)
+		}
+	}
 }
 
 // pumpPluginLog reads lines from a plugin and hands each to fn.

@@ -288,6 +288,56 @@ func TestOpenToleratesStdoutNoise(t *testing.T) {
 	}
 }
 
+// TestStderrFloodIsRateLimited checks the other half of issue #714's bound: a
+// plugin that floods stderr with short lines — never tripping MaxStderrLine,
+// which bounds one line's size and nothing about how many arrive — costs the
+// host a bounded number of relayed log records rather than one per line.
+//
+// The pipe still has to be drained regardless, the same as the tolerated
+// stdout noise above: a plugin blocked on a full pipe looks exactly like a
+// hung one. This plugin writes 20,000 lines; the assertion is that far fewer
+// than 20,000 made it into the host's log.
+func TestStderrFloodIsRateLimited(t *testing.T) {
+	t.Parallel()
+
+	var logged strings.Builder
+	cfg := testConfig(t, pluginDir(t, "stderr-flood"))
+	cfg.MaxStderrLinesPerMinute = 5
+	cfg.Logger = newCapturingLogger(t, &logged)
+
+	host := openHost(t, cfg)
+
+	p, ok := host.Lookup("stderr-flood")
+	if !ok {
+		t.Fatal("plugin was not launched")
+	}
+
+	if health := p.CheckHealth(t.Context()); health.Status != HealthServing {
+		t.Fatalf("health = %v, want serving: %v", health.Status, health.Err)
+	}
+
+	// Give the flood time to run its course and the pump time to drain it.
+	// The plugin writes as fast as it can and exits its goroutine well under
+	// a second; this waits generously rather than racing it.
+	time.Sleep(500 * time.Millisecond)
+
+	relayed := strings.Count(logged.String(), `msg="plugin log"`)
+	if relayed == 0 {
+		t.Fatal("no stderr lines were relayed at all, so this proved nothing about the bound")
+	}
+	if relayed > cfg.MaxStderrLinesPerMinute {
+		t.Errorf("relayed %d stderr lines, want at most the configured budget of %d", relayed, cfg.MaxStderrLinesPerMinute)
+	}
+
+	// The window this test runs in is real-clock minutes long and the test
+	// itself takes well under a second, so it never rolls over — meaning the
+	// summary line the limiter owes on rollover must not have fired yet, and
+	// every line past the budget was silently counted rather than relayed.
+	if strings.Contains(logged.String(), "plugin log suppressed") {
+		t.Error(`log contains "plugin log suppressed" before the rate window has rolled over`)
+	}
+}
+
 // TestHandshakeBoundsAreApplied checks that the launch environment is what the
 // protocol says it is, since everything else depends on it.
 func TestHandshakeBoundsAreApplied(t *testing.T) {

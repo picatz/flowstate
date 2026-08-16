@@ -88,6 +88,20 @@ const (
 	// streamed a line at a time, so this is the whole memory bound on a plugin
 	// that writes without ever printing a newline.
 	DefaultMaxStderrLine = 64 << 10 // 64 KiB
+
+	// DefaultMaxStderrLinesPerMinute bounds how many stderr lines per minute the
+	// host will relay into its own log stream. It bounds volume, not size —
+	// MaxStderrLine already bounds one line, and the two are independent
+	// resources: a plugin can flood by rate without ever writing an overlong
+	// line. Generous enough that no honest plugin's normal logging, including a
+	// noisy startup, ever reaches it.
+	DefaultMaxStderrLinesPerMinute = 2000
+
+	// stderrRateWindow is the interval [Config.MaxStderrLinesPerMinute] is
+	// measured over. Fixed rather than configurable: the field name promises a
+	// per-minute budget, and a window a deployment could change out from under
+	// that name would make the field lie about its own units.
+	stderrRateWindow = time.Minute
 )
 
 // Config describes which plugins a deployment will run and how far it will let
@@ -208,6 +222,24 @@ type Config struct {
 	// [DefaultMaxStderrLine].
 	MaxStderrLine int
 
+	// MaxStderrLinesPerMinute bounds how many stderr lines per minute are
+	// relayed into the host's log. Zero selects
+	// [DefaultMaxStderrLinesPerMinute]; a negative value disables the bound,
+	// for a deployment that has decided some other layer owns log volume.
+	//
+	// Lines suppressed past the budget are still drained from the pipe — the
+	// plugin never blocks on a full one — and counted, and the count is
+	// reported in one summary line logged the moment the next window opens, so
+	// a flood is visible at a rate the host chooses rather than the plugin's.
+	MaxStderrLinesPerMinute int
+
+	// stderrClock is the time source a plugin's stderr rate limiter measures
+	// its window against. Nil selects [time.Now]; a test seam so a rate
+	// bounded in wall-clock minutes can be verified without waiting one. See
+	// beforeExec below for why a seam that a deployment must not reach is
+	// unexported rather than a field.
+	stderrClock func() time.Time
+
 	// beforeExec runs after a plugin's executable has been opened and hashed and
 	// before it is executed, with the plugin's path.
 	//
@@ -238,6 +270,7 @@ func (c Config) withDefaults() Config {
 	setInt(&c.MaxDescriptorBytes, DefaultMaxDescriptorBytes)
 	setInt(&c.MaxDescriptorFiles, DefaultMaxDescriptorFiles)
 	setInt(&c.MaxStderrLine, DefaultMaxStderrLine)
+	setInt(&c.MaxStderrLinesPerMinute, DefaultMaxStderrLinesPerMinute)
 
 	if c.MaxRestartBackoff < c.RestartBackoff {
 		c.MaxRestartBackoff = c.RestartBackoff
