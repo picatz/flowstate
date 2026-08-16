@@ -221,9 +221,19 @@ this section exists to prevent.
    these sitting on the page, and twenty-four of them accumulated across one
    wave of PRs before anyone counted.
 
-   REST deletes them, and that is the right answer *for this class only*:
+   Threads and top-level comments are two different endpoints, so step 2's
+   `get_review_comments` fetch does not surface this class at all — neither
+   it nor `get_reviews` returns a top-level issue comment or its database
+   ID. Fetch them separately, paginated, before deleting anything:
 
-       gh api -X DELETE repos/{owner}/{repo}/issues/comments/{id}
+       gh api --paginate repos/{owner}/{repo}/issues/{number}/comments
+
+   REST deletes them, and that is the right answer *for this class only*.
+   `{id}` is the database ID each comment carries in that listing — bind it
+   to a variable and substitute it, since `gh api`'s own endpoint
+   substitution covers only `{owner}`, `{repo}`, and `{branch}`:
+
+       gh api -X DELETE repos/{owner}/{repo}/issues/comments/$id
 
    **Never delete a finding.** Not a review comment, not a review summary,
    not a human's comment, not a bot's comment that contains an actual claim
