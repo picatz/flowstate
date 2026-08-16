@@ -574,7 +574,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// are the part that grew.
 		if err := v1.CheckRunStateSize(next); err != nil {
 			logger.Error("cannot continue as new", "error", err.Error())
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: err.Error()}
+			// Out through [compensate], the identical reason the completion-time
+			// size failure above does: a run whose carried state cannot fit is a
+			// failed run, and a failed saga takes back what it did. Returning
+			// ErrRunFailed directly here would report FAILED while leaving every
+			// effect this segment's steps performed in place — the saga-contract
+			// violation the original fix on this path existed to close, reopened
+			// by measuring the bound correctly and hitting it on a run this exact
+			// check used to let through.
+			return v1.PartialTranscript(stepOutputs), compensate(ctx, exec, &ErrRunFailed{Message: err.Error()})
 		}
 
 		logger.Info("continuing as new",
