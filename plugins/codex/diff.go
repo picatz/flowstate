@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -70,6 +71,22 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 		return "", filesChanged, false
 	}
 
+	// The repository is controlled by the task and may configure helpers that
+	// execute as the worker, outside the Codex sandbox. The overrides are
+	// computed once, before any command that touches the index or the working
+	// tree, and carried by every one of them: `git add` runs the same
+	// repository-configured programs `git diff` does, so hardening only the
+	// command whose output is read leaves the command that runs first wide
+	// open. If they cannot be computed, fail closed rather than run anything
+	// with an unknown helper still enabled.
+	hardened, cleanup, ok := hardenedGitConfig(ctx, gitBin, workDir)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if !ok {
+		return "", filesChanged, false
+	}
+
 	// Files the run created are untracked, and `git diff` does not report an
 	// untracked file at all - so without this the patch would silently omit
 	// exactly the new files a downstream commit most needs. --intent-to-add
@@ -77,21 +94,12 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 	// them appear below as additions. Best-effort like the rest of this
 	// function: if it fails, the tracked changes still diff.
 	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
-		append(hardenedGitConfig(), "add", "--intent-to-add", "--", ".")...)
+		append(slices.Clone(hardened), "add", "--intent-to-add", "--", ".")...)
 
-	// The repository is controlled by the task and may configure helpers that
-	// execute as the worker, outside the Codex sandbox. --no-ext-diff and
-	// --no-textconv cover diff drivers, but Git still applies clean/process
-	// filters when it converts working-tree content for comparison. Discover
-	// every configured filter command and override it with an empty value for
-	// this invocation; an empty filter command means no filter. If the config
-	// cannot be enumerated, fail closed rather than render with an unknown
-	// command still enabled.
-	diffArgs, ok := safeDiffArgs(ctx, gitBin, workDir)
-	if !ok {
-		return "", filesChanged, false
-	}
-	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes, diffArgs...)
+	// --no-ext-diff and --no-textconv cover the two diff drivers; the content
+	// filters and the hooks are covered by the overrides above.
+	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
+		append(slices.Clone(hardened), "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M", "HEAD")...)
 	if !ok {
 		return "", filesChanged, false
 	}
@@ -99,34 +107,40 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 	return out, filesChanged, truncatedOutput
 }
 
-// hardenedGitConfig is the set of overrides every Git invocation over a
-// task-controlled workspace carries, whatever subcommand it runs.
+// hardenedGitConfig is the `-c` prefix every Git invocation over a
+// task-controlled workspace carries, whatever subcommand follows it, together
+// with a cleanup for the temporary directory one of the overrides points at.
 //
-// core.fsmonitor names a program Git executes to ask what changed in the
-// working tree, and it is consulted by any command that inspects the index -
-// `git add` and `git diff` both. It is not a content filter, so enumerating
-// filter.* does not reach it, and it needs no gitattributes entry to fire:
-// setting the one config key is the whole attack. `false` is Git's own
-// spelling for "there is no monitor," which is what an unconfigured
-// repository looks like.
+// Three ways a repository names a program for Git to run, and all three fire
+// from `git add` as readily as from `git diff` — which is why this is a prefix
+// applied to both rather than something the diff builds for itself:
 //
-// Per-invocation rather than folded into safeDiffArgs, because the
-// --intent-to-add call runs before any of that and is just as much a command
-// over the same repository.
-func hardenedGitConfig() []string {
-	return []string{"-c", "core.fsmonitor=false"}
-}
-
-// safeDiffArgs builds a diff command with every configured content-filter
-// command disabled. Git config keys cannot contain NUL, so --name-only --null
-// gives an unambiguous list even when a task-controlled value contains newlines.
-func safeDiffArgs(ctx context.Context, gitBin, workDir string) ([]string, bool) {
+//   - Content filters. `filter.<driver>.clean` and `.process` convert
+//     working-tree content on the way in, so both the index update and the diff
+//     invoke them. The driver names are the repository's to choose, so they are
+//     enumerated rather than guessed, and each is overridden with an empty
+//     command, which is Git's spelling for "no filter".
+//   - core.fsmonitor. A program Git runs to ask what changed in the working
+//     tree, consulted by anything that inspects the index. It is not a content
+//     filter, so enumerating filter.* never reaches it, and it needs no
+//     gitattributes entry: setting the one key is the whole attack.
+//   - Hooks. `git add` writes the index, which fires post-index-change from
+//     wherever core.hooksPath points. Pointed at an empty directory this
+//     process makes, because there is no "no hooks" value — only a place with
+//     no hooks in it.
+//
+// Fails closed: a config listing that cannot be read or that hits its bound,
+// and a hooks directory that cannot be created, both return false rather than
+// letting a command run with an unknown helper still live.
+func hardenedGitConfig(ctx context.Context, gitBin, workDir string) ([]string, func(), bool) {
 	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, maxGitConfigBytes,
-		append(hardenedGitConfig(), "config", "--list", "--name-only", "--null")...)
+		"-c", "core.fsmonitor=false", "config", "--list", "--name-only", "--null")
 	if !ok || truncated {
-		return nil, false
+		return nil, nil, false
 	}
 
+	// Git config keys cannot contain NUL, so --name-only --null gives an
+	// unambiguous list even when a task-controlled value contains newlines.
 	var keys []string
 	for _, key := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
 		lower := strings.ToLower(key)
@@ -136,11 +150,18 @@ func safeDiffArgs(ctx context.Context, gitBin, workDir string) ([]string, bool) 
 		}
 	}
 	sort.Strings(keys)
-	overrides := append(hardenedGitConfig(), make([]string, 0, len(keys)*2)...)
+
+	hooks, err := os.MkdirTemp("", "codex-no-hooks-")
+	if err != nil {
+		return nil, nil, false
+	}
+	cleanup := func() { _ = os.RemoveAll(hooks) }
+
+	overrides := []string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + hooks}
 	for _, key := range keys {
 		overrides = append(overrides, "-c", key+"=")
 	}
-	return append(overrides, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M", "HEAD"), true
+	return overrides, cleanup, true
 }
 
 // workspaceBaseline is what was true of working_context *before* a run

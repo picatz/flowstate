@@ -122,6 +122,14 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch \""+marker+"\"\ncat\n"), 0o700); err != nil {
 		t.Fatalf("WriteFile helper: %v", err)
 	}
+	hooks := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatalf("MkdirAll hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "post-index-change"),
+		[]byte("#!/bin/sh\ntouch \""+marker+"\"\n"), 0o700); err != nil {
+		t.Fatalf("WriteFile hook: %v", err)
+	}
 	for key, value := range map[string]string{
 		"diff.external":     helper,
 		"filter.evil.clean": helper,
@@ -135,6 +143,11 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 		// as the diff itself. Sweeping filter.* does not reach it, so that
 		// sweep alone leaves the one config key that is the whole attack.
 		"core.fsmonitor": helper,
+		// Writing the index fires post-index-change from wherever
+		// core.hooksPath points, so `git add --intent-to-add` runs a hook the
+		// repository supplies. There is no "no hooks" value, only a directory
+		// with none in it.
+		"core.hooksPath": hooks,
 	} {
 		cmd := exec.Command(gitBin, "-C", dir, "config", key, value)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -142,7 +155,7 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 		}
 	}
 	attributes := filepath.Join(dir, ".git", "info", "attributes")
-	if err := os.WriteFile(attributes, []byte("a.txt filter=evil\nb.txt filter=wicked\n"), 0o600); err != nil {
+	if err := os.WriteFile(attributes, []byte("a.txt filter=evil\nb.txt filter=wicked\nc.txt filter=evil\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile attributes: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
@@ -152,6 +165,13 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 	// content under both filter spellings rather than only the .clean one.
 	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("also changed\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile process-filtered change: %v", err)
+	}
+	// And an untracked file matching the clean filter, so the intent-to-add
+	// that runs before the diff has content of its own to convert. That
+	// command is the one the hardening reaches first and the one a diff-only
+	// fix leaves running every helper here.
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("new file\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile untracked: %v", err)
 	}
 
 	patch, _, truncated := computePatch(context.Background(), dir, true, workspaceBaseline{observed: true},
