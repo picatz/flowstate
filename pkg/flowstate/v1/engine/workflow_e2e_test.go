@@ -10,8 +10,6 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
-	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 )
@@ -36,23 +34,10 @@ import (
 func TestRun_E2E_ExpressionsAcrossContinueAsNew(t *testing.T) {
 	t.Parallel()
 
-	if testing.Short() {
-		t.Skip("skipping: starts a real Temporal dev server; CI runs the full suite")
-	}
-
 	baseURL := tests.NewHTTPServer(t)
 
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	// Start worker and register our workflow + activities
-	w := worker.New(devServer.Client(), engine.RunTaskQueueName, worker.Options{})
-	engine.Register(w)
-	require.NoError(t, w.Start())
-	t.Cleanup(w.Stop)
+	temporal := newTemporalNamespace(t)
+	startWorker(t, temporal)
 
 	echoes := func(id, body string) *v1.Node {
 		return &v1.Node{
@@ -94,7 +79,7 @@ func TestRun_E2E_ExpressionsAcrossContinueAsNew(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			run, err := devServer.Client().ExecuteWorkflow(
+			run, err := temporal.ExecuteWorkflow(
 				t.Context(),
 				client.StartWorkflowOptions{
 					ID:        "e2e-expressions-continue-" + tc.name,
