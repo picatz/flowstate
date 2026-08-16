@@ -226,7 +226,8 @@ whose before clicking, #348, not landed.
 ### Worker to plugin
 
 **Today.** `--plugin-dir` names an explicit local path an operator controls; a
-relative or world-writable search path is refused, with
+relative search path, or one writable by any user other than its owner (group
+or world), is refused, with
 `--allow-insecure-plugin-dir` as the named escape hatch
 (`pkg/flowstate/v1/plugin/doc.go:50-52`, `docs/DEPLOYMENT.md:508-515`). Plugin
 environments are built from nothing rather than inherited
@@ -235,9 +236,17 @@ resolved host-side, before `Execute`, and only for inputs the `TaskManifest` nam
 an unnamed input is refused (`docs/ARCHITECTURE.md:432-448`). Responses from a
 plugin are byte-bounded at the RoundTripper, below the RPC library, so no error path
 the library treats specially can miss the cap
-(`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`).
+(`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`). The distribution digest a
+run is pinned to is taken from the same open descriptor the process is executed
+through, on Linux via `/proc/self/fd`, so a binary replaced between the hash and the
+exec cannot make the recorded provenance describe bytes that never ran
+(`pkg/flowstate/v1/plugin/image.go`).
 
-**Limits.** A launched plugin is trusted code with the worker's authority. The output
+**Limits.** Pinning the digest to the executed image is a Linux guarantee: a
+platform with no way to execute an already-open descriptor falls back to executing
+the path, which leaves the window this closes, and says so in a log line at every
+launch (`pkg/flowstate/v1/plugin/image.go`, `image_other.go`). A launched plugin is
+trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin

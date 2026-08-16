@@ -47,10 +47,12 @@
 // Every one of these is a configuration error that would otherwise become a
 // runtime surprise:
 //
-//   - A search path entry that is relative, or world-writable. A plugin
-//     directory is arbitrary code execution; a directory anyone can write to is
-//     arbitrary code execution by anyone. See [Config.AllowInsecureSearchPath]
-//     for the escape hatch and what it costs.
+//   - A search path entry that is relative, or writable by anyone other than
+//     its owner — group-writable as well as world-writable. A plugin directory
+//     is arbitrary code execution; a directory anyone can write to is arbitrary
+//     code execution by anyone, and a group is a list of users this process does
+//     not curate. See [Config.AllowInsecureSearchPath] for the escape hatch and
+//     what it costs.
 //   - A binary that does not handshake within [Config.HandshakeTimeout]. It is
 //     killed rather than waited on.
 //   - A handshake naming a protocol version the host did not offer, or an
