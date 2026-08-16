@@ -12,7 +12,7 @@ import (
 )
 
 // What a durable run reports when its state records no trigger — the other half
-// of the one asymmetry [tests.TriggerContextCases] deliberately leaves out.
+// of the one asymmetry [conformance.TriggerContextCases] deliberately leaves out.
 //
 // Every entry path in this repository records one now, so a state with none is a
 // run that started before the field existed. Empty is the honest answer for it,

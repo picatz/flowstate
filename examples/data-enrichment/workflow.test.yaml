@@ -16,7 +16,7 @@
 #     asserted: `InvalidInput` is permanent, `Upstream` is transient, which is
 #     what makes the two failures in this file different things;
 #   * a stub cannot count attempts, so "three attempts happened" is not
-#     assertable from here — pkg/flowstate/v1/tests owns retry counting for both
+#     assertable from here — pkg/flowstate/v1/internal/conformance owns retry counting for both
 #     drivers. What is assertable, and is the reason the retry is in the file at
 #     all, is that a retryable failure which outlasts its policy still ends up
 #     *tolerated* rather than failing the run.

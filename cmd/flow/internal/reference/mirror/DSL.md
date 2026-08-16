@@ -3320,7 +3320,7 @@ fails with `v1.LoopIterationLimitError` ("ran its full budget of N iterations wi
 the `until:` condition becoming true"), one sentence both drivers report, rather than
 silently returning its partial results as though it were done. Silence there would
 hide exactly the runaway the bound exists to catch. The bound is asserted *reached*,
-not merely not-exceeded (the List lesson): `tests.LoopCases`'s runaway case can only
+not merely not-exceeded (the List lesson): `conformance.LoopCases`'s runaway case can only
 end by exhausting its three iterations, and both drivers are held to that failure;
 `examples/loop-accumulate`'s second test case proves it from a Flowfile.
 
@@ -3341,7 +3341,7 @@ its own step to the transcript, exactly as before. Tolerate the exhaustion itsel
 (`continue_on_error:` on the loop step) and the account is not just in the
 transcript but in scope: `${steps.<id>.results}` and `${steps.<id>.error}` are
 readable by later steps. Both drivers are held to the identical entry by
-`tests.LoopExhaustionTranscriptCases`; the one place the account is withheld is a
+`conformance.LoopExhaustionTranscriptCases`; the one place the account is withheld is a
 durable resume that already dropped earlier segments' iterations (the retention
 rule above), where publishing the surviving suffix as `results` would be the
 short-but-complete lie `v1.LoopStateOutputsHonest` refuses on the completing path.
@@ -3388,7 +3388,7 @@ the author to narrow what `items:` produces or to page the work across runs. A
 list written out literally in the file is refused earlier still, by `flow
 validate`, with a position; that half is deliberately the smaller one, since how
 long a computed list will be is a property of the run rather than of the file. The
-shared cases (`tests.ForEachTripCountCases`, two verified callers) assert the bound
+shared cases (`conformance.ForEachTripCountCases`, two verified callers) assert the bound
 is *reached* rather than only not exceeded: a list of exactly the ceiling runs, and
 the case checks that every one of those iterations was recorded.
 

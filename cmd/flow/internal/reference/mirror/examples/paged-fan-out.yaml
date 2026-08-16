@@ -44,7 +44,7 @@
 #
 # CI additionally runs this exact file, unstubbed, against a stand-in that
 # serves a real two-page cursor API (`NewExamplesHTTPServer` in
-# pkg/flowstate/v1/tests/examples.go) — on both execution drivers. Point the two
+# pkg/flowstate/v1/internal/conformance/examples.go) — on both execution drivers. Point the two
 # URLs at a service of your own and it runs as written.
 #
 # Run durably and the walk survives losing the worker: the cursor is state on

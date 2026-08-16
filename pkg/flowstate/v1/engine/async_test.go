@@ -18,7 +18,7 @@ import (
 // The latency claim, which is the whole point of `async:` and the one thing the
 // shared corpus deliberately does not carry.
 //
-// Every case in `tests.AsyncCases` is about what an author can *see* — where an
+// Every case in `conformance.AsyncCases` is about what an author can *see* — where an
 // output appears, where a failure is heard — and both drivers must agree about
 // all of it. Whether the work actually overlaps is a claim about this driver's
 // scheduler and nothing else: the local driver runs an async step where it is

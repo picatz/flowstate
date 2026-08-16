@@ -484,7 +484,7 @@ func TestEveryExampleRunsDurably(t *testing.T) {
 			// `RunState.pending_undo` is the field that makes it work, and a run that
 			// never suspends never reads it.
 			if want, fails := conformance.ExampleFailure(name); fails {
-				assertFailingExampleAgrees(t, devServer.Client(), "example-failing-"+name, name, want,
+				assertFailingExampleAgrees(t, temporal, "example-failing-"+name, name, want,
 					localSpec, suspendingSpec, inputs, authority, secretStore, signals)
 
 				mu.Lock()

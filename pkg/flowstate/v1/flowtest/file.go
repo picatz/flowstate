@@ -684,10 +684,10 @@ type Expectation struct {
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
-	// [tests.Case.ExpectedOutputs] already documents: a run that fails
+	// [conformance.Case.ExpectedOutputs] already documents: a run that fails
 	// outright has no outputs to compare.
 	//
-	// [tests.Case.ExpectedOutputs]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/tests#Case
+	// [conformance.Case.ExpectedOutputs]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#Case
 	Outputs map[string]any `yaml:"outputs"`
 
 	// Inputs, when set, must equal the inputs a replayed delivery produced,

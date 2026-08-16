@@ -545,7 +545,7 @@ func TestUndoIsReservedAgainstTaskNames(t *testing.T) {
 // TestUndoInsideConcurrentControlFlowIsAccepted pins the placement that opened
 // when concurrent scopes gained a structural ordering key: a compensation in a
 // `for_each` body and one in a `parallel` branch both validate. The engine-side
-// ordering claim lives in the shared corpus ([tests.UndoCases]); what belongs to
+// ordering claim lives in the shared corpus ([conformance.UndoCases]); what belongs to
 // the validator is only that the author is no longer refused.
 func TestUndoInsideConcurrentControlFlowIsAccepted(t *testing.T) {
 	t.Parallel()
@@ -601,7 +601,7 @@ steps:
 // TestUndoOnControlFlowIsRefusedWithAPosition keeps the surviving refusal
 // author-facing: a compensation on a step that has no effect of its own is
 // reported at the step, with the position an editor can jump to. The engine's
-// backstop for a spec that never saw a Flowfile is [tests.UndoPlacementCases];
+// backstop for a spec that never saw a Flowfile is [conformance.UndoPlacementCases];
 // this is the half with line and column.
 func TestUndoOnControlFlowIsRefusedWithAPosition(t *testing.T) {
 	t.Parallel()

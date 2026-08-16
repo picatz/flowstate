@@ -21,7 +21,7 @@
 // exist to grant, and a property that forbade it would be a property no correct
 // engine could pass. [Result.UnorderedPrefix] is where a case says which of its
 // effects are a set rather than a sequence, the same distinction
-// [tests.UndoCase] already draws for the same reason.
+// [conformance.UndoCase] already draws for the same reason.
 //
 // # Every failure is a seed
 //
@@ -53,7 +53,7 @@
 // unchanged: both drivers run every case in pkg/flowstate/v1/internal/conformance, and the cases
 // this package explores are those same cases.
 //
-// [tests.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/tests#UndoCase
+// [conformance.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#UndoCase
 package dst
 
 import (
@@ -205,10 +205,10 @@ type Result struct {
 	// UnorderedPrefix is how many leading entries of Effects are compared as a
 	// set rather than a sequence: work whose order is the schedule's to choose,
 	// which is exactly what this harness varies. The same distinction
-	// [tests.UndoCase] draws, for the same reason — beyond the prefix, order is
+	// [conformance.UndoCase] draws, for the same reason — beyond the prefix, order is
 	// a claim.
 	//
-	// [tests.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/tests#UndoCase
+	// [conformance.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#UndoCase
 	UnorderedPrefix int
 }
 
