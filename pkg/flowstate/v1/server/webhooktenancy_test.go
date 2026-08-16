@@ -246,7 +246,7 @@ func TestAReceiverRefusesAWorkflowThisDeploymentCannotSatisfy(t *testing.T) {
 	}
 
 	installed := func(version string) *v1.PluginCatalog {
-		return &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{
+		return &v1.PluginCatalog{ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion, Plugins: []*v1.PluginDescription{{
 			Name: "storefront", Version: version, ProtocolVersion: 2,
 			TaskSchemaDigest: "sha256:schema", DistributionDigest: "sha256:binary", ClaimsDigest: "sha256:claims",
 		}}}

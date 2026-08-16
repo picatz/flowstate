@@ -15,14 +15,20 @@ func describedPlugin(name, version, schema string) *v1.PluginDescription {
 	}
 }
 
-// catalogOf is a deployment holding exactly these plugins.
+// catalogOf is a deployment holding exactly these plugins, reporting the
+// current build's claims schema version — what a real catalog from this
+// commit's Host.Catalog() actually reports, and what resolveOne now requires
+// before it will mint a new pin (#763 review: a new pin left at the zero
+// value would permanently exempt that run's replay guard from the version
+// check). Tests exercising a specific other version, including zero to
+// simulate a pre-#763 catalog, use [catalogWithClaimsSchemaVersion] instead.
 func catalogOf(plugins ...*v1.PluginDescription) *v1.PluginCatalog {
-	return &v1.PluginCatalog{Plugins: plugins}
+	return &v1.PluginCatalog{Plugins: plugins, ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion}
 }
 
-// catalogWithClaimsSchemaVersion is catalogOf plus a claims schema version,
-// for the tests that need one asserted rather than left at the zero value
-// catalogOf leaves it at.
+// catalogWithClaimsSchemaVersion is catalogOf with a specific claims schema
+// version asserted instead of the current build's, for tests that need one
+// other than today's default — including zero, a pre-#763 catalog's shape.
 func catalogWithClaimsSchemaVersion(version uint32, plugins ...*v1.PluginDescription) *v1.PluginCatalog {
 	return &v1.PluginCatalog{Plugins: plugins, ClaimsSchemaVersion: version}
 }
@@ -413,6 +419,35 @@ func TestResolvePluginsPinsClaimsSchemaVersion(t *testing.T) {
 
 	require.Equal(t, uint32(1), wf.GetResolvedPlugins()[0].GetClaimsSchemaVersion(),
 		"resolving against a catalog with a claims schema version did not pin it onto the run")
+}
+
+// TestResolvePluginsRefusesAnUnknownClaimsSchemaVersion is the Codex finding
+// on #763's own version-pinning fix: sameResolvedPlugin's leniency for a zero
+// ClaimsSchemaVersion exists for a pin made before this field existed, not
+// for one resolveOne mints today. A new pin left at zero (or at a version
+// this build did not compute its ClaimsDigest under) would permanently
+// exempt that run's replay guard from the check
+// TestReplayGuardStillRefusesAClaimsSchemaVersionMismatchOnANewPin proves
+// exists — so resolveOne must refuse to create one rather than pin it and
+// leave the check silently inert for that run's whole lifetime.
+func TestResolvePluginsRefusesAnUnknownClaimsSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	wf := requires("slack", "v2.1.0")
+	err := v1.ResolvePlugins(wf, catalogWithClaimsSchemaVersion(0, describedPlugin("slack", "v2.1.0", "sha256:schema")))
+	require.ErrorContains(t, err, "claims schema version",
+		"a catalog reporting an unknown (zero) claims schema version was resolved into a new pin "+
+			"instead of being refused, which would leave that run's replay guard permanently unable "+
+			"to check claims schema version")
+
+	// A future version this build was not compiled to understand is refused
+	// identically — TaskDescriptionClaimsKnown's own reasoning (#763, both
+	// rounds) applies here too: reading is not the only side that must know
+	// what a version means, minting a pin under a version this build cannot
+	// interpret is exactly as unsafe.
+	err = v1.ResolvePlugins(requires("slack", "v2.1.0"),
+		catalogWithClaimsSchemaVersion(v1.CurrentClaimsSchemaVersion+1, describedPlugin("slack", "v2.1.0", "sha256:schema")))
+	require.ErrorContains(t, err, "claims schema version")
 }
 
 // TestReplayGuardAcceptsALegacyPinWithNoClaimsSchemaVersion is the same
