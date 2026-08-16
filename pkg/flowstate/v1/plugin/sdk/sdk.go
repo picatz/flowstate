@@ -28,6 +28,10 @@
 //		})
 //	}
 //
+// resolve and greet's own bodies aren't shown here; see
+// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example]
+// for the worked example this is drawn from, including both.
+//
 // The manifest the engine sees is derived from that value, which is what keeps a
 // plugin from advertising something it did not implement: capabilities come from
 // which fields are set, schemes from the resolver, and each task's input and
