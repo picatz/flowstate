@@ -407,10 +407,10 @@ func scrubMap(scrubber *secrets.Scrubber, m protoreflect.Map, field protoreflect
 	seen := make(map[any]struct{}, len(entries))
 	for _, item := range entries {
 		if _, collides := seen[item.key.Interface()]; collides {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf(
+			return fmt.Errorf(
 				"two keys of output field %q redact to the same key %v, so one would silently "+
 					"replace the other: a map key is a name, and a resolved secret must not be used as one",
-				field.Name(), item.key.Interface()))
+				field.Name(), item.key.Interface())
 		}
 		seen[item.key.Interface()] = struct{}{}
 	}
