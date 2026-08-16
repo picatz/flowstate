@@ -127,6 +127,8 @@ func TestAScheduleIsCreatedDescribedFiredAndDeleted(t *testing.T) {
 
 			return workflowID != ""
 		}, 60*time.Second, 200*time.Millisecond, "the schedule never took an action")
+		require.Contains(t, workflowID, "flowstate-schedule-team-a_nightly-report",
+			"a scheduled run's workflow id is not scoped to its tenant")
 
 		// The run it started is an ordinary run of this tenant's — addressable by
 		// `flow get`, listed by `flow list`, authorized by the same memo. A firing
