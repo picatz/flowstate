@@ -280,11 +280,45 @@ type TaskDescription struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Summary is a single line, the same one `flow tasks` prints.
-	Summary       string       `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
-	Inputs        []*TaskField `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
-	Outputs       []*TaskField `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Summary string       `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
+	Inputs  []*TaskField `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	Outputs []*TaskField `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	// NeedsScope reports whether the task must receive every prior step's
+	// outputs and the variables bound by enclosing control flow, on every call.
+	//
+	// The largest trust jump a task definition can make: from seeing its own
+	// declared inputs to seeing the whole workflow's computed state so far. A
+	// plugin task that flips this from false to true between versions has
+	// asked for materially more than it asked for last time, and this is the
+	// field an operator or a pinned digest reads to notice that.
+	NeedsScope bool `protobuf:"varint,5,opt,name=needs_scope,json=needsScope,proto3" json:"needs_scope,omitempty"`
+	// SecretInputs names the inputs the host will resolve a `${secret(...)}`
+	// reference into a plaintext value for, before the request crosses into a
+	// plugin process. Empty for a built-in task, which resolves its own secret
+	// inputs a different way (see TaskField.constraints' "may hold a secret
+	// reference" note); populated for a plugin task from TaskManifest's field of
+	// the same name.
+	//
+	// This is the whole-value case, not TaskField.deferred or the per-field
+	// "may hold a secret reference" note — this is the list of inputs where a
+	// secret *reference itself* is a legal thing to write, which is a claim
+	// about trust: naming an input here is the plugin asking to receive a value
+	// the workflow author never wrote in the clear.
+	SecretInputs []string `protobuf:"bytes,6,rep,name=secret_inputs,json=secretInputs,proto3" json:"secret_inputs,omitempty"`
+	// ShapesOutputs reports whether the task evaluates an `outputs:` input as a
+	// replacement for the outputs it declares above, rather than the outputs
+	// above being what the task actually returns.
+	ShapesOutputs bool `protobuf:"varint,7,opt,name=shapes_outputs,json=shapesOutputs,proto3" json:"shapes_outputs,omitempty"`
+	// DeferredInputs names inputs whose expressions the task evaluates itself,
+	// against a scope the workflow does not have. Mirrors TaskField.deferred at
+	// the task level, so a consumer that wants the list rather than a per-field
+	// scan does not have to walk every field.
+	DeferredInputs []string `protobuf:"bytes,8,rep,name=deferred_inputs,json=deferredInputs,proto3" json:"deferred_inputs,omitempty"`
+	// ExpressionInputs names inputs that must be written as `${...}` rather
+	// than as a literal.
+	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TaskDescription) Reset() {
@@ -341,6 +375,41 @@ func (x *TaskDescription) GetInputs() []*TaskField {
 func (x *TaskDescription) GetOutputs() []*TaskField {
 	if x != nil {
 		return x.Outputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetNeedsScope() bool {
+	if x != nil {
+		return x.NeedsScope
+	}
+	return false
+}
+
+func (x *TaskDescription) GetSecretInputs() []string {
+	if x != nil {
+		return x.SecretInputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetShapesOutputs() bool {
+	if x != nil {
+		return x.ShapesOutputs
+	}
+	return false
+}
+
+func (x *TaskDescription) GetDeferredInputs() []string {
+	if x != nil {
+		return x.DeferredInputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetExpressionInputs() []string {
+	if x != nil {
+		return x.ExpressionInputs
 	}
 	return nil
 }
@@ -442,10 +511,25 @@ type PluginDescription struct {
 	SecretSchemes []string `protobuf:"bytes,5,rep,name=secret_schemes,json=secretSchemes,proto3" json:"secret_schemes,omitempty"`
 	// Tasks are the tasks this plugin provides, described exactly as a built-in
 	// task is.
-	Tasks              []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
-	ProtocolVersion    uint32             `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	TaskSchemaDigest   string             `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
-	DistributionDigest string             `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
+	Tasks           []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
+	ProtocolVersion uint32             `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	// TaskSchemaDigest is computed over Tasks as this host reconstructed them,
+	// deterministically marshaled — the case it exists to catch is a plugin
+	// whose descriptors changed shape while its version stood still.
+	//
+	// Semantic change: TaskDescription.needs_scope, secret_inputs,
+	// shapes_outputs, deferred_inputs and expression_inputs now travel inside
+	// the marshaled TaskDescription this digest is computed over, so a plugin
+	// that flips needs_scope or adds a name to secret_inputs without changing
+	// any descriptor shape now changes this digest where it previously did
+	// not. That is the fix for the gap this field existed to catch (#712): the
+	// fields with the most security weight in a plugin's contract were
+	// computable and simply excluded from it. Every digest pinned before this
+	// change is a digest of a narrower contract and will not match one
+	// recomputed after it, for every plugin, whether its claims changed or not
+	// — a one-time rollout cost, paid once per pin.
+	TaskSchemaDigest   string `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
+	DistributionDigest string `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -666,12 +750,18 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
 	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
-	"\aexample\x18\x04 \x01(\tR\aexample\"\xa3\x01\n" +
+	"\aexample\x18\x04 \x01(\tR\aexample\"\xe6\x02\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x17.flowstate.v1.TaskFieldR\x06inputs\x121\n" +
-	"\aoutputs\x18\x04 \x03(\v2\x17.flowstate.v1.TaskFieldR\aoutputs\"k\n" +
+	"\aoutputs\x18\x04 \x03(\v2\x17.flowstate.v1.TaskFieldR\aoutputs\x12\x1f\n" +
+	"\vneeds_scope\x18\x05 \x01(\bR\n" +
+	"needsScope\x12#\n" +
+	"\rsecret_inputs\x18\x06 \x03(\tR\fsecretInputs\x12%\n" +
+	"\x0eshapes_outputs\x18\a \x01(\bR\rshapesOutputs\x12'\n" +
+	"\x0fdeferred_inputs\x18\b \x03(\tR\x0edeferredInputs\x12+\n" +
+	"\x11expression_inputs\x18\t \x03(\tR\x10expressionInputs\"k\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -87,4 +88,94 @@ func TestADeferredInputIsMarked(t *testing.T) {
 
 	require.True(t, deferred["outputs"], "http's outputs is evaluated by the task and is not marked")
 	require.False(t, deferred["url"], "url is resolved by the engine and is marked deferred")
+}
+
+// TestDescribeTaskCarriesTheClaimsWithSecurityWeight is #712: needs_scope,
+// secret_inputs, shapes_outputs, deferred_inputs and expression_inputs were
+// computable from a TaskDef and simply left off TaskDescription, so every reader
+// of DescribeTask's result — the catalog, GetCatalog, `flow plugins`, and
+// TaskSchemaDigest, which is computed over exactly this message — had no way to
+// see a task's own claim to see the whole workflow's state or to receive a host
+// secret.
+//
+// http exercises three of the five for a real, non-synthetic reason: it declares
+// NeedsPrevOutputs, ShapesOutputs and ExpressionInputs today, so a regression that
+// drops them from DescribeTask fails here rather than only in a test that builds
+// its own TaskDef.
+func TestDescribeTaskCarriesTheClaimsWithSecurityWeight(t *testing.T) {
+	t.Parallel()
+
+	def, found := v1.LookupTask("http")
+	require.True(t, found)
+
+	described := v1.DescribeTask(def)
+
+	require.True(t, described.GetNeedsScope(),
+		"http needs prior step outputs to evaluate its own outputs: input, and DescribeTask does not say so")
+	require.True(t, described.GetShapesOutputs(),
+		"http replaces its declared outputs with outputs:, and DescribeTask does not say so")
+	require.Contains(t, described.GetExpressionInputs(), "expect",
+		"http requires expect to be written as an expression, and DescribeTask does not say so")
+
+	// SecretInputs and DeferredInputs are exercised against a task with real
+	// values for them, since http's own DeferredInputs and SecretInputs are
+	// empty (its secret-accepting inputs are NestedSecretInputs, a different
+	// list — see TaskDef.SecretInputs' doc comment for why the two are not the
+	// same question).
+	synthetic := v1.TaskDef{
+		Name:           "synthetic",
+		DeferredInputs: []string{"outputs"},
+		SecretInputs:   []string{"token"},
+	}
+	syntheticDescribed := v1.DescribeTask(synthetic)
+
+	require.Equal(t, []string{"outputs"}, syntheticDescribed.GetDeferredInputs(),
+		"DeferredInputs on the TaskDef is not reaching TaskDescription")
+	require.Equal(t, []string{"token"}, syntheticDescribed.GetSecretInputs(),
+		"SecretInputs on the TaskDef is not reaching TaskDescription")
+}
+
+// TestTaskSchemaDigestChangesWithNeedsScope reproduces the marshaling
+// [pkg/flowstate/v1/plugin.Host.Catalog] does — a deterministic marshal of a
+// PluginDescription holding the plugin's TaskDescriptions — and checks that
+// flipping needs_scope changes the digest.
+//
+// Before #712 it did not: the field existed on TaskManifest and on TaskDef and
+// was enforced, but DescribeTask never wrote it into TaskDescription, so it was
+// bytes the digest never saw. A plugin update turning needs_scope from false to
+// true — the largest quiet privilege escalation the protocol allows — pinned
+// clean.
+func TestTaskSchemaDigestChangesWithNeedsScope(t *testing.T) {
+	t.Parallel()
+
+	before := v1.DescribeTask(v1.TaskDef{Name: "commit_push"})
+	after := v1.DescribeTask(v1.TaskDef{Name: "commit_push", NeedsPrevOutputs: true})
+
+	digestOf := func(tasks ...*v1.TaskDescription) string {
+		bytes, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&v1.PluginDescription{Tasks: tasks})
+		require.NoError(t, err)
+		return v1.ContentDigest(bytes)
+	}
+
+	require.NotEqual(t, digestOf(before), digestOf(after),
+		"needs_scope flipped and the task schema digest did not change")
+}
+
+// TestTaskSchemaDigestChangesWithSecretInputs is the same claim for the other
+// field with security weight: which inputs the host will resolve a secret
+// reference into before it crosses into the plugin.
+func TestTaskSchemaDigestChangesWithSecretInputs(t *testing.T) {
+	t.Parallel()
+
+	before := v1.DescribeTask(v1.TaskDef{Name: "commit_push"})
+	after := v1.DescribeTask(v1.TaskDef{Name: "commit_push", SecretInputs: []string{"token"}})
+
+	digestOf := func(tasks ...*v1.TaskDescription) string {
+		bytes, err := (proto.MarshalOptions{Deterministic: true}).Marshal(&v1.PluginDescription{Tasks: tasks})
+		require.NoError(t, err)
+		return v1.ContentDigest(bytes)
+	}
+
+	require.NotEqual(t, digestOf(before), digestOf(after),
+		"secret_inputs gained an entry and the task schema digest did not change")
 }

@@ -236,6 +236,17 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		for _, task := range p.GetTasks() {
 			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(task.GetName()), task.GetSummary())
 
+			// The two claims that change what this task can see, in words an
+			// operator can act on rather than a field an operator has to already
+			// know to go looking for (#712). Printed here, ahead of the
+			// input/output tables, because they are trust posture rather than
+			// shape: a reviewer deciding whether to trust this task reads these
+			// two lines before they read what it takes.
+			if secretInputs := task.GetSecretInputs(); len(secretInputs) > 0 {
+				fmt.Fprintf(out, "    accepts a secret in: %s\n", strings.Join(secretInputs, ", "))
+			}
+			fmt.Fprintf(out, "    receives prior step outputs: %s\n", yesNo(task.GetNeedsScope()))
+
 			if err := writeFields(out, theme, surface.Caps.Width, []fieldGroup{
 				{label: "inputs", fields: inputFields(task.GetInputs())},
 				{label: "outputs", fields: inputFields(task.GetOutputs())},
@@ -251,6 +262,15 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		"This is what a worker with the same --plugin-dir would bring up, not the state of one already running."))
 
 	return nil
+}
+
+// yesNo renders a bool the way an operator reads a trust-posture line, rather
+// than as a Go zero value.
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 // pluginLogger sends host events and plugin stderr to the account stream.

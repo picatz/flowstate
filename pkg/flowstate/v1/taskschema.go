@@ -377,8 +377,13 @@ func taskInputNotes(def TaskDef) map[string][]string {
 	for _, name := range def.CredentialInputs {
 		notes[name] = append(notes[name], "names a deployment credential target")
 	}
+	// def.SecretInputs is the plugin whole-value list (TaskManifest.secret_inputs,
+	// #712): a different mechanism from AuthorityInputs/NestedSecretInputs, but
+	// the same fact about what an author may legally write there, so it earns
+	// the same note.
 	for _, name := range slices.Sorted(slices.Values(append(
-		slices.Clone(def.AuthorityInputs), def.NestedSecretInputs...))) {
+		slices.Clone(def.AuthorityInputs),
+		append(slices.Clone(def.NestedSecretInputs), def.SecretInputs...)...))) {
 		if slices.Contains(def.CredentialInputs, name) ||
 			slices.Contains(notes[name], "may hold a secret reference") {
 			continue
@@ -474,6 +479,17 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		Summary: def.Summary,
 		Inputs:  taskFields(Inputs(def)),
 		Outputs: taskFields(Outputs(def)),
+
+		// The five claims with security weight (#712): invisible here before,
+		// which meant invisible in the catalog and outside TaskSchemaDigest,
+		// which is computed over exactly this message. Read straight off the
+		// definition rather than re-derived, for the same reason every other
+		// field above is: one definition of what a task does, described.
+		NeedsScope:       def.NeedsPrevOutputs,
+		SecretInputs:     slices.Clone(def.SecretInputs),
+		ShapesOutputs:    def.ShapesOutputs,
+		DeferredInputs:   slices.Clone(def.DeferredInputs),
+		ExpressionInputs: slices.Clone(def.ExpressionInputs),
 	}
 }
 

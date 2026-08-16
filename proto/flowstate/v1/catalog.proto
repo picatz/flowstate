@@ -139,6 +139,45 @@ message TaskDescription {
 
   repeated TaskField inputs = 3;
   repeated TaskField outputs = 4;
+
+  // NeedsScope reports whether the task must receive every prior step's
+  // outputs and the variables bound by enclosing control flow, on every call.
+  //
+  // The largest trust jump a task definition can make: from seeing its own
+  // declared inputs to seeing the whole workflow's computed state so far. A
+  // plugin task that flips this from false to true between versions has
+  // asked for materially more than it asked for last time, and this is the
+  // field an operator or a pinned digest reads to notice that.
+  bool needs_scope = 5;
+
+  // SecretInputs names the inputs the host will resolve a `${secret(...)}`
+  // reference into a plaintext value for, before the request crosses into a
+  // plugin process. Empty for a built-in task, which resolves its own secret
+  // inputs a different way (see TaskField.constraints' "may hold a secret
+  // reference" note); populated for a plugin task from TaskManifest's field of
+  // the same name.
+  //
+  // This is the whole-value case, not TaskField.deferred or the per-field
+  // "may hold a secret reference" note — this is the list of inputs where a
+  // secret *reference itself* is a legal thing to write, which is a claim
+  // about trust: naming an input here is the plugin asking to receive a value
+  // the workflow author never wrote in the clear.
+  repeated string secret_inputs = 6;
+
+  // ShapesOutputs reports whether the task evaluates an `outputs:` input as a
+  // replacement for the outputs it declares above, rather than the outputs
+  // above being what the task actually returns.
+  bool shapes_outputs = 7;
+
+  // DeferredInputs names inputs whose expressions the task evaluates itself,
+  // against a scope the workflow does not have. Mirrors TaskField.deferred at
+  // the task level, so a consumer that wants the list rather than a per-field
+  // scan does not have to walk every field.
+  repeated string deferred_inputs = 8;
+
+  // ExpressionInputs names inputs that must be written as `${...}` rather
+  // than as a literal.
+  repeated string expression_inputs = 9;
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
@@ -198,6 +237,22 @@ message PluginDescription {
   // task is.
   repeated TaskDescription tasks = 6;
   uint32 protocol_version = 7;
+
+  // TaskSchemaDigest is computed over Tasks as this host reconstructed them,
+  // deterministically marshaled — the case it exists to catch is a plugin
+  // whose descriptors changed shape while its version stood still.
+  //
+  // Semantic change: TaskDescription.needs_scope, secret_inputs,
+  // shapes_outputs, deferred_inputs and expression_inputs now travel inside
+  // the marshaled TaskDescription this digest is computed over, so a plugin
+  // that flips needs_scope or adds a name to secret_inputs without changing
+  // any descriptor shape now changes this digest where it previously did
+  // not. That is the fix for the gap this field existed to catch (#712): the
+  // fields with the most security weight in a plugin's contract were
+  // computable and simply excluded from it. Every digest pinned before this
+  // change is a digest of a narrower contract and will not match one
+  // recomputed after it, for every plugin, whether its claims changed or not
+  // — a one-time rollout cost, paid once per pin.
   string task_schema_digest = 8;
   string distribution_digest = 9;
 }
