@@ -583,6 +583,69 @@ func TestScheduleBackfillCalendarDedupeIgnoresComment(t *testing.T) {
 			"calendars do — a naive sum would refuse a window this cadence alone accepts")
 }
 
+// TestScheduleBackfillCronDedupeIgnoresInternalWhitespace is the regression
+// for the finding that cronDedupeKey trimmed only leading and trailing
+// whitespace, so two spellings of the identical seven fields that differ in
+// how many spaces separate two of them — "* * * * * * *" and its double-space
+// cousin — produced different dedup keys and were charged as two cadences.
+// Both are the same seven fields to the cluster, and cronMinimumPeriod's own
+// classification already reads through strings.Fields, so the dedup key has
+// to agree with it.
+func TestScheduleBackfillCronDedupeIgnoresInternalWhitespace(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	window := (v1.MaxScheduleBackfillFirings * 3 / 4) * time.Second // 75,000s: under the limit alone, over it doubled.
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-window)),
+		EndAt:   timestamppb.New(now),
+	}}
+
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"* * * * * * *", "*  * * * * * *"}}, backfill),
+		"a stray extra space between two fields must not stop the second entry from deduping "+
+			"against the first — both are the identical seven fields to the cluster")
+}
+
+// TestScheduleBackfillJitterExpandsTheWindow is the regression for the
+// finding that the firing estimate ignored `jitter`: each real firing is
+// delayed by a random amount up to jitter (capped by the gap to the next
+// firing, which only ever shrinks the real delay, never grows it), so a
+// nominal firing up to `jitter` before the requested window's start can be
+// delayed into it — a firing this estimate would otherwise miss entirely,
+// since it never happens at its own nominal instant. This is the dangerous
+// direction (an undercount), unlike most of the false-refusal bugs fixed
+// above: a schedule with jitter set could pass a check that a real cluster
+// then exceeds.
+func TestScheduleBackfillJitterExpandsTheWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	// Exactly 100,000 seconds at a one-second cadence is exactly the
+	// ceiling with no jitter — TestScheduleBackfillIsBoundedByCadence
+	// already covers that. One second of jitter means a nominal firing one
+	// second before the window could be delayed into it, adding a real
+	// 100,001st firing this estimate has to count.
+	trigger := &v1.ScheduleTrigger{
+		Every:  durationpb.New(time.Second),
+		Jitter: durationpb.New(time.Second),
+	}
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-100_000 * time.Second)),
+		EndAt:   timestamppb.New(now),
+	}}
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+		"one second of jitter on a one-second cadence can delay a firing from just before the window "+
+			"into it, reaching a real 100,001 where the nominal schedule alone would only reach 100,000")
+
+	// Without jitter, the identical range is exactly at the ceiling and must
+	// be accepted — proving the refusal above is specifically about jitter,
+	// not a general regression in the span math.
+	trigger.Jitter = nil
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill),
+		"without jitter, 100,000 seconds at a one-second cadence is exactly the ceiling, not one over it")
+}
+
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
 // values that cannot be right on any cluster.
 //

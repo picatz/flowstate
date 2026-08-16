@@ -214,6 +214,23 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		// that already covers the end being inclusive.
 		span, startInclusive := intersectedBackfillSpan(trigger, b)
 
+		// Jitter delays each firing by a random amount up to its own value
+		// (capped by the gap to the next firing, which only ever shrinks the
+		// real delay, never grows it past `jitter` itself), so a nominal
+		// firing up to `jitter` before the window's start can be delayed
+		// into it, and one within `jitter` of the end can be delayed past
+		// it. Only the first direction adds firings this estimate would
+		// otherwise miss — a firing pushed past the end is one this window
+		// no longer contains, not an extra one — so padding span by the
+		// full jitter is what a widened left edge would give, and is always
+		// at least the true worst case regardless of cadence: no bound
+		// tighter than the field's own maximum can be proven without
+		// evaluating real fire times, which every estimate in this
+		// function deliberately avoids. Added once, to the shared span,
+		// rather than per cadence, since every cadence in this trigger is
+		// jittered by the identical schedule-level amount.
+		span += trigger.GetJitter().AsDuration()
+
 		var firings int64
 		for _, period := range cadences {
 			quotient := int64(span / period)
@@ -316,11 +333,17 @@ func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) (tim
 
 // cronDedupeKey normalizes a cron expression to the same form
 // [cronMinimumPeriod] classifies it by, so two spellings that are the
-// identical schedule — differing only in a trailing comment or surrounding
-// whitespace — are recognized as the one duplicate they are, and anything
-// short of that stays distinct.
+// identical schedule — differing only in a trailing comment, in surrounding
+// whitespace, or in how many spaces separate two fields — are recognized as
+// the one duplicate they are, and anything short of that stays distinct.
+//
+// strings.Fields splits on any run of whitespace and drops empty results, so
+// rejoining with single spaces collapses "*  * * * * * *" (a stray extra
+// space) to the same key as "* * * * * * *" — both are the identical seven
+// fields to the cluster, which the dedup key has to agree with or a naive
+// byte comparison charges the same cadence twice.
 func cronDedupeKey(expression string) string {
-	return strings.TrimSpace(stripCronComment(expression))
+	return strings.Join(strings.Fields(stripCronComment(expression)), " ")
 }
 
 // calendarsEqual reports whether two calendar specifications fire at exactly
