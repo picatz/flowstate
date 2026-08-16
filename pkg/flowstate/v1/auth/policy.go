@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -185,6 +186,30 @@ type TrustedIssuer struct {
 	// namespace an admitting entry cannot map is a rejection, deliberately never
 	// a reason to try the next entry.
 	NamespaceClaim string `json:"namespace_claim,omitempty" yaml:"namespace_claim,omitempty"`
+
+	// NamespaceMap, when set alongside NamespaceClaim, replaces the grammar
+	// check NamespaceClaim would otherwise apply to the raw claim value with an
+	// exact lookup: the claim's value is looked up as a key in this map, and the
+	// mapped value — which must itself satisfy [ValidateNamespace] — becomes the
+	// namespace. A claim value with no entry is refused with [ErrNoNamespace],
+	// the same way a missing or ungrammatical claim is: there is no fallback to
+	// the raw value and no wildcard entry, because a wildcard here is the same
+	// mistake [ClaimRule.AnyOf] refuses to let a claim rule express.
+	//
+	// This is what NamespaceClaim's own doc points to for a claim whose values
+	// cannot satisfy the namespace grammar at all, such as GitHub Actions'
+	// "repository" claim ("<owner>/<name>", which contains "/"): list every
+	// tenant's exact claim value once, mapped to the namespace it names.
+	// Two different claim values may map to the same namespace on purpose — two
+	// repositories sharing one tenant is a deliberate choice, not a collision —
+	// but every mapped value is validated at policy load, so a typo that would
+	// only surface at verification time is caught before any token is checked
+	// against it.
+	//
+	// Requires NamespaceClaim; refused when Namespace is set instead, and
+	// refused for kind: mtls for the same reason NamespaceClaim is: a client
+	// certificate carries no claim to look up.
+	NamespaceMap map[string]string `json:"namespace_map,omitempty" yaml:"namespace_map,omitempty"`
 
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
@@ -411,6 +436,23 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is empty", ErrNoNamespace, t.NamespaceClaim, t.Name)
 	}
 
+	// With a namespace_map configured, the raw claim value is never itself the
+	// namespace: it is a key into an exact, operator-authored table, and a claim
+	// value with no entry is refused rather than falling back to the raw value
+	// (which the grammar below would usually refuse anyway) or to any default.
+	// This is the path a claim shaped like "<owner>/<name>" takes, since no
+	// grammar accepts "/" without making it ambiguous with the "/" a namespace
+	// is combined with elsewhere — see ValidateNamespace's and NamespaceMap's own
+	// doc comments.
+	if t.NamespaceMap != nil {
+		mapped, ok := t.NamespaceMap[namespace]
+		if !ok {
+			return "", fmt.Errorf("%w: the %q claim of a token from %q is %q, which has no entry in namespace_map",
+				ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64))
+		}
+		return mapped, nil
+	}
+
 	// A namespace names a tenant, and it reaches an assertion subject and a
 	// secret rule. This is the one grammar both of those places check — see
 	// [ValidateNamespace] — checked here too so a namespace claim that would
@@ -563,6 +605,10 @@ func (t TrustedIssuer) validateMTLS() error {
 			"besides the subject SAN itself, so it cannot name a tenant. Give this entry a fixed namespace, "+
 			"and use one entry per tenant if several must share a CA", IssuerKindMTLS)
 	}
+	if t.NamespaceMap != nil {
+		return fmt.Errorf("namespace_map is not supported for kind: %s: it maps namespace_claim's value, "+
+			"which this kind never has", IssuerKindMTLS)
+	}
 	if err := t.validateNamespaceFields(); err != nil {
 		return err
 	}
@@ -604,6 +650,27 @@ func (t TrustedIssuer) validateNamespaceFields() error {
 			return fmt.Errorf("namespace: %w", err)
 		}
 	}
+
+	if t.NamespaceMap != nil {
+		if t.NamespaceClaim == "" {
+			return fmt.Errorf("namespace_map requires namespace_claim: it maps that claim's value to a namespace, so there is nothing to look up without it")
+		}
+		if len(t.NamespaceMap) == 0 {
+			return fmt.Errorf("namespace_map is present but empty: every claim value would be refused, which is the same as not admitting this issuer at all")
+		}
+		for claimValue, namespace := range t.NamespaceMap {
+			if claimValue == "" {
+				return fmt.Errorf("namespace_map: the empty string is not a claim value a verified token can carry (namespaceFor already refuses an empty claim)")
+			}
+			if namespace == "" {
+				return fmt.Errorf("namespace_map: claim value %q maps to an empty namespace", claimValue)
+			}
+			if err := ValidateNamespace(namespace); err != nil {
+				return fmt.Errorf("namespace_map: claim value %q maps to namespace %q: %w", claimValue, namespace, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -682,6 +749,7 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	for i, rule := range clone.Require {
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
 	}
+	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 
 	return clone
 }
