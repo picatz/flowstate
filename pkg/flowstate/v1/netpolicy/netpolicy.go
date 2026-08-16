@@ -184,10 +184,10 @@ func New(opts ...Option) (*Policy, error) {
 }
 
 // Client returns an http.Client that enforces p. Every returned client shares one
-// transport, and so one connection pool, but each is a distinct value: a caller
-// that reassigns Transport or CheckRedirect on the client it was handed disables
-// the policy only for itself, and cannot disable it for other tasks holding the
-// same [Policy].
+// transport (and its connection pool when reuse is safe), but each is a distinct
+// value: a caller that reassigns Transport or CheckRedirect on the client it was
+// handed disables the policy only for itself, and cannot disable it for other
+// tasks holding the same [Policy].
 //
 // Requests made with it are checked before they are sent, again in the dialer for
 // every address connected to, and again for every redirect hop. Response bodies
@@ -232,6 +232,22 @@ func (p *Policy) newClient() *http.Client {
 	transport.MaxIdleConnsPerHost = 8
 	transport.MaxConnsPerHost = 32
 	transport.MaxResponseHeaderBytes = DefaultMaxResponseHeaderBytes
+	// Connection-scoped rules are evaluated by the dialer. Do not let a later
+	// request bypass that evaluation by reusing a connection established for a
+	// different request (and potentially a different workload identity).
+	//
+	// Self-administration is the same hazard wearing different clothes and has to
+	// be named separately, because it is decided at dial time too without being a
+	// CEL rule: [Policy.checkControlPlane] reads the run identity off the
+	// *request's* context, so a request carrying one could open a connection to
+	// the control plane that a later request carrying none then reuses — never
+	// entering controlDial, and so never meeting the denial that exists precisely
+	// to stop a workflow acting with the worker's authority.
+	//
+	// Without self-administration the control-plane answer is a flat refusal that
+	// does not read the request at all, so no connection to one can exist to be
+	// reused, and reuse stays safe.
+	transport.DisableKeepAlives = !p.connRules.empty() || p.cfg.selfAdministration
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
