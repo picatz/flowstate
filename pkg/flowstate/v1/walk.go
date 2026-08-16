@@ -333,6 +333,19 @@ type Walk struct {
 
 	// Value is called once for each value position, in document order.
 	Value func(site ValueSite)
+
+	// Truncated is called when a structure nests past [MaxStructureDepth] and
+	// [Walk.nested] stops descending into it, naming the top-level site whose
+	// contents it could not finish walking.
+	//
+	// Optional, and its absence is not the same question as Value being nil.
+	// A caller that only wants positions can leave this unset and get exactly
+	// what it asked for; a caller for whom "I stopped looking" and "there was
+	// nothing to find" are different answers — [CollectNodeRefs] is the one
+	// today — wires this to react rather than accept a walk that silently
+	// under-reports past its own bound. See [MaxStructureDepth]'s doc for why
+	// the bound exists and what reaching it means for the value underneath.
+	Truncated func(site ValueSite)
 }
 
 // WalkWorkflow visits every position in a workflow document.
@@ -543,11 +556,21 @@ func (w Walk) value(site ValueSite) {
 // inventing one would put a spelling in a diagnostic that appears nowhere in the
 // file.
 //
-// Bounded by [maxStructureDepth] for that constant's reason: a specification does
+// Bounded by [MaxStructureDepth] for that constant's reason: a specification does
 // not have to have come from a Flowfile, and this recursion's depth would
 // otherwise be a number the sender picks.
+//
+// Reaching the bound with more structure still beneath it calls
+// [Walk.Truncated], naming the position this traversal stopped inside of,
+// rather than returning as though there were nothing left — the same
+// fail-closed shape [CollectValueRefs] uses for the identical bound, applied
+// here so any caller of this shared traversal inherits it rather than having
+// to reimplement it.
 func (w Walk) nested(site ValueSite, depth int) {
-	if depth >= maxStructureDepth {
+	if depth >= MaxStructureDepth {
+		if site.Value.GetStructure() != nil && w.Truncated != nil {
+			w.Truncated(site)
+		}
 		return
 	}
 

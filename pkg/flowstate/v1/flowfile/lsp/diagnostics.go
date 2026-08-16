@@ -529,6 +529,12 @@ func rangeOfFlowfileDiagnostic(doc *document, d flowfile.Diagnostic) lsp.Range {
 		return reportedRange(doc, d)
 	}
 
+	// By id and document-wide, which is the most this can do: the validator runs
+	// over the compiled workflow, so a diagnostic against a nested step names it by
+	// bare id and carries no position to disambiguate two blocks that legally reuse
+	// one. Unlike hover and definition there is no asking scope to resolve within —
+	// the problem is *the step's*, not an expression's — so narrowing this wants the
+	// validator to carry a path, not a rule invented here.
 	step := doc.parsed.step(d.Step)
 	if step == nil {
 		return reportedRange(doc, d)
@@ -612,6 +618,14 @@ func idSuspect(doc *document, step *parsedStep) bool {
 			return true
 		}
 	}
+	// A reused id. Scope-blind, deliberately left that way: two steps may carry one
+	// id legally when neither can see the other — a body step of one `loop:` and a
+	// body step of the next — so this is the wider question, and narrowing it to
+	// [visibleFrom] in both directions is a change nothing observes. Every
+	// step-level diagnostic that could reach it (an unknown task, a bad kind key)
+	// carries a Field or a Kind and is positioned before this is consulted, so the
+	// narrower answer has no test that can tell it from this one; see #323, where
+	// the reference surfaces above were the half that could.
 	for _, other := range doc.parsed.steps {
 		if other != step && other.id == step.id {
 			return true

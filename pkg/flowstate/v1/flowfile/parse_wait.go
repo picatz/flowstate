@@ -278,13 +278,15 @@ func (c *compiler) waitForSignal(n ast.Node, path string, r ref) *v1.Wait {
 
 // waitOutputs compiles a `wait_for_signal:`'s `outputs:` mapping.
 //
-// Each value is an ordinary expression position — [compiler.inputValue], the same
-// helper a task input and a `vars:` binding go through — so a fence means what it
-// means everywhere else and a `${secret(...)}` is refused where it is refused
-// everywhere else. What is *different* here is only the scope these expressions
-// resolve in, and scope is not this function's business: it is
-// [validateWait]'s, which adds the wait's own bound names, and
-// [v1.ShapeSignalOutputs]'s, which binds them.
+// Each value is an ordinary expression position, compiled through
+// [compiler.waitOutputValue] rather than [compiler.inputValue] directly — a fence
+// means what it means everywhere else, but a bare `${secret(...)}` is refused
+// here, unlike a task input, because a shaped output is evaluated by the workflow
+// and its value is recorded on the run rather than reaching an activity that could
+// resolve it. See [notInWaitOutputsHelp]. What is otherwise ordinary about this
+// position is only the scope these expressions resolve in, and scope is not this
+// function's business: it is [validateWait]'s, which adds the wait's own bound
+// names, and [v1.ShapeSignalOutputs]'s, which binds them.
 //
 // An empty mapping is a diagnostic rather than a no-op, because `outputs:`
 // *replaces* the step's outputs — an empty one is a step that deliberately
@@ -307,7 +309,7 @@ func (c *compiler) waitOutputs(n ast.Node, path string, r ref) map[string]*v1.Va
 	compiled := make(map[string]*v1.Value, len(entries))
 	for _, e := range entries {
 		valuePath := fieldPath(path, e.name)
-		value := c.inputValue(e.value, valuePath,
+		value := c.waitOutputValue(e.value, valuePath,
 			ref{step: r.step, path: valuePath, label: "outputs." + e.name})
 		if value != nil {
 			compiled[e.name] = value

@@ -413,7 +413,7 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 // EnumValuesShapeError reports that a declared enum's `values:` list
 // violates one of the per-member or list-size rules the schema itself
 // declares on [InputDeclaration.values] in
-// proto/flowstate/v1/flowstate.proto: at most 64 entries, each 1-128
+// proto/flowstate/v1/workflow.proto: at most 64 entries, each 1-128
 // characters, all distinct.
 //
 // [CheckInputConstraintShape] returns one of these, rather than a bare
@@ -830,10 +830,24 @@ const maxListElements = 10_000
 // count, while still exhausting the walker's own call stack — depth and
 // breadth are independent attacker-controlled dimensions, so each gets its
 // own bound and its own message, rather than one being asked to stand in for
-// the other. Set to match [maxActivationDepth]'s reasoning and value: deep
-// enough for anything a person writes by hand, shallow enough that recursion
-// bounded by it cannot exhaust a goroutine's stack.
-const maxConstraintValueDepth = 32
+// the other.
+//
+// Reads [MaxStructureDepth] rather than keeping its own number. This walk
+// descends a compiled CEL literal (a
+// google.golang.org/genproto/googleapis/api/expr/v1alpha1.Value) rather than
+// a [Value_Structure] — a different Go type — but it is the identical
+// resource: how many levels of list-or-map nesting one recursive walk must
+// descend before it can answer a question about the whole value. Per the
+// one-constant rule that makes it the same bound rather than a coincidentally
+// equal one; before this was unified the two numbers agreed only because a
+// comment said to keep them in sync by hand, which is exactly the shape
+// CLAUDE.md's "both execution drivers must agree" section warns never
+// survives being written down twice. Deep enough for anything a person writes
+// by hand, shallow enough that recursion bounded by it cannot exhaust a
+// goroutine's stack; see [maxActivationDepth] for the same reasoning applied
+// to a third resource (CEL activation recursion) that happens to share the
+// number without sharing the type being walked.
+const maxConstraintValueDepth = MaxStructureDepth
 
 // checkConstraintValueBound refuses a value whose `must:` a caller could
 // make expensive to check: either because the total number of list elements
@@ -1156,8 +1170,17 @@ func checkEnumConstraint(name string, decl *InputDeclaration, lit *expr.Value) e
 
 	message := fmt.Sprintf("input %q is %s, which is not one of the values %s declares: %s",
 		name, strconv.Quote(got), name, quotedStrings(decl.GetValues()))
-	if suggestion, ok := nearest.Name(got, decl.GetValues()); ok {
-		message += fmt.Sprintf("; did you mean %q?", suggestion)
+	// Distance is at least the difference between the two rune counts. Avoid
+	// its O(len(got)*len(choice)) work when got is too long to be within the
+	// repository-wide suggestion limit of even the longest declared choice.
+	maxChoiceRunes := 0
+	for _, choice := range decl.GetValues() {
+		maxChoiceRunes = max(maxChoiceRunes, utf8.RuneCountInString(choice))
+	}
+	if utf8.RuneCountInString(got) <= maxChoiceRunes+nearest.MaxDistance {
+		if suggestion, ok := nearest.Name(got, decl.GetValues()); ok {
+			message += fmt.Sprintf("; did you mean %q?", suggestion)
+		}
 	}
 
 	return fmt.Errorf("%s", message)

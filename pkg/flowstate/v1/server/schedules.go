@@ -100,8 +100,12 @@ func scheduleNameFrom(id, namespace string) (string, bool) {
 //
 // The refusals are `Run`'s, deliberately and in the same order, because a schedule
 // is a run somebody arranged in advance and every reason to refuse one now is a
-// reason to refuse it at three in the morning — with nobody there to read it. The
-// only addition is the cadence itself, which `Run` has no opinion about.
+// reason to refuse it at three in the morning — with nobody there to read it. That
+// is why this shares [FlowstateServer.validateSpecification] with `Run` rather than
+// hand-rolling a second copy of it: a schedule that refused a specification `Run`
+// accepts, or accepted one `Run` refuses, would be exactly the "may create" versus
+// "may Run" drift `validateSubmission`'s own doc warns about, one RPC further out.
+// The only addition is the cadence itself, which `Run` has no opinion about.
 func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Request[v1.CreateScheduleRequest]) (*connect.Response[v1.CreateScheduleResponse], error) {
 	if err := v1.Validate(req.Msg); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -109,21 +113,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 
 	workflow := req.Msg.GetWorkflow()
 
-	// The same pinning `Run` does, on the same reasoning as everything else in
-	// this handler: a schedule is a run somebody arranged in advance, and the
-	// deployment that will execute it is the one being asked now.
-	if err := s.pinPlugins(workflow); err != nil {
+	// pinPlugins, credential targets, declared signal policies, spec size and
+	// structure depth — everything `Run` asks about a specification on its own,
+	// before it ever sees a submission's inputs. See that function's doc.
+	if err := s.validateSpecification(workflow); err != nil {
 		return nil, err
-	}
-
-	if s.credentialTargetsConfigured {
-		if err := v1.ValidateCredentialTargets(workflow, s.credentialTargets); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-	}
-
-	if err := v1.CheckSpecSize(workflow); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	// The cadence. A schedule with none is one Temporal creates happily and never
@@ -263,12 +257,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		Memo: scheduleMemo,
 
 		Action: &client.ScheduleWorkflowAction{
-			// A readable id rather than a uuid, because unlike a run this workload
-			// has a name in advance: every firing is `<schedule>`, and Temporal
-			// appends the scheduled time to keep them distinct. An operator reading
-			// `flow list` can then see which schedule a run came from without asking
-			// anything else.
-			ID:        schedulePrefix + name,
+			// Use the schedule object's tenant-scoped id as the readable base for
+			// every firing. Temporal appends the scheduled time to keep firings
+			// distinct; including the tenant keeps same-named schedules in a shared
+			// Temporal namespace distinct too.
+			ID:        scheduleIDFor(namespace, name),
 			Workflow:  engine.Run,
 			TaskQueue: taskQueue,
 

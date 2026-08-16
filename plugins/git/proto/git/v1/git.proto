@@ -4,7 +4,7 @@ package git.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/git/gen/git/v1;gitv1";
 
-import "flowstate/v1/flowstate.proto";
+import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: the rich, unapologetically git-specific
 // half of the factoring described in issue #149 - "git.*" here, the small

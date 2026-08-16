@@ -52,6 +52,17 @@ type Case struct {
 	// asserted through ExpectedOutputs like any other.
 	ExpectFailure bool
 
+	// ExpectedErrorContains overrides the substring an ExpectFailure case's
+	// error is checked against, for a runner that otherwise asserts one fixed
+	// sentence for every case in its set — [LoopCases]' runners check "ran its
+	// full budget" by default, because until this field existed every failing
+	// loop case failed the same way: exhausting its iteration ceiling. A case
+	// about a different failure — a loop value the engine cannot evaluate at
+	// all, say — sets this instead of forcing every other case in the set to
+	// carry an assertion it does not need. Empty means "use the set's default
+	// sentence".
+	ExpectedErrorContains string
+
 	// ExpectedOutputsPredicate checks a run's outputs when the exact value is
 	// not what is under test — a run-time CEL error's precise wording, say,
 	// which is a property of the expression evaluator rather than of the two

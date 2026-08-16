@@ -53,9 +53,9 @@ func TestProtocolVersionNamesItsRoutes(t *testing.T) {
 		}
 	}
 
-	// Version 2 is what that package is worth. Asserted so the constant cannot be
-	// renumbered back to something already spent.
-	if got, want := protocol.HostVersions(), []int{protocol.Version2}; len(got) != len(want) || got[0] != want[0] {
+	// Version 3 is what that package is worth today. Asserted so the constant
+	// cannot be renumbered back to something already spent.
+	if got, want := protocol.HostVersions(), []int{protocol.Version3}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("HostVersions() = %v, want %v", got, want)
 	}
 }
@@ -63,28 +63,39 @@ func TestProtocolVersionNamesItsRoutes(t *testing.T) {
 // TestRetiredProtocolVersionIsNotOffered is the negative direction.
 //
 // Retiring a version means the host stops offering it, and that is the whole of the
-// fix: a plugin built against version 1 then finds nothing in common and refuses at
-// startup, naming both sides, instead of negotiating successfully into routes that
-// are not there. A test asserting only that version 2 is offered would also pass on
-// a host that offered both.
+// fix: a plugin built against a retired version then finds nothing in common and
+// refuses at startup, naming both sides, instead of negotiating successfully into
+// routes that are not there — or, for version 2, into a manifest neither side can
+// reconstruct. A test asserting only that the current version is offered would also
+// pass on a host that offered the retired ones alongside it.
 func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 	t.Parallel()
 
+	retired := map[int]string{
+		protocol.Version1: "its routes were under `flowstate.v1.` and nothing serves them now",
+		protocol.Version2: "its descriptor exchange assumes flowstate/v1/flowstate.proto, which the twelve-file split replaced",
+	}
+
 	for _, v := range protocol.HostVersions() {
-		if v == protocol.Version1 {
+		if why, dead := retired[v]; dead {
 			t.Errorf("the host offers protocol version %d, which is retired\n"+
-				"  its routes were under `flowstate.v1.` and nothing serves them now\n"+
+				"  %s\n"+
 				"  offering it lets a plugin negotiate a version this build cannot answer",
-				protocol.Version1)
+				v, why)
 		}
 	}
 
-	// And the retired number stays reserved rather than being reused, for the same
+	// And a retired number stays reserved rather than being reused, for the same
 	// reason `Task.description`'s field number is: a number that meant something
 	// else must never come back meaning something new.
-	if protocol.Version1 == protocol.Version2 {
-		t.Errorf("Version1 and Version2 are both %d; a retired version number must not be reused",
-			protocol.Version1)
+	for _, pair := range [][2]int{
+		{protocol.Version1, protocol.Version2},
+		{protocol.Version1, protocol.Version3},
+		{protocol.Version2, protocol.Version3},
+	} {
+		if pair[0] == pair[1] {
+			t.Errorf("two protocol versions are both %d; a retired version number must not be reused", pair[0])
+		}
 	}
 }
 
@@ -97,12 +108,12 @@ func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	t.Parallel()
 
-	// What a plugin built before the move speaks.
-	old := []int{protocol.Version1}
-
-	if _, ok := protocol.Negotiate(old, protocol.HostVersions()); ok {
-		t.Fatal("a plugin speaking only the retired version negotiated successfully; " +
-			"it would then be sent requests to routes it does not serve")
+	// What a plugin built before each retirement speaks.
+	for _, old := range []int{protocol.Version1, protocol.Version2} {
+		if _, ok := protocol.Negotiate([]int{old}, protocol.HostVersions()); ok {
+			t.Fatalf("a plugin speaking only retired version %d negotiated successfully; "+
+				"it would then be sent requests it cannot answer", old)
+		}
 	}
 
 	// A current plugin still negotiates, or the check above would be satisfied by a
@@ -111,15 +122,69 @@ func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	if !ok {
 		t.Fatal("a current plugin failed to negotiate with the host")
 	}
-	if got != protocol.Version2 {
-		t.Errorf("negotiated version = %d, want %d", got, protocol.Version2)
+	if got != protocol.Version3 {
+		t.Errorf("negotiated version = %d, want %d", got, protocol.Version3)
 	}
 
 	// The refusal an operator reads names both sides. Checked because the value of
 	// failing here rather than on `Describe` is entirely in what it says.
 	rendered := protocol.FormatVersions(protocol.HostVersions())
-	if !strings.Contains(rendered, strconv.Itoa(protocol.Version2)) {
+	if !strings.Contains(rendered, strconv.Itoa(protocol.Version3)) {
 		t.Errorf("FormatVersions(%v) = %q, which does not name the version the host speaks",
 			protocol.HostVersions(), rendered)
+	}
+}
+
+// TestTheSchemaSplitIsRefusedAtTheHandshakeInBothDirections is the reason
+// version 3 exists, and it is a *bidirectional* claim, which is what the first
+// analysis of the split got wrong.
+//
+// Splitting flowstate/v1/flowstate.proto into twelve files made a pre-split and
+// a post-split build mutually unusable, because each omits from its shipped
+// descriptors the files it believes the other already has, and after the split
+// they disagree about what those are. Measured, before this bump: the same
+// descriptor bytes are accepted by one engine and refused by the other, in both
+// directions, with an error naming an import path.
+//
+// Nothing about that is expressible as a missing route, which is why leaving the
+// number at 2 was tempting. It is also why leaving it would have been the worst
+// available failure: negotiation agrees, the plugin loads, and the first task
+// manifest fails to reconstruct — an operator told everything is fine, then
+// handed a descriptor error deep in a launch.
+//
+// So the claim under test is that neither combination gets that far. Both are
+// checked because the reverse direction is the one no diagnostic of ours can
+// reach: it fails inside a *host that already shipped*, and the only thing that
+// makes it legible there is a version number that host already knows how to
+// refuse.
+func TestTheSchemaSplitIsRefusedAtTheHandshakeInBothDirections(t *testing.T) {
+	t.Parallel()
+
+	preSplit := []int{protocol.Version2}
+	postSplit := protocol.HostVersions()
+
+	// Old plugin, new host: the host offers only 3, and a version 2 plugin finds
+	// nothing in common and exits before it ever prints a handshake line.
+	if _, ok := protocol.Negotiate(postSplit, preSplit); ok {
+		t.Error("a pre-split plugin negotiated with a post-split host\n" +
+			"  it would load, then fail reconstructing its first task manifest\n" +
+			"  with an error about flowstate/v1/flowstate.proto rather than about versions")
+	}
+
+	// New plugin, old host: the mirror, and the one that matters most. A host
+	// built before this change offers only 2; a plugin built after it speaks only
+	// 3, so the plugin refuses at startup naming both numbers. That refusal is
+	// reachable precisely because the old host's code already knows how to fail
+	// this way — no change we ship today can run inside it.
+	if _, ok := protocol.Negotiate(preSplit, postSplit); ok {
+		t.Error("a post-split plugin negotiated with a pre-split host\n" +
+			"  it would load, then fail reconstructing its first task manifest\n" +
+			"  with an error about flowstate/v1/value.proto rather than about versions")
+	}
+
+	// And matched builds still work, or the two checks above are satisfied by a
+	// protocol that refuses everything.
+	if _, ok := protocol.Negotiate(postSplit, postSplit); !ok {
+		t.Fatal("two post-split builds failed to negotiate with each other")
 	}
 }

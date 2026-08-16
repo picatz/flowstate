@@ -116,10 +116,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		// is not a [flowfile.Diagnostics] — a document that is not YAML at all.
 		// Both are the file's problem rather than the invocation's, so both are
 		// reported the same way.
-		var diagnostics flowfile.Diagnostics
-		if !errors.As(err, &diagnostics) {
-			diagnostics = flowfile.Diagnostics{{Message: err.Error()}}
-		}
+		diagnostics := errDiagnosticsOf(err)
 		writeDiagnostics(surface.Err, surface.ErrTheme.Muted.Render(path), diagnostics)
 		return errCompileRefused
 	}

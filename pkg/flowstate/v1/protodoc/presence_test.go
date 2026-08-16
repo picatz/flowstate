@@ -145,7 +145,7 @@ func TestEverySymbolHoverReadsIsDocumented(t *testing.T) {
 		checked++
 		comment, documented := CommentOf(d)
 		if !documented {
-			t.Errorf("field %s has no leading comment; hover shows the schema's own prose for it now, so write one in proto/flowstate/v1/flowstate.proto", d.FullName())
+			t.Errorf("field %s has no leading comment; hover shows the schema's own prose for it now, so write one in the schema under proto/flowstate/v1/", d.FullName())
 
 			return
 		}
@@ -233,7 +233,7 @@ func TestSchemaProseIsPresent(t *testing.T) {
 			return
 		}
 		if !documented {
-			t.Errorf("%s %s has no leading comment; write one in proto/flowstate/v1/flowstate.proto", kind, name)
+			t.Errorf("%s %s has no leading comment; write one in the schema under proto/flowstate/v1/", kind, name)
 		}
 	}
 

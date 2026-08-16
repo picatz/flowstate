@@ -1,8 +1,10 @@
 package flowstatev1
 
 import (
+	"fmt"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // A [Value] used to be one of three flat things — an expression, a literal, or a
@@ -27,14 +29,232 @@ import (
 //   - Only a task input the task *applies itself*, entry by entry, accepts one.
 //     See [TaskDef.NestedSecretInputs].
 
-// maxStructureDepth bounds how deeply a structure may nest.
+// MaxStructureDepth bounds how deeply a [Value_Structure] may nest.
+//
+// Exported, and the only definition of this number in the module, per the
+// one-constant rule: every walk below that descends into a structure reads
+// this one, `pkg/flowstate/v1/flowfile` reads it to refuse a Flowfile whose
+// compiled structure would exceed it before it ever reaches a walk that
+// enforces it a second time, and `CheckStructureDepth` reads it to refuse a
+// hand-built specification arriving over the RPC path without ever passing
+// through the compiler at all. Before this was unified, the compiler's own
+// document-nesting bound (`flowfile.maxDepth`, 64) and this bound disagreed —
+// two constants for what reads as one concept, and the gap between them was
+// exactly where #329's depth-33 fail-open evasion lived: a Flowfile the
+// compiler accepted could still compile a structure deeper than the walks
+// below were prepared to fully inspect. Document nesting and structure
+// nesting share one YAML depth budget during compilation (a `Value_Structure`
+// literal is built by descending the same document tree flowfile.maxDepth
+// bounds), but 64 is loose enough to admit a structure past 32 while staying
+// well inside the document bound — see structure_depth_test.go for the
+// reproduction. 32 is the bound that wins: fail closed at the number every
+// walk below can actually afford to inspect, everywhere a structure can
+// arrive, rather than loosening every walk to match a looser parser limit
+// that exists to bound a different resource (total YAML document depth, not
+// structure nesting specifically).
 //
 // The walks below are recursive and a specification does not have to have come
 // from a Flowfile — the compiler's own nesting bound says nothing about a message
 // submitted over the wire, which is a value an outside party chooses. Depth is the
 // resource that walk spends, so depth is what is bounded here; breadth costs one
 // pass per entry and is bounded by the size of the specification itself.
-const maxStructureDepth = 32
+const MaxStructureDepth = 32
+
+// maxStructureWalkNodes bounds how many steps [CheckStructureDepth] will visit
+// in total while following `call:` into inlined callees.
+//
+// [WalkWorkflow] deliberately does not follow `Workflow.steps[].call.workflow`
+// — see [NodeRecursionEdges] — because most of what runs over one traversal
+// (diagnostics, reference collection, the negation-drift lint) must not count a
+// library workflow's expressions against its caller. Structure depth is the
+// exception: a `Value_Structure` the engine cannot fully inspect is exactly as
+// dangerous nested inside an inlined callee as it is at the top level, because
+// [Call.Workflow] carries the callee's specification whole — see that field's
+// doc — so its steps are steps of *this* submission by the time execution
+// reaches them.
+//
+// So [CheckStructureDepth] runs its own bounded descent into `call.workflow`,
+// separate from [WalkWorkflow]'s contract, which stays exactly what every
+// other caller of that traversal depends on. Two resources are bounded, for
+// the reason CLAUDE.md gives generally: a diamond of calls — several call
+// steps whose callees themselves call a callee in common — multiplies breadth
+// at every level exactly as a billion-laughs YAML document does, so depth
+// alone does not stop it.
+//
+//   - Call-nesting depth is bounded by [MaxCallDepth], the same number the
+//     engine itself refuses a call chain past at execution — reused rather
+//     than invented, per the one-constant rule, since a chain nested deeper
+//     than that is refused at runtime regardless of what this check finds.
+//   - Total steps visited, across every callee entered, is bounded here by
+//     this constant, mirroring `flowfile.maxNodes` (100,000): call-nesting
+//     depth bounds one chain, and a document can hold many call chains side
+//     by side, each nested to the limit, so the walk's total cost is the
+//     resource that actually needs its own number.
+//
+// In production this is a backstop rather than the load-bearing bound: every
+// caller of [CheckStructureDepth] runs [CheckSpecSize] first, and a call's
+// callee is carried whole in the specification's own bytes, so a diamond wide
+// enough to threaten this budget has already been refused for its size before
+// this walk ever starts. The budget exists for the caller that does not enjoy
+// that ordering — a direct call to [CheckStructureDepth], from a test or from
+// code written later — because a bound only reachable through a particular
+// caller's ordering is not a bound this function actually has.
+const maxStructureWalkNodes = 100_000
+
+// CheckStructureDepth refuses a workflow holding a [Value_Structure] nested
+// deeper than [MaxStructureDepth], at any value position reachable from wf —
+// including one nested inside a `call:`'s inlined callee, any number of calls
+// deep up to [MaxCallDepth].
+//
+// This is the RPC-path half of the bound. A Flowfile can never compile one
+// this deep — see [MaxStructureDepth]'s doc — but a specification submitted
+// directly over the RPC boundary arrives without the compiler in front of it,
+// so the schema-level walks that decide authority, references and Continue-
+// As-New retention are the only defense a hand-built spec meets. Called from
+// submission validation, alongside [Validate] and [CheckSpecSize]: those ask
+// whether the message is well-formed and whether it fits, and this asks
+// whether every walk this package runs over it later can actually see all of
+// it. A structure too deep to inspect is refused here rather than silently
+// under-inspected later.
+//
+// [WalkWorkflow] does not descend into a call's callee — every other walk
+// that shares it must not — so this function does that part itself, bounded
+// by [maxStructureWalkNodes]; see that constant's doc for both bounds and why
+// a cyclic or diamond-shaped call graph cannot make the walk run long or loop
+// forever.
+func CheckStructureDepth(wf *Workflow) error {
+	var violation *ValueSite
+	var violationChain []string
+	var chain []string
+	nodesLeft := maxStructureWalkNodes
+	exhausted := false
+
+	var walk func(w *Workflow, callDepth int)
+	walk = func(w *Workflow, callDepth int) {
+		if violation != nil || exhausted {
+			return
+		}
+		WalkWorkflow(w, Walk{
+			Value: func(site ValueSite) {
+				if violation != nil {
+					return
+				}
+				if structureDepth(site.Value, 0) > MaxStructureDepth {
+					s := site
+					violation = &s
+					violationChain = slices.Clone(chain)
+				}
+			},
+			Node: func(node *Node) {
+				if violation != nil || exhausted {
+					return
+				}
+				if nodesLeft <= 0 {
+					exhausted = true
+					return
+				}
+				nodesLeft--
+
+				call, ok := node.GetKind().(*Node_Call)
+				if !ok {
+					return
+				}
+				callee := call.Call.GetWorkflow()
+				if callee == nil {
+					return
+				}
+
+				nextDepth := callDepth + 1
+				if err := CheckCallDepth(nextDepth); err != nil {
+					// A call chain this deep is refused at execution by
+					// CheckCallDepth itself, regardless of what this walk
+					// would find beneath it — descending further would only
+					// be inspecting a callee nothing will ever run.
+					return
+				}
+
+				chain = append(chain, node.GetId())
+				walk(callee, nextDepth)
+				chain = chain[:len(chain)-1]
+			},
+		})
+	}
+	walk(wf, 0)
+
+	if exhausted && violation == nil {
+		return fmt.Errorf(
+			"the workflow's call graph holds more than %d steps once every `call:`'s callee is walked, "+
+				"which is more than this server can inspect for a nested structure while deciding whether "+
+				"a step reads a secret; flatten the call graph or reduce how many workflows it calls",
+			maxStructureWalkNodes)
+	}
+	if violation == nil {
+		return nil
+	}
+
+	field := violation.Field()
+	where := violation.Step
+	if where == "" {
+		where = "the workflow"
+	} else if field != "" {
+		where = fmt.Sprintf("step %q", where)
+	}
+
+	calledFrom := ""
+	if len(violationChain) > 0 {
+		calledFrom = fmt.Sprintf(" (reached by calling %s)", callChainText(violationChain))
+	}
+
+	if field != "" {
+		return fmt.Errorf(
+			"%s's %s nests a structure more than %d levels deep%s, which is deeper than this server can "+
+				"walk cheaply while deciding whether a step reads a secret; flatten it, or have a step "+
+				"read it from a reference instead of submitting it nested this deep",
+			where, field, MaxStructureDepth, calledFrom)
+	}
+	return fmt.Errorf(
+		"%s nests a structure more than %d levels deep%s, which is deeper than this server can walk "+
+			"cheaply while deciding whether a step reads a secret; flatten it, or have a step read it "+
+			"from a reference instead of submitting it nested this deep",
+		where, MaxStructureDepth, calledFrom)
+}
+
+// callChainText renders the steps a violation was reached through as
+// `step "a" > step "b"`, the same arrow [Call]'s doc uses to describe a
+// position that stays a path rather than a flattened name.
+func callChainText(chain []string) string {
+	parts := make([]string, len(chain))
+	for i, id := range chain {
+		parts[i] = fmt.Sprintf("step %q", id)
+	}
+	return strings.Join(parts, " > ")
+}
+
+// structureDepth measures how many levels of [Value_Structure] nest inside v,
+// stopping early once it has already proven the answer is over the bound: the
+// caller only needs to know "too deep" versus a precise number, and stopping
+// early keeps this cheap against a value built to make it expensive.
+func structureDepth(v *Value, depth int) int {
+	if depth > MaxStructureDepth {
+		return depth
+	}
+
+	structure := v.GetStructure()
+	if structure == nil {
+		return depth
+	}
+
+	max := depth
+	for _, entry := range StructureValues(structure) {
+		if d := structureDepth(entry, depth+1); d > max {
+			max = d
+			if max > MaxStructureDepth {
+				return max
+			}
+		}
+	}
+	return max
+}
 
 // ValueHoldsSecretRef reports whether v is a secret reference or contains one at
 // any depth.
@@ -92,7 +312,7 @@ func SecretRefsIn(task *Task) []string {
 
 // walkSecretRefs visits every reference in v, stopping early when visit says so.
 //
-// Past maxStructureDepth the walk cannot see what is below, and it visits nil to
+// Past MaxStructureDepth the walk cannot see what is below, and it visits nil to
 // say so rather than walking on or staying silent: a visitor deciding an
 // authority or refusal question must treat "too deep to scan" as "may hold one",
 // because the compiler admits deeper nesting than this walk inspects and a
@@ -102,7 +322,7 @@ func walkSecretRefs(v *Value, depth int, visit func(*SecretRef) bool) bool {
 	if v == nil {
 		return true
 	}
-	if depth > maxStructureDepth {
+	if depth > MaxStructureDepth {
 		return visit(nil)
 	}
 

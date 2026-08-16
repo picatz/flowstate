@@ -144,6 +144,35 @@ const (
 		"workflow and its value is written to durable history, and there is no activity here to " +
 		"resolve it in. Write ${secret('...')} directly on the task input that consumes the " +
 		"secret instead"
+
+	// notInWaitOutputsHelp is the refusal for a `wait_for_signal:`'s shaped
+	// `outputs:`, read the same way [notInVarHelp] is: a shaped output is
+	// evaluated by the workflow, at the moment [v1.ShapeSignalOutputs] resolves
+	// the wait, and its value is recorded on the run and carried across every
+	// Continue-As-New — durable, broadly readable history, with no activity
+	// anywhere on this path to resolve a reference in.
+	//
+	// The remedy is more specific than "write it on a task input instead",
+	// because that is rarely what the author meant to reach for here. A shaping
+	// expression exists to read what the signal actually carried — `payload`,
+	// `sender`, `timed_out` — so a bare `${secret(...)}` is far more likely to
+	// be a mistaken reach for one of those than an author who wants the literal
+	// secret value recorded as an output. The message points there first.
+	notInWaitOutputsHelp = "a secret reference cannot be part of a wait's shaped `outputs:`; " +
+		"an output here is evaluated by the workflow and recorded on the run, which is durable, " +
+		"broadly readable history, and there is no activity on this path to resolve a reference in. " +
+		"If you meant to read something the signal carried, use payload or sender instead — " +
+		"${payload.token}, say; a secret belongs on a task input that a later step consumes it from"
+
+	// notInLoopStateHelp is [notInVarHelp]'s reasoning applied to a loop's
+	// carried state: `init:` and `update:` are evaluated by the workflow
+	// ([v1.EvalLoopValue]), and the result is bound bare for the body to read
+	// and carried in `Frame.loop_state` across every Continue-As-New — durable
+	// history with no activity anywhere on the path to resolve a reference in.
+	notInLoopStateHelp = "a secret reference cannot be carried as loop state (`init:` or `update:`); " +
+		"both are evaluated by the workflow and the result is written to durable history, and there " +
+		"is no activity here to resolve it in. Write ${secret('...')} directly on the task input " +
+		"that consumes the secret instead"
 )
 
 // secretMarkerSpan returns the span of the first ${secret(...)} reference inside n,
@@ -233,7 +262,7 @@ func (c *compiler) structure(n ast.Node, path string, r ref) *v1.Value {
 		return nil
 	}
 
-	return c.structureValue(n, path, r)
+	return c.structureValue(n, path, r, 0)
 }
 
 // acceptedElsewhere names the inputs of a task that do accept a nested reference,
@@ -267,7 +296,19 @@ func (c *compiler) markerNode(n ast.Node) ast.Node {
 }
 
 // structureValue compiles one node of a structure that holds a reference.
-func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
+//
+// sdepth counts levels of [v1.Value_Structure] specifically — list-or-map
+// nesting within this one structure literal — which is a narrower count than
+// [compiler.enter]'s document depth: the surrounding step, task and input
+// wrapper each cost a level of document depth before this function is ever
+// called, so document depth alone admits a structure nested well past
+// [v1.MaxStructureDepth] while staying comfortably under the document's own
+// [maxDepth]. See [v1.MaxStructureDepth]'s doc for the reproduction and why
+// this compiler, rather than only the schema-side walks, is where a structure
+// this deep is refused: every walk downstream of here reads that one bound,
+// and admitting a value none of them can fully inspect is the fail-open shape
+// #329 found.
+func (c *compiler) structureValue(n ast.Node, path string, r ref, sdepth int) *v1.Value {
 	n = c.resolve(n, path, r)
 	if n == nil || !c.enter(n, r) {
 		return nil
@@ -275,11 +316,20 @@ func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
 	defer c.exit()
 	c.pos.record(path, spanOfNode(n))
 
+	if sdepth > v1.MaxStructureDepth {
+		c.report(spanOfNode(n), r,
+			"nests a structure more than %d levels deep, which is deeper than this server can walk "+
+				"cheaply while deciding whether a step reads a secret; flatten it, or have a step read it "+
+				"from a reference instead of submitting it nested this deep",
+			v1.MaxStructureDepth)
+		return nil
+	}
+
 	switch node := n.(type) {
 	case *ast.SequenceNode:
 		values := make([]*v1.Value, 0, len(node.Values))
 		for i, element := range node.Values {
-			value := c.structureValue(element, indexPath(path, i), r)
+			value := c.structureValue(element, indexPath(path, i), r, sdepth+1)
 			if value == nil {
 				return nil
 			}
@@ -294,7 +344,7 @@ func (c *compiler) structureValue(n ast.Node, path string, r ref) *v1.Value {
 		}
 		mapped := make(map[string]*v1.Value, len(entries))
 		for _, e := range entries {
-			value := c.structureValue(e.value, fieldPath(path, e.name), r)
+			value := c.structureValue(e.value, fieldPath(path, e.name), r, sdepth+1)
 			if value == nil {
 				return nil
 			}

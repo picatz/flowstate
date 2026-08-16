@@ -731,6 +731,12 @@ func (p *parsedFile) expressionEntries() []*entry {
 
 // step returns the step with the given id, preferring the first declaration so
 // that a duplicate id resolves the same way the engine's first write does.
+//
+// Document-wide and scope-blind, which makes it the wrong function for resolving
+// a *reference*: an id is unique within a visibility domain and not within a
+// file, so two sibling blocks may each declare one legally. Anything answering
+// for an expression asks [parsedFile.stepVisibleFrom] instead, which is the
+// lookup with the asking scope in hand.
 func (p *parsedFile) step(id string) *parsedStep {
 	if p == nil || id == "" {
 		return nil
@@ -950,6 +956,52 @@ func visibleFromEntry(target, from *parsedStep, ls loopScope) bool {
 		return true
 	}
 	return visibleFrom(target, from)
+}
+
+// stepVisibleFrom resolves `steps.<id>` written in an expression of from that is
+// evaluated in scope ls: the step that reference names, or nil when nothing by
+// that id is in scope there.
+//
+// This is the whole of #323. A step id is unique within a *visibility domain*,
+// not within a file — two sibling `loop:` blocks may each declare a body step
+// called `page`, legally, because body outputs do not escape. A lookup that took
+// the first id match in the document therefore answered the *first* loop's step
+// for a reference written in the second's `until:`, and [visibleFromEntry] then
+// correctly rejected that stale target, so hover and definition said nothing
+// about a reference the validator accepts and the engine resolves. Silence reads
+// as "there is nothing here", which is the worse half of the defect: an author
+// has no reason to doubt it.
+//
+// The candidate set is the same one completion offers — every step [visibleFromEntry]
+// admits — because there is one scope model here and it is that predicate. What
+// this adds is only which candidate to take when more than one carries the id,
+// and the answer is the engine's: an iteration scope starts as a copy of the
+// outputs visible before the block and the body's steps are written into it by
+// id, so the innermost binding is the one a reference reads. `scope` is a frame
+// per enclosing block, and every candidate visible from one position sits in a
+// prefix of that position's frames, so more frames is unambiguously nearer.
+//
+// For a file `flow validate` accepts there is at most one candidate to choose
+// between at all: the validator refuses a nested id that shadows one already in
+// scope (see validateNested's `already used by a step this one is nested
+// inside`), so the depth rule is what keeps a *broken* file's answer stable and
+// engine-shaped rather than what carries the common case —
+// TestOneReferenceHasOneVisibleTarget asserts the uniqueness it leans on.
+func (p *parsedFile) stepVisibleFrom(id string, from *parsedStep, ls loopScope) *parsedStep {
+	if p == nil || id == "" || from == nil {
+		return nil
+	}
+
+	var best *parsedStep
+	for _, s := range p.steps {
+		if s.id != id || !visibleFromEntry(s, from, ls) {
+			continue
+		}
+		if best == nil || len(s.scope) > len(best.scope) {
+			best = s
+		}
+	}
+	return best
 }
 
 // containsFrame reports whether scope includes the given frame.

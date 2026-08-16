@@ -205,7 +205,13 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 			env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
+			// The durable driver's route for the case's identity: the server
+			// established it and it rides on the run's own state, which
+			// workflow.go copies into the scope every task is dispatched in.
+			// A different route from the local driver's rehearsal context
+			// value, deliberately — what the pair of callers compares is the
+			// answer, not the plumbing.
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow, Identity: tc.Identity})
 			require.True(t, env.IsWorkflowCompleted())
 
 			if tc.DeniedTask != "" {
@@ -1626,9 +1632,12 @@ func TestRunWorkflowLoop(t *testing.T) {
 
 			err := env.GetWorkflowError()
 			if test.ExpectFailure {
-				require.Error(t, err, "the loop was expected to fail at its ceiling")
-				require.Contains(t, err.Error(), "ran its full budget",
-					"a loop that exhausts its budget must say so distinctly")
+				require.Error(t, err, "the loop was expected to fail")
+				want := test.ExpectedErrorContains
+				if want == "" {
+					want = "ran its full budget"
+				}
+				require.Contains(t, err.Error(), want)
 				return
 			}
 			require.NoError(t, err)

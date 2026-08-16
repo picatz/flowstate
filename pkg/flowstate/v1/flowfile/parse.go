@@ -958,7 +958,6 @@ func (c *compiler) declaredInput(e entry, parent string) *v1.InputDeclaration {
 			declaration.Must = proto.String(v)
 		}
 	}
-
 	return declaration
 }
 
@@ -997,9 +996,17 @@ func (c *compiler) enumValues(n ast.Node, path string, r ref) []string {
 	values := make([]string, 0, len(sequence.Values))
 	for i, value := range sequence.Values {
 		elementPath := indexPath(path, i)
+		// Resolving an alias can make this same sequence appear under many input
+		// declarations. Charge every expanded element, rather than only the YAML
+		// node that contains the alias, so a small document cannot make this loop
+		// and its position table grow without reaching the document budget.
+		if !c.enter(value, ref{path: elementPath, label: r.label}) {
+			return values
+		}
 		if text, ok := c.text(value, elementPath, ref{path: elementPath, label: r.label}); ok {
 			values = append(values, text)
 		}
+		c.exit()
 	}
 	return values
 }
@@ -1849,13 +1856,13 @@ func (c *compiler) loop(n ast.Node, path string, r ref) *v1.Loop {
 
 	if f, found := fields.get("init"); found {
 		initPath := fieldPath(path, "init")
-		loop.Initial = c.inputValue(f.value, initPath,
+		loop.Initial = c.loopStateValue(f.value, initPath,
 			ref{step: r.step, path: initPath, label: "loop init"})
 	}
 
 	if f, found := fields.get("update"); found {
 		updatePath := fieldPath(path, "update")
-		loop.Update = c.inputValue(f.value, updatePath,
+		loop.Update = c.loopStateValue(f.value, updatePath,
 			ref{step: r.step, path: updatePath, label: "loop update"})
 	}
 

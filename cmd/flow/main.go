@@ -666,19 +666,25 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Acquisition is startup: obtain (or reuse from cache) a certificate for
-	// every configured host now, before this process claims to be serving
-	// anything, rather than lazily on the first real TLS-ALPN-01 handshake —
-	// see [primeACMECertificates]'s doc for why that matters.
+	// picatz/flowstate#629: when ACME also terminates this listener,
+	// resolveMTLS just mutated the very tls.Config autocert's GetCertificate
+	// answers every handshake from, including the ACME CA's own
+	// TLS-ALPN-01 validation connection — which holds no certificate from
+	// the deployment's private client CA pool. Left alone,
+	// --tls-client-auth require would refuse that connection at the TLS
+	// layer before autocert ever decides anything, and renewal would fail
+	// quietly, sixty days out. Exempting it is safe only because it keys on
+	// the ALPN offer autocert itself uses to recognize the same connection
+	// (see acme.go's doc on this), so it is wired here, after tlsCfg's
+	// ClientAuth is whatever --tls-client-auth actually resolved to, and
+	// only for a listener this file's own ACME settings built.
 	if acmeCfg != nil {
-		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
-		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("obtaining ACME certificates before serving: %w", err)
-		}
-		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
+		exemptACMETLSALPN01ChallengeFromClientAuth(tlsCfg)
 	}
+
+	// Acquisition is startup, but it cannot happen *here*: see the ordering
+	// note where priming actually runs, below the point this listener starts
+	// serving. #628.
 
 	// Fetch every trusted issuer's keys now, so an issuer that is misconfigured
 	// or unreachable is reported at startup instead of as a puzzling
@@ -944,6 +950,35 @@ func runServer(cmd *cobra.Command, args []string) error {
 			}
 			serveErr <- nil
 		}()
+	}
+
+	// Acquisition is startup — and it runs here, with the listener above
+	// already serving, because TLS-ALPN-01 is answered on that very socket.
+	// The CA completes the challenge by connecting back to it, so priming
+	// before the socket existed made first-time issuance impossible and left
+	// ACME working only from a warm cache (#628; [primeACMECertificates] has
+	// the mechanism).
+	//
+	// Failing here still fails startup: the deferred shutdown below runs, and
+	// the error is returned rather than logged, which is the property #581
+	// asked for. What changed is only that the challenge can now be answered
+	// while it is asked.
+	if acmeCfg != nil {
+		primeCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Minute)
+		err := primeACMECertificates(primeCtx, acmeCfg.manager, acmeCfg.hosts)
+		cancel()
+		if err != nil {
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 1*time.Minute)
+			_ = httpServer.Shutdown(shutdownCtx)
+			cancelShutdown()
+			if internalServer != nil {
+				internalShutdownCtx, cancelInternal := context.WithTimeout(context.Background(), 1*time.Minute)
+				_ = internalServer.Shutdown(internalShutdownCtx)
+				cancelInternal()
+			}
+			return fmt.Errorf("obtaining ACME certificates: %w", err)
+		}
+		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
 	}
 
 	// The renewal watchdog, only running when ACME is configured. A nil
@@ -1537,12 +1572,17 @@ flow validate examples/hello-world/workflow.yaml`,
 			"in the words a server refuses a submission in. Without --plugin-dir there are no " +
 			"plugins, and a step naming one is an unknown task, which is what a worker without " +
 			"them would also say.\n\n" +
-			"One limit worth knowing before writing a rule about who is running. --as-subject " +
-			"and its siblings name the identity this rehearsal's secret rules and plugin tasks " +
-			"see. They do not make the run attested: a local run has no server in front of it " +
-			"to attest anything, so `run.identity` and the task-shape and egress rules keep " +
-			"reading it as having no caller. A rule keyed on identity.namespace therefore " +
-			"matches nothing here, and can refuse locally what production allows.\n\n" +
+			"--as-subject and its siblings name the identity this rehearsal runs as, and every " +
+			"surface that reads one reads that: the secret access rules, a credential the run " +
+			"assumes, plugin tasks, `run.identity`, and the --task-policy and --egress-policy " +
+			"rules a worker would enforce. So a rule keyed on identity.namespace answers here " +
+			"the way it answers in production, which is what rehearsing under a policy is for.\n\n" +
+			"What that does not do is make the run attested. Nothing verified these flags - they " +
+			"are what you say you are - so `run.local` reads true, and a credential this run " +
+			"assumes is minted under a subject carrying a `_local` component no server-attested " +
+			"run can ever produce. A cloud trust policy written for your production subject will " +
+			"not match a rehearsal's, deliberately: that refusal is the one divergence between " +
+			"the two drivers that is a feature.\n\n" +
 			"A gate is the one place that limit is lifted, because a gate is the thing worth " +
 			"rehearsing. --signal-as-subject and its siblings name the approver a --signal " +
 			"delivery stands in for, and the workflow's own `signals:` policy is then checked " +
@@ -2005,8 +2045,11 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 		Short: "Serve Flowstate to an AI agent over the Model Context Protocol",
 		Long: "Serve every workflow-service RPC as an MCP tool over stdin and stdout, " +
 			"with input schemas derived from the same protobuf schema the API speaks. " +
-			"Validation, the task catalog and local execution answer in this process; " +
-			"the run-lifecycle tools call the configured server.\n\n" +
+			"Validation, compilation and local execution always answer in this process; " +
+			"the run-lifecycle tools call the configured server. The task catalog answers " +
+			"in this process too, unless --address (or FLOWSTATE_ADDRESS) explicitly names " +
+			"a deployment, in which case it answers from that deployment instead, and " +
+			"refuses rather than falling back here if it cannot be reached.\n\n" +
 			"flowstate_run_local executes a submitted Flowfile here, the way `flow run local` " +
 			"does. What such a run may reach is decided by the flags this process is started " +
 			"with and by nothing a client sends: with no flags, egress is denied and no secret " +

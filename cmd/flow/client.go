@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -82,6 +83,14 @@ type serverFlags struct {
 	// addressed to. Ignored by sources that present a token they did not
 	// mint.
 	audience string
+
+	// clientCert is the client certificate/key/trust-root triple from
+	// cmd/flow/clientcert.go: --tls-client-cert-file, --tls-client-key-file
+	// and --tls-ca-file. What lets `flow` reach a server started with
+	// --tls-client-auth require (picatz/flowstate#630) — without it, every
+	// verb below is locked out at the handshake, before the bearer
+	// credential above is ever considered.
+	clientCert clientCertFlags
 }
 
 // addServerFlags declares them on a verb that contacts a server.
@@ -117,6 +126,13 @@ func addServerFlags(cmd *cobra.Command) {
 	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
 		"the relying party a minted credential should be addressed to (overrides "+
 			"FLOWSTATE_AUDIENCE); required by --credential-source=github-actions")
+
+	// The client's own certificate, key and trust root — see
+	// cmd/flow/clientcert.go. Declared alongside the bearer-credential flags
+	// above because a server may demand both: --tls-client-auth require gets
+	// this command past the handshake, and the credential above is what gets
+	// it past the server's own Authenticator.
+	addClientCertFlags(cmd)
 }
 
 // defaultServerAddress is where a Flowstate server runs unless told otherwise.
@@ -139,6 +155,7 @@ func serverFlagsOf(cmd *cobra.Command) serverFlags {
 		tokenFile:        tokenFile,
 		credentialSource: credentialSource,
 		audience:         audience,
+		clientCert:       clientCertFlagsOf(cmd),
 	}
 }
 
@@ -159,7 +176,15 @@ func newWorkflowServiceClient(server serverFlags) flowstatev1connect.WorkflowSer
 	// see [newFollowClient].
 	source, sourceErr := credentialSourceFor(server)
 
-	return newWorkflowServiceClientWithSource(server, source, sourceErr)
+	// A misconfigured --tls-client-cert-file/--tls-client-key-file/--tls-ca-file
+	// triple is exactly the same shape as a misconfigured --credential-source:
+	// local, cheap to detect, and never something a later request could fix by
+	// being retried. It is carried the same way, through the transport, so the
+	// first RPC this client attempts reports it rather than silently dialing
+	// with no client certificate.
+	tlsConfig, tlsConfigErr := clientTLSConfig(server.clientCert)
+
+	return newWorkflowServiceClientWithSource(server, source, sourceErr, tlsConfig, tlsConfigErr)
 }
 
 // newFollowClient builds the client a follow polls through: `flow watch`, and
@@ -190,7 +215,12 @@ func newFollowClient(server serverFlags) (flowstatev1connect.WorkflowServiceClie
 			"omit it to use --token-file/FLOWSTATE_TOKEN instead", err)
 	}
 
-	return newWorkflowServiceClientWithSource(server, source, nil), nil
+	tlsConfig, err := clientTLSConfig(server.clientCert)
+	if err != nil {
+		return nil, err
+	}
+
+	return newWorkflowServiceClientWithSource(server, source, nil, tlsConfig, nil), nil
 }
 
 // newWorkflowServiceClientWithSource builds the client both constructors above
@@ -200,8 +230,13 @@ func newWorkflowServiceClientWithSource(
 	server serverFlags,
 	source credentialsource.Source,
 	sourceErr error,
+	tlsConfig *tls.Config,
+	tlsConfigErr error,
 ) flowstatev1connect.WorkflowServiceClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig
+	}
 	baseURL := serverBaseURL(server.address)
 
 	// The client half of the tracing the server has carried all along, and a
@@ -239,10 +274,11 @@ func newWorkflowServiceClientWithSource(
 	return flowstatev1connect.NewWorkflowServiceClient(
 		&http.Client{
 			Transport: &authorizingTransport{
-				base:      &boundedTransport{base: transport, max: maxResponseBytes},
-				baseURL:   baseURL,
-				source:    source,
-				sourceErr: sourceErr,
+				base:         &boundedTransport{base: transport, max: maxResponseBytes},
+				baseURL:      baseURL,
+				source:       source,
+				sourceErr:    sourceErr,
+				tlsConfigErr: tlsConfigErr,
 			},
 
 			// Bounded in time as well as in bytes, and for the same reason: the peer

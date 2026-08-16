@@ -297,8 +297,8 @@ func scalarText(v *expr.Value) (string, error) {
 // timing, because a mapping containing a reference used to be an expression the
 // workflow evaluated.
 func valueToNative(v *Value, reveal revealFunc, depth int) (any, error) {
-	if depth > maxStructureDepth {
-		return nil, fmt.Errorf("nested more than %d levels deep", maxStructureDepth)
+	if depth > MaxStructureDepth {
+		return nil, fmt.Errorf("nested more than %d levels deep", MaxStructureDepth)
 	}
 
 	if ref := v.GetSecretRef(); ref != nil {

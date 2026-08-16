@@ -469,7 +469,7 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 
 		// Only after a step's inputs are checked do its outputs become
 		// available, which is what makes a self- or forward-reference detectable.
-		scope.steps[id] = true
+		scope.steps[id] = node
 	}
 
 	// Last, against the scope the walk ends with, because that is when a run
@@ -714,34 +714,40 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	return ds
 }
 
-// branchStepIDs returns the ids of every step across a parallel block's branches,
+// branchStepNodes returns every step across a parallel block's branches,
 // including those nested inside branch control flow whose outputs also merge out.
-func branchStepIDs(parallel *v1.Parallel) []string {
-	var ids []string
+func branchStepNodes(parallel *v1.Parallel) []*v1.Node {
+	var nodes []*v1.Node
 	for _, branch := range parallel.GetBranches() {
-		ids = append(ids, mergedStepIDs(branch.GetSteps())...)
+		nodes = append(nodes, mergedStepNodes(branch.GetSteps())...)
 	}
-	return ids
+	return nodes
 }
 
-// mergedStepIDs returns the ids whose outputs become visible to steps following a
-// list of nodes.
+// mergedStepNodes returns the steps whose outputs become visible to steps
+// following a list of nodes.
 //
-// A loop contributes only its own id, because its body's outputs are reported
+// A loop contributes only itself, because its body's outputs are reported
 // through its `results` output rather than merged. A nested parallel block
-// contributes its branches' ids, because those are merged.
-func mergedStepIDs(nodes []*v1.Node) []string {
-	var ids []string
+// contributes its branches' steps, because those are merged.
+//
+// The nodes rather than their ids, because a scope that holds only names cannot
+// answer what a name's outputs *are*: the check on `steps.<id>.<output>` used to
+// find its node by searching the whole workflow for that id, which is the wrong
+// step as soon as two blocks legally reuse one (#323). Recording what was put in
+// scope, at the point it is put there, is what makes the later lookup exact.
+func mergedStepNodes(nodes []*v1.Node) []*v1.Node {
+	var out []*v1.Node
 	for _, node := range nodes {
-		ids = append(ids, node.GetId())
+		out = append(out, node)
 		if p, ok := node.GetKind().(*v1.Node_Parallel); ok {
-			ids = append(ids, branchStepIDs(p.Parallel)...)
+			out = append(out, branchStepNodes(p.Parallel)...)
 		}
 		if s, ok := node.GetKind().(*v1.Node_Switch); ok {
-			ids = append(ids, switchStepIDs(s.Switch)...)
+			out = append(out, switchStepNodes(s.Switch)...)
 		}
 	}
-	return ids
+	return out
 }
 
 // recordStepInScope marks a finished step in the scope the steps after it are
@@ -756,8 +762,8 @@ func mergedStepIDs(nodes []*v1.Node) []string {
 // with two spellings is two rules. Whatever a step contributes to the names
 // after it is decided here, once.
 func recordStepInScope(scope refScope, node *v1.Node) {
-	for _, id := range mergedStepIDs([]*v1.Node{node}) {
-		scope.steps[id] = true
+	for _, merged := range mergedStepNodes([]*v1.Node{node}) {
+		scope.steps[merged.GetId()] = merged
 	}
 }
 
@@ -773,9 +779,19 @@ func recordStepInScope(scope refScope, node *v1.Node) {
 // root and a local is named bare, so neither can be mistaken for the other and
 // there is nothing left for a rule to forbid.
 type refScope struct {
-	// steps are the ids whose outputs exist at this point, reachable as
-	// `steps.<id>`.
-	steps map[string]bool
+	// steps are the steps whose outputs exist at this point, reachable as
+	// `steps.<id>`, keyed by the id a reference spells.
+	//
+	// The node and not merely the name, because an id is unique within a
+	// *visibility domain* and not within a file — two sibling `loop:` blocks may
+	// each declare a body step called `page`, legally, since body outputs do not
+	// escape. A set of names forces the check on `steps.<id>.<output>` to go
+	// looking for the node again, and the only lookup available to it was the
+	// first match in the whole workflow: from the second loop that is the *first*
+	// loop's step, whose outputs are a different set, so a legal file was reported
+	// as referencing an output that does not exist (#323). What is in scope is
+	// known exactly where the scope is built, so it is recorded there.
+	steps map[string]*v1.Node
 
 	// locals are the names bound bare here: a loop's iterator, and `now` inside a
 	// wait expression. They are not steps and never were.
@@ -814,7 +830,7 @@ func newRefScope(wf *v1.Workflow) refScope {
 		inputs[declaration.GetName()] = true
 	}
 
-	return refScope{steps: map[string]bool{}, locals: map[string]bool{}, vars: vars, inputs: inputs}
+	return refScope{steps: map[string]*v1.Node{}, locals: map[string]bool{}, vars: vars, inputs: inputs}
 }
 
 // clone returns a copy that can be extended without disturbing the original,
@@ -822,7 +838,7 @@ func newRefScope(wf *v1.Workflow) refScope {
 // while the steps after the loop see neither.
 func (s refScope) clone() refScope {
 	out := refScope{
-		steps:  make(map[string]bool, len(s.steps)+1),
+		steps:  make(map[string]*v1.Node, len(s.steps)+1),
 		locals: make(map[string]bool, len(s.locals)+1),
 		// Shared rather than copied: nothing extends the var set after the scope is
 		// built, because workflow vars all exist before the first step runs. The same
@@ -1010,7 +1026,7 @@ func validateNamedLoop(stepID string, loop *v1.Loop, enclosing refScope, index i
 	}
 	for _, node := range loop.GetBody() {
 		if id := node.GetId(); id != "" {
-			afterBody.steps[id] = true
+			afterBody.steps[id] = node
 		}
 	}
 	if loop.GetUntil() != nil {
@@ -1146,7 +1162,9 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 	// collide across branches — and a branch must not reference a sibling, since
 	// branches are unordered.
 	seen := make(map[string]bool, len(enclosing.steps))
-	maps.Copy(seen, enclosing.steps)
+	for id := range enclosing.steps {
+		seen[id] = true
+	}
 
 	for i, branch := range parallel.GetBranches() {
 		for _, node := range branch.GetSteps() {
@@ -1208,7 +1226,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			})
 		}
 
-		if id != "" && enclosing.steps[id] {
+		if _, shadowed := enclosing.steps[id]; id != "" && shadowed {
 			ds = append(ds, Diagnostic{
 				Step: id,
 				Message: fmt.Sprintf(
@@ -1260,7 +1278,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 
 		ds = append(ds, validateTaskStep(id, node, task, scope, inner, index, wf)...)
 
-		scope.steps[id] = true
+		scope.steps[id] = node
 	}
 	return ds
 }
@@ -1435,7 +1453,7 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 	// and is thrown away, so nothing after the step can reference itself by having
 	// been undone.
 	self := scope.clone()
-	self.steps[id] = true
+	self.steps[id] = node
 
 	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 	for _, name := range sortedInputNames(checkable) {
@@ -1541,12 +1559,15 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	// in scope. There is no second reading of it to rule out, which is the point of
 	// the root.
 	for _, ref := range rooted {
-		if !scope.steps[ref.ID] {
+		target, inScope := scope.steps[ref.ID]
+		if !inScope {
 			ds = append(ds, unresolvedStep(stepID, inputName, ref.ID, index, wf)...)
 
 			continue
 		}
-		if d, wrong := unknownStepOutput(stepID, inputName, ref, wf); wrong {
+		// The step this scope put in scope under that id, rather than whichever
+		// step in the file happens to be spelled that way — see [refScope.steps].
+		if d, wrong := unknownStepOutput(stepID, inputName, ref, target); wrong {
 			ds = append(ds, d)
 		}
 	}
@@ -2655,14 +2676,18 @@ func unknownTriggerKindLiteral(stepID, inputName, literal string) Diagnostic {
 // same reason this function would otherwise have to. The case this does cover is the
 // one that is never right: a step whose kind declares a fixed set, referenced by a name
 // outside it — which `log`, declaring none, makes total rather than occasional.
-func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (Diagnostic, bool) {
+func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Diagnostic, bool) {
 	if ref.Output == "" {
 		// The whole outputs mapping. Legal for any step, including one with nothing
 		// in it.
 		return Diagnostic{}, false
 	}
 
-	node := nodeWithID(ref.ID, wf)
+	if node == nil {
+		// Nothing recorded under that id, so there is nothing certain to say. A
+		// reference that reaches here has already been reported as unresolved.
+		return Diagnostic{}, false
+	}
 
 	// A loop's outputs are `results` and, when it carries state, `state` — fixed the
 	// moment the loop is written (`state` appears exactly when `state:` is set), the
@@ -2677,7 +2702,14 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 	// `for_each`'s `results` gets below, and neither loop kind's certainty reaches past
 	// its own top-level name.
 	if loop := node.GetLoop(); loop != nil {
-		if state := loop.GetState(); state != "" && ref.Output == state {
+		// A loop whose carried state happens to be named `error` collides, by
+		// spelling alone, with the tolerated-error output a `continue_on_error:`
+		// loop also carries. Where the policy is set, `error` is not a mistaken
+		// reach for the loop's `as:` name — it is the real output the policy
+		// grants — so that reading has to win before the state-name message
+		// below claims the whole name for itself.
+		if state := loop.GetState(); state != "" && ref.Output == state &&
+			!(ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError()) {
 			return Diagnostic{
 				Step: stepID, Field: inputName, Value: ref.Output,
 				Message: fmt.Sprintf(
@@ -2905,11 +2937,17 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, wf *v1.Workflow) (
 // [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
 func certainNames(node *v1.Node) []string {
 	entries, _ := v1.OutputNames(node, nil)
-	names := make([]string, 0, len(entries))
+	names := make([]string, 0, len(entries)+1)
 	for _, e := range entries {
 		if e.Name != "" {
 			names = append(names, e.Name)
 		}
+	}
+	// This output belongs to the step policy rather than its kind. Include it in
+	// every fixed set so the early compound-step checks agree with the generic
+	// task path below.
+	if node.GetPolicy().GetContinueOnError() {
+		names = append(names, toleratedErrorOutput)
 	}
 	return names
 }
@@ -3017,6 +3055,14 @@ func unknownShapedOutput(stepID, inputName string, ref stepRef, shaping *v1.Valu
 }
 
 // nodeWithID returns the node an id names, anywhere in the workflow, or nil.
+//
+// Scope-blind, and therefore not what a check on a *reference* may use: an id is
+// unique within a visibility domain and not within a workflow, so two sibling
+// blocks may each declare a body step of the same id and this answers with
+// whichever comes first in the file. Every validation path takes the step from
+// [refScope.steps] instead, which holds what was put in scope where it was put
+// there. What remains here is the test helper that reads a fixture's node back
+// by name, where the file is known to declare exactly one.
 func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 	var walk func([]*v1.Node) *v1.Node
 	walk = func(nodes []*v1.Node) *v1.Node {

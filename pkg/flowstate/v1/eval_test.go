@@ -83,9 +83,12 @@ func TestRunWorkflowLoop(t *testing.T) {
 		t.Run(test.Name, func(t *testing.T) {
 			out, err := v1.Run(t.Context(), test.Workflow)
 			if test.ExpectFailure {
-				require.Error(t, err, "the loop was expected to fail at its ceiling")
-				require.Contains(t, err.Error(), "ran its full budget",
-					"a loop that exhausts its budget must say so distinctly")
+				require.Error(t, err, "the loop was expected to fail")
+				want := test.ExpectedErrorContains
+				if want == "" {
+					want = "ran its full budget"
+				}
+				require.Contains(t, err.Error(), want)
 				return
 			}
 			require.NoError(t, err)
@@ -199,7 +202,13 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 			v1.SetDefaultTaskPolicy(policy)
 			t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-			out, err := v1.Run(t.Context(), tc.Workflow)
+			// The local driver's route for the case's identity: the same
+			// seam `flow run local --as-*` uses, which is the whole of what
+			// #295 fixed. A case with no identity sets nil, which is
+			// identical to not setting one — the starter-less run.
+			ctx := v1.NewContextWithRehearsalIdentity(t.Context(), tc.Identity)
+
+			out, err := v1.Run(ctx, tc.Workflow)
 
 			if tc.DeniedTask != "" {
 				require.Error(t, err, "the policy must refuse this dispatch")
