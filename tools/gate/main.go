@@ -24,6 +24,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"go/format"
 	"io"
@@ -38,40 +39,67 @@ import (
 const bufVersion = "v1.72.0"
 
 func main() {
-	if err := run(); err != nil {
+	// One flag, because there is one thing to choose: who is asking. The
+	// local tier runs the legs; CI asks only which of its jobs this diff can
+	// reach and decides the rest itself. Both answers come from the same
+	// analyse() call below, which is the point — see ci.go.
+	ci := flag.Bool("ci", false, "print the CI job plan for this diff and write it to $GITHUB_OUTPUT, rather than running the local legs")
+	event := flag.String("event", os.Getenv("GITHUB_EVENT_NAME"), "the GitHub event name; anything other than pull_request forces every job to run")
+	flag.Parse()
+
+	var err error
+	if *ci {
+		err = runCI(*event)
+	} else {
+		err = run()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "gate:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+// analysis is what both tiers need before they can decide anything: the plan
+// the changed paths alone imply, and the package set the import graph expands
+// it to.
+type analysis struct {
+	plan            plan
+	affected        []string
+	exampleDataDeps []string
+	base            string
+	changed         []string
+}
+
+// analyse is the one computation. The local tier turns it into legs; the CI
+// tier turns it into jobs. Nothing else in this repository is allowed a second
+// opinion about which packages a diff reaches.
+func analyse() (analysis, error) {
 	// Root the whole run at the repository top level so the gate behaves
 	// identically from any working directory.
 	root, err := gitOutput("rev-parse", "--show-toplevel")
 	if err != nil {
-		return fmt.Errorf("not inside a git repository: %w", err)
+		return analysis{}, fmt.Errorf("not inside a git repository: %w", err)
 	}
 	if err := os.Chdir(strings.TrimSpace(root)); err != nil {
-		return err
+		return analysis{}, err
 	}
 
 	base, err := gitOutput("merge-base", "HEAD", "origin/main")
 	if err != nil {
-		return fmt.Errorf("cannot find the merge-base with origin/main (run `git fetch origin main` first): %w", err)
+		return analysis{}, fmt.Errorf("cannot find the merge-base with origin/main (run `git fetch origin main` first): %w", err)
 	}
 	base = strings.TrimSpace(base)
 
 	changed, err := changedFiles(base)
 	if err != nil {
-		return err
+		return analysis{}, err
 	}
-	fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(changed), base[:12])
 
 	p := buildPlan(changed)
 
 	pkgs, err := goList()
 	if err != nil {
-		return err
+		return analysis{}, err
 	}
 	byDir := map[string]string{}
 	for _, m := range pkgs {
@@ -80,9 +108,24 @@ func run() error {
 		}
 	}
 
+	// A changed .go file whose own directory is not a key in byDir means `go
+	// list` cannot find a package there on the tree as checked out — almost
+	// always because this diff deleted the last source file a package had,
+	// so the directory holds none any more. resolveDirs cannot see that: it
+	// walks upward looking for the nearest package ancestor, which finds
+	// whatever package happens to sit above an emptied directory (or nothing
+	// at all) and silently drops the file rather than reporting that its own
+	// package vanished. The risk is not the deleted package itself — it is
+	// gone, so it has nothing left to test — it is whatever else in the tree
+	// still imports it: that importer is now broken, but nothing changed in
+	// *its* files, so affectedPackages alone would never flag it. Treated the
+	// same conservative way p.moduleWide already is: every package affected,
+	// so the widest job it could possibly reach still runs.
+	unresolvedGoDir := hasUnresolvedGoDir(p.goFiles, byDir)
+
 	var affected []string
 	var exampleDataDeps []string
-	if p.moduleWide {
+	if p.moduleWide || unresolvedGoDir {
 		for _, m := range pkgs {
 			affected = append(affected, m.ImportPath)
 		}
@@ -107,6 +150,31 @@ func run() error {
 
 		affected = affectedPackages(pkgs, changedSet)
 	}
+
+	return analysis{plan: p, affected: affected, exampleDataDeps: exampleDataDeps, base: base, changed: changed}, nil
+}
+
+// runCI is the plan job's whole body: analyse the diff, decide which of
+// ci.yml's jobs it can reach, and publish that. It runs no checks itself and
+// never fails on a finding — a wrong answer here is a job that did not run, and
+// the verdict job is what turns that into a red required check.
+func runCI(event string) error {
+	a, err := analyse()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("plan: %d changed file(s) vs merge-base %s, %d affected package(s)\n",
+		len(a.changed), a.base[:12], len(a.affected))
+	return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.plan)))
+}
+
+func run() error {
+	a, err := analyse()
+	if err != nil {
+		return err
+	}
+	p, affected, exampleDataDeps := a.plan, a.affected, a.exampleDataDeps
+	fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(a.changed), a.base[:12])
 
 	g := &gate{}
 
@@ -214,14 +282,19 @@ func run() error {
 	// the golden still said the old edition, and a silent local skip sent
 	// that to CI to discover. So: run it where the tooling exists, and say
 	// plainly that it is unverified where it does not.
-	if p.appearance {
+	//
+	// The trigger is needsAppearance rather than p.appearance alone, for
+	// the reason needsDocs gives one level up: the goldens record what the
+	// cmd/flow *binary* prints, so its dependency closure is the real
+	// source set, and a path rule can only ever be the approximation.
+	if needsAppearance(p, affected) {
 		if missing := missingAppearanceTools(); len(missing) > 0 {
 			fmt.Printf("gate: appearance: NOT VERIFIED locally (%s absent); CI's appearance job owns this. "+
 				"If this change alters printed output, expect that job to fail and re-record with `make appearance-update`.\n",
 				strings.Join(missing, ", "))
 			g.unverified++
 		} else {
-			g.leg("appearance", p.reasons["appearance"]+" changed",
+			g.leg("appearance", appearanceWhy(p, affected),
 				commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-timeout", "900s", "-count=1", "-run", "TestAppearance", "./cmd/flow/internal/appearance/"))
 		}
 	} else {
@@ -249,8 +322,18 @@ func run() error {
 // changedFiles is the diff against the merge-base (committed, staged and
 // unstaged tracked changes) plus untracked files, which a plain diff cannot
 // see and which a new package arrives as.
+//
+// --no-renames, because a plain `git diff --name-only` on a detected rename
+// prints only the destination path — verified against git 2.43.0, and the
+// reason hasUnresolvedGoDir could still miss a deleted package: renaming a
+// package's last .go file to a non-Go extension is indistinguishable, in
+// --name-only output with rename detection on, from a file that was never
+// there. With --no-renames a rename reports as a delete plus an add, the same
+// two name-only entries either operation produces on its own, so the old
+// path still lands in p.goFiles and still trips hasUnresolvedGoDir when
+// whatever it named disappears.
 func changedFiles(base string) ([]string, error) {
-	diff, err := gitOutput("diff", "--name-only", base)
+	diff, err := gitOutput("diff", "--no-renames", "--name-only", base)
 	if err != nil {
 		return nil, err
 	}
