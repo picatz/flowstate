@@ -593,18 +593,41 @@ probe below instead of `httpGet`.
           failureThreshold: 3
 ```
 
-The internal listener is also the fix for server-terminated TLS, and not
+The internal listener is also the fix for server-terminated TLS **when that
+TLS comes from an explicit `--tls-cert-file`/`--tls-key-file` pair**, and not
 only a way to keep credential-free probe traffic off the RPC port when that
 is a concern on the upstream-terminated shape above — either way it works
-the same, just not through `httpGet`. Set `--internal-listen
-127.0.0.1:9090` and point an **`exec` probe** at it instead, since `exec`
-runs the command inside the container's own network namespace, which
-loopback is reachable from, and the internal listener never carries TLS or
-client-cert requirements of its own (`internalHandler`,
-`cmd/flow/routing.go:160`) regardless of what the public listener demands:
+the same, just not through `httpGet`. It does not apply when TLS comes from
+`--tls-acme-hosts`: `resolveACMESettings` refuses to start `flow server` if
+`--internal-listen` is set alongside it at all (`cmd/flow/acme.go:185-194`),
+because the internal listener is loopback or a private address by design and
+a public CA can never issue it a certificate. An ACME deployment needing
+probe traffic off the TLS-terminated port has no `httpGet` workaround here;
+the options are a sidecar or a probe that speaks the ACME-issued cert's
+protocol.
+
+For the explicit-certificate case, set `--internal-listen 127.0.0.1:9090`
+and point **`exec` probes** at it instead of `httpGet` — for all three
+probes above, not just liveness, since `startupProbe` and `readinessProbe`
+are equally plaintext `httpGet` checks against the TLS-terminated port and
+fail the same way if left as they are. `exec` runs the command inside the
+container's own network namespace, which loopback is reachable from, and the
+internal listener never carries TLS or client-cert requirements of its own
+(`internalHandler`, `cmd/flow/routing.go:160`) regardless of what the public
+listener demands:
 
 ```yaml
+        startupProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          failureThreshold: 30
+          periodSeconds: 2
         livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
           exec:
             command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
           periodSeconds: 10
