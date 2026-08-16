@@ -51,7 +51,7 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 // staticcheck and test. None of those can be affected by that file.
 func TestAMarkdownOnlyDiffReachesNothing(t *testing.T) {
 	ds := decide(t, []string{"CLAUDE.md"}, nil, "pull_request")
-	mustSkip(t, ds, "test", "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "test", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 // TestEveryDecisionSaysWhy holds both answers to the same standard the local
@@ -79,7 +79,7 @@ func TestEveryDecisionSaysWhy(t *testing.T) {
 func TestDocsOnlySourcesStillReachTheTestJob(t *testing.T) {
 	ds := decide(t, []string{"docs/DSL.md"}, nil, "pull_request")
 	mustRun(t, ds, "test")
-	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 // TestAnExampleOnlyChangeReachesTheTestJob: examples/ holds the corpus the
@@ -103,7 +103,7 @@ func TestAnExampleOnlyChangeReachesTheTestJob(t *testing.T) {
 func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 	ds := decide(t, []string{"plugins/openai/main.go"}, nil, "pull_request")
 	mustRun(t, ds, "test")
-	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 // TestReadmeOrArchitectureOnlyStillReachesTheTestJob is the regression for a
@@ -123,31 +123,29 @@ func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
 		t.Run(f, func(t *testing.T) {
 			ds := decide(t, []string{f}, nil, "pull_request")
 			mustRun(t, ds, "test")
-			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 		})
 	}
 }
 
-// TestTheNarrowJobsFollowTheAffectedSet pins the three jobs whose trigger is a
-// package rather than a path: federation runs one test in one package,
-// fuzz-smoke's targets live in three, and the appearance goldens record what
-// the cmd/flow binary prints.
+// TestTheNarrowJobsFollowTheAffectedSet pins the two jobs whose trigger is a
+// package rather than a path: fuzz-smoke's targets live in three, and the
+// appearance goldens record what the cmd/flow binary prints.
 func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
 	changed := []string{"pkg/flowstate/v1/engine/policy.go"}
 
 	// A diff that reaches the engine and nothing else.
 	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/engine"}, "pull_request")
 	mustRun(t, ds, "test", "vulncheck", "staticcheck")
-	mustSkip(t, ds, "federation", "fuzz-smoke", "appearance", "proto")
+	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto")
 
-	// The same diff, in a tree where the engine is on cmd/flow's and auth's
-	// import path — which is what affectedPackages actually computes.
+	// The same diff, in a tree where the engine is on cmd/flow's import path —
+	// which is what affectedPackages actually computes.
 	ds = decide(t, changed, []string{
 		modulePath + "/pkg/flowstate/v1/engine",
-		modulePath + "/pkg/flowstate/v1/auth",
 		cmdFlowPkg,
 	}, "pull_request")
-	mustRun(t, ds, "federation", "fuzz-smoke", "appearance")
+	mustRun(t, ds, "fuzz-smoke", "appearance")
 }
 
 // TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Three forcing conditions,
@@ -156,7 +154,7 @@ func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
 // harness is a change to the thing computing the plan, which the plan cannot
 // reason about.
 func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
-	all := []string{"test", "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance"}
+	all := []string{"test", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
 
 	for _, tc := range []struct {
 		name    string

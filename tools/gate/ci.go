@@ -12,7 +12,6 @@ import (
 // Go code changed". cmdFlowPkg and flowtestPkg live in plan.go beside the legs
 // they already decide.
 const (
-	authPkg     = modulePath + "/pkg/flowstate/v1/auth"
 	flowfilePkg = modulePath + "/pkg/flowstate/v1/flowfile"
 	pluginPkg   = modulePath + "/pkg/flowstate/v1/plugin"
 )
@@ -117,13 +116,6 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 			Run: goAffected,
 			Why: pick(goAffected, fmt.Sprintf("%d affected package(s)", len(affected)),
 				"no Go package is affected")},
-
-		// federation runs one test, in one package, against the real
-		// issuer. Anything that reaches that package can change what it
-		// asserts; nothing else can.
-		{Job: "federation", Output: "federation",
-			Run: contains(affected, authPkg),
-			Why: pick(contains(affected, authPkg), "the auth package is affected", "the auth package is not affected")},
 
 		// fuzz-smoke's five targets live in three packages. A target's
 		// behaviour is its package's behaviour, so the affected set
