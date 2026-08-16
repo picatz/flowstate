@@ -492,9 +492,22 @@ type PluginCatalog struct {
 	// Carried because an empty plugin list has two meanings that matter to tell
 	// apart (nothing installed, or nowhere to look), and only one of them is a
 	// configuration mistake.
-	SearchPath    []string `protobuf:"bytes,2,rep,name=search_path,json=searchPath,proto3" json:"search_path,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SearchPath []string `protobuf:"bytes,2,rep,name=search_path,json=searchPath,proto3" json:"search_path,omitempty"`
+	// ClaimsSchemaVersion is the same presence signal as
+	// [TaskCatalog.claims_schema_version], for the same reason, on the other
+	// message a build's task claims travel in.
+	//
+	// `flow plugins -o json` serializes this message directly rather than a
+	// TaskCatalog, and that output is written to disk or piped to another
+	// process, so it outlives the process that produced it — the same
+	// rolling-upgrade skew ClaimsSchemaVersion exists to resolve for a remote
+	// GetCatalog reader applies just as well to a saved PluginCatalog read
+	// later by a binary built before this field, or read by a newer binary
+	// against a file a pre-#712 build wrote. Zero means "this catalog predates
+	// every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
+	ClaimsSchemaVersion uint32 `protobuf:"varint,3,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PluginCatalog) Reset() {
@@ -539,6 +552,13 @@ func (x *PluginCatalog) GetSearchPath() []string {
 		return x.SearchPath
 	}
 	return nil
+}
+
+func (x *PluginCatalog) GetClaimsSchemaVersion() uint32 {
+	if x != nil {
+		return x.ClaimsSchemaVersion
+	}
+	return 0
 }
 
 // PluginDescription is one plugin's identity and what it advertises.
@@ -825,11 +845,12 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\rsecret_inputs\x18\x06 \x03(\tR\fsecretInputs\x12%\n" +
 	"\x0eshapes_outputs\x18\a \x01(\bR\rshapesOutputs\x12'\n" +
 	"\x0fdeferred_inputs\x18\b \x03(\tR\x0edeferredInputs\x12+\n" +
-	"\x11expression_inputs\x18\t \x03(\tR\x10expressionInputs\"k\n" +
+	"\x11expression_inputs\x18\t \x03(\tR\x10expressionInputs\"\x9f\x01\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
-	"searchPath\"\x82\x03\n" +
+	"searchPath\x122\n" +
+	"\x15claims_schema_version\x18\x03 \x01(\rR\x13claimsSchemaVersion\"\x82\x03\n" +
 	"\x11PluginDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +

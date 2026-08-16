@@ -63,3 +63,26 @@ func TestAPluginThatDeclaresNoSecretInputsDescribesNone(t *testing.T) {
 	assert.Empty(t, described.GetSecretInputs())
 	assert.False(t, described.GetNeedsScope())
 }
+
+// TestPluginCatalogCarriesClaimsSchemaVersion is the same presence signal as
+// TaskCatalog.ClaimsSchemaVersion, on the other message a build's task
+// claims travel in.
+//
+// TaskCatalog.ClaimsSchemaVersion was added so a remote GetCatalog reader
+// could tell "this task claims nothing" from "this server predates the claim
+// fields entirely." PluginCatalog answers the identical question for `flow
+// plugins -o json`'s output, which is written to disk or piped to another
+// process rather than read in the process that built it — so it needs the
+// same signal, and a Host built from a real plugin has to actually set it
+// rather than leave the field declared and unpopulated.
+func TestPluginCatalogCarriesClaimsSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	host := openHost(t, testConfig(t, pluginDir(t, "ok")))
+
+	got := host.Catalog().GetClaimsSchemaVersion()
+	require.Equal(t, flowstatev1.CurrentClaimsSchemaVersion, got,
+		"a PluginCatalog built by this host does not carry the current claims schema version, "+
+			"so a saved or piped `flow plugins -o json` output could not be told apart from a "+
+			"pre-#712 build's response by anything reading it later")
+}

@@ -253,6 +253,20 @@ message PluginCatalog {
   // apart (nothing installed, or nowhere to look), and only one of them is a
   // configuration mistake.
   repeated string search_path = 2;
+
+  // ClaimsSchemaVersion is the same presence signal as
+  // [TaskCatalog.claims_schema_version], for the same reason, on the other
+  // message a build's task claims travel in.
+  //
+  // `flow plugins -o json` serializes this message directly rather than a
+  // TaskCatalog, and that output is written to disk or piped to another
+  // process, so it outlives the process that produced it — the same
+  // rolling-upgrade skew ClaimsSchemaVersion exists to resolve for a remote
+  // GetCatalog reader applies just as well to a saved PluginCatalog read
+  // later by a binary built before this field, or read by a newer binary
+  // against a file a pre-#712 build wrote. Zero means "this catalog predates
+  // every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
+  uint32 claims_schema_version = 3;
 }
 
 // PluginDescription is one plugin's identity and what it advertises.

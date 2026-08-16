@@ -352,6 +352,13 @@ func Inputs(def TaskDef) []InputField {
 	return describeFields(def.Inputs, def.DeferredInputs, taskInputNotes(def))
 }
 
+// secretReferenceNote is the constraint phrase [taskInputNotes] writes for an
+// input that may hold a secret reference. Named once because
+// [TaskDescriptionSansClaims] has to strip exactly this phrase back out for
+// the SecretInputs source specifically — see that function's doc comment —
+// and a second literal there could drift from what this one writes.
+const secretReferenceNote = "may hold a secret reference"
+
 // taskInputNotes is what the *task* adds to a field's constraints, by input name.
 //
 // Read off the definition rather than restated: `ExpressionInputs` is already the
@@ -380,15 +387,20 @@ func taskInputNotes(def TaskDef) map[string][]string {
 	// def.SecretInputs is the plugin whole-value list (TaskManifest.secret_inputs,
 	// #712): a different mechanism from AuthorityInputs/NestedSecretInputs, but
 	// the same fact about what an author may legally write there, so it earns
-	// the same note.
+	// the same note. It is also the one source here that is a claim field
+	// (plugin-manifest-declared, mutable independently of a task's descriptor
+	// shape) rather than fixed Go source — AuthorityInputs and NestedSecretInputs
+	// are only ever set for a built-in task, never a plugin one — which is why
+	// [TaskDescriptionSansClaims] has to know how to take this specific note
+	// back out.
 	for _, name := range slices.Sorted(slices.Values(append(
 		slices.Clone(def.AuthorityInputs),
 		append(slices.Clone(def.NestedSecretInputs), def.SecretInputs...)...))) {
 		if slices.Contains(def.CredentialInputs, name) ||
-			slices.Contains(notes[name], "may hold a secret reference") {
+			slices.Contains(notes[name], secretReferenceNote) {
 			continue
 		}
-		notes[name] = append(notes[name], "may hold a secret reference")
+		notes[name] = append(notes[name], secretReferenceNote)
 	}
 
 	return notes
@@ -567,9 +579,17 @@ func canonicalStrings(names []string) []string {
 // exists (#763 review: an in-flight durable run's pinned digest must not
 // disagree with itself for a plugin whose descriptors did not change).
 //
-// A shallow copy: Inputs and Outputs are shared with t rather than deep
-// cloned, which is safe because both this function's callers only marshal
-// the result.
+// Not quite a shallow copy of Inputs and Outputs: each field's constraints
+// has [secretReferenceNote] stripped back out first, because
+// [taskInputNotes] writes that note for SecretInputs — a claim field, #712 —
+// into the very TaskField this digest hashes, and doing nothing about it
+// here would put a security posture change back into a digest that was
+// supposed to be immune to one. TaskField.deferred and the "must be written
+// as an expression" note are left alone on purpose: DeferredInputs and
+// ExpressionInputs already rendered into Inputs before #712 existed, so
+// stripping them now would make this digest disagree with what a truly
+// pre-#712 build computed for a plugin already using either feature — the
+// identical bug, arriving from the opposite direction.
 func TaskDescriptionSansClaims(t *TaskDescription) *TaskDescription {
 	if t == nil {
 		return nil
@@ -578,9 +598,44 @@ func TaskDescriptionSansClaims(t *TaskDescription) *TaskDescription {
 	return &TaskDescription{
 		Name:    t.GetName(),
 		Summary: t.GetSummary(),
-		Inputs:  t.GetInputs(),
-		Outputs: t.GetOutputs(),
+		Inputs:  fieldsSansSecretNote(t.GetInputs()),
+		Outputs: fieldsSansSecretNote(t.GetOutputs()),
 	}
+}
+
+// fieldsSansSecretNote returns fields with [secretReferenceNote] removed
+// from each one's constraints. A field that never carried the note is
+// returned as-is rather than copied, since every caller of
+// [TaskDescriptionSansClaims] only marshals the result and never mutates it.
+func fieldsSansSecretNote(fields []*TaskField) []*TaskField {
+	if len(fields) == 0 {
+		return fields
+	}
+
+	out := make([]*TaskField, len(fields))
+	for i, f := range fields {
+		if !slices.Contains(f.GetConstraints(), secretReferenceNote) {
+			out[i] = f
+			continue
+		}
+
+		constraints := make([]string, 0, len(f.GetConstraints())-1)
+		for _, c := range f.GetConstraints() {
+			if c != secretReferenceNote {
+				constraints = append(constraints, c)
+			}
+		}
+
+		out[i] = &TaskField{
+			Name:        f.GetName(),
+			Type:        f.GetType(),
+			Required:    f.GetRequired(),
+			Deferred:    f.GetDeferred(),
+			Constraints: constraints,
+		}
+	}
+
+	return out
 }
 
 // TaskDescriptionClaimsOnly returns a copy of t carrying only its name and

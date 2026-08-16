@@ -549,9 +549,32 @@ type ResolvedPlugin struct {
 	// there is nothing recorded to compare against and the alternative is a
 	// routine host upgrade permanently failing every already-durable run
 	// touching a plugin with a non-default claim.
-	ClaimsDigest  string `protobuf:"bytes,6,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ClaimsDigest string `protobuf:"bytes,6,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	// ClaimsSchemaVersion is [flowstatev1.PluginCatalog]'s claims-schema
+	// version at the moment this pin was resolved, pinned alongside
+	// claims_digest rather than folded into it.
+	//
+	// A schema-version bump is allowed to redefine what an existing claim
+	// field *means*, not only add a new one — see
+	// [flowstatev1.CurrentClaimsSchemaVersion]'s doc comment. claims_digest
+	// hashes only the claim fields' values, so a run pinned under one schema
+	// version and a worker computing the identical field values under a later
+	// version, whose meaning has since changed, would hash to the same
+	// claims_digest and pass [flowstatev1.sameResolvedPlugin] silently — the
+	// run would execute under new security semantics its own pin never
+	// agreed to. Comparing this field exactly, the same way task_schema_digest
+	// and distribution_digest already are, is what refuses that worker
+	// instead of accepting it.
+	//
+	// Zero on a run resolved before this field existed, the same "not
+	// asserted" leniency claims_digest itself carries and for the identical
+	// reason: there is nothing recorded to compare a worker's version
+	// against, and treating that as a mismatch would turn a routine worker
+	// upgrade into a non-retryable failure for a property that pin never
+	// promised to track.
+	ClaimsSchemaVersion uint32 `protobuf:"varint,7,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ResolvedPlugin) Reset() {
@@ -624,6 +647,13 @@ func (x *ResolvedPlugin) GetClaimsDigest() string {
 		return x.ClaimsDigest
 	}
 	return ""
+}
+
+func (x *ResolvedPlugin) GetClaimsSchemaVersion() uint32 {
+	if x != nil {
+		return x.ClaimsSchemaVersion
+	}
+	return 0
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is
@@ -2865,14 +2895,15 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\x8d\x01\n" +
 	"\x11PluginRequirement\x12-\n" +
 	"\x04name\x18\x01 \x01(\tB\x19\xbaH\x16r\x142\x12^[a-z][a-z0-9_-]*$R\x04name\x12I\n" +
-	"\x0fminimum_version\x18\x02 \x01(\tB \xbaH\x1dr\x1b2\x19^v[0-9]+\\.[0-9]+\\.[0-9]+$R\x0eminimumVersion\"\xed\x01\n" +
+	"\x0fminimum_version\x18\x02 \x01(\tB \xbaH\x1dr\x1b2\x19^v[0-9]+\\.[0-9]+\\.[0-9]+$R\x0eminimumVersion\"\xa1\x02\n" +
 	"\x0eResolvedPlugin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\rR\x0fprotocolVersion\x12,\n" +
 	"\x12task_schema_digest\x18\x04 \x01(\tR\x10taskSchemaDigest\x12/\n" +
 	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\x12#\n" +
-	"\rclaims_digest\x18\x06 \x01(\tR\fclaimsDigest\"\xc6\x06\n" +
+	"\rclaims_digest\x18\x06 \x01(\tR\fclaimsDigest\x122\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\xc6\x06\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +

@@ -387,6 +387,12 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 	catalog := &flowstatev1.PluginCatalog{
 		Plugins:    make([]*flowstatev1.PluginDescription, 0, len(plugins)),
 		SearchPath: slices.Clone(h.cfg.SearchPath),
+
+		// Same presence signal as TaskCatalog.ClaimsSchemaVersion, populated
+		// for the same reason: `flow plugins -o json` serializes this message
+		// directly, and that output outlives this process. See the field's
+		// doc comment in catalog.proto.
+		ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
 	}
 
 	for _, p := range plugins {

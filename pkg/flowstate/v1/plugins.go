@@ -151,7 +151,7 @@ func ResolvePlugins(wf *Workflow, catalog *PluginCatalog) error {
 	}
 
 	return walkPluginWorkflows(wf, 0, func(wf *Workflow) error {
-		resolved, err := resolveOne(wf, available)
+		resolved, err := resolveOne(wf, available, catalog.GetClaimsSchemaVersion())
 		if err != nil {
 			return err
 		}
@@ -166,7 +166,12 @@ func ResolvePlugins(wf *Workflow, catalog *PluginCatalog) error {
 // The refusals name the plugin, what the file asked for, and what the deployment
 // has, because that triple is the whole of what somebody needs to act: install
 // it, raise the deployment's version, or lower the file's floor.
-func resolveOne(wf *Workflow, available map[string]*PluginDescription) ([]*ResolvedPlugin, error) {
+//
+// claimsSchemaVersion is the catalog's own [PluginCatalog.ClaimsSchemaVersion]
+// rather than anything per-plugin — one build computes every plugin's claim
+// fields under the same schema version, so it is read once here and pinned
+// onto every resolution from this catalog.
+func resolveOne(wf *Workflow, available map[string]*PluginDescription, claimsSchemaVersion uint32) ([]*ResolvedPlugin, error) {
 	resolved := make([]*ResolvedPlugin, 0, len(wf.GetPluginRequirements()))
 	for _, requirement := range wf.GetPluginRequirements() {
 		want, ok := parsePluginVersion(requirement.GetMinimumVersion())
@@ -198,7 +203,7 @@ func resolveOne(wf *Workflow, available map[string]*PluginDescription) ([]*Resol
 				"distribution digest, and this deployment reported %q at protocol %d",
 				p.GetName(), p.GetVersion(), p.GetProtocolVersion())
 		}
-		resolved = append(resolved, pinOf(p))
+		resolved = append(resolved, pinOf(p, claimsSchemaVersion))
 	}
 
 	return resolved, nil
@@ -211,18 +216,23 @@ func resolveOne(wf *Workflow, available map[string]*PluginDescription) ([]*Resol
 // of this is how a field added to the contract ends up checked on one side only.
 //
 // A submission always resolves against a *live* catalog — the deployment it is
-// submitted to, right now — so ClaimsDigest is always populated here even
-// though [sameResolvedPlugin] treats an empty one as "not asserted": that
-// leniency exists only for a pin already durable when this field was added,
-// never for a new one.
-func pinOf(p *PluginDescription) *ResolvedPlugin {
+// submitted to, right now — so ClaimsDigest and claimsSchemaVersion are always
+// populated here even though [sameResolvedPlugin] treats either as zero-valued
+// as "not asserted": that leniency exists only for a pin already durable when
+// the field was added, never for a new one.
+//
+// claimsSchemaVersion comes from the catalog rather than from p, because it
+// is [PluginCatalog.ClaimsSchemaVersion] — one value for the whole catalog,
+// not a per-plugin field on [PluginDescription].
+func pinOf(p *PluginDescription, claimsSchemaVersion uint32) *ResolvedPlugin {
 	return &ResolvedPlugin{
-		Name:               p.GetName(),
-		Version:            p.GetVersion(),
-		ProtocolVersion:    p.GetProtocolVersion(),
-		TaskSchemaDigest:   p.GetTaskSchemaDigest(),
-		DistributionDigest: p.GetDistributionDigest(),
-		ClaimsDigest:       p.GetClaimsDigest(),
+		Name:                p.GetName(),
+		Version:             p.GetVersion(),
+		ProtocolVersion:     p.GetProtocolVersion(),
+		TaskSchemaDigest:    p.GetTaskSchemaDigest(),
+		DistributionDigest:  p.GetDistributionDigest(),
+		ClaimsDigest:        p.GetClaimsDigest(),
+		ClaimsSchemaVersion: claimsSchemaVersion,
 	}
 }
 
@@ -315,7 +325,7 @@ func CheckPluginsAvailable(pins []*ResolvedPlugin, catalog *PluginCatalog) error
 			return fmt.Errorf("the run is pinned to plugin %q and this worker has no such plugin installed; "+
 				"it cannot execute this run", pin.GetName())
 		}
-		if err := sameResolvedPlugin(pin, pinOf(p)); err != nil {
+		if err := sameResolvedPlugin(pin, pinOf(p, catalog.GetClaimsSchemaVersion())); err != nil {
 			return err
 		}
 	}
@@ -380,6 +390,21 @@ func sameResolvedPlugin(want, have *ResolvedPlugin) error {
 	if want.GetClaimsDigest() != "" && want.GetClaimsDigest() != have.GetClaimsDigest() {
 		return fmt.Errorf("plugin %q does not match the run's replay contract: claims digest is %s here and the run is pinned to %s",
 			want.GetName(), have.GetClaimsDigest(), want.GetClaimsDigest())
+	}
+
+	// ClaimsSchemaVersion is checked only when the pin asserts one, for the
+	// same reason and by the same one-way door as ClaimsDigest just above:
+	// zero means the run was resolved before this field existed, and there is
+	// nothing recorded to compare a worker's version against. Checked
+	// separately from claims_digest, rather than folded into what it hashes,
+	// because a schema-version bump is allowed to redefine what an existing
+	// claim field means without changing any claim's serialized value — two
+	// byte-identical claims_digests computed under different schema versions
+	// are not the same security posture, and only comparing the version
+	// itself catches that a claims_digest match alone would miss.
+	if want.GetClaimsSchemaVersion() != 0 && want.GetClaimsSchemaVersion() != have.GetClaimsSchemaVersion() {
+		return fmt.Errorf("plugin %q does not match the run's replay contract: claims schema version is %d here and the run is pinned to %d",
+			want.GetName(), have.GetClaimsSchemaVersion(), want.GetClaimsSchemaVersion())
 	}
 
 	return nil

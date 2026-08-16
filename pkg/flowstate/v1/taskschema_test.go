@@ -209,6 +209,46 @@ func TestTaskSchemaDigestIsStableAcrossAClaimsChange(t *testing.T) {
 			"for a plugin whose descriptors never changed")
 }
 
+// TestTaskSchemaDigestIsStableAcrossASecretInputsNoteChange is the same claim
+// as [TestTaskSchemaDigestIsStableAcrossAClaimsChange], but for the one
+// SecretInputs regression that test cannot see.
+//
+// That test's TaskDefs set SecretInputs to a name — "token" — that names no
+// field on either TaskDef's Inputs (both leave Inputs nil), so
+// taskInputNotes never has a real TaskField to attach the secret-reference
+// note ("may hold a secret reference"; the constant naming it,
+// secretReferenceNote, is unexported and this test lives in the external
+// flowstatev1_test package) to, and the note this test exists to catch never
+// appears in either digest. Only a TaskDef with a real Inputs descriptor,
+// where SecretInputs names an
+// actual field on it, exercises the path: before
+// #763's fix, [v1.TaskDescriptionSansClaims] returned Inputs unchanged, so
+// the note taskInputNotes writes for a plugin-declared SecretInputs field
+// leaked into the digest that is supposed to be immune to a claims change —
+// defeating the split TestTaskSchemaDigestIsStableAcrossAClaimsChange exists
+// to protect. http is used as the real descriptor because it is a built-in
+// task with real proto Inputs; "url" carries no note of its own today, so
+// this test's before/after difference is exactly the SecretInputs note and
+// nothing else.
+func TestTaskSchemaDigestIsStableAcrossASecretInputsNoteChange(t *testing.T) {
+	t.Parallel()
+
+	def, found := v1.LookupTask("http")
+	require.True(t, found)
+	require.Empty(t, def.SecretInputs, "http must start with no SecretInputs for this test to isolate the change")
+
+	withSecretInput := def
+	withSecretInput.SecretInputs = []string{"url"}
+
+	before := v1.TaskDescriptionSansClaims(v1.DescribeTask(def))
+	after := v1.TaskDescriptionSansClaims(v1.DescribeTask(withSecretInput))
+
+	require.Equal(t, digestOf(t, before), digestOf(t, after),
+		"declaring SecretInputs for a real field moved the task schema digest; the "+
+			"\"may hold a secret reference\" note taskInputNotes writes for it leaked into "+
+			"TaskDescriptionSansClaims, undoing the claims/schema digest split")
+}
+
 // TestClaimsSchemaVersionDistinguishesUnknownFromFalse is the fail-closed
 // direction a Codex review on #763 named: proto3 cannot mark a bool or a
 // repeated string field `optional`, so NeedsScope=false and SecretInputs=nil
