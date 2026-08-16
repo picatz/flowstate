@@ -25,8 +25,6 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	format := rendering.format
-
 	surface := newSurface(cmd)
 	workflowID := args[0]
 
@@ -71,7 +69,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 	//
 	// The exit status is still the run's outcome, so `flow get x -o json && ...`
 	// behaves the way the shell reader expects either way.
-	if format.Machine() {
+	//
+	// rendering.WantsDocument() rather than format.Machine() alone, so `flow get
+	// x --raw` with the default text format writes the GetResponse document too
+	// — the same fix writeRun and writeTaskOutputs already have, and without it
+	// this was the one run-answering verb --raw did not work alone on.
+	if rendering.WantsDocument() {
 		if err := writeRunJSON(surface, rendering, msg); err != nil {
 			return err
 		}
