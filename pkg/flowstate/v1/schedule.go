@@ -172,7 +172,7 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 			continue
 		}
 		seenCron[key] = true
-		cadences = append(cadences, cronMinimumPeriod(expression))
+		cadences = append(cadences, cronMinimumPeriod(expression, trigger.GetTimeZone()))
 	}
 
 	calendars := trigger.GetCalendars()
@@ -187,7 +187,7 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		if duplicate {
 			continue
 		}
-		cadences = append(cadences, calendarMinimumPeriod(calendar))
+		cadences = append(cadences, calendarMinimumPeriod(calendar, trigger.GetTimeZone()))
 	}
 
 	if len(cadences) == 0 {
@@ -203,7 +203,16 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		// will not schedule one — so charging the full requested range here
 		// counts firings that can never happen, over-estimating exactly the
 		// schedules a narrow start_at/end_at was written to keep small.
-		span := intersectedBackfillSpan(trigger, b)
+		//
+		// startInclusive is true when the trigger's own start_at, not the
+		// requested range's own start, ends up as the effective left edge.
+		// trigger.start_at bounds its window inclusively (its own doc
+		// comment says so), unlike the backfill range's own start, which the
+		// remainder handling below already treats as the exclusive edge of
+		// (start, end] — so a firing landing exactly on that boundary needs
+		// charging separately rather than falling out of the same arithmetic
+		// that already covers the end being inclusive.
+		span, startInclusive := intersectedBackfillSpan(trigger, b)
 
 		var firings int64
 		for _, period := range cadences {
@@ -221,6 +230,15 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 			// from a total another cadence was contributing honestly.
 			firings += int64(span / period)
 			if span%period != 0 {
+				firings++
+			}
+			if startInclusive {
+				// The trigger's own inclusive start can itself be a firing
+				// instant, one this cadence's span/period estimate — built
+				// for a half-open (start, end] range — does not otherwise
+				// count. Charged unconditionally, once per cadence, for the
+				// identical reason the remainder bump above is
+				// unconditional: an over-count here is the safe direction.
 				firings++
 			}
 			if firings > remaining {
@@ -242,12 +260,18 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 // A trigger without a start_at or an end_at is unbounded on that side, so the
 // requested range's own edge stands; both unset reduces to the requested
 // range untouched, which is the behavior before this bound existed.
-func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) time.Duration {
+//
+// The second return reports whether the trigger's own start_at, rather than
+// the requested range's own start, ended up as the effective left edge — see
+// this function's caller for why that boundary needs different treatment.
+func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) (time.Duration, bool) {
 	start, end := b.GetStartAt().AsTime(), b.GetEndAt().AsTime()
+	startFromTrigger := false
 
 	if ts := trigger.GetStartAt(); ts != nil {
 		if t := ts.AsTime(); t.After(start) {
 			start = t
+			startFromTrigger = true
 		}
 	}
 	if ts := trigger.GetEndAt(); ts != nil {
@@ -260,9 +284,9 @@ func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) time
 		// The trigger's window and the requested range do not overlap at all —
 		// nothing in this range can ever fire, so it contributes nothing to
 		// charge against the limit rather than a negative or wrapped span.
-		return 0
+		return 0, false
 	}
-	return end.Sub(start)
+	return end.Sub(start), startFromTrigger
 }
 
 // cronDedupeKey normalizes a cron expression to the same form
@@ -306,35 +330,42 @@ func stripCronComment(expression string) string {
 	return expression
 }
 
-// dstSpringForwardMargin bounds how much shorter a wall-clock day (or any
-// longer wall-clock period) can be than its nominal length, in a `time_zone`
-// that observes a standard one-hour spring-forward transition.
-//
-// Every cadence charged in whole wall-clock days here — a calendar with
-// nothing finer than a day populated, and the day-or-longer cron shorthands
-// below — assumes it cannot fire more than once per that many nominal days.
-// A spring-forward transition inside one gap between two such firings
-// shortens the real elapsed time by exactly the amount the clock skips, so
-// two local-midnight firings either side of the transition can be 23 real
-// hours apart, not 24. Charging the nominal length undercounts exactly there:
-// a calendar can fire twice in a range slightly over 23 hours while the
-// estimate still says once, which can let more than [MaxScheduleBackfillFirings]
-// real firings through when another cadence's count is close to the ceiling.
-//
-// A fall-back transition runs the other way — it lengthens a gap, which only
-// makes the estimate more conservative, so nothing here needs to account for
-// it. And this deliberately does not resolve `time_zone` against a real tzdata
-// entry to compute the actual transition: the estimate has to stay valid
-// across whichever zone the schedule names without evaluating one, the same
-// reason the cron and calendar estimates above never evaluate real fire
-// times, so a flat margin covering the standard one-hour case is what is
-// charged rather than a per-zone answer.
-const dstSpringForwardMargin = time.Hour
+// isUTC reports whether zone names no offset at all: the empty string
+// (unset, which [checkTimeZoneName] documents as meaning UTC) or a spelling
+// of UTC itself. Every other IANA name is a zone [wallClockCadencePeriod]
+// cannot inspect and therefore cannot bound.
+func isUTC(zone string) bool {
+	return zone == "" || strings.EqualFold(zone, "UTC") || strings.EqualFold(zone, "Etc/UTC")
+}
 
-// wallClockDayPeriod is the safe minimum period for a cadence that nominally
-// fires once every n wall-clock days, net of [dstSpringForwardMargin].
-func wallClockDayPeriod(n int) time.Duration {
-	return time.Duration(n)*24*time.Hour - dstSpringForwardMargin
+// wallClockCadencePeriod is the safe minimum period for a cadence that
+// nominally fires once every n wall-clock days, in the schedule's own
+// `time_zone`.
+//
+// UTC never observes an offset change — there is no daylight-saving or
+// political rule to apply to it — so a UTC cadence really is bound below by
+// its nominal length: two once-a-day firings cannot be less than 24 real
+// hours apart, ever. Any other named zone is a different problem entirely.
+// This package never resolves `time_zone` against real tzdata (see
+// [checkTimeZoneName]'s doc, and the package doc's rule about keeping I/O off
+// an author's keystroke path — the same reasoning that keeps this whole file
+// estimating rather than evaluating), so nothing here can rule out an offset
+// change of any particular size for whichever zone a schedule names.
+// IANA's database records changes far larger than the familiar one-hour
+// spring-forward case — Samoa's 2011 shift skipped a whole day — so a flat
+// margin bounded at any fixed value is not a safe minimum period for a zone
+// this code cannot inspect. A named zone is therefore charged the fastest
+// cadence there is, the identical fail-closed default an unrecognized cron
+// form gets in [cronMinimumPeriod]. That gives up the ergonomic win this
+// estimate exists for on exactly the schedules that ask for local wall-clock
+// behavior — a real cost, stated here rather than left implicit — but the
+// alternative is a bound this package cannot prove, and an unproven bound is
+// the exact shape of undercount #716 exists to close.
+func wallClockCadencePeriod(zone string, n int) time.Duration {
+	if isUTC(zone) {
+		return time.Duration(n) * 24 * time.Hour
+	}
+	return time.Second
 }
 
 // calendarMinimumPeriod reports the shortest interval a calendar can fire at,
@@ -350,9 +381,11 @@ func wallClockDayPeriod(n int) time.Duration {
 // the finest one is defaulted to zero and cannot multiply the count; anything
 // above it is free to be "every", which is already accounted for by the period
 // being no longer than that field's own unit. Second, minute and hour
-// resolutions are all finer than a day and so are never subject to
-// [dstSpringForwardMargin]; only the "fires at most once a day" default is.
-func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
+// resolutions are all finer than a day and are charged the same regardless of
+// zone; only the "fires at most once a day" default goes through
+// [wallClockCadencePeriod], because only that arm assumes a wall-clock day is
+// bounded below by anything at all.
+func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar, timeZone string) time.Duration {
 	switch {
 	case len(calendar.GetSecond()) > 0:
 		return time.Second
@@ -362,9 +395,8 @@ func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
 		return time.Hour
 	default:
 		// Second, minute and hour all default to zero, so the calendar fires at
-		// most once on any day it matches at all — net of a spring-forward
-		// transition landing between two such firings.
-		return wallClockDayPeriod(1)
+		// most once on any day it matches at all.
+		return wallClockCadencePeriod(timeZone, 1)
 	}
 }
 
@@ -379,15 +411,26 @@ func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
 // them one-second cadences estimates a two-day backfill of `@daily` at 172,800
 // firings and refuses it, when it produces two.
 //
+// triggerTimeZone is the schedule's own `time_zone`, read when the expression
+// carries no `CRON_TZ=`/`TZ=` prefix of its own — an expression's own prefix
+// overrides the schedule's zone for that one entry, the same precedence
+// Temporal itself gives it, so a day-or-longer shorthand's DST exposure is
+// decided by whichever zone actually governs it.
+//
 // Anything it cannot classify is charged the fastest cadence there is. That is
 // the fail-closed direction here: an over-estimate refuses a backfill somebody
 // then writes more narrowly, where an under-estimate is the fan-out this whole
 // check exists to stop.
-func cronMinimumPeriod(expression string) time.Duration {
+func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration {
 	expression = strings.TrimSpace(stripCronComment(expression))
 
+	zoneName := triggerTimeZone
 	if zone, rest, found := strings.Cut(expression, " "); found {
-		if strings.HasPrefix(zone, "CRON_TZ=") || strings.HasPrefix(zone, "TZ=") {
+		if after, ok := strings.CutPrefix(zone, "CRON_TZ="); ok {
+			zoneName = after
+			expression = strings.TrimSpace(rest)
+		} else if after, ok := strings.CutPrefix(zone, "TZ="); ok {
+			zoneName = after
 			expression = strings.TrimSpace(rest)
 		}
 	}
@@ -406,22 +449,22 @@ func cronMinimumPeriod(expression string) time.Duration {
 		// The fixed shorthands, each charged the shortest period it can mean:
 		// a month is charged 28 days and a year 365, because a lower bound on
 		// the period is an upper bound on the firings. Day-or-longer shorthands
-		// go through [wallClockDayPeriod] for the same reason
+		// go through [wallClockCadencePeriod] for the same reason
 		// [calendarMinimumPeriod]'s default case does: each fires on a
-		// wall-clock boundary, so a spring-forward transition between two
-		// firings can shorten the nominal period by up to
-		// [dstSpringForwardMargin]. @hourly is finer than a day and is not.
+		// wall-clock boundary, whose minimum gap this package can bound only
+		// in UTC. @hourly is finer than a day and is charged the same
+		// regardless of zone.
 		switch strings.ToLower(head) {
 		case "@hourly":
 			return time.Hour
 		case "@daily", "@midnight":
-			return wallClockDayPeriod(1)
+			return wallClockCadencePeriod(zoneName, 1)
 		case "@weekly":
-			return wallClockDayPeriod(7)
+			return wallClockCadencePeriod(zoneName, 7)
 		case "@monthly":
-			return wallClockDayPeriod(28)
+			return wallClockCadencePeriod(zoneName, 28)
 		case "@yearly", "@annually":
-			return wallClockDayPeriod(365)
+			return wallClockCadencePeriod(zoneName, 365)
 		default:
 			return time.Second
 		}

@@ -341,74 +341,144 @@ func TestScheduleBackfillIsChargedOnlyInsideTheTriggersOwnWindow(t *testing.T) {
 		"a trigger with no start_at/end_at is charged the full requested range, as before")
 }
 
-// TestScheduleBackfillCalendarCadenceSurvivesSpringForward is the regression
-// for the DST finding that landed after the union-vs-sum and window-
-// intersection fixes above: a calendar with no field finer than a day, or a
-// day-or-longer cron shorthand (@daily, @weekly, @monthly, @yearly), was
-// charged its exact nominal period — 24 hours for a day, and multiples of it
-// for the others — as its minimum gap between firings. A `time_zone`
-// observing a standard spring-forward transition can put two local-midnight
-// firings only 23 real hours apart, so charging the nominal 24 hours
-// undercounts by one firing across that boundary. On its own that one firing
-// is invisible; combined with a fast cadence already close to the ceiling in
-// the same range, it is the difference between a bound that holds and one
-// that does not — which is the dangerous direction, unlike the two
-// false-refusal bugs fixed above: this one lets more than
-// [v1.MaxScheduleBackfillFirings] real firings past the check rather than
-// merely refusing a legitimate schedule.
+// TestScheduleBackfillWallClockDayCadenceIsUnboundedOutsideUTC is the
+// regression for two rounds of the DST finding on the wall-clock-day arms —
+// a calendar with no field finer than a day, and the day-or-longer cron
+// shorthands (@daily, @weekly, @monthly, @yearly).
 //
-// The range below is constructed so the flip is exact rather than
-// approximate: a 23h30m span (inside the spring-forward window) combined
-// with an every-846ms cadence sized to contribute exactly 99,999 of its own
-// firings over that same range. The old 24-hour calendar period charges the
-// range's one day as a single firing (span < 24h), landing the total exactly
-// at the 100,000 ceiling — accepted, since the check refuses only what
-// exceeds it. The corrected 23-hour period charges the same range two
-// firings (span > 23h), landing the total one over the ceiling — refused.
-func TestScheduleBackfillCalendarCadenceSurvivesSpringForward(t *testing.T) {
+// Round one charged those cadences their exact nominal period (24 hours for
+// a day, multiples of it for the others). A `time_zone` observing a
+// spring-forward transition can put two local-midnight firings closer
+// together than that, so the nominal period undercounts — the dangerous
+// direction, unlike the two false-refusal bugs fixed above this test, since
+// combined with a fast cadence near the ceiling it can let more than
+// [v1.MaxScheduleBackfillFirings] real firings past the check.
+//
+// A fixed one-hour margin (round one's fix) closed the *standard*
+// spring-forward case but not the general one: this package never resolves
+// `time_zone` against real tzdata, so it cannot rule out a larger offset
+// change for whichever zone a schedule names — IANA's database records
+// changes far larger than one hour. So the actual fix charges a
+// wall-clock-day-or-longer cadence its exact nominal period only in UTC,
+// where no offset change can ever happen, and falls back to the fastest
+// cadence there is — one second, the same fail-closed default an
+// unclassifiable cron form gets — for any other named zone.
+func TestScheduleBackfillWallClockDayCadenceIsUnboundedOutsideUTC(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 
-	period := 846 * time.Millisecond
-	span := 84600*time.Second - period // 23h30m, less one period: an exact multiple of period.
-
-	trigger := &v1.ScheduleTrigger{
-		Every: durationpb.New(period),
-		Calendars: []*v1.ScheduleTrigger_Calendar{
-			// day_of_month is the field that satisfies "at least one field
-			// populated" without moving calendarMinimumPeriod off its default
-			// (day-resolution) case — only second/minute/hour do that.
-			{DayOfMonth: []*v1.ScheduleTrigger_Calendar_Range{{Start: 1, End: 31}}},
-		},
-	}
+	// The two-day span this file's own doc comments use as the running
+	// example: a calendar or @daily backfilled over it fires twice.
 	backfill := []*v1.ScheduleBackfill{{
-		StartAt: timestamppb.New(now.Add(-span)),
+		StartAt: timestamppb.New(now.Add(-48 * time.Hour)),
 		EndAt:   timestamppb.New(now),
 	}}
-
-	require.Equal(t, int64(99999), int64(span/period), "premise: the every-cadence alone must land exactly one firing short of the ceiling")
-
-	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
-		"a calendar with no sub-day field must be charged as though it can fire twice in a 23.5-hour range, "+
-			"not once, or a fast cadence already near the ceiling lets real firings past the bound")
-
-	// The day-or-longer cron shorthands share the fix: @daily in place of the
-	// calendar above must refuse the identical range for the identical reason.
-	trigger.Calendars = nil
-	trigger.Cron = []string{"@daily"}
-	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
-		"@daily must be charged the same spring-forward-aware period a calendar with no sub-day field is")
-
-	// A calendar or cron cadence finer than a day is unaffected: charged in
-	// hours, minutes or seconds, never in whole wall-clock days, so nothing
-	// here should change its behavior.
-	trigger.Cron = nil
-	trigger.Calendars = []*v1.ScheduleTrigger_Calendar{
-		{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}}},
+	// day_of_month is the field that satisfies "at least one field
+	// populated" without moving calendarMinimumPeriod off its default
+	// (day-resolution) case — only second/minute/hour do that.
+	dailyCalendar := &v1.ScheduleTrigger_Calendar{
+		DayOfMonth: []*v1.ScheduleTrigger_Calendar_Range{{Start: 1, End: 31}},
 	}
-	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
-		"an hour-resolution calendar was already charged its own count correctly before this fix, "+
-			"and this fix must not have touched that arithmetic")
+
+	t.Run("UTC (unset time_zone) keeps the exact nominal period", func(t *testing.T) {
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+			&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{dailyCalendar}}, backfill),
+			"a two-day backfill of a daily calendar in UTC fires twice — no offset change can ever "+
+				"shorten that gap, so the exact 24-hour period is a safe bound, not just a convenient one")
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+			&v1.ScheduleTrigger{Cron: []string{"@daily"}}, backfill),
+			"@daily in UTC is the identical case")
+	})
+
+	t.Run("a named time_zone falls back to the fastest cadence", func(t *testing.T) {
+		trigger := &v1.ScheduleTrigger{
+			TimeZone:  "America/New_York",
+			Calendars: []*v1.ScheduleTrigger_Calendar{dailyCalendar},
+		}
+		assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+			"a daily calendar in a named zone must be charged as though it could fire once a second — "+
+				"172,800 times over two days — not twice, because this package cannot rule out an offset "+
+				"change of any particular size for a zone it never resolves against real tzdata")
+
+		trigger.Calendars = nil
+		trigger.Cron = []string{"@daily"}
+		assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+			"@daily shares the same fallback as a calendar with no sub-day field")
+	})
+
+	t.Run("a cron expression's own CRON_TZ overrides the trigger's time_zone", func(t *testing.T) {
+		// The trigger names a zone; the expression's own prefix names UTC,
+		// which must win for that one entry and keep the exact nominal period.
+		trigger := &v1.ScheduleTrigger{
+			TimeZone: "America/New_York",
+			Cron:     []string{"CRON_TZ=UTC @daily"},
+		}
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill),
+			"the expression's own CRON_TZ=UTC must override the trigger's named zone for this entry")
+
+		// And the reverse: the trigger is UTC (unset), but this entry's own
+		// prefix names a zone, which must fall back to the fastest cadence.
+		trigger = &v1.ScheduleTrigger{Cron: []string{"TZ=America/New_York @daily"}}
+		assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+			"an expression's own TZ= prefix naming a zone must fall back, even with no trigger-level time_zone set")
+	})
+
+	t.Run("a calendar or cron cadence finer than a day is unaffected by zone", func(t *testing.T) {
+		trigger := &v1.ScheduleTrigger{
+			TimeZone:  "America/New_York",
+			Calendars: []*v1.ScheduleTrigger_Calendar{{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}}}},
+		}
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill),
+			"an hour-resolution calendar is charged in hours regardless of zone — only the "+
+				"\"fires at most once a day\" default depends on whether an offset change is possible")
+	})
+}
+
+// TestScheduleBackfillIntersectedStartIsInclusive is the regression for the
+// Codex finding on [intersectedBackfillSpan]'s own fix: the trigger's own
+// start_at bounds its window inclusively (its doc comment says so
+// explicitly), but when it becomes the effective left edge of a clipped
+// range, the firing-count arithmetic still treated it as the exclusive edge
+// of a (start, end] interval — the convention that arithmetic already uses
+// correctly for the *requested* range's own start, and for both ranges'
+// inclusive end. A firing landing exactly on that boundary went uncounted.
+func TestScheduleBackfillIntersectedStartIsInclusive(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+
+	// An epoch-aligned one-second cadence: exactly 100,000 seconds from
+	// start_at to end_at inclusive holds 100,001 possible firing instants
+	// (0 through 100000), one more than the span alone (100,000 seconds)
+	// accounts for.
+	trigger := &v1.ScheduleTrigger{
+		Every:   durationpb.New(time.Second),
+		StartAt: timestamppb.New(start),
+	}
+	// The requested range starts well before the trigger's own window, so
+	// start_at — not the request's own start — is the effective left edge
+	// intersectedBackfillSpan clips to.
+	requested := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(start.Add(-time.Hour)),
+		EndAt:   timestamppb.New(start.Add(100_000 * time.Second)),
+	}}
+
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, requested), "more than 100000 firings",
+		"the trigger's own start_at is inclusive, so this range can hold 100,001 firings, one more than "+
+			"the 100,000-second span alone accounts for — the ceiling must be reached, not merely approached")
+
+	// The identical span, entirely within the requested range's own edges —
+	// no trigger start_at to clip to — is accepted at exactly the ceiling:
+	// this proves the extra firing above is specifically about the
+	// trigger-clipped boundary, not a general off-by-one in the span math.
+	trigger = &v1.ScheduleTrigger{Every: durationpb.New(time.Second)}
+	requested = []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(start),
+		EndAt:   timestamppb.New(start.Add(100_000 * time.Second)),
+	}}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, requested),
+		"without a trigger start_at to clip to, the requested range's own start is the ordinary "+
+			"exclusive edge of (start, end], and 100,000 seconds at a one-second cadence is exactly "+
+			"the ceiling, not one over it")
 }
 
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
