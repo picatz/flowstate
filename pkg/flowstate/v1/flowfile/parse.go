@@ -483,15 +483,24 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 	return workflow, c.pos, nil
 }
 
-// yamlCoordinate matches the `[line:column]` a goccy error embeds in its own
-// message when it names a second position beside the one it fails at — a
-// duplicate key's earlier definition, for instance. It is goccy's own bracket
-// spelling, not this package's `line:column` one, so left untranslated it would
-// put a second, differently-punctuated position inside a message this package
-// otherwise renders through exactly one convention (see position.go and #384's
-// positionLine). Rewritten to prose rather than dropped, because the position it
-// names is still the information an author needs to resolve a duplicate key.
-var yamlCoordinate = regexp.MustCompile(`\[(\d+):(\d+)\]`)
+// yamlCoordinate matches the `at [line:column]` goccy's parser appends to a
+// duplicate-key message to name the earlier definition — see
+// parser.go's `"mapping key %q already defined at [%d:%d]"`. It is goccy's own
+// bracket spelling, not this package's `line:column` one, so left untranslated
+// it would put a second, differently-punctuated position inside a message this
+// package otherwise renders through exactly one convention (see position.go and
+// #384's positionLine). Rewritten to prose rather than dropped, because the
+// position it names is still the information an author needs to resolve a
+// duplicate key.
+//
+// Anchored on the literal `at ` prefix and the end of the string — the exact
+// shape the parser generates — rather than matching any `[N:M]`-shaped run
+// wherever it occurs. A looser match would also rewrite a key whose own name is
+// spelled that way: goccy quotes the key verbatim into the message ahead of
+// this suffix, so a mapping key literally named `[1:2]` produces `mapping key
+// "[1:2]" already defined at [3:4]`, and only the trailing, unquoted occurrence
+// is the parser's own position rather than the author's text.
+var yamlCoordinate = regexp.MustCompile(` at \[(\d+):(\d+)\]$`)
 
 // yamlSyntaxDiagnostics translates a failure from the YAML parser into the
 // [Diagnostic] grammar every other failure in this package speaks (#654).
@@ -527,7 +536,7 @@ func yamlSyntaxDiagnostics(err error) Diagnostics {
 		}
 	}
 
-	d.Message = yamlCoordinate.ReplaceAllString(d.Message, "line $1, column $2")
+	d.Message = yamlCoordinate.ReplaceAllString(d.Message, " at line $1, column $2")
 
 	return Diagnostics{d}
 }
