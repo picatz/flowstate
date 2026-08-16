@@ -179,3 +179,29 @@ func TestTaskSchemaDigestChangesWithSecretInputs(t *testing.T) {
 	require.NotEqual(t, digestOf(before), digestOf(after),
 		"secret_inputs gained an entry and the task schema digest did not change")
 }
+
+// TestClaimsSchemaVersionDistinguishesUnknownFromFalse is the fail-closed
+// direction a Codex review on #763 named: proto3 cannot mark a bool or a
+// repeated string field `optional`, so NeedsScope=false and SecretInputs=nil
+// decode identically whether a task genuinely claims nothing or a GetCatalog
+// response came from a deployment still on a build that predates these
+// fields entirely (a rolling upgrade's old-server, new-client case).
+// ClaimsSchemaVersion is the presence signal that resolves it, and this is
+// the test that a caller reading a catalog with no version set is told
+// "unknown", not handed a false that reads as "safe".
+func TestClaimsSchemaVersionDistinguishesUnknownFromFalse(t *testing.T) {
+	t.Parallel()
+
+	current := v1.Catalog()
+	require.True(t, v1.TaskDescriptionClaimsKnown(current),
+		"a catalog built by this binary reports its claim fields as unknown, "+
+			"which would make GetNeedsScope() and GetSecretInputs() look like honest answers on every task")
+
+	// The old-shaped response: every task's fields as DescribeTask would have
+	// produced them before #712, and no version at all — exactly what an old
+	// server's GetCatalog answers during a rolling upgrade.
+	old := &v1.TaskCatalog{Tasks: current.Tasks}
+	require.False(t, v1.TaskDescriptionClaimsKnown(old),
+		"a catalog with no ClaimsSchemaVersion reads as known, so a remote GetCatalog "+
+			"caller talking to an old deployment would trust its zero-valued needs_scope as an explicit no")
+}

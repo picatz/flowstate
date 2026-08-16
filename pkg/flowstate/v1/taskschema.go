@@ -441,6 +441,32 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 	return out
 }
 
+// CurrentClaimsSchemaVersion is [TaskCatalog.ClaimsSchemaVersion]'s current
+// value: every build carrying this constant populates NeedsScope,
+// SecretInputs, ShapesOutputs, DeferredInputs and ExpressionInputs on every
+// TaskDescription it produces. Bump it only alongside a change that adds or
+// redefines one of those fields, the same event that would justify a new
+// entry in the doc comment on ClaimsSchemaVersion itself.
+const CurrentClaimsSchemaVersion uint32 = 1
+
+// TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
+// be trusted to say when a task needs scope or accepts a secret, as opposed
+// to a zero value that means "never populated."
+//
+// Exists for the GetCatalog RPC specifically: `flow plugins` and `flow
+// tasks` build a [TaskCatalog] or [PluginCatalog] in the same process that
+// renders it, so there is no version skew to have an opinion about — but a
+// remote GetCatalog client can be talking to a deployment running an older
+// build mid-rollout, whose TaskDescriptions never had NeedsScope or
+// SecretInputs to set in the first place. proto3 gives no presence signal
+// for a bool or a repeated string field, so an old server's response and a
+// new server's honest "this task claims nothing" decode identically. Callers
+// deciding whether to trust a plugin must check this before reading either
+// field, and must treat false here as "unknown", never as "no" (#712).
+func TaskDescriptionClaimsKnown(catalog *TaskCatalog) bool {
+	return catalog.GetClaimsSchemaVersion() > 0
+}
+
 // Catalog describes everything this build can execute.
 //
 // Built from the registry rather than maintained, so a task added to it appears
@@ -452,12 +478,13 @@ func Catalog() *TaskCatalog {
 	defs := DefaultRegistry().All()
 
 	catalog := &TaskCatalog{
-		Tasks:         make([]*TaskDescription, 0, len(defs)),
-		CelLibraries:  ExtensionLibraries(),
-		CelFunctions:  catalogFunctions(),
-		DurationUnits: DurationUnits(),
-		NowIdentifier: NowIdentifier,
-		ValueRoots:    []string{VarsRoot, StepsRoot, InputsRoot, RunRoot, TriggerRoot},
+		Tasks:               make([]*TaskDescription, 0, len(defs)),
+		CelLibraries:        ExtensionLibraries(),
+		CelFunctions:        catalogFunctions(),
+		DurationUnits:       DurationUnits(),
+		NowIdentifier:       NowIdentifier,
+		ValueRoots:          []string{VarsRoot, StepsRoot, InputsRoot, RunRoot, TriggerRoot},
+		ClaimsSchemaVersion: CurrentClaimsSchemaVersion,
 	}
 
 	for _, def := range defs {

@@ -71,6 +71,28 @@ message TaskCatalog {
   // consumer that only wants to know the shape of the dialect should not have to
   // derive it from ninety names.
   repeated CELFunction cel_functions = 6;
+
+  // ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
+  // describing a task's security-relevant claims — started at 1 for
+  // needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
+  // expression_inputs (#712).
+  //
+  // Exists because proto3 cannot mark a bool or a repeated string field
+  // `optional`, so none of those five fields can distinguish "populated as
+  // false/empty" from "never populated, because the server that built this
+  // catalog predates them" on its own — an old GetCatalog server's response
+  // decodes needs_scope as false whether the task genuinely claims nothing
+  // or the field simply does not exist in that server's schema. This is the
+  // presence signal for the whole set instead of one per field, read once
+  // rather than reconstructed from five independent zero-checks.
+  //
+  // Zero means "this catalog predates every claim field" — the value on
+  // every GetCatalog response before this field existed, and the value an
+  // old server still on that build keeps returning during a rolling
+  // upgrade. A reader comparing this against zero, not the individual claim
+  // fields, is what tells "unknown" from "false": see
+  // [flowstatev1.TaskDescriptionClaimsKnown].
+  uint32 claims_schema_version = 7;
 }
 
 // CELFunction is one name an expression may call.

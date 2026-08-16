@@ -83,9 +83,30 @@ type TaskCatalog struct {
 	// groups these and what docs/DSL.md and the profile definition talk in, so a
 	// consumer that only wants to know the shape of the dialect should not have to
 	// derive it from ninety names.
-	CelFunctions  []*CELFunction `protobuf:"bytes,6,rep,name=cel_functions,json=celFunctions,proto3" json:"cel_functions,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CelFunctions []*CELFunction `protobuf:"bytes,6,rep,name=cel_functions,json=celFunctions,proto3" json:"cel_functions,omitempty"`
+	// ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
+	// describing a task's security-relevant claims — started at 1 for
+	// needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
+	// expression_inputs (#712).
+	//
+	// Exists because proto3 cannot mark a bool or a repeated string field
+	// `optional`, so none of those five fields can distinguish "populated as
+	// false/empty" from "never populated, because the server that built this
+	// catalog predates them" on its own — an old GetCatalog server's response
+	// decodes needs_scope as false whether the task genuinely claims nothing
+	// or the field simply does not exist in that server's schema. This is the
+	// presence signal for the whole set instead of one per field, read once
+	// rather than reconstructed from five independent zero-checks.
+	//
+	// Zero means "this catalog predates every claim field" — the value on
+	// every GetCatalog response before this field existed, and the value an
+	// old server still on that build keeps returning during a rolling
+	// upgrade. A reader comparing this against zero, not the individual claim
+	// fields, is what tells "unknown" from "false": see
+	// [flowstatev1.TaskDescriptionClaimsKnown].
+	ClaimsSchemaVersion uint32 `protobuf:"varint,7,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TaskCatalog) Reset() {
@@ -158,6 +179,13 @@ func (x *TaskCatalog) GetCelFunctions() []*CELFunction {
 		return x.CelFunctions
 	}
 	return nil
+}
+
+func (x *TaskCatalog) GetClaimsSchemaVersion() uint32 {
+	if x != nil {
+		return x.ClaimsSchemaVersion
+	}
+	return 0
 }
 
 // CELFunction is one name an expression may call.
@@ -737,7 +765,7 @@ var File_flowstate_v1_catalog_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/catalog.proto\x12\fflowstate.v1\"\x96\x02\n" +
+	"\x1aflowstate/v1/catalog.proto\x12\fflowstate.v1\"\xca\x02\n" +
 	"\vTaskCatalog\x123\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12#\n" +
 	"\rcel_libraries\x18\x02 \x03(\tR\fcelLibraries\x12%\n" +
@@ -745,7 +773,8 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x0enow_identifier\x18\x04 \x01(\tR\rnowIdentifier\x12\x1f\n" +
 	"\vvalue_roots\x18\x05 \x03(\tR\n" +
 	"valueRoots\x12>\n" +
-	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\"k\n" +
+	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\x122\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"k\n" +
 	"\vCELFunction\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
