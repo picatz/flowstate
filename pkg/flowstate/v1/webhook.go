@@ -263,42 +263,71 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 // the outer `event` would accept an idempotency key that names the same
 // value on every delivery.
 func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
-	return celExprReferencesFreeIdentifier(expression, name, nil)
+	return celExprReferencesFreeIdentifier(expression, name, false, maxIdentifierWalkDepth)
 }
 
-// celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk,
-// carrying the set of names an enclosing comprehension has bound so far.
-func celExprReferencesFreeIdentifier(expression *expr.Expr, name string, bound map[string]struct{}) bool {
-	if expression == nil {
+// maxIdentifierWalkDepth bounds [celExprReferencesFreeIdentifier]'s recursion.
+//
+// This walk reads an AST an outside party chose: the submit path accepts a
+// hand-built `RunRequest` carrying a `ParsedExpr` that never went through the
+// CEL parser, so nothing upstream has limited how deeply it nests. The 1 MiB
+// specification cap bounds bytes, and bytes are not depth — compact nested
+// nodes buy thousands of levels inside it, which is CLAUDE.md's rule about
+// bounding the resource the attacker actually controls. Depth is that
+// resource here, because the walk is recursive and the exhaustible thing is
+// the goroutine stack.
+//
+// Exceeding it answers "no free occurrence", which refuses the idempotency
+// key. That is the fail-closed direction: the alternative accepts a key on an
+// expression this function gave up reading.
+//
+// 32, the same bound and the same argument as [maxActivationDepth]. A real
+// idempotency key is a header lookup or a field selection, nowhere near it.
+const maxIdentifierWalkDepth = 32
+
+// celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk.
+//
+// shadowed records whether an enclosing comprehension has bound `name` — one
+// bool rather than the set of every enclosing binding, because that set was
+// only ever consulted about `name`. Carrying the set meant copying it at each
+// comprehension, which made the walk quadratic in nesting depth on exactly
+// the hand-built input described above: thousands of nested comprehensions
+// with distinct iterator names, each level copying every name bound above it.
+// One bool has nothing to copy, and shadowing is monotone — once `name` is
+// bound it stays bound for everything inside — so there is no pop to get
+// wrong either.
+func celExprReferencesFreeIdentifier(expression *expr.Expr, name string, shadowed bool, depth int) bool {
+	if expression == nil || depth <= 0 {
 		return false
 	}
+	depth--
 	switch kind := expression.GetExprKind().(type) {
 	case *expr.Expr_IdentExpr:
-		if _, shadowed := bound[kind.IdentExpr.GetName()]; shadowed {
+		if shadowed {
 			return false
 		}
 		return kind.IdentExpr.GetName() == name
 	case *expr.Expr_SelectExpr:
-		return celExprReferencesFreeIdentifier(kind.SelectExpr.GetOperand(), name, bound)
+		return celExprReferencesFreeIdentifier(kind.SelectExpr.GetOperand(), name, shadowed, depth)
 	case *expr.Expr_CallExpr:
-		if celExprReferencesFreeIdentifier(kind.CallExpr.GetTarget(), name, bound) {
+		if celExprReferencesFreeIdentifier(kind.CallExpr.GetTarget(), name, shadowed, depth) {
 			return true
 		}
 		for _, argument := range kind.CallExpr.GetArgs() {
-			if celExprReferencesFreeIdentifier(argument, name, bound) {
+			if celExprReferencesFreeIdentifier(argument, name, shadowed, depth) {
 				return true
 			}
 		}
 	case *expr.Expr_ListExpr:
 		for _, element := range kind.ListExpr.GetElements() {
-			if celExprReferencesFreeIdentifier(element, name, bound) {
+			if celExprReferencesFreeIdentifier(element, name, shadowed, depth) {
 				return true
 			}
 		}
 	case *expr.Expr_StructExpr:
 		for _, entry := range kind.StructExpr.GetEntries() {
-			if celExprReferencesFreeIdentifier(entry.GetMapKey(), name, bound) ||
-				celExprReferencesFreeIdentifier(entry.GetValue(), name, bound) {
+			if celExprReferencesFreeIdentifier(entry.GetMapKey(), name, shadowed, depth) ||
+				celExprReferencesFreeIdentifier(entry.GetValue(), name, shadowed, depth) {
 				return true
 			}
 		}
@@ -307,24 +336,21 @@ func celExprReferencesFreeIdentifier(expression *expr.Expr, name string, bound m
 
 		// iter_range and accu_init are evaluated in the *outer* scope — the
 		// comprehension's own variables are not bound yet when either runs.
-		if celExprReferencesFreeIdentifier(comprehension.GetIterRange(), name, bound) ||
-			celExprReferencesFreeIdentifier(comprehension.GetAccuInit(), name, bound) {
+		if celExprReferencesFreeIdentifier(comprehension.GetIterRange(), name, shadowed, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetAccuInit(), name, shadowed, depth) {
 			return true
 		}
 
-		inner := make(map[string]struct{}, len(bound)+3)
-		for existing := range bound {
-			inner[existing] = struct{}{}
-		}
+		inner := shadowed
 		for _, iterName := range []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()} {
-			if iterName != "" {
-				inner[iterName] = struct{}{}
+			if iterName != "" && iterName == name {
+				inner = true
 			}
 		}
 
-		return celExprReferencesFreeIdentifier(comprehension.GetLoopCondition(), name, inner) ||
-			celExprReferencesFreeIdentifier(comprehension.GetLoopStep(), name, inner) ||
-			celExprReferencesFreeIdentifier(comprehension.GetResult(), name, inner)
+		return celExprReferencesFreeIdentifier(comprehension.GetLoopCondition(), name, inner, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetLoopStep(), name, inner, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetResult(), name, inner, depth)
 	}
 	return false
 }

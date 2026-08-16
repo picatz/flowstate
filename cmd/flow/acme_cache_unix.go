@@ -57,7 +57,28 @@ func checkPathComponentsAreSafe(path string, uid uint32) error {
 		if err != nil {
 			return fmt.Errorf("resolving --tls-acme-cache path %s: %w", path, err)
 		}
-		path = wd + string(filepath.Separator) + path
+
+		// The *physical* cwd, which is not what os.Getwd necessarily answers:
+		// on Unix it returns $PWD when that names the same directory, and a
+		// shell's $PWD preserves the symlinks it was cd'd through. So a
+		// process started in `/srv/current`, where `current` is a symlink to
+		// `/srv/releases/7`, gets the logical path back.
+		//
+		// That matters because the kernel does not resolve a relative path
+		// that way. It resolves `cache` from the already-open cwd inode and
+		// never traverses `current` at all, so the walk below would be
+		// checking components no open of this path ever visits — and would
+		// refuse a configuration that is in fact safe, because `current` is a
+		// symlink and this function refuses those. The reverse error is the
+		// dangerous one and this does not create it: EvalSymlinks resolves to
+		// the same directory the kernel starts from, so the walk checks the
+		// components actually traversed rather than fewer of them.
+		physical, err := filepath.EvalSymlinks(wd)
+		if err != nil {
+			return fmt.Errorf("resolving --tls-acme-cache path %s: %w", path, err)
+		}
+
+		path = physical + string(filepath.Separator) + path
 	}
 
 	root := string(filepath.Separator)

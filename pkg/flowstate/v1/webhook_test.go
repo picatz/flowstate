@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // The mapping from a delivery to a run's inputs is the whole of what a webhook
@@ -304,4 +306,66 @@ func TestAWebhookIsFoundByName(t *testing.T) {
 	_, ok = v1.FindWebhookTrigger(workflow, "shopify")
 	assert.False(t, ok)
 	assert.Equal(t, []string{"stripe"}, v1.WebhookTriggerNames(workflow))
+}
+
+// TestAnIdempotencyKeyWalkIsBoundedInDepth covers the resource an attacker
+// controls here, which is neither bytes nor time. The submit path accepts a
+// hand-built `RunRequest` carrying a `ParsedExpr` that never went through the
+// CEL parser, so the specification's 1 MiB cap is the only upstream limit and
+// it bounds size rather than nesting: compact nodes buy thousands of levels
+// inside it. The walk is recursive, so what runs out is the stack.
+//
+// Built as protobuf rather than parsed, deliberately. Going through NewExpr
+// would test cel-go's parser nesting limit instead, and the whole premise of
+// this path is a specification that never met the parser.
+//
+// Nested past the bound, the answer must be the refusing one. Reading the key
+// as delivery-dependent on an expression the walk gave up on is the open
+// direction, and CLAUDE.md's rule is that a component which allows when it
+// cannot decide eventually allows everything.
+func TestAnIdempotencyKeyWalkIsBoundedInDepth(t *testing.T) {
+	t.Parallel()
+
+	// Deeper than the bound by a wide margin, and deep enough that a walk
+	// copying its binding set at every level would be doing millions of map
+	// insertions rather than thousands of comparisons.
+	const depth = 5000
+
+	// The innermost expression genuinely names the delivery root, so nothing
+	// but the depth bound can be what refuses this.
+	inner := &expr.Expr{ExprKind: &expr.Expr_IdentExpr{
+		IdentExpr: &expr.Expr_Ident{Name: v1.EventRoot},
+	}}
+
+	// Each level binds a *distinct* iterator name, which is the shape that
+	// made the old set-copying walk quadratic: nothing is ever shadowed, so
+	// the set only grew.
+	for i := range depth {
+		inner = &expr.Expr{ExprKind: &expr.Expr_ComprehensionExpr{
+			ComprehensionExpr: &expr.Expr_Comprehension{
+				IterVar: "v" + strconv.Itoa(i),
+				AccuVar: "a" + strconv.Itoa(i),
+				IterRange: &expr.Expr{ExprKind: &expr.Expr_ListExpr{
+					ListExpr: &expr.Expr_CreateList{},
+				}},
+				AccuInit: &expr.Expr{ExprKind: &expr.Expr_ListExpr{
+					ListExpr: &expr.Expr_CreateList{},
+				}},
+				LoopCondition: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+				LoopStep: inner,
+				Result: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{
+					ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_BoolValue{BoolValue: true}},
+				}},
+			},
+		}}
+	}
+
+	key := &v1.Value{Kind: &v1.Value_Expr{
+		Expr: &expr.ParsedExpr{Expr: inner},
+	}}
+
+	assert.Error(t, v1.CheckWebhookIdempotencyKey("deep", key),
+		"a key nested past the walk's depth bound was accepted as delivery-dependent")
 }
