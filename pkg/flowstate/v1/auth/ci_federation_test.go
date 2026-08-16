@@ -479,6 +479,88 @@ func TestNamespaceMapValidation(t *testing.T) {
 	}
 }
 
+// TestNamespaceMapExplicitNullIsRefused is the regression for the finding
+// Codex raised on PR #744: constructing a TrustedIssuer directly in Go can
+// never produce a NamespaceMap that is present-but-null, because a Go map
+// literal has no such state — only decoding a document that spells the key
+// out can. So this goes through [auth.ParsePolicy] with literal YAML, the
+// only path that can reproduce the bug: namespace_map: null (or a bare
+// namespace_map: with nothing after the colon, YAML's other spelling of the
+// same null) must be refused at load, not silently treated the same as the
+// key never having been written — which would fall the entry back to
+// namespace_claim's raw-value grammar check with no map involved at all.
+func TestNamespaceMapExplicitNullIsRefused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "namespace_map: null",
+			yaml: `
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository_owner
+    namespace_map: null
+`,
+		},
+		{
+			name: "namespace_map: with nothing after the colon",
+			yaml: `
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository_owner
+    namespace_map:
+`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := auth.ParsePolicy([]byte(test.yaml))
+			require.Error(t, err, "a null namespace_map must be refused at load")
+			assert.ErrorIs(t, err, auth.ErrInvalidPolicy)
+			assert.Contains(t, err.Error(), "namespace_map")
+		})
+	}
+
+	t.Run("a genuinely absent namespace_map is unaffected", func(t *testing.T) {
+		// The control: namespace_claim alone, with no namespace_map key
+		// anywhere in the document, is the pre-existing, supported,
+		// grammar-checked mode and must keep loading cleanly.
+		policy, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository_owner
+`))
+		require.NoError(t, err)
+		require.Len(t, policy.Issuers, 1)
+		assert.Nil(t, policy.Issuers[0].NamespaceMap)
+	})
+
+	t.Run("a populated namespace_map still loads and resolves through the map", func(t *testing.T) {
+		policy, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: ci
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    namespace_claim: repository
+    namespace_map:
+      acme-org/service-a: team-a
+`))
+		require.NoError(t, err)
+		require.Len(t, policy.Issuers, 1)
+		assert.Equal(t, map[string]string{"acme-org/service-a": "team-a"}, map[string]string(policy.Issuers[0].NamespaceMap))
+	})
+}
+
 // TestCIClaimsCarriedIntoRunIdentity records which claims survive the step from
 // a verified caller to the identity a run acts as, since that is what an
 // authorization rule downstream reads.
