@@ -88,7 +88,12 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task, identity *v1.WorkloadIdentity) error {
 	if err := v1.CheckTaskPolicy(ctx, task.GetName(), identity); err != nil {
 		recordTaskOutcome(span, err)
-		return activityError(task.GetName(), err)
+		// Never benign: a deployment's task-shape policy denying dispatch is
+		// not the failure `continue_on_error:` describes — it is the
+		// deployment refusing to run the task at all, which is exactly the
+		// kind of thing an operator's alerting should still see regardless
+		// of what the step's own policy tolerates.
+		return activityError(task.GetName(), err, false)
 	}
 	return nil
 }
@@ -106,7 +111,16 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 // can carry identity at all. Added as a parameter rather than read from
 // anywhere ambient, because this activity — unlike [TaskInScope] — never
 // receives a [v1.Scope], so there is nothing else on this call to carry it.
-func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity) (*v1.Node_Outputs, error) {
+//
+// continueOnError is the step's own `continue_on_error:` (#750,
+// [v1.StepPolicy.GetContinueOnError]), threaded the identical way: read at
+// [executor.dispatch] from the node's policy, which is workflow-side and
+// already in hand there, and carried across the activity boundary as a
+// parameter because that is the only way it reaches [activityError], which
+// runs here on the worker. It only ever categorizes the *Temporal* error this
+// activity returns — see [activityError]'s own doc for why that is a
+// heuristic and not a correctness signal.
+func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
@@ -142,7 +156,7 @@ func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity) (*v
 	out, err := task.Eval(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(identity)), nil)
 	recordTaskOutcome(span, err)
 
-	return out, activityError(task.GetName(), err)
+	return out, activityError(task.GetName(), err, continueOnError)
 }
 
 // TaskWithPrev executes a task that evaluates expressions itself and therefore
@@ -158,6 +172,11 @@ func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity) (*v
 // run still in flight the day this deploys. identity therefore stays nil here,
 // deliberately: no pre-scope run ever carried one to lose, and [v1.WorkloadIdentity]
 // nil reads as every field empty, exactly as an absent one always has.
+//
+// The same freeze rules out a continueOnError parameter (#750): a pre-scope
+// run's history never recorded one, so it stays uncategorized here rather
+// than benign — the frozen signature has no way to carry it, and inventing a
+// value this activity was never told would be a guess dressed as a fact.
 func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutputs) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
@@ -176,7 +195,7 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 	out, err := task.Eval(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(nil)), prev)
 	recordTaskOutcome(span, err)
 
-	return out, activityError(task.GetName(), err)
+	return out, activityError(task.GetName(), err, false)
 }
 
 // TaskInScope executes a task that evaluates expressions itself, against the scope
@@ -192,7 +211,10 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 // against a response that does not exist until the request has been made, so they
 // cannot be resolved before the activity is scheduled — and they may still name a
 // binding from the loop the step sits in.
-func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_Outputs, error) {
+//
+// continueOnError carries the step's `continue_on_error:` across the activity
+// boundary the same way it does on [Task] — see that parameter's doc.
+func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOnError bool) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, "")
 	defer span.End()
 
@@ -219,7 +241,7 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_
 	out, err := task.EvalInScope(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(scope.GetIdentity())), scope)
 	recordTaskOutcome(span, err)
 
-	return out, activityError(task.GetName(), err)
+	return out, activityError(task.GetName(), err, continueOnError)
 }
 
 // activityError translates a task failure into an error carrying Temporal's
@@ -231,7 +253,26 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope) (*v1.Node_
 // failure wastes the budget, and for a non-idempotent request repeats an
 // operation that already took effect. Classification happens in the
 // execution-independent layer; this function only maps it onto the substrate.
-func activityError(taskName string, err error) error {
+//
+// continueOnError is the step's own `continue_on_error:` (#750), threaded in
+// from every caller's own parameter of the same name — see [Task]'s doc for
+// where it originates and why it has to cross the activity boundary as an
+// argument rather than being read from anywhere ambient. When set, every
+// branch below adds [temporal.ApplicationErrorCategoryBenign], which is what
+// lets an operator's category-aware metrics or alerting distinguish a
+// failure the workflow author already told the system to tolerate from one
+// that needs a human.
+//
+// This is a heuristic, not a verdict on the failure's cause: `continue_on_error`
+// is a property of the *step*, decided before any particular attempt runs, so
+// it categorizes every failure that step produces as benign — including one
+// the author did not anticipate. A step tolerant of a flaky upstream's 5xxs
+// still marks a genuine bug in its own input expression benign by the same
+// flag. That is the same shape the SDK's own docs describe the category for
+// (logging and metrics behavior, not correctness), so nothing downstream of
+// this function should treat the category as validating what went wrong —
+// only as "this step's author said failures here are expected."
+func activityError(taskName string, err error, continueOnError bool) error {
 	if err == nil {
 		return nil
 	}
@@ -245,6 +286,11 @@ func activityError(taskName string, err error) error {
 	// the same sentence under either driver.
 	message := v1.StepErrorText(err)
 
+	var category temporal.ApplicationErrorCategory
+	if continueOnError {
+		category = temporal.ApplicationErrorCategoryBenign
+	}
+
 	if kind.Retryable() {
 		// A failure that told us when to come back gets that carried to the
 		// substrate, which schedules the next attempt. The alternative — sleeping
@@ -257,6 +303,7 @@ func activityError(taskName string, err error) error {
 				temporal.ApplicationErrorOptions{
 					Cause:          err,
 					NextRetryDelay: delay,
+					Category:       category,
 				})
 		}
 
@@ -265,9 +312,15 @@ func activityError(taskName string, err error) error {
 		// explicitly now so the message carries the canonical text; the retry
 		// semantics are the same, and the type names the classification.
 		return temporal.NewApplicationErrorWithOptions(message, kind.String(),
-			temporal.ApplicationErrorOptions{Cause: err})
+			temporal.ApplicationErrorOptions{Cause: err, Category: category})
 	}
-	return temporal.NewNonRetryableApplicationError(message, kind.String(), err)
+
+	// NewNonRetryableApplicationError has no Options variant that also takes a
+	// category, so a tolerated non-retryable failure is built the same way the
+	// retryable arms are, with NonRetryable pinned explicitly instead of relying
+	// on the constructor that cannot also carry Category.
+	return temporal.NewApplicationErrorWithOptions(message, kind.String(),
+		temporal.ApplicationErrorOptions{Cause: err, NonRetryable: true, Category: category})
 }
 
 // The first-party spans, and the two rules that decide their whole shape.

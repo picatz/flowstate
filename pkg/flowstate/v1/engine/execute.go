@@ -761,9 +761,9 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 			// being resolved locally at each end.
 			Profile: e.scope.GetProfile(),
 		}
-		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), &out)
+		evalErr = e.dispatch(stepCtx, resolved, compact, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
 	} else {
-		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), &out)
+		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
 	}
 	if evalErr != nil {
 		return nodeFailed(evalErr)
@@ -791,29 +791,39 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 // [TaskWithPrev] is not dispatched here at all — it exists only to replay a
 // run whose history predates this split, so it is not one of these four arms
 // and never receives identity; see its own doc.
+//
+// continueOnError is the step's `continue_on_error:` (#750), read by the one
+// caller in [runTask] from `node.GetPolicy()` while it still has the node in
+// hand, and threaded through every arm below to [activityError] — see
+// [Task]'s doc for why it has to travel as an activity argument rather than
+// being recovered on the workflow side after the fact. [runUndoTask] passes
+// false: a compensation's failure is never the tolerated case
+// `continue_on_error` describes, whatever the step it is undoing was
+// configured to tolerate.
 func (e *executor) dispatch(
 	ctx workflow.Context,
 	resolved *v1.Task,
 	scope *v1.Scope,
 	needsAuthority bool,
 	stepID string,
+	continueOnError bool,
 	out *v1.Node_Outputs,
 ) error {
 	if scope != nil {
 		if needsAuthority {
 			return workflow.ExecuteActivity(ctx, "TaskInScopeAuthorized", resolved, scope,
-				e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
+				e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 		}
 
-		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope).Get(ctx, out)
+		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope, continueOnError).Get(ctx, out)
 	}
 
 	if needsAuthority {
 		return workflow.ExecuteActivity(ctx, "TaskAuthorized", resolved,
-			e.identity, e.spec.GetName(), e.runID, stepID).Get(ctx, out)
+			e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 	}
 
-	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity).Get(ctx, out)
+	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity, continueOnError).Get(ctx, out)
 }
 
 // runUndoTask runs one registered compensation as an activity.
@@ -884,7 +894,7 @@ func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, wit
 		}
 	}
 
-	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), &out)
+	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), false, &out)
 	if err == nil {
 		return nil
 	}

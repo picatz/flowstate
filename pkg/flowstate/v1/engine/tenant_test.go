@@ -29,7 +29,7 @@ func tenantWorker(t *testing.T, tenant string) *testsuite.TestWorkflowEnvironmen
 		Interceptors: []interceptor.WorkerInterceptor{engine.TenantInterceptor(tenant)},
 	})
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task).Maybe()
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task).Maybe()
 
 	return env
 }
@@ -160,7 +160,7 @@ func TestUnrestrictedWorkerIsUnchanged(t *testing.T) {
 		suite := &testsuite.WorkflowTestSuite{}
 		env := suite.NewTestWorkflowEnvironment()
 		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task).Maybe()
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task).Maybe()
 
 		env.ExecuteWorkflow(engine.Run, runFor(namespace))
 

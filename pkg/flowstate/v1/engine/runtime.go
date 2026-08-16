@@ -88,7 +88,7 @@ func orEmptyIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
 // a workload to anyone reading the collector, and a trace does not need them to
 // say which step ran. See the span rules in activities.go.
 
-func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) (*v1.Node_Outputs, error) {
+func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, stepID)
 	defer span.End()
 
@@ -114,10 +114,10 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 	out, err := task.Eval(ctx, nil)
 	recordTaskOutcome(span, err)
 
-	return out, activityError(task.GetName(), err)
+	return out, activityError(task.GetName(), err, continueOnError)
 }
 
-func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) (*v1.Node_Outputs, error) {
+func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
 	ctx, span := startTaskSpan(ctx, task, stepID)
 	defer span.End()
 
@@ -135,5 +135,5 @@ func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task
 	out, err := task.EvalInScope(ctx, scope)
 	recordTaskOutcome(span, err)
 
-	return out, activityError(task.GetName(), err)
+	return out, activityError(task.GetName(), err, continueOnError)
 }
