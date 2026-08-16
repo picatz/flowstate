@@ -109,6 +109,26 @@ type executor struct {
 	// is the one that stops moving the moment the run descends into anything.
 	progress *progress
 
+	// detailsCtx is the context [workflow.SetCurrentDetails] is called through —
+	// deliberately *not* [executor.ctx]. The SDK's built-in
+	// `__temporal_workflow_metadata` query is answered from the WorkflowOptions
+	// pointer installed on the workflow's own root context, established once by
+	// the SDK before the registered workflow function is even invoked; a value
+	// field on that struct (SetCurrentDetails' target) is a plain string, copied
+	// by value rather than shared by reference the way [progress]'s pointer or
+	// [signals]'s channel are. Any `workflow.With*` call that forks
+	// WorkflowOptions — `workflow.WithDataConverter`, which
+	// [withSignalDeliveryCompat] calls to reach [signalDeliveryCompatConverter] —
+	// installs a *new* WorkflowOptions copy on the context it returns, so a
+	// SetCurrentDetails call made through [executor.ctx] (downstream of that
+	// fork) silently writes a field the built-in query never reads again.
+	// Captured once, at the very top of [runWorkflow], before any such fork, and
+	// carried unchanged everywhere [progress] is — see that field's own doc for
+	// why a concurrent branch or iteration carries neither: SetCurrentDetails is
+	// only ever called guarded on progress being non-nil (execute.go), so this
+	// is meaningless and left unset wherever progress is nil too.
+	detailsCtx workflow.Context
+
 	// waits is the set of signal waits parked in this run, for the same query
 	// handler to answer from.
 	//
@@ -243,15 +263,34 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		e.setFrame(depth, i)
 		e.progress.enter(depth, node.GetId())
 
-		// Deterministic and pure — [progress.currentDetailsMarkdown] only
-		// formats state [e.progress] already holds, the same values
+		// Guarded on e.progress being non-nil, the same guard [progress.enter]
+		// above already applies internally — see the field's own doc comment:
+		// a parallel branch, a concurrent for_each iteration, and an async
+		// step's executor all deliberately carry progress: nil, because a
+		// position is singular and cannot be claimed by one of several
+		// branches. Calling this unconditionally would let one of those
+		// nil-progress executors' empty currentDetailsMarkdown() overwrite the
+		// *parent* run's still-accurate details for the duration of the
+		// concurrent work — SetCurrentDetails has no concept of "this
+		// executor has nothing to say," only the last value written, so
+		// silence has to mean "do not call" rather than "call with empty."
+		//
+		// Deterministic and pure otherwise — [progress.currentDetailsMarkdown]
+		// only formats state [e.progress] already holds, the same values
 		// [ProgressQuery] already answers with, so this writes no history
 		// event and does no I/O; see that method's doc for the format and for
 		// why it is safe to call on every transition rather than rate-limited.
 		// Surfaces the same position through the SDK's own Details/Timeline
 		// views that [ProgressQuery] already answers over RPC (#753), so the
 		// two never have a second source of truth to drift from each other.
-		workflow.SetCurrentDetails(e.ctx, e.progress.currentDetailsMarkdown())
+		//
+		// Through [e.detailsCtx], never [e.ctx] — see [executor.detailsCtx]'s
+		// doc for why calling this through the ordinary execution context
+		// writes a WorkflowOptions copy the built-in metadata query never
+		// reads back.
+		if e.progress != nil {
+			workflow.SetCurrentDetails(e.detailsCtx, e.progress.currentDetailsMarkdown())
+		}
 
 		// Only the node the resume path points at continues descending into a
 		// saved position; everything after it starts fresh.
@@ -568,10 +607,11 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// Shared by pointer with the caller, for the same reasons the top-level
 		// executor shares them with every nested one: a signal or a compensation
 		// belongs to the run, not to the level that happens to be executing.
-		signals:  e.signals,
-		progress: e.progress,
-		waits:    e.waits,
-		undo:     e.undo,
+		signals:    e.signals,
+		progress:   e.progress,
+		detailsCtx: e.detailsCtx,
+		waits:      e.waits,
+		undo:       e.undo,
 
 		// Composed with the scope this call itself sits in, not always
 		// [v1.UndoScopeCall] — see [v1.UndoScope.IntoCall]. A call reached from
@@ -1227,10 +1267,11 @@ func (e *executor) runLoopIteration(loop *v1.Loop, stateName string, state *v1.V
 		processed: e.processed,
 		frames:    e.frames,
 
-		signals:  e.signals,
-		progress: e.progress,
-		waits:    e.waits,
-		undo:     e.undo,
+		signals:    e.signals,
+		progress:   e.progress,
+		detailsCtx: e.detailsCtx,
+		waits:      e.waits,
+		undo:       e.undo,
 
 		// Composed with the scope this loop itself sits in, not always
 		// [v1.UndoScopeLoop] — see [v1.UndoScope.IntoLoop]. A loop body is an
@@ -1312,10 +1353,11 @@ func (e *executor) runIteration(loop *v1.ForEach, iterator string, item *v1.Valu
 		// The run's carry, by pointer. A wait in a loop body consumes from the
 		// same place a top-level one does, and consuming it here has to remove it
 		// for the whole run.
-		signals:  e.signals,
-		progress: e.progress,
-		waits:    e.waits,
-		undo:     e.undo,
+		signals:    e.signals,
+		progress:   e.progress,
+		detailsCtx: e.detailsCtx,
+		waits:      e.waits,
+		undo:       e.undo,
 
 		// The concurrent scope is merged by structural position at the parent.
 		undoScope: v1.UndoScopeConcurrent,
