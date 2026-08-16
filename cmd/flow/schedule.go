@@ -77,6 +77,9 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := v1.CheckScheduleBackfillForTrigger(workflow.GetTriggers().GetSchedule(), backfills); err != nil {
+		return err
+	}
 
 	request := &v1.CreateScheduleRequest{
 		Workflow: workflow,

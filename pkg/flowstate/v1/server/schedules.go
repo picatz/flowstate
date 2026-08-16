@@ -147,7 +147,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 			"workflow %q cannot be scheduled: %w", workflow.GetName(), err))
 	}
 
-	if err := v1.CheckScheduleBackfill(req.Msg.GetBackfill()); err != nil {
+	if err := v1.CheckScheduleBackfillForTrigger(trigger, req.Msg.GetBackfill()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
