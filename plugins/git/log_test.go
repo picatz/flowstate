@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -262,6 +265,159 @@ func TestGitLogReportsTruncatedWhenTotalMessageBudgetExceeded(t *testing.T) {
 			"being a distinct, independently reachable bound", len(out.Commits), maxMaxCommits)
 	}
 }
+
+func TestLogMetadataBytesBoundsIdentities(t *testing.T) {
+	base := object.Commit{
+		Author:       object.Signature{Name: "A", Email: "a@example.com"},
+		Committer:    object.Signature{Name: "C", Email: "c@example.com"},
+		ParentHashes: make([]plumbing.Hash, maxLogParents),
+	}
+	charged, err := logMetadataBytes(&base)
+	if err != nil {
+		t.Fatalf("metadata at the documented parent limit was refused: %v", err)
+	}
+	// Parent hashes are charged here even though their count is refused
+	// upstream: they are still bytes this page will serialize.
+	want := len("A") + len("a@example.com") + len("C") + len("c@example.com") +
+		maxLogParents*len(plumbing.ZeroHash.String())
+	if charged != want {
+		t.Fatalf("charged %d bytes, want %d - every variable-length field has to be charged", charged, want)
+	}
+
+	oversizedIdentity := base
+	oversizedIdentity.Author.Name = strings.Repeat("a", maxLogIdentityBytes+1)
+	if _, err := logMetadataBytes(&oversizedIdentity); !errors.Is(err, errCommitMetadataTooLarge) {
+		t.Fatalf("metadata with an oversized author name: err = %v, want errCommitMetadataTooLarge", err)
+	}
+}
+
+// TestParentBoundIsEnforcedBeforeTheParentsAreExpanded is the direction the
+// bound exists for. Charged in collectLogCommits, the parent count is read
+// after multiRootCommitIter.Next has already appended every entry to the walk's
+// own stack - so the check refuses a copy of an allocation the repository
+// already made the walk pay for, and never runs at all when a path filter
+// discards the commit first. Asserted by watching the stack, because "returns
+// an error" is equally true of a check that runs too late.
+func TestParentBoundIsEnforcedBeforeTheParentsAreExpanded(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	repo, err := git.PlainOpen(remote)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	real, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		t.Fatalf("CommitObject: %v", err)
+	}
+
+	// One commit carrying more parents than the bound reads. The parent
+	// hashes deliberately resolve to nothing: the refusal has to happen
+	// before the walk ever looks one of them up.
+	monster := *real
+	monster.ParentHashes = make([]plumbing.Hash, maxLogParents+1)
+	for i := range monster.ParentHashes {
+		monster.ParentHashes[i] = plumbing.NewHash(fmt.Sprintf("%040x", i+1))
+	}
+	encoded := repo.Storer.NewEncodedObject()
+	if err := monster.Encode(encoded); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	hash, err := repo.Storer.SetEncodedObject(encoded)
+	if err != nil {
+		t.Fatalf("SetEncodedObject: %v", err)
+	}
+
+	iter := newMultiRootCommitIter(repo, []plumbing.Hash{hash}, map[plumbing.Hash]bool{})
+	if _, err := iter.Next(); !errors.Is(err, errCommitMetadataTooLarge) {
+		t.Fatalf("Next: err = %v, want errCommitMetadataTooLarge", err)
+	}
+	if got := len(iter.Frontier()); got != 0 {
+		t.Fatalf("the walk's stack holds %d hashes after the refusal, want 0 - the parents were "+
+			"expanded onto it before the bound refused them, which is the allocation the bound "+
+			"exists to prevent", got)
+	}
+}
+
+// TestCommitMetadataRefusalIsNotAResumablePage is the other half: a per-commit
+// refusal is permanent, so it must leave as an error rather than as a
+// truncated page. A page would carry the rejected commit in next_cursor, the
+// resume would refuse it again, and doLogWithBounds would read the truncated
+// zero-commit result as a shallow boundary and report that the cursor is too
+// far behind the tips - a diagnostic describing something that did not happen,
+// after retrying every clone depth to produce it.
+func TestCommitMetadataRefusalIsNotAResumablePage(t *testing.T) {
+	remote := newBareRemote(t)
+	seedRemote(t, remote, "main")
+	repo, err := git.PlainOpen(remote)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+
+	commits, truncated, discarded, err := collectLogCommits(repo,
+		&oneCommitIter{commit: &object.Commit{
+			Hash:   head.Hash(),
+			Author: object.Signature{Name: strings.Repeat("a", maxLogIdentityBytes+1)},
+		}}, maxMaxCommits)
+	if !errors.Is(err, errCommitMetadataTooLarge) {
+		t.Fatalf("collectLogCommits: err = %v, want errCommitMetadataTooLarge", err)
+	}
+	if commits != nil || truncated || discarded != nil {
+		t.Fatalf("collectLogCommits = (%v, %v, %v), want no page at all - a page here names the "+
+			"rejected commit in next_cursor, and resuming it can only refuse the same commit again",
+			commits, truncated, discarded)
+	}
+
+	// And it reaches an author as a sentence naming what to write instead,
+	// rather than as the bare sentinel the default classification renders.
+	if got := classifyGitError(fmt.Errorf("walk: %w", errCommitMetadataTooLarge)); got == nil ||
+		!strings.Contains(got.Error(), "narrow the walk with since or path") {
+		t.Fatalf("classifyGitError = %v, want a diagnostic naming the walk to write instead", got)
+	}
+}
+
+// oneCommitIter hands collectLogCommits exactly one commit, so a per-commit
+// bound can be exercised against a commit no repository would let a test push.
+type oneCommitIter struct {
+	commit *object.Commit
+	done   bool
+}
+
+func (it *oneCommitIter) Next() (*object.Commit, error) {
+	if it.done {
+		return nil, io.EOF
+	}
+	it.done = true
+	return it.commit, nil
+}
+
+func (it *oneCommitIter) ForEach(cb func(*object.Commit) error) error {
+	for {
+		c, err := it.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := cb(c); err != nil {
+			if err == storer.ErrStop {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func (it *oneCommitIter) Close() {}
 
 // TestGitLogPathFilterFindsOnlyTouchingCommits proves path narrows results
 // to commits that actually touched it, not merely that it does not crash -

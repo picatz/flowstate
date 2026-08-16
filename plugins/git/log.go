@@ -416,13 +416,28 @@ func resolveOptionalRef(repo *git.Repository, ref string) (plumbing.Hash, error)
 	return resolve(repo, ref)
 }
 
+// errCommitMetadataTooLarge marks a commit refused for its own metadata, as
+// against a page that stopped because a budget ran out.
+//
+// The distinction decides what may be handed back. A budget refills on the next
+// call, so the commit that exhausted one is pushed back, named in next_cursor,
+// and collected by the page after - the cursor makes progress. A commit larger
+// than a per-commit limit does not become smaller on the next call: a cursor
+// naming it would refuse it again forever, and doLogWithBounds would read the
+// resulting truncated zero-commit page as a shallow boundary, retry every clone
+// depth, and finally report that the cursor is too far behind the tips, which is
+// not what happened. So this leaves as an error rather than as a page.
+var errCommitMetadataTooLarge = errors.New("commit metadata exceeds what git.log reads")
+
 // collectLogCommits walks iter, keeping at most maxCommits entries and
-// stopping early - reporting truncated: true - the moment either bound is
-// reached: maxCommits entries collected, or maxTotalLogMessageBytes worth of
-// message text collected across them, whichever comes first. Both bounds
-// exist independently (see validate.go's own doc comment on
-// maxTotalLogMessageBytes): a repository with few, enormous commit messages
-// can exceed the byte budget long before it exceeds the count.
+// stopping early - reporting truncated: true - the moment any budget is
+// reached: maxCommits entries collected, maxTotalLogMessageBytes worth of
+// message text, or maxTotalLogMetadataBytes worth of identities and parent
+// hashes, whichever comes first. A per-commit identity limit is checked
+// before that attacker-controlled value is copied into the response, and
+// refuses the walk rather than truncating it - see
+// [errCommitMetadataTooLarge]. The per-commit parent limit is enforced
+// earlier still, in [multiRootCommitIter.Next].
 //
 // A third way collection can stop is the shallow clone's own fetch boundary,
 // rather than either bound above: with a sparse path filter, the walk can run
@@ -453,7 +468,7 @@ func resolveOptionalRef(repo *git.Repository, ref string) (plumbing.Hash, error)
 // TestGitLogCursorPagesReachEveryCommitExactlyOnce, which under-counted by
 // exactly the commits lost this way before discarded existed.
 func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits int) (commits []*gitv1.Commit, truncated bool, discarded *plumbing.Hash, err error) {
-	var totalBytes int
+	var totalMessageBytes, totalMetadataBytes int
 	err = iter.ForEach(func(c *object.Commit) error {
 		if len(commits) >= maxCommits {
 			truncated = true
@@ -463,7 +478,7 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 		}
 
 		message, messageBytes := truncateLogMessage(c.Message, maxLogMessageBytes)
-		if totalBytes+messageBytes > maxTotalLogMessageBytes {
+		if totalMessageBytes+messageBytes > maxTotalLogMessageBytes {
 			// The total message budget, not the per-entry cap or
 			// maxCommits, is what ran out here - stopped with the same
 			// honest signal: there was more history this call could have
@@ -475,7 +490,32 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 			discarded = &h
 			return storer.ErrStop
 		}
-		totalBytes += messageBytes
+
+		metadataBytes, metadataErr := logMetadataBytes(c)
+		if metadataErr != nil {
+			// Not a budget running out, and so not a truncation: this
+			// commit is refused for what it is rather than for what is
+			// left, and it will be refused identically on the next call.
+			// Pushing it back and naming it in next_cursor would hand the
+			// caller a cursor whose only effect is to fail again - and
+			// worse than merely failing, doLogWithBounds reads the
+			// resulting truncated zero-commit page as a shallow boundary,
+			// retries every clone depth, and reports that the cursor is
+			// too far behind, which is not what happened.
+			return metadataErr
+		}
+		if totalMetadataBytes+metadataBytes > maxTotalLogMetadataBytes {
+			// The aggregate metadata budget, which *is* a budget: the next
+			// page starts with a fresh one and this commit fits in it, so
+			// the cursor below makes progress exactly as the message
+			// budget's does.
+			truncated = true
+			h := c.Hash
+			discarded = &h
+			return storer.ErrStop
+		}
+		totalMessageBytes += messageBytes
+		totalMetadataBytes += metadataBytes
 
 		commits = append(commits, &gitv1.Commit{
 			Sha:          c.Hash.String(),
@@ -509,6 +549,39 @@ func collectLogCommits(repo *git.Repository, iter object.CommitIter, maxCommits 
 	}
 	return nil, false, nil, err
 }
+
+// logMetadataBytes validates and charges the commit metadata whose size the
+// repository controls, before collectLogCommits copies it: the four identity
+// strings, and the parent hashes, whose encoded width is fixed but whose count
+// is not.
+//
+// What it deliberately does not charge is the per-commit fields of fixed size -
+// the sha, and the timestamps in each signature. Those cannot be made larger by
+// a repository, so they are bounded by maxCommits alone and adding them would
+// only shift the budget by a constant per entry.
+//
+// The parent count is charged here and bounded in [multiRootCommitIter.Next],
+// which is the last point before the walk expands it - by the time a commit
+// reaches this function its parents are already on the iterator's stack, so a
+// refusal here would be a bound on the copy rather than on the allocation.
+func logMetadataBytes(c *object.Commit) (int, error) {
+	identities := [...]string{c.Author.Name, c.Author.Email, c.Committer.Name, c.Committer.Email}
+	total := 0
+	for _, identity := range identities {
+		if len(identity) > maxLogIdentityBytes {
+			return 0, fmt.Errorf("%w: commit %s carries a %d byte identity field, and at most %d are read",
+				errCommitMetadataTooLarge, c.Hash, len(identity), maxLogIdentityBytes)
+		}
+		total += len(identity)
+	}
+	return total + len(c.ParentHashes)*hashTextBytes, nil
+}
+
+// hashTextBytes is the width of a hash once [plumbing.Hash.String] has encoded
+// it: two hex characters per byte. A constant rather than
+// `len(plumbing.ZeroHash.String())`, which builds and throws away a string on
+// every commit of every page to learn a number that cannot change.
+const hashTextBytes = 2 * len(plumbing.ZeroHash)
 
 // repoHasShallowBoundary reports whether repo's own object store recorded any
 // shallow-boundary commits - go-git's own bookkeeping (equivalent to git's

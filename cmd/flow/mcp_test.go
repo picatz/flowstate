@@ -170,7 +170,7 @@ func TestEveryToolHasADescription(t *testing.T) {
 // where the copy next to the Go is the one that stays behind when the schema
 // moves. So the assertion is provenance rather than presence. Every RPC tool's
 // description must *begin* with the leading comment its RPC carries in
-// proto/flowstate/v1/flowstate.proto, byte for byte, which no hand-written
+// proto/flowstate/v1/service.proto, byte for byte, which no hand-written
 // string can satisfy by accident.
 //
 // Begin with rather than equal, because a tool may add a note about this surface
@@ -184,7 +184,7 @@ func TestEveryToolDescriptionComesFromTheSchema(t *testing.T) {
 		comment, ok := protodoc.Method(flowmcp.WorkflowServiceName, protoreflect.Name(name))
 		require.True(t, ok,
 			"rpc %s carries no leading comment in the schema; write one in "+
-				"proto/flowstate/v1/flowstate.proto, which is where this surface's prose lives", name)
+				"proto/flowstate/v1/service.proto, which is where this surface's prose lives", name)
 		require.NotEmpty(t, comment)
 
 		assert.True(t, strings.HasPrefix(flowmcp.ToolDescription(name), comment),

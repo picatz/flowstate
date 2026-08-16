@@ -1,0 +1,306 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/identity.proto";
+import "flowstate/v1/value.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// SignalPolicy constrains who may deliver one named signal to a run.
+//
+// A sender is authorized if it satisfies *any* rule in [allow]: the rules
+// are alternatives, not requirements every one of them must meet. See
+// [SignalPolicyRule] for what one rule may require.
+message SignalPolicy {
+  // Allow lists the alternative rules that may authorize a sender. At least
+  // one, or the policy authorizes nobody, which is indistinguishable from a
+  // typo and is refused by the compiler rather than accepted as (probably
+  // unintended) lockout.
+  repeated SignalPolicyRule allow = 1 [
+    (buf.validate.field).repeated = {
+      min_items: 1
+      max_items: 32
+    }
+  ];
+
+  // DistinctFromStarter requires, in addition to whichever rule in [allow]
+  // an otherwise-authorized sender satisfies, that the sender not be this
+  // run's own starter: the same issuer and the same subject as the
+  // identity that submitted the run, compared the way [SignalPolicyRule.subject]
+  // already is (see `QualifiedSubject`). Set at the policy level, not on a
+  // rule, so it cannot be bypassed by adding a wide-open rule to `allow:`:
+  // separation of duties is ANDed onto every rule this policy has, present
+  // or future, rather than expressed as one more alternative a caller could
+  // satisfy around it.
+  //
+  // Enforced against the `flowstate.starter` value recorded on the run's
+  // memo at submit. A run whose memo predates that key (started before
+  // this field existed) has nothing to compare against, and is refused
+  // whenever this flag demands the comparison: a run that cannot prove
+  // separation does not get it, the same fail-closed rule
+  // [SignalPolicyAllows]'s own doc comment states for every other case once
+  // a policy exists.
+  bool distinct_from_starter = 2;
+}
+
+// SignalPolicyRule is one admissible sender, checked against the
+// [SignalSender] the server itself attested, never against anything the
+// signal's payload claims.
+//
+// Every field set on a rule must match (an AND); a rule with nothing set
+// matches every sender, which defeats the point of writing one, so the
+// compiler refuses it. Combine subject *and* claims in one rule to express
+// "this identity, and it must also carry this claim". That is one list
+// entry, not two policies an author has to keep in sync by hand.
+message SignalPolicyRule {
+  // Subject is an issuer-qualified identity, written as
+  // "<issuer>#<subject>", matched exactly against the attested sender's
+  // `issuer` and `subject` together.
+  //
+  // Issuer-qualified rather than subject alone, on purpose: a subject is
+  // only unique within its issuer (`auth/principal.go`'s own rule, restated
+  // by `examples/approval-gate/workflow.yaml`'s self-approval check for the
+  // identical reason), so two identity providers can each mint a "runner"
+  // subject that must not be treated as the same caller. A rule keyed on
+  // subject alone would authorize the wrong runner's signal under the right
+  // name, the exact multi-IdP ambiguity #215 found in `run.identity`
+  // comparisons, reproduced here if this field accepted a bare subject. Only
+  // the qualified spelling is accepted; there is no subject-only form to be
+  // ambiguous about.
+  string subject = 1 [(buf.validate.field) = {
+    ignore: IGNORE_IF_UNPOPULATED
+    string: {
+      max_len: 320
+      pattern: "^[^#]+#.+$"
+    }
+  }];
+
+  // Namespace restricts to one tenant, matched exactly against the attested
+  // sender's `namespace`.
+  //
+  // Rarely useful alone (every signal is already confined to its run's own
+  // tenant by `authorizeRun`, before this policy is even consulted), but
+  // combines with `claims` to express "anyone in this tenant carrying this
+  // claim" without naming individual subjects.
+  string namespace = 2 [(buf.validate.field).string = {max_len: 128}];
+
+  // Claims are exact-match requirements against the attested sender's
+  // claims: every key here must be present on the sender with this value.
+  // Empty places no claim requirement, so a rule naming only `subject` is
+  // ordinary and common.
+  map<string, string> claims = 3 [(buf.validate.field).map = {
+    max_pairs: 16
+    keys: {string: {min_len: 1, max_len: 128}}
+    values: {string: {max_len: 256}}
+  }];
+
+  // SubjectFrom carries `subject:` written as an expression (`subject:
+  // ${...}` in a Flowfile) rather than a literal. It resolves exactly
+  // once, at submit, against the run's bound inputs (after
+  // `BindRunInputs`, before anything else runs), and the result is written
+  // into [subject] and this field is cleared before the policy is frozen
+  // into the run's memo.
+  //
+  // That resolve-then-clear is why the enforcement path never evaluates an
+  // expression: by the time a signal can arrive, `subject` already holds a
+  // literal or is empty, and [subject_from] is always unset on whatever
+  // `SignalPolicyAllows` is asked to check. A decoded policy that still
+  // carries a populated `subject_from` is refused by
+  // `CheckSignalPolicyShape`: an unresolved expression must never survive
+  // to the path that authorizes a signal, because that path runs on every
+  // delivery and evaluating a caller-influenced expression there is
+  // exactly what `BindRunInputs`'s own input-value rule already refuses
+  // for an ordinary input.
+  //
+  // The narrowing rule: a rule that sets this field must also set
+  // [namespace] or [claims]. See the Flowfile compiler's narrowing check.
+  // An interpolated subject alone would let a caller pick their own
+  // authorization by choosing what input value to submit; requiring a
+  // co-resident literal constraint means an input can only narrow a static
+  // grant the workflow's author already wrote, never invent one.
+  Value subject_from = 4;
+}
+
+// Signal names something a workload waits to be told.
+//
+// The payload a signal carries becomes the waiting step's outputs, which is what
+// makes a gate compose with everything else: `${approval.approved}` resolves the
+// way any other step reference does, so it works in an `if:`, in a task input,
+// and in a later expression, with no special form for signals.
+message Signal {
+  // Name is what a sender addresses. It is part of the workload's contract with
+  // whatever approves it, so it is written by the author rather than generated.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9-_]*$"
+    }
+  ];
+
+  // Outputs shapes what the waiting step produces, the way the http task's own
+  // `outputs:` shapes what a request produces.
+  //
+  // Each value is evaluated once, at the moment the wait resolves, against the
+  // wait's own result: `payload`, `sender` and `timed_out` are bound bare, and
+  // so is `now`: every expression a wait holds sees the driver's clock (see
+  // [NowIdentifier]). The enclosing scope is underneath, so `steps.*`,
+  // `inputs.*` and `vars.*` read here exactly as they do in an `if:`.
+  //
+  //     wait_for_signal:
+  //       name: deploy-approved
+  //       timeout: 1h
+  //       outputs:
+  //         approved: ${has(payload.approved) && payload.approved}
+  //         timed_out: ${timed_out}
+  //
+  // # Replace, not extend
+  //
+  // The shaped names become the step's outputs, and the defaults are gone:
+  // one key with one meaning, matching `Task.HTTP.Inputs.outputs` exactly. An
+  // author who still needs `payload` or `timed_out` re-exposes it in a line,
+  // and reading one that was dropped is an ordinary "step has no output"
+  // diagnostic rather than an empty value that branches the wrong way.
+  //
+  // # Why this exists
+  //
+  // A condition derived from a step's own result had nowhere to be named, so
+  // real workflows wrote it once per reader: in an `if:`, negated in the
+  // sibling's `if:`, and re-derived in the workflow's `outputs:`. Nothing kept
+  // the copies in agreement, and the report could disagree with the branch that
+  // ran. Shaped here, the gate is stated once on the step that produced the data
+  // and every later reader reads the same recorded output.
+  //
+  // # Why it is on Signal rather than on Wait
+  //
+  // Two of the three names these expressions see (`payload` and `sender`) do
+  // not exist on the other arms, and the third, `timed_out`, is a constant
+  // `false` for a `sleep:` and a `wait_until:`. Shaping a constant is what
+  // `vars:` is for. Putting the field here rather than on [Wait] makes the
+  // refusal structural instead of reported: `timeout` sits on [Wait] and is
+  // meaningless on two of its arms, which is exactly why [ValidateWait] has to
+  // exist. The placement also matches the precedent it copies: http's
+  // `outputs:` sits on that task's own inputs, not on a generic step wrapper.
+  //
+  // Carriage across Continue-As-New is unaffected either way, which is what
+  // frees the decision to be made on meaning: the whole node travels inside the
+  // spec, and a shaped value is recorded in `Workflow_StepOutputs` like any
+  // other step output. What compaction *does* need is that the references these
+  // expressions make are collected. See `CollectNodeRefs`.
+  map<string, Value> outputs = 2;
+
+  // Prompt is what this gate is asking for, in the author's own words, carried
+  // to whoever is being asked.
+  //
+  // A gate could say which signal releases it and could not say what agreeing
+  // to it means. `deploy-approved` is a routing key, not a question: an
+  // operator holding a run id learned the name to send and nothing about what
+  // they would be approving. This is the sentence that was missing, and it
+  // travels on [PendingWait.prompt] so every surface that reports a parked gate
+  // reports it.
+  //
+  // An expression rather than a literal string, because the interesting part of
+  // an approval is the particulars: `${"deploy %s to %s?".format([inputs.version,
+  // inputs.environment])}` says which build and which environment, and a fixed
+  // string cannot. A plain unfenced string is still a plain string, exactly as
+  // it is in every other input position.
+  //
+  // # When it is evaluated, and what it sees
+  //
+  // Once, at the moment the wait begins parking, on both drivers - the same
+  // point the wait announces itself to the reporting registry, and after both
+  // ways a wait can resolve without parking at all (a signal that arrived
+  // early, a bound that had already lapsed). A gate the run walks straight
+  // through evaluates no prompt, because it never asks anybody anything.
+  //
+  // It sees the enclosing scope and [NowIdentifier], the same names
+  // `timeout:` sees. It does *not* see `payload`, `sender` or `timed_out`:
+  // those are the wait's result, and the result does not exist yet when the
+  // question is asked. That asymmetry with `outputs:` is the honest one, and
+  // it is why this is a sibling of that key rather than an entry in it.
+  //
+  // A prompt that fails to evaluate fails the step, exactly as a `timeout:`
+  // that fails to evaluate does. Silently parking with no question is the one
+  // outcome worth refusing: nobody would learn the gate had asked anything, and
+  // an approver would be shown a blank where the decision was supposed to be.
+  //
+  // # Sensitivity, which is why this field is not simply a string
+  //
+  // The evaluated text is rendered into *other people's* clients - an approver
+  // who is not the run's author, and who was given a run id rather than the
+  // file. So the rule the `log:` lint draws at direct surfacing is drawn wider
+  // here: a prompt may not *reach* an input declared `sensitive:` at all, by any
+  // spelling, and may not hold a `${secret(...)}` reference. Both are refused at
+  // compile where they are statically knowable, and refused again fail-closed at
+  // submit by [CheckWaitPromptsAreAskable]. A prompt that still holds a secret
+  // reference when it is evaluated - a specification built in process, never
+  // parsed and never submitted - renders as a refusal rather than as the secret.
+  //
+  // # Bounded
+  //
+  // The evaluated text is bounded by [MaxWaitPromptBytes], read by both drivers
+  // from the package both import. Text past the bound is cut and
+  // [PendingWait.prompt_truncated] says so, because a question a reader cannot
+  // tell was cut short is a question they may answer having read half of it.
+  Value prompt = 3;
+}
+
+// SignalSender is who the server attests sent a signal, never what the
+// sender's own payload claims.
+//
+// Two separate things travel with every signal, and they must never merge into
+// one map: `payload` is what the sender chose to send, unchanged and untrusted;
+// `sender` is what the server itself established about the caller before it
+// ever looked at the payload. A workflow author writes conditions against
+// `sender` (`sender.identity.subject != inputs.requested_by` for separation of
+// duties) and treats `payload` as evidence rather than identity.
+//
+// Identity reuses [WorkloadIdentity] rather than a parallel type: a signal's
+// sender and a run's own caller are the same kind of fact (someone acting,
+// established by authentication rather than self-report), and a run's identity
+// is already this message. Two messages for one shape is exactly the drift
+// invariant 1 (proto-first) exists to prevent.
+//
+// Absent entirely on a signal that predates this field (identity unset,
+// accepted_at unset, local false), which reads as unattested. That is correct,
+// because no signal recorded before this field existed could have carried one.
+// There is no compatibility arm: an old signal simply has nothing here.
+message SignalSender {
+  // Identity is the authenticated caller the server established for this
+  // signal, by the same path a run's own identity is established
+  // (`FlowstateServer.identityFor`, via `authorizeRun`). Never taken from the
+  // request: a caller who could name their own identity could name anyone
+  // else's, which is the exact defect this message exists to close.
+  WorkloadIdentity identity = 1;
+
+  // AcceptedAt is when the server accepted the signal, from the server's own
+  // clock, never the sender's. A self-reported time is exactly the kind of
+  // claim this field replaces with something attested.
+  google.protobuf.Timestamp accepted_at = 2;
+
+  // Local marks a signal delivered to a local run (`flow run local --signal`
+  // or `flow test`'s scripted signals), which has no authenticated caller at
+  // all: there is no server in front of it to attest anything. Set only by
+  // [LocalSignalSender]; the durable driver never sets it true.
+  //
+  // A wait's rendered `sender.local` output (see wait.go's signalSenderValue)
+  // is `true` for this case *and* for every other case where nothing was
+  // attested at all: this message absent entirely, which covers a signal
+  // that predates this field, a timed-out wait with nothing pending, and the
+  // engine's own compatibility fallback for a signal that arrived in the
+  // pre-#194 wire shape (engine/signal_compat.go). All of those are the same
+  // fact from a workflow author's point of view (nobody attested this), and
+  // must read the same way, distinct from an attested-but-anonymous caller
+  // (this message present, Local false, Identity.Subject merely empty because
+  // no identity provider is configured). This field's own wire value only
+  // ever means "the local driver," never "nothing was attested"; the broader
+  // reading exists solely in the rendered output, precisely so a workflow
+  // author can trust `!sender.local` as "the server accepted this."
+  bool local = 3;
+}

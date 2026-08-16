@@ -413,7 +413,7 @@ func CheckInputConstraintShape(decl *InputDeclaration) error {
 // EnumValuesShapeError reports that a declared enum's `values:` list
 // violates one of the per-member or list-size rules the schema itself
 // declares on [InputDeclaration.values] in
-// proto/flowstate/v1/flowstate.proto: at most 64 entries, each 1-128
+// proto/flowstate/v1/workflow.proto: at most 64 entries, each 1-128
 // characters, all distinct.
 //
 // [CheckInputConstraintShape] returns one of these, rather than a bare

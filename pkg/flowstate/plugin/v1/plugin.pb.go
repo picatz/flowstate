@@ -950,7 +950,7 @@ var File_flowstate_plugin_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	" flowstate/plugin/v1/plugin.proto\x12\x13flowstate.plugin.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cflowstate/v1/flowstate.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xe9\x02\n" +
+	" flowstate/plugin/v1/plugin.proto\x12\x13flowstate.plugin.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x16flowstate/v1/run.proto\x1a\x17flowstate/v1/task.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xe9\x02\n" +
 	"\x0ePluginManifest\x12:\n" +
 	"\x04name\x18\x01 \x01(\tB&\xe2A\x01\x02\xbaH\x1f\xc8\x01\x01r\x1a\x10\x01\x18@2\x14^[a-z0-9][a-z0-9-]*$R\x04name\x12!\n" +
 	"\aversion\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\aversion\x12*\n" +
