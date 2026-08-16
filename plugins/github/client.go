@@ -82,8 +82,15 @@ func newClient(token, baseURL string) (*github.Client, error) {
 		client = client.WithAuthToken(token)
 	}
 
-	if baseURL != "" {
-		u := strings.TrimSuffix(baseURL, "/") + "/"
+	// Only for a base that is actually not github.com's. Forcing the base above
+	// makes baseURL non-empty for every authenticated call, including the
+	// github.com ones that previously left it empty, and WithEnterpriseURLs sets
+	// the upload endpoint to whatever it is handed — so routing github.com
+	// through it would silently move uploads from uploads.github.com to
+	// api.github.com. Nothing here uploads today, which is exactly why it would
+	// have gone unnoticed until something did.
+	if base := strings.TrimSuffix(baseURL, "/"); base != "" && base != defaultAPIBaseURL {
+		u := base + "/"
 		var err error
 		client, err = client.WithEnterpriseURLs(u, u)
 		if err != nil {

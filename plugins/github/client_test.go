@@ -92,12 +92,16 @@ func TestAuthenticatedClientUsesOperatorSelectedBaseURL(t *testing.T) {
 // credential now forces the base to the operator-selected one, and with nothing
 // configured that is github.com's.
 //
-// Worth asserting because forcing it makes baseURL non-empty, which sends this
-// path through go-github's WithEnterpriseURLs — the call that appends "/api/v3/"
-// to a Enterprise Server base. It does not append here, because it skips hosts
-// beginning "api.", so the default stays exactly what an unauthenticated client
-// uses. Both are checked, so a regression shows up as the two disagreeing rather
-// than as every authenticated github.com call 404ing in production.
+// Worth asserting because forcing it makes baseURL non-empty, which would
+// otherwise send this path through go-github's WithEnterpriseURLs. That call
+// leaves an "api."-hosted base alone, so BaseURL survived either way — but it
+// sets the *upload* endpoint to whatever it is handed, which would have moved
+// uploads off uploads.github.com. Nothing here uploads today, so the only thing
+// that would have caught it is this test.
+//
+// Both endpoints are checked against the unauthenticated client, so a regression
+// reads as a credential moving an endpoint rather than as a call failing
+// somewhere far away.
 func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
 	t.Setenv(envAPIBaseURL, "")
 	if err := installEgressPolicy(); err != nil {
@@ -111,6 +115,9 @@ func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
 	if got, want := authenticated.BaseURL.String(), defaultAPIBaseURL+"/"; got != want {
 		t.Fatalf("authenticated BaseURL: got %q, want %q", got, want)
 	}
+	if got, want := authenticated.UploadURL.String(), "https://uploads.github.com/"; got != want {
+		t.Fatalf("authenticated UploadURL: got %q, want %q — go-github's upload default must survive", got, want)
+	}
 
 	unauthenticated, err := newClient("", "")
 	if err != nil {
@@ -118,5 +125,8 @@ func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
 	}
 	if got, want := authenticated.BaseURL.String(), unauthenticated.BaseURL.String(); got != want {
 		t.Fatalf("authenticated BaseURL %q, unauthenticated %q: a credential must not move the base", got, want)
+	}
+	if got, want := authenticated.UploadURL.String(), unauthenticated.UploadURL.String(); got != want {
+		t.Fatalf("authenticated UploadURL %q, unauthenticated %q: a credential must not move the upload endpoint", got, want)
 	}
 }
