@@ -208,38 +208,16 @@ func TestTaskPolicyDeniesAuthorityCarryingCompensationDurably(t *testing.T) {
 // non-authority scope-carrying dispatch arm. A compensation's inputs are already
 // resolved when it is registered, but TaskInScope still needs the run identity
 // in that scope to enforce identity-based deployment policy without failing open.
+//
+// The case itself lives in [tests.UndoIdentityWorkflow] and is run by the local
+// driver too, from one definition: the claim here is that both drivers decide a
+// compensation the same way, and two hand-built copies of a scenario stop
+// proving that as soon as either drifts.
 func TestTaskPolicyDeniesScopedCompensationByIdentityDurably(t *testing.T) {
-	policy, err := v1.TaskPolicyConfig{
-		Deny: []string{`task == "http" && identity.namespace == "blocked-tenant"`},
-	}.Policy()
-	require.NoError(t, err)
-	v1.SetDefaultTaskPolicy(policy)
+	v1.SetDefaultTaskPolicy(tests.UndoIdentityPolicy(t))
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	baseURL := tests.NewHTTPServer(t)
-	workflow := &v1.Workflow{
-		Name:    "task-policy-scoped-undo-identity",
-		Profile: v1.CurrentProfile,
-		Steps: []*v1.Node{
-			{
-				Id: "provision",
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "log",
-					Inputs: map[string]*v1.Value{"message": v1.NewLiteral("provisioned")},
-				}},
-				Undo: &v1.Compensation{Task: &v1.Task{
-					Name:   "http",
-					Inputs: map[string]*v1.Value{"url": v1.NewLiteral(baseURL + "/status/200")},
-				}},
-			},
-			{
-				Id: "boom",
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name: "unknown-task",
-				}},
-			},
-		},
-	}
+	workflow := tests.UndoIdentityWorkflow(tests.NewHTTPServer(t))
 
 	run := func(t *testing.T, namespace string) error {
 		t.Helper()
@@ -249,19 +227,16 @@ func TestTaskPolicyDeniesScopedCompensationByIdentityDurably(t *testing.T) {
 			Identity: &v1.WorkloadIdentity{Namespace: namespace},
 		})
 		require.True(t, env.IsWorkflowCompleted())
+
 		return env.GetWorkflowError()
 	}
 
 	t.Run("blocked tenant compensation is denied", func(t *testing.T) {
-		err := run(t, "blocked-tenant")
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "task-shape policy")
+		tests.AssertUndoIdentityDenied(t, run(t, tests.UndoIdentityBlockedNamespace))
 	})
 
 	t.Run("another tenant compensation reaches the task", func(t *testing.T) {
-		err := run(t, "another-tenant")
-		require.Error(t, err, "the later unknown task still fails the workflow")
-		require.NotContains(t, err.Error(), "task-shape policy")
+		tests.AssertUndoIdentityReached(t, run(t, tests.UndoIdentityAllowedNamespace))
 	})
 }
 
