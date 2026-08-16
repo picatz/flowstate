@@ -464,18 +464,19 @@ const CurrentClaimsSchemaVersion uint32 = 1
 // deciding whether to trust a plugin must check this before reading either
 // field, and must treat false here as "unknown", never as "no" (#712).
 //
-// Bounded above as well as below: a version greater than
-// [CurrentClaimsSchemaVersion] is a *future* redefinition this build was not
-// compiled against, which is the same failure shape the zero case is — this
-// reader does not know what changed — just arriving from the other
-// direction. Treating "known" as "no larger than what I understand" rather
-// than "nonzero" is what keeps forward skew failing closed too: an older
-// client reading a newer catalog must not assume it can interpret whatever
-// the version bump introduced (#763 review).
+// Exact equality with [CurrentClaimsSchemaVersion], not merely bounded: a
+// version bump can add a field or redefine one that already existed (see
+// CurrentClaimsSchemaVersion's own doc comment), so a v1-built client is not
+// safe reading a v2 catalog either — it does not know what changed — and a
+// v2-built client reading a v1 catalog is not safe assuming the older
+// response's silence on a field v2 introduced means that field is false; the
+// v1 response structurally cannot contain it. Both directions are the same
+// failure shape the zero case is (this reader does not know what the
+// producer meant), so both are refused the same way: only the exact version
+// this build was compiled to read is "known" (#763 review, both rounds — a
+// `<=` bound closed the too-new direction and reopened the too-old one).
 func TaskDescriptionClaimsKnown(catalog *TaskCatalog) bool {
-	version := catalog.GetClaimsSchemaVersion()
-
-	return version > 0 && version <= CurrentClaimsSchemaVersion
+	return catalog.GetClaimsSchemaVersion() == CurrentClaimsSchemaVersion
 }
 
 // Catalog describes everything this build can execute.

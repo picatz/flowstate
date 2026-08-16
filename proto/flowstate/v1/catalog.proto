@@ -93,12 +93,15 @@ message TaskCatalog {
   // fields, is what tells "unknown" from "false": see
   // [flowstatev1.TaskDescriptionClaimsKnown].
   //
-  // Bounded above as well as below, and for the identical reason: a version
-  // *greater* than the reading client's own [flowstatev1.CurrentClaimsSchemaVersion]
-  // names a future redefinition that client was not compiled against, which
-  // is the same "I do not know what this means" as the zero case, arriving
-  // from the other direction — an older client must not treat a newer
-  // catalog's claims as known just because the version is nonzero.
+  // Checked for exact equality against the reading client's own
+  // [flowstatev1.CurrentClaimsSchemaVersion], not merely boundedness in
+  // either direction — a version bump can redefine a field as well as add
+  // one, so neither "newer than mine" nor "older than mine" is safe to
+  // treat as known: a newer version may mean something this client was not
+  // compiled to read, and an older version's silence on a field this
+  // client's version introduced is not the same fact as that field
+  // genuinely being false. Only the version this client understands
+  // exactly is known; see [flowstatev1.TaskDescriptionClaimsKnown].
   uint32 claims_schema_version = 7;
 }
 

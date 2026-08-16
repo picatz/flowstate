@@ -235,30 +235,37 @@ func TestClaimsSchemaVersionDistinguishesUnknownFromFalse(t *testing.T) {
 			"caller talking to an old deployment would trust its zero-valued needs_scope as an explicit no")
 }
 
-// TestClaimsSchemaVersionRejectsAFutureVersionToo is the same review's second
-// finding: "known" bounded only below (nonzero) still fails open going
-// forward. A client built against ClaimsSchemaVersion 1 reading a catalog
-// stamped with a version it has never heard of cannot know what a future
-// redefinition of these fields means, and must not treat that catalog's
-// claims as trustworthy just because the version is nonzero.
-func TestClaimsSchemaVersionRejectsAFutureVersionToo(t *testing.T) {
+// TestClaimsSchemaVersionRequiresExactEquality is the review's second and
+// fourth findings together: "known" bounded only by `> 0`, and later only by
+// `<= CurrentClaimsSchemaVersion`, both fail open in one direction. A future
+// version this build has never heard of might redefine an existing field, not
+// only add one, so a v1-built client cannot trust a v2 catalog; and a v2
+// client cannot trust a v1 catalog either, because a v1 response structurally
+// cannot carry whatever field v2 introduced — its absence there is not the
+// same fact as its absence on a genuine v2 "claims nothing" answer. Only
+// exact equality is safe in both directions.
+func TestClaimsSchemaVersionRequiresExactEquality(t *testing.T) {
 	t.Parallel()
 
-	future := &v1.TaskCatalog{
-		Tasks:               v1.Catalog().Tasks,
-		ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion + 1,
-	}
+	tasks := v1.Catalog().Tasks
 
+	future := &v1.TaskCatalog{Tasks: tasks, ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion + 1}
 	require.False(t, v1.TaskDescriptionClaimsKnown(future),
 		"a claims schema version newer than this build understands reads as known, "+
 			"so an older client reading a newer deployment's catalog would trust claim fields it cannot interpret")
 
-	// The positive direction beside it, so the test above is not simply
+	if v1.CurrentClaimsSchemaVersion > 1 {
+		older := &v1.TaskCatalog{Tasks: tasks, ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion - 1}
+		require.False(t, v1.TaskDescriptionClaimsKnown(older),
+			"a claims schema version older than this build's reads as known, so a newer client reading "+
+				"an older deployment's catalog would trust the absence of a field that version cannot carry")
+	}
+
+	// The positive direction beside both, so neither above is simply
 	// asserting the check always fails: the version this build actually
 	// produces is accepted.
 	require.True(t, v1.TaskDescriptionClaimsKnown(&v1.TaskCatalog{
-		Tasks:               v1.Catalog().Tasks,
-		ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion,
+		Tasks: tasks, ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion,
 	}))
 }
 
