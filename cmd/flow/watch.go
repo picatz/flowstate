@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -12,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/cmd/flow/internal/watch"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 )
@@ -31,9 +30,9 @@ import (
 // (`pkg/flowstate/v1/server/server.go`, the STATUS_RUNNING case), so every poll
 // carries where the run is — the top-level step and the path into it — and whether
 // an activity is on its fourth attempt and what the last one died of. Both are
-// folded in by absorb and rendered by both shapes, through the same helpers
-// `flow get` prints them with: [runPosition] and [pendingActivityLines]. A follow
-// therefore says at least what a `flow get` says, continuously.
+// folded in by [watch.State.Absorb] and rendered by both shapes, through the same
+// helpers `flow get` prints them with: [runPosition] and [pendingActivityLines]. A
+// follow therefore says at least what a `flow get` says, continuously.
 //
 // The position is also part of what *changed* means. A run that spends four minutes
 // moving between steps under one status would otherwise be four minutes of a screen
@@ -70,17 +69,57 @@ import (
 // several of them into one redraw is showing the same information with less
 // flicker. What polling must not do is hammer the server, so the interval is
 // bounded below and the request is the same one `flow get` makes.
+//
+// # What lives here versus in cmd/flow/internal/watch
+//
+// Split by #410: the state machine and the bubbletea model that draws the live
+// view moved to internal/watch, so a test can drive either with a fake poller and
+// nothing else — no cobra command, no client, no --output flag. What stays here is
+// the transport ([clientPoller], which needs [serverFlags] and [newFollowClient]),
+// the classification of a refusal against the connect code ([classifyPollError]),
+// the cobra command and its flags, and the writing of the run document `--output`
+// asked for ([reportChange], [finishWatch]) — none of which a state machine should
+// need to know about to be tested.
 
 // watchPoller is the run state this command renders, behind an interface so both
-// shapes can be driven without a server.
-//
-// The parts most likely to be wrong are the ones a fake can exercise: an off-by-one
-// in a step list, a terminal status that does not stop the loop, a transient error
-// that ends a watch it should have survived. What a fake cannot tell us is whether
-// `Get` returns what we think, which is why the wiring below issues the same
-// request `flow get` does rather than a second opinion about it.
-type watchPoller interface {
-	Poll(ctx context.Context) (*v1.GetResponse, error)
+// shapes can be driven without a server. See [watch.Poller].
+type watchPoller = watch.Poller
+
+// watchState is the run as a watch has seen it. See [watch.State].
+type watchState = watch.State
+
+// watchProgress is what one poll means for a reader. See [watch.Progress].
+type watchProgress = watch.Progress
+
+// transientError marks a poll failure worth asking about again. See
+// [watch.TransientError].
+type transientError = watch.TransientError
+
+// outageAllowance is how long the server may be unable to answer before a watch
+// gives up on it. See [watch.OutageAllowance].
+const outageAllowance = watch.OutageAllowance
+
+// completedSteps lists the ids of steps that have produced outputs, in order. See
+// [watch.CompletedSteps].
+var completedSteps = watch.CompletedSteps
+
+// watchDeps supplies internal/watch the rendering functions it borrows from this
+// package rather than owning a second copy of — see [watch.Deps].
+func watchDeps() watch.Deps {
+	return watch.Deps{
+		StatusTone:           statusTone,
+		StatusLabel:          statusLabel,
+		PositionPath:         positionPath,
+		RunPosition:          runPosition,
+		PendingActivityLines: pendingActivityLines,
+		PendingWaitLines:     pendingWaitLines,
+	}
+}
+
+// newWatchState begins a walk, optionally already knowing something about the run,
+// supplying this package's [watch.Deps]. See [watch.NewState].
+func newWatchState(workflowID string, known *v1.GetResponse) *watchState {
+	return watch.NewState(watchDeps(), workflowID, known)
 }
 
 // clientPoller polls the real service.
@@ -143,17 +182,6 @@ func (p clientPoller) Poll(ctx context.Context) (*v1.GetResponse, error) {
 	return redactGetResponse(response.Msg, p.spec, p.reveal), nil
 }
 
-// transientError marks a poll failure worth asking about again.
-type transientError struct{ error }
-
-// Unwrap keeps the refusal underneath reachable.
-//
-// Without it the chain stops here, so everything that reads an error by type
-// sees a marker with nothing inside it: [nextCommandsFor], looking for the remedy
-// a [noServerError] carries, finds none. A watch that gave up because no server
-// answered is precisely the case that wants the way out printed.
-func (e transientError) Unwrap() error { return e.error }
-
 // classifyPollError explains a refused poll and records whether it is worth another
 // attempt.
 //
@@ -165,7 +193,7 @@ func (e transientError) Unwrap() error { return e.error }
 func classifyPollError(workflowID string, server serverFlags, err error) error {
 	refused := refusedRun("reading", workflowID, server, err)
 	if worthAskingAgain(connect.CodeOf(err)) {
-		return transientError{refused}
+		return watch.NewTransientError(refused)
 	}
 
 	return refused
@@ -207,25 +235,6 @@ const (
 	// defaultWatchInterval is slow enough to be unnoticeable server-side and fast
 	// enough that a step boundary appears while the eye is still on the screen.
 	defaultWatchInterval = time.Second
-
-	// outageAllowance is how long the server may be unable to answer before the
-	// watch gives up on it.
-	//
-	// Some allowance is not indulgence: the reason to watch rather than to loop
-	// `flow get` is that a watch lasts as long as the run, and over an hour a
-	// server restart or a dropped connection is close to certain. A watch that dies
-	// on the first one sends people back to the shell loop, which retries by
-	// construction.
-	//
-	// Measured as elapsed time, from the clock, and not as a number of attempts.
-	// Attempts were the first attempt at this and they were wrong twice over. They
-	// are only equal to time if every attempt returns promptly — so an interval of
-	// ten seconds gave up after twenty while reporting thirty, and a server that
-	// accepted a connection and then said nothing produced no attempt at all, which
-	// left the allowance never starting and the watch hanging until somebody killed
-	// it. Whenever a bound is stated in one unit and enforced in another, the
-	// difference is where the peer gets to live.
-	outageAllowance = 30 * time.Second
 )
 
 // addFollowFlags declares the flags of a command that follows a run.
@@ -423,10 +432,10 @@ func followPlainly(
 		// allowance measures is how long the server has been *observed* unable to
 		// answer, and an answer that took twenty seconds to fail was twenty seconds
 		// nobody knew about.
-		progress := state.absorb(time.Now(), response, err)
+		progress := state.Absorb(time.Now(), response, err)
 
 		if progress.Changed {
-			if err := reportChange(surface, rendering, state, response); err != nil {
+			if err := reportChange(surface, rendering, state); err != nil {
 				return err
 			}
 		}
@@ -441,6 +450,55 @@ func followPlainly(
 		case <-ticker.C:
 		}
 	}
+}
+
+// newWatchModel builds the live view, supplying this package's [watch.Deps].
+func newWatchModel(
+	ctx context.Context,
+	surface *ui.UI,
+	poller watchPoller,
+	interval time.Duration,
+	workflowID string,
+	known *v1.GetResponse,
+) watch.Model {
+	return watch.NewModel(ctx, surface, watchDeps(), poller, interval, workflowID, known)
+}
+
+// followLive draws a run until it finishes, through [watch.Run], and then writes
+// whatever the shape owes a reader at the end from the model it comes back with.
+func followLive(
+	ctx context.Context,
+	surface *ui.UI,
+	rendering runRendering,
+	poller watchPoller,
+	interval time.Duration,
+	workflowID string,
+	known *v1.GetResponse,
+) error {
+	model, err := watch.Run(ctx, surface, watchDeps(), poller, interval, workflowID, known)
+	if err != nil {
+		return err
+	}
+
+	return watchEnding(surface, rendering, model)
+}
+
+// watchEnding is what a finished live view owes its caller.
+//
+// Separate from followLive because it is the whole of what the live shape decides
+// for itself, and the only part of it a test can reach without a terminal to draw
+// on.
+func watchEnding(surface *ui.UI, rendering runRendering, model watch.Model) error {
+	if model.Quit() {
+		// Watching stopped before the run did, so there is no outcome to report and
+		// nothing to write to stdout: the run has not produced its outputs yet.
+		return nil
+	}
+
+	// Otherwise the same ending the plain shape reaches, from the same state, so the
+	// outputs on stdout and the exit code are identical whichever shape drew the
+	// progress. A TUI that reports differently from a pipe is two commands.
+	return finishWatch(surface, rendering, model.State())
 }
 
 // interrupted ends a follow that stopped before the run did.
@@ -464,23 +522,23 @@ func followPlainly(
 // `-o json` watch does, not the silence the text shape gets when nothing was
 // asked for.
 func interrupted(surface *ui.UI, rendering runRendering, state *watchState) error {
-	if rendering.format == FormatJSONL || !rendering.WantsDocument() || state.response == nil {
+	if rendering.format == FormatJSONL || !rendering.WantsDocument() || state.Response() == nil {
 		// jsonl has already emitted every change including the last, the text
 		// shapes have said what they knew on stderr as they went, and nothing
 		// asked for a document owes nobody one.
 		return nil
 	}
 
-	return writeRunJSON(surface, rendering, state.response)
+	return writeRunJSON(surface, rendering, state.Response())
 }
 
 // reportChange writes one change, in the shape the format asks for.
-func reportChange(surface *ui.UI, rendering runRendering, state *watchState, response *v1.GetResponse) error {
+func reportChange(surface *ui.UI, rendering runRendering, state *watchState) error {
 	switch rendering.format {
 	case FormatJSONL:
 		// The server's own message, so a reader is indexing documented fields
 		// rather than a shape invented here for the occasion.
-		return writeRunJSON(surface, rendering, response)
+		return writeRunJSON(surface, rendering, state.Response())
 
 	case FormatJSON:
 		// One document per invocation, so nothing is written until the last change
@@ -491,7 +549,7 @@ func reportChange(surface *ui.UI, rendering runRendering, state *watchState, res
 		// stderr, because this is the account of the run and not its answer: the
 		// answer is the outputs, and it goes to stdout when the run has produced
 		// it. A pipe therefore receives the outputs alone.
-		_, err := fmt.Fprintln(surface.Err, state.line(surface.ErrTheme))
+		_, err := fmt.Fprintln(surface.Err, state.Line(surface.ErrTheme))
 
 		return err
 	}
@@ -503,8 +561,8 @@ func finishWatch(surface *ui.UI, rendering runRendering, state *watchState) erro
 	// A watch that gave up knows nothing final about the run, so it writes nothing
 	// final about it. Emitting the last state it happened to see as though it were
 	// the answer is how a program concludes a run is still RUNNING for good.
-	if state.gaveUp {
-		return state.lastError
+	if state.GaveUp() {
+		return state.LastError()
 	}
 
 	// The line-per-change shape has already written every change including the last,
@@ -513,335 +571,12 @@ func finishWatch(surface *ui.UI, rendering runRendering, state *watchState) erro
 	// `flow run local` finishes through, which is what keeps a caller reading
 	// `.outputs.stepValues` reading the same field from both drivers.
 	if rendering.format != FormatJSONL {
-		if err := writeRun(surface, rendering, state.response); err != nil {
+		if err := writeRun(surface, rendering, state.Response()); err != nil {
 			return err
 		}
 	}
 
-	return outcomeError(state.status, state.workflowID, state.failure)
-}
-
-// watchState is the run as the watch has seen it, and the decision of when to stop.
-//
-// One state machine, folded into by both shapes, because "has anything changed",
-// "is this over", and "has the server been quiet too long" are three questions that
-// must not get two answers. The live view and the plain lines then differ only in
-// how they render it — which is what keeps a bug fixed in one from surviving in the
-// other.
-type watchState struct {
-	workflowID string
-
-	runID  string
-	status v1.RunResponse_Status
-
-	// steps are the ids of steps that have produced outputs, sorted.
-	steps []string
-
-	// position is where the run has got to, as bare text: the top-level step and
-	// the path into it, joined by [positionPath]. Empty where the server answered
-	// nothing, which is not the same as the beginning — see [runPosition].
-	position string
-
-	// pending is what Temporal is retrying, already rendered.
-	//
-	// Rendered at absorb time rather than at draw time because one of the sentences
-	// carries a countdown, and the moment to measure it against is the moment the
-	// answer was observed rather than whichever redraw happens to display it. A
-	// live view repaints on a resize, and a countdown that ticked on a keystroke
-	// would be reporting the terminal rather than the run.
-	pending []string
-
-	// waits are the gates the run is parked on, already rendered.
-	//
-	// Rendered at absorb time for the reason pending is: one of these sentences
-	// carries a countdown to a gate's deadline, and the moment to measure it
-	// against is the moment the answer was observed rather than whichever redraw
-	// happens to display it.
-	//
-	// No key beside it, unlike pendingKeys, and that is not an omission. A gate
-	// is a step, so reaching one and leaving one both move the position, which
-	// this shape already treats as news; a key here would be a second way to say
-	// the same thing, and a countdown in it would make every poll a change.
-	waits []string
-
-	// pendingKeys is the part of pending that means something has changed: the
-	// attempt count and the last failure, one string per activity.
-	//
-	// Deliberately not the countdown. It falls by whatever the interval is on every
-	// poll, so keying change detection on the rendered line would make every poll a
-	// change — one line per second in the plain shape, which is the `flow get` loop
-	// this command exists to replace.
-	pendingKeys []string
-
-	// waitKeys is the stable identity of the held gates, for the same purpose
-	// pendingKeys serves for retries: deciding whether anything changed. The
-	// rendered wait lines cannot serve, because they carry a deadline
-	// countdown measured from the observation, which differs at every poll.
-	waitKeys []string
-
-	// failure is a failed run's message, empty until there is one.
-	failure string
-
-	// response is the last answer the server gave, kept for the shapes that emit
-	// the server's own message rather than prose about it.
-	response *v1.GetResponse
-
-	// outageSince is when the server was first observed unable to answer, zero once
-	// it answers again.
-	//
-	// A time rather than a count, because the allowance is stated in seconds and has
-	// to be enforced in seconds. See [outageAllowance] for the two ways a count got
-	// it wrong.
-	outageSince time.Time
-
-	// lastError is the most recent failure, so a live view can say why nothing is
-	// moving instead of appearing to have frozen.
-	lastError error
-
-	// gaveUp records that lastError is why the walk ended rather than something it
-	// survived, which is what the live shape has to know: a bubbletea program that
-	// quits carries no error out, so the reason travels on the state.
-	gaveUp bool
-}
-
-// newWatchState begins a walk, optionally already knowing something about the run.
-//
-// `flow run` knows the run exists and what its ids are before it starts following,
-// and seeding that matters for a reason that is not cosmetic: a machine-readable
-// caller interrupted before the first poll would otherwise be given nothing at all,
-// while a durable workload it can no longer name goes on running. See [finishWatch].
-func newWatchState(workflowID string, known *v1.GetResponse) *watchState {
-	state := &watchState{workflowID: workflowID}
-	if known != nil {
-		state.response = known
-		state.runID = known.GetRunId()
-		state.status = known.GetStatus()
-	}
-
-	return state
-}
-
-// watchProgress is what one poll means for a reader.
-type watchProgress struct {
-	// Changed reports that a reader has something new to be told. False for a poll
-	// that found the run exactly where it was, which is most of them.
-	Changed bool
-
-	// Done reports that the walk is over.
-	Done bool
-
-	// Err is why it ended, when it ended badly. A Done with no Err is the run
-	// having reached a terminal status, which is success at watching whatever the
-	// run itself did.
-	Err error
-}
-
-// absorb folds one poll result into the state.
-//
-// at is when the result was observed, taken by the caller rather than read here. Both
-// shapes already have it — the plain loop reads the clock, the live view has the time
-// on the tick that scheduled the poll — and taking it makes the whole state machine a
-// function of its inputs, so a test can state exactly when it should give up rather
-// than wait to find out.
-func (s *watchState) absorb(at time.Time, response *v1.GetResponse, err error) watchProgress {
-	if err != nil {
-		return s.absorbError(at, err)
-	}
-
-	// A status the schema forbids is a peer that is not answering the question.
-	// Treating it as "still running" would wait forever on a server that will never
-	// say otherwise, and the whole point of a status is that it distinguishes those.
-	if response.GetStatus() == v1.RunResponse_STATUS_UNSPECIFIED {
-		return s.stop(fmt.Errorf(
-			"the server reported no status for run %q, which is a status the schema does not permit; "+
-				"ask `flow get %s` and report it if it persists", s.workflowID, s.workflowID))
-	}
-
-	recovered := !s.outageSince.IsZero()
-	s.outageSince, s.lastError = time.Time{}, nil
-
-	steps := completedSteps(response)
-	position := positionPath(response.GetProgress())
-	pendingKeys := pendingActivityKeys(response.GetPendingActivities())
-	waitKeys := pendingWaitKeys(response.GetProgress())
-
-	// No separate "is this the first answer" flag, and the reason is the guard above
-	// rather than an oversight: the zero value of status is UNSPECIFIED, and an
-	// UNSPECIFIED answer never reaches here, so the first answer to get this far
-	// always has a status differing from the one held. A flag saying the same thing
-	// would be a field whose value can never change the outcome — which is a thing
-	// that reads as load-bearing and is not, and which no test can hold honest.
-	//
-	// Position and retry state are grounds on their own, because most of a run's
-	// interesting movement happens under one unchanging status: a run that reaches
-	// its third step, or an activity that fails and is scheduled again, has changed
-	// in the only sense a reader cares about. Without them the "nothing has changed
-	// yet" rule suppresses exactly the news this command exists to deliver.
-	// The wait set is its own ground for the same reason retries are, and with
-	// a sharper edge: a gate opening or closing inside concurrent work moves
-	// neither the position (those workers deliberately carry none) nor the
-	// pending activities, so without this key the news that a run is now
-	// waiting on somebody, or has stopped, is exactly the change a poll
-	// swallows.
-	changed := recovered ||
-		s.status != response.GetStatus() ||
-		s.runID != response.GetRunId() ||
-		s.position != position ||
-		!slices.Equal(s.pendingKeys, pendingKeys) ||
-		!slices.Equal(s.waitKeys, waitKeys) ||
-		!slices.Equal(s.steps, steps)
-
-	s.response = response
-	s.runID = response.GetRunId()
-	s.status = response.GetStatus()
-	s.steps = steps
-	s.position = position
-	s.pending = pendingActivityLines(response.GetPendingActivities(), at)
-	s.waits = pendingWaitLines(response.GetProgress(), at)
-	s.pendingKeys = pendingKeys
-	s.waitKeys = waitKeys
-	if failure := response.GetError(); failure != nil {
-		s.failure = failure.GetMessage()
-	}
-
-	return watchProgress{Changed: changed, Done: terminalStatus(s.status)}
-}
-
-// absorbError folds a refused poll in, deciding whether to keep asking.
-func (s *watchState) absorbError(at time.Time, err error) watchProgress {
-	var transient transientError
-	if !errors.As(err, &transient) {
-		return s.stop(err)
-	}
-
-	first := s.outageSince.IsZero()
-	if first {
-		s.outageSince = at
-	}
-	s.lastError = err
-
-	// The measured elapsed time, and the allowance therefore always gets its full
-	// span whatever the interval and however long a request took to fail. A first
-	// failure never ends a watch, because no time has passed since itself — so there
-	// is always a second attempt, without a floor on attempts to say so.
-	if elapsed := at.Sub(s.outageSince); elapsed >= outageAllowance {
-		return s.stop(fmt.Errorf(
-			"gave up watching %q after %s of the server being unable to answer: %w",
-			s.workflowID, elapsed.Round(time.Second), err))
-	}
-
-	// A change, so the reader is told the server went quiet rather than watching a
-	// still screen and guessing. Only the first one: an outage that persists is not
-	// news each second. The recovery is a change too, which is why absorb reports
-	// one when the outage ends.
-	return watchProgress{Changed: first}
-}
-
-// stop records why the walk ended and reports it.
-//
-// Written onto the state as well as returned because the two shapes collect it
-// differently: the plain loop reads the return value, and a bubbletea program that
-// quits carries nothing out but its model. One assignment here is what keeps those
-// from disagreeing about whether a watch ended well.
-func (s *watchState) stop(err error) watchProgress {
-	s.lastError, s.gaveUp = err, true
-
-	return watchProgress{Done: true, Err: err}
-}
-
-// line renders the state as one line of prose, for the shape that prints a line per
-// change.
-func (s *watchState) line(theme ui.Theme) string {
-	if s.lastError != nil {
-		return fmt.Sprintf("%s %s", theme.Pill(ui.ToneWarning, "unreachable"), s.lastError)
-	}
-
-	// The same status-then-position sentence `flow get` writes, through the same
-	// renderer: one line about a run in flight, so a CI log and a person asking once
-	// are reading the same words about the same thing.
-	line := fmt.Sprintf("%s workflow %s run %s%s",
-		theme.Pill(statusTone(s.status), statusLabel(s.status)), s.workflowID, s.runID,
-		runPosition(theme, s.response.GetProgress()))
-
-	// Why it is where it is, on the same line, because this shape's whole discipline
-	// is one line per change and a retry is part of one change rather than another.
-	for _, pending := range s.pending {
-		line += fmt.Sprintf(" (%s)", pending)
-	}
-
-	// The gates it is parked on, through `flow get`'s own renderer for that
-	// renderer's reason: a person who asks once and a person who watches are
-	// reading about one run, and a second wording of "waiting for signal x" is
-	// how the two come to describe it differently.
-	//
-	// Rendered at absorb time like the retries above, so the countdown to a
-	// gate's deadline is measured against the moment the answer was observed.
-	for _, wait := range s.waits {
-		line += fmt.Sprintf(" (%s)", wait)
-	}
-
-	if len(s.steps) > 0 {
-		line += fmt.Sprintf(" after %s", strings.Join(s.steps, ", "))
-	}
-	if s.failure != "" {
-		line += fmt.Sprintf(": %s", s.failure)
-	}
-
-	return line
-}
-
-// pendingActivityKeys reduces the retries to what a reader would call news.
-//
-// The attempt count and the last failure, and nothing else — see [watchState] for
-// why the countdown is left out of this and kept in the rendered line.
-func pendingActivityKeys(pending []*v1.PendingActivity) []string {
-	if len(pending) == 0 {
-		return nil
-	}
-
-	keys := make([]string, 0, len(pending))
-	for _, activity := range pending {
-		keys = append(keys, fmt.Sprintf("%d\x00%s", activity.GetAttempt(), activity.GetLastFailure()))
-	}
-
-	return keys
-}
-
-// pendingWaitKeys reduces the held gates to what identifies them across polls:
-// which step, where, which signal, policed or not, and the deadline's fixed
-// instant rather than the countdown to it. A gate entering or leaving is a
-// change worth reporting; the same gate ten seconds closer to its deadline is
-// not, or a bounded wait would make every poll "news".
-func pendingWaitKeys(progress *v1.RunProgress) []string {
-	waits := progress.GetPendingWaits()
-	if len(waits) == 0 {
-		return nil
-	}
-
-	keys := make([]string, 0, len(waits))
-	for _, wait := range waits {
-		keys = append(keys, fmt.Sprintf("%s\x00%s\x00%s\x00%t\x00%d",
-			wait.GetStepId(), wait.GetPath(), wait.GetSignalName(), wait.GetPoliced(),
-			wait.GetDeadline().GetSeconds()))
-	}
-
-	return keys
-}
-
-// terminalStatus reports whether a run has stopped moving.
-//
-// UNSPECIFIED is deliberately absent: it is not a run in progress, it is a server
-// that has not answered the question, and absorb refuses it rather than waiting on
-// it.
-func terminalStatus(status v1.RunResponse_Status) bool {
-	switch status {
-	case v1.RunResponse_STATUS_COMPLETED, v1.RunResponse_STATUS_FAILED,
-		v1.RunResponse_STATUS_CANCELED, v1.RunResponse_STATUS_TERMINATED,
-		v1.RunResponse_STATUS_TIMED_OUT:
-		return true
-	default:
-		return false
-	}
+	return outcomeError(state.Status(), state.WorkflowID(), state.Failure())
 }
 
 // outcomeError turns a finished run's status into this command's exit code.
@@ -851,7 +586,7 @@ func terminalStatus(status v1.RunResponse_Status) bool {
 // status rather than restating it as a failure, because "terminated" and "timed
 // out" are different things to go and look at.
 func outcomeError(status v1.RunResponse_Status, workflowID, failure string) error {
-	if !terminalStatus(status) {
+	if !watch.TerminalStatus(status) {
 		// Watching stopped before the run did — a cancelled context, or a person
 		// pressing q. Not the run's outcome, so not an error about the run.
 		return nil
@@ -895,24 +630,4 @@ func restatesStatus(failure string, status v1.RunResponse_Status) bool {
 // sentence this CLI writes.
 func statusWord(status v1.RunResponse_Status) string {
 	return strings.ToLower(strings.ReplaceAll(statusLabel(status), "_", " "))
-}
-
-// completedSteps lists the ids of steps that have produced outputs, in order.
-//
-// Sorted because the outputs arrive in a protobuf map, which has no iteration
-// order — an unsorted list would reshuffle itself on every redraw and read as
-// though the run were going backwards.
-func completedSteps(response *v1.GetResponse) []string {
-	values := response.GetOutputs().GetStepValues()
-	if len(values) == 0 {
-		return nil
-	}
-
-	ids := make([]string, 0, len(values))
-	for id := range values {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-
-	return ids
 }
