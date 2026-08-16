@@ -367,8 +367,12 @@ func (s *FlowstateServer) NewWebhookReceiver(
 	// deployment configured. Scoped by the same namespace the receiver
 	// itself was just scoped by, so two tenants that both configure a
 	// workflow named alike cannot substitute one for the other's.
-	for _, workflow := range workflows {
-		s.registerTrustedWorkflow(namespace, workflow)
+	//
+	// It refuses rather than replaces when this deployment already trusts a
+	// different specification under one of these names: see
+	// [FlowstateServer.registerTrustedWorkflows].
+	if err := s.registerTrustedWorkflows(namespace, workflows); err != nil {
+		return nil, err
 	}
 
 	return receiver, nil

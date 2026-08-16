@@ -126,7 +126,10 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// with `manual: denied`, add a `schedule:` trigger to their own copy, and
 	// have this handler create and later fire *that* copy under the trusted
 	// name.
-	workflow := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	if err != nil {
+		return nil, err
+	}
 
 	// pinPlugins, credential targets, declared signal policies, spec size and
 	// structure depth — everything `Run` asks about a specification on its own,

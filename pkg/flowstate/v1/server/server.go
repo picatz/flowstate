@@ -203,10 +203,44 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 			if workflow == nil || workflow.GetName() == "" {
 				continue
 			}
-			s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
-				proto.Clone(workflow).(*v1.Workflow)
+			key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
+			if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+				// Two registrations disagree about one tenant's workflow.
+				// Last-writer-wins here would let a later, weaker copy
+				// replace `manual: denied` or a narrower
+				// `allowed_principals` — silently, and decided by option
+				// order rather than by anything an operator wrote down.
+				// An [Option] cannot report an error, so the conflict is
+				// recorded and every request for this key is refused; see
+				// [FlowstateServer.noteTrustedWorkflowConflict].
+				s.noteTrustedWorkflowConflict(key)
+				continue
+			}
+			s.trustedWorkflows[key] = proto.Clone(workflow).(*v1.Workflow)
 		}
 	}
+}
+
+// noteTrustedWorkflowConflict marks a key two registrations disagreed about.
+//
+// Fail closed, per CLAUDE.md: a component that allows when it cannot decide
+// will eventually allow everything, and this is precisely a case of not being
+// able to decide. Neither candidate can be served — the later one may be the
+// weaker policy, and the earlier one may be the stale one — and serving the
+// *caller's* copy is the open behavior this whole mechanism exists to remove.
+// So the key is refused outright until the deployment's configuration says one
+// thing about it.
+//
+// Identical re-registration is not a conflict. The same specification loaded
+// twice (one Flowfile named to two receivers, an option restating what a
+// receiver also serves) says one thing, so it authorizes one thing.
+//
+// Callers hold trustedWorkflowsMu for writing.
+func (s *FlowstateServer) noteTrustedWorkflowConflict(key trustedWorkflowKey) {
+	if s.trustedWorkflowConflicts == nil {
+		s.trustedWorkflowConflicts = make(map[trustedWorkflowKey]bool)
+	}
+	s.trustedWorkflowConflicts[key] = true
 }
 
 // trustedWorkflowKey identifies a trusted workflow specification by both the
@@ -264,6 +298,12 @@ type FlowstateServer struct {
 	trustedWorkflowsMu sync.RWMutex
 	trustedWorkflows   map[trustedWorkflowKey]*v1.Workflow
 
+	// trustedWorkflowConflicts records keys two registrations disagreed
+	// about, which [FlowstateServer.trustedWorkflow] then refuses rather
+	// than answering with either candidate. See
+	// [FlowstateServer.noteTrustedWorkflowConflict].
+	trustedWorkflowConflicts map[trustedWorkflowKey]bool
+
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
 	// started serving. See [WithSearchAttributesRegistered].
@@ -289,17 +329,33 @@ type FlowstateServer struct {
 // treat specifications as immutable, but keeping the configured authority
 // out of request-lifetime code makes that trust boundary robust to later
 // normalization.
-func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) *v1.Workflow {
+// It returns an error for a name this deployment registered twice with
+// different specifications, rather than an answer drawn from either of them.
+// See [FlowstateServer.noteTrustedWorkflowConflict].
+func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, error) {
 	if requested == nil {
-		return nil
+		return nil, nil
 	}
+	key := trustedWorkflowKey{namespace: namespace, name: requested.GetName()}
 	s.trustedWorkflowsMu.RLock()
-	trusted, ok := s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: requested.GetName()}]
+	trusted, ok := s.trustedWorkflows[key]
+	conflicted := s.trustedWorkflowConflicts[key]
 	s.trustedWorkflowsMu.RUnlock()
-	if !ok {
-		return requested
+	if conflicted {
+		// Named, not silently degraded to open submission: the caller can do
+		// nothing about this and the operator must, so the message says whose
+		// problem it is. It carries no specification detail — the request came
+		// from outside and the conflict is between two deployment-owned
+		// copies.
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+			"workflow %q is registered twice for this namespace with different specifications, "+
+				"so this deployment has no single policy to enforce for it; an operator must make "+
+				"the trusted registrations agree", requested.GetName()))
 	}
-	return proto.Clone(trusted).(*v1.Workflow)
+	if !ok {
+		return requested, nil
+	}
+	return proto.Clone(trusted).(*v1.Workflow), nil
 }
 
 // registerTrustedWorkflow adds one deployment-owned specification to the
@@ -312,17 +368,51 @@ func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workfl
 // call while the server is serving — the receiver runs before the process
 // starts listening, but nothing here assumes that — because every read and
 // write of the map takes the same lock.
-func (s *FlowstateServer) registerTrustedWorkflow(namespace string, workflow *v1.Workflow) {
-	if workflow == nil || workflow.GetName() == "" {
-		return
-	}
+// It refuses a name already registered with a different specification, rather
+// than replacing it. A receiver constructed after [WithTrustedWorkflows] named
+// the same workflow, or after an earlier receiver served it, would otherwise
+// substitute its own copy for the one the deployment already had — so a weaker
+// `manual:` policy could quietly displace a stricter one, decided by nothing
+// more than which receiver was constructed last. Unlike [WithTrustedWorkflows]
+// this path can report the error, and refusing at construction beats denying at
+// request time.
+//
+// The whole call is one transaction: every workflow is checked before any is
+// written, for the same reason [FlowstateServer.NewWebhookReceiver] grants
+// trust in a second pass — a rejected registration must leave the trusted set
+// exactly as it found it.
+func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows []*v1.Workflow) error {
 	s.trustedWorkflowsMu.Lock()
+	defer s.trustedWorkflowsMu.Unlock()
+
+	for _, workflow := range workflows {
+		if workflow == nil || workflow.GetName() == "" {
+			continue
+		}
+		key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
+		if s.trustedWorkflowConflicts[key] {
+			return fmt.Errorf("workflow %q is already registered twice for this namespace with "+
+				"different specifications; make the trusted registrations agree before serving it "+
+				"for webhook deliveries", workflow.GetName())
+		}
+		if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+			return fmt.Errorf("workflow %q is already registered for this namespace with a different "+
+				"specification; two deployment-owned copies under one name are two `manual:` policies "+
+				"this server would have to choose between, so serve one of them", workflow.GetName())
+		}
+	}
+
 	if s.trustedWorkflows == nil {
 		s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
 	}
-	s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
-		proto.Clone(workflow).(*v1.Workflow)
-	s.trustedWorkflowsMu.Unlock()
+	for _, workflow := range workflows {
+		if workflow == nil || workflow.GetName() == "" {
+			continue
+		}
+		s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
+			proto.Clone(workflow).(*v1.Workflow)
+	}
+	return nil
 }
 
 // WithDataConverter sets the data converter this server reads its own recorded
@@ -727,7 +817,10 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// name flat enough for one tenant to reach another's trusted entry.
 	identity := s.identityFor(ctx)
 
-	workflow := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	if err != nil {
+		return nil, err
+	}
 	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
