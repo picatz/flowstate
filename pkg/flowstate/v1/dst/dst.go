@@ -52,6 +52,8 @@
 // and a different mechanism. What keeps the two honest in the meantime is
 // unchanged: both drivers run every case in pkg/flowstate/v1/tests, and the cases
 // this package explores are those same cases.
+//
+// [tests.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/tests#UndoCase
 package dst
 
 import (
@@ -205,6 +207,8 @@ type Result struct {
 	// which is exactly what this harness varies. The same distinction
 	// [tests.UndoCase] draws, for the same reason — beyond the prefix, order is
 	// a claim.
+	//
+	// [tests.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/tests#UndoCase
 	UnorderedPrefix int
 }
 
