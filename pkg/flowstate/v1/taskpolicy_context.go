@@ -103,10 +103,11 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // optimization so much as it is the accurate description of what the policy
 // governs: one dispatch, one decision.
 //
-// local is [Scope.GetLocal] — true only for `flow run local`'s own
-// rehearsal, never for the durable driver (see engine/workflow.go's
-// varsScope, "Never Local: the durable driver always has a server in front
-// of it"). It reaches nothing here but [TaskPolicyDeniedError.Local]: the
+// local is [Scope.GetLocal] — true for any local-driver entry point's own
+// rehearsal (`flow run local`, `flow test`, `flow task run`, ...), never
+// for the durable driver (see engine/workflow.go's varsScope, "Never Local:
+// the durable driver always has a server in front of it"). It reaches
+// nothing here but [TaskPolicyDeniedError.Local]: the
 // decision above — which policy governs, which rule matches, allow versus
 // deny — is made by [TaskPolicy.Check] before this ever runs, entirely from
 // task and identity. This parameter is set on the resulting error, if any,
