@@ -115,10 +115,17 @@ this section exists to prevent.
    description's reactions tells you whether a review is in flight, for a
    fraction of the cost of fetching threads. Do not merge while one is in
    flight.
-2. **Fetch once per PR, not once per finding.** `get_review_comments`
-   returns the threads with their `isResolved`/`isOutdated` metadata.
-   Never fetch the full PR object just to check state; its body is large
-   and you already know the PR. Use `get_check_runs` for CI status.
+2. **Fetch once per PR, not once per finding — and over REST, not GraphQL.**
+   `gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate` returns every
+   review comment's id, author, path, line and `in_reply_to_id`, which is
+   everything triage needs to group comments into threads and decide what to
+   act on. Item 9 below is the reason this is REST rather than
+   `get_review_comments`: that call is GraphQL, costs the shared pool, and
+   this step runs once per PR regardless of finding count — calling it here
+   *and* again at resolve time (item 9) is the exact double-spend a prior
+   sweep found burning the pool. Never fetch the full PR object just to check
+   state; its body is large and you already know the PR. Use `get_check_runs`
+   for CI status.
 3. **Triage the whole set in one pass.** Classify each finding: real (fix
    it), stale (a later commit already fixed it; no action), or wrong
    (skip, and say why in the session report, not on GitHub).
@@ -222,10 +229,12 @@ this section exists to prevent.
    wave of PRs before anyone counted.
 
    Threads and top-level comments are two different endpoints, so step 2's
-   `get_review_comments` fetch does not surface this class at all — neither
-   it nor `get_reviews` returns a top-level issue comment or its database
-   ID. Fetch them separately, paginated, before deleting anything:
+   REST comment listing does not surface this class at all — neither it nor
+   `get_reviews` returns a top-level issue comment or its database ID. Fetch
+   them separately, paginated, before deleting anything, with `number` bound
+   to this PR's number first (nothing here binds it for you):
 
+       number=<the PR's number>
        gh api --paginate repos/{owner}/{repo}/issues/$number/comments
 
    REST deletes them, and that is the right answer *for this class only*.
