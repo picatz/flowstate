@@ -2,10 +2,12 @@ package auth_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/goccy/go-yaml"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -558,6 +560,83 @@ issuers:
 		require.NoError(t, err)
 		require.Len(t, policy.Issuers, 1)
 		assert.Equal(t, map[string]string{"acme-org/service-a": "team-a"}, map[string]string(policy.Issuers[0].NamespaceMap))
+	})
+}
+
+// TestNamespaceMapEmptyRoundTripsAsPresent is the regression for the finding
+// that landed on PR #744 after TestNamespaceMapExplicitNullIsRefused: a
+// caller that builds a non-nil, empty [auth.NamespaceMap] directly in Go
+// (a deliberate deny-all, distinct from never configuring the field at all)
+// must have that emptiness survive marshal -> unmarshal, for both JSON and
+// YAML.
+//
+// Before the fix, both encoding/json's `omitempty` and goccy/go-yaml's
+// `omitempty` decided whether to omit the field by reflecting on len(m) --
+// which a non-nil empty map satisfies exactly as a nil map does -- before
+// ever calling [auth.NamespaceMap]'s MarshalJSON/MarshalYAML method. So the
+// field vanished from the wire exactly as if it had never been set, and
+// re-parsing decoded it back as nil (absent, unrestricted): the marshal
+// round trip silently turned a deny-all into no restriction at all, defeated
+// the null-rejection this same file's TestNamespaceMapExplicitNullIsRefused
+// exists to enforce, and did so without hitting [auth.ParsePolicy] at all --
+// a plain encoding/json or goccy/go-yaml round trip is enough.
+func TestNamespaceMapEmptyRoundTripsAsPresent(t *testing.T) {
+	t.Parallel()
+
+	issuer := auth.TrustedIssuer{
+		Name:           "ci",
+		Issuer:         "https://token.actions.githubusercontent.com",
+		Audiences:      []string{"flowstate"},
+		NamespaceClaim: "repository",
+		NamespaceMap:   auth.NamespaceMap{}, // non-nil, empty: deliberate deny-all.
+	}
+	policy := auth.Policy{Issuers: []auth.TrustedIssuer{issuer}}
+
+	t.Run("JSON", func(t *testing.T) {
+		data, err := json.Marshal(policy)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"namespace_map":{}`,
+			"an empty NamespaceMap must be written, not omitted")
+
+		var back auth.Policy
+		require.NoError(t, json.Unmarshal(data, &back))
+		require.Len(t, back.Issuers, 1)
+		assert.NotNil(t, back.Issuers[0].NamespaceMap,
+			"an empty namespace_map must decode as present, not absent")
+		assert.Empty(t, map[string]string(back.Issuers[0].NamespaceMap))
+	})
+
+	t.Run("YAML", func(t *testing.T) {
+		data, err := yaml.Marshal(policy)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "namespace_map: {}",
+			"an empty NamespaceMap must be written, not omitted")
+
+		var back auth.Policy
+		require.NoError(t, yaml.Unmarshal(data, &back))
+		require.Len(t, back.Issuers, 1)
+		assert.NotNil(t, back.Issuers[0].NamespaceMap,
+			"an empty namespace_map must decode as present, not absent")
+		assert.Empty(t, map[string]string(back.Issuers[0].NamespaceMap))
+	})
+
+	t.Run("nil NamespaceMap is still omitted, both formats", func(t *testing.T) {
+		nilPolicy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:           "ci",
+			Issuer:         "https://token.actions.githubusercontent.com",
+			Audiences:      []string{"flowstate"},
+			NamespaceClaim: "repository",
+		}}}
+
+		jdata, err := json.Marshal(nilPolicy)
+		require.NoError(t, err)
+		assert.NotContains(t, string(jdata), "namespace_map",
+			"a never-configured NamespaceMap must not appear on the wire at all")
+
+		ydata, err := yaml.Marshal(nilPolicy)
+		require.NoError(t, err)
+		assert.NotContains(t, string(ydata), "namespace_map",
+			"a never-configured NamespaceMap must not appear on the wire at all")
 	})
 }
 

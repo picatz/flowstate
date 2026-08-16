@@ -130,6 +130,29 @@ func (m NamespaceMap) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]string(m))
 }
 
+// IsZero reports whether m is nil — never whether it is empty. Both
+// encoding/json's `omitzero` and goccy/go-yaml's `omitempty` (which treats an
+// [IsZeroer] as authoritative over its own default reflection-based check;
+// see that package's yaml.go doc) call this instead of measuring len(m)
+// before deciding whether to omit the field, which is what lets
+// [TrustedIssuer.NamespaceMap]'s struct tags tell "never configured" (nil)
+// apart from "configured empty, deliberately deny-all" (non-nil, len 0) on
+// the wire.
+//
+// Without this method, both encoders fall back to reflecting on the field's
+// own zero-ness — len(m) == 0 — to decide whether to omit it, and that check
+// runs before [NamespaceMap.MarshalJSON] or [NamespaceMap.MarshalYAML] is
+// ever called. A non-nil empty map satisfies len(m) == 0 exactly as a nil map
+// does, so both encoders omitted it identically: an intentional deny-all
+// marshaled as if the field had never been set. Re-parsing that output then
+// decodes NamespaceMap as absent — unrestricted — silently discarding the
+// deny-all this package's own null-rejection (see [rejectNullNamespaceMap])
+// exists to enforce, in exactly the marshal round trip that rejection cannot
+// see.
+func (m NamespaceMap) IsZero() bool {
+	return m == nil
+}
+
 // TrustedIssuer is one issuer Flowstate trusts, the tokens it will accept from
 // that issuer, and the Flowstate identity it grants them.
 //
@@ -289,7 +312,17 @@ type TrustedIssuer struct {
 	// The field's type is [NamespaceMap] rather than a plain
 	// map[string]string so that "the key was written" and "the key was never
 	// written" stay distinguishable through decoding — see its own doc.
-	NamespaceMap NamespaceMap `json:"namespace_map,omitempty" yaml:"namespace_map,omitempty"`
+	//
+	// The JSON tag uses `omitzero`, not `omitempty`: encoding/json's
+	// `omitempty` decides by reflecting on len(m) before ever calling
+	// [NamespaceMap.MarshalJSON], so a non-nil empty map — a deliberate
+	// deny-all — would omit exactly like nil, and re-parsing would then
+	// decode it as absent (unrestricted), silently discarding the deny-all.
+	// `omitzero` instead defers to [NamespaceMap.IsZero], which distinguishes
+	// nil from empty; see that method's doc. goccy/go-yaml's `omitempty`
+	// already defers to the same IsZero method when a field implements it
+	// (goccy/go-yaml's yaml.go doc), so the YAML tag needs no change.
+	NamespaceMap NamespaceMap `json:"namespace_map,omitzero" yaml:"namespace_map,omitempty"`
 
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
