@@ -29,6 +29,7 @@ func installedPlugin(name, version string) *v1.PluginDescription {
 		ProtocolVersion:    2,
 		TaskSchemaDigest:   "sha256:schema",
 		DistributionDigest: "sha256:binary",
+		ClaimsDigest:       "sha256:claims",
 	}
 }
 

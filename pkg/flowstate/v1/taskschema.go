@@ -352,6 +352,13 @@ func Inputs(def TaskDef) []InputField {
 	return describeFields(def.Inputs, def.DeferredInputs, taskInputNotes(def))
 }
 
+// secretReferenceNote is the constraint phrase [taskInputNotes] writes for an
+// input that may hold a secret reference. Named once because
+// [TaskDescriptionSansClaims] has to strip exactly this phrase back out for
+// the SecretInputs source specifically — see that function's doc comment —
+// and a second literal there could drift from what this one writes.
+const secretReferenceNote = "may hold a secret reference"
+
 // taskInputNotes is what the *task* adds to a field's constraints, by input name.
 //
 // Read off the definition rather than restated: `ExpressionInputs` is already the
@@ -377,13 +384,23 @@ func taskInputNotes(def TaskDef) map[string][]string {
 	for _, name := range def.CredentialInputs {
 		notes[name] = append(notes[name], "names a deployment credential target")
 	}
+	// def.SecretInputs is the plugin whole-value list (TaskManifest.secret_inputs,
+	// #712): a different mechanism from AuthorityInputs/NestedSecretInputs, but
+	// the same fact about what an author may legally write there, so it earns
+	// the same note. It is also the one source here that is a claim field
+	// (plugin-manifest-declared, mutable independently of a task's descriptor
+	// shape) rather than fixed Go source — AuthorityInputs and NestedSecretInputs
+	// are only ever set for a built-in task, never a plugin one — which is why
+	// [TaskDescriptionSansClaims] has to know how to take this specific note
+	// back out.
 	for _, name := range slices.Sorted(slices.Values(append(
-		slices.Clone(def.AuthorityInputs), def.NestedSecretInputs...))) {
+		slices.Clone(def.AuthorityInputs),
+		append(slices.Clone(def.NestedSecretInputs), def.SecretInputs...)...))) {
 		if slices.Contains(def.CredentialInputs, name) ||
-			slices.Contains(notes[name], "may hold a secret reference") {
+			slices.Contains(notes[name], secretReferenceNote) {
 			continue
 		}
-		notes[name] = append(notes[name], "may hold a secret reference")
+		notes[name] = append(notes[name], secretReferenceNote)
 	}
 
 	return notes
@@ -436,6 +453,44 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 	return out
 }
 
+// CurrentClaimsSchemaVersion is [TaskCatalog.ClaimsSchemaVersion]'s current
+// value: every build carrying this constant populates NeedsScope,
+// SecretInputs, ShapesOutputs, DeferredInputs and ExpressionInputs on every
+// TaskDescription it produces. Bump it only alongside a change that adds or
+// redefines one of those fields, the same event that would justify a new
+// entry in the doc comment on ClaimsSchemaVersion itself.
+const CurrentClaimsSchemaVersion uint32 = 1
+
+// TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
+// be trusted to say when a task needs scope or accepts a secret, as opposed
+// to a zero value that means "never populated."
+//
+// Exists for the GetCatalog RPC specifically: `flow plugins` and `flow
+// tasks` build a [TaskCatalog] or [PluginCatalog] in the same process that
+// renders it, so there is no version skew to have an opinion about — but a
+// remote GetCatalog client can be talking to a deployment running an older
+// build mid-rollout, whose TaskDescriptions never had NeedsScope or
+// SecretInputs to set in the first place. proto3 gives no presence signal
+// for a bool or a repeated string field, so an old server's response and a
+// new server's honest "this task claims nothing" decode identically. Callers
+// deciding whether to trust a plugin must check this before reading either
+// field, and must treat false here as "unknown", never as "no" (#712).
+//
+// Exact equality with [CurrentClaimsSchemaVersion], not merely bounded: a
+// version bump can add a field or redefine one that already existed (see
+// CurrentClaimsSchemaVersion's own doc comment), so a v1-built client is not
+// safe reading a v2 catalog either — it does not know what changed — and a
+// v2-built client reading a v1 catalog is not safe assuming the older
+// response's silence on a field v2 introduced means that field is false; the
+// v1 response structurally cannot contain it. Both directions are the same
+// failure shape the zero case is (this reader does not know what the
+// producer meant), so both are refused the same way: only the exact version
+// this build was compiled to read is "known" (#763 review, both rounds — a
+// `<=` bound closed the too-new direction and reopened the too-old one).
+func TaskDescriptionClaimsKnown(catalog *TaskCatalog) bool {
+	return catalog.GetClaimsSchemaVersion() == CurrentClaimsSchemaVersion
+}
+
 // Catalog describes everything this build can execute.
 //
 // Built from the registry rather than maintained, so a task added to it appears
@@ -447,12 +502,13 @@ func Catalog() *TaskCatalog {
 	defs := DefaultRegistry().All()
 
 	catalog := &TaskCatalog{
-		Tasks:         make([]*TaskDescription, 0, len(defs)),
-		CelLibraries:  ExtensionLibraries(),
-		CelFunctions:  catalogFunctions(),
-		DurationUnits: DurationUnits(),
-		NowIdentifier: NowIdentifier,
-		ValueRoots:    []string{VarsRoot, StepsRoot, InputsRoot, RunRoot, TriggerRoot},
+		Tasks:               make([]*TaskDescription, 0, len(defs)),
+		CelLibraries:        ExtensionLibraries(),
+		CelFunctions:        catalogFunctions(),
+		DurationUnits:       DurationUnits(),
+		NowIdentifier:       NowIdentifier,
+		ValueRoots:          []string{VarsRoot, StepsRoot, InputsRoot, RunRoot, TriggerRoot},
+		ClaimsSchemaVersion: CurrentClaimsSchemaVersion,
 	}
 
 	for _, def := range defs {
@@ -474,6 +530,131 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		Summary: def.Summary,
 		Inputs:  taskFields(Inputs(def)),
 		Outputs: taskFields(Outputs(def)),
+
+		// The five claims with security weight (#712): invisible here before,
+		// which meant invisible in the catalog and outside ClaimsDigest (see
+		// [TaskDescriptionClaimsOnly]), which is computed over exactly these
+		// five fields. Read straight off the definition rather than
+		// re-derived, for the same reason every other field above is: one
+		// definition of what a task does, described.
+		//
+		// The three lists are canonicalized rather than cloned as-is: to the
+		// engine they are membership sets (MustBeExpression, IsDeferred and
+		// resolvePluginSecretInputs all ask "does this list contain X", never
+		// "in what order"), but the manifest schema bounds them only by size,
+		// not by order. ClaimsDigest hashes them with deterministic
+		// marshaling, which fixes *field* order and says nothing about the
+		// *contents* of a repeated string field — so two launches of one
+		// unchanged plugin binary declaring the same set in a different order
+		// (map iteration in the plugin's own code, say) would otherwise digest
+		// differently and fail CheckPluginsAvailable's exact-match replay guard
+		// for a run that plugin can execute unchanged (#763 review).
+		NeedsScope:       def.NeedsPrevOutputs,
+		SecretInputs:     canonicalStrings(def.SecretInputs),
+		ShapesOutputs:    def.ShapesOutputs,
+		DeferredInputs:   canonicalStrings(def.DeferredInputs),
+		ExpressionInputs: canonicalStrings(def.ExpressionInputs),
+	}
+}
+
+// canonicalStrings sorts and deduplicates a membership set before it enters a
+// hashed description, so its wire form depends on its contents and not on
+// whatever order it happened to be declared in. See the comment at its call
+// site in [DescribeTask].
+func canonicalStrings(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+
+	out := slices.Sorted(slices.Values(names))
+
+	return slices.Compact(out)
+}
+
+// TaskDescriptionSansClaims returns a copy of t carrying only what
+// TaskSchemaDigest hashes: name, summary, inputs and outputs. Used to build
+// that digest so it stays stable across a change to the five claim fields —
+// see [TaskDescriptionClaimsOnly] for the digest that covers those, and
+// PluginDescription.task_schema_digest's doc comment for why the split
+// exists (#763 review: an in-flight durable run's pinned digest must not
+// disagree with itself for a plugin whose descriptors did not change).
+//
+// Not quite a shallow copy of Inputs and Outputs: each field's constraints
+// has [secretReferenceNote] stripped back out first, because
+// [taskInputNotes] writes that note for SecretInputs — a claim field, #712 —
+// into the very TaskField this digest hashes, and doing nothing about it
+// here would put a security posture change back into a digest that was
+// supposed to be immune to one. TaskField.deferred and the "must be written
+// as an expression" note are left alone on purpose: DeferredInputs and
+// ExpressionInputs already rendered into Inputs before #712 existed, so
+// stripping them now would make this digest disagree with what a truly
+// pre-#712 build computed for a plugin already using either feature — the
+// identical bug, arriving from the opposite direction.
+func TaskDescriptionSansClaims(t *TaskDescription) *TaskDescription {
+	if t == nil {
+		return nil
+	}
+
+	return &TaskDescription{
+		Name:    t.GetName(),
+		Summary: t.GetSummary(),
+		Inputs:  fieldsSansSecretNote(t.GetInputs()),
+		Outputs: fieldsSansSecretNote(t.GetOutputs()),
+	}
+}
+
+// fieldsSansSecretNote returns fields with [secretReferenceNote] removed
+// from each one's constraints. A field that never carried the note is
+// returned as-is rather than copied, since every caller of
+// [TaskDescriptionSansClaims] only marshals the result and never mutates it.
+func fieldsSansSecretNote(fields []*TaskField) []*TaskField {
+	if len(fields) == 0 {
+		return fields
+	}
+
+	out := make([]*TaskField, len(fields))
+	for i, f := range fields {
+		if !slices.Contains(f.GetConstraints(), secretReferenceNote) {
+			out[i] = f
+			continue
+		}
+
+		constraints := make([]string, 0, len(f.GetConstraints())-1)
+		for _, c := range f.GetConstraints() {
+			if c != secretReferenceNote {
+				constraints = append(constraints, c)
+			}
+		}
+
+		out[i] = &TaskField{
+			Name:        f.GetName(),
+			Type:        f.GetType(),
+			Required:    f.GetRequired(),
+			Deferred:    f.GetDeferred(),
+			Constraints: constraints,
+		}
+	}
+
+	return out
+}
+
+// TaskDescriptionClaimsOnly returns a copy of t carrying only its name and
+// the five claim fields with security weight (#712): NeedsScope,
+// SecretInputs, ShapesOutputs, DeferredInputs, ExpressionInputs. Used to
+// build ClaimsDigest apart from TaskSchemaDigest — see
+// [TaskDescriptionSansClaims] for the reverse split and why both exist.
+func TaskDescriptionClaimsOnly(t *TaskDescription) *TaskDescription {
+	if t == nil {
+		return nil
+	}
+
+	return &TaskDescription{
+		Name:             t.GetName(),
+		NeedsScope:       t.GetNeedsScope(),
+		SecretInputs:     t.GetSecretInputs(),
+		ShapesOutputs:    t.GetShapesOutputs(),
+		DeferredInputs:   t.GetDeferredInputs(),
+		ExpressionInputs: t.GetExpressionInputs(),
 	}
 }
 

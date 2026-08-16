@@ -71,6 +71,13 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// returns.
 		ShapesOutputs: manifest.GetShapesOutputs(),
 
+		// The whole-value list the manifest declared, carried onto the def so a
+		// description of this task (DescribeTask, the catalog, `flow plugins`)
+		// can say so. Enforcement itself still reads the manifest directly,
+		// closed over below in taskFunc — this copy is for visibility, not for
+		// the resolve-or-refuse decision.
+		SecretInputs: manifest.GetSecretInputs(),
+
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
 		// cross-reference on AuthorityInputs itself — and that is deliberate

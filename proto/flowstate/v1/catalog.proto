@@ -71,6 +71,38 @@ message TaskCatalog {
   // consumer that only wants to know the shape of the dialect should not have to
   // derive it from ninety names.
   repeated CELFunction cel_functions = 6;
+
+  // ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
+  // describing a task's security-relevant claims — started at 1 for
+  // needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
+  // expression_inputs (#712).
+  //
+  // Exists because proto3 cannot mark a bool or a repeated string field
+  // `optional`, so none of those five fields can distinguish "populated as
+  // false/empty" from "never populated, because the server that built this
+  // catalog predates them" on its own — an old GetCatalog server's response
+  // decodes needs_scope as false whether the task genuinely claims nothing
+  // or the field simply does not exist in that server's schema. This is the
+  // presence signal for the whole set instead of one per field, read once
+  // rather than reconstructed from five independent zero-checks.
+  //
+  // Zero means "this catalog predates every claim field" — the value on
+  // every GetCatalog response before this field existed, and the value an
+  // old server still on that build keeps returning during a rolling
+  // upgrade. A reader comparing this against zero, not the individual claim
+  // fields, is what tells "unknown" from "false": see
+  // [flowstatev1.TaskDescriptionClaimsKnown].
+  //
+  // Checked for exact equality against the reading client's own
+  // [flowstatev1.CurrentClaimsSchemaVersion], not merely boundedness in
+  // either direction — a version bump can redefine a field as well as add
+  // one, so neither "newer than mine" nor "older than mine" is safe to
+  // treat as known: a newer version may mean something this client was not
+  // compiled to read, and an older version's silence on a field this
+  // client's version introduced is not the same fact as that field
+  // genuinely being false. Only the version this client understands
+  // exactly is known; see [flowstatev1.TaskDescriptionClaimsKnown].
+  uint32 claims_schema_version = 7;
 }
 
 // CELFunction is one name an expression may call.
@@ -139,6 +171,55 @@ message TaskDescription {
 
   repeated TaskField inputs = 3;
   repeated TaskField outputs = 4;
+
+  // NeedsScope reports whether the task must receive every prior step's
+  // outputs and the variables bound by enclosing control flow, on every call.
+  //
+  // The largest trust jump a task definition can make: from seeing its own
+  // declared inputs to seeing the whole workflow's computed state so far. A
+  // plugin task that flips this from false to true between versions has
+  // asked for materially more than it asked for last time, and this is the
+  // field an operator or a pinned digest reads to notice that.
+  bool needs_scope = 5;
+
+  // SecretInputs names the inputs the host will resolve a `${secret(...)}`
+  // reference into a plaintext value for, before the request crosses into a
+  // plugin process. Empty for a built-in task, which resolves its own secret
+  // inputs a different way (see TaskField.constraints' "may hold a secret
+  // reference" note); populated for a plugin task from TaskManifest's field of
+  // the same name.
+  //
+  // This is the whole-value case, not TaskField.deferred or the per-field
+  // "may hold a secret reference" note — this is the list of inputs where a
+  // secret *reference itself* is a legal thing to write, which is a claim
+  // about trust: naming an input here is the plugin asking to receive a value
+  // the workflow author never wrote in the clear.
+  //
+  // A membership set, not a sequence — sorted and deduplicated by whichever
+  // server produces this message, regardless of what order a plugin manifest
+  // declared it in. What matters to every reader is which names are present;
+  // an order that varied between two launches of one unchanged plugin binary
+  // would otherwise change TaskSchemaDigest for no behavioral reason.
+  repeated string secret_inputs = 6;
+
+  // ShapesOutputs reports whether the task evaluates an `outputs:` input as a
+  // replacement for the outputs it declares above, rather than the outputs
+  // above being what the task actually returns.
+  bool shapes_outputs = 7;
+
+  // DeferredInputs names inputs whose expressions the task evaluates itself,
+  // against a scope the workflow does not have. Mirrors TaskField.deferred at
+  // the task level, so a consumer that wants the list rather than a per-field
+  // scan does not have to walk every field.
+  //
+  // Sorted and deduplicated, for the same reason secret_inputs above is.
+  repeated string deferred_inputs = 8;
+
+  // ExpressionInputs names inputs that must be written as `${...}` rather
+  // than as a literal.
+  //
+  // Sorted and deduplicated, for the same reason secret_inputs above is.
+  repeated string expression_inputs = 9;
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
@@ -172,6 +253,20 @@ message PluginCatalog {
   // apart (nothing installed, or nowhere to look), and only one of them is a
   // configuration mistake.
   repeated string search_path = 2;
+
+  // ClaimsSchemaVersion is the same presence signal as
+  // [TaskCatalog.claims_schema_version], for the same reason, on the other
+  // message a build's task claims travel in.
+  //
+  // `flow plugins -o json` serializes this message directly rather than a
+  // TaskCatalog, and that output is written to disk or piped to another
+  // process, so it outlives the process that produced it — the same
+  // rolling-upgrade skew ClaimsSchemaVersion exists to resolve for a remote
+  // GetCatalog reader applies just as well to a saved PluginCatalog read
+  // later by a binary built before this field, or read by a newer binary
+  // against a file a pre-#712 build wrote. Zero means "this catalog predates
+  // every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
+  uint32 claims_schema_version = 3;
 }
 
 // PluginDescription is one plugin's identity and what it advertises.
@@ -198,8 +293,33 @@ message PluginDescription {
   // task is.
   repeated TaskDescription tasks = 6;
   uint32 protocol_version = 7;
+
+  // TaskSchemaDigest is computed over Tasks' descriptor shape — name,
+  // summary, inputs, outputs — deterministically marshaled: the case it
+  // exists to catch is a plugin whose descriptors changed shape while its
+  // version stood still.
+  //
+  // Deliberately not computed over NeedsScope, SecretInputs, ShapesOutputs,
+  // DeferredInputs or ExpressionInputs, even though those travel on the same
+  // TaskDescription — see ClaimsDigest below for why they get their own
+  // digest instead of folding into this one. This field is embedded in every
+  // in-flight run's ResolvedPlugin the moment a run is submitted, replayed
+  // against a worker's freshly computed catalog at every segment boundary,
+  // and a mismatch is a non-retryable failure: a run already durable when
+  // this field's *meaning* changed must still see the same digest for a
+  // plugin whose descriptors did not change.
   string task_schema_digest = 8;
   string distribution_digest = 9;
+
+  // ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
+  // ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
+  // with security weight (#712) — kept apart from task_schema_digest so it
+  // can change on its own without disturbing the replay contract every
+  // already-durable run is pinned to. See
+  // [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
+  // old pin that predates this field (#763 review): it is not compared, not
+  // assumed safe, simply not asked.
+  string claims_digest = 10;
 }
 
 // TaskField is one input or output, described in the DSL's vocabulary.
