@@ -160,8 +160,14 @@ var dslKeys = map[string][]dslKey{
 			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings: `vars:` is a mapping, so there is no order that would make one available to another. " +
 			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding.\n\n" +
 			"A `${secret(...)}` reference may not be stored here either, for the same reason it may not go in the workflow's own `vars:`. Write it on the task input that consumes the secret."},
-		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
-		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
+		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`.\n\n" +
+			"Only a task step schedules the one activity this bounds. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
+			"`wait_until:`, `wait_for_signal:` and `value:` are refused: each either schedules zero or more of something else, or nothing " +
+			"at all, so put `timeout:` on the steps inside the body that need it instead."},
+		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults.\n\n" +
+			"Only a task step schedules the one activity this re-runs. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
+			"`wait_until:`, `wait_for_signal:` and `value:` are refused for the same reason `timeout:` is: put `retry:` on the steps inside " +
+			"the body that need it instead."},
 		{name: "continue_on_error", detail: "bool", docs: "Let the run proceed when this step fails. A cancellation is not a failure, so this does not tolerate one."},
 		{name: "undo", detail: "map", docs: "How this step is taken back when a *later* step fails and the run cannot continue: the saga compensation for what it did.\n\n" +
 			"Written as the task that undoes it, with its inputs beneath: the same shape as the step's own work, because it is the same kind of thing. " +
@@ -327,7 +333,7 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		// they are the same kind of thing: both are ways to finish this line. The
 		// registry supplies one half and the table the other, which is why a task
 		// added to the registry becomes completable with no change here.
-		return list(append(dslCandidates("steps", word, replace), taskCandidates(word, replace, doc.tasks)...))
+		return list(append(stepKeyCandidates(current, word, replace), taskCandidates(word, replace, doc.tasks)...))
 	case len(path) == 0:
 		return list(dslCandidates("", word, replace))
 	}
@@ -1232,6 +1238,34 @@ func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks 
 			// without one, and typing it again is friction.
 			TextEdit: &lsp.TextEdit{Range: replace, NewText: name + ": "},
 		})
+	}
+	return items
+}
+
+// stepKeyCandidates is dslCandidates("steps", ...), minus timeout and retry
+// once the step at the cursor has already committed to a kind that refuses
+// both.
+//
+// checkPolicyPlacement (flowfile/parse_wait.go) refuses timeout:/retry: on
+// every step kind but a task, because only a task's arm ever reads a
+// StepPolicy — so once current.kindKey names one of those kinds,
+// recommending either key is completeAt actively suggesting syntax its own
+// diagnostic then refuses. current is nil (no kind chosen yet, or not inside
+// a step at all) and current.kindKey == "" (a task, or a kind not decided
+// yet) both still offer the full menu: both are exactly the cases where
+// timeout:/retry: are legal or might become so.
+func stepKeyCandidates(current *outlineStep, prefix string, replace lsp.Range) []lsp.CompletionItem {
+	if current == nil || current.kindKey == "" {
+		return dslCandidates("steps", prefix, replace)
+	}
+
+	all := dslCandidates("steps", prefix, replace)
+	items := make([]lsp.CompletionItem, 0, len(all))
+	for _, item := range all {
+		if item.Label == "timeout" || item.Label == "retry" {
+			continue
+		}
+		items = append(items, item)
 	}
 	return items
 }

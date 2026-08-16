@@ -30,6 +30,23 @@ var keyLine = regexp.MustCompile(`^(\s*)(-\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*:(.*
 // dashLine matches a block sequence entry.
 var dashLine = regexp.MustCompile(`^(\s*)-(\s|$)`)
 
+// nonTaskKindKeys are the step keys that decide a non-task step's kind —
+// flowfile/parse.go's nodeKindKeys, minus "call", which the scanner already
+// tracks separately for callTarget. Kept in sync with that list by hand: both
+// name the same exclusive set of keys a step's `kind` oneof compiles from, so
+// a kind added there needs an entry here before completion stops offering
+// `timeout:`/`retry:` on it too.
+var nonTaskKindKeys = map[string]bool{
+	"for_each":        true,
+	"loop":            true,
+	"parallel":        true,
+	"sleep":           true,
+	"wait_until":      true,
+	"wait_for_signal": true,
+	"value":           true,
+	"switch":          true,
+}
+
 // An outlineStep is one step of a Flowfile as the line scan sees it.
 type outlineStep struct {
 	index int
@@ -52,6 +69,19 @@ type outlineStep struct {
 	// in source order. Completion leaves them out of the menu the way inputKeys
 	// are left out of a task's.
 	withKeys []string
+
+	// kindKey is the step's own kind-deciding key — one of nodeKindKeys
+	// (flowfile/parse.go), e.g. "for_each" or "sleep" — once the scanner has
+	// seen it, empty otherwise. A step's kind is exclusive (the grammar's own
+	// invariant, not this scanner's), so the first one seen at the step's own
+	// content indent is the whole answer.
+	//
+	// Recorded for the same reason taskName and callTarget are: once a step
+	// has committed to a kind, `timeout:`/`retry:` stop applying to it (see
+	// checkPolicyPlacement), and completion offering them anyway is
+	// completeAt recommending syntax the diagnostic it just wrote will
+	// immediately refuse.
+	kindKey string
 
 	// startLine is the line of the dash that opens the step and endLine the last
 	// line belonging to it, both 0-based.
@@ -190,6 +220,13 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 		case indent == contentIndent && key == "call":
 			if s.callTarget == "" {
 				s.callTarget = scalarText(rest)
+			}
+			if s.kindKey == "" {
+				s.kindKey = key
+			}
+		case indent == contentIndent && nonTaskKindKeys[key]:
+			if s.kindKey == "" {
+				s.kindKey = key
 			}
 		case indent == contentIndent && key == "with":
 			inWith, withIndent = true, indent
