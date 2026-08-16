@@ -699,17 +699,25 @@ those forward — both when scheduling a step and when performing Continue-As-Ne
 Payload discipline matters, but the framing is about defaults rather than hard ceilings.
 Temporal's default per-payload and history limits mean an unbounded blob flowing through
 history will fail a run, and carrying only what is needed keeps ordinary workloads well
-inside them. Genuinely large data is a solved problem *on this substrate* — a custom
-payload codec offloads the blob to external storage and carries a reference through
-history, the claim-check pattern — but it is not yet a solved problem *in this tree*:
-every `DataConverter` in the codebase is the default one, and no seam exists for an
-operator to supply a codec (#113 is the design record, #271 tracks the gap). Until that
-seam is built, the honest answer to a payload too large for history is the refusal
-`CheckRunStateSize` already gives, not an offload nothing can configure. The same seam is
-where payload encryption would live, so the confidentiality statement is the same one:
-today, history confidentiality is whatever the cluster's own database and filesystem
-encryption provide — Flowstate keeps secrets *out* of history (invariant 7) and seals
-nothing that legitimately goes in. When the seam lands, the codec is the right place to
+inside them. Payload *encryption* is a solved problem in this tree: `pkg/flowstate/v1/payloadcodec`
+is the seam, wrapping `converter.PayloadCodec` in `converter.NewCodecDataConverter` and
+setting it on both drivers' `client.Options.DataConverter` from one configuration,
+forcing the failure converter's `EncodeCommonAttributes` on whenever a codec is
+configured so error strings can't leak plaintext the codec was meant to hide, and
+validating worst-case ciphertext expansion against Temporal's blob limit at startup.
+History confidentiality, where a codec is configured, is therefore the codec's — not
+merely the cluster's database and filesystem encryption — and Flowstate still keeps
+secrets *out* of history regardless (invariant 7).
+
+Payload *offload* — the claim-check pattern, carrying a reference through history to a
+blob stored externally — is the part not yet solved *in this tree*: the seam a codec
+occupies is general enough to carry one, but no offloading codec ships today, only the
+null codec (`cmd/flow/codec.go` documents this as the deliberate current boundary; #113
+is the design record). Until an offloading codec lands, the honest answer to a payload
+too large for history is the refusal `CheckRunStateSize` already gives. When one lands,
+this is the seam it occupies, not a new one.
+
+The codec is the right place to
 absorb large payloads; per-task byte caps exist to bound worker memory, not to express
 what the system can handle.
 
