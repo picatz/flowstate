@@ -42,7 +42,13 @@ func randomPassword(t *testing.T) string {
 }
 
 func TestClickHouseTenantAndTraceContract(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
+	// Budgeted against the documented `go test -timeout 120s`, with the cleanup
+	// counted: this deadline plus the 15s `ContainerRemove` below has to fit,
+	// because a test killed by the outer timeout runs no cleanup at all and
+	// leaves a ClickHouse container on whoever's machine ran it. 90 + 15 leaves
+	// 15s of headroom; anything that raises either number has to raise the
+	// documented command's timeout in README.md with it.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	docker, err := client.New(client.FromEnv, client.WithAPIVersionNegotiation())
