@@ -311,6 +311,16 @@ steps:
             message: hi
 `,
 	"bad-http-method.yaml": brokenWorkflow,
+
+	// malformed-yaml is the regression for #654: every fixture above fails to
+	// *compile* — the YAML parses fine and flowfile's own compiler rejects it —
+	// so none of them exercised the layer below that, where the YAML itself
+	// does not parse. A tab used for indentation is the mistake most likely to
+	// be an author's actual first error, since it is what a plain-text editor
+	// writes for Tab unless told otherwise, and YAML's grammar refuses it
+	// outright.
+	"malformed-yaml.yaml": "edition: v2026.3\nname: broken\nsteps:\n\t- id: greet\n\t  log:\n\t    message: hi\n",
+
 	"wait-outputs-secret.yaml": `edition: v2026.3
 name: broken
 steps:
