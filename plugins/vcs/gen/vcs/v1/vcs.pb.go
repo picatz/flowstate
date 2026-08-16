@@ -495,7 +495,7 @@ var File_vcs_v1_vcs_proto protoreflect.FileDescriptor
 
 const file_vcs_v1_vcs_proto_rawDesc = "" +
 	"\n" +
-	"\x10vcs/v1/vcs.proto\x12\x06vcs.v1\x1a\x1cflowstate/v1/flowstate.proto\"\x99\x01\n" +
+	"\x10vcs/v1/vcs.proto\x12\x06vcs.v1\x1a\x18flowstate/v1/value.proto\"\x99\x01\n" +
 	"\x06Commit\x12\x10\n" +
 	"\x03sha\x18\x01 \x01(\tR\x03sha\x12\x1f\n" +
 	"\vauthor_name\x18\x02 \x01(\tR\n" +

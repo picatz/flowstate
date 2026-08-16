@@ -32,17 +32,46 @@ func TestEmbeddedDescriptorSetCarriesSourceInfo(t *testing.T) {
 		t.Fatal("embedded descriptor set holds no files")
 	}
 
-	var found *descriptorpb.FileDescriptorProto
+	// Every file of the schema, named. Counting instead — or asking only that
+	// some flowstate/v1 file is present — passes on an artifact holding one
+	// file and missing the other eleven, which is the failure this is for:
+	// reports.proto is reached by no other test here, so a descriptorset that
+	// silently lost it would cost the documentation of every message in it and
+	// nothing would say so.
+	want := map[string]bool{
+		"flowstate/v1/catalog.proto":     false,
+		"flowstate/v1/diagnostics.proto": false,
+		"flowstate/v1/identity.proto":    false,
+		"flowstate/v1/reports.proto":     false,
+		"flowstate/v1/run.proto":         false,
+		"flowstate/v1/schedule.proto":    false,
+		"flowstate/v1/service.proto":     false,
+		"flowstate/v1/signal.proto":      false,
+		"flowstate/v1/task.proto":        false,
+		"flowstate/v1/trigger.proto":     false,
+		"flowstate/v1/value.proto":       false,
+		"flowstate/v1/workflow.proto":    false,
+	}
+
 	for _, file := range set.GetFile() {
-		if file.GetName() == "flowstate/v1/flowstate.proto" {
-			found = file
+		name := file.GetName()
+		if !strings.HasPrefix(name, "flowstate/v1/") {
+			continue
+		}
+		if _, expected := want[name]; !expected {
+			t.Errorf("embedded descriptor set holds unexpected schema file %s; add it here if the schema gained a file", name)
+			continue
+		}
+		want[name] = true
+		if len(file.GetSourceCodeInfo().GetLocation()) == 0 {
+			t.Fatalf("%s carries no SourceCodeInfo; the artifact must be built without --exclude-source-info", name)
 		}
 	}
-	if found == nil {
-		t.Fatal("embedded descriptor set does not hold flowstate/v1/flowstate.proto")
-	}
-	if len(found.GetSourceCodeInfo().GetLocation()) == 0 {
-		t.Fatal("flowstate/v1/flowstate.proto carries no SourceCodeInfo; the artifact must be built without --exclude-source-info")
+
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("embedded descriptor set is missing %s; every message it declares would lose its prose", name)
+		}
 	}
 }
 

@@ -1,0 +1,219 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/diagnostics.proto";
+import "google/protobuf/duration.proto";
+
+option go_package = "flowstatev1";
+
+// FixChange is one edit `flow fix` made, or would make under `--check`.
+//
+// A schema type for the same reason [Diagnostic] is: `flow fix --output json`
+// hands this to whatever is driving the CLI, and a hand-invented shape would give
+// `--output json` two meanings on one binary.
+message FixChange {
+  // Line is the 1-based line the change was made at.
+  uint32 line = 1;
+
+  // Message says what changed, in the terms an author wrote the file in.
+  string message = 2 [(buf.validate.field).required = true];
+}
+
+// FixReport is what `flow fix` (or `flow fix --check`) did to one file.
+//
+// Per file rather than per invocation, on the same reasoning as [DiagnosticReport]:
+// `flow fix a.yaml b.yaml` touches two files and a consumer wants to know which
+// report belongs to which. `Changed` answers "would git see a diff" on its own,
+// because a file with nothing to change produces neither a change nor a refusal
+// and would otherwise look indistinguishable from one that was never reached.
+//
+// The file is also the unit the rewrite happens in: one that cannot be converted
+// entirely is not written at all, while the others named in the same invocation
+// convert on their own merits.
+message FixReport {
+  // File is the path as it was given on the command line, so a reader can find it
+  // again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Changed reports that the file was rewritten, or would be under `--check`.
+  // False whenever anything was refused, because then nothing was written at all.
+  bool changed = 2;
+
+  // Changes is every edit made, or that would have been made had the file
+  // converted, in source order. Empty when there was nothing to do. A file with
+  // refusals lists what it found here and applies none of it, so that one run
+  // tells an author the whole of the work rather than the first item of it.
+  repeated FixChange changes = 3;
+
+  // Refusals are the places the rewriter could not act on safely, positioned where
+  // a position exists. A file with refusals was left exactly as it was: the
+  // rewrite is per file and all or nothing, because half a migration is a file
+  // claiming a form it is not in.
+  repeated Diagnostic refusals = 4;
+
+  // Notes are places worth a human's eye that are not problems and do not affect
+  // whether the file is finished: a comment mentioning a step that has moved, for
+  // instance. Distinct from Refusals for the reason `flow fix` draws that line
+  // itself: a caller must not fail a build on one of these.
+  repeated Diagnostic notes = 5;
+}
+
+// FmtReport is what `flow fmt` (or `flow fmt --check`) did to one file.
+//
+// `flow fmt` is not comment- or position-preserving the way `flow fix` is (it
+// reads a file into a workflow and renders that back out from nothing), so a
+// refusal here is "this file did not parse (or could not be rendered back out)"
+// rather than one shape among several, and rarely carries a position of its own
+// beyond what the parser's own error already gives.
+message FmtReport {
+  // File is the path as it was given on the command line.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Changed reports that the file was reformatted, or would be under `--check`.
+  bool changed = 2;
+
+  // Refusals are the reasons the file was left untouched: it did not parse, or the
+  // workflow it parsed into cannot be rendered back out. Positioned where the
+  // parser could position it, unpositioned where the failure is only a message.
+  repeated Diagnostic refusals = 3;
+}
+
+// FixReports is what `flow fix` produced, across every file it was given.
+//
+// The same reason [ValidationReport] exists beside [DiagnosticReport]: `json` is
+// one document per invocation and `jsonl` is one per line, and fixing three files
+// produces three [FixReport]s, which is three lines of `jsonl` and, without
+// something to hold them, three documents where `json` promises one.
+message FixReports {
+  // Files is one report per file given, in the order they were given.
+  repeated FixReport files = 1;
+}
+
+// FmtReports is what `flow fmt` produced, across every file it was given, on the
+// same reasoning as [FixReports].
+message FmtReports {
+  // Files is one report per file given, in the order they were given.
+  repeated FmtReport files = 1;
+}
+
+// TestCase is what one test in a `*.test.yaml` file produced.
+//
+// Per case rather than per file, on the same reasoning as [FixReport]: a test
+// file usually holds more than one `tests:` entry, and a reader wants to know
+// which one failed without re-deriving it from an index.
+message TestCase {
+  // Name is the test's own `name:`, so a report reads the same words the
+  // author wrote.
+  string name = 1 [(buf.validate.field).required = true];
+
+  // Passed is true when every expectation in the case held.
+  bool passed = 2;
+
+  // Failures are the expectations that did not hold, positioned to the test
+  // file where an expectation's own position is known: a diagnostic in the
+  // same shape `flow validate` and `flow fix` already report, so a consumer of
+  // `-o json` learns one schema for "something is wrong" across every verb.
+  repeated Diagnostic failures = 3;
+
+  // Error is set instead of Failures when the case could not run to a verdict
+  // at all: the workflow it names failed to compile, a stub described a task
+  // the registry does not have, or the run failed in a way the case did not
+  // declare with `expect.failed`. That is distinct from an expectation that ran
+  // and did not hold.
+  string error = 4;
+
+  // Duration is how long the case took to run, in wall-clock time. Never a
+  // reading of virtual time: it is what a person deciding whether the suite
+  // is still fast wants to know, and virtual time inside the run answers a
+  // different question.
+  google.protobuf.Duration duration = 5;
+}
+
+// TestReport is what `flow test` produced for one `*.test.yaml` file.
+//
+// Per file rather than per invocation, on the same reasoning as
+// [DiagnosticReport]: `flow test examples/` discovers more than one file and a
+// consumer wants to know which report belongs to which.
+message TestReport {
+  // File is the path as it was given on the command line, so a reader can
+  // find it again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Cases is one result per `tests:` entry in the file, in the order they
+  // were written. Empty when Refused is set: no case was ever reached.
+  repeated TestCase cases = 2;
+
+  // Refused reports that the file itself could not be run as a test file (it
+  // did not parse, or named a workflow that could not be loaded), which is
+  // reported once for the file rather than once per case.
+  string refused = 3;
+
+  // Coverage is one branch-coverage account per workflow the file's cases
+  // targeted (issue #420). A `*.test.yaml` usually tests one workflow and
+  // carries exactly one entry, but each case names its own `workflow:`, so a
+  // file may target several, and coverage is kept separate per workflow so a
+  // step one workflow reaches never masks the same step id left unreached in
+  // another. Empty when the file was refused, or when no case compiled a
+  // workflow to account for.
+  repeated CoverageReport coverage = 4;
+}
+
+// CoverageReport is `flow test`'s branch-coverage account for one workflow:
+// which of that workflow's steps at least one case ran, and which no case ever
+// reached (issue #420).
+//
+// It rides the machine report so CI reads the sets rather than scraping the
+// prose coverage line. Whether `--coverage-required` was passed is not
+// recorded here: that is the CLI's invocation mode, a property of how the
+// command was run rather than a fact about the suite, so it stays off the
+// machine output.
+message CoverageReport {
+  // Workflow is the workflow this coverage accounts for, as the path the case's
+  // `workflow:` resolved to. It is the identity coverage is keyed by, so a
+  // reader can tell two workflows apart when a file targets more than one.
+  string workflow = 1;
+
+  // StepsTotal is how many of the workflow's steps coverage accounts for: the
+  // size of Reached plus Unreached.
+  int32 steps_total = 2;
+
+  // StepsReached is how many of those steps at least one case ran: the size of
+  // Reached.
+  int32 steps_reached = 3;
+
+  // Reached is every step id that ran in at least one case, sorted.
+  repeated string reached = 4;
+
+  // Unreached is the complement: every step id in the workflow that no case
+  // ran, sorted. This is the line #420 exists to report.
+  repeated string unreached = 5;
+
+  // Gaps is every unreached step the file did not record a reason for: the
+  // holes in the suite, as opposed to the residuals it accepted. This is what
+  // `--coverage-required` fails on, together with Stale.
+  repeated string gaps = 6;
+
+  // Accepted maps an unreached step id to the reason the file recorded for it
+  // under `coverage.allow_unreached`. Every key here is also in Unreached: it
+  // is genuinely not reached, and Accepted is why that is a decision rather
+  // than a gap. A step in Accepted does not fail `--coverage-required`.
+  map<string, string> accepted = 7;
+
+  // Stale is every `coverage.allow_unreached` entry that does not describe a
+  // real residual of any workflow the file targets: it names a step some case
+  // reached, or a step id no targeted workflow has. Such a record is a false
+  // statement about the suite, so it fails `--coverage-required` the same way
+  // an unrecorded gap does. Each entry is a sentence naming the step and what
+  // is wrong.
+  repeated string stale = 8;
+}
+
+// TestReports is what `flow test` produced, across every file it discovered,
+// on the same reasoning as [FixReports].
+message TestReports {
+  // Files is one report per test file discovered, in the order they were
+  // found.
+  repeated TestReport files = 1;
+}

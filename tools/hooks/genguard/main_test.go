@@ -17,7 +17,7 @@ func TestGenerated(t *testing.T) {
 		rel      string
 		mentions []string // the source and command the message must name
 	}{
-		{"pkg/flowstate/v1/flowstate.pb.go", []string{"proto/flowstate/v1/flowstate.proto", "buf", "generate"}},
+		{"pkg/flowstate/v1/workflow.pb.go", []string{"proto/flowstate/v1/", "buf", "generate"}},
 		{"pkg/flowstate/v1/plugin/protocol.pb.go", []string{"buf", "generate"}},
 		{"docs/reference/tasks.md", []string{"make docs"}},
 		{"docs/reference/envvars.md", []string{"cmd/flow/internal/docsgen/envvars.go"}},
@@ -40,7 +40,7 @@ func TestGenerated(t *testing.T) {
 
 	allow := []string{
 		"pkg/flowstate/v1/eval.go",
-		"proto/flowstate/v1/flowstate.proto",
+		"proto/flowstate/v1/workflow.proto",
 		"docs/DSL.md",
 		"docs/ARCHITECTURE.md",
 		// The reference package's own source, beside the generated mirror.

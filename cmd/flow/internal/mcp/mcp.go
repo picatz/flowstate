@@ -72,7 +72,7 @@ const MaxResultBytes = 256 << 10
 // written-twice defect this repository keeps refinding: the schema's service
 // section describes the same RPCs, so every description existed in two places
 // and only one of them moved when the behavior did. The prose now lives in
-// proto/flowstate/v1/flowstate.proto and arrives through
+// proto/flowstate/v1/service.proto and arrives through
 // [protodoc.Method], so a sentence corrected in the schema is the sentence an
 // agent is handed, and there is no second copy to correct. Slice 2 of #424.
 //
