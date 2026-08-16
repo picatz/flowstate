@@ -54,9 +54,12 @@ var switchCorpusTable = map[string]switchCorpusEntry{
 	"optional-dispatch/report": closedDomain("no_response", "approved", "rejected"),
 
 	// `settle` dispatches on `outcome`, a `value:` step combining two wait
-	// gates' own shaped outcomes into the report's four endings — the same
-	// value-step tier as `optional-dispatch/report` above, over a nested
-	// conditional whose leaves are all string literals.
+	// gates' own shaped outcomes into the report's four endings. `outcome`
+	// itself reads `steps.escalation_outcome.value` in one branch rather than
+	// a nested ternary inline — the decomposition #674 is about, one hop of
+	// `steps.<id>.<name>` in leaf position rather than a string literal — so
+	// this pin also exercises the recursive case switchDomain's leaf walk
+	// added, not merely the value-step tier `optional-dispatch/report` covers.
 	"expense-approval/settle": closedDomain("approved_by_manager", "approved_after_escalation",
 		"denied_no_response", "denied"),
 

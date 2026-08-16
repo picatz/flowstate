@@ -151,19 +151,31 @@ steps:
   # and re-derived a third time in each of the two `outputs:`. Every reader
   # now reads this one recorded value instead.
   #
-  # `steps.finance_review.outcome` is read only in the branch where the
-  # manager gate expired, the identical short circuit the file used before a
-  # named value existed - `finance_review` never ran on any other path, so
-  # nothing else may read it.
+  # Split into two `value:` steps rather than one three-deep ternary, per the
+  # style charter's nesting-depth rule - and, since #674, without losing what
+  # a decomposed discriminant used to cost silently: `switch:` below dispatches
+  # on `steps.outcome.value`, and the exhaustiveness and impossible-case
+  # diagnostics that gives it read straight through the `steps.escalation_outcome.value`
+  # leaf to the step that produced it, so a misspelled case in `settle` is
+  # still fatal even though the value it dispatches on is two steps away from
+  # the ternary that computes it.
+  #
+  # `escalation_outcome` only runs, and is only read, on the path where the
+  # manager gate expired - the same short circuit `finance_review` itself
+  # uses, now stated once as an `if:` instead of folded into every read of
+  # `steps.finance_review.outcome`.
+  - id: escalation_outcome
+    if: ${steps.manager_review.timed_out}
+    value: >-
+      ${steps.finance_review.outcome == "approved"  ? "approved_after_escalation"
+        : steps.finance_review.outcome == "expired" ? "denied_no_response"
+        : "denied"}
+
   - id: outcome
     value: >-
-      ${steps.manager_review.outcome == "approved"
-        ? "approved_by_manager"
-        : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "approved")
-          ? "approved_after_escalation"
-          : (steps.manager_review.outcome == "expired" && steps.finance_review.outcome == "expired")
-            ? "denied_no_response"
-            : "denied"}
+      ${steps.manager_review.outcome == "approved"  ? "approved_by_manager"
+        : steps.manager_review.outcome == "expired" ? steps.escalation_outcome.value
+        : "denied"}
 
   # One switch over the named outcome, rather than two `if:`-guarded steps
   # each re-testing the manager and finance gates by hand. Two explicit cases
