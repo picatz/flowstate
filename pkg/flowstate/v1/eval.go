@@ -2182,7 +2182,11 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	// checks at the identical position, once per activity entry
 	// (`engine/activities.go`), which is what keeps the two drivers agreeing
 	// about which dispatches are denied.
-	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity()); err != nil {
+	// scope.GetLocal() is true for a rehearsal run through any local-driver
+	// entry point; it changes nothing about the decision above, only
+	// whether a resulting denial's message says so — see [CheckTaskPolicy]'s
+	// own doc.
+	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
 		return nil, err
 	}
 
