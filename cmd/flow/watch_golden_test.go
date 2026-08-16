@@ -23,8 +23,11 @@ import (
 //
 // A substring proves a fragment survived; a golden proves the reviewer who
 // approved this diff is the one who is still looking at it. Update a golden
-// with `go test ./cmd/flow/... -run TestWatchViewGolden -update` after
-// confirming the new shape by eye — see golden.RequireEqual.
+// with `go test ./cmd/flow -run TestWatchViewGolden -update` after
+// confirming the new shape by eye — see golden.RequireEqual. Scoped to this
+// package rather than `./cmd/flow/...`: golden's `-update` flag is not
+// registered in sibling packages' test binaries, which fail with "flag
+// provided but not defined" when it is passed down to them too.
 //
 // This covers two cells of the matrix #402 names (styled 80x24, a completed
 // run and a run stuck retrying). The rest of the matrix — the 100-column
