@@ -115,10 +115,17 @@ this section exists to prevent.
    description's reactions tells you whether a review is in flight, for a
    fraction of the cost of fetching threads. Do not merge while one is in
    flight.
-2. **Fetch once per PR, not once per finding.** `get_review_comments`
-   returns the threads with their `isResolved`/`isOutdated` metadata.
-   Never fetch the full PR object just to check state; its body is large
-   and you already know the PR. Use `get_check_runs` for CI status.
+2. **Fetch once per PR, not once per finding — and over REST, not GraphQL.**
+   `gh api repos/{owner}/{repo}/pulls/{n}/comments --paginate` returns every
+   review comment's id, author, path, line and `in_reply_to_id`, which is
+   everything triage needs to group comments into threads and decide what to
+   act on. Item 9 below is the reason this is REST rather than
+   `get_review_comments`: that call is GraphQL, costs the shared pool, and
+   this step runs once per PR regardless of finding count — calling it here
+   *and* again at resolve time (item 9) is the exact double-spend a prior
+   sweep found burning the pool. Never fetch the full PR object just to check
+   state; its body is large and you already know the PR. Use `get_check_runs`
+   for CI status.
 3. **Triage the whole set in one pass.** Classify each finding: real (fix
    it), stale (a later commit already fixed it; no action), or wrong
    (skip, and say why in the session report, not on GitHub).
@@ -185,27 +192,115 @@ this section exists to prevent.
    actually lands on. GitHub's API can hide that summary: `PullRequestReview`
    implements `Minimizable` in the GraphQL schema, exactly as
    `PullRequestReviewComment` does, so `minimizeComment` accepts a review's
-   node id with a `minimizedReason` of `resolved` or `outdated`. What is
-   missing is on our side — the MCP tool surface exposes
-   `resolve_review_thread` and `unresolve_review_thread` and no minimize —
-   so today the summary survives every sweep, and that is a tooling gap to
-   close rather than an API limit to explain away. Until it closes, say
-   plainly that the root body is still open and why, instead of reporting a
-   PR as swept when its most visible block is not.
+   node id with a `minimizedReason` of `resolved` or `outdated`.
+
+   All three ways to reach it are blocked for this session type — tested on
+   2026-08-16 against a Copilot `COMMENTED` review, not assumed:
+
+       gh api graphql … minimizeComment       403  not in the pinned set
+       PUT  …/pulls/N/reviews/ID/dismissals   403  "not permitted for this
+                                                    session type"
+       DELETE …/pulls/N/reviews/ID            403  pending reviews only
+
+   So a review body cannot be hidden from here at all. Say that plainly
+   rather than reporting a PR as swept when its most visible block is not,
+   and do not spend calls rediscovering it: those three results are the
+   whole surface, and the fix is an added capability or an owner hiding it
+   in the UI.
+
+   Keep the three classes straight, because each has a different mechanism
+   and only one of them is a resolve: a review **thread** resolves, a
+   **top-level bot comment** deletes (below), and a review **body** does
+   neither.
 
    The complementary lever is reviewer configuration: automatic review set
    to request-only rather than on every push produces fewer summaries at
    the source. That is a repository setting and therefore an owner
    decision, and it reduces the inflow — it does not close what is already
    on the page.
-9. **Respect the API budget.** REST and GraphQL each have their own pool.
+
+   **A bot's operational notice is a third class, and it has its own
+   mechanism.** Codex posts things like `You have reached your Codex usage
+   limits for security reviews. Please try again later.` as a *top-level
+   PR comment*, not a review thread. Nothing resolves a top-level comment —
+   GitHub offers no resolve for one, and `minimizeComment` needs GraphQL
+   this environment refuses. So a sweep that only resolves threads leaves
+   these sitting on the page, and twenty-four of them accumulated across one
+   wave of PRs before anyone counted.
+
+   Threads and top-level comments are two different endpoints, so step 2's
+   REST comment listing does not surface this class at all — neither it nor
+   `get_reviews` returns a top-level issue comment or its database ID. Fetch
+   them separately, paginated, before deleting anything, with `number` bound
+   to this PR's number first (nothing here binds it for you):
+
+       number=<the PR's number>
+       gh api --paginate repos/{owner}/{repo}/issues/$number/comments
+
+   REST deletes them, and that is the right answer *for this class only*.
+   `{id}` is the database ID each comment carries in that listing — bind it
+   to a variable and substitute it, since `gh api`'s own endpoint
+   substitution covers only `{owner}`, `{repo}`, and `{branch}`:
+
+       gh api -X DELETE repos/{owner}/{repo}/issues/comments/$id
+
+   **Never delete a finding.** Not a review comment, not a review summary,
+   not a human's comment, not a bot's comment that contains an actual claim
+   about the code — even a wrong one, which gets a thumbs-down and a
+   sentence of evidence so the judgment is on the record. Deletion destroys
+   the record, and the record is why the thread rule exists at all.
+
+   What qualifies is narrow and testable: the comment carries **no claim
+   about the diff**. A rate-limit notice, a "try again later", a bot
+   announcing it is starting. If you have to think about whether it carries
+   signal, it does — leave it, react to it if a reaction applies, or reply if
+   it needs one, and say so in your own report. Not "resolve it": a top-level
+   comment has no resolve mechanism, which is the fact this whole item opened
+   with — resolution is for review threads only.
+
+   If `minimizeComment` becomes reachable, prefer it: hiding preserves the
+   record where deleting does not, and the narrowness of this rule is a
+   consequence of only having the destructive tool.
+9. **Triage over REST, resolve over GraphQL — once per PR, at resolve time.**
+   This is the single biggest budget lever and it was found the expensive
+   way: one wave of 27 PRs burned 10,757 GraphQL points and exhausted the
+   pool, almost all of it on *reading* threads over and over rather than
+   resolving them.
+
+   `GET /repos/{owner}/{repo}/pulls/{n}/comments` is REST, costs the core
+   budget (15,000/hour, rarely the constraint), and returns every review
+   comment with its id, author, path, line and `in_reply_to_id` — enough to
+   group comments into threads and decide what to act on: triage the whole
+   set, fix or accept each finding, and post every reaction over REST. None
+   of that needs GraphQL.
+
+   What REST cannot give you is the thread's own identity.
+   `resolve_review_thread` takes a review-thread node ID (`PRRT_…`), and
+   that ID exists only in the GraphQL schema — REST's comment listing has no
+   field for it, and no amount of grouping REST's comment IDs manufactures
+   one. So resolving is unavoidably a GraphQL operation; the lever is
+   *when* you pay for it, not whether. Finish triage and every fix first,
+   entirely over REST. Only once a PR is otherwise done, make **one**
+   `get_review_comments` call for that PR to read off every thread's node ID
+   together with its `isResolved` state, and drive every `resolve_review_thread`
+   call for that PR from that single read. One GraphQL read per PR at the
+   end, not one per finding throughout the sweep, and never a second one
+   to confirm — a resolve that returned success succeeded, and re-reading
+   to check costs the budget the batching was trying to save.
+
+   The failure mode this prevents is not slowness. With GraphQL exhausted,
+   threads cannot be resolved at all, and the rule that nothing merges with
+   unresolved threads then blocks every merge — the pool running dry stops
+   the entire pipeline, not just the sweep.
+
+10. **Respect the API budget.** REST and GraphQL each have their own pool.
    A pool is shared across everything the account does, so polling PR
    state exhausted one of them in a single wave, but the two are not
    shared with each other and go down independently. Prefer webhook
    events over polling, batch reads, and when a pool is exhausted back
    off from *that* pool rather than stopping altogether: see the budget
    section below for what still works when one of them is gone.
-10. **Know what the API can do, and separately what our tools can do.**
+11. **Know what the API can do, and separately what our tools can do.**
     These are two different questions and conflating them turns a missing
     tool into an imagined law of nature. GitHub's API offers all three
     operations: resolve/unresolve on threads; dismissal of a review, in
