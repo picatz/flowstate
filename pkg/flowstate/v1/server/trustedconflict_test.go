@@ -109,3 +109,34 @@ func TestAConflictIsScopedToItsOwnTenant(t *testing.T) {
 		"another tenant's conflicting registration refused this tenant's workflow: %v", err)
 	assert.Contains(t, err.Error(), "oncall@example.com")
 }
+
+// TestAnInvalidTrustedRegistrationIsNotSubstituted is the second half of the
+// same gap. Every RPC runs v1.Validate over the *request*, and it runs before
+// the trusted lookup replaces the caller's copy; validateSubmission never asks
+// again afterwards. So a specification the schema refuses, registered by an
+// embedder, used to be substituted for a caller's valid one and carried to
+// Temporal on the strength of being deployment-owned.
+//
+// Written as the negative direction again: what must be false is that
+// registering a malformed copy gives it authority.
+func TestAnInvalidTrustedRegistrationIsNotSubstituted(t *testing.T) {
+	t.Parallel()
+
+	// A valid name and no steps: past the field rules a Go embedder building a
+	// Workflow by hand would notice, refused by the whole-message rules.
+	malformed := &v1.Workflow{Name: "break-glass", Profile: v1.CurrentProfile}
+	require.Error(t, v1.Validate(malformed), "the fixture is valid, so this test proves nothing")
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := server.New(temporal, server.WithTrustedWorkflows("", malformed))
+
+	_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: narrowedWorkflow(),
+		Reason:   "an ordinary manual start",
+	}))
+
+	require.Error(t, err, "a specification the schema refuses was substituted and run")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "refuses",
+		"the refusal does not tell an operator their registration is the problem: %v", err)
+}

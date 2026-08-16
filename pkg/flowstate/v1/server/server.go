@@ -204,6 +204,22 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				continue
 			}
 			key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
+
+			// A specification the schema refuses must not become the copy
+			// substituted for a caller's. Nothing downstream would catch it:
+			// the RPC handlers run [v1.Validate] on the *request*, which is
+			// the caller's copy and is checked before the trusted lookup
+			// replaces it, and validateSubmission does not ask again after
+			// substitution. So an embedder's malformed programmatic workflow
+			// would reach Temporal and the engine on the strength of being
+			// deployment-owned.
+			if err := v1.Validate(workflow); err != nil {
+				s.refuseTrustedWorkflow(key, fmt.Sprintf(
+					"workflow %q is registered as a trusted specification this deployment refuses: %v",
+					workflow.GetName(), err))
+				continue
+			}
+
 			if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
 				// Two registrations disagree about one tenant's workflow.
 				// Last-writer-wins here would let a later, weaker copy
@@ -213,7 +229,10 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				// An [Option] cannot report an error, so the conflict is
 				// recorded and every request for this key is refused; see
 				// [FlowstateServer.noteTrustedWorkflowConflict].
-				s.noteTrustedWorkflowConflict(key)
+				s.refuseTrustedWorkflow(key, fmt.Sprintf(
+					"workflow %q is registered twice for this namespace with different specifications, "+
+						"so this deployment has no single policy to enforce for it; an operator must "+
+						"make the trusted registrations agree", workflow.GetName()))
 				continue
 			}
 			s.trustedWorkflows[key] = proto.Clone(workflow).(*v1.Workflow)
@@ -221,7 +240,8 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 	}
 }
 
-// noteTrustedWorkflowConflict marks a key two registrations disagreed about.
+// refuseTrustedWorkflow marks a key with no usable answer, against the sentence
+// [FlowstateServer.trustedWorkflow] will return for it.
 //
 // Fail closed, per CLAUDE.md: a component that allows when it cannot decide
 // will eventually allow everything, and this is precisely a case of not being
@@ -236,11 +256,16 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 // receiver also serves) says one thing, so it authorizes one thing.
 //
 // Callers hold trustedWorkflowsMu for writing.
-func (s *FlowstateServer) noteTrustedWorkflowConflict(key trustedWorkflowKey) {
-	if s.trustedWorkflowConflicts == nil {
-		s.trustedWorkflowConflicts = make(map[trustedWorkflowKey]bool)
+func (s *FlowstateServer) refuseTrustedWorkflow(key trustedWorkflowKey, reason string) {
+	if s.trustedWorkflowRefusals == nil {
+		s.trustedWorkflowRefusals = make(map[trustedWorkflowKey]string)
 	}
-	s.trustedWorkflowConflicts[key] = true
+	// First reason wins: it is the one describing the registration that was
+	// actually rejected, and a later one would only restate that the key is
+	// still unusable.
+	if _, already := s.trustedWorkflowRefusals[key]; !already {
+		s.trustedWorkflowRefusals[key] = reason
+	}
 }
 
 // trustedWorkflowKey identifies a trusted workflow specification by both the
@@ -298,11 +323,12 @@ type FlowstateServer struct {
 	trustedWorkflowsMu sync.RWMutex
 	trustedWorkflows   map[trustedWorkflowKey]*v1.Workflow
 
-	// trustedWorkflowConflicts records keys two registrations disagreed
-	// about, which [FlowstateServer.trustedWorkflow] then refuses rather
-	// than answering with either candidate. See
-	// [FlowstateServer.noteTrustedWorkflowConflict].
-	trustedWorkflowConflicts map[trustedWorkflowKey]bool
+	// trustedWorkflowRefusals records keys with no usable answer, against
+	// the sentence saying why: two registrations that disagreed, or one
+	// specification the schema refuses. [FlowstateServer.trustedWorkflow]
+	// returns that sentence rather than substituting anything. See
+	// [FlowstateServer.refuseTrustedWorkflow].
+	trustedWorkflowRefusals map[trustedWorkflowKey]string
 
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
@@ -339,18 +365,15 @@ func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workfl
 	key := trustedWorkflowKey{namespace: namespace, name: requested.GetName()}
 	s.trustedWorkflowsMu.RLock()
 	trusted, ok := s.trustedWorkflows[key]
-	conflicted := s.trustedWorkflowConflicts[key]
+	refusal := s.trustedWorkflowRefusals[key]
 	s.trustedWorkflowsMu.RUnlock()
-	if conflicted {
+	if refusal != "" {
 		// Named, not silently degraded to open submission: the caller can do
 		// nothing about this and the operator must, so the message says whose
 		// problem it is. It carries no specification detail — the request came
 		// from outside and the conflict is between two deployment-owned
 		// copies.
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
-			"workflow %q is registered twice for this namespace with different specifications, "+
-				"so this deployment has no single policy to enforce for it; an operator must make "+
-				"the trusted registrations agree", requested.GetName()))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))
 	}
 	if !ok {
 		return requested, nil
@@ -390,10 +413,18 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 			continue
 		}
 		key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
-		if s.trustedWorkflowConflicts[key] {
-			return fmt.Errorf("workflow %q is already registered twice for this namespace with "+
-				"different specifications; make the trusted registrations agree before serving it "+
-				"for webhook deliveries", workflow.GetName())
+		if reason := s.trustedWorkflowRefusals[key]; reason != "" {
+			return fmt.Errorf("%s; resolve that before serving it for webhook deliveries", reason)
+		}
+
+		// The same reason [WithTrustedWorkflows] validates, except this path
+		// can refuse the whole construction rather than poison one key.
+		// NewWebhookReceiver's own register() has already run the schema
+		// rules over these, so this is belt and braces for any other caller
+		// of registerTrustedWorkflows that arrives later.
+		if err := v1.Validate(workflow); err != nil {
+			return fmt.Errorf("workflow %q cannot be trusted as a deployment-owned specification "+
+				"because this deployment refuses it: %w", workflow.GetName(), err)
 		}
 		if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
 			return fmt.Errorf("workflow %q is already registered for this namespace with a different "+
