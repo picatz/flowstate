@@ -183,6 +183,19 @@ func runFakePlugin() int {
 		}()
 	}
 
+	if mode == "stderr-flood" {
+		// Writes far more lines than any reasonable per-minute budget, as fast
+		// as it can, on the channel a plugin is *supposed* to use — a buggy
+		// dependency logging in a hot loop needs no attacker. The host must
+		// keep draining the pipe (so this never blocks) while relaying only a
+		// bounded prefix of it into its own log.
+		go func() {
+			for range 20_000 {
+				fmt.Fprintln(os.Stderr, "i will not stop logging")
+			}
+		}()
+	}
+
 	fmt.Fprintf(os.Stderr, "fake plugin %q serving\n", mode)
 
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}

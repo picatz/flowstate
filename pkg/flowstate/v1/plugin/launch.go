@@ -211,12 +211,18 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	// stderr is a plugin's only diagnostic channel, so it is captured from
 	// before the handshake: the most valuable thing a plugin ever writes there
 	// is the reason it is about to fail to hand shake.
+	//
+	// The pump drains every line regardless of the limiter below: a full pipe
+	// looks like a hung plugin, and only what gets *relayed* into the host's
+	// own log is bounded.
 	inst.pumps.Add(1)
 	go func() {
 		defer inst.pumps.Done()
-		pumpPluginLog(stderrR, cfg.MaxStderrLine, func(line string, truncated bool) {
-			log.Info("plugin log", "line", line, "truncated", truncated)
-		})
+		relay, flush := stderrRelayFunc(cfg, log)
+		pumpPluginLog(stderrR, cfg.MaxStderrLine, relay)
+		if summary := flush(); summary != "" {
+			log.Warn(summary)
+		}
 	}()
 
 	handshake, err := inst.handshake(cfg, stdoutR, log)
@@ -563,6 +569,39 @@ func isProtocolEnv(entry string) bool {
 		}
 	}
 	return false
+}
+
+// stderrRelayFunc returns the callback pumpPluginLog invokes per stderr line,
+// rate-limited to cfg.MaxStderrLinesPerMinute so that the volume the host
+// relays into its own log is bounded independently of how long any one line
+// is, and a flush to call once the pump sees EOF. A negative
+// MaxStderrLinesPerMinute disables the bound: every line is relayed, as
+// before this existed, and flush is a no-op.
+//
+// allow only reports a window's suppressed count when another line arrives to
+// roll the window over, so a plugin that floods and then goes quiet — a crash
+// is a common reason, and often the one this limiter's summary would explain
+// — leaves its last window's count unreported. flush recovers it once, after
+// the pump can no longer call allow.
+func stderrRelayFunc(cfg Config, log *slog.Logger) (relay func(line string, truncated bool), flush func() string) {
+	if cfg.MaxStderrLinesPerMinute < 0 {
+		return func(line string, truncated bool) {
+			log.Info("plugin log", "line", line, "truncated", truncated)
+		}, func() string { return "" }
+	}
+
+	limiter := newStderrLimiter(cfg.MaxStderrLinesPerMinute, stderrRateWindow, cfg.stderrClock)
+	return func(line string, truncated bool) {
+			ok, summary := limiter.allow()
+			if summary != "" {
+				log.Warn(summary)
+			}
+			if ok {
+				log.Info("plugin log", "line", line, "truncated", truncated)
+			}
+		}, func() string {
+			return limiter.flush()
+		}
 }
 
 // pumpPluginLog reads lines from a plugin and hands each to fn.
