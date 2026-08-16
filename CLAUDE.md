@@ -684,8 +684,12 @@ When several agents edit interlocking packages:
   stalled this way in a row, each needing a human to notice a "waiting for the
   monitor" hand-back with no monitor behind it and manually resume the agent
   with the same task. Poll a long-running command inline, in the same turn,
-  with a sleep loop (`until ! kill -0 $PID 2>/dev/null; do sleep 15; done`)
-  rather than backgrounding it and stopping.
+  and capture its real exit status rather than only whether the process is
+  still alive — `kill -0` after backgrounding answers "has it exited," not
+  "did it pass," and inverting it with `!` turns a failed gate into a loop
+  that ends the same way a passing one does. `wait "$PID"` after the loop, or
+  just run the command in the foreground and skip the backgrounding
+  entirely, so a broken gate cannot look like a stopping point.
 - **Commit before a checkpoint you don't control, not after.** A container
   restart during one of those stalls killed two agents mid-task and discarded
   everything they had not yet committed — one of them a finished, reviewed fix
