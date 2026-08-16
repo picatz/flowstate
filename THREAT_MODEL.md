@@ -253,12 +253,17 @@ worker from starting, and copying it into memory to seal it reintroduces that.
 **Limits.** Pinning the digest to the executed image is a Linux guarantee, and
 not one it makes about every plugin. A platform with no way to execute an
 already-open descriptor falls back to executing the path, which leaves the window
-this closes; so does a `#!` script on any platform, because the kernel starts the
-interpreter and hands it the path to reopen, after the descriptor naming it is
-gone — and the bytes that run a script are the interpreter's, which nothing here
-hashes. Both cases launch, and both say which guarantee they are giving in a log
-line at every launch (`pkg/flowstate/v1/plugin/image.go`, `image_other.go`). An
-operator who needs the strong guarantee ships a compiled binary. A launched
+this closes; so does any image the kernel runs through an *interpreter* rather
+than directly, because the kernel starts that interpreter and hands it the path to
+reopen after the descriptor naming it is gone — and the bytes that then run are
+the interpreter's, which nothing here hashes. `#!` is the familiar case and not
+the only one: a `binfmt_misc` registration without the open-binary (`O`) flag
+behaves identically for whatever format it claims. Which images may be pinned is
+therefore an allowlist — a native ELF binary, and nothing else — rather than a
+list of known-bad markers a host can add to at any time. Every case launches, and
+every case says which guarantee it is giving in a log line at every launch
+(`pkg/flowstate/v1/plugin/image.go`, `image_linux.go`, `image_other.go`). An
+operator who needs the strong guarantee ships a native binary. A launched
 plugin is trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
