@@ -297,7 +297,7 @@ type TaskDef struct {
 // in flight — the activity's own unknown-task error, which names the task and
 // lists what the run's registry offers ([TaskNamesIn]).
 //
-// And a blanket `true` would damage precisely that report. `tests.ErrorKindCases`
+// And a blanket `true` would damage precisely that report. `conformance.ErrorKindCases`
 // makes "unknown task is [ErrorKindUnknownTask]" a contract both drivers keep, on
 // the stated grounds that it is permanent; routing an unknown task to an arm a
 // worker may not have registered turns it into a retryable

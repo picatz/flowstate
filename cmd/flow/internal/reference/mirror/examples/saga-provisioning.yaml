@@ -30,7 +30,7 @@
 # watch it happen from here: interrupt this file part way through and the steps that
 # had already succeeded come back off before the command exits. CI cannot press
 # Ctrl-C, so what keeps that honest is the shared cross-driver corpus in
-# `pkg/flowstate/v1/tests/undo.go` rather than this example.
+# `pkg/flowstate/v1/internal/conformance/undo.go` rather than this example.
 edition: v2026.3
 name: saga-provisioning
 description: Provision a tenant, fail partway, and undo what already succeeded.

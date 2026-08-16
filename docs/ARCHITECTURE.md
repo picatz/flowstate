@@ -664,7 +664,7 @@ every run outside a simulation gets, is precisely what the driver did before.
 `NewSeededScheduler` answers from a PRNG instead, so an interleaving has a name that is
 one number long. `pkg/flowstate/v1/dst` is what does something with that: run one workflow
 once per seed and assert every observable matches the written-order baseline's, over the
-same shared corpus both drivers already run (`pkg/flowstate/v1/tests`). A divergence
+same shared corpus both drivers already run (`pkg/flowstate/v1/internal/conformance`). A divergence
 prints its seed and the command that replays it.
 
 Two things this deliberately is not. It is not a Go scheduler: the engine's own decision

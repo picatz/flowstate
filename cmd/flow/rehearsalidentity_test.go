@@ -20,7 +20,7 @@ import (
 // taught an author their correct rule was wrong.
 //
 // The unit-level agreement between the drivers is pinned by the shared cases
-// ([tests.TaskPolicyCases], [tests.EgressIdentityCases]) with a caller on each.
+// ([conformance.TaskPolicyCases], [conformance.EgressIdentityCases]) with a caller on each.
 // What those cannot see is the flag: they set the identity through the seam
 // directly, and a `--as-namespace` that never reached that seam would leave them
 // green. This is the path from a command line, which is what CLAUDE.md's "a

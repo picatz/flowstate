@@ -368,7 +368,7 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 // case fails, naming the task, rather than doing whatever the real one does.
 //
 // The registry-swap pattern the repo's own tests already use for the same
-// reason (`allowLoopback` in pkg/flowstate/v1/tests/tests.go): the local
+// reason (`allowLoopback` in pkg/flowstate/v1/internal/conformance/conformance.go): the local
 // driver looks tasks up through the process-wide default registry
 // ([v1.LookupTask]), so replacing a task for the duration of one case means
 // mutating that registry and putting it back. Test cases within one `flow

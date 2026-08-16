@@ -15,7 +15,7 @@ import (
 // case named in the issue's own design record — "codex denied outside the
 // platform team" — against a *real* attested identity, which only the
 // durable driver can carry through to a task dispatch (see
-// [tests.TaskPolicyCases]' own doc for why the shared, both-drivers case set
+// [conformance.TaskPolicyCases]' own doc for why the shared, both-drivers case set
 // deliberately stays on `task` alone: the local driver's [v1.Scope.identity]
 // is always empty, by design, for every local run — [flowstatev1_test
 // .TestRunIdentityShapeLocal] pins that same fact for `run.identity`).

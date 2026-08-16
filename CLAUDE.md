@@ -295,7 +295,7 @@ drivers over one execution model. Anything observable — whether a step is skip
 retried, tolerated, or how a loop reports results — must match, because local runs
 exist to tell an author what production will do.
 
-Shared cases live in `pkg/flowstate/v1/tests`; both drivers run them. Add cases
+Shared cases live in `pkg/flowstate/v1/internal/conformance`; both drivers run them. Add cases
 there rather than in one driver's package — and check that both drivers actually
 *call* the set you added. Every function in that package had two callers, one per
 driver, except `ZeroValueCases`, which had one; it sat there for months proving

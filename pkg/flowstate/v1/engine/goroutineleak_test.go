@@ -8,7 +8,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
@@ -51,8 +51,8 @@ func TestAsyncCoroutinesDoNotLeak(t *testing.T) {
 			"see the goroutineleak job in .github/workflows/deep.yml")
 	}
 
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.AsyncCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.AsyncCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			inputs, err := v1.BindRunInputs(test.Workflow, test.Inputs)
 			require.NoError(t, err, "the submission was refused")
@@ -67,7 +67,7 @@ func TestAsyncCoroutinesDoNotLeak(t *testing.T) {
 			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow, Inputs: inputs})
 			require.True(t, env.IsWorkflowCompleted())
 			// Deliberately not asserting success/failure here beyond completion:
-			// [tests.AsyncCases] already pins every outcome (TestRunWorkflowAsync
+			// [conformance.AsyncCases] already pins every outcome (TestRunWorkflowAsync
 			// runs the identical set for that), including the failing and
 			// tolerated-failure cases whose scope has to join on the way out. What
 			// this test needs from each case is only that every coroutine it

@@ -7,8 +7,8 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
 	"google.golang.org/protobuf/testing/protocmp"
@@ -19,12 +19,12 @@ import (
 // [engine.Register] at worker registration — and runs the case through
 // [engine.Run] on a Temporal test environment.
 //
-// eval_test.go's runAuthorityCase runs the identical [tests.AuthorityCase]
+// eval_test.go's runAuthorityCase runs the identical [conformance.AuthorityCase]
 // through a context value instead. The two are deliberately the same
 // assertions against a different installation path: #116 existed because
 // nothing compared them, and secret denial text and a JIT credential's
 // containment had each only ever been proven by one driver's own test file.
-func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
+func runAuthorityCase(t *testing.T, test conformance.AuthorityCase) {
 	t.Helper()
 
 	testSuite := &testsuite.WorkflowTestSuite{}
@@ -56,7 +56,7 @@ func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
 	require.Empty(t, cmp.Diff(test.ExpectedOutputs, &out, protocmp.Transform()))
 
 	if test.ContainmentValue != "" {
-		tests.AssertNoLeak(t, &out, test.ContainmentValue)
+		conformance.AssertNoLeak(t, &out, test.ContainmentValue)
 	}
 }
 
@@ -64,7 +64,7 @@ func runAuthorityCase(t *testing.T, test tests.AuthorityCase) {
 // against the durable driver. The local driver runs the same cases in
 // eval_test.go.
 func TestAuthorityDenial(t *testing.T) {
-	for _, test := range tests.AuthorityDenialCases() {
+	for _, test := range conformance.AuthorityDenialCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
 			if test.Authority.ProviderCalls != nil {
@@ -79,8 +79,8 @@ func TestAuthorityDenial(t *testing.T) {
 // containment cases against the durable driver. The local driver runs the
 // same cases in eval_test.go.
 func TestAuthorityContainment(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
-	for _, test := range tests.AuthorityContainmentCases(baseURL) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.AuthorityContainmentCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
 		})

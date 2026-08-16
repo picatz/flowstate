@@ -13,7 +13,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // tenantWorker builds a test environment standing in for a worker started with
@@ -36,7 +36,7 @@ func tenantWorker(t *testing.T, tenant string) *testsuite.TestWorkflowEnvironmen
 
 func runFor(namespace string) *v1.RunState {
 	return &v1.RunState{
-		Workflow: tests.RunIdentityWorkflow(),
+		Workflow: conformance.RunIdentityWorkflow(),
 		Identity: &v1.WorkloadIdentity{
 			Subject:   "release-requester@example.com",
 			Issuer:    "flowstate:test",
@@ -125,13 +125,13 @@ func TestWorkerForTheDefaultTenantRefusesANamedTenantsRun(t *testing.T) {
 func TestWorkerForOneTenantRefusesARunWithNoTenant(t *testing.T) {
 	env := tenantWorker(t, "team-a")
 
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tests.RunIdentityWorkflow()})
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.RunIdentityWorkflow()})
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.ErrorContains(t, env.GetWorkflowError(), "this worker executes one tenant's workloads only")
 
 	def := tenantWorker(t, "")
-	def.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tests.RunIdentityWorkflow()})
+	def.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.RunIdentityWorkflow()})
 	require.True(t, def.IsWorkflowCompleted())
 	require.NoError(t, def.GetWorkflowError())
 }
@@ -149,7 +149,7 @@ func TestWorkerForOneTenantRunsItsOwn(t *testing.T) {
 
 	var outputs v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&outputs))
-	tests.AssertRunIdentityShape(t, &outputs, false, "release-requester@example.com")
+	conformance.AssertRunIdentityShape(t, &outputs, false, "release-requester@example.com")
 }
 
 // TestUnrestrictedWorkerIsUnchanged is the other half of "nothing existing

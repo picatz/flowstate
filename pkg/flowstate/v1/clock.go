@@ -27,7 +27,7 @@ import (
 // the property this exists to give the local driver, and duplicating that
 // machinery here would be one more place for the two drivers to disagree about
 // what a workflow can see of time. What has to stay true across both is
-// narrower and sits in [pkg/flowstate/v1/tests]: given the *same* wall-clock
+// narrower and sits in [pkg/flowstate/v1/internal/conformance]: given the *same* wall-clock
 // starting point, both drivers compute the same wait deadline from the same
 // `now` expression. See the "now advances" case in tests/wait.go.
 type Clock interface {

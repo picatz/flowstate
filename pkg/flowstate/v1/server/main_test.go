@@ -207,7 +207,7 @@ func startWorker(t *testing.T, temporal client.Client) {
 //
 // One such test exists: the run that grows until it cannot be carried forward
 // raises the deadlock budget, for the reason
-// [tests.BoundaryDeadlockDetectionTimeout] gives. Keeping the option at the call
+// [conformance.BoundaryDeadlockDetectionTimeout] gives. Keeping the option at the call
 // site rather than in the shared helper is the point, so that a worker with a
 // budget nobody deploys is visibly the exception it is.
 func startWorkerWithOptions(t *testing.T, temporal client.Client, options worker.Options) {
