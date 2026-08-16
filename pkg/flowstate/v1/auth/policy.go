@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -51,6 +53,104 @@ type Policy struct {
 	// their history and visibility. Optional: a single-team deployment needs none
 	// of it, and a first run needs no configuration at all.
 	Tenancy *Tenancy `json:"tenancy,omitempty" yaml:"tenancy,omitempty"`
+}
+
+// NamespaceMap is the wire type of [TrustedIssuer.NamespaceMap]: an exact
+// claim-value-to-namespace table, decoded from either YAML or JSON.
+//
+// It behaves as map[string]string with one deliberate difference: decoding
+// tracks whether the namespace_map key was written in the source document at
+// all — even as `null` or `{}` — and leaves the field nil only when the key
+// never appeared. A plain map cannot make that distinction, because decoding
+// `null` into one and leaving a missing key alone both produce the identical
+// nil map. That ambiguity is a fail-open hazard here specifically: this
+// package's validation already refuses a NamespaceMap that is present but
+// empty (every claim value would be refused, which defeats the point of
+// enumerating tenants) — but only once it knows the field was present.
+// Without this type, an operator's mistake that emptied a namespace_map — a
+// dropped block under a `namespace_map:` key, a `null` from a broken template
+// — decoded to the same nil value as never having set the field, silently
+// falling back to NamespaceClaim's raw-value grammar check instead of being
+// refused at policy load. That is the exact shape CLAUDE.md's "fail closed"
+// section rules out: "an errored rule denies... rules compile and type-check
+// when configuration loads rather than when a request arrives." A malformed
+// namespace_map now fails to load rather than deferring the failure to the
+// first token that hits it.
+//
+// [TrustedIssuer.validateNamespaceFields] reads that distinction directly:
+// nil means the key was never written, so this entry does not use a map at
+// all; non-nil (even length zero) means the key was written, and every check
+// that applies to a configured namespace_map — including "present but empty"
+// — applies to it.
+type NamespaceMap map[string]string
+
+// UnmarshalYAML implements [yaml.BytesUnmarshaler]. It is invoked only when
+// the namespace_map key is present in the document, which is what lets a
+// present-but-null or present-but-empty value decode to a non-nil (possibly
+// zero-length) map rather than to the nil value a key that was never written
+// also produces — see [NamespaceMap]'s own doc for why that distinction
+// matters here.
+func (m *NamespaceMap) UnmarshalYAML(data []byte) error {
+	var decoded map[string]string
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded == nil {
+		decoded = map[string]string{}
+	}
+	*m = decoded
+	return nil
+}
+
+// UnmarshalJSON implements [encoding/json.Unmarshaler], for the same reason
+// and with the same behavior as [NamespaceMap.UnmarshalYAML]: it runs only
+// when the key is present, including an explicit `null`, and always leaves
+// the field non-nil once it has run.
+func (m *NamespaceMap) UnmarshalJSON(data []byte) error {
+	var decoded map[string]string
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded == nil {
+		decoded = map[string]string{}
+	}
+	*m = decoded
+	return nil
+}
+
+// MarshalYAML implements [yaml.BytesMarshaler] so a NamespaceMap round-trips
+// as a plain mapping rather than through this type's own fields.
+func (m NamespaceMap) MarshalYAML() ([]byte, error) {
+	return yaml.Marshal(map[string]string(m))
+}
+
+// MarshalJSON implements [encoding/json.Marshaler], for the same reason as
+// [NamespaceMap.MarshalYAML].
+func (m NamespaceMap) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string(m))
+}
+
+// IsZero reports whether m is nil — never whether it is empty. Both
+// encoding/json's `omitzero` and goccy/go-yaml's `omitempty` (which treats an
+// [IsZeroer] as authoritative over its own default reflection-based check;
+// see that package's yaml.go doc) call this instead of measuring len(m)
+// before deciding whether to omit the field, which is what lets
+// [TrustedIssuer.NamespaceMap]'s struct tags tell "never configured" (nil)
+// apart from "configured empty, deliberately deny-all" (non-nil, len 0) on
+// the wire.
+//
+// Without this method, both encoders fall back to reflecting on the field's
+// own zero-ness — len(m) == 0 — to decide whether to omit it, and that check
+// runs before [NamespaceMap.MarshalJSON] or [NamespaceMap.MarshalYAML] is
+// ever called. A non-nil empty map satisfies len(m) == 0 exactly as a nil map
+// does, so both encoders omitted it identically: an intentional deny-all
+// marshaled as if the field had never been set. Re-parsing that output then
+// decodes NamespaceMap as absent — unrestricted — silently discarding the
+// deny-all this package's own null-rejection (see [rejectNullNamespaceMap])
+// exists to enforce, in exactly the marshal round trip that rejection cannot
+// see.
+func (m NamespaceMap) IsZero() bool {
+	return m == nil
 }
 
 // TrustedIssuer is one issuer Flowstate trusts, the tokens it will accept from
@@ -186,6 +286,44 @@ type TrustedIssuer struct {
 	// a reason to try the next entry.
 	NamespaceClaim string `json:"namespace_claim,omitempty" yaml:"namespace_claim,omitempty"`
 
+	// NamespaceMap, when set alongside NamespaceClaim, replaces the grammar
+	// check NamespaceClaim would otherwise apply to the raw claim value with an
+	// exact lookup: the claim's value is looked up as a key in this map, and the
+	// mapped value — which must itself satisfy [ValidateNamespace] — becomes the
+	// namespace. A claim value with no entry is refused with [ErrNoNamespace],
+	// the same way a missing or ungrammatical claim is: there is no fallback to
+	// the raw value and no wildcard entry, because a wildcard here is the same
+	// mistake [ClaimRule.AnyOf] refuses to let a claim rule express.
+	//
+	// This is what NamespaceClaim's own doc points to for a claim whose values
+	// cannot satisfy the namespace grammar at all, such as GitHub Actions'
+	// "repository" claim ("<owner>/<name>", which contains "/"): list every
+	// tenant's exact claim value once, mapped to the namespace it names.
+	// Two different claim values may map to the same namespace on purpose — two
+	// repositories sharing one tenant is a deliberate choice, not a collision —
+	// but every mapped value is validated at policy load, so a typo that would
+	// only surface at verification time is caught before any token is checked
+	// against it.
+	//
+	// Requires NamespaceClaim; refused when Namespace is set instead, and
+	// refused for kind: mtls for the same reason NamespaceClaim is: a client
+	// certificate carries no claim to look up.
+	//
+	// The field's type is [NamespaceMap] rather than a plain
+	// map[string]string so that "the key was written" and "the key was never
+	// written" stay distinguishable through decoding — see its own doc.
+	//
+	// The JSON tag uses `omitzero`, not `omitempty`: encoding/json's
+	// `omitempty` decides by reflecting on len(m) before ever calling
+	// [NamespaceMap.MarshalJSON], so a non-nil empty map — a deliberate
+	// deny-all — would omit exactly like nil, and re-parsing would then
+	// decode it as absent (unrestricted), silently discarding the deny-all.
+	// `omitzero` instead defers to [NamespaceMap.IsZero], which distinguishes
+	// nil from empty; see that method's doc. goccy/go-yaml's `omitempty`
+	// already defers to the same IsZero method when a field implements it
+	// (goccy/go-yaml's yaml.go doc), so the YAML tag needs no change.
+	NamespaceMap NamespaceMap `json:"namespace_map,omitzero" yaml:"namespace_map,omitempty"`
+
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
 	// the normal case; set it only for an issuer that publishes keys without a
@@ -293,11 +431,60 @@ func ParsePolicy(data []byte) (Policy, error) {
 		return Policy{}, fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
+	if err := rejectNullNamespaceMap(data, policy); err != nil {
+		return Policy{}, err
+	}
+
 	if err := policy.Validate(); err != nil {
 		return Policy{}, err
 	}
 
 	return policy, nil
+}
+
+// rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
+// library cannot: goccy/go-yaml never invokes a field's custom unmarshaler for
+// an explicit YAML `null`, so `namespace_map: null` (or a bare `namespace_map:`
+// with nothing after the colon) decodes straight to Go's zero value without
+// [NamespaceMap.UnmarshalYAML] ever running — indistinguishable, after decode,
+// from the key never having been written at all. That is exactly the
+// ambiguity NamespaceMap exists to remove, so this re-decodes the document
+// generically (a plain `map[string]any`, which has no such special case: a
+// null value still leaves the key present with a nil value) and refuses any
+// issuer entry whose namespace_map key is present but whose typed field ended
+// up nil, before [Policy.Validate] — which only sees the already-collapsed
+// typed value — ever runs.
+func rejectNullNamespaceMap(data []byte, policy Policy) error {
+	var raw struct {
+		Issuers []map[string]any `yaml:"issuers" json:"issuers"`
+	}
+	// Best-effort: the strict typed decode above already succeeded, so a
+	// failure here would mean this loose, non-strict decode disagrees with it
+	// in some way that does not bear on namespace_map presence. Nothing to
+	// enforce without a raw document to compare against.
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+
+	for i, issuer := range raw.Issuers {
+		if i >= len(policy.Issuers) {
+			break
+		}
+		if _, present := issuer["namespace_map"]; !present {
+			continue
+		}
+		if policy.Issuers[i].NamespaceMap != nil {
+			continue
+		}
+		name := policy.Issuers[i].Name
+		return fmt.Errorf("%w: issuers[%d] (%q): namespace_map is present but null, which this package refuses "+
+			"rather than silently treating as absent: a null or empty namespace_map would fall back to "+
+			"namespace_claim's raw-value grammar check instead of the exact table the entry appears to intend. "+
+			"Remove namespace_map entirely to use namespace_claim alone, or give it at least one entry",
+			ErrInvalidPolicy, i, name)
+	}
+
+	return nil
 }
 
 // Validate reports whether the policy is usable, wrapping [ErrInvalidPolicy]
@@ -409,6 +596,23 @@ func (t TrustedIssuer) namespaceFor(claims map[string]any) (string, error) {
 	}
 	if namespace == "" {
 		return "", fmt.Errorf("%w: the %q claim of a token from %q is empty", ErrNoNamespace, t.NamespaceClaim, t.Name)
+	}
+
+	// With a namespace_map configured, the raw claim value is never itself the
+	// namespace: it is a key into an exact, operator-authored table, and a claim
+	// value with no entry is refused rather than falling back to the raw value
+	// (which the grammar below would usually refuse anyway) or to any default.
+	// This is the path a claim shaped like "<owner>/<name>" takes, since no
+	// grammar accepts "/" without making it ambiguous with the "/" a namespace
+	// is combined with elsewhere — see ValidateNamespace's and NamespaceMap's own
+	// doc comments.
+	if t.NamespaceMap != nil {
+		mapped, ok := t.NamespaceMap[namespace]
+		if !ok {
+			return "", fmt.Errorf("%w: the %q claim of a token from %q is %q, which has no entry in namespace_map",
+				ErrNoNamespace, t.NamespaceClaim, t.Name, truncate(namespace, 64))
+		}
+		return mapped, nil
 	}
 
 	// A namespace names a tenant, and it reaches an assertion subject and a
@@ -563,6 +767,10 @@ func (t TrustedIssuer) validateMTLS() error {
 			"besides the subject SAN itself, so it cannot name a tenant. Give this entry a fixed namespace, "+
 			"and use one entry per tenant if several must share a CA", IssuerKindMTLS)
 	}
+	if t.NamespaceMap != nil {
+		return fmt.Errorf("namespace_map is not supported for kind: %s: it maps namespace_claim's value, "+
+			"which this kind never has", IssuerKindMTLS)
+	}
 	if err := t.validateNamespaceFields(); err != nil {
 		return err
 	}
@@ -604,6 +812,27 @@ func (t TrustedIssuer) validateNamespaceFields() error {
 			return fmt.Errorf("namespace: %w", err)
 		}
 	}
+
+	if t.NamespaceMap != nil {
+		if t.NamespaceClaim == "" {
+			return fmt.Errorf("namespace_map requires namespace_claim: it maps that claim's value to a namespace, so there is nothing to look up without it")
+		}
+		if len(t.NamespaceMap) == 0 {
+			return fmt.Errorf("namespace_map is present but empty: every claim value would be refused, which is the same as not admitting this issuer at all")
+		}
+		for claimValue, namespace := range t.NamespaceMap {
+			if claimValue == "" {
+				return fmt.Errorf("namespace_map: the empty string is not a claim value a verified token can carry (namespaceFor already refuses an empty claim)")
+			}
+			if namespace == "" {
+				return fmt.Errorf("namespace_map: claim value %q maps to an empty namespace", claimValue)
+			}
+			if err := ValidateNamespace(namespace); err != nil {
+				return fmt.Errorf("namespace_map: claim value %q maps to namespace %q: %w", claimValue, namespace, err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -682,6 +911,7 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 	for i, rule := range clone.Require {
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
 	}
+	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
 
 	return clone
 }
