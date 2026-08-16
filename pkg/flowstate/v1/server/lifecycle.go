@@ -530,7 +530,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	workflow := s.trustedWorkflow(req.Msg.GetWorkflow())
+	workflow := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err

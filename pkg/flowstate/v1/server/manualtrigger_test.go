@@ -104,7 +104,7 @@ func TestRunCannotRemoveADeploymentOwnedManualPolicy(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	trusted := narrowedWorkflow()
-	flowstate := server.New(temporal, server.WithTrustedWorkflows(trusted))
+	flowstate := server.New(temporal, server.WithTrustedWorkflows("", trusted))
 
 	modified := narrowedWorkflow()
 	modified.Triggers.Manual = nil

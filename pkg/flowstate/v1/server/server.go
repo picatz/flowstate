@@ -173,9 +173,13 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 }
 
 // WithTrustedWorkflows installs deployment-owned workflow specifications for
-// remote submission. A request whose workflow name matches one of these entries
-// is authorized and executed from the trusted copy, not from the copy carried by
-// the request. This is what makes restrictions such as `manual: denied` and
+// remote submission, scoped to namespace exactly as [FlowstateServer.NewWebhookReceiver]'s
+// own namespace argument is: empty means this deployment's own, unnamed
+// tenant — the same value [FlowstateServer.identityFor] falls back to for an
+// unauthenticated caller or one WithNamespace named. A request whose
+// namespace and workflow name match one of these entries is authorized and
+// executed from the trusted copy, not from the copy carried by the request.
+// This is what makes restrictions such as `manual: denied` and
 // `manual.allowed_principals` authorization policy rather than caller input.
 //
 // Workflows not named by this option retain the open submission behavior: the
@@ -183,18 +187,41 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // must therefore register the restricted workflow here under its name. Cloning at
 // configuration time prevents a caller that still holds the source pointer from
 // changing policy after the server has started.
-func WithTrustedWorkflows(workflows ...*v1.Workflow) Option {
+//
+// namespace is required to be explicit — never derived from a prior
+// [WithNamespace] option — because [Option]s apply in the order given and a
+// value read from options that may not have run yet would make this entry's
+// tenant depend on argument order rather than say what it means. A
+// deployment using a non-empty default namespace passes it here the same way
+// it does everywhere else that scopes a namespace explicitly.
+func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 	return func(s *FlowstateServer) {
 		if s.trustedWorkflows == nil {
-			s.trustedWorkflows = make(map[string]*v1.Workflow)
+			s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
 		}
 		for _, workflow := range workflows {
 			if workflow == nil || workflow.GetName() == "" {
 				continue
 			}
-			s.trustedWorkflows[workflow.GetName()] = proto.Clone(workflow).(*v1.Workflow)
+			s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
+				proto.Clone(workflow).(*v1.Workflow)
 		}
 	}
+}
+
+// trustedWorkflowKey identifies a trusted workflow specification by both the
+// tenant it is trusted for and its name — a struct, not a concatenated
+// string. CLAUDE.md's namespacing rule is why: every character legal in a
+// namespace is also legal in a name, so no separator disambiguates
+// `namespace + name` from a different pair that happens to concatenate to
+// the same string — `"team-a"` + `"deploy"` and `"team"` + `"a-deploy"`
+// collide under any single-character or fixed separator. A struct compares
+// each field independently and cannot be made to collide this way; see the
+// `env` and file secret providers' own namespacing fix for the same mistake
+// made twice already.
+type trustedWorkflowKey struct {
+	namespace string
+	name      string
 }
 
 // FlowstateServer implements the flowstatev1connect.WorkflowServiceHandler interface
@@ -235,7 +262,7 @@ type FlowstateServer struct {
 	// from a request in flight and a write from a receiver still starting up
 	// must not be allowed to race.
 	trustedWorkflowsMu sync.RWMutex
-	trustedWorkflows   map[string]*v1.Workflow
+	trustedWorkflows   map[trustedWorkflowKey]*v1.Workflow
 
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
@@ -248,16 +275,26 @@ type FlowstateServer struct {
 	dataConverter converter.DataConverter
 }
 
-// trustedWorkflow returns the deployment-owned specification for a registered
-// workflow name. The clone is per request: validation and preparation currently
-// treat specifications as immutable, but keeping the configured authority out of
-// request-lifetime code makes that trust boundary robust to later normalization.
-func (s *FlowstateServer) trustedWorkflow(requested *v1.Workflow) *v1.Workflow {
+// trustedWorkflow returns the deployment-owned specification registered for
+// namespace and requested's name, or requested unchanged if none was.
+//
+// namespace must be the caller's own — [FlowstateServer.identityFor]'s
+// answer for this request, never a value the request itself carries —
+// because the trust boundary this implements is exactly that a namespace
+// only reaches its own registered entries. Two tenants that each register a
+// workflow of the same name under [WithTrustedWorkflows] or
+// [FlowstateServer.NewWebhookReceiver] must never be able to substitute the
+// other's specification, which a lookup keyed on name alone could not tell
+// apart. The clone is per request: validation and preparation currently
+// treat specifications as immutable, but keeping the configured authority
+// out of request-lifetime code makes that trust boundary robust to later
+// normalization.
+func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) *v1.Workflow {
 	if requested == nil {
 		return nil
 	}
 	s.trustedWorkflowsMu.RLock()
-	trusted, ok := s.trustedWorkflows[requested.GetName()]
+	trusted, ok := s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: requested.GetName()}]
 	s.trustedWorkflowsMu.RUnlock()
 	if !ok {
 		return requested
@@ -265,24 +302,26 @@ func (s *FlowstateServer) trustedWorkflow(requested *v1.Workflow) *v1.Workflow {
 	return proto.Clone(trusted).(*v1.Workflow)
 }
 
-// registerTrustedWorkflow adds one deployment-owned specification to the trusted
-// set after construction, which is what lets [NewWebhookReceiver] extend
-// [WithTrustedWorkflows]'s set from the Flowfiles a `--webhook` deployment loads:
-// those are exactly the specifications whose `manual:`/trigger policy must bind
-// regardless of what a caller submits under the same name, and the receiver is
-// the one place that has already parsed and validated them by the time a
-// trusted copy is needed. Safe to call while the server is serving — the
-// receiver runs before the process starts listening, but nothing here assumes
-// that — because every read and write of the map takes the same lock.
-func (s *FlowstateServer) registerTrustedWorkflow(workflow *v1.Workflow) {
+// registerTrustedWorkflow adds one deployment-owned specification to the
+// trusted set after construction, scoped to namespace, which is what lets
+// [NewWebhookReceiver] extend [WithTrustedWorkflows]'s set from the Flowfiles
+// a `--webhook` deployment loads: those are exactly the specifications whose
+// `manual:`/trigger policy must bind regardless of what a caller submits
+// under the same name, and the receiver is the one place that has already
+// parsed and validated them by the time a trusted copy is needed. Safe to
+// call while the server is serving — the receiver runs before the process
+// starts listening, but nothing here assumes that — because every read and
+// write of the map takes the same lock.
+func (s *FlowstateServer) registerTrustedWorkflow(namespace string, workflow *v1.Workflow) {
 	if workflow == nil || workflow.GetName() == "" {
 		return
 	}
 	s.trustedWorkflowsMu.Lock()
 	if s.trustedWorkflows == nil {
-		s.trustedWorkflows = make(map[string]*v1.Workflow)
+		s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
 	}
-	s.trustedWorkflows[workflow.GetName()] = proto.Clone(workflow).(*v1.Workflow)
+	s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
+		proto.Clone(workflow).(*v1.Workflow)
 	s.trustedWorkflowsMu.Unlock()
 }
 
@@ -680,16 +719,19 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	workflow := s.trustedWorkflow(req.Msg.GetWorkflow())
+	// Captured before the trusted lookup below, not only for its usual reason
+	// (the run outlives this request, so anything a later step needs to know
+	// about who asked for the work has to be recorded in the state it
+	// carries) but because the lookup needs the caller's own namespace to
+	// stay a boundary between tenants rather than a single deployment-wide
+	// name flat enough for one tenant to reach another's trusted entry.
+	identity := s.identityFor(ctx)
+
+	workflow := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
 	}
-
-	// Capture the identity now, while the authenticated caller is still in scope.
-	// The run outlives this request, so anything a later step needs to know about
-	// who asked for the work has to be recorded in the state it carries.
-	identity := s.identityFor(ctx)
 
 	// A random id unless the caller named a business key, in which case the run
 	// is addressable by what it *is* rather than by an id nobody wrote down —
