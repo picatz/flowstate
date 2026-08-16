@@ -28,8 +28,9 @@ the tests pass.
 
 ## The verification gate
 
-The diff-scoped gate is the default before pushing a PR branch; PR CI is the
-full gate, and `make check` is the same full list run locally:
+The diff-scoped gate is the default before pushing a PR branch; PR CI runs the
+same diff-scoped computation and skips what the diff cannot reach, the merge
+queue runs the full list, and `make check` is the same full list run locally:
 
     go run ./tools/gate    # diff-scoped tier (or: make gate)
     make check             # full CI-parity rehearsal
