@@ -106,12 +106,12 @@ func TestExecImagePointsAtTheDescriptorRatherThanThePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, BinaryPrefix+"pinned")
 
-	// Deliberately not a `#!` script: those are executed by path on purpose
-	// (see [errShebangCannotBeExecutedByDescriptor]), so a script here would
-	// be asserting the opposite of what this file is about. Nothing executes
-	// these bytes — the pin is the whole subject — so any non-script content
-	// does.
-	if err := os.WriteFile(path, []byte("\x7fELF not really, but not a script either\n"), 0o755); err != nil {
+	// A header this host's own ELF loader would claim, because only a natively
+	// executable image is pinned (see [isDirectlyExecutable]) and a script or
+	// a foreign-architecture image here would be asserting the opposite of
+	// what this file is about. Nothing executes these bytes — the pin is the
+	// whole subject — so the header is all that has to be real.
+	if err := os.WriteFile(path, append(nativeELFHeader(t), "the rest does not matter here\n"...), 0o755); err != nil {
 		t.Fatalf("writing the binary: %v", err)
 	}
 

@@ -3,11 +3,35 @@
 package plugin
 
 import (
+	"debug/elf"
+	"encoding/binary"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// otherClass and otherData return the ELF class and byte order this host's
+// loader does *not* accept, so a header can be built that is wrong in exactly
+// one field.
+func otherClass(t *testing.T) elf.Class {
+	t.Helper()
+
+	if hostELF[runtime.GOARCH].class == elf.ELFCLASS64 {
+		return elf.ELFCLASS32
+	}
+	return elf.ELFCLASS64
+}
+
+func otherData(t *testing.T) elf.Data {
+	t.Helper()
+
+	if hostELF[runtime.GOARCH].data == elf.ELFDATA2LSB {
+		return elf.ELFDATA2MSB
+	}
+	return elf.ELFDATA2LSB
+}
 
 // Which images may be pinned to a descriptor is a question about executable
 // *format*, and it is asked as an allowlist: an image is pinned when it is
@@ -32,8 +56,52 @@ func writeImage(t *testing.T, name string, content []byte) string {
 	return path
 }
 
-// elfMagic is the four bytes that make the kernel run an image itself.
-var elfMagic = []byte{0x7f, 'E', 'L', 'F'}
+// elfHeaderFor builds a 20-byte ELF header prefix — everything through
+// e_machine, which is all [isDirectlyExecutable] reads.
+func elfHeaderFor(class elf.Class, data elf.Data, machine elf.Machine) []byte {
+	header := make([]byte, elfIdentSize)
+	copy(header, elf.ELFMAG)
+	header[elf.EI_CLASS] = byte(class)
+	header[elf.EI_DATA] = byte(data)
+	header[elf.EI_VERSION] = byte(elf.EV_CURRENT)
+
+	switch data {
+	case elf.ELFDATA2MSB:
+		binary.BigEndian.PutUint16(header[18:20], uint16(machine))
+	default:
+		binary.LittleEndian.PutUint16(header[18:20], uint16(machine))
+	}
+
+	return header
+}
+
+// nativeELFHeader is a header this host's own loader would claim.
+func nativeELFHeader(t *testing.T) []byte {
+	t.Helper()
+
+	host, known := hostELF[runtime.GOARCH]
+	if !known {
+		t.Skipf("no native ELF header is known for GOARCH %s", runtime.GOARCH)
+	}
+	return elfHeaderFor(host.class, host.data, host.machine)
+}
+
+// foreignELFHeader is a header for some architecture that is definitely not
+// this one — the qemu-user/binfmt_misc shape.
+func foreignELFHeader(t *testing.T) []byte {
+	t.Helper()
+
+	host := hostELF[runtime.GOARCH]
+
+	// Any entry whose machine differs from this host's will do; s390x is the
+	// usual pick and x86-64 stands in when this *is* an s390x.
+	foreign := hostELF["s390x"]
+	if foreign.machine == host.machine {
+		foreign = hostELF["amd64"]
+	}
+
+	return elfHeaderFor(foreign.class, foreign.data, foreign.machine)
+}
 
 // TestOnlyANativeBinaryIsPinnedToItsDescriptor is the allowlist, in both
 // directions: ELF is pinned, and every other shape falls back to the path with
@@ -60,6 +128,16 @@ func TestOnlyANativeBinaryIsPinnedToItsDescriptor(t *testing.T) {
 		// Shares a prefix with ELF without being it: the check must compare
 		// every byte of the magic, not merely the first.
 		"almost-elf": {0x7f, 'E', 'L', 'X', 'x'},
+
+		// A real ELF, and still not one this host's loader claims: the
+		// foreign-architecture case that qemu-user registers binfmt_misc for.
+		// Four magic bytes call this native; the header says otherwise.
+		"foreign-arch-elf": foreignELFHeader(t),
+
+		// The same question asked through the other two header fields the
+		// loader decides on.
+		"wrong-elf-class":     elfHeaderFor(otherClass(t), hostELF[runtime.GOARCH].data, hostELF[runtime.GOARCH].machine),
+		"wrong-elf-byteorder": elfHeaderFor(hostELF[runtime.GOARCH].class, otherData(t), hostELF[runtime.GOARCH].machine),
 	}
 
 	for name, content := range interpreted {
@@ -89,7 +167,7 @@ func TestOnlyANativeBinaryIsPinnedToItsDescriptor(t *testing.T) {
 	}
 
 	// And the one shape that is certainly executed directly.
-	native := writeImage(t, "native", append(append([]byte{}, elfMagic...), "the rest does not matter here"...))
+	native := writeImage(t, "native", append(nativeELFHeader(t), "the rest does not matter here"...))
 
 	image, err := openExecImage(native, testLogger(t))
 	if err != nil {

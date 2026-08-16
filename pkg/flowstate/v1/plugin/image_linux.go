@@ -3,11 +3,14 @@
 package plugin
 
 import (
+	"debug/elf"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"runtime"
 	"strconv"
 	"syscall"
 )
@@ -116,6 +119,10 @@ var errImageIsRunThroughAnInterpreter = errors.New(
 	"the image is not a native ELF binary, so the kernel runs it through an interpreter that is handed " +
 		"the path and must reopen it after the close-on-exec descriptor naming it is gone")
 
+// elfIdentSize is how much of an ELF header this needs: through e_machine,
+// which ends at offset 20.
+const elfIdentSize = 20
+
 // isDirectlyExecutable reports whether the kernel executes this image itself,
 // rather than handing it to an interpreter.
 //
@@ -126,21 +133,88 @@ var errImageIsRunThroughAnInterpreter = errors.New(
 // been unsupported by mainline for years, and treating a format nobody ships as
 // pinnable would be guessing in the unsafe direction for no benefit.
 //
+// Being an ELF is not sufficient, which is the part four magic bytes get wrong.
+// `binfmt_misc` is very often registered for *foreign-architecture ELF* — that is
+// what qemu-user does, and it is how a multi-arch image runs anything at all —
+// and such a file carries the identical magic. The native loader refuses it on
+// architecture, binfmt_misc then starts qemu with the path, and the path is gone.
+// So the header is read through e_machine and every field that decides which
+// loader claims the file is compared against this host: class, byte order and
+// machine. An ELF that disagrees on any of them is somebody's interpreter's
+// problem, not `binfmt_elf`'s.
+//
+// A GOARCH this does not have an entry for answers false, which costs a pin and
+// keeps a launch. That is the safe direction of a check whose only lever is
+// whether the digest is provable.
+//
 // Read from the descriptor rather than the path, like everything else here, and
 // with [os.File.ReadAt] so it does not disturb the offset [execImage.digest]
-// rewinds anyway. An image too short to hold the magic cannot be a native binary,
-// which is a short read rather than an error worth failing a launch over.
+// rewinds anyway. An image too short to hold the header cannot be a native
+// binary, which is a short read rather than an error worth failing a launch over.
 func isDirectlyExecutable(f *os.File) (bool, error) {
-	var magic [4]byte
+	var header [elfIdentSize]byte
 
-	switch _, err := f.ReadAt(magic[:], 0); {
+	switch _, err := f.ReadAt(header[:], 0); {
 	case errors.Is(err, io.EOF):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("reading the first bytes of %s: %w", f.Name(), err)
 	}
 
-	return magic == [4]byte{0x7f, 'E', 'L', 'F'}, nil
+	if string(header[:len(elf.ELFMAG)]) != elf.ELFMAG {
+		return false, nil
+	}
+
+	host, known := hostELF[runtime.GOARCH]
+	if !known {
+		return false, nil
+	}
+
+	if elf.Class(header[elf.EI_CLASS]) != host.class || elf.Data(header[elf.EI_DATA]) != host.data {
+		return false, nil
+	}
+
+	var machine elf.Machine
+	switch host.data {
+	case elf.ELFDATA2LSB:
+		machine = elf.Machine(binary.LittleEndian.Uint16(header[18:20]))
+	case elf.ELFDATA2MSB:
+		machine = elf.Machine(binary.BigEndian.Uint16(header[18:20]))
+	default:
+		return false, nil
+	}
+
+	return machine == host.machine, nil
+}
+
+// nativeELF is what an ELF header has to say for `binfmt_elf` on this host to be
+// the loader that claims it.
+type nativeELF struct {
+	class   elf.Class
+	data    elf.Data
+	machine elf.Machine
+}
+
+// hostELF maps GOARCH to the header this host's native loader accepts.
+//
+// Keyed by GOARCH rather than probed, because the question is which loader the
+// *kernel* picks for a file, and the answer is fixed by the architecture this
+// binary was built for. An entry missing here is not an error: see
+// [isDirectlyExecutable] on why an unknown GOARCH declines to pin.
+var hostELF = map[string]nativeELF{
+	"386":      {elf.ELFCLASS32, elf.ELFDATA2LSB, elf.EM_386},
+	"amd64":    {elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_X86_64},
+	"arm":      {elf.ELFCLASS32, elf.ELFDATA2LSB, elf.EM_ARM},
+	"arm64":    {elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_AARCH64},
+	"loong64":  {elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_LOONGARCH},
+	"mips":     {elf.ELFCLASS32, elf.ELFDATA2MSB, elf.EM_MIPS},
+	"mipsle":   {elf.ELFCLASS32, elf.ELFDATA2LSB, elf.EM_MIPS},
+	"mips64":   {elf.ELFCLASS64, elf.ELFDATA2MSB, elf.EM_MIPS},
+	"mips64le": {elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_MIPS},
+	"ppc64":    {elf.ELFCLASS64, elf.ELFDATA2MSB, elf.EM_PPC64},
+	"ppc64le":  {elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_PPC64},
+	"riscv64":  {elf.ELFCLASS64, elf.ELFDATA2LSB, elf.EM_RISCV},
+	"s390x":    {elf.ELFCLASS64, elf.ELFDATA2MSB, elf.EM_S390},
 }
 
 // raiseAboveExecShuffle moves f to a descriptor at or above [execFDFloor],

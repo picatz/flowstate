@@ -258,9 +258,12 @@ than directly, because the kernel starts that interpreter and hands it the path 
 reopen after the descriptor naming it is gone — and the bytes that then run are
 the interpreter's, which nothing here hashes. `#!` is the familiar case and not
 the only one: a `binfmt_misc` registration without the open-binary (`O`) flag
-behaves identically for whatever format it claims. Which images may be pinned is
-therefore an allowlist — a native ELF binary, and nothing else — rather than a
-list of known-bad markers a host can add to at any time. Every case launches, and
+behaves identically for whatever format it claims, and the format it most often
+claims is *foreign-architecture ELF*, which is how a multi-arch image runs
+anything at all. Which images may be pinned is therefore an allowlist — an ELF
+whose class, byte order and machine are the ones this host's own loader claims,
+and nothing else — rather than a list of known-bad markers a host can add to at
+any time, or a magic-bytes test that a qemu-user target passes. Every case launches, and
 every case says which guarantee it is giving in a log line at every launch
 (`pkg/flowstate/v1/plugin/image.go`, `image_linux.go`, `image_other.go`). An
 operator who needs the strong guarantee ships a native binary. A launched
