@@ -306,6 +306,37 @@ func stripCronComment(expression string) string {
 	return expression
 }
 
+// dstSpringForwardMargin bounds how much shorter a wall-clock day (or any
+// longer wall-clock period) can be than its nominal length, in a `time_zone`
+// that observes a standard one-hour spring-forward transition.
+//
+// Every cadence charged in whole wall-clock days here — a calendar with
+// nothing finer than a day populated, and the day-or-longer cron shorthands
+// below — assumes it cannot fire more than once per that many nominal days.
+// A spring-forward transition inside one gap between two such firings
+// shortens the real elapsed time by exactly the amount the clock skips, so
+// two local-midnight firings either side of the transition can be 23 real
+// hours apart, not 24. Charging the nominal length undercounts exactly there:
+// a calendar can fire twice in a range slightly over 23 hours while the
+// estimate still says once, which can let more than [MaxScheduleBackfillFirings]
+// real firings through when another cadence's count is close to the ceiling.
+//
+// A fall-back transition runs the other way — it lengthens a gap, which only
+// makes the estimate more conservative, so nothing here needs to account for
+// it. And this deliberately does not resolve `time_zone` against a real tzdata
+// entry to compute the actual transition: the estimate has to stay valid
+// across whichever zone the schedule names without evaluating one, the same
+// reason the cron and calendar estimates above never evaluate real fire
+// times, so a flat margin covering the standard one-hour case is what is
+// charged rather than a per-zone answer.
+const dstSpringForwardMargin = time.Hour
+
+// wallClockDayPeriod is the safe minimum period for a cadence that nominally
+// fires once every n wall-clock days, net of [dstSpringForwardMargin].
+func wallClockDayPeriod(n int) time.Duration {
+	return time.Duration(n)*24*time.Hour - dstSpringForwardMargin
+}
+
 // calendarMinimumPeriod reports the shortest interval a calendar can fire at,
 // read from which of its sub-day fields are populated.
 //
@@ -318,7 +349,9 @@ func stripCronComment(expression string) string {
 // So the ladder walks down from the finest field written. Anything at or below
 // the finest one is defaulted to zero and cannot multiply the count; anything
 // above it is free to be "every", which is already accounted for by the period
-// being no longer than that field's own unit.
+// being no longer than that field's own unit. Second, minute and hour
+// resolutions are all finer than a day and so are never subject to
+// [dstSpringForwardMargin]; only the "fires at most once a day" default is.
 func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
 	switch {
 	case len(calendar.GetSecond()) > 0:
@@ -329,8 +362,9 @@ func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
 		return time.Hour
 	default:
 		// Second, minute and hour all default to zero, so the calendar fires at
-		// most once on any day it matches at all.
-		return 24 * time.Hour
+		// most once on any day it matches at all — net of a spring-forward
+		// transition landing between two such firings.
+		return wallClockDayPeriod(1)
 	}
 }
 
@@ -371,18 +405,23 @@ func cronMinimumPeriod(expression string) time.Duration {
 		}
 		// The fixed shorthands, each charged the shortest period it can mean:
 		// a month is charged 28 days and a year 365, because a lower bound on
-		// the period is an upper bound on the firings.
+		// the period is an upper bound on the firings. Day-or-longer shorthands
+		// go through [wallClockDayPeriod] for the same reason
+		// [calendarMinimumPeriod]'s default case does: each fires on a
+		// wall-clock boundary, so a spring-forward transition between two
+		// firings can shorten the nominal period by up to
+		// [dstSpringForwardMargin]. @hourly is finer than a day and is not.
 		switch strings.ToLower(head) {
 		case "@hourly":
 			return time.Hour
 		case "@daily", "@midnight":
-			return 24 * time.Hour
+			return wallClockDayPeriod(1)
 		case "@weekly":
-			return 7 * 24 * time.Hour
+			return wallClockDayPeriod(7)
 		case "@monthly":
-			return 28 * 24 * time.Hour
+			return wallClockDayPeriod(28)
 		case "@yearly", "@annually":
-			return 365 * 24 * time.Hour
+			return wallClockDayPeriod(365)
 		default:
 			return time.Second
 		}

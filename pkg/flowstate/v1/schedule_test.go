@@ -341,6 +341,76 @@ func TestScheduleBackfillIsChargedOnlyInsideTheTriggersOwnWindow(t *testing.T) {
 		"a trigger with no start_at/end_at is charged the full requested range, as before")
 }
 
+// TestScheduleBackfillCalendarCadenceSurvivesSpringForward is the regression
+// for the DST finding that landed after the union-vs-sum and window-
+// intersection fixes above: a calendar with no field finer than a day, or a
+// day-or-longer cron shorthand (@daily, @weekly, @monthly, @yearly), was
+// charged its exact nominal period — 24 hours for a day, and multiples of it
+// for the others — as its minimum gap between firings. A `time_zone`
+// observing a standard spring-forward transition can put two local-midnight
+// firings only 23 real hours apart, so charging the nominal 24 hours
+// undercounts by one firing across that boundary. On its own that one firing
+// is invisible; combined with a fast cadence already close to the ceiling in
+// the same range, it is the difference between a bound that holds and one
+// that does not — which is the dangerous direction, unlike the two
+// false-refusal bugs fixed above: this one lets more than
+// [v1.MaxScheduleBackfillFirings] real firings past the check rather than
+// merely refusing a legitimate schedule.
+//
+// The range below is constructed so the flip is exact rather than
+// approximate: a 23h30m span (inside the spring-forward window) combined
+// with an every-846ms cadence sized to contribute exactly 99,999 of its own
+// firings over that same range. The old 24-hour calendar period charges the
+// range's one day as a single firing (span < 24h), landing the total exactly
+// at the 100,000 ceiling — accepted, since the check refuses only what
+// exceeds it. The corrected 23-hour period charges the same range two
+// firings (span > 23h), landing the total one over the ceiling — refused.
+func TestScheduleBackfillCalendarCadenceSurvivesSpringForward(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	period := 846 * time.Millisecond
+	span := 84600*time.Second - period // 23h30m, less one period: an exact multiple of period.
+
+	trigger := &v1.ScheduleTrigger{
+		Every: durationpb.New(period),
+		Calendars: []*v1.ScheduleTrigger_Calendar{
+			// day_of_month is the field that satisfies "at least one field
+			// populated" without moving calendarMinimumPeriod off its default
+			// (day-resolution) case — only second/minute/hour do that.
+			{DayOfMonth: []*v1.ScheduleTrigger_Calendar_Range{{Start: 1, End: 31}}},
+		},
+	}
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-span)),
+		EndAt:   timestamppb.New(now),
+	}}
+
+	require.Equal(t, int64(99999), int64(span/period), "premise: the every-cadence alone must land exactly one firing short of the ceiling")
+
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+		"a calendar with no sub-day field must be charged as though it can fire twice in a 23.5-hour range, "+
+			"not once, or a fast cadence already near the ceiling lets real firings past the bound")
+
+	// The day-or-longer cron shorthands share the fix: @daily in place of the
+	// calendar above must refuse the identical range for the identical reason.
+	trigger.Calendars = nil
+	trigger.Cron = []string{"@daily"}
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+		"@daily must be charged the same spring-forward-aware period a calendar with no sub-day field is")
+
+	// A calendar or cron cadence finer than a day is unaffected: charged in
+	// hours, minutes or seconds, never in whole wall-clock days, so nothing
+	// here should change its behavior.
+	trigger.Cron = nil
+	trigger.Calendars = []*v1.ScheduleTrigger_Calendar{
+		{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}}},
+	}
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+		"an hour-resolution calendar was already charged its own count correctly before this fix, "+
+			"and this fix must not have touched that arithmetic")
+}
+
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
 // values that cannot be right on any cluster.
 //
