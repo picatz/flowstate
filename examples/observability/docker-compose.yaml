@@ -196,6 +196,19 @@ services:
     container_name: clickhouse
     environment:
       CLICKHOUSE_DB: otel
+      # Also what makes `default` reachable from the collector and Grafana, which
+      # is worth writing down because it reads like an unrelated setting. The
+      # image's entrypoint writes a `users.d/default-user.xml` that pins a
+      # passwordless `default` to ::1 and 127.0.0.1 — a healthcheck run by
+      # `clickhouse-client` inside the container passes, and every cross-container
+      # client fails — *unless* a user, a password, or this variable is set, in
+      # which case it writes the user with `<networks><ip>::/0</ip></networks>`
+      # instead. So this lab's ClickHouse is reachable across the compose network
+      # with no password, deliberately: the only published port is the loopback
+      # binding below, 9000 is not published at all, and a lab whose whole purpose
+      # is to be torn down after looking at a trace has nothing to protect. If a
+      # port here is ever bound to anything but 127.0.0.1, this stops being true
+      # and the user needs a password before that change lands, not after.
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
       - clickhouse-data:/var/lib/clickhouse

@@ -96,6 +96,13 @@ trace correlation and tenant-scoped queries. It also proves an unscoped query
 can see both tenants: a regression guard against documenting a filter as a
 security boundary.
 
+It gives that container a password generated for the run, which is what makes it
+reachable at all: the image pins a passwordless `default` user to loopback
+*inside* the container, and the test connects through a published port, so its
+requests arrive from the bridge gateway. A credential is the fix for that; opening
+the passwordless user to every network is not, and the difference matters more
+here than in the compose lab, since a test runs on whatever machine CI gave it.
+
 ```console
 $ GOMEMLIMIT=1GiB go test -tags=integration -timeout 120s ./examples/observability
 ```
