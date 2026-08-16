@@ -28,8 +28,10 @@ description: Commits one file to a branch and pushes it using the "git" plugin's
 # is not optional in practice: no forge accepts an anonymous push over
 # HTTPS, so writing always needs a credential, whichever repository this
 # points at. It takes the same shape every credential in this plugin does -
-# a secret reference, ${secret('git:name')}, resolved from GIT_SECRET_<NAME>
-# in the worker's own environment, never a literal in this file - see
+# a secret reference, ${secret('git:name')}, resolved from
+# GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME> in the worker's own
+# environment - GIT_SECRET_0__NAME in the default namespace - never a
+# literal in this file - see
 # plugins/git/README.md, "Authentication," and "Which git server?" for why
 # that one shape (an HTTPS Basic-auth password) is what every provider this
 # plugin has been asked to work with actually wants.

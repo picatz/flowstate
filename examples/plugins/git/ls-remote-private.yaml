@@ -32,7 +32,9 @@ steps:
       # A secret reference, resolved inside the task, never a literal - the
       # only line that differs from workflow.yaml's own call to this same
       # task. See plugins/git/README.md, "Authentication," for what
-      # GIT_SECRET_<NAME> this resolves to, and "Which git server?" for why
+      # GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME> variable this
+      # resolves to - GIT_SECRET_0__TOKEN in the default namespace - and
+      # "Which git server?" for why
       # the same shape (an HTTPS Basic-auth password) works unchanged across
       # every provider this plugin has been asked to work with.
       token: ${secret('git:token')}
