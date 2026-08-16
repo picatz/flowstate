@@ -88,10 +88,13 @@ difference is this one field being set - see `ls-remote-private.yaml`.
 accepts an anonymous push over HTTPS, so writing always needs a credential,
 whichever repository it targets - see `commit-push.yaml`.
 
-A reference selects a credential by its namespace and name. Both segments use
-uppercase letters, digits, and underscores (a hyphen becomes an underscore),
-and the namespace's encoded length preserves the boundary between them. The
-default namespace has length zero and no namespace segment:
+A reference selects a credential by its namespace and name. Both are written
+in the Flowfile as lowercase ASCII letters, digits and hyphens — anything else
+is refused rather than rewritten — and each is encoded into the variable name
+by upcasing it and turning every hyphen into an underscore. The namespace's
+*encoded* length is written in front, which is what preserves the boundary
+between the two halves. The default namespace encodes to the empty string, so
+its length is zero and the segment between the separators is empty:
 
 ```
 GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME>=<https-password>

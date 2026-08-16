@@ -66,13 +66,23 @@ func resolveSecret(_ context.Context, req sdk.SecretRequest) (sdk.SecretResponse
 	return sdk.SecretResponse{Value: []byte(value)}, nil
 }
 
-// envSegment renders a lowercase DNS-label-shaped reference segment as part
-// of an environment variable name. Rejecting rather than replacing any other
-// character keeps this mapping injective: authorization is performed against
-// the original reference, so two references must never select the same variable.
+// envSegment renders one reference segment as part of an environment variable
+// name: lowercase ASCII letters and digits pass through upcased, a hyphen
+// becomes an underscore, and everything else is refused. The empty string is a
+// valid segment, and is what the default namespace renders as.
+//
+// Rejecting rather than replacing any other character keeps this mapping
+// injective: authorization is performed against the original reference, so two
+// references must never select the same variable. Injectivity of a segment is
+// not by itself enough — see [resolveSecret] for how the pair of them is kept
+// unambiguous — but without it nothing downstream can recover the difference.
+//
+// The refusal names the offending character and where it is, because the
+// author of a Flowfile sees this through `sdk.InvalidInput` and "some character
+// somewhere is wrong" is not something anyone can act on.
 func envSegment(s string) (string, error) {
 	var b strings.Builder
-	for _, r := range s {
+	for i, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r - ('a' - 'A'))
@@ -81,9 +91,12 @@ func envSegment(s string) (string, error) {
 		case r == '-':
 			b.WriteByte('_')
 		default:
-			return "", fmt.Errorf("must contain only lowercase ASCII letters, digits, and hyphens")
+			return "", fmt.Errorf(
+				"%q at offset %d is not allowed; use only lowercase ASCII letters, digits, and hyphens",
+				r, i)
 		}
 	}
+
 	return b.String(), nil
 }
 
