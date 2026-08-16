@@ -429,3 +429,47 @@ func TestEntityStateTruncationReachesTheClientThroughGet(t *testing.T) {
 	}, 30*time.Second, 100*time.Millisecond,
 		"an entity whose carried state fits under entityStateMaxBytes never returned its untruncated vars through Get")
 }
+
+// TestSignalWithStartRefusesANameNothingWaitsFor is the shape this RPC can
+// create and then never resolve, and it is a property of moving the initiating
+// delivery into `RunState.PendingSignals` rather than sending it as a signal.
+//
+// A signal for a name nothing waits for is, through [FlowstateServer.Signal],
+// wasteful and self-clearing: it lands on a Temporal channel nobody reads and
+// is dropped at the run's next Continue-As-New. Carried in RunState it is
+// neither. `drainSignals` carries everything already pending forward
+// unconditionally and only *adds* from the channels the specification declares,
+// so nothing ever removes an entry no `wait_for_signal:` will consume: it holds
+// one of [v1.MaxPendingSignals] slots and its share of the state budget for the
+// entity's whole life.
+//
+// The far more common cause is a misspelling, and the run created by one would
+// look exactly like a working entity — running, addressable, accumulating
+// nothing. So the refusal is synchronous and names the alternatives, and no
+// entity is created at all.
+func TestSignalWithStartRefusesANameNothingWaitsFor(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	_, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-43",
+		Workflow:  entityWorkflow(nil),
+		Name:      "updat", // misspelled, on purpose
+		Payload:   updatePayload(5, false),
+	}))
+	require.Error(t, err, "a mutation no step waits for was accepted, and would be carried forever")
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.Contains(t, err.Error(), "no `wait_for_signal:` in this workflow waits for")
+	require.Contains(t, err.Error(), "update", "the diagnostic must name what was meant, not only what was wrong")
+
+	// And nothing was created: the refusal happens before the entity key is
+	// claimed, so a misspelling does not leave a parked run behind for the
+	// corrected call to collide with.
+	workflowID, err := v1.EntityWorkflowID("team-a", "order-43")
+	require.NoError(t, err)
+	_, err = fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+	require.Error(t, err, "a refused SignalWithStart must not have created an entity")
+	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
