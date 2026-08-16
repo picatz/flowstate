@@ -10,6 +10,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/watch"
 )
 
 // The first sad path anybody meets is the one where no server is running, and for
@@ -230,7 +232,7 @@ func TestTheWayOutSurvivesBeingWrapped(t *testing.T) {
 	refusal := unreachableServer(serverFlags{address: "localhost:9233"}, "", unavailable())
 
 	gaveUp := fmt.Errorf("gave up watching %q after 30s of the server being unable to answer: %w",
-		"flowstate-workflow-3f7c", transientError{refusal})
+		"flowstate-workflow-3f7c", watch.NewTransientError(refusal))
 
 	assert.NotEmpty(t, nextCommandsFor(gaveUp),
 		"the way out was lost behind the sentence that wrapped it")
