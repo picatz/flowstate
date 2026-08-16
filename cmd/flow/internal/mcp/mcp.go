@@ -692,6 +692,9 @@ const RunLocalToolDescription = "Execute a Flowfile immediately, in this process
 	"survive this process, Continue-As-New compaction never happens, and parallel steps are rehearsed " +
 	"rather than genuinely distributed. Submit the compiled specification with flowstate_run when the " +
 	"rehearsal is right.\n\n" +
+	"Bounded: `sleep: 24h` is a legal Flowfile, and this call holds this turn open for as long as the " +
+	"workflow runs, so the operator's --run-local-timeout (default 2m) stops execution and reports the " +
+	"run as timed out rather than letting an untrusted workflow hold the call forever.\n\n" +
 	"A source declaring `inputs:` is given them in the `inputs` object of this call, keyed by declared " +
 	"name and typed as declared; a required one left out, an undeclared name, or a mistyped value is " +
 	"refused before any step runs. What the source declares under `outputs:` comes back as `runOutputs`.\n\n" +

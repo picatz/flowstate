@@ -118,6 +118,9 @@ type WorkflowServiceClient interface {
 	// of it: the same signal name, the same outputs, the same expressions reading
 	// them. That is the part that has to match for a local run to tell an author
 	// what production will do.
+	//
+	// [SignalResponse] is empty: it says the signal was accepted, not what the run
+	// did with it. Call [Get] afterward to see whether a waiting step consumed it.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
@@ -148,9 +151,15 @@ type WorkflowServiceClient interface {
 	// caller: a short or empty page is not the end of the listing.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
+	//
+	// [CancelResponse] is empty: it says the stop request was accepted, not that
+	// the run has stopped. Call [Get] afterward to see the run's final status.
 	Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error)
 	// Terminate stops a run immediately, running none of its cleanup. Prefer
 	// Cancel; see CancelRequest for when this is the right answer anyway.
+	//
+	// [TerminateResponse] is empty: the run is already stopped by the time this
+	// returns, so a follow-up call to [Get] confirms status rather than awaiting it.
 	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
 	// Validate checks Flowfiles and returns their diagnostics, executing nothing.
 	//
@@ -529,6 +538,9 @@ type WorkflowServiceHandler interface {
 	// of it: the same signal name, the same outputs, the same expressions reading
 	// them. That is the part that has to match for a local run to tell an author
 	// what production will do.
+	//
+	// [SignalResponse] is empty: it says the signal was accepted, not what the run
+	// did with it. Call [Get] afterward to see whether a waiting step consumed it.
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	// SignalWithStart delivers a signal to the entity holding a business key, an
 	// order id or a subscription id, creating that entity if this is the first
@@ -559,9 +571,15 @@ type WorkflowServiceHandler interface {
 	// caller: a short or empty page is not the end of the listing.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
+	//
+	// [CancelResponse] is empty: it says the stop request was accepted, not that
+	// the run has stopped. Call [Get] afterward to see the run's final status.
 	Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error)
 	// Terminate stops a run immediately, running none of its cleanup. Prefer
 	// Cancel; see CancelRequest for when this is the right answer anyway.
+	//
+	// [TerminateResponse] is empty: the run is already stopped by the time this
+	// returns, so a follow-up call to [Get] confirms status rather than awaiting it.
 	Terminate(context.Context, *connect.Request[v1.TerminateRequest]) (*connect.Response[v1.TerminateResponse], error)
 	// Validate checks Flowfiles and returns their diagnostics, executing nothing.
 	//

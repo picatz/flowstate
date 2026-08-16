@@ -491,7 +491,7 @@ support beyond the four named clients is not something this audit verified beyon
 the announcement's own claim, and should be treated as unconfirmed until checked
 against whatever MCP client the next slice targets.
 
-What this makes easy for `flow mcp`: the nine RPC-projected tools already return
+What this makes easy for `flow mcp`: the RPC-projected tools already return
 protojson built from the same messages this document's views render, so a `ui://`
 resource for, say, a run's progress would consume `GetResponse` exactly as
 `writeRun` does today — no new data path, only a new renderer subscribing to data

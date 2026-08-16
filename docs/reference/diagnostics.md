@@ -19,3 +19,43 @@ everything else is `general`, and that is documented rather than pretended away.
 | `retired-key` | A bare name is the pre-rooting spelling of a step reference; `flow fix` rewrites it rather than an author needing to decide what to write. |
 | `sensitive-in-log` | An input declared `sensitive:` is written directly into a `log:` message, where it would be recorded in run history and stdout in the clear; log a value derived from it instead of the value itself. |
 | `sensitive-in-prompt` | A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or holds a secret reference; a prompt is rendered to whoever is being asked to approve, so ask the question without that value in it. |
+
+## Shape
+
+The table above narrows *what* is wrong: `code` names the class, `message` says
+what a human reads. Neither is what a program acts on to repair a file without a
+human reading anything: that is `edits`, a field on every `Diagnostic` (see
+[diagnostics.proto](../../proto/flowstate/v1/diagnostics.proto)) with no code of
+its own because it is populated per diagnostic, only when the checker that raised
+it can name the exact source to replace and the exact text to put there.
+
+A step whose field is misspelled is one of the checks that can, because the
+nearest known field name is an unambiguous rename. Here `notify`'s `meessage:`
+key is one edit away from `message:`, so `flow validate --output json` answers
+with a `Diagnostic` carrying it:
+
+```json
+{
+  "line": 12,
+  "column": 5,
+  "message": "unknown key \"meessage\"; did you mean \"message\"?",
+  "step": "notify",
+  "field": "meessage",
+  "edits": [
+    {
+      "title": "rename to `message`",
+      "changes": [
+        {
+          "range": { "startLine": 12, "startColumn": 5, "endLine": 12, "endColumn": 13 },
+          "newText": "message"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Applying every `changes` entry in one `edits[i]` and stopping is a complete
+repair for the problem that diagnostic names — not a promise the file has no
+other problems, and never a step to compose with a sibling edit. More than one
+entry in `edits` means alternatives to choose between, not a sequence to run.
