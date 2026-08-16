@@ -4,9 +4,12 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // workerCommand returns a fresh `flow worker`, with the environment defaults its
@@ -289,4 +292,82 @@ func TestWorkerIdentityDefaultTenantIsNamedExplicitly(t *testing.T) {
 	identity := workerIdentity(cmd, deployment, temporalFlagsOf(cmd))
 
 	require.Contains(t, identity, "tenant=_default")
+}
+
+// TestWorkerStopTimeoutDefaultsToTheDocumentedValue is the unit-level half of
+// #751's fix: the value CLAUDE.md's both-drivers reasoning does not cover
+// (WorkerStopTimeout is durable-only, nothing to compare against), so this is the
+// only place a regression to the SDK's own 0s default — which drains for
+// effectively no time at all, see size.go's [v1.DefaultWorkerStopTimeout] doc —
+// would be caught before a real deploy caught it instead.
+func TestWorkerStopTimeoutDefaultsToTheDocumentedValue(t *testing.T) {
+	t.Setenv("FLOWSTATE_WORKER_STOP_TIMEOUT", "")
+
+	cmd := workerCommand(t)
+
+	got, err := workerStopTimeout(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, v1.DefaultWorkerStopTimeout, got)
+}
+
+// TestWorkerStopTimeoutDefaultsFromTheEnvironment mirrors
+// TestWorkerVersioningFlagsDefaultFromTheEnvironment above for this flag: an
+// operator's deployment sets the variable once and every worker in the fleet
+// picks it up, without a --worker-stop-timeout on every command line.
+func TestWorkerStopTimeoutDefaultsFromTheEnvironment(t *testing.T) {
+	t.Setenv("FLOWSTATE_WORKER_STOP_TIMEOUT", "90s")
+
+	cmd, _, err := newRootCommand().Find([]string{"worker"})
+	require.NoError(t, err)
+
+	got, err := workerStopTimeout(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, 90*time.Second, got)
+}
+
+// TestWorkerStopTimeoutFlagWinsOverTheEnvironment is the same precedence every
+// other overridable flag in this command promises.
+func TestWorkerStopTimeoutFlagWinsOverTheEnvironment(t *testing.T) {
+	t.Setenv("FLOWSTATE_WORKER_STOP_TIMEOUT", "90s")
+
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("worker-stop-timeout", "45s"))
+
+	got, err := workerStopTimeout(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, 45*time.Second, got)
+}
+
+// TestWorkerStopTimeoutAcceptsTheDSLsDurationGrammar pins that
+// --worker-stop-timeout means exactly what a Flowfile's sleep: means for the same
+// characters — v1.ParseDuration, not the stricter time.ParseDuration — so `7d` is
+// legal here too, and not only in a workflow.
+func TestWorkerStopTimeoutAcceptsTheDSLsDurationGrammar(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("worker-stop-timeout", "1d"))
+
+	got, err := workerStopTimeout(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, 24*time.Hour, got)
+}
+
+// TestWorkerStopTimeoutRefusesAnUnparsableValue is reached before Temporal is
+// dialed, a plugin is launched, or a secret provider is opened — see runWorker's
+// ordering comment above the call to workerStopTimeout — for the same reason
+// TestWorkerRefusalIsReachedBeforeTemporalIs gives for the versioning gate: a
+// mistake in the command line should say so immediately, not as a connection
+// failure that sends the operator looking at the wrong thing.
+func TestWorkerStopTimeoutRefusesAnUnparsableValue(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("worker-stop-timeout", "not-a-duration"))
+
+	_, err := workerStopTimeout(cmd)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--worker-stop-timeout")
+	require.Contains(t, err.Error(), "not-a-duration")
 }
