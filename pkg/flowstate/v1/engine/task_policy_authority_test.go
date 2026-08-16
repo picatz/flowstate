@@ -204,6 +204,42 @@ func TestTaskPolicyDeniesAuthorityCarryingCompensationDurably(t *testing.T) {
 	})
 }
 
+// TestTaskPolicyDeniesScopedCompensationByIdentityDurably covers the
+// non-authority scope-carrying dispatch arm. A compensation's inputs are already
+// resolved when it is registered, but TaskInScope still needs the run identity
+// in that scope to enforce identity-based deployment policy without failing open.
+//
+// The case itself lives in [tests.UndoIdentityWorkflow] and is run by the local
+// driver too, from one definition: the claim here is that both drivers decide a
+// compensation the same way, and two hand-built copies of a scenario stop
+// proving that as soon as either drifts.
+func TestTaskPolicyDeniesScopedCompensationByIdentityDurably(t *testing.T) {
+	v1.SetDefaultTaskPolicy(tests.UndoIdentityPolicy(t))
+	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+	workflow := tests.UndoIdentityWorkflow(tests.NewHTTPServer(t))
+
+	run := func(t *testing.T, namespace string) error {
+		t.Helper()
+		env := newAuthorizedTestEnv(t)
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{
+			Workflow: workflow,
+			Identity: &v1.WorkloadIdentity{Namespace: namespace},
+		})
+		require.True(t, env.IsWorkflowCompleted())
+
+		return env.GetWorkflowError()
+	}
+
+	t.Run("blocked tenant compensation is denied", func(t *testing.T) {
+		tests.AssertUndoIdentityDenied(t, run(t, tests.UndoIdentityBlockedNamespace))
+	})
+
+	t.Run("another tenant compensation reaches the task", func(t *testing.T) {
+		tests.AssertUndoIdentityReached(t, run(t, tests.UndoIdentityAllowedNamespace))
+	})
+}
+
 // TestTaskPolicyIdentityMatchesOnPlainTaskActivity closes #187's second
 // review finding: the plain [engine.Task] activity (no scope, no authority —
 // the arm a task like `log` dispatches through) used to pass a hard-coded
