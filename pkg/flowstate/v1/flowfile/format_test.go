@@ -467,3 +467,49 @@ steps:
 	assert.True(t, strings.Contains(err.Error(), "could not be read"),
 		"the refusal does not say that the source could not be read: %v", err)
 }
+
+// deepVarsSource writes a Flowfile whose `vars:` value nests levels deep,
+// through a chain of single-key mappings: `blob: {k: {k: {k: ... leaf: 1}}}`.
+func deepVarsSource(levels int) string {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: deep\nvars:\n  blob:\n")
+	indent := "    "
+	for range levels {
+		b.WriteString(indent + "k:\n")
+		indent += "  "
+	}
+	b.WriteString(indent + "leaf: 1\n")
+	b.WriteString("steps:\n  - id: s\n    value: 1\n")
+	return b.String()
+}
+
+// TestFormatAcceptsWhatValidateAccepts is #691: a document whose `vars:` value
+// nests 30 levels deep parses and compiles fine — accepted by `flow validate`,
+// well inside [v1.MaxStructureDepth] — but `flow fmt` refused it, blaming the
+// document for nesting past 64 levels when it was 30 deep.
+//
+// The two bounds were counting different things. The compiler's own walk
+// (parse.go's recordTree) counts one level of value nesting as one increment,
+// descending straight from a *ast.MappingNode to each entry's value. The
+// formatter's walks instead recursed through both the *ast.MappingNode and
+// the *ast.MappingValueNode at each level, paying the same maxDepth budget
+// twice per author-visible level — so the formatter's effective ceiling was
+// roughly half the compiler's, hidden by the two sharing one constant.
+//
+// This is exact reproduction from the issue: 30 levels compiles and used to
+// fail Format; the table in the issue measured 29 ok, 30 refused, 32 refused.
+// After the fix all three format successfully, because the walks now count
+// the same way the compiler does.
+func TestFormatAcceptsWhatValidateAccepts(t *testing.T) {
+	t.Parallel()
+
+	for _, levels := range []int{29, 30, 32} {
+		src := deepVarsSource(levels)
+
+		workflow, err := flowfile.Unmarshal([]byte(src))
+		require.NoErrorf(t, err, "at %d levels: the document does not compile, so it says nothing about Format", levels)
+
+		_, err = flowfile.Format([]byte(src), workflow)
+		assert.NoErrorf(t, err, "at %d levels: flow validate accepts this document but flow fmt refused it", levels)
+	}
+}
