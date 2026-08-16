@@ -1,8 +1,8 @@
-RUNNING flowstate-workflow-3f7c                                                 
-run 0198f1e2-0000-7000-8000-000000000000                                        
-on deploy                                                                       
-watching                                                                        
-△ retrying, attempt 4: connection refused                                       
+[48;2;0;164;255m [m[1;38;2;32;31;38;48;2;0;164;255mRUNNING[m[48;2;0;164;255m [m [1;38;2;241;239;239mflowstate-workflow-3f7c[m                                               
+[2;38;2;133;131;146mrun 0198f1e2-0000-7000-8000-000000000000[m                                        
+[2;38;2;133;131;146mon deploy[m                                                                       
+[2;38;2;133;131;146mwatching[m                                                                        
+[38;2;245;239;52m△[m [38;2;245;239;52mretrying, attempt 4: connection refused[m                                       
                                                                                 
-q stops watching, not the run                                                   
+[2;38;2;133;131;146mq stops watching, not the run[m                                                   
                                                                                 
