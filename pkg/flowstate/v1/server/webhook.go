@@ -346,6 +346,15 @@ func (s *FlowstateServer) NewWebhookReceiver(
 		if err := receiver.register(ctx, workflow, resolver); err != nil {
 			return nil, err
 		}
+
+		// A workflow served for webhook deliveries is deployment-owned in the
+		// same sense a `--webhook` Flowfile always is: an operator chose to
+		// serve it, at this deployment, under this name. Registering it here
+		// is what makes its `manual:` policy binding on `Run`/`SignalWithStart`
+		// /`CreateSchedule` too — without this, a caller who names the same
+		// workflow but submits their own copy authorizes against whatever
+		// restriction *they* wrote, not the one this deployment configured.
+		s.registerTrustedWorkflow(workflow)
 	}
 
 	return receiver, nil

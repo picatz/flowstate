@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -226,7 +227,15 @@ type FlowstateServer struct {
 	credentialTargets           []string
 	credentialTargetsConfigured bool
 	pluginCatalog               *v1.PluginCatalog
-	trustedWorkflows            map[string]*v1.Workflow
+
+	// trustedWorkflowsMu guards trustedWorkflows. [WithTrustedWorkflows] writes it
+	// at construction, before the struct exists to race against, but
+	// [registerTrustedWorkflow] writes it again after construction — from
+	// [NewWebhookReceiver], once per workflow the receiver admits — so a read
+	// from a request in flight and a write from a receiver still starting up
+	// must not be allowed to race.
+	trustedWorkflowsMu sync.RWMutex
+	trustedWorkflows   map[string]*v1.Workflow
 
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
@@ -247,11 +256,34 @@ func (s *FlowstateServer) trustedWorkflow(requested *v1.Workflow) *v1.Workflow {
 	if requested == nil {
 		return nil
 	}
+	s.trustedWorkflowsMu.RLock()
 	trusted, ok := s.trustedWorkflows[requested.GetName()]
+	s.trustedWorkflowsMu.RUnlock()
 	if !ok {
 		return requested
 	}
 	return proto.Clone(trusted).(*v1.Workflow)
+}
+
+// registerTrustedWorkflow adds one deployment-owned specification to the trusted
+// set after construction, which is what lets [NewWebhookReceiver] extend
+// [WithTrustedWorkflows]'s set from the Flowfiles a `--webhook` deployment loads:
+// those are exactly the specifications whose `manual:`/trigger policy must bind
+// regardless of what a caller submits under the same name, and the receiver is
+// the one place that has already parsed and validated them by the time a
+// trusted copy is needed. Safe to call while the server is serving — the
+// receiver runs before the process starts listening, but nothing here assumes
+// that — because every read and write of the map takes the same lock.
+func (s *FlowstateServer) registerTrustedWorkflow(workflow *v1.Workflow) {
+	if workflow == nil || workflow.GetName() == "" {
+		return
+	}
+	s.trustedWorkflowsMu.Lock()
+	if s.trustedWorkflows == nil {
+		s.trustedWorkflows = make(map[string]*v1.Workflow)
+	}
+	s.trustedWorkflows[workflow.GetName()] = proto.Clone(workflow).(*v1.Workflow)
+	s.trustedWorkflowsMu.Unlock()
 }
 
 // WithDataConverter sets the data converter this server reads its own recorded

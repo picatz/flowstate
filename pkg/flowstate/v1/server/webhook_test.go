@@ -16,6 +16,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/log"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -647,4 +648,60 @@ func TestAVerifiedDeliveryThatDoesNotMapIsReportedHonestly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(said), "storefront",
 		"a delivery that did not map was refused without saying which webhook or why")
+}
+
+// webhookOnlyWorkflowWithManualDenied is a deployment-owned workflow that is
+// meant to start only from its webhook: `manual: denied` says so, and it also
+// declares a webhook trigger so [FlowstateServer.NewWebhookReceiver] admits it.
+func webhookOnlyWorkflowWithManualDenied() *v1.Workflow {
+	return &v1.Workflow{
+		Name:    "break-glass-webhook",
+		Profile: v1.CurrentProfile,
+		Triggers: &v1.Triggers{
+			Manual: &v1.ManualTrigger{Denied: true},
+			Webhooks: []*v1.WebhookTrigger{{
+				Name: "rotate",
+				Verify: map[string]*v1.Value{
+					v1.WebhookSchemeHMACSHA256: {Kind: &v1.Value_SecretRef{
+						SecretRef: &v1.SecretRef{Scheme: "env", Name: "ROTATE_WEBHOOK_SECRET"},
+					}},
+				},
+				IdempotencyKey: v1.NewExpr(`event.body.id`),
+			}},
+		},
+		Steps: []*v1.Node{{
+			Id:   "rotate",
+			Kind: &v1.Node_Value{Value: v1.NewLiteral("rotated")},
+		}},
+	}
+}
+
+// TestAWebhookServedWorkflowIsTrustedForRun is the P1 this file's receiver setup
+// exists to close: a workflow this deployment serves for webhook deliveries is
+// deployment-owned in exactly the sense [server.WithTrustedWorkflows] means, so a
+// caller naming it through `Run` must be held to *this* copy's `manual: denied`
+// rather than to whatever policy their own submitted copy carries — including
+// none at all.
+func TestAWebhookServedWorkflowIsTrustedForRun(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := server.New(temporal)
+
+	_, err := flowstate.NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{webhookOnlyWorkflowWithManualDenied()}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	// The same name, submitted with no `manual:` block at all — the shape an
+	// attacker who merely knows the workflow's name, and nothing about its
+	// deployment-side policy, would submit.
+	submitted := webhookOnlyWorkflowWithManualDenied()
+	submitted.Triggers = &v1.Triggers{Webhooks: submitted.Triggers.GetWebhooks()}
+
+	_, err = flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: submitted,
+		Reason:   "trying to start a webhook-only workload directly",
+	}))
+	require.Error(t, err, "a webhook-served workflow's manual: denied was bypassed by a caller's own copy")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
