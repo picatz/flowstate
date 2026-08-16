@@ -385,6 +385,39 @@ func indentOf(line string) int {
 	return i
 }
 
+// stepOwningKeyAt returns the step whose own key list a line at the "steps"
+// level of nesting belongs to — the step whose dash opens at exactly the
+// same column the cursor's own key would sit at — or nil if none does.
+//
+// This is deliberately not [stepScope]: that function's `current` is the
+// *innermost* step whose line range contains the cursor, which is right for
+// a task's own input keys but wrong here. scanOutline ends a step's range
+// where the next step begins at any depth (see its own doc), so on a sibling
+// line after a for_each/loop/parallel/switch body, stepScope's current is
+// the last nested step inside that body, not the composite the cursor is
+// actually a sibling of. keyPath's indentation walk gets the *level* right
+// (it says "steps", correctly, regardless of nesting) but discards which
+// step owns that level, since it skips dash lines entirely.
+//
+// This function is the missing piece: it matches contentIndent, computed the
+// same way [indentOf] treats a dash line, against every step's own opening
+// line, and returns the nearest one at or before the cursor. That is exactly
+// the step a new key at this column would be written onto.
+func stepOwningKeyAt(ix *lineIndex, steps []*outlineStep, line0 int) *outlineStep {
+	depth := indentOf(ix.line(line0))
+
+	var owner *outlineStep
+	for _, s := range steps {
+		if s.startLine > line0 {
+			break
+		}
+		if indentOf(ix.line(s.startLine)) == depth {
+			owner = s
+		}
+	}
+	return owner
+}
+
 // endsWith reports whether path ends with the given keys, which is how each
 // completion context is recognized.
 func endsWith(path []string, keys ...string) bool {

@@ -370,6 +370,31 @@ edition: v2026.3
 			notWant: []string{"timeout", "retry"},
 		},
 		{
+			// Fresh evidence after the fixture above: scanOutline ends a step's
+			// line range where the next step begins at *any* depth, so with a
+			// non-empty body the nested task's range runs all the way to this
+			// sibling line — stepScope's `current` used to resolve to that nested
+			// task rather than to `fan`, and completion offered timeout/retry
+			// again exactly where checkPolicyPlacement refuses them on `fan`
+			// itself. stepOwningKeyAt is what fixes it: it matches this line's
+			// column against the step that actually opens at it.
+			name: "timeout and retry stay withheld with a non-empty body",
+			src: `name: c
+steps:
+  - id: fan
+    for_each:
+      items: ${[1, 2, 3]}
+      steps:
+        - id: inner
+          log:
+            message: hi
+    |
+edition: v2026.3
+`,
+			want:    []string{"id", "description", "if", "vars", "continue_on_error"},
+			notWant: []string{"timeout", "retry"},
+		},
+		{
 			// A task step's own kind key is the task name, which is not in
 			// nonTaskKindKeys, so timeout:/retry: stay on the menu — the
 			// unconditional case the withholding above must not over-reach into.

@@ -333,7 +333,13 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		// they are the same kind of thing: both are ways to finish this line. The
 		// registry supplies one half and the table the other, which is why a task
 		// added to the registry becomes completable with no change here.
-		return list(append(stepKeyCandidates(current, word, replace), taskCandidates(word, replace, doc.tasks)...))
+		//
+		// stepOwningKeyAt rather than current: current is stepScope's innermost
+		// containing step, which on a sibling line after a for_each/loop/parallel/
+		// switch body is the last nested step inside that body — not the
+		// composite this key actually belongs to. See that function's doc.
+		owner := stepOwningKeyAt(doc.index, steps, pos.Line)
+		return list(append(stepKeyCandidates(owner, word, replace), taskCandidates(word, replace, doc.tasks)...))
 	case len(path) == 0:
 		return list(dslCandidates("", word, replace))
 	}
