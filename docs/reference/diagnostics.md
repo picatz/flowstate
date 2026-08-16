@@ -29,25 +29,34 @@ human reading anything: that is `edits`, a field on every `Diagnostic` (see
 its own because it is populated per diagnostic, only when the checker that raised
 it can name the exact source to replace and the exact text to put there.
 
-A step whose field is misspelled is one of the checks that can, because the
-nearest known field name is an unambiguous rename. Here `notify`'s `meessage:`
-key is one edit away from `message:`, so `flow validate --output json` answers
-with a `Diagnostic` carrying it:
+A step's own property misspelled is one of the checks that can, because the
+nearest known property name is an unambiguous rename. Here step `notify` writes
+`retryy:` where the grammar has `retry:`, so `flow validate --output json` answers
+with a `Diagnostic` carrying an edit that renames it:
+
+```yaml
+steps:
+  - id: notify
+    retryy:
+      max_attempts: 3
+    log:
+      message: hello
+```
 
 ```json
 {
-  "line": 12,
+  "line": 5,
   "column": 5,
-  "message": "unknown key \"meessage\"; did you mean \"message\"?",
+  "message": "unknown key \"retryy\"; did you mean \"retry\"?",
   "step": "notify",
-  "field": "meessage",
+  "code": "general",
   "edits": [
     {
-      "title": "rename to `message`",
+      "title": "rename to `retry`",
       "changes": [
         {
-          "range": { "startLine": 12, "startColumn": 5, "endLine": 12, "endColumn": 13 },
-          "newText": "message"
+          "range": { "startLine": 5, "startColumn": 5, "endLine": 5, "endColumn": 11 },
+          "newText": "retry"
         }
       ]
     }
