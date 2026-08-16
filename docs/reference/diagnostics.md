@@ -19,3 +19,52 @@ everything else is `general`, and that is documented rather than pretended away.
 | `retired-key` | A bare name is the pre-rooting spelling of a step reference; `flow fix` rewrites it rather than an author needing to decide what to write. |
 | `sensitive-in-log` | An input declared `sensitive:` is written directly into a `log:` message, where it would be recorded in run history and stdout in the clear; log a value derived from it instead of the value itself. |
 | `sensitive-in-prompt` | A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or holds a secret reference; a prompt is rendered to whoever is being asked to approve, so ask the question without that value in it. |
+
+## Shape
+
+The table above narrows *what* is wrong: `code` names the class, `message` says
+what a human reads. Neither is what a program acts on to repair a file without a
+human reading anything: that is `edits`, a field on every `Diagnostic` (see
+[diagnostics.proto](../../proto/flowstate/v1/diagnostics.proto)) with no code of
+its own because it is populated per diagnostic, only when the checker that raised
+it can name the exact source to replace and the exact text to put there.
+
+A step's own property misspelled is one of the checks that can, because the
+nearest known property name is an unambiguous rename. Here step `notify` writes
+`retryy:` where the grammar has `retry:`, so `flow validate --output json` answers
+with a `Diagnostic` carrying an edit that renames it:
+
+```yaml
+steps:
+  - id: notify
+    retryy:
+      max_attempts: 3
+    log:
+      message: hello
+```
+
+```json
+{
+  "line": 5,
+  "column": 5,
+  "message": "unknown key \"retryy\"; did you mean \"retry\"?",
+  "step": "notify",
+  "code": "general",
+  "edits": [
+    {
+      "title": "rename to `retry`",
+      "changes": [
+        {
+          "range": { "startLine": 5, "startColumn": 5, "endLine": 5, "endColumn": 11 },
+          "newText": "retry"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Applying every `changes` entry in one `edits[i]` and stopping is a complete
+repair for the problem that diagnostic names — not a promise the file has no
+other problems, and never a step to compose with a sibling edit. More than one
+entry in `edits` means alternatives to choose between, not a sequence to run.
