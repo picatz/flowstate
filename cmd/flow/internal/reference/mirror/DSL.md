@@ -3430,7 +3430,9 @@ the same iteration count and the same state transitions.
   so they cannot run at once — which is why a loop has no `max_parallel:` at all, and a
   concurrent variant would need a different meaning for "carry" that is not obvious.
   Nested loops are refused by the validator with a positioned diagnostic
-  (`flowfile/validate.go`, locked by `flowfile/loopnesting_test.go`), because their
+  (`flowfile/validate.go`, locked by `flowfile/loopnesting_test.go`), and again at
+  the RPC boundary by `CheckLoopNesting` for a specification that never was a
+  Flowfile and so never met that compiler, because their
   suspend/compaction interaction across two `loop_state` frames wants its own cases
   before it is claimed. The refusal reaches through a `call:` as well. Hoisting the
   inner loop into a called workflow was once recommended here as the workaround, and

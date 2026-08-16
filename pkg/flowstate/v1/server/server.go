@@ -1038,6 +1038,16 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// The same argument for the nested-loop refusal the compiler reports (see
+	// [v1.CheckLoopNesting]'s doc). This one is worth more than parity: what a
+	// hand-built specification buys by arriving without the compiler is a run
+	// whose two iteration ceilings multiply with no Continue-As-New between
+	// them, and that does not fail — it wedges, RUNNING forever once the
+	// history it carries is too large for Temporal to accept.
+	if err := v1.CheckLoopNesting(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Size is a separate question from validity, and it has to be asked here
 	// because here is where somebody is still listening.
 	//
