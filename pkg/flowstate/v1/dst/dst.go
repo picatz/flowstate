@@ -50,7 +50,7 @@
 // exercises. Holding the durable driver to this property would mean driving
 // Temporal's test environment's coroutine scheduler from a seed — slice 3's work,
 // and a different mechanism. What keeps the two honest in the meantime is
-// unchanged: both drivers run every case in pkg/flowstate/v1/tests, and the cases
+// unchanged: both drivers run every case in pkg/flowstate/v1/internal/conformance, and the cases
 // this package explores are those same cases.
 //
 // [tests.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/tests#UndoCase

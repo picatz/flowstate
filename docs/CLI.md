@@ -579,8 +579,8 @@ caller that ever injects the virtual one, through
 [`v1.NewContextWithClock`](../pkg/flowstate/v1/clock.go). Any case where the
 two drivers could disagree about what `now` means, or about whether a wait
 actually blocks for what it says, is covered by a shared case in
-`pkg/flowstate/v1/tests` that both drivers run — see `WaitCases` in
-`pkg/flowstate/v1/tests/wait.go` — which is what keeps "the local driver got
+`pkg/flowstate/v1/internal/conformance` that both drivers run — see `WaitCases` in
+`pkg/flowstate/v1/internal/conformance/wait.go` — which is what keeps "the local driver got
 faster" from quietly becoming "the local driver stopped rehearsing production."
 
 Stubbing happens at the task boundary and nowhere lower: a step's `if:`,

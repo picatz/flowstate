@@ -1864,7 +1864,7 @@ each async step on its own coroutine, so the overlap is real. The local driver
 runs the work where it is written and holds the result until the join — the same
 rehearsal `parallel:` already gets, whose branches run in order locally and
 concurrently in production. Everything an author can *see* is identical either
-way, which is what `pkg/flowstate/v1/tests/async.go` holds both to; the overlap
+way, which is what `pkg/flowstate/v1/internal/conformance/async.go` holds both to; the overlap
 itself is a claim about a scheduler and is proved against the durable one.
 
 `examples/crossing-dependencies` is the N-graph end to end, with the barrier
@@ -3397,7 +3397,7 @@ the case checks that every one of those iterations was recorded.
 Local (`eval.go` `runLoop`) runs the loop in-process; durable (`engine/execute.go`
 `runLoop`) runs it in the executor and suspends between iterations exactly as a
 `for_each` does — a long loop is where history accumulates, so an iteration boundary
-is a Continue-As-New seam. The shared cases (`pkg/flowstate/v1/tests/loop.go`) run
+is a Continue-As-New seam. The shared cases (`pkg/flowstate/v1/internal/conformance/loop.go`) run
 under both, with two verified callers (`TestRunWorkflowLoop` in the v1 package and in
 the engine package).
 
@@ -4620,7 +4620,7 @@ never authorizes a durable run" is enforced rather than merely unlikely.
 What is shared is the decision itself. Both drivers reach `SignalPolicyCheck` with an
 identity and the run's starter, so a rule that admits an approver in production admits
 them on a laptop, one that refuses them refuses them there, and the cases pinning that
-live in `pkg/flowstate/v1/tests` where both drivers run them.
+live in `pkg/flowstate/v1/internal/conformance` where both drivers run them.
 
 The limit worth stating: the flags name one approver for the whole run, so a workflow
 with two gates expecting two different people is rehearsed one approver at a time.

@@ -10,7 +10,7 @@
 // workflow's own control flow — conditions, retries, loops, `undo:` — runs for
 // real through the ordinary local driver. That is the registry-swap pattern
 // the repo's own tests already use (`allowLoopback`, `NewUndoServer` in
-// pkg/flowstate/v1/tests) productized for an author's own workflow.
+// pkg/flowstate/v1/internal/conformance) productized for an author's own workflow.
 //
 // # Secrets are stubbed at the reference boundary, the same way tasks are
 // stubbed at the task boundary
@@ -733,7 +733,7 @@ type Expectation struct {
 	// Compensated names the steps that must have been undone, in any order —
 	// this checks the *set* the undo log reports, not the reverse-registration
 	// order [v1.RunUndoLog] itself already guarantees and which
-	// pkg/flowstate/v1/tests/undo.go already pins for both drivers.
+	// pkg/flowstate/v1/internal/conformance/undo.go already pins for both drivers.
 	Compensated []string `yaml:"compensated"`
 
 	// Ran names steps that must have executed — present in the run's step

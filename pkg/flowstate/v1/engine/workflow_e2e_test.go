@@ -7,7 +7,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/proto"
@@ -34,7 +34,7 @@ import (
 func TestRun_E2E_ExpressionsAcrossContinueAsNew(t *testing.T) {
 	t.Parallel()
 
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	temporal := newTemporalNamespace(t)
 	startWorker(t, temporal)

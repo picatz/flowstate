@@ -18,7 +18,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // newWaitEnv returns a test environment with the engine's workflow and
@@ -99,7 +99,7 @@ func signalStep(id, name string, timeout time.Duration) *v1.Node {
 func TestRunWorkflowWait(t *testing.T) {
 	t.Parallel()
 
-	for _, test := range tests.WaitCases() {
+	for _, test := range conformance.WaitCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			t.Parallel()
 
@@ -363,9 +363,9 @@ func TestWaitForSignal(t *testing.T) {
 		"the attested sender disagreed with what the engine was actually told")
 
 	// The shared half of the #194 fix: an attested delivery must report itself
-	// as attested, with the shape [tests.AssertSignalSenderShape] checks. The
+	// as attested, with the shape [conformance.AssertSignalSenderShape] checks. The
 	// local half of this same assertion lives in wait_local_test.go.
-	tests.AssertSignalSenderShape(t, approval, false)
+	conformance.AssertSignalSenderShape(t, approval, false)
 
 	require.NotNil(t, outputs.GetStepValues()["deploy"], "the gated step did not run after approval")
 }

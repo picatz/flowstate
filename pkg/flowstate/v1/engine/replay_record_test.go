@@ -18,7 +18,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // The other half of the replay gate: how a history gets into the corpus.
@@ -252,7 +252,7 @@ type replayScenario struct {
 func replayScenarios(tb testing.TB) []replayScenario {
 	tb.Helper()
 
-	baseURL := tests.NewHTTPServer(tb)
+	baseURL := conformance.NewHTTPServer(tb)
 
 	says := func(id, message string) *v1.Node {
 		return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{

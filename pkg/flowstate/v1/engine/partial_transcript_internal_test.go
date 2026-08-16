@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // partialTranscriptProbe runs a workflow that is expected to fail and reports the
@@ -61,7 +61,7 @@ func exhaustionSpanningProbe(ctx workflow.Context, st *v1.RunState) (*v1.Workflo
 // TestRunWorkflowLoopExhaustionAcrossCAN drives a loop across a real
 // Continue-As-New and then exhausts it on a resumed segment — the one path
 // [v1.LoopExhaustedError.Truncated] exists for, and one no shared case can
-// reach: every [tests.LoopExhaustionTranscriptCases] workflow exhausts within
+// reach: every [conformance.LoopExhaustionTranscriptCases] workflow exhausts within
 // its first segment (a local run always does — it has no Continue-As-New at
 // all), so this lives beside the durable driver's other CAN tests rather than
 // in the shared set, exercised through [exhaustionSpanningProbe] because
@@ -187,14 +187,14 @@ func TestRunWorkflowLoopExhaustionAcrossCAN(t *testing.T) {
 // [partialTranscriptProbe] for the reason every transcript case here is: the
 // value under test rides beside a failure Temporal would otherwise drop.
 //
-// The local driver runs the identical [tests.LoopExhaustionTranscriptCases].
+// The local driver runs the identical [conformance.LoopExhaustionTranscriptCases].
 // What the pairing holds the two to: the iterations that ran are recorded under
 // the failed loop's own `results` — a tolerated failure among them naming the
 // state it carried under `item` — and an iteration the spent budget never let
 // start has no entry at all, on either driver, so ran-and-failed and
 // never-attempted cannot blur into each other on just one of them.
 func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
-	for _, test := range tests.LoopExhaustionTranscriptCases() {
+	for _, test := range conformance.LoopExhaustionTranscriptCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
@@ -220,14 +220,14 @@ func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
 // TestRunWorkflowPartialTranscript is the durable half of what a failed run hands
 // back about what it did (issue #453).
 //
-// The local driver runs the identical [tests.PartialTranscriptCases]. Pairing them
+// The local driver runs the identical [conformance.PartialTranscriptCases]. Pairing them
 // is the whole point: the record both drivers accumulate as they walk was always
 // there and never returned, so the risk in returning it was never "does it exist"
 // but "do the two contain the same thing", and in particular whether the step that
 // *ended* the run is in one and not the other, which is the one entry neither
 // driver wrote before this.
 func TestRunWorkflowPartialTranscript(t *testing.T) {
-	for _, test := range tests.PartialTranscriptCases() {
+	for _, test := range conformance.PartialTranscriptCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()

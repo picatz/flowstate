@@ -9,7 +9,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestRunIdentityShapeDurable checks the durable half of #206's second gap:
@@ -26,7 +26,7 @@ func TestRunIdentityShapeDurable(t *testing.T) {
 	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
-		Workflow: tests.RunIdentityWorkflow(),
+		Workflow: conformance.RunIdentityWorkflow(),
 		Identity: &v1.WorkloadIdentity{
 			Subject:   "release-requester@example.com",
 			Issuer:    "flowstate:test",
@@ -40,7 +40,7 @@ func TestRunIdentityShapeDurable(t *testing.T) {
 	var outputs v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&outputs))
 
-	tests.AssertRunIdentityShape(t, &outputs, false, "release-requester@example.com")
+	conformance.AssertRunIdentityShape(t, &outputs, false, "release-requester@example.com")
 }
 
 // TestRunIdentityShapePredatesTheField checks invariant 10's own direction: a
@@ -60,7 +60,7 @@ func TestRunIdentityShapePredatesTheField(t *testing.T) {
 	// No Identity at all — the wire shape of a RunState written before this
 	// field existed, decoded by a build that now reads it.
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
-		Workflow: tests.RunIdentityWorkflow(),
+		Workflow: conformance.RunIdentityWorkflow(),
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
@@ -69,5 +69,5 @@ func TestRunIdentityShapePredatesTheField(t *testing.T) {
 	var outputs v1.Workflow_StepOutputs
 	require.NoError(t, env.GetWorkflowResult(&outputs))
 
-	tests.AssertRunIdentityShape(t, &outputs, false, "")
+	conformance.AssertRunIdentityShape(t, &outputs, false, "")
 }
