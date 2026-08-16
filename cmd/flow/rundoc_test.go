@@ -92,11 +92,21 @@ func TestTheCollapsedWrappersAreTheOnesTheSchemaHas(t *testing.T) {
 
 	var collapsed []string
 
-	messages := v1.File_flowstate_v1_flowstate_proto.Messages()
-	walkMessages(messages, func(descriptor protoreflect.MessageDescriptor) {
-		if _, ok := soleMapField(descriptor); ok {
-			collapsed = append(collapsed, string(descriptor.FullName()))
+	// The schema is twelve files rather than one (#658), so there is no single
+	// File_flowstate_v1_..._proto to walk any more — every generated file in
+	// the package has to be visited, which is what RangeFiles over the global
+	// registry does rather than naming each one and going stale the next time
+	// a file is added or split further.
+	protoregistry.GlobalFiles.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		if fd.Package() != flowstatePackage {
+			return true
 		}
+		walkMessages(fd.Messages(), func(descriptor protoreflect.MessageDescriptor) {
+			if _, ok := soleMapField(descriptor); ok {
+				collapsed = append(collapsed, string(descriptor.FullName()))
+			}
+		})
+		return true
 	})
 
 	assert.ElementsMatch(t, []string{

@@ -115,6 +115,50 @@ func TestALocalRunAnswersAMachineCallerWithTheWholeRun(t *testing.T) {
 		"a local run was given a durable identity it does not have")
 }
 
+// TestAStructuredLiteralOutputRendersAsPlainJSON is the regression for a Codex
+// finding on #666: `.runOutputs.<name>` is documented (runDocumentHelp) as
+// "each a plain JSON value rather than a tagged union", but an output written
+// directly as a mapping or list — rather than as a computed `${...}`
+// expression — compiled to a Value_Structure and reached the rendering
+// untouched, in the tagged wire spelling a program reading the documented
+// path had no reason to expect.
+func TestAStructuredLiteralOutputRendersAsPlainJSON(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, `edition: v2026.3
+name: structured-literal-output
+steps:
+  - id: a
+    log:
+      message: hi
+outputs:
+  config:
+    value:
+      replicas: 3
+      region: us-east-1
+`, "--output", "json")
+	require.NoError(t, err, stdout)
+
+	var run map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &run),
+		"stdout is not a single JSON document:\n%s", stdout)
+
+	outputs, ok := run["outputs"].(map[string]any)
+	require.True(t, ok, "no outputs in the document:\n%s", stdout)
+	runOutputs, ok := outputs["runOutputs"].(map[string]any)
+	require.True(t, ok, "no runOutputs in the document:\n%s", stdout)
+
+	config, ok := runOutputs["config"].(map[string]any)
+	require.True(t, ok,
+		"`.runOutputs.config` is not a plain JSON object — the documented contract "+
+			"is violated:\n%s", stdout)
+
+	assert.NotContains(t, config, "structure",
+		"the tagged wire spelling leaked into the run document instead of being flattened")
+	assert.EqualValues(t, 3, config["replicas"])
+	assert.Equal(t, "us-east-1", config["region"])
+}
+
 // TestBothDriversAnswerWithTheSameFieldSet is the claim the README makes, checked
 // rather than asserted in prose.
 //
