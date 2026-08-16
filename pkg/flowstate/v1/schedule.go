@@ -545,8 +545,13 @@ func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration 
 	switch len(strings.Fields(expression)) {
 	case 5, 6:
 		// Minute-resolution: the five ordinary fields, and the same five with a
-		// year appended.
-		return time.Minute
+		// year appended. Routed through [wallClockCadencePeriod] for the same
+		// reason the shorthands above are: an ordinary cron entry fires on a
+		// wall-clock minute boundary, whose minimum gap this package can
+		// bound only in UTC. A named zone can shift by more than a minute at
+		// an offset change, so a sub-minute rollback can repeat a matching
+		// local minute in under sixty seconds.
+		return wallClockCadencePeriod(zoneName, time.Minute)
 	default:
 		// Seven fields put seconds first. Anything else is not an expression
 		// CheckCronExpression accepts, and is charged the fastest cadence.

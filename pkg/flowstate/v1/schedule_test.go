@@ -742,6 +742,53 @@ func TestScheduleBackfillNamedZoneAffectsEveryWallClockResolution(t *testing.T) 
 		"@hourly in a named zone must fall back the same way the calendar does")
 }
 
+// TestScheduleBackfillNamedZoneAffectsOrdinaryCronFields is the regression
+// for the finding that ordinary five- and six-field cron expressions kept a
+// flat minute floor even though zoneName is parsed earlier in the same
+// function, and the file already treats every other minute-or-coarser
+// cadence as untrustworthy outside UTC. A sub-minute offset rollback can
+// repeat a matching local minute in under sixty seconds, so the same
+// undercount that motivated the calendar and @hourly fixes applies here too.
+func TestScheduleBackfillNamedZoneAffectsOrdinaryCronFields(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	// A two-day window: an ordinary minute-resolution cron entry in UTC
+	// fires at most 2,880 times (once a minute for 48 hours), comfortably
+	// accepted; in a named zone it must fall back to one-second resolution,
+	// refused at 172,800.
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-48 * time.Hour)),
+		EndAt:   timestamppb.New(now),
+	}}
+	ordinary := []string{"0 * * * *"}
+
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: ordinary}, backfill),
+		"an ordinary five-field cron entry in UTC is charged at minute resolution, far under the ceiling")
+
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Cron: ordinary}, backfill),
+		"more than 100000 firings",
+		"the identical expression in a named zone must fall back to one-second resolution")
+
+	// CRON_TZ overrides the trigger's zone per entry, in both directions.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"CRON_TZ=America/Caracas 0 * * * *"}}, backfill),
+		"more than 100000 firings",
+		"CRON_TZ naming a non-UTC zone must fall back even when the trigger itself has no time_zone")
+
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Cron: []string{"CRON_TZ=UTC 0 * * * *"}}, backfill),
+		"CRON_TZ=UTC must keep the minute floor even when the trigger's own time_zone is named")
+
+	// The six-field form (with a year) shares the fix.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Cron: []string{"0 * * * * *"}}, backfill),
+		"more than 100000 firings",
+		"the six-field form must fall back the same way the five-field form does")
+}
+
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar
 // values that cannot be right on any cluster.
 //
