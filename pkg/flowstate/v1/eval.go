@@ -1099,15 +1099,35 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// [RunWithInputs] for what a caller may read from it. Built from the same
 		// `scope.Outputs` the successful path returns, so there is one accumulated
 		// record per run rather than a second one assembled for failures.
-		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			// withCancellationCause reads context.Cause(ctx) here, at the run's own
-			// context — the one a caller like `flow run local` attaches a signal's
-			// or a `flow cancel`'s reason to (see cmd/flow/main.go). Whatever ran
-			// underneath already had its own chance to name a narrower cause (a
-			// step's schedule-to-close budget, the compensation budget below); this
-			// is the fallback for the cases nothing more specific was running, most
-			// visibly a run parked at a `wait:` when the stop arrives.
-			return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), runUndoOnCancel(ctx, w, undo))
+		// Two decisions, and they are not the same question, which is the trap
+		// in writing this as one condition. *Which context compensates* turns
+		// only on whether this one is already cancelled — a dead context
+		// refuses every entry whatever the run failed of. *What the run
+		// reports* turns on whether the cancellation is the failure. Conflating
+		// them compensates on the dead context whenever the failure is anything
+		// but the cancellation itself: a run whose last step raced a `flow
+		// cancel` and then produced an oversized transcript fails with a size
+		// error that cannot wrap ctx.Err(), and every undo is refused by its
+		// transport before it is attempted.
+		if ctx.Err() != nil {
+			results := runUndoOnCancel(ctx, w, undo)
+			if errors.Is(err, ctx.Err()) {
+				// withCancellationCause reads context.Cause(ctx) here, at the run's
+				// own context — the one a caller like `flow run local` attaches a
+				// signal's or a `flow cancel`'s reason to (see cmd/flow/main.go).
+				// Whatever ran underneath already had its own chance to name a
+				// narrower cause (a step's schedule-to-close budget, the
+				// compensation budget); this is the fallback for the cases nothing
+				// more specific was running, most visibly a run parked at a `wait:`
+				// when the stop arrives.
+				return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), results)
+			}
+
+			// Compensated on the surviving scope, but reported as what actually
+			// went wrong: a run that failed on its own terms while a stop was
+			// arriving did not fail *because* of the stop, and saying so would
+			// lose the only account of why.
+			return PartialTranscript(stepOutputs), UndoRunError(err, results)
 		}
 
 		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
