@@ -192,6 +192,29 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 	return nil
 }
 
+// stripCronComment removes a trailing comment, and only a trailing one.
+//
+// `#` is two things in a cron expression. Starting a whitespace-separated word
+// it begins a comment; inside a day-of-week field it is the nth-weekday-of-month
+// operator, which this repository accepts and tests (`0 9 * * 5#3`, the third
+// Friday). Cutting at the first `#` wherever it appears conflates them, and the
+// conflation loses fields: `* * * * * 5#3 2030` becomes six fields rather than
+// seven, so a seconds-resolution expression is charged one firing a *minute* —
+// an under-estimate, which is the direction that lets a backfill past the
+// ceiling. A 29-day range over two such Fridays estimates about 41,760 firings
+// against a possible 172,800.
+func stripCronComment(expression string) string {
+	for i := range len(expression) {
+		if expression[i] != '#' {
+			continue
+		}
+		if i == 0 || expression[i-1] == ' ' || expression[i-1] == '\t' {
+			return expression[:i]
+		}
+	}
+	return expression
+}
+
 // calendarMinimumPeriod reports the shortest interval a calendar can fire at,
 // read from which of its sub-day fields are populated.
 //
@@ -236,10 +259,7 @@ func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
 // then writes more narrowly, where an under-estimate is the fan-out this whole
 // check exists to stop.
 func cronMinimumPeriod(expression string) time.Duration {
-	if comment := strings.Index(expression, "#"); comment >= 0 {
-		expression = expression[:comment]
-	}
-	expression = strings.TrimSpace(expression)
+	expression = strings.TrimSpace(stripCronComment(expression))
 
 	if zone, rest, found := strings.Cut(expression, " "); found {
 		if strings.HasPrefix(zone, "CRON_TZ=") || strings.HasPrefix(zone, "TZ=") {

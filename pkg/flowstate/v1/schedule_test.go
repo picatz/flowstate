@@ -182,6 +182,14 @@ func TestScheduleBackfillIsBoundedByCadence(t *testing.T) {
 	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
 		&v1.ScheduleTrigger{Cron: []string{"* * * * * * 2030"}}, backfill(v1.MaxScheduleBackfillSpan)),
 		"more than 100000 firings")
+
+	// `#` inside a day-of-week field is the nth-weekday operator, not a
+	// comment. Cutting at the first one loses a field, which turns this
+	// seconds-resolution expression into a minute-resolution estimate — the
+	// under-count that lets a backfill past the ceiling.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"* * * * * 5#3 2030"}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"more than 100000 firings")
 	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
 		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{
 			{Second: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}},
