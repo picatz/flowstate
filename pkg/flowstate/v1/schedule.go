@@ -153,10 +153,8 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 	for _, expression := range trigger.GetCron() {
 		cadences = append(cadences, cronMinimumPeriod(expression))
 	}
-	for range trigger.GetCalendars() {
-		// A calendar carries a seconds field, so its fastest legal cadence is
-		// one firing a second.
-		cadences = append(cadences, time.Second)
+	for _, calendar := range trigger.GetCalendars() {
+		cadences = append(cadences, calendarMinimumPeriod(calendar))
 	}
 	if len(cadences) == 0 {
 		return fmt.Errorf("a backfill needs a schedule cadence whose firing count can be bounded")
@@ -174,7 +172,16 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 			// 100,001 firings, and rounding down would have called it 100,000
 			// and let it past the ceiling. Round up, so what is compared
 			// against the limit is a number the range can never exceed.
-			firings += int64(span+period-1) / int64(period)
+			//
+			// By quotient and remainder rather than by (span+period-1)/period,
+			// which is the same arithmetic only while the sum fits: `@every` is
+			// an accepted spelling for a period near the top of time.Duration,
+			// and that sum overflows to a negative firing count, subtracting
+			// from a total another cadence was contributing honestly.
+			firings += int64(span / period)
+			if span%period != 0 {
+				firings++
+			}
 			if firings > remaining {
 				return fmt.Errorf("the backfill can produce more than %d firings at this cadence; "+
 					"range %d would exceed the bounded recovery limit", MaxScheduleBackfillFirings, i+1)
@@ -183,6 +190,34 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		remaining -= firings
 	}
 	return nil
+}
+
+// calendarMinimumPeriod reports the shortest interval a calendar can fire at,
+// read from which of its sub-day fields are populated.
+//
+// Temporal defaults an unwritten second, minute or hour to *zero* rather than to
+// "every" — which is the whole reason a calendar of `hour: 9` means 09:00:00
+// daily and not 3,600 firings between nine and ten. Charging every calendar one
+// firing a second ignores that: it estimates a two-day backfill of that calendar
+// at 172,800 firings and refuses it, for a schedule that produces two.
+//
+// So the ladder walks down from the finest field written. Anything at or below
+// the finest one is defaulted to zero and cannot multiply the count; anything
+// above it is free to be "every", which is already accounted for by the period
+// being no longer than that field's own unit.
+func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar) time.Duration {
+	switch {
+	case len(calendar.GetSecond()) > 0:
+		return time.Second
+	case len(calendar.GetMinute()) > 0:
+		return time.Minute
+	case len(calendar.GetHour()) > 0:
+		return time.Hour
+	default:
+		// Second, minute and hour all default to zero, so the calendar fires at
+		// most once on any day it matches at all.
+		return 24 * time.Hour
+	}
 }
 
 // cronMinimumPeriod reports the shortest interval an expression accepted by

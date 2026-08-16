@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -182,7 +183,34 @@ func TestScheduleBackfillIsBoundedByCadence(t *testing.T) {
 		&v1.ScheduleTrigger{Cron: []string{"* * * * * * 2030"}}, backfill(v1.MaxScheduleBackfillSpan)),
 		"more than 100000 firings")
 	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
-		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{{}}}, backfill(v1.MaxScheduleBackfillSpan)),
+		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{
+			{Second: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}},
+		}}, backfill(v1.MaxScheduleBackfillSpan)),
+		"more than 100000 firings")
+
+	// A calendar's unwritten second, minute and hour default to zero rather
+	// than to "every", so the fields it does write decide how fast it can be.
+	// Charging every calendar one firing a second refuses `hour: 9` — a daily
+	// schedule — over any span past about a day.
+	for _, c := range []*v1.ScheduleTrigger_Calendar{
+		{}, // Nothing written: 00:00:00, once a day.
+		{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}}},
+		{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9, End: 17}}},
+		{Minute: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}},
+	} {
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+			&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{c}},
+			backfill(v1.MaxScheduleBackfillSpan)),
+			"a calendar writing no seconds fires far under the limit over the widest window")
+	}
+
+	// An `@every` period near the top of time.Duration must not wrap the
+	// ceiling arithmetic negative and pay for another cadence's real firings.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{
+			Every: durationpb.New(time.Duration(math.MaxInt64)),
+			Cron:  []string{"* * * * * * 2030"},
+		}, backfill((v1.MaxScheduleBackfillFirings+1)*time.Second)),
 		"more than 100000 firings")
 
 	// Each cadence is charged its own count. A daily cron beside a one-second
