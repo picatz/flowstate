@@ -58,8 +58,18 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 	// checks and the compose parse — so anything Go, anything under
 	// examples/ (which is where the compose file lives), the schema, and
 	// the derived-docs sources all reach it.
-	testRun := goAffected || p.examples || p.docs || p.proto
-	testWhy := "no Go package is affected, and nothing under examples/ or proto/ and none of the derived-docs sources changed"
+	//
+	// p.plugins is in this OR for the reason a path filter could not express:
+	// a plugin module is a separate Go module, so a diff touching only
+	// plugins/<name>/ never lands in affected (go list ./... from the root
+	// cannot see it) and touches none of examples/, proto/ or the derived-docs
+	// sources either. Without this arm testRun was false for exactly that
+	// diff, the test job — the only job that runs `make test-plugins`, since
+	// nothing else in this workflow walks a plugin module at all — was
+	// skipped, and verdict accepted the skip: a plugin that does not compile
+	// could merge on a PR whose only change was to that plugin.
+	testRun := goAffected || p.examples || p.docs || p.proto || len(p.plugins) > 0
+	testWhy := "no Go package is affected, and nothing under examples/ or proto/, none of the derived-docs sources, and no plugin module changed"
 	switch {
 	case goAffected:
 		testWhy = fmt.Sprintf("%d affected package(s)", len(affected))
@@ -69,6 +79,8 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		testWhy = p.reasons["proto"] + " changed"
 	case p.docs:
 		testWhy = p.reasons["docs"] + " changed"
+	case len(p.plugins) > 0:
+		testWhy = strings.Join(p.plugins, ", ") + " changed, and make test-plugins is the only thing that builds/vets/tests it"
 	}
 
 	decisions := []decision{

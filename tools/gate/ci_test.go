@@ -91,6 +91,21 @@ func TestAnExampleOnlyChangeReachesTheTestJob(t *testing.T) {
 	mustSkip(t, ds, "staticcheck", "vulncheck")
 }
 
+// TestAPluginOnlyChangeStillReachesTheTestJob is the regression for the gap
+// Codex's review of #688 found: a diff touching only plugins/<name>/ never
+// lands in the root module's affected-package set (go list ./... from the
+// root cannot see a separate module) and touches none of examples/, proto/
+// or the derived-docs sources either — so before p.plugins was in testRun's
+// OR, this diff reached no job at all, and the test job is the only one
+// that runs `make test-plugins`, the sole thing in this workflow that
+// builds, vets or tests a plugin module. Skipping it here is the gate
+// failing open on exactly the PRs whose whole point is to change a plugin.
+func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
+	ds := decide(t, []string{"plugins/openai/main.go"}, nil, "pull_request")
+	mustRun(t, ds, "test")
+	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+}
+
 // TestTheNarrowJobsFollowTheAffectedSet pins the three jobs whose trigger is a
 // package rather than a path: federation runs one test in one package,
 // fuzz-smoke's targets live in three, and the appearance goldens record what
