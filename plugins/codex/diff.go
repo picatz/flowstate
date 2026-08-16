@@ -76,7 +76,8 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 	// records their existence without staging content, which is what makes
 	// them appear below as additions. Best-effort like the rest of this
 	// function: if it fails, the tracked changes still diff.
-	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes, "add", "--intent-to-add", "--", ".")
+	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
+		append(hardenedGitConfig(), "add", "--intent-to-add", "--", ".")...)
 
 	// The repository is controlled by the task and may configure helpers that
 	// execute as the worker, outside the Codex sandbox. --no-ext-diff and
@@ -98,12 +99,30 @@ func computePatch(ctx context.Context, workDir string, mutating bool, baseline w
 	return out, filesChanged, truncatedOutput
 }
 
+// hardenedGitConfig is the set of overrides every Git invocation over a
+// task-controlled workspace carries, whatever subcommand it runs.
+//
+// core.fsmonitor names a program Git executes to ask what changed in the
+// working tree, and it is consulted by any command that inspects the index -
+// `git add` and `git diff` both. It is not a content filter, so enumerating
+// filter.* does not reach it, and it needs no gitattributes entry to fire:
+// setting the one config key is the whole attack. `false` is Git's own
+// spelling for "there is no monitor," which is what an unconfigured
+// repository looks like.
+//
+// Per-invocation rather than folded into safeDiffArgs, because the
+// --intent-to-add call runs before any of that and is just as much a command
+// over the same repository.
+func hardenedGitConfig() []string {
+	return []string{"-c", "core.fsmonitor=false"}
+}
+
 // safeDiffArgs builds a diff command with every configured content-filter
 // command disabled. Git config keys cannot contain NUL, so --name-only --null
 // gives an unambiguous list even when a task-controlled value contains newlines.
 func safeDiffArgs(ctx context.Context, gitBin, workDir string) ([]string, bool) {
 	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
-		"config", "--list", "--name-only", "--null")
+		append(hardenedGitConfig(), "config", "--list", "--name-only", "--null")...)
 	if !ok || truncated {
 		return nil, false
 	}
@@ -117,7 +136,7 @@ func safeDiffArgs(ctx context.Context, gitBin, workDir string) ([]string, bool) 
 		}
 	}
 	sort.Strings(keys)
-	overrides := make([]string, 0, len(keys)*2)
+	overrides := append(hardenedGitConfig(), make([]string, 0, len(keys)*2)...)
 	for _, key := range keys {
 		overrides = append(overrides, "-c", key+"=")
 	}

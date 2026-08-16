@@ -125,6 +125,12 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 	for key, value := range map[string]string{
 		"diff.external":     helper,
 		"filter.evil.clean": helper,
+		// Not a content filter, and needing no gitattributes entry: Git runs
+		// core.fsmonitor to ask what changed in the working tree, from any
+		// command that inspects the index - the --intent-to-add call as much
+		// as the diff itself. Sweeping filter.* does not reach it, so that
+		// sweep alone leaves the one config key that is the whole attack.
+		"core.fsmonitor": helper,
 	} {
 		cmd := exec.Command(gitBin, "-C", dir, "config", key, value)
 		if out, err := cmd.CombinedOutput(); err != nil {
