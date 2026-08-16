@@ -816,9 +816,10 @@ func (e *executor) dispatch(
 // Nothing is evaluated here, which is the whole point of resolving a compensation
 // when its step succeeded rather than when the run fails: undoing is scheduling,
 // and scheduling is not new workflow-side nondeterminism (invariant 4). The scope
-// carries the profile and nothing else — the only inputs still unresolved are the
-// ones a task evaluates against its own response, and those need no run scope in
-// either driver.
+// carries the profile and run identity. The only task inputs still unresolved are
+// the ones a task evaluates against its own response, and those need no other run
+// scope in either driver; identity still has to cross the activity boundary so the
+// deployment's task-shape policy evaluates a compensation against its real caller.
 //
 // The activity options are the ones a step with no `retry:` and no `timeout:`
 // gets, from `activityOptionsFor(nil)`. The local driver reaches the same defaults
@@ -872,7 +873,10 @@ func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, wit
 	var out v1.Node_Outputs
 	var scope *v1.Scope
 	if v1.TaskNeedsPrevOutputs(task.GetName()) {
-		scope = &v1.Scope{Profile: e.spec.GetProfile()}
+		scope = &v1.Scope{
+			Identity: e.identity,
+			Profile:  e.spec.GetProfile(),
+		}
 	}
 
 	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), &out)

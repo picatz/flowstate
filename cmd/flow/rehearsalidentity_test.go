@@ -128,19 +128,15 @@ steps:
 	require.NoError(t, err)
 
 	var response struct {
-		RunOutputs struct {
-			Values map[string]struct {
-				Literal map[string]any `json:"literal"`
-			} `json:"values"`
-		} `json:"runOutputs"`
+		RunOutputs map[string]any `json:"runOutputs"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &response))
 
-	values := response.RunOutputs.Values
-	assert.Equal(t, "release-requester@example.com", values["subject"].Literal["stringValue"],
+	values := response.RunOutputs
+	assert.Equal(t, "release-requester@example.com", values["subject"],
 		"run.identity must report the identity --as-subject named")
-	assert.Equal(t, "team-a", values["namespace"].Literal["stringValue"],
+	assert.Equal(t, "team-a", values["namespace"],
 		"run.identity must report the tenant --as-namespace named")
-	assert.Equal(t, true, values["local"].Literal["boolValue"],
+	assert.Equal(t, true, values["local"],
 		"a rehearsal must still say it is one: naming an identity is not being attested as one")
 }

@@ -111,7 +111,25 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	workflow := req.Msg.GetWorkflow()
+	// Captured before the trusted lookup below, for the same reason [FlowstateServer.Run]
+	// captures it before its own: the lookup needs the caller's own namespace,
+	// or it is a single deployment-wide name rather than a boundary between
+	// tenants. Otherwise captured where it always was — see the later comment
+	// by its second use, just before it is frozen into the schedule.
+	identity := s.identityFor(ctx)
+
+	// Through the trusted lookup, for the identical reason [FlowstateServer.Run]
+	// and [FlowstateServer.SignalWithStart] do: a schedule is a run somebody
+	// arranged in advance, so the trust boundary that keeps `manual:` and
+	// `manual.allowed_principals` policy rather than caller input has to bind
+	// here too. Without it, a caller could take a trusted webhook-only workflow
+	// with `manual: denied`, add a `schedule:` trigger to their own copy, and
+	// have this handler create and later fire *that* copy under the trusted
+	// name.
+	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	if err != nil {
+		return nil, err
+	}
 
 	// pinPlugins, credential targets, declared signal policies, spec size and
 	// structure depth — everything `Run` asks about a specification on its own,
@@ -147,13 +165,12 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Captured now, while the authenticated caller is still in scope, and then
-	// frozen: every firing for the life of this schedule acts as whoever created
-	// it. That is the honest reading of what a schedule is — a standing instruction
-	// left by a person — and the alternative has no answer, since at 03:00 there is
-	// no caller to derive an identity from. It is also why deleting a schedule
-	// matters when somebody leaves.
-	identity := s.identityFor(ctx)
+	// identity was captured above, before the trusted lookup, and is used here
+	// unchanged: every firing for the life of this schedule acts as whoever
+	// created it. That is the honest reading of what a schedule is — a
+	// standing instruction left by a person — and the alternative has no
+	// answer, since at 03:00 there is no caller to derive an identity from.
+	// It is also why deleting a schedule matters when somebody leaves.
 	namespace := identity.GetNamespace()
 
 	name := v1.ScheduleNameFor(req.Msg.GetName(), workflow)
@@ -257,12 +274,11 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		Memo: scheduleMemo,
 
 		Action: &client.ScheduleWorkflowAction{
-			// A readable id rather than a uuid, because unlike a run this workload
-			// has a name in advance: every firing is `<schedule>`, and Temporal
-			// appends the scheduled time to keep them distinct. An operator reading
-			// `flow list` can then see which schedule a run came from without asking
-			// anything else.
-			ID:        schedulePrefix + name,
+			// Use the schedule object's tenant-scoped id as the readable base for
+			// every firing. Temporal appends the scheduled time to keep firings
+			// distinct; including the tenant keeps same-named schedules in a shared
+			// Temporal namespace distinct too.
+			ID:        scheduleIDFor(namespace, name),
 			Workflow:  engine.Run,
 			TaskQueue: taskQueue,
 

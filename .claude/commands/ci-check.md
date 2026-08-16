@@ -32,7 +32,7 @@ Notes, per CLAUDE.md:
 - `flow fix --check` on every example is not advisory: the examples are already
   in the current edition, so a failure here is a real regression, not noise.
 - `buf generate` followed by `git diff --exit-code` catches committed generated
-  code that has drifted from `proto/flowstate/v1/flowstate.proto`.
+  code that has drifted from the schema under `proto/flowstate/v1/`.
 - `govulncheck` reports reachability against a database fetched at run time, so
   it can go red on a tree nobody touched. Before treating a finding as yours,
   run it against `main` too — if `main` also fails, the advisory arrived rather

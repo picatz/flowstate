@@ -348,6 +348,33 @@ func (s *FlowstateServer) NewWebhookReceiver(
 		}
 	}
 
+	// Trust is granted only once every workflow in this call has been fully
+	// admitted, in a second pass rather than interleaved with the loop above.
+	// A constructor that mutates the server-wide trusted set as it goes and
+	// then returns an error on a later workflow leaves that set holding
+	// entries a failed call never actually served — this deployment's own
+	// `Run`/`SignalWithStart`/`CreateSchedule` would then substitute a
+	// specification for a workflow no webhook route exists for, on the
+	// strength of a receiver that was never created.
+	//
+	// A workflow served for webhook deliveries is deployment-owned in the
+	// same sense a `--webhook` Flowfile always is: an operator chose to
+	// serve it, at this deployment, under this name and this namespace.
+	// Registering it here is what makes its `manual:` policy binding on
+	// `Run`/`SignalWithStart`/`CreateSchedule` too — without this, a caller
+	// who names the same workflow but submits their own copy authorizes
+	// against whatever restriction *they* wrote, not the one this
+	// deployment configured. Scoped by the same namespace the receiver
+	// itself was just scoped by, so two tenants that both configure a
+	// workflow named alike cannot substitute one for the other's.
+	//
+	// It refuses rather than replaces when this deployment already trusts a
+	// different specification under one of these names: see
+	// [FlowstateServer.registerTrustedWorkflows].
+	if err := s.registerTrustedWorkflows(namespace, workflows); err != nil {
+		return nil, err
+	}
+
 	return receiver, nil
 }
 

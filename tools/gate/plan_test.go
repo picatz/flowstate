@@ -38,14 +38,14 @@ func TestBuildPlan(t *testing.T) {
 			// the proto leg here would let the gate pass with
 			// stale docs/reference/.
 			name:    "a proto-only edit fires the proto leg AND the docs leg",
-			changed: []string{"proto/flowstate/v1/flowstate.proto"},
+			changed: []string{"proto/flowstate/v1/workflow.proto"},
 			want: plan{
 				fileDirs: []string{"proto/flowstate/v1"},
 				proto:    true,
 				docs:     true,
 				reasons: map[string]string{
-					"proto": "proto/flowstate/v1/flowstate.proto",
-					"docs":  "proto/flowstate/v1/flowstate.proto",
+					"proto": "proto/flowstate/v1/workflow.proto",
+					"docs":  "proto/flowstate/v1/workflow.proto",
 				},
 			},
 		},
@@ -221,7 +221,7 @@ func TestBuildPlan(t *testing.T) {
 		{
 			name: "a mixed diff fires each leg once with the first trigger recorded",
 			changed: []string{
-				"proto/flowstate/v1/flowstate.proto",
+				"proto/flowstate/v1/workflow.proto",
 				"proto/flowstate/v1/plugin.proto",
 				"docs/DSL.md",
 				"examples/hello/workflow.yaml",
@@ -241,11 +241,11 @@ func TestBuildPlan(t *testing.T) {
 				docs:     true,
 				examples: true,
 				reasons: map[string]string{
-					"proto": "proto/flowstate/v1/flowstate.proto",
+					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
 					// is first in this diff, so it is the
 					// trigger recorded rather than DSL.md.
-					"docs":     "proto/flowstate/v1/flowstate.proto",
+					"docs":     "proto/flowstate/v1/workflow.proto",
 					"examples": "examples/hello/workflow.yaml",
 				},
 			},
@@ -307,6 +307,59 @@ func TestResolveDirs(t *testing.T) {
 			got := resolveDirs(tt.dirs, index)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("resolveDirs(%v) = %v, want %v", tt.dirs, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHasUnresolvedGoDir is the regression for a Codex P1 on #688: a diff
+// that deletes the last .go file a package had leaves that package's
+// directory absent from `go list`'s output entirely, which resolveDirs
+// (walking upward for the nearest ancestor) cannot distinguish from a file
+// that was never part of a package at all — both silently drop out of the
+// changed set, and whatever else in the tree still imports the now-vanished
+// package would build broken with the test job never having run.
+func TestHasUnresolvedGoDir(t *testing.T) {
+	t.Parallel()
+
+	index := map[string]string{
+		"pkg/flowstate/v1":          modulePath + "/pkg/flowstate/v1",
+		"pkg/flowstate/v1/flowfile": modulePath + "/pkg/flowstate/v1/flowfile",
+		"cmd/flow":                  modulePath + "/cmd/flow",
+	}
+
+	tests := []struct {
+		name string
+		go_  []string
+		want bool
+	}{
+		{
+			name: "every changed .go file's own directory is still a package",
+			go_:  []string{"cmd/flow/main.go", "pkg/flowstate/v1/flowfile/parse.go"},
+			want: false,
+		},
+		{
+			name: "a deleted package's last file leaves its directory unresolved",
+			go_:  []string{"pkg/flowstate/v1/deleted/last.go"},
+			want: true,
+		},
+		{
+			name: "one resolvable file alongside one unresolvable one still reports true",
+			go_:  []string{"cmd/flow/main.go", "pkg/flowstate/v1/deleted/last.go"},
+			want: true,
+		},
+		{
+			name: "no changed .go files resolves to nothing missing",
+			go_:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasUnresolvedGoDir(tt.go_, index); got != tt.want {
+				t.Errorf("hasUnresolvedGoDir(%v) = %v, want %v", tt.go_, got, tt.want)
 			}
 		})
 	}

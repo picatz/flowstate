@@ -9,7 +9,7 @@ a change that violates one is a bug even when the tests pass.
 
 ## Proto-first
 
-Types describing the system live in `proto/flowstate/v1/flowstate.proto`, not as
+Types describing the system live in the schema under `proto/flowstate/v1/`, not as
 hand-written Go structs. Regenerate with `buf generate`. Behavior attaches to
 generated types as methods in hand-written files; the shape comes from the schema.
 
@@ -74,15 +74,43 @@ behaves oddly, check:
 
     ps -Ao pid,rss,args | grep -E '\.test|-fuzz' | grep -v grep
 
-## The gate: diff-scoped before a push, full on PR CI
+## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
 
-Two tiers over one list of checks. The diff-scoped tier runs locally before a
-push and covers what your diff can reach. PR CI runs the full list as seven
-parallel jobs in about six minutes and is the gate that decides; the
-orchestrator's webhook loop watches the PR and drives red back to green.
-`make check` runs the same full list locally, and remains the rehearsal for
-main-composition verification and for anyone who wants the whole answer on
-their own machine.
+Three tiers over one list of checks, and — this is the part worth holding on to
+— **one computation of what a diff can reach**, in `tools/gate`. The local tier
+runs it before a push. PR CI runs the same computation in its `plan` job and
+skips the jobs the diff cannot reach. The merge queue runs everything, because
+it is the last gate before main and the one place where being wrong about the
+plan is unrecoverable. `make check` remains the full local rehearsal.
+
+CI does not have a second opinion, and must never grow one. `paths:` filters in
+YAML are the obvious way to do this and the wrong one: they are the same value
+written down twice, in the venue where the copy cannot be unit tested, cannot
+see the import graph, and cannot see that `pkg/flowstate/v1/flowfile`'s tests
+read `examples/` off disk with no import anywhere (#589).
+
+Two GitHub semantics decide the shape of the PR lane, and both fail in a
+direction someone has to know about:
+
+- A **required** job skipped by an `if:` reports the conclusion `skipped`, and
+  a required status check counts `skipped` as satisfied. Make the conditional
+  jobs required and a wrongly-skipped `test` shows a green tick on a pull
+  request nothing tested. That is a gate passing on something it never looked
+  at, and it is the *default* behaviour.
+- A required check that never reports at all — what a workflow-level `paths:`
+  filter produces, since the whole workflow is skipped — stays pending forever
+  and blocks the merge with no way to clear it.
+
+So none of the conditional jobs is required. **`plan` and `verdict` are the two
+required checks.** `verdict` runs `if: always()`, re-reads the plan, and fails
+unless every job the plan selected succeeded, every job it did not select was
+skipped, and the two sets of job names match the workflow's. A skip can
+therefore only ever be a decision the plan made in writing.
+`tools/gate/verdict_test.go` executes that script — read out of the workflow
+file, not copied — against every one of those failure shapes.
+
+See `docs/CI.md` for the whole design, the measured numbers, and the repository
+settings it depends on.
 
 Before pushing a PR branch, run the diff-scoped tier:
 
@@ -118,7 +146,14 @@ That reasoning predates a six-minute parallel CI and a standing red-to-green
 driver: in the last wave, five agents each re-ran the full list serially on
 one contended machine at 30 to 60 minutes per gate, to predict an answer CI
 returns in six (#482). What survives is the bound, not the venue: nothing
-merges red, and every required check still runs on every PR.
+merges red, and every check still runs on every change whose diff can reach it.
+
+That last clause used to read "every required check still runs on every PR",
+and it was doing two jobs. As a claim about coverage it is now stated more
+precisely by `verdict`. As a claim about *enforcement* it was, until #489's
+branch-protection fix was written up and never shipped, a convention the owner
+was applying by hand — there was no required-status-checks ruleset on this
+repository at all. `docs/CI.md` records the ruleset that makes it a mechanism.
 
 Two habits the last wave paid for, now written down. Editing `docs/DSL.md`
 requires `go generate ./cmd/flow/internal/reference`, because that package
@@ -419,6 +454,64 @@ the thing rather than from where it is written. And test by comparing bytes or b
 compiling the result: asserting the output still validates is what let all of this
 through.
 
+## A design sketch names the spelling it already has
+
+The most expensive mistakes in this repository have not been wrong code. They have
+been *proposals written without reading the thing they propose to change* — and they
+are expensive because a sketch that looks coherent gets discussed, refined, and
+sometimes built before anybody notices it re-invents something three files away.
+
+The shape is always the same. Someone reasons from the domain rather than from the
+tree, produces a design that is internally sensible, and lands it beside an existing
+answer to the same question. The result is invariant 1's violation arriving as a
+*new feature* instead of as legacy debt: two hand-maintained shapes of one thing,
+both current, both defensible.
+
+Worked example, because the general statement is too easy to nod at. A sketch on
+#726 proposed a `ClaimRequirement` message — `{claim, one_of_values}` — to annotate
+which claims gate an RPC. It reads well. It is also the *third* spelling of "this
+claim must carry this value" in a tree that already had two, one of them in the
+schema and gating an RPC:
+
+- `SignalPolicyRule.claims` (`proto/flowstate/v1/signal.proto:95`) — a structured
+  `map<string, string>` of exact-match claim requirements, checked against the
+  sender the server attested, and the thing that decides who may signal a run.
+- `auth.ClaimRule` (`auth/policy.go:215`) — the same idea at token admission,
+  hand-written rather than schema-defined.
+- CEL, where the rest of policy lives: `SecretAccessPolicy` takes CEL strings
+  (`auth/secretpolicy.go:61`), and `netpolicy` evaluates CEL over an identity
+  activation already exposing `subject`, `issuer`, `namespace` and `claims`
+  (`netpolicy/identity.go:27-30`).
+
+Note what the grep changes, and that this section was itself corrected by one
+(#730). Without `SignalPolicyRule` the sketch looks like it mirrors a lone legacy
+struct, and "just use CEL" is the obvious answer. With it, the repository already
+has a schema-defined structured claims map gating an RPC — so the live question is
+whether the new surface should *be* that message rather than a fourth shape beside
+it, and the strongest argument against the sketch is not "CEL exists" but "this
+message exists, five files away, doing exactly this". Five minutes of grep, before
+the sketch rather than after it, would have produced a better design and no
+discussion.
+
+So, before proposing a schema addition, a config surface, a policy shape, or a new
+keyword:
+
+- **Find how the repo already spells this, and cite it with `file:line`.** If the
+  answer is "it doesn't", say that explicitly — that is a finding, and a reviewer
+  can check it. An uncited sketch is a claim of novelty nobody can falsify.
+- **Check the neighbours.** If three surfaces answer one question, the odd one out is
+  usually the oldest, not the best. Do not mirror the odd one out.
+- **State the cost you are choosing to pay.** Every real design loses something. A
+  sketch with no stated cost has not been compared against anything.
+- **Prefer deriving to duplicating.** A view computed from the source of truth cannot
+  drift; a parallel declaration of the same facts always eventually does.
+
+The rule generalizes past design. It is the same failure as a "confident, wrong
+finding" from a stale checkout (#647), and the same failure as a review comment that
+describes code the author has already changed: **reasoning about this repository from
+memory or from first principles, when the file is right there.** Read it first. The
+tree is the only thing that is authoritative about the tree.
+
 ## Opening pull requests and issues
 
 Use `gh` — `gh pr create`, `gh issue create` — rather than an MCP or API call that
@@ -439,6 +532,48 @@ wordings differ — a body ending in "Generated with Claude Code" plus a session
 link, followed by the server's "Generated by Claude Code", is what shipped on
 #589 before anyone noticed. Review comments and replies are the exception: those
 carry the footer explicitly, because nothing appends one for them.
+
+**A `codex`-labelled pull request was authored by Codex, not by the account
+that opened it.** Codex commits through a maintainer's credential, so its
+commits carry that human as git author and a squash merge credits them —
+while Codex, which wrote the diff, is credited nowhere. `41baccf` shipped
+exactly that, crediting the maintainer and Claude for a change Codex wrote.
+
+The squash commit message is ours to write, so the trailers get fixed there.
+The `codex` label is the signal; do not infer authorship from a branch name.
+
+    Co-authored-by: chatgpt-codex-connector[bot] <199175422+chatgpt-codex-connector[bot]@users.noreply.github.com>
+    Co-authored-by: claude[bot] <209825114+claude[bot]@users.noreply.github.com>
+    Co-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>
+
+Credit Codex when the label is present. Credit Claude additionally when
+Claude did work on it — a rebase, a fix for a finding, a conflict
+resolution, a test — and not when Claude only pressed merge, because merging
+is not authorship. Credit Copilot only where a finding of its materially
+shaped the diff; a review that was read and dismissed is not co-authorship.
+Do not credit the human account on a `codex` PR unless they hand-wrote part
+of it: relaying a tool's output through your credential is not authorship,
+and that is the whole correction.
+
+None of this loosens the rule above. A commit already authored as
+`claude[bot]` still takes no trailer naming Claude.
+
+The point is not politeness. These numbers are what the project's own
+metrics are read from, and a contribution graph that attributes an agent's
+work to whoever holds the credential describes a team that does not exist.
+
+**A commit authored as `claude[bot]` gets no `Co-authored-by` trailer naming
+Claude.** It is already the author, and GitHub adds its own co-author line when
+a branch is squash-merged — so a second one credits Claude twice for one commit.
+On the repository's front page that renders as "claude[bot] and claude", two
+avatars for one contributor, which is the same double-attribution mistake as the
+footer above wearing different clothes. `13e928f` shipped carrying both
+`Co-authored-by: claude[bot]` and `Co-authored-by: Claude Opus 5`.
+
+So: commit as `claude[bot]`, and let that be the whole claim. A co-author
+trailer is for a *second* contributor — a human who paired on the change, or
+another agent that genuinely wrote part of it. Naming yourself in one is not
+attribution, it is an echo.
 
 Two `gh` habits worth having from the start. Every listing takes `--paginate`, and
 `per_page` defaults to 30 without it, so a bare listing on a busy PR silently

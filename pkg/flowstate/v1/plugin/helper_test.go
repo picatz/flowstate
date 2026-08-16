@@ -119,7 +119,7 @@ func runFakePlugin() int {
 		// retired one makes the host refuse on the version and never reach the
 		// address, which passes the test for the wrong reason.
 		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version2)
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -235,7 +235,7 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version2,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version3,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
 
@@ -318,6 +318,21 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			pluginv1.Capability(9999),
 		}
 		base.Schemes = []string{"future"}
+		return base, nil
+
+	case "self-digest":
+		// Reports the digest of the image this process is *running*, read from
+		// the running inode rather than from the path it was launched by, so a
+		// test can compare what the host recorded against what actually ran.
+		// See [runningImageDigest] and
+		// TestTheDigestIsOfTheImageThatRanWhenTheBinaryIsSwappedAtExec.
+		digest, err := runningImageDigest()
+		if err != nil {
+			return nil, err
+		}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
+		base.Schemes = []string{mode}
+		base.Description = digest
 		return base, nil
 
 	case "secrets-no-schemes":

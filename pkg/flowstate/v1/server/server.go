@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -171,6 +172,117 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 	}
 }
 
+// WithTrustedWorkflows installs deployment-owned workflow specifications for
+// remote submission, scoped to namespace exactly as [FlowstateServer.NewWebhookReceiver]'s
+// own namespace argument is: empty means this deployment's own, unnamed
+// tenant — the same value [FlowstateServer.identityFor] falls back to for an
+// unauthenticated caller or one WithNamespace named. A request whose
+// namespace and workflow name match one of these entries is authorized and
+// executed from the trusted copy, not from the copy carried by the request.
+// This is what makes restrictions such as `manual: denied` and
+// `manual.allowed_principals` authorization policy rather than caller input.
+//
+// Workflows not named by this option retain the open submission behavior: the
+// Run API accepts ad-hoc specifications. Deployments that use manual restrictions
+// must therefore register the restricted workflow here under its name. Cloning at
+// configuration time prevents a caller that still holds the source pointer from
+// changing policy after the server has started.
+//
+// namespace is required to be explicit — never derived from a prior
+// [WithNamespace] option — because [Option]s apply in the order given and a
+// value read from options that may not have run yet would make this entry's
+// tenant depend on argument order rather than say what it means. A
+// deployment using a non-empty default namespace passes it here the same way
+// it does everywhere else that scopes a namespace explicitly.
+func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
+	return func(s *FlowstateServer) {
+		if s.trustedWorkflows == nil {
+			s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
+		}
+		for _, workflow := range workflows {
+			if workflow == nil || workflow.GetName() == "" {
+				continue
+			}
+			key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
+
+			// A specification the schema refuses must not become the copy
+			// substituted for a caller's. Nothing downstream would catch it:
+			// the RPC handlers run [v1.Validate] on the *request*, which is
+			// the caller's copy and is checked before the trusted lookup
+			// replaces it, and validateSubmission does not ask again after
+			// substitution. So an embedder's malformed programmatic workflow
+			// would reach Temporal and the engine on the strength of being
+			// deployment-owned.
+			if err := v1.Validate(workflow); err != nil {
+				s.refuseTrustedWorkflow(key, fmt.Sprintf(
+					"workflow %q is registered as a trusted specification this deployment refuses: %v",
+					workflow.GetName(), err))
+				continue
+			}
+
+			if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+				// Two registrations disagree about one tenant's workflow.
+				// Last-writer-wins here would let a later, weaker copy
+				// replace `manual: denied` or a narrower
+				// `allowed_principals` — silently, and decided by option
+				// order rather than by anything an operator wrote down.
+				// An [Option] cannot report an error, so the conflict is
+				// recorded and every request for this key is refused; see
+				// [FlowstateServer.noteTrustedWorkflowConflict].
+				s.refuseTrustedWorkflow(key, fmt.Sprintf(
+					"workflow %q is registered twice for this namespace with different specifications, "+
+						"so this deployment has no single policy to enforce for it; an operator must "+
+						"make the trusted registrations agree", workflow.GetName()))
+				continue
+			}
+			s.trustedWorkflows[key] = proto.Clone(workflow).(*v1.Workflow)
+		}
+	}
+}
+
+// refuseTrustedWorkflow marks a key with no usable answer, against the sentence
+// [FlowstateServer.trustedWorkflow] will return for it.
+//
+// Fail closed, per CLAUDE.md: a component that allows when it cannot decide
+// will eventually allow everything, and this is precisely a case of not being
+// able to decide. Neither candidate can be served — the later one may be the
+// weaker policy, and the earlier one may be the stale one — and serving the
+// *caller's* copy is the open behavior this whole mechanism exists to remove.
+// So the key is refused outright until the deployment's configuration says one
+// thing about it.
+//
+// Identical re-registration is not a conflict. The same specification loaded
+// twice (one Flowfile named to two receivers, an option restating what a
+// receiver also serves) says one thing, so it authorizes one thing.
+//
+// Callers hold trustedWorkflowsMu for writing.
+func (s *FlowstateServer) refuseTrustedWorkflow(key trustedWorkflowKey, reason string) {
+	if s.trustedWorkflowRefusals == nil {
+		s.trustedWorkflowRefusals = make(map[trustedWorkflowKey]string)
+	}
+	// First reason wins: it is the one describing the registration that was
+	// actually rejected, and a later one would only restate that the key is
+	// still unusable.
+	if _, already := s.trustedWorkflowRefusals[key]; !already {
+		s.trustedWorkflowRefusals[key] = reason
+	}
+}
+
+// trustedWorkflowKey identifies a trusted workflow specification by both the
+// tenant it is trusted for and its name — a struct, not a concatenated
+// string. CLAUDE.md's namespacing rule is why: every character legal in a
+// namespace is also legal in a name, so no separator disambiguates
+// `namespace + name` from a different pair that happens to concatenate to
+// the same string — `"team-a"` + `"deploy"` and `"team"` + `"a-deploy"`
+// collide under any single-character or fixed separator. A struct compares
+// each field independently and cannot be made to collide this way; see the
+// `env` and file secret providers' own namespacing fix for the same mistake
+// made twice already.
+type trustedWorkflowKey struct {
+	namespace string
+	name      string
+}
+
 // FlowstateServer implements the flowstatev1connect.WorkflowServiceHandler interface
 // and provides methods to run and get the status of workflows using Temporal.
 type FlowstateServer struct {
@@ -202,6 +314,22 @@ type FlowstateServer struct {
 	credentialTargetsConfigured bool
 	pluginCatalog               *v1.PluginCatalog
 
+	// trustedWorkflowsMu guards trustedWorkflows. [WithTrustedWorkflows] writes it
+	// at construction, before the struct exists to race against, but
+	// [registerTrustedWorkflow] writes it again after construction — from
+	// [NewWebhookReceiver], once per workflow the receiver admits — so a read
+	// from a request in flight and a write from a receiver still starting up
+	// must not be allowed to race.
+	trustedWorkflowsMu sync.RWMutex
+	trustedWorkflows   map[trustedWorkflowKey]*v1.Workflow
+
+	// trustedWorkflowRefusals records keys with no usable answer, against
+	// the sentence saying why: two registrations that disagreed, or one
+	// specification the schema refuses. [FlowstateServer.trustedWorkflow]
+	// returns that sentence rather than substituting anything. See
+	// [FlowstateServer.refuseTrustedWorkflow].
+	trustedWorkflowRefusals map[trustedWorkflowKey]string
+
 	// searchAttributesRegistered records whether [EnsureSearchAttributesRegistered]
 	// succeeded against this deployment's Temporal namespace before the server
 	// started serving. See [WithSearchAttributesRegistered].
@@ -211,6 +339,111 @@ type FlowstateServer struct {
 	// client: memos, a schedule's stored arguments, an activity's heartbeat
 	// details. It is set in [New] and never nil. See [WithDataConverter].
 	dataConverter converter.DataConverter
+}
+
+// trustedWorkflow returns the deployment-owned specification registered for
+// namespace and requested's name, or requested unchanged if none was.
+//
+// namespace must be the caller's own — [FlowstateServer.identityFor]'s
+// answer for this request, never a value the request itself carries —
+// because the trust boundary this implements is exactly that a namespace
+// only reaches its own registered entries. Two tenants that each register a
+// workflow of the same name under [WithTrustedWorkflows] or
+// [FlowstateServer.NewWebhookReceiver] must never be able to substitute the
+// other's specification, which a lookup keyed on name alone could not tell
+// apart. The clone is per request: validation and preparation currently
+// treat specifications as immutable, but keeping the configured authority
+// out of request-lifetime code makes that trust boundary robust to later
+// normalization.
+// It returns an error for a name this deployment registered twice with
+// different specifications, rather than an answer drawn from either of them.
+// See [FlowstateServer.noteTrustedWorkflowConflict].
+func (s *FlowstateServer) trustedWorkflow(namespace string, requested *v1.Workflow) (*v1.Workflow, error) {
+	if requested == nil {
+		return nil, nil
+	}
+	key := trustedWorkflowKey{namespace: namespace, name: requested.GetName()}
+	s.trustedWorkflowsMu.RLock()
+	trusted, ok := s.trustedWorkflows[key]
+	refusal := s.trustedWorkflowRefusals[key]
+	s.trustedWorkflowsMu.RUnlock()
+	if refusal != "" {
+		// Named, not silently degraded to open submission: the caller can do
+		// nothing about this and the operator must, so the message says whose
+		// problem it is. It carries no specification detail — the request came
+		// from outside and the conflict is between two deployment-owned
+		// copies.
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(refusal))
+	}
+	if !ok {
+		return requested, nil
+	}
+	return proto.Clone(trusted).(*v1.Workflow), nil
+}
+
+// registerTrustedWorkflow adds one deployment-owned specification to the
+// trusted set after construction, scoped to namespace, which is what lets
+// [NewWebhookReceiver] extend [WithTrustedWorkflows]'s set from the Flowfiles
+// a `--webhook` deployment loads: those are exactly the specifications whose
+// `manual:`/trigger policy must bind regardless of what a caller submits
+// under the same name, and the receiver is the one place that has already
+// parsed and validated them by the time a trusted copy is needed. Safe to
+// call while the server is serving — the receiver runs before the process
+// starts listening, but nothing here assumes that — because every read and
+// write of the map takes the same lock.
+// It refuses a name already registered with a different specification, rather
+// than replacing it. A receiver constructed after [WithTrustedWorkflows] named
+// the same workflow, or after an earlier receiver served it, would otherwise
+// substitute its own copy for the one the deployment already had — so a weaker
+// `manual:` policy could quietly displace a stricter one, decided by nothing
+// more than which receiver was constructed last. Unlike [WithTrustedWorkflows]
+// this path can report the error, and refusing at construction beats denying at
+// request time.
+//
+// The whole call is one transaction: every workflow is checked before any is
+// written, for the same reason [FlowstateServer.NewWebhookReceiver] grants
+// trust in a second pass — a rejected registration must leave the trusted set
+// exactly as it found it.
+func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows []*v1.Workflow) error {
+	s.trustedWorkflowsMu.Lock()
+	defer s.trustedWorkflowsMu.Unlock()
+
+	for _, workflow := range workflows {
+		if workflow == nil || workflow.GetName() == "" {
+			continue
+		}
+		key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
+		if reason := s.trustedWorkflowRefusals[key]; reason != "" {
+			return fmt.Errorf("%s; resolve that before serving it for webhook deliveries", reason)
+		}
+
+		// The same reason [WithTrustedWorkflows] validates, except this path
+		// can refuse the whole construction rather than poison one key.
+		// NewWebhookReceiver's own register() has already run the schema
+		// rules over these, so this is belt and braces for any other caller
+		// of registerTrustedWorkflows that arrives later.
+		if err := v1.Validate(workflow); err != nil {
+			return fmt.Errorf("workflow %q cannot be trusted as a deployment-owned specification "+
+				"because this deployment refuses it: %w", workflow.GetName(), err)
+		}
+		if existing, ok := s.trustedWorkflows[key]; ok && !proto.Equal(existing, workflow) {
+			return fmt.Errorf("workflow %q is already registered for this namespace with a different "+
+				"specification; two deployment-owned copies under one name are two `manual:` policies "+
+				"this server would have to choose between, so serve one of them", workflow.GetName())
+		}
+	}
+
+	if s.trustedWorkflows == nil {
+		s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
+	}
+	for _, workflow := range workflows {
+		if workflow == nil || workflow.GetName() == "" {
+			continue
+		}
+		s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
+			proto.Clone(workflow).(*v1.Workflow)
+	}
+	return nil
 }
 
 // WithDataConverter sets the data converter this server reads its own recorded
@@ -607,15 +840,22 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	inputs, err := s.validateSubmission(req.Msg.GetWorkflow(), req.Msg.GetInputs())
+	// Captured before the trusted lookup below, not only for its usual reason
+	// (the run outlives this request, so anything a later step needs to know
+	// about who asked for the work has to be recorded in the state it
+	// carries) but because the lookup needs the caller's own namespace to
+	// stay a boundary between tenants rather than a single deployment-wide
+	// name flat enough for one tenant to reach another's trusted entry.
+	identity := s.identityFor(ctx)
+
+	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
-
-	// Capture the identity now, while the authenticated caller is still in scope.
-	// The run outlives this request, so anything a later step needs to know about
-	// who asked for the work has to be recorded in the state it carries.
-	identity := s.identityFor(ctx)
+	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
+	if err != nil {
+		return nil, err
+	}
 
 	// A random id unless the caller named a business key, in which case the run
 	// is addressable by what it *is* rather than by an id nobody wrote down —
@@ -650,11 +890,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// A workflow with no `manual:` block passes unchanged, which is every
 	// workflow that exists: `triggers:` is not exhaustive, and adding a webhook
 	// must never silently stop `flow run` from working.
-	if err := v1.CheckManualStart(req.Msg.GetWorkflow(), identity.GetSubject(), req.Msg.GetReason()); err != nil {
+	if err := v1.CheckManualStart(workflow, identity.GetSubject(), req.Msg.GetReason()); err != nil {
 		return nil, connect.NewError(connect.CodePermissionDenied, err)
 	}
 
-	memo, temporal, options, err := s.prepareCreate(ctx, identity, req.Msg.GetWorkflow(), inputs)
+	memo, temporal, options, err := s.prepareCreate(ctx, identity, workflow, inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +912,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	options.Memo = memo
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
-		Workflow:    req.Msg.GetWorkflow(),
+		Workflow:    workflow,
 		StepsBudget: int32(s.maxStepsPerRun),
 		Identity:    identity,
 
@@ -783,6 +1023,18 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// first time a signal is actually delivered and denied for a reason the
 	// author never saw at submit.
 	if err := v1.CheckSignalPolicies(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Compiling a Flowfile refuses `timeout:`/`retry:` on a step kind that
+	// schedules no activity for either to act on (see
+	// [v1.CheckPolicyPlacement]'s doc). A specification built by hand and
+	// submitted straight to this RPC arrives without that compiler in front
+	// of it, so the same refusal has to run here too, or the unsafe behavior
+	// it exists to prevent — a policy that silently does nothing — reaches
+	// production for any specification that did not begin life as a
+	// Flowfile.
+	if err := v1.CheckPolicyPlacement(wf); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 

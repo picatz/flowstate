@@ -439,7 +439,8 @@ fleet — one per tenant namespace for Tier 2, replicas for throughput within a
 tenant. Plugins are Unix-socket subprocesses launched by the worker process
 itself, so no extra container or sidecar is needed for them; a `--plugin-dir`
 pointed at a `ConfigMap`- or `initContainer`-populated directory works as
-long as that directory isn't world-writable (see [blockers](#blockers)).
+long as that directory isn't writable by other users — group or world (see
+[blockers](#blockers)).
 Secrets mount as files (`--secret-dir`) or environment (`--secret-env`) the
 ordinary Kubernetes way — Secret volumes or `envFrom`.
 
@@ -577,7 +578,8 @@ than it is.
   or `run local` with plugins, needs a POSIX host. State that posture to
   anyone asking "does this run on Windows" — the honest answer is "your
   editor does, your worker fleet doesn't."
-- **`--plugin-dir` refuses a world-writable directory**, and rightly:
+- **`--plugin-dir` refuses a directory other users can write to**, group as
+  well as world, and rightly:
   `plugin.doc.go` documents this refusal (a plugin directory is arbitrary
   code execution; a directory anyone can write to is arbitrary code execution
   by anyone), with `--allow-insecure-plugin-dir` as the explicit, named escape

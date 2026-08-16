@@ -164,7 +164,7 @@ func TestWatchFollowsARealRunningExecution(t *testing.T) {
 	// The plain shape, because it is the one whose whole output is assertable: the
 	// live view draws the same state through the same helpers, and its own tests
 	// cover the drawing.
-	require.NoError(t, followPlainly(ctx, surface, FormatText, poller, minWatchInterval,
+	require.NoError(t, followPlainly(ctx, surface, renderingOf(FormatText), poller, minWatchInterval,
 		workflowID, nil))
 
 	require.Equal(t, []string{"first", "waiting"}, poller.distinct(),

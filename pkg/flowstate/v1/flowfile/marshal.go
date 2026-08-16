@@ -160,6 +160,32 @@ func stepsToYAML(nodes []*v1.Node) ([]any, error) {
 	return steps, nil
 }
 
+// unrepresentablePolicySubject reports whether node is a kind that
+// [checkPolicyPlacement] refuses to accept `timeout:`/`retry:` on, and if so
+// names it the same way that diagnostic does — kept in sync with it because
+// both describe the identical set of kinds for the identical reason: neither
+// schedules a single activity for either key to act on.
+func unrepresentablePolicySubject(node *v1.Node) (string, bool) {
+	switch node.GetKind().(type) {
+	case *v1.Node_Wait:
+		return "a `wait:` step", true
+	case *v1.Node_Value:
+		return "a `value:` step", true
+	case *v1.Node_ForEach:
+		return "a `for_each:` step", true
+	case *v1.Node_Parallel:
+		return "a `parallel:` step", true
+	case *v1.Node_Call:
+		return "a `call:` step", true
+	case *v1.Node_Loop:
+		return "a `loop:` step", true
+	case *v1.Node_Switch:
+		return "a `switch:` step", true
+	default:
+		return "", false
+	}
+}
+
 // stepToYAML writes one step.
 func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 	step := yaml.MapSlice{{Key: "id", Value: textToYAML(node.GetId())}}
@@ -200,9 +226,28 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 
 	if policy := node.GetPolicy(); policy != nil {
 		if timeout := policy.GetTimeout(); timeout != nil {
+			// A hand-built Workflow can carry a `timeout:`/`retry:` on a step
+			// kind that schedules no activity for either to act on — the
+			// compiler refuses this while parsing a Flowfile (see
+			// [v1.CheckPolicyPlacement]), but a Workflow constructed directly
+			// in Go bypasses the compiler entirely. Marshal's contract is
+			// that its output reads back as the same workflow, and a
+			// document carrying either key here would fail to parse the
+			// moment it did: better to refuse writing it than to hand back a
+			// file the parser itself rejects.
+			if subject, ok := unrepresentablePolicySubject(node); ok {
+				return nil, fmt.Errorf(
+					"step %q is %s and cannot carry `timeout:`: it schedules no single "+
+						"activity for the key to bound", node.GetId(), subject)
+			}
 			step = append(step, yaml.MapItem{Key: "timeout", Value: durationToYAML(timeout)})
 		}
 		if retry := policy.GetRetry(); retry != nil {
+			if subject, ok := unrepresentablePolicySubject(node); ok {
+				return nil, fmt.Errorf(
+					"step %q is %s and cannot carry `retry:`: it schedules no single "+
+						"activity for the key to re-run", node.GetId(), subject)
+			}
 			step = append(step, yaml.MapItem{Key: "retry", Value: retryToYAML(retry)})
 		}
 		if policy.GetContinueOnError() {
@@ -742,7 +787,17 @@ func literalToYAML(literal *expr.Value) (any, error) {
 		// Go holding one could not be written out at all and saying so was the
 		// only honest answer. `$${` is that spelling, and reading the result back
 		// produces this string again — which is what Marshal owes.
-		return escapeFences(kind.StringValue), nil
+		//
+		// Through [textToYAML] and not [escapeFences] alone, which is the whole
+		// of #728. Handing the emitter a bare string leaves the quoting to it,
+		// and it writes a scalar opening with `? ` plain — so `message: ?
+		// 0000000` reads back as an explicit key and the document Marshal just
+		// produced does not parse. A literal is text like any other text here;
+		// the same question ("does the emitter's rendering read back as this
+		// string?") has one answer, so it is asked in one place. Every other
+		// scalar position already went through it, which is why the fuzzer
+		// reached this one and not those.
+		return textToYAML(kind.StringValue), nil
 	case *expr.Value_Int64Value:
 		return kind.Int64Value, nil
 	case *expr.Value_Uint64Value:

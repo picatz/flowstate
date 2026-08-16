@@ -52,7 +52,8 @@ type pluginFlags struct {
 	// schemes, when non-empty, is the secret schemes a plugin may claim.
 	schemes []string
 
-	// allowInsecureDirs permits a world-writable plugin directory. There is one
+	// allowInsecureDirs permits a plugin directory other users can write to,
+	// group-writable as well as world-writable. There is one
 	// legitimate use — a container image whose whole filesystem is 0777 and whose
 	// only user is root — and no other one.
 	allowInsecureDirs bool

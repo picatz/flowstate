@@ -470,10 +470,12 @@ func runWorker(cmd *cobra.Command, args []string) error {
 // forever about a run that had stopped. Anything observable about following a run is
 // now decided in one place, which is the only way the two commands can agree.
 func runWorkflow(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
 	}
+
+	format := rendering.format
 
 	// Before the file is read, which is the earliest this command can say
 	// anything: a run that never starts still says where it was going, so
@@ -554,7 +556,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		noteRevealedSensitiveValues(surface)
 	}
 
-	return watchRun(cmd.Context(), surface, format,
+	return watchRun(cmd.Context(), surface, rendering,
 		clientPoller{workflowID: workflowID, server: server, client: client, spec: workflow, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
@@ -1511,7 +1513,8 @@ flow lsp`,
 			"the run starts, so `flow watch` can pick it up again afterwards.\n\n" +
 			"A workflow that declares `inputs:` is given them with --input name=value or " +
 			"--input-file inputs.json. The declaration decides how a value is read, so an " +
-			"argument that does not fit is refused here, before the run starts.",
+			"argument that does not fit is refused here, before the run starts." +
+			runDocumentHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: runWorkflow,
 		Example: `# Run a workflow and watch it:
@@ -1524,7 +1527,7 @@ flow run examples/parameterized-deploy/workflow.yaml --input service=checkout --
 flow run examples/parameterized-deploy/workflow.yaml --input-file examples/parameterized-deploy/inputs.json
 
 # Run it and pipe the outputs, with the live view still on the terminal:
-flow run examples/hello-world/workflow.yaml | jq .stepValues
+flow run examples/hello-world/workflow.yaml | jq .steps
 
 # In CI: one line per change, exit code reports the outcome.
 flow run examples/hello-world/workflow.yaml >/dev/null
@@ -1534,6 +1537,7 @@ flow validate examples/hello-world/workflow.yaml`,
 	}
 
 	addOutputFlag(runCmd)
+	addRawOutputFlag(runCmd)
 	addFollowFlags(runCmd)
 	addInputFlags(runCmd)
 
@@ -1590,7 +1594,7 @@ flow validate examples/hello-world/workflow.yaml`,
 			"in production opens the gate here, one it refuses is refused here, and an approver " +
 			"who is this run's own starter is refused by `distinct_from_starter:` on both. It " +
 			"remains a rehearsal, and says so: nothing attested it, and the gate's own " +
-			"`sender.local` output reads true.",
+			"`sender.local` output reads true." + runDocumentHelp,
 		Args: cobra.MinimumNArgs(1),
 		RunE: runLocalWorkflow,
 		Example: `# Run a workflow locally:
@@ -1600,7 +1604,7 @@ flow run local examples/hello-world/workflow.yaml
 flow run local examples/hello-world-multi-step/workflow.yaml
 
 # Take one step's output, the same way you would from a durable run:
-flow run local examples/hello-world/workflow.yaml | jq .stepValues.hello.namedValues
+flow run local examples/hello-world/workflow.yaml | jq .steps.hello
 
 # Ask for the whole run as one document, including how it went:
 flow run local examples/hello-world/workflow.yaml -o json | jq -r .status
@@ -1619,6 +1623,7 @@ flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --sec
 	}
 
 	addOutputFlag(runLocalCmd)
+	addRawOutputFlag(runLocalCmd)
 	addInputFlags(runLocalCmd)
 	addRevealSensitiveFlag(runLocalCmd)
 
@@ -1858,20 +1863,22 @@ flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | leng
 		Short: "Report what a run is doing",
 		Long: "Report the status of a run, and its outputs if it has finished. The status is " +
 			"written to stderr and the outputs to stdout, so the outputs can be piped. A run " +
-			"that failed is reported as a failure, so `flow get id && ...` behaves as expected.",
+			"that failed is reported as a failure, so `flow get id && ...` behaves as expected." +
+			runDocumentHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: runGet,
 		Example: `# Ask what a run is doing:
 flow get flowstate-workflow-3f7c
 
 # Keep only the outputs:
-flow get flowstate-workflow-3f7c | jq .stepValues
+flow get flowstate-workflow-3f7c | jq .steps
 
 # Ask about one attempt rather than the current one:
 flow get flowstate-workflow-3f7c --run-id 0198f1e2-...`,
 	}
 
 	addOutputFlag(getCmd)
+	addRawOutputFlag(getCmd)
 	addRevealSensitiveFlag(getCmd)
 
 	getCmd.Flags().String("run-id", "",

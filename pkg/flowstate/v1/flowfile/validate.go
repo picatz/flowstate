@@ -2740,7 +2740,14 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// `for_each`'s `results` gets below, and neither loop kind's certainty reaches past
 	// its own top-level name.
 	if loop := node.GetLoop(); loop != nil {
-		if state := loop.GetState(); state != "" && ref.Output == state {
+		// A loop whose carried state happens to be named `error` collides, by
+		// spelling alone, with the tolerated-error output a `continue_on_error:`
+		// loop also carries. Where the policy is set, `error` is not a mistaken
+		// reach for the loop's `as:` name — it is the real output the policy
+		// grants — so that reading has to win before the state-name message
+		// below claims the whole name for itself.
+		if state := loop.GetState(); state != "" && ref.Output == state &&
+			!(ref.Output == toleratedErrorOutput && node.GetPolicy().GetContinueOnError()) {
 			return Diagnostic{
 				Step: stepID, Field: inputName, Value: ref.Output,
 				Message: fmt.Sprintf(
@@ -2968,11 +2975,17 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 // [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
 func certainNames(node *v1.Node) []string {
 	entries, _ := v1.OutputNames(node, nil)
-	names := make([]string, 0, len(entries))
+	names := make([]string, 0, len(entries)+1)
 	for _, e := range entries {
 		if e.Name != "" {
 			names = append(names, e.Name)
 		}
+	}
+	// This output belongs to the step policy rather than its kind. Include it in
+	// every fixed set so the early compound-step checks agree with the generic
+	// task path below.
+	if node.GetPolicy().GetContinueOnError() {
+		names = append(names, toleratedErrorOutput)
 	}
 	return names
 }
