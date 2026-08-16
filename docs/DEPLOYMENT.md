@@ -493,6 +493,152 @@ in front of it: that is exactly the plaintext-to-the-internet case the flag's
 help text tells you not to use it for, and the cluster network is not a
 substitute boundary the way a container's published-port binding is.
 
+### Health checks and probes
+
+`flow server` answers `GET`/`HEAD /healthz` with `200` and an empty body —
+nothing else, deliberately: an unauthenticated endpoint that describes the
+deployment (version, config, dependency state) is reconnaissance served on
+request (`healthzHandler`, `cmd/flow/routing.go:118-126`). It is mounted in
+two places:
+
+- On the **public** listener, unauthenticated, always — `serverHandler`,
+  `cmd/flow/routing.go:94`.
+- On the **internal** listener, if `--internal-listen`
+  (`FLOWSTATE_INTERNAL_ADDRESS`) names a loopback address — `internalHandler`,
+  `cmd/flow/routing.go:160`. The internal listener also carries `/debug/pprof/*`
+  (`cmd/flow/routing.go:167-171`), which is why it has no default and is
+  refused off loopback (`checkInternalListenAddress`,
+  `cmd/flow/internallistener.go:79-90`): pprof can read this process's memory
+  and running goroutines, and the listener has no TLS or authentication of its
+  own.
+
+There is exactly one probe endpoint — `flow server` does not expose a
+separate readiness or startup route. What makes `/healthz` usable as more than
+a bare liveness check is startup ordering: `flow server` dials Temporal with
+the SDK's eager `client.DialContext` (`cmd/flow/main.go:809`, wired through
+`temporalclient.Dial`, `pkg/flowstate/v1/temporalclient/temporalclient.go:175-187`)
+and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
+and every other startup check (TLS configuration, auth policy load, plugin
+catalog build), succeeds. So the first `200` from `/healthz` already implies
+the initial Temporal connection worked; it does not mean the connection is
+*still* good, since nothing re-checks it afterward, and it says nothing about
+the pool's per-tenant Temporal clients (`temporalclient.Pool`) reconnecting
+after that.
+
+`flow worker` exposes no HTTP surface at all — no listener, no `/healthz`, no
+`--internal-listen` flag — so a worker's liveness has to come from the
+process itself: run it under a supervisor that treats process exit as the
+signal (`systemd`'s `Restart=on-failure` in the [systemd
+recipe](#single-vm-ec2-or-similar-systemd--the-best-supported-production-shape)
+above, or a Kubernetes `Deployment`'s own restart-on-crash) rather than an
+HTTP probe, because there is no port to point one at.
+
+A Kubernetes `httpGet` probe is dialed by the kubelet from the node's own
+network namespace, against the pod's IP — not from inside the pod's network
+namespace — so it can only reach a listener bound to an address the pod IP
+routes to. That is exactly what the public listener is, per the "pod's
+`FLOWSTATE_ADDRESS` needs a flag alongside it" note above (`0.0.0.0:9233`,
+wildcard bind). The internal listener is the opposite on purpose: refused
+off loopback (`checkInternalListenAddress`,
+`cmd/flow/internallistener.go:79-90`), so it never accepts a connection that
+didn't originate in the same network namespace — which rules it out for a
+`httpGet` probe target, not just as a matter of style. So:
+
+The `httpGet` probes below assume the **upstream-terminated-TLS** shape from
+the [Kubernetes](#kubernetes) section above (`--tls-terminated-upstream`,
+Ingress does the TLS): the pod's public listener speaks plain HTTP, and
+`httpGet`'s `scheme` defaults to `HTTP`, so it needs no `scheme:` field to
+line up. If the pod terminates TLS itself
+(`FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE` instead), `/healthz`
+shares that listener with everything else `flow server` serves
+(`healthzHandler` is mounted on the same mux the TLS-wrapped `http.Server`
+answers — `cmd/flow/main.go:974`, `:1032-1033`) and comes back over HTTPS
+only; an `httpGet` probe with no `scheme:` then dials plaintext against a
+TLS port and every probe fails, which reads as a healthy pod stuck in a
+restart loop, not as a TLS error anywhere the kubelet reports. Setting
+`scheme: HTTPS` gets the handshake started, but does not finish it if the
+pod also requires client certificates (`--tls-client-auth` /
+`client_certificate_required`, `cmd/flow/main.go:996`) — the kubelet's probe
+client presents none, and a `Kubernetes` probe has no field to give it one.
+When the pod terminates TLS itself, point the probes at the loopback `exec`
+probe below instead of `httpGet`.
+
+```yaml
+        # startupProbe: gives Temporal-dial-plus-policy-load startup room
+        # before liveness/readiness get a vote, without lowering their own
+        # timeouts to cover a case that only happens once per pod.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 9233
+          failureThreshold: 30
+          periodSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9233
+          periodSeconds: 10
+          failureThreshold: 3
+        # readinessProbe: same route as liveness, because flow server has no
+        # separate readiness check today. It answers "the process is up and
+        # its one-time startup checks passed" (see above), not "Temporal is
+        # reachable right now" — a mid-run Temporal outage does not flip this
+        # to unready, so a readiness probe alone will not pull a pod out of
+        # an Ingress/Service's rotation for that failure mode.
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9233
+          periodSeconds: 10
+          failureThreshold: 3
+```
+
+The internal listener is also the fix for server-terminated TLS **when that
+TLS comes from an explicit `--tls-cert-file`/`--tls-key-file` pair**, and not
+only a way to keep credential-free probe traffic off the RPC port when that
+is a concern on the upstream-terminated shape above — either way it works
+the same, just not through `httpGet`. It does not apply when TLS comes from
+`--tls-acme-hosts`: `resolveACMESettings` refuses to start `flow server` if
+`--internal-listen` is set alongside it at all (`cmd/flow/acme.go:185-194`),
+because the internal listener is loopback or a private address by design and
+a public CA can never issue it a certificate. An ACME deployment needing
+probe traffic off the TLS-terminated port has no `httpGet` workaround here;
+the options are a sidecar or a probe that speaks the ACME-issued cert's
+protocol.
+
+For the explicit-certificate case, set `--internal-listen 127.0.0.1:9090`
+and point **`exec` probes** at it instead of `httpGet` — for all three
+probes above, not just liveness, since `startupProbe` and `readinessProbe`
+are equally plaintext `httpGet` checks against the TLS-terminated port and
+fail the same way if left as they are. `exec` runs the command inside the
+container's own network namespace, which loopback is reachable from, and the
+internal listener never carries TLS or client-cert requirements of its own
+(`internalHandler`, `cmd/flow/routing.go:160`) regardless of what the public
+listener demands:
+
+```yaml
+        startupProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          failureThreshold: 30
+          periodSeconds: 2
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+```
+
+That trades a probe dependency on the container image having `wget` (or
+`curl`) for keeping probe traffic off the RPC port and away from anything
+that terminates TLS in front of it; whether that trade is worth making is a
+per-deployment call this document isn't going to make for you.
+
 ### Graceful shutdown
 
 `flow worker` catches SIGINT and SIGTERM — the signal every recipe above
@@ -663,6 +809,88 @@ substrate whose whole job is being the thing that enforces limits
 correctly under load; this repo's own design bias (`CLAUDE.md`, "proto-first",
 "leaning into Temporal") is to surface what Temporal does rather than
 reimplement it, and this is exactly that call.
+
+## Metrics
+
+Telemetry is OTLP push, gated on the standard `OTEL_EXPORTER_OTLP*`
+environment variables — unset means nothing is emitted at all: no exporter,
+no goroutines, no network (`telemetryConfigured`, `cmd/flow/telemetry.go:98-103`).
+There is no Prometheus-shaped `/metrics` scrape endpoint on either listener;
+[internalHandler](#health-checks-and-probes)'s own doc comment says why —
+standing one up means a second telemetry pipeline (a registry plus an
+exporter) this tree does not carry today (`cmd/flow/routing.go:141-146`). If
+your metrics stack expects to scrape, point an OTel Collector's OTLP receiver
+at it and let the collector's own Prometheus exporter serve `/metrics` from
+there; `examples/observability/docker-compose.yaml` wires exactly that
+(Collector receiving OTLP, Prometheus scraping the Collector).
+
+Every metric below is real code, cited by call site — not a proposal. Two
+instrumentation sources exist, and one deliberate gap:
+
+**RPC metrics**, from the `otelconnect` interceptor wired onto every command
+that speaks Connect RPC — `flow server` (`cmd/flow/main.go:923`), `flow server
+dev` (`cmd/flow/serverdev.go:724`), and every CLI/MCP client call
+(`cmd/flow/client.go:270`). `otelconnect.NewInterceptor()` is called with no
+options, so both its default instruments are active
+(`instruments.go:44-49`, `connectrpc.com/otelconnect@v0.9.0`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `rpc.server.duration` / `rpc.client.duration` | histogram | ms | `rpc.system`, `rpc.service`, `rpc.method`, `rpc.connect.error_code` or `rpc.grpc.status_code`, `net.peer.name`, `net.peer.port` | Wall time per RPC, server- or client-side depending which end recorded it |
+| `rpc.server.request.size` / `rpc.client.request.size` | histogram | bytes | same as above | Uncompressed request message size |
+| `rpc.server.response.size` / `rpc.client.response.size` | histogram | bytes | same as above | Uncompressed response message size |
+| `rpc.server.requests_per_rpc` / `rpc.client.requests_per_rpc` | histogram | 1 | same as above | Messages received per RPC (1 for every non-streaming call) |
+| `rpc.server.responses_per_rpc` / `rpc.client.responses_per_rpc` | histogram | 1 | same as above | Messages sent per RPC |
+
+(`rpc.service`/`rpc.method` come from the Connect procedure path;
+`net.peer.*` from the connection's remote address — `attributes.go:48-83`,
+same module.)
+
+**Plugin metrics**, from every plugin process a worker launches
+(`pkg/flowstate/v1/plugin/telemetry.go:42-47`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.plugin.operation.duration` | histogram | s | `flowstate.plugin.name`, `flowstate.plugin.operation`, `flowstate.task.name` (when the operation is task-scoped), `flowstate.plugin.outcome` | Duration of one host-to-plugin operation (`launch`, `start`, `health`, `execute`) |
+| `flowstate.plugin.calls` | counter | — | same as above | One increment per operation, same attribute set as the duration it accompanies |
+| `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, or `unreachable` — `plugin.go:87-99`; `unknown` is the pre-poll default and is never recorded, since an unspecified poll response is mapped to `not serving` before the metric is written) | One increment per health poll result (`plugin.go:353`, `plugin.go:385`) |
+| `flowstate.plugin.restarts` | counter | — | none | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`plugin.go:732`) |
+| `flowstate.plugin.launch.failures` | counter | — | none | One increment per failed plugin launch (`launch.go:93`) |
+| `flowstate.plugin.protocol.errors` | counter | — | none | One increment when a launch fails specifically on handshake — `ErrHandshake` or `ErrHandshakeTimeout` (`launch.go:96`) |
+
+The last three carry no labels at the call site — a launch failure or a
+protocol error happens before a plugin identity is necessarily known, and
+`restarts` is recorded without one either, so none of the three can be
+filtered by plugin name today; only the span each operation opens carries
+`flowstate.plugin.name` regardless of outcome. `flowstate.plugin.name` and
+`flowstate.task.name` are `ClassConfiguration` labels (bounded by which
+plugins/tasks a deployment installs, not by a caller) and every label passes
+through `pkg/flowstate/v1/metricschema` before reaching an instrument, which
+drops an unrecognized key and caps a runaway value's cardinality behind an
+`OverflowValue` sentinel rather than losing the measurement — see that
+package's doc comment for the full policy.
+
+**Temporal SDK metrics** are also live once telemetry is on: `initTelemetry`
+wires a `client.MetricsHandler` (`opentelemetry.NewMetricsHandler`, meter name
+`temporal-sdk`) into both the server's and the worker's Temporal client
+options, which the SDK had never had a handler for before this landed
+(`cmd/flow/telemetry.go:35-41`, `:290-292`). That handler emits the Go SDK's
+own instrument set — task-queue backlog, poller counts, workflow-task
+latency, activity failures among them — under names and label conventions
+Flowstate does not define and this document is not going to restate, since
+they belong to `go.temporal.io/sdk` and drift with it rather than with this
+codebase; see the [Temporal SDK metrics
+reference](https://docs.temporal.io/references/sdk-metrics) for the current
+list. Verified here only as "on and reachable," not enumerated.
+
+**No metric exists yet for a run's own lifecycle** — started, completed,
+failed, a step's retry count — searched for and not found anywhere under
+`pkg/flowstate/v1` or `cmd/flow` outside the two tables above. An operator
+wanting "runs per tenant per hour" or "step failure rate" today has to derive
+it from spans (`engine.startTaskSpan` and neighbors) or from `flow list`
+against Temporal visibility, not from a counter. That is a real gap, not a
+documentation one — file it separately rather than treat this catalog as
+covering it.
 
 ## Worker versioning, every time
 
