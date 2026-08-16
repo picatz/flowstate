@@ -3430,9 +3430,18 @@ the same iteration count and the same state transitions.
   so they cannot run at once — which is why a loop has no `max_parallel:` at all, and a
   concurrent variant would need a different meaning for "carry" that is not obvious.
   Nested loops are refused by the validator with a positioned diagnostic
-  (`flowfile/validate.go`, locked by `flowfile/loopnesting_test.go`) that recommends
-  hoisting the inner loop into a `call:`, because their suspend/compaction
-  interaction across two `loop_state` frames wants its own cases before it is claimed.
+  (`flowfile/validate.go`, locked by `flowfile/loopnesting_test.go`), and again at
+  the RPC boundary by `CheckLoopNesting` for a specification that never was a
+  Flowfile and so never met that compiler, because their
+  suspend/compaction interaction across two `loop_state` frames wants its own cases
+  before it is claimed. The refusal reaches through a `call:` as well. Hoisting the
+  inner loop into a called workflow was once recommended here as the workaround, and
+  it is not one: a callee runs atomically at the outer loop's deeper suspend level, so
+  the hoisted shape multiplies the two iteration ceilings with no opportunity to
+  Continue-As-New between inner iterations — precisely the untested interaction being
+  deferred. What to write instead is one loop: flatten the two, or move the inner
+  iteration into a task. Why the validator sees into a callee at all is
+  "A `call:` is transparent to static analysis," in the sixth round below.
 - **A pre-body `while`.** Deferred as unnecessary: the do-while covers it (guard the
   body with an `if:`), and adding a second loop mode is 2ⁿ dialects for a shape the
   first already reaches.
@@ -3955,6 +3964,68 @@ total compiled size is bounded by breadth — [`maxCallExpansionNodes`](../pkg/f
 — because a diamond of calls (`a` calls `b` twice, each of which calls `c` twice) embeds
 four whole copies of `c`'s steps, the same shape a repeated YAML alias has, and nothing
 here deduplicates a callee compiled more than once.
+
+### A `call:` is transparent to static analysis
+
+**A static check descends into a `call:`'s callee.** The unit a check runs over is
+the compiled specification, not the file someone typed. A callee is resolved at
+compile time and carried whole (above), so the callee's steps *are* steps of the
+thing that will run — declining to look at them would be declining to analyse half
+the program while claiming to have checked it.
+
+Two surfaces answered this independently before it was written down, which is why it
+is written down here rather than argued again: `CheckPolicyPlacement` walks into
+`Call.workflow` looking for a `timeout:`/`retry:` that binds nothing, and the
+validator's loop-nesting refusal walks into it looking for a `loop:` inside a
+`loop:`. Both arrived at descent on their own. The next static check inherits the
+answer instead of re-deriving it.
+
+What made this look like an open question is that **isolation and analysis are two
+different boundaries, and they were being conflated.** A callee sees its bound
+`inputs:` and nothing else — no caller step, no caller `vars:`, no enclosing loop
+binding — and that is a *runtime scoping* property, the thing that makes a called
+workflow understandable apart from its callers. It says what a callee may *read*
+while it runs. It says nothing about what a compiler may *look at* beforehand, and
+reading it as an analysis boundary buys an author nothing: a refusal that a callee
+can launder is not a refusal, and the shapes being refused here — a policy key that
+binds nothing, two loop frames the engine cannot suspend between — are exactly the
+shapes a caller cannot see and would not think to check.
+
+This extends the rule that governs every other diagnostic in this document —
+*report what is a property of the file, stay silent about what a deployment
+decides.* That rule does not settle a callee, because a callee is neither: it is
+not the file in the author's editor, and it is not a deployment's configuration. The
+extension is the sentence above: **the unit of analysis is the compiled
+specification, not the source file.** A property of the compiled spec is reportable
+however many files it took to assemble it, and a deployment's answers stay out of it
+just as before.
+
+#### What a diagnostic that descended looks like
+
+Descent means an author can be told about a defect in a file they did not write, so
+the diagnostic owes them the way back. The shape, which the compiler already
+established for a callee that fails to compile:
+
+- **Position at the call site**, in the file being compiled. That is the line the
+  author can act on, and the only position they can see from where they are.
+- **Name the callee**, as written in the `call:` — `"./workflows/inner.yaml"`, the
+  path the author typed, not a resolved absolute one.
+- **Then say what was found there**, quoting the callee's own message.
+
+A callee that will not compile is reported as *calls "./workflows/x.yaml", which
+failed to compile:* followed by that file's own diagnostics, indented beneath. The
+nested-loop refusal follows it: positioned on the *caller's* `loop:` step, naming the
+callee holding the inner loop and the `call:` step that reaches it.
+
+One gap, stated rather than papered over. `CheckPolicyPlacement` is the server-side
+gate on a specification arriving over the RPC path — a hand-built `Workflow` with no
+Flowfile behind it — so its error names the offending step id and nothing else: no
+position, no call site, no callee, because in that path there is no source file for
+any of the three to point into. That is right for what it guards, and it is a gap
+for anyone who reaches it holding a Flowfile, since the message cannot tell them
+which of their calls led to the step it names. Nobody does today — a Flowfile meets
+the positioned compiler check first, and the server check exists for specifications
+that never were one — so it is recorded here, not fixed here.
 
 ### Pinning what a call reads
 
