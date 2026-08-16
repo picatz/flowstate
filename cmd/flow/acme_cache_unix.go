@@ -110,18 +110,35 @@ func checkPathComponentIsSafe(component string, info os.FileInfo, uid uint32) er
 	// replace any entry inside it through their own owner-permission bits,
 	// whatever the directory's group/world bits say — a 0755 directory owned
 	// by another identity still lets that identity swap this cache's parent
-	// out from under it. Root is trusted infrastructure (the usual owner of
-	// `/`, `/var`, `/etc`) and is checked the old way — refused only if it is
-	// *also* world-writable and not sticky, the `/tmp` shape — because
-	// refusing every root-owned ancestor would refuse nearly every real
-	// deployment.
+	// out from under it. Root is the exception, as trusted infrastructure and
+	// the usual owner of `/`, `/var` and `/etc`: refusing every root-owned
+	// ancestor would refuse nearly every real deployment. Root's directories
+	// still face the writability check below, which is a separate question
+	// asked of every component regardless of who owns it.
 	if stat.Uid != uid && stat.Uid != 0 {
 		return fmt.Errorf("--tls-acme-cache path component %s is owned by another identity (uid %d) "+
 			"and so can be renamed or replaced regardless of its mode", component, stat.Uid)
 	}
+	// Writability is judged independently of ownership, because it is a
+	// separate question: a directory *this* identity owns at 0777 is
+	// world-writable all the same — the bits say any user may create, rename
+	// and remove entries in it, and owning it does nothing to stop them.
+	// Gating the check on `stat.Uid != uid`, as an earlier version did, waved
+	// through exactly two shapes: a service-owned 0777 ancestor, and — when
+	// the process runs as root — every root-owned ancestor, since `stat.Uid ==
+	// uid` then holds for `/`, `/var` and everything else root owns, which is
+	// the whole path.
+	//
+	// The sticky exemption is a property of the directory rather than of who
+	// owns it, so it survives the split unchanged: on a sticky directory the
+	// kernel permits only an entry's own owner (or the directory's owner) to
+	// rename or remove that entry, so a 1777 `/tmp` cannot be used to swap out
+	// a cache directory this identity already owns. That is the case the
+	// exemption exists for. It is scoped to directories because the bit means
+	// nothing else anywhere else.
 	otherWritable := info.Mode().Perm()&0o022 != 0
-	sticky := info.Mode()&os.ModeSticky != 0
-	if stat.Uid != uid && otherWritable && !sticky {
+	sticky := info.IsDir() && info.Mode()&os.ModeSticky != 0
+	if otherWritable && !sticky {
 		return fmt.Errorf("--tls-acme-cache path component %s is writable by another identity and can be swapped", component)
 	}
 	return nil

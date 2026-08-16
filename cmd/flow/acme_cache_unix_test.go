@@ -61,6 +61,54 @@ func TestCheckPathComponentIsSafeRefusesAnAttackerOwnedDirectoryEvenAtASafeMode(
 	require.Error(t, err, "a world-writable, non-sticky directory was accepted")
 }
 
+// TestCheckPathComponentIsSafeRefusesAWorldWritableDirectoryTheServiceOwns is
+// the mirror of the case above: where that one is a check that read only mode
+// and missed ownership, this is a check that read ownership and missed mode.
+// A world-writable directory is world-writable whoever owns it — the bits let
+// any user create, rename and remove entries in it, and owning it changes
+// nothing about that — so `stat.Uid != uid && otherWritable && !sticky` had
+// two holes. A service-owned 0777 ancestor satisfied neither arm, and a
+// root-run process reading a root-owned 0777 ancestor fell out of the same
+// expression, which is every component of the path when the service is root.
+func TestCheckPathComponentIsSafeRefusesAWorldWritableDirectoryTheServiceOwns(t *testing.T) {
+	t.Parallel()
+
+	const serviceUID = 1000
+
+	err := checkPathComponentIsSafe("/service-owned-but-world-writable",
+		fakeFileInfo{mode: fs.ModeDir | 0o777, uid: serviceUID}, serviceUID)
+	require.Error(t, err, "a 0777 directory was accepted because the service identity happened to own it")
+	require.Contains(t, err.Error(), "writable by another identity")
+
+	// The root-run shape of the same hole: uid 0 reading a root-owned 0777
+	// directory. Ownership matches, so the old predicate short-circuited on
+	// every component of every path such a deployment could name.
+	err = checkPathComponentIsSafe("/root-owned-but-world-writable",
+		fakeFileInfo{mode: fs.ModeDir | 0o777, uid: 0}, 0)
+	require.Error(t, err, "a 0777 directory was accepted because a root-run process owned it")
+	require.Contains(t, err.Error(), "writable by another identity")
+
+	// Group-writable is the same question asked through the other bit.
+	err = checkPathComponentIsSafe("/service-owned-but-group-writable",
+		fakeFileInfo{mode: fs.ModeDir | 0o770, uid: serviceUID}, serviceUID)
+	require.Error(t, err, "a group-writable directory was accepted because the service identity owned it")
+
+	// And the exemption still exempts what it exists for: `/tmp`. A sticky
+	// 1777 directory cannot be used to rename or remove an entry its owner
+	// did not create, so it stays accepted — owned by root, and owned by the
+	// service itself, since the bit is a property of the directory rather
+	// than of who owns it.
+	require.NoError(t, checkPathComponentIsSafe("/tmp",
+		fakeFileInfo{mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: 0}, serviceUID),
+		"a sticky world-writable directory (the /tmp shape) must stay accepted")
+	require.NoError(t, checkPathComponentIsSafe("/service-owned-sticky",
+		fakeFileInfo{mode: fs.ModeDir | fs.ModeSticky | 0o777, uid: serviceUID}, serviceUID))
+
+	// A private directory is unaffected either way.
+	require.NoError(t, checkPathComponentIsSafe("/service-owned-private",
+		fakeFileInfo{mode: fs.ModeDir | 0o755, uid: serviceUID}, serviceUID))
+}
+
 func TestCheckACMECacheDirRefusesSymlinkPath(t *testing.T) {
 	t.Parallel()
 
