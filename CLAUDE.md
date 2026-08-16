@@ -675,6 +675,24 @@ When several agents edit interlocking packages:
   your own worktree path) and kill exactly those. The corollary for the victim:
   a test run that dies with SIGTERM and no failure output was probably somebody's
   pattern, not your diff; re-run before diagnosing.
+- **A dispatched agent's own background command does not wake it back up.** An
+  agent that starts `go run ./tools/gate` or a CI-poll loop with a backgrounded
+  shell and then ends its turn to "wait for the notification" is not paused, it
+  is finished — the notification for a background job fires into whoever
+  dispatched it, not back into the agent that started it, and nothing resumes a
+  turn that has already returned. In one session, five separate dispatches
+  stalled this way in a row, each needing a human to notice a "waiting for the
+  monitor" hand-back with no monitor behind it and manually resume the agent
+  with the same task. Poll a long-running command inline, in the same turn,
+  with a sleep loop (`until ! kill -0 $PID 2>/dev/null; do sleep 15; done`)
+  rather than backgrounding it and stopping.
+- **Commit before a checkpoint you don't control, not after.** A container
+  restart during one of those stalls killed two agents mid-task and discarded
+  everything they had not yet committed — one of them a finished, reviewed fix
+  sitting only in the working tree because the polling loop above never got to
+  the commit step. Nothing here schedules a restart for you to plan around, so
+  treat every long wait (a gate run, CI, a review round) as one: commit whatever
+  is correct and complete before starting it, not after it returns.
 - **Leave a green stopping point.** A package with fewer features that compiles and
   passes beats a half-migrated one. If a migration cannot finish, back it out and
   document it rather than leaving both halves.
