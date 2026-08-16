@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -397,6 +398,28 @@ func stripCronComment(expression string) string {
 	return expression
 }
 
+// cutCronField splits s at its first run of whitespace — the same
+// tokenization strings.Fields uses to split a cron expression into fields,
+// and so the one a `CRON_TZ=`/`TZ=` prefix has to be detected with too.
+// strings.Cut(s, " ") only recognizes a literal space, so a prefix
+// separated by a tab (or any other whitespace strings.Fields accepts) is
+// missed: cronMinimumPeriod then reads the whole "CRON_TZ=zone\t..." token
+// as an ordinary field rather than a zone override, leaving zoneName at the
+// trigger's own time_zone. When that trigger zone is UTC (or unset) while
+// the tab-separated prefix names a real offset-changing zone, the estimate
+// charges the exact nominal period for a cadence this package can no longer
+// prove is bound by it — the same undercount every other named-zone fix in
+// this file exists to close, just reached through the one prefix-detection
+// site that hadn't been aligned with the field-count classification's own
+// whitespace grammar.
+func cutCronField(s string) (head, rest string, found bool) {
+	i := strings.IndexFunc(s, unicode.IsSpace)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], strings.TrimLeftFunc(s[i:], unicode.IsSpace), true
+}
+
 // isUTC reports whether zone names no offset at all: the empty string
 // (unset, which [checkTimeZoneName] documents as meaning UTC) or a spelling
 // of UTC itself. Every other IANA name is a zone [wallClockCadencePeriod]
@@ -497,7 +520,7 @@ func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration 
 	expression = strings.TrimSpace(stripCronComment(expression))
 
 	zoneName := triggerTimeZone
-	if zone, rest, found := strings.Cut(expression, " "); found {
+	if zone, rest, found := cutCronField(expression); found {
 		if after, ok := strings.CutPrefix(zone, "CRON_TZ="); ok {
 			zoneName = after
 			expression = strings.TrimSpace(rest)
@@ -758,8 +781,10 @@ func CheckCronExpression(expression string) error {
 	}
 
 	// The zone prefix, which is a whole field of its own and would otherwise be
-	// counted as a minute.
-	if zone, rest, found := strings.Cut(expression, " "); found {
+	// counted as a minute. cutCronField rather than strings.Cut(expression, " "),
+	// so a prefix separated by a tab is detected the same way strings.Fields
+	// would tokenize it below, rather than being read as an ordinary field.
+	if zone, rest, found := cutCronField(expression); found {
 		if name, isZone := strings.CutPrefix(zone, "CRON_TZ="); isZone {
 			if err := checkTimeZoneName(name); err != nil {
 				return fmt.Errorf("cron expression %q: %w", original, err)

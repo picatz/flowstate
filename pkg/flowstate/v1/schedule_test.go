@@ -791,6 +791,52 @@ func TestScheduleBackfillNamedZoneAffectsOrdinaryCronFields(t *testing.T) {
 		"the six-field form must fall back the same way the five-field form does")
 }
 
+// TestScheduleBackfillCronTZPrefixDetectedAcrossAnyWhitespace is the
+// regression for the finding that a `CRON_TZ=`/`TZ=` prefix separated from
+// its fields by a tab (or any whitespace strings.Fields recognizes other
+// than a literal space) went undetected: cronMinimumPeriod cut only on
+// " ", so the whole "CRON_TZ=zone\t..." token was read as an ordinary field
+// rather than a zone override, leaving zoneName at the trigger's own zone.
+// With the trigger's own zone left at UTC and a tab-separated CRON_TZ
+// naming a real offset-changing zone, the old code charged the exact
+// nominal period for a cadence this package can no longer prove is bound by
+// it — the identical undercount every other named-zone fix in this file
+// exists to close.
+func TestScheduleBackfillCronTZPrefixDetectedAcrossAnyWhitespace(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-48 * time.Hour)),
+		EndAt:   timestamppb.New(now),
+	}}
+
+	// Space-separated: already covered by the fix above, restated here as
+	// the baseline this tab-separated case must match.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"CRON_TZ=America/Caracas 0 * * * *"}}, backfill),
+		"more than 100000 firings",
+		"a space-separated CRON_TZ naming a non-UTC zone falls back to one-second resolution")
+
+	// Identical expression, tab-separated instead of space-separated. The
+	// trigger's own time_zone is left unset (UTC) on purpose: if the
+	// tab-separated prefix goes undetected, zoneName falls through to the
+	// trigger's UTC zone and the estimate wrongly charges the exact minute
+	// floor instead of falling back.
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"CRON_TZ=America/Caracas\t0\t*\t*\t*\t*"}}, backfill),
+		"more than 100000 firings",
+		"a tab-separated CRON_TZ must be detected the same way a space-separated one is, and fall back "+
+			"to one-second resolution rather than being read as an ordinary field")
+
+	// CRON_TZ=UTC, tab-separated, must still keep the minute floor — the fix
+	// has to detect the prefix in both directions, not merely refuse
+	// everything it cannot parse.
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"CRON_TZ=UTC\t0\t*\t*\t*\t*"}}, backfill),
+		"a tab-separated CRON_TZ=UTC must still be recognized as UTC and keep the minute floor")
+}
+
 // TestWallClockCadencePeriodsAreNeverReturnedBare is a structural guard
 // against the exact class of bug that surfaced one call site at a time
 // across several review rounds: a cadence coarser than a second is a
