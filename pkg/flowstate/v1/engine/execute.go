@@ -243,6 +243,16 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		e.setFrame(depth, i)
 		e.progress.enter(depth, node.GetId())
 
+		// Deterministic and pure — [progress.currentDetailsMarkdown] only
+		// formats state [e.progress] already holds, the same values
+		// [ProgressQuery] already answers with, so this writes no history
+		// event and does no I/O; see that method's doc for the format and for
+		// why it is safe to call on every transition rather than rate-limited.
+		// Surfaces the same position through the SDK's own Details/Timeline
+		// views that [ProgressQuery] already answers over RPC (#753), so the
+		// two never have a second source of truth to drift from each other.
+		workflow.SetCurrentDetails(e.ctx, e.progress.currentDetailsMarkdown())
+
 		// Only the node the resume path points at continues descending into a
 		// saved position; everything after it starts fresh.
 		descend := resuming && i == start

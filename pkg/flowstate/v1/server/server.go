@@ -721,6 +721,33 @@ func runSearchAttributes(namespace, workflowName string) temporal.SearchAttribut
 	)
 }
 
+// runStaticSummary builds the single-line Markdown [client.StartWorkflowOptions.StaticSummary]
+// both [FlowstateServer.Run]/[FlowstateServer.SignalWithStart] (through
+// [FlowstateServer.prepareCreate]) and [FlowstateServer.CreateSchedule]'s fired
+// executions carry, so a run is legible in the Temporal Web workflow list
+// without opening it — see #753. One function for [runSearchAttributes]'s
+// exact reason: two independent renderings of "which workflow, which tenant"
+// drift, and CLAUDE.md's invariant-1 discipline says build this from the same
+// values already flowing into the memo and search attributes rather than a
+// third rendering of them.
+//
+// Unconditional, unlike [runSearchAttributes]: this is a Markdown string
+// field with no cluster-side registration to depend on, exactly the same
+// reason [workflowNameMemoEntry] is unconditional while the search attribute
+// beside it is not.
+//
+// Backtick-delimited, and safe to delimit that way because both inputs are
+// already constrained to a grammar with no backtick in it: workflowName by
+// the schema's `^[A-Za-z0-9-_]+$` on [v1.Workflow.Name], namespace by
+// [auth.ValidateNamespace]'s `[a-z0-9-]` grammar. Neither value is secret and
+// neither is derived from anything the memo does not already carry — see
+// [runSearchAttributes]'s comment on containment, which applies identically
+// here: this is Temporal visibility data, exactly as broadly readable as the
+// memo it mirrors.
+func runStaticSummary(namespace, workflowName string) string {
+	return fmt.Sprintf("`%s` · tenant `%s`", workflowName, namespace)
+}
+
 // EnsureSearchAttributesRegistered idempotently registers the search
 // attributes Flowstate projects onto a run, against one Temporal namespace.
 //
@@ -1222,6 +1249,14 @@ func (s *FlowstateServer) prepareCreate(
 		// the bucket it is scheduled in, or the first thing anyone writes is the
 		// one that puts them in their own.
 		Priority: fairnessFor(identity.GetNamespace()),
+
+		// Unconditional and built from the exact values the memo above already
+		// carries — see [runStaticSummary]. Makes a run legible in the Temporal
+		// Web workflow list without opening it (#753); StaticDetails is left
+		// unset here because prepareCreate has no natural longer-form
+		// description at this call site the memo does not already say more
+		// tersely — see [FlowstateServer.CreateSchedule], which does.
+		StaticSummary: runStaticSummary(identity.GetNamespace(), wf.GetName()),
 	}
 
 	// Projected into visibility only when registration was confirmed at

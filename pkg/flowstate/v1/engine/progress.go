@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"strings"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/proto"
@@ -131,6 +133,51 @@ func (p *progress) snapshot() *v1.RunProgress {
 	}
 
 	return out
+}
+
+// currentDetailsMarkdown renders the run's position for
+// [workflow.SetCurrentDetails] — see its call site in execute.go, right beside
+// [progress.enter], which is what keeps this current on every step
+// transition.
+//
+// Joined "`id` > `id` > `id`", the identical shape `cmd/flow/get.go`'s
+// positionPath renders a queried [v1.RunProgress] in: a reader who already
+// knows how `flow get`/`flow watch` spell a position should not have to learn
+// a second notation for the same fact in Temporal Web. The two cannot import
+// one function to share — this package cannot depend on `cmd/flow`, which is
+// the wrong direction for an engine to depend in — so the shape is kept in
+// sync by citing this comment rather than by one function.
+//
+// Empty stepID (a position asked about before the run reached anywhere)
+// renders nothing, matching [progress.snapshot]'s own treatment of the same
+// case — an empty [workflow.SetCurrentDetails] is simply never called for it,
+// which is honest: there is nothing to say yet, and inventing "on step 1"
+// would be a fact this position does not have.
+//
+// Built only from step ids, which [v1.Workflow_Node.Id]'s schema constrains
+// to `^[A-Za-z0-9-_]+$` (workflow.proto) — the same grammar
+// [server.runStaticSummary] already relies on to backtick-delimit safely, so
+// this is exactly as safe to render the same way. Nothing here is secret or
+// caller-supplied outside that grammar: a step id is an author's own
+// specification, exactly as public as the position [ProgressQuery] already
+// answers with, so nothing crosses the boundary CLAUDE.md's "Secrets never
+// enter workflow history" describes.
+func (p *progress) currentDetailsMarkdown() string {
+	if p == nil || p.stepID == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("On step `")
+	b.WriteString(p.stepID)
+	b.WriteByte('`')
+	for _, step := range p.path {
+		b.WriteString(" > `")
+		b.WriteString(step)
+		b.WriteByte('`')
+	}
+
+	return b.String()
 }
 
 // ancestors returns the steps enclosing the step the run is currently inside,
