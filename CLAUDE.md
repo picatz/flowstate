@@ -469,14 +469,29 @@ both current, both defensible.
 
 Worked example, because the general statement is too easy to nod at. A sketch on
 #726 proposed a `ClaimRequirement` message — `{claim, one_of_values}` — to annotate
-which claims gate an RPC. It reads well. It also mirrored `auth.ClaimRule`
-(`auth/policy.go:215`), the *one* policy surface in this repo that is not CEL:
-`SecretAccessPolicy` takes CEL strings (`auth/secretpolicy.go:61`), `netpolicy`
-evaluates CEL over an identity activation that already exposes `subject`, `issuer`,
-`namespace` and `claims` (`netpolicy/identity.go:27-30`). So the sketch proposed to
-canonize the legacy spelling into the schema, as a third copy, while the repo was
-already two-thirds of the way to the other answer. Five minutes of grep, before the
-sketch rather than after it, would have produced a better design and no discussion.
+which claims gate an RPC. It reads well. It is also the *third* spelling of "this
+claim must carry this value" in a tree that already had two, one of them in the
+schema and gating an RPC:
+
+- `SignalPolicyRule.claims` (`proto/flowstate/v1/signal.proto:95`) — a structured
+  `map<string, string>` of exact-match claim requirements, checked against the
+  sender the server attested, and the thing that decides who may signal a run.
+- `auth.ClaimRule` (`auth/policy.go:215`) — the same idea at token admission,
+  hand-written rather than schema-defined.
+- CEL, where the rest of policy lives: `SecretAccessPolicy` takes CEL strings
+  (`auth/secretpolicy.go:61`), and `netpolicy` evaluates CEL over an identity
+  activation already exposing `subject`, `issuer`, `namespace` and `claims`
+  (`netpolicy/identity.go:27-30`).
+
+Note what the grep changes, and that this section was itself corrected by one
+(#730). Without `SignalPolicyRule` the sketch looks like it mirrors a lone legacy
+struct, and "just use CEL" is the obvious answer. With it, the repository already
+has a schema-defined structured claims map gating an RPC — so the live question is
+whether the new surface should *be* that message rather than a fourth shape beside
+it, and the strongest argument against the sketch is not "CEL exists" but "this
+message exists, five files away, doing exactly this". Five minutes of grep, before
+the sketch rather than after it, would have produced a better design and no
+discussion.
 
 So, before proposing a schema addition, a config surface, a policy shape, or a new
 keyword:
