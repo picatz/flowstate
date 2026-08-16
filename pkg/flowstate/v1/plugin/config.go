@@ -207,6 +207,17 @@ type Config struct {
 	// MaxStderrLine bounds one captured stderr line. Zero selects
 	// [DefaultMaxStderrLine].
 	MaxStderrLine int
+
+	// beforeExec runs after a plugin's executable has been opened and hashed and
+	// before it is executed, with the plugin's path.
+	//
+	// It is the seam the time-of-check-to-time-of-use test replaces a binary
+	// through, and it is unexported so that no deployment can reach it: what it
+	// exists to make deterministic is a window that a test would otherwise have
+	// to hope for, and a sleep-shaped race test proves nothing on a loaded
+	// machine. Nothing outside this package sets it, so it is nil everywhere a
+	// plugin actually runs.
+	beforeExec func(path string)
 }
 
 // withDefaults returns a copy with every zero bound replaced by its default, so

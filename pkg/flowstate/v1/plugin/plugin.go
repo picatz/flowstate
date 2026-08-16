@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -157,7 +156,8 @@ type Plugin struct {
 	manifest *pluginv1.PluginManifest
 
 	// distribution is the digest of the executable this plugin was launched
-	// from, taken at the launch rather than read back later from the path.
+	// from, taken from the handle it was launched through rather than read back
+	// later from the path.
 	//
 	// The two are not the same fact. A path is a name, and an atomic replacement
 	// rebinds it: a digest read after the fact identifies whatever is at the name
@@ -165,6 +165,13 @@ type Plugin struct {
 	// has to be the bytes that served it, so it is captured beside the launch and
 	// retained, and a relaunch that produces a different one is refused (see
 	// [ErrDistribution]).
+	//
+	// Beside the launch is not close enough on its own, either: hashing the path
+	// and then executing the path is two opens with a window between them, and an
+	// atomic rename is what an in-place upgrade does. The digest is therefore
+	// taken from the same open descriptor the process is executed through, which
+	// closes the window where the platform permits it — see [execImage] for what
+	// each platform can promise.
 	distribution string
 
 	state     State
@@ -390,21 +397,42 @@ func (p *Plugin) recordHealth(h Health) {
 // start launches the process, handshakes, and asks the plugin to describe
 // itself. It is the whole of what has to succeed for a plugin to be usable, and
 // it is the same on the first launch and on every relaunch.
-// The digest is taken beside the launch and returned with the instance, so that
-// the caller records the bytes that this process is running rather than the bytes
-// that answer to its path afterwards.
+//
+// The executable is opened once, hashed, and executed through that same open
+// handle, so the digest returned beside the instance is the digest of the image
+// this process is running rather than of whatever answered to its path a moment
+// earlier or a moment later. See [execImage].
 func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
 	ctx, _, finish := p.telemetry.start(p.procCtx, "start", p.name, "")
 	var startErr error
 	defer func() { finish(startErr) }()
 
-	distribution, err := distributionDigest(p.path)
+	image, err := openExecImage(p.path, p.log)
+	if err != nil {
+		startErr = pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
+		return nil, nil, "", startErr
+	}
+	// Held open across the launch and no longer: Start returns after the child's
+	// execve has been attempted, so this cannot race the exec it is holding the
+	// image open for.
+	defer image.close()
+
+	distribution, err := image.digest()
 	if err != nil {
 		startErr = pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrLaunch, err))
 		return nil, nil, "", startErr
 	}
 
-	inst, err := launch(ctx, p.cfg, Found{Name: p.name, Path: p.path})
+	// The seam the time-of-check-to-time-of-use test replaces the binary
+	// through. It is nil in every configuration outside this package's tests —
+	// the field is unexported — and it sits exactly where the old window was, so
+	// a launch that went back to executing the path would fail that test rather
+	// than pass it by timing.
+	if p.cfg.beforeExec != nil {
+		p.cfg.beforeExec(p.path)
+	}
+
+	inst, err := launch(ctx, p.cfg, Found{Name: p.name, Path: p.path}, image)
 	if err != nil {
 		startErr = err
 		return nil, nil, "", err
@@ -422,6 +450,7 @@ func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
 		"version", manifest.GetVersion(),
 		"protocol", inst.protocolVersion,
 		"distribution", distribution,
+		"distribution_pinned", image.pinned,
 		"capabilities", capabilityNames(manifest.GetCapabilities()),
 		"schemes", manifest.GetSchemes(),
 		"tasks", taskNames(manifest.GetTasks()),
@@ -430,22 +459,16 @@ func (p *Plugin) start() (*instance, *pluginv1.PluginManifest, string, error) {
 	return inst, manifest, distribution, nil
 }
 
-// distributionDigest hashes an executable without holding it.
-//
-// Streamed rather than read: the file is chosen by whatever is in the discovery
-// directory, and a worker that allocates a plugin binary in full to hash it can
-// be stopped from starting by one very large file. See [flowstatev1.ContentDigestOf].
-func distributionDigest(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	return flowstatev1.ContentDigestOf(f)
-}
-
 // DistributionDigest is the digest of the executable currently serving.
+//
+// Where the host can execute an already-open descriptor — Linux, through
+// /proc/self/fd — this is the digest of the image the kernel ran: the file is
+// opened once, hashed, and executed through that same handle, so the two cannot
+// name different inodes. Where it cannot, it is the digest of the file that was
+// at the plugin's path immediately before the launch, which a replacement
+// landing between the hash and the exec can still falsify. [openExecImage] logs
+// which of the two a given launch got, so the weaker answer is never handed over
+// as though it were the stronger one.
 func (p *Plugin) DistributionDigest() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

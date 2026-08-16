@@ -320,6 +320,21 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		base.Schemes = []string{"future"}
 		return base, nil
 
+	case "self-digest":
+		// Reports the digest of the image this process is *running*, read from
+		// the running inode rather than from the path it was launched by, so a
+		// test can compare what the host recorded against what actually ran.
+		// See [runningImageDigest] and
+		// TestTheDigestIsOfTheImageThatRanWhenTheBinaryIsSwappedAtExec.
+		digest, err := runningImageDigest()
+		if err != nil {
+			return nil, err
+		}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
+		base.Schemes = []string{mode}
+		base.Description = digest
+		return base, nil
+
 	case "secrets-no-schemes":
 		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
 		return base, nil

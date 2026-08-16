@@ -243,10 +243,13 @@ func TestLaunchNoSuchBinary(t *testing.T) {
 
 	cfg := testConfig(t, t.TempDir()).withDefaults()
 
+	// A nil image, which is the launch path for a caller with no digest to
+	// protect: there is nothing to open, since the point of the case is a binary
+	// that is not there.
 	_, err := launch(t.Context(), cfg, Found{
 		Name: "ghost",
 		Path: filepath.Join(t.TempDir(), "flowstate-plugin-ghost"),
-	})
+	}, nil)
 	if !errors.Is(err, ErrLaunch) {
 		t.Fatalf("launch error = %v, want one wrapping %v", err, ErrLaunch)
 	}

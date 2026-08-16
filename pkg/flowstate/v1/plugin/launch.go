@@ -70,6 +70,13 @@ type instance struct {
 
 // launch starts a plugin binary and completes the handshake with it.
 //
+// image is the open handle on the executable, already hashed by the caller. What
+// is executed is that handle where the platform allows naming one, and the path
+// otherwise; either way the plugin's own argv[0] stays the path an operator
+// installed it at, because that is the name everything else here reports. A nil
+// image executes found.Path, which is what a caller with no digest to protect
+// wants.
+//
 // procCtx bounds the process's whole life: cancelling it terminates the plugin.
 // It is deliberately not the context of whatever call triggered the launch — a
 // plugin must outlive the request that first needed it.
@@ -78,7 +85,7 @@ type instance struct {
 // killed, the socket directory removed, and the pipes closed. A launch either
 // yields a usable instance or leaves nothing behind, because the failure paths
 // here are the ones that leak child processes.
-func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, err error) {
+func launch(procCtx context.Context, cfg Config, found Found, image *execImage) (inst *instance, err error) {
 	procCtx, _, finish := newTelemetry(cfg).start(procCtx, "launch", found.Name, "")
 	defer func() {
 		finish(err)
@@ -138,7 +145,19 @@ func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, e
 	// nothing in the path or the environment is interpreted, and no arguments,
 	// so there is nothing for a plugin to be configured with that an operator
 	// did not put in Config.Env.
-	cmd := exec.CommandContext(procCtx, found.Path)
+	//
+	// What is executed and what argv[0] says are deliberately allowed to differ:
+	// the first is the already-hashed descriptor wherever the platform can name
+	// one, which is the only way to be sure the digest describes this process,
+	// and the second is the installed path, which is what an operator, the
+	// catalog and every log line here call this plugin. Both contain a slash, so
+	// neither is looked up on $PATH.
+	execPath := found.Path
+	if image != nil {
+		execPath = image.execPath
+	}
+
+	cmd := exec.CommandContext(procCtx, execPath)
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
 	cmd.Env = pluginEnv(cfg, socketPath, token)

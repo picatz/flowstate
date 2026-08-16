@@ -226,7 +226,8 @@ whose before clicking, #348, not landed.
 ### Worker to plugin
 
 **Today.** `--plugin-dir` names an explicit local path an operator controls; a
-relative or world-writable search path is refused, with
+relative search path, or one writable by any user other than its owner (group
+or world), is refused, with
 `--allow-insecure-plugin-dir` as the named escape hatch
 (`pkg/flowstate/v1/plugin/doc.go:50-52`, `docs/DEPLOYMENT.md:508-515`). Plugin
 environments are built from nothing rather than inherited
@@ -235,9 +236,38 @@ resolved host-side, before `Execute`, and only for inputs the `TaskManifest` nam
 an unnamed input is refused (`docs/ARCHITECTURE.md:432-448`). Responses from a
 plugin are byte-bounded at the RoundTripper, below the RPC library, so no error path
 the library treats specially can miss the cap
-(`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`).
+(`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`). The distribution digest a
+run is pinned to is taken from the same open descriptor the process is executed
+through, on Linux via `/proc/self/fd`, so a binary *replaced* between the hash and
+the exec — written beside and renamed over, which is how software on disk ordinarily
+replaces itself — cannot make the recorded provenance describe bytes that never ran
+(`pkg/flowstate/v1/plugin/image.go`). The descriptor pins the inode rather than its
+contents, so a writer who modifies that inode *in place* in the same window can still
+part the digest from what runs; this admits no new principal, because both the search
+path and each binary in it are refused when they are writable by group or world
+(`discover.go:75,111`), which leaves only the owner — the party who already chooses
+what this worker executes. Sealing a private copy would close it and is not done: the
+image is hashed as a stream precisely so that one very large plugin file cannot stop a
+worker from starting, and copying it into memory to seal it reintroduces that.
 
-**Limits.** A launched plugin is trusted code with the worker's authority. The output
+**Limits.** Pinning the digest to the executed image is a Linux guarantee, and
+not one it makes about every plugin. A platform with no way to execute an
+already-open descriptor falls back to executing the path, which leaves the window
+this closes; so does any image the kernel runs through an *interpreter* rather
+than directly, because the kernel starts that interpreter and hands it the path to
+reopen after the descriptor naming it is gone — and the bytes that then run are
+the interpreter's, which nothing here hashes. `#!` is the familiar case and not
+the only one: a `binfmt_misc` registration without the open-binary (`O`) flag
+behaves identically for whatever format it claims, and the format it most often
+claims is *foreign-architecture ELF*, which is how a multi-arch image runs
+anything at all. Which images may be pinned is therefore an allowlist — an ELF
+whose class, byte order and machine are the ones this host's own loader claims,
+and nothing else — rather than a list of known-bad markers a host can add to at
+any time, or a magic-bytes test that a qemu-user target passes. Every case launches, and
+every case says which guarantee it is giving in a log line at every launch
+(`pkg/flowstate/v1/plugin/image.go`, `image_linux.go`, `image_other.go`). An
+operator who needs the strong guarantee ships a native binary. A launched
+plugin is trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin

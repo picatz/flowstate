@@ -99,7 +99,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// plugin providing it is loaded. This is the same [startPlugins] the worker,
 	// the server, `flow task run`, `flow plugins`, `flow mcp` and `flow lsp` all
 	// call, with the same discovery hardening, the same handshake and the same
-	// refusal of a world-writable directory. A local run that discovered plugins
+	// refusal of a directory other users can write to. A local run that discovered plugins
 	// its own way would be rehearsing a different deployment.
 	catalog, closePlugins, err := startPlugins(cmd, providers.registry)
 	if err != nil {
