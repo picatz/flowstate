@@ -179,3 +179,64 @@ func TestTenantRefusalNamesTheFlag(t *testing.T) {
 	require.True(t, strings.Contains(message, "routing misconfiguration"),
 		"the refusal must say what kind of problem this is, got: %s", message)
 }
+
+// runWithVarsFor is [runFor] for a workflow that declares a `vars:` block, so
+// the run dispatches [engine.WorkflowVars] on its way through.
+//
+// That activity is the one whose scope is built at its call site rather than
+// derived from a step, which is what makes it the arm a tenant guard is most
+// likely to get wrong in either direction — see
+// [TestWorkerForOneTenantRunsItsOwnRunDeclaringVars].
+func runWithVarsFor(namespace string) *v1.RunState {
+	state := runFor(namespace)
+	state.Workflow.Vars = map[string]*v1.Value{
+		"release": v1.NewExpr(`"v" + "1"`),
+	}
+
+	return state
+}
+
+// TestWorkerForOneTenantRunsItsOwnRunDeclaringVars is the regression that a fix
+// for the scoped-activity hole has twice been one line away from causing, and
+// it is not a control despite asserting a success.
+//
+// [engine.WorkflowVars] is dispatched with a scope assembled at the call site.
+// Give the tenant guard the obvious rule — an identity-less scope belongs to
+// the default tenant — without also giving that scope the run's identity, and
+// every `--tenant` worker refuses every run that declares `vars:`, its own
+// included. A previous attempt at this shipped exactly that and was reverted.
+//
+// So this asserts the direction the guard must *not* refuse, against the arm
+// that would have been refused, on a worker restricted to the run's own tenant.
+// The negative direction is
+// [TestWorkerForOneTenantRefusesAnotherTenantsRunDeclaringVars] below; both are
+// needed, because a guard that admits everything and a guard that refuses
+// everything each satisfy one of them.
+func TestWorkerForOneTenantRunsItsOwnRunDeclaringVars(t *testing.T) {
+	env := tenantWorker(t, "team-a")
+	env.RegisterActivity(engine.WorkflowVars)
+
+	env.ExecuteWorkflow(engine.Run, runWithVarsFor("team-a"))
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError(),
+		"a worker restricted to team-a refused team-a's own run for declaring vars:")
+}
+
+// TestWorkerForOneTenantRefusesAnotherTenantsRunDeclaringVars is the hole
+// itself, at the activity guard rather than at the run guard.
+//
+// The run guard already refuses this run at its entry point, which is why the
+// activity guard is a second line: the case it exists for is a wrong-tenant
+// worker sharing a queue and stealing an activity task from a run a
+// right-tenant worker already accepted. This drives the guard directly with the
+// arguments that dispatch produces, because that is the only way to reach an
+// activity whose run was never refused.
+func TestWorkerForOneTenantRefusesAnotherTenantsRunDeclaringVars(t *testing.T) {
+	env := tenantWorker(t, "team-b")
+
+	env.ExecuteWorkflow(engine.Run, runWithVarsFor("team-a"))
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.ErrorContains(t, env.GetWorkflowError(), `this run belongs to namespace "team-a"`)
+}

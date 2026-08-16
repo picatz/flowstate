@@ -399,6 +399,14 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		if err := workflow.ExecuteActivity(ctx, WorkflowVars, &v1.Scope{
 			AmbientVars: st.GetWorkflow().GetVars(),
 			Profile:     st.GetWorkflow().GetProfile(),
+
+			// The run's own identity, for no reason this activity itself reads:
+			// it evaluates expressions and asks nobody who is running. It is here
+			// so the scope this activity travels in says whose work it is, which
+			// is what [TenantInterceptor]'s activity guard checks. A scope that
+			// named no tenant would be the one activity a wrong-tenant worker
+			// could take without being refused.
+			Identity: st.GetIdentity(),
 		}).Get(ctx, &evaluated); err != nil {
 			return nil, err
 		}
