@@ -242,11 +242,16 @@ through, on Linux via `/proc/self/fd`, so a binary replaced between the hash and
 exec cannot make the recorded provenance describe bytes that never ran
 (`pkg/flowstate/v1/plugin/image.go`).
 
-**Limits.** Pinning the digest to the executed image is a Linux guarantee: a
-platform with no way to execute an already-open descriptor falls back to executing
-the path, which leaves the window this closes, and says so in a log line at every
-launch (`pkg/flowstate/v1/plugin/image.go`, `image_other.go`). A launched plugin is
-trusted code with the worker's authority. The output
+**Limits.** Pinning the digest to the executed image is a Linux guarantee, and
+not one it makes about every plugin. A platform with no way to execute an
+already-open descriptor falls back to executing the path, which leaves the window
+this closes; so does a `#!` script on any platform, because the kernel starts the
+interpreter and hands it the path to reopen, after the descriptor naming it is
+gone — and the bytes that run a script are the interpreter's, which nothing here
+hashes. Both cases launch, and both say which guarantee they are giving in a log
+line at every launch (`pkg/flowstate/v1/plugin/image.go`, `image_other.go`). An
+operator who needs the strong guarantee ships a compiled binary. A launched
+plugin is trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin

@@ -105,7 +105,13 @@ func TestExecImagePointsAtTheDescriptorRatherThanThePath(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, BinaryPrefix+"pinned")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+
+	// Deliberately not a `#!` script: those are executed by path on purpose
+	// (see [errShebangCannotBeExecutedByDescriptor]), so a script here would
+	// be asserting the opposite of what this file is about. Nothing executes
+	// these bytes — the pin is the whole subject — so any non-script content
+	// does.
+	if err := os.WriteFile(path, []byte("\x7fELF not really, but not a script either\n"), 0o755); err != nil {
 		t.Fatalf("writing the binary: %v", err)
 	}
 
