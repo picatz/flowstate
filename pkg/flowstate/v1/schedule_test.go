@@ -423,14 +423,33 @@ func TestScheduleBackfillWallClockDayCadenceIsUnboundedOutsideUTC(t *testing.T) 
 			"an expression's own TZ= prefix naming a zone must fall back, even with no trigger-level time_zone set")
 	})
 
-	t.Run("a calendar or cron cadence finer than a day is unaffected by zone", func(t *testing.T) {
+	t.Run("only second resolution is unaffected by zone", func(t *testing.T) {
+		// An hour-resolution calendar is subject to the identical fallback as
+		// the day-resolution default: a named zone's offset change (e.g.
+		// America/Caracas's 2016 thirty-minute shift) can undercut the
+		// assumed 60-minute floor exactly the way a day-scale shift
+		// undercuts a daily one.
 		trigger := &v1.ScheduleTrigger{
 			TimeZone:  "America/New_York",
 			Calendars: []*v1.ScheduleTrigger_Calendar{{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}}}},
 		}
-		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill),
-			"an hour-resolution calendar is charged in hours regardless of zone — only the "+
-				"\"fires at most once a day\" default depends on whether an offset change is possible")
+		assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+			"an hour-resolution calendar in a named zone must fall back the same way a day-resolution one does")
+
+		// Minute resolution, the identical reasoning one step finer.
+		trigger.Calendars = []*v1.ScheduleTrigger_Calendar{{Minute: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}}}
+		assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill), "more than 100000 firings",
+			"a minute-resolution calendar in a named zone must fall back too")
+
+		// Second resolution is the one genuinely unaffected: it is already
+		// this package's finest assumed granularity, so no offset change can
+		// undercut it further — a small window that fits at one second in
+		// UTC must still fit in a named zone.
+		trigger.Calendars = []*v1.ScheduleTrigger_Calendar{{Second: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}}}
+		small := []*v1.ScheduleBackfill{{StartAt: timestamppb.New(now.Add(-time.Minute)), EndAt: timestamppb.New(now)}}
+		assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, small),
+			"a second-resolution calendar is charged at one second regardless of zone, so a one-minute "+
+				"window fits the same way it would in UTC")
 	})
 }
 
@@ -644,6 +663,83 @@ func TestScheduleBackfillJitterExpandsTheWindow(t *testing.T) {
 	trigger.Jitter = nil
 	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill),
 		"without jitter, 100,000 seconds at a one-second cadence is exactly the ceiling, not one over it")
+}
+
+// TestScheduleBackfillJitterIsCappedPerCadence is the regression for the
+// finding on the jitter fix above: a real delay can never exceed the gap to
+// the *next* firing (the schema's own doc comment says so), so padding a
+// fast cadence's span by the full, uncapped jitter — as the first version of
+// the fix did — refuses backfills a jitter that large could never actually
+// affect. The maximum allowed jitter is 24 hours; an every-second schedule's
+// own firings are never more than a second apart, so no delay on it can ever
+// exceed a second regardless of how large jitter is configured.
+func TestScheduleBackfillJitterIsCappedPerCadence(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	trigger := &v1.ScheduleTrigger{
+		Every:  durationpb.New(time.Second),
+		Jitter: durationpb.New(24 * time.Hour), // the field's own maximum
+	}
+	// 20,000 one-second firings, comfortably under the ceiling — and it must
+	// stay that way: the uncapped fix padded this span by a full day
+	// (86,400s), reaching 106,400 and refusing a window that can only ever
+	// hold about 20,001 real firings (20,000 nominal, plus at most one more
+	// pulled in from just before the window by jitter capped at one second).
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-20_000 * time.Second)),
+		EndAt:   timestamppb.New(now),
+	}}
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(trigger, backfill),
+		"jitter must be capped at each cadence's own period before padding its span — a 24-hour jitter "+
+			"on a one-second cadence can only ever shift a firing by at most one second")
+}
+
+// TestScheduleBackfillNamedZoneAffectsEveryWallClockResolution is the
+// regression for the finding that only the day-or-longer default case went
+// through the named-zone fallback, leaving minute and hour resolutions
+// charged a flat nominal period regardless of zone — undercountable the
+// identical way a day-scale cadence is, just at a finer unit
+// (America/Caracas shifted by thirty minutes in 2016, undercutting an
+// hour-resolution calendar's assumed 60-minute floor).
+func TestScheduleBackfillNamedZoneAffectsEveryWallClockResolution(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	// A two-day window: an hour-resolution calendar in UTC fires 48 times,
+	// comfortably accepted; in a named zone it must fall back to one-second
+	// resolution, refused at 172,800.
+	backfill := []*v1.ScheduleBackfill{{
+		StartAt: timestamppb.New(now.Add(-48 * time.Hour)),
+		EndAt:   timestamppb.New(now),
+	}}
+	hourly := &v1.ScheduleTrigger_Calendar{Hour: []*v1.ScheduleTrigger_Calendar_Range{{Start: 9}}}
+
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Calendars: []*v1.ScheduleTrigger_Calendar{hourly}}, backfill),
+		"an hour-resolution calendar in UTC fires 48 times over two days, far under the ceiling")
+
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Calendars: []*v1.ScheduleTrigger_Calendar{hourly}},
+		backfill), "more than 100000 firings",
+		"the identical calendar in a named zone must fall back to one-second resolution, not stay "+
+			"charged in hours, since this package cannot rule out an offset change smaller than an hour")
+
+	// Minute resolution, one step finer, same reasoning.
+	minutely := &v1.ScheduleTrigger_Calendar{Minute: []*v1.ScheduleTrigger_Calendar_Range{{Start: 0, End: 59}}}
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Calendars: []*v1.ScheduleTrigger_Calendar{minutely}},
+		backfill), "more than 100000 firings",
+		"a minute-resolution calendar in a named zone must fall back too")
+
+	// @hourly shares the fix.
+	assert.NoError(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{Cron: []string{"@hourly"}}, backfill),
+		"@hourly in UTC is the identical case as the calendar above")
+	assert.ErrorContains(t, v1.CheckScheduleBackfillForTrigger(
+		&v1.ScheduleTrigger{TimeZone: "America/Caracas", Cron: []string{"@hourly"}}, backfill),
+		"more than 100000 firings",
+		"@hourly in a named zone must fall back the same way the calendar does")
 }
 
 // TestScheduleCalendarsAreCheckedAgainstTemporalsOwnRanges covers the calendar

@@ -214,26 +214,37 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 		// that already covers the end being inclusive.
 		span, startInclusive := intersectedBackfillSpan(trigger, b)
 
-		// Jitter delays each firing by a random amount up to its own value
-		// (capped by the gap to the next firing, which only ever shrinks the
-		// real delay, never grows it past `jitter` itself), so a nominal
-		// firing up to `jitter` before the window's start can be delayed
-		// into it, and one within `jitter` of the end can be delayed past
-		// it. Only the first direction adds firings this estimate would
-		// otherwise miss — a firing pushed past the end is one this window
-		// no longer contains, not an extra one — so padding span by the
-		// full jitter is what a widened left edge would give, and is always
-		// at least the true worst case regardless of cadence: no bound
-		// tighter than the field's own maximum can be proven without
-		// evaluating real fire times, which every estimate in this
-		// function deliberately avoids. Added once, to the shared span,
-		// rather than per cadence, since every cadence in this trigger is
-		// jittered by the identical schedule-level amount.
-		span += trigger.GetJitter().AsDuration()
+		// Jitter delays each firing by a random amount up to its own value,
+		// capped by the gap to the *next* firing — the schema's own doc
+		// comment says so. That cap is what keeps the padding below
+		// per-cadence rather than a flat addition to the shared span: a
+		// firing can only be delayed as far as the next one it would
+		// otherwise collide with, so a cadence firing every second can
+		// never be shifted more than a second regardless of how large
+		// `jitter` itself is. Padding every cadence by the *uncapped*
+		// jitter — as an earlier version of this fix did — refuses a fast
+		// cadence over a jitter the schedule can never actually apply to
+		// it: a one-day jitter on an every-second schedule cannot shift any
+		// firing by more than the one second to its neighbor, so charging a
+		// whole day of padding there is a false refusal wide enough to be
+		// its own bug, not just imprecision.
+		jitter := trigger.GetJitter().AsDuration()
 
 		var firings int64
 		for _, period := range cadences {
-			quotient := int64(span / period)
+			// A nominal firing up to jitter before the window's start can be
+			// delayed into it — a firing this estimate would otherwise miss
+			// entirely, since it never happens at its own nominal instant.
+			// One within jitter of the end can be delayed past it, but that
+			// only removes a firing this window would have charged, never
+			// adds one, so only the left edge needs padding. Capped at this
+			// cadence's own period for the reason above.
+			padded := span
+			if cap := min(jitter, period); cap > 0 {
+				padded += cap
+			}
+
+			quotient := int64(padded / period)
 			switch {
 			case startInclusive:
 				// [start, end] is closed at both ends now, and the tight upper
@@ -249,7 +260,7 @@ func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*Sche
 				// range that can hold at most 100,000, an over-count that
 				// refuses a legitimate backfill.
 				firings += quotient + 1
-			case span%period != 0:
+			case padded%period != 0:
 				// Temporal's interval is (start, end], which holds one more
 				// evenly spaced firing than the floor of its length when the
 				// range is aligned that way: an aligned 300001s range at a 3s
@@ -395,31 +406,37 @@ func isUTC(zone string) bool {
 }
 
 // wallClockCadencePeriod is the safe minimum period for a cadence that
-// nominally fires once every n wall-clock days, in the schedule's own
-// `time_zone`.
+// nominally fires once every `nominal` wall-clock duration, in the
+// schedule's own `time_zone`. Applies to every resolution coarser than a
+// second — minute, hour, and whole days or multiples of them — since only
+// second resolution is already the finest granularity this package assumes
+// and cannot be undercut by any offset change.
 //
 // UTC never observes an offset change — there is no daylight-saving or
 // political rule to apply to it — so a UTC cadence really is bound below by
-// its nominal length: two once-a-day firings cannot be less than 24 real
-// hours apart, ever. Any other named zone is a different problem entirely.
-// This package never resolves `time_zone` against real tzdata (see
-// [checkTimeZoneName]'s doc, and the package doc's rule about keeping I/O off
-// an author's keystroke path — the same reasoning that keeps this whole file
-// estimating rather than evaluating), so nothing here can rule out an offset
-// change of any particular size for whichever zone a schedule names.
-// IANA's database records changes far larger than the familiar one-hour
-// spring-forward case — Samoa's 2011 shift skipped a whole day — so a flat
-// margin bounded at any fixed value is not a safe minimum period for a zone
-// this code cannot inspect. A named zone is therefore charged the fastest
-// cadence there is, the identical fail-closed default an unrecognized cron
-// form gets in [cronMinimumPeriod]. That gives up the ergonomic win this
-// estimate exists for on exactly the schedules that ask for local wall-clock
-// behavior — a real cost, stated here rather than left implicit — but the
-// alternative is a bound this package cannot prove, and an unproven bound is
-// the exact shape of undercount #716 exists to close.
-func wallClockCadencePeriod(zone string, n int) time.Duration {
+// its nominal length: two once-an-hour firings cannot be less than 60 real
+// minutes apart, ever, and the same holds at every coarser resolution. Any
+// other named zone is a different problem entirely. This package never
+// resolves `time_zone` against real tzdata (see [checkTimeZoneName]'s doc,
+// and the package doc's rule about keeping I/O off an author's keystroke
+// path — the same reasoning that keeps this whole file estimating rather
+// than evaluating), so nothing here can rule out an offset change of any
+// particular size for whichever zone a schedule names, at any resolution
+// coarser than a second. The familiar spring-forward case shifts by an hour;
+// `America/Caracas` shifted by thirty minutes in 2016, which would undercut
+// an *hourly* calendar's assumed 60-minute floor exactly the way a day-scale
+// shift undercuts a daily one; and IANA's database records changes as large
+// as a whole day (Samoa's 2011 shift). A named zone is therefore charged the
+// fastest cadence there is, at every resolution above a second — the
+// identical fail-closed default an unrecognized cron form gets in
+// [cronMinimumPeriod]. That gives up the ergonomic win this estimate exists
+// for on exactly the schedules that ask for local wall-clock behavior — a
+// real cost, stated here rather than left implicit — but the alternative is
+// a bound this package cannot prove, and an unproven bound is the exact
+// shape of undercount #716 exists to close.
+func wallClockCadencePeriod(zone string, nominal time.Duration) time.Duration {
 	if isUTC(zone) {
-		return time.Duration(n) * 24 * time.Hour
+		return nominal
 	}
 	return time.Second
 }
@@ -436,23 +453,22 @@ func wallClockCadencePeriod(zone string, n int) time.Duration {
 // So the ladder walks down from the finest field written. Anything at or below
 // the finest one is defaulted to zero and cannot multiply the count; anything
 // above it is free to be "every", which is already accounted for by the period
-// being no longer than that field's own unit. Second, minute and hour
-// resolutions are all finer than a day and are charged the same regardless of
-// zone; only the "fires at most once a day" default goes through
-// [wallClockCadencePeriod], because only that arm assumes a wall-clock day is
-// bounded below by anything at all.
+// being no longer than that field's own unit. Every resolution coarser than a
+// second goes through [wallClockCadencePeriod], because every one of them
+// assumes a wall-clock gap bounded below by something — an assumption a named
+// zone's offset change can undercut regardless of which unit it is.
 func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar, timeZone string) time.Duration {
 	switch {
 	case len(calendar.GetSecond()) > 0:
 		return time.Second
 	case len(calendar.GetMinute()) > 0:
-		return time.Minute
+		return wallClockCadencePeriod(timeZone, time.Minute)
 	case len(calendar.GetHour()) > 0:
-		return time.Hour
+		return wallClockCadencePeriod(timeZone, time.Hour)
 	default:
 		// Second, minute and hour all default to zero, so the calendar fires at
 		// most once on any day it matches at all.
-		return wallClockCadencePeriod(timeZone, 1)
+		return wallClockCadencePeriod(timeZone, 24*time.Hour)
 	}
 }
 
@@ -504,23 +520,23 @@ func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration 
 		}
 		// The fixed shorthands, each charged the shortest period it can mean:
 		// a month is charged 28 days and a year 365, because a lower bound on
-		// the period is an upper bound on the firings. Day-or-longer shorthands
-		// go through [wallClockCadencePeriod] for the same reason
-		// [calendarMinimumPeriod]'s default case does: each fires on a
-		// wall-clock boundary, whose minimum gap this package can bound only
-		// in UTC. @hourly is finer than a day and is charged the same
-		// regardless of zone.
+		// the period is an upper bound on the firings. Every shorthand here
+		// goes through [wallClockCadencePeriod] for the same reason
+		// [calendarMinimumPeriod]'s every-resolution-but-second case does:
+		// each fires on a wall-clock boundary, whose minimum gap this
+		// package can bound only in UTC, regardless of whether the boundary
+		// is an hour or a year.
 		switch strings.ToLower(head) {
 		case "@hourly":
-			return time.Hour
+			return wallClockCadencePeriod(zoneName, time.Hour)
 		case "@daily", "@midnight":
-			return wallClockCadencePeriod(zoneName, 1)
+			return wallClockCadencePeriod(zoneName, 24*time.Hour)
 		case "@weekly":
-			return wallClockCadencePeriod(zoneName, 7)
+			return wallClockCadencePeriod(zoneName, 7*24*time.Hour)
 		case "@monthly":
-			return wallClockCadencePeriod(zoneName, 28)
+			return wallClockCadencePeriod(zoneName, 28*24*time.Hour)
 		case "@yearly", "@annually":
-			return wallClockCadencePeriod(zoneName, 365)
+			return wallClockCadencePeriod(zoneName, 365*24*time.Hour)
 		default:
 			return time.Second
 		}
