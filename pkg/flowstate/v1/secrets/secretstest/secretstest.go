@@ -31,6 +31,16 @@ type NamespaceFixture struct {
 	Ref secrets.Ref
 
 	// Value is what resolving Ref under Namespace must return.
+	//
+	// Value doubles as a canary: [VerifyNamespaceIsolation] detects a leak by
+	// comparing a wrongly-scoped resolution's *value* against this field, so
+	// every fixture's Value must be distinct from every other fixture's in
+	// the same call. Two isolated tenants sharing a Value — a realistic case,
+	// such as both using the same rotated credential — would make a
+	// requester's own, correctly-isolated resolution equal another fixture's
+	// Value by coincidence, which the check cannot tell apart from an actual
+	// leak. [VerifyNamespaceIsolation] rejects a fixture list that violates
+	// this before running any subtest, rather than risk a false failure.
 	Value string
 
 	// Collisions names further references, distinct from Ref, that a
@@ -94,6 +104,34 @@ type Collision struct {
 	Ref secrets.Ref
 }
 
+// Option configures [VerifyNamespaceIsolation].
+type Option func(*options)
+
+type options struct {
+	unconfiguredNamespace string
+}
+
+// WithUnconfiguredNamespace overrides the sentinel namespace
+// [VerifyNamespaceIsolation] uses to probe fallback behavior for a requester
+// the provider was never configured for.
+//
+// The built-in sentinel ("secretstest-unconfigured-tenant") is only ever
+// proven absent from the fixture list passed to this call — nothing proves it
+// absent from the provider's own configuration, which [secrets.Provider] does
+// not expose a way to inspect. A provider under test that happens to have a
+// real tenant configured under that exact string would make the sentinel
+// probe silently test an ordinary configured requester instead of an
+// unconfigured one, which could either false-fail a correct provider or let a
+// real fallback bug pass.
+//
+// Callers who can name a namespace their own provider setup genuinely never
+// configures — because they built the provider and know what they didn't
+// pass it — should supply it here instead of relying on the built-in
+// sentinel.
+func WithUnconfiguredNamespace(namespace string) Option {
+	return func(o *options) { o.unconfiguredNamespace = namespace }
+}
+
 // VerifyNamespaceIsolation is the conformance check every [secrets.Provider]
 // author should run against their own implementation, referenced from the
 // interface's own doc comment.
@@ -128,11 +166,16 @@ type Collision struct {
 // the correct answer to a request outside a namespace's configuration. What
 // this checks is narrower and non-negotiable: an error is acceptable, another
 // tenant's value is not.
-func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures []NamespaceFixture) {
+func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures []NamespaceFixture, opts ...Option) {
 	t.Helper()
 
 	if err := validateFixtures(fixtures); err != nil {
 		t.Fatal(err)
+	}
+
+	o := options{unconfiguredNamespace: "secretstest-unconfigured-tenant"}
+	for _, opt := range opts {
+		opt(&o)
 	}
 
 	for _, f := range fixtures {
@@ -166,14 +209,21 @@ func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures 
 	// as a NamespaceFixture — giving it one would make it "own" a fixture,
 	// which is exactly the case the loop above already covers, and it would
 	// fail the distinct-namespace precondition if it collided with an
-	// existing one. So probe it explicitly: an unconfigured, sentinel
+	// existing one. So probe it explicitly: an unconfigured
 	// requester namespace, guaranteed not to equal any fixture's Namespace,
 	// asking for each owner's own plain Ref.
-	const unconfiguredNamespace = "secretstest-unconfigured-tenant"
+	//
+	// This namespace is only proven absent from the fixtures below, not from
+	// the provider's own configuration — see [WithUnconfiguredNamespace]. A
+	// caller who can name a namespace their own provider setup genuinely
+	// never configures should supply it via that option; the built-in
+	// default assumes it is not coincidentally a real, configured tenant.
+	unconfiguredNamespace := o.unconfiguredNamespace
 	for _, f := range fixtures {
 		if f.Namespace == unconfiguredNamespace {
-			t.Fatalf("fixture list uses the sentinel unconfigured namespace %q as a real fixture's Namespace; "+
-				"VerifyNamespaceIsolation needs this value to name no configured tenant", unconfiguredNamespace)
+			t.Fatalf("fixture list uses the unconfigured namespace %q as a real fixture's Namespace; "+
+				"VerifyNamespaceIsolation needs this value to name no configured tenant "+
+				"(pass a different one via WithUnconfiguredNamespace)", unconfiguredNamespace)
 		}
 	}
 
@@ -201,19 +251,31 @@ func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures 
 	}
 }
 
-// validateFixtures checks the precondition [VerifyNamespaceIsolation] needs
+// validateFixtures checks the preconditions [VerifyNamespaceIsolation] needs
 // to actually prove isolation: at least two fixtures, naming at least two
-// distinct namespace values.
+// distinct namespace values, each with a Value distinct from every other
+// fixture's.
 //
 // The distinct-namespace half exists because the count alone is not enough.
 // Two fixtures that share a Namespace string pass the ownership subtests
 // trivially — both are just the same namespace resolving its own ref — and
 // the negative-direction loop's `requester.Namespace == owner.Namespace`
 // guard then skips every pair, since every pair *is* that case. A provider
-// that ignores Request.Namespace entirely would pass undetected. It holds no
-// dependency on *testing.T for the same reason [checkOwnFixture] and
-// [checkNoCollision] don't: this package's own meta-regression tests need to
-// observe the failure without it propagating to every ancestor *testing.T
+// that ignores Request.Namespace entirely would pass undetected.
+//
+// The distinct-value half exists because [checkNoCollision] detects a leak by
+// comparing resolved *plaintext* against the owner's Value, not by asking the
+// provider which storage entry it touched. If two fixtures legitimately
+// share a Value — two tenants using the same rotated credential, say — then a
+// requester resolving its own, correctly-isolated secret would coincidentally
+// equal another fixture's Value, and the equality check would report a
+// cross-tenant leak that never happened. Rejecting duplicate Values up front
+// keeps that comparison honest: it turns Value into a canary, unique enough
+// that seeing it back only ever means one thing.
+//
+// It holds no dependency on *testing.T for the same reason [checkOwnFixture]
+// and [checkNoCollision] don't: this package's own meta-regression tests need
+// to observe the failure without it propagating to every ancestor *testing.T
 // the way a failed t.Run subtest — or a t.Fatalf on the *testing.T passed
 // into this function — would.
 func validateFixtures(fixtures []NamespaceFixture) error {
@@ -221,15 +283,28 @@ func validateFixtures(fixtures []NamespaceFixture) error {
 		return fmt.Errorf("VerifyNamespaceIsolation needs at least two fixtures to prove isolation between namespaces; got %d", len(fixtures))
 	}
 
-	distinct := make(map[string]struct{}, len(fixtures))
+	distinctNamespaces := make(map[string]struct{}, len(fixtures))
 	for _, f := range fixtures {
-		distinct[f.Namespace] = struct{}{}
+		distinctNamespaces[f.Namespace] = struct{}{}
 	}
-	if len(distinct) < 2 {
+	if len(distinctNamespaces) < 2 {
 		return fmt.Errorf("VerifyNamespaceIsolation needs at least two fixtures naming distinct namespaces to prove isolation "+
 			"between namespaces; got %d fixture(s) sharing %d namespace value(s) — two fixtures with the same "+
 			"Namespace make every ownership subtest trivially pass and the negative-direction loop skip every pair, "+
-			"so a provider that ignores Request.Namespace entirely would pass undetected", len(fixtures), len(distinct))
+			"so a provider that ignores Request.Namespace entirely would pass undetected", len(fixtures), len(distinctNamespaces))
+	}
+
+	valueOwners := make(map[string]string, len(fixtures)) // Value -> owning Namespace
+	for _, f := range fixtures {
+		if owner, ok := valueOwners[f.Value]; ok {
+			return fmt.Errorf("VerifyNamespaceIsolation needs every fixture's Value to be distinct, because "+
+				"the isolation check detects a leak by comparing resolved plaintext against it; namespace %q and "+
+				"namespace %q share the value %q — if that is deliberate (e.g. both tenants use the same rotated "+
+				"credential), give each fixture a distinct canary Value instead, since a shared one makes a "+
+				"correctly-isolated resolution indistinguishable from an actual cross-tenant leak",
+				owner, f.Namespace, f.Value)
+		}
+		valueOwners[f.Value] = f.Namespace
 	}
 
 	return nil

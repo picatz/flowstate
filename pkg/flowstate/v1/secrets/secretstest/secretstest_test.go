@@ -105,3 +105,47 @@ func TestVerifyNamespaceIsolation_FileProvider(t *testing.T) {
 		},
 	})
 }
+
+// TestVerifyNamespaceIsolation_WithUnconfiguredNamespace exercises the fifth-
+// round fix for the sentinel-collision finding: a caller who knows a
+// namespace their own provider setup never configures can supply it via
+// [secretstest.WithUnconfiguredNamespace] instead of relying on the built-in
+// sentinel, whose absence is only ever proven against the fixture list, never
+// against the opaque provider's own configuration.
+//
+// This provider is deliberately constructed with a namespace mapping that
+// happens to include the built-in sentinel string
+// ("secretstest-unconfigured-tenant") as a real, isolated third tenant — the
+// exact scenario the finding describes, where the default sentinel would
+// silently probe an ordinary configured requester instead of an unconfigured
+// one. Passing a namespace this test knows is genuinely unconfigured
+// ("secretstest-genuinely-unconfigured") keeps the fallback probe honest.
+func TestVerifyNamespaceIsolation_WithUnconfiguredNamespace(t *testing.T) {
+	t.Setenv("TEAM_A_SECRET_API_KEY", "team-a-value")
+	t.Setenv("TEAM_B_SECRET_API_KEY", "team-b-value")
+	t.Setenv("SENTINEL_SECRET_API_KEY", "sentinel-tenant-value")
+
+	provider, err := secrets.NewEnvProvider(secrets.WithEnvNamespaces(map[string]string{
+		"team-a": "TEAM_A_SECRET_",
+		"team-b": "TEAM_B_SECRET_",
+		// The built-in sentinel namespace happens to be a real, correctly
+		// isolated tenant of this provider — proving the option lets a
+		// caller route around that coincidence instead of being silently
+		// misled by it.
+		"secretstest-unconfigured-tenant": "SENTINEL_SECRET_",
+	}))
+	require.NoError(t, err)
+
+	secretstest.VerifyNamespaceIsolation(t, provider, []secretstest.NamespaceFixture{
+		{
+			Namespace: "team-a",
+			Ref:       secrets.NewRef("env", "API_KEY"),
+			Value:     "team-a-value",
+		},
+		{
+			Namespace: "team-b",
+			Ref:       secrets.NewRef("env", "API_KEY"),
+			Value:     "team-b-value",
+		},
+	}, secretstest.WithUnconfiguredNamespace("secretstest-genuinely-unconfigured"))
+}

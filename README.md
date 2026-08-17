@@ -24,9 +24,11 @@ workflow, in Go. Airflow gives you an authoring surface and a scheduler, but its
 retries and state live at the DAG level, not inside a durably-resumable step, so a
 long wait or a worker crash mid-task is a different problem than the one it was
 built to solve. Flowstate keeps Temporal's durability, replaces hand-written Go
-workflow code with a typed, checkable specification, and puts policy — egress,
-secrets, signal authorization — in the file the workload's author already owns
-rather than in a separate system they have to keep in sync. See
+workflow code with a typed, checkable specification, and puts signal
+authorization in the file the workload's author already owns rather than in a
+separate system they have to keep in sync. Egress and secret access are
+governed the same way, in CEL, but by the operator: a worker's separate
+`--egress-policy` and `--auth-policy` files, not the Flowfile. See
 [docs/USE_CASES.md](docs/USE_CASES.md) for four worked examples of what that buys
 in practice.
 

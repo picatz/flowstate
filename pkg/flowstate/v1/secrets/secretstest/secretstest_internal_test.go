@@ -260,3 +260,115 @@ func Test_validateFixtures_RejectsDuplicateNamespaces(t *testing.T) {
 		t.Fatalf("validateFixtures rejected a fixture list with two genuinely distinct namespaces: %v", err)
 	}
 }
+
+// coincidentalSentinelProvider reproduces, on purpose, the exact scenario the
+// fifth-round P2 finding described: it correctly separates its two
+// configured tenants, team-a and team-b, and *also* happens to have a real,
+// correctly isolated third tenant configured under the exact string the
+// built-in sentinel namespace uses ("secretstest-unconfigured-tenant") — but
+// silently falls back to team-a's storage for any namespace that is
+// genuinely unconfigured, i.e. anything other than those three strings.
+//
+// A probe that uses the hardcoded sentinel string finds a correctly isolated
+// tenant there and reports no leak — not because the fallback bug is absent,
+// but because the sentinel happened to name a real tenant instead of an
+// unconfigured one. Only a namespace the caller actually knows is
+// unconfigured against this provider's setup can observe the fallback.
+type coincidentalSentinelProvider struct {
+	values map[string]string // namespace+"/"+name -> value
+}
+
+func (p *coincidentalSentinelProvider) Scheme() string { return "env" }
+
+func (p *coincidentalSentinelProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	namespace := req.Namespace
+	switch namespace {
+	case "team-a", "team-b", "secretstest-unconfigured-tenant":
+		// configured; use as given — including the sentinel string, which
+		// this provider happens to have a real, isolated tenant under.
+	default:
+		// genuinely unconfigured requester: silently fall back to team-a's
+		// storage rather than failing closed.
+		namespace = "team-a"
+	}
+
+	value, ok := p.values[namespace+"/"+req.Ref.GetName()]
+	if !ok {
+		return secrets.Secret{}, &secrets.ResolveError{Ref: req.Ref, Err: secrets.ErrNotFound}
+	}
+
+	return secrets.NewSecret(req.Ref, value), nil
+}
+
+// Test_checkNoCollision_SentinelCanCoincideWithARealTenant is the meta
+// regression for the fifth-round P2 finding on the unconfigured-namespace
+// probe: proof that the hardcoded sentinel namespace can miss a real fallback
+// bug when a provider under test happens to have a tenant configured under
+// that exact string, and that a caller-supplied namespace known to be
+// genuinely unconfigured catches it where the sentinel cannot.
+func Test_checkNoCollision_SentinelCanCoincideWithARealTenant(t *testing.T) {
+	provider := &coincidentalSentinelProvider{
+		values: map[string]string{
+			"team-a/api-key": "team-a-value",
+			"team-b/api-key": "team-b-value",
+			"secretstest-unconfigured-tenant/api-key": "sentinel-tenant-value",
+		},
+	}
+
+	teamA := NamespaceFixture{
+		Namespace: "team-a",
+		Ref:       secrets.NewRef("env", "api-key"),
+		Value:     "team-a-value",
+	}
+
+	// The hardcoded sentinel string used as the default unconfigured
+	// namespace is, on this provider, a real and correctly isolated tenant —
+	// so probing with it reports no leak, even though the fallback bug is
+	// very much present for a namespace this provider was never told about.
+	const hardcodedSentinel = "secretstest-unconfigured-tenant"
+	if err := checkNoCollision(t.Context(), provider, hardcodedSentinel, teamA, teamA.Ref); err != nil {
+		t.Fatalf("checkNoCollision reported a leak from the sentinel namespace, but this provider genuinely "+
+			"isolates that namespace as a real tenant — the point of this test is that the probe stays clean "+
+			"here, hiding the actual fallback bug: %v", err)
+	}
+
+	// A namespace the caller actually knows is unconfigured against this
+	// provider's setup — the value WithUnconfiguredNamespace lets a caller
+	// supply — does catch the fallback.
+	const genuinelyUnconfigured = "secretstest-genuinely-unconfigured"
+	if err := checkNoCollision(t.Context(), provider, genuinelyUnconfigured, teamA, teamA.Ref); err == nil {
+		t.Fatal("checkNoCollision did not catch the fallback-to-team-a bug when probed with a namespace " +
+			"genuinely unconfigured against this provider — WithUnconfiguredNamespace exists precisely so a " +
+			"caller can supply this instead of the coincidentally-configured hardcoded sentinel")
+	}
+}
+
+// Test_validateFixtures_RejectsDuplicateValues is the meta regression for the
+// fifth-round P2 finding: proof that validateFixtures rejects a fixture list
+// whose entries share a Value, because [checkNoCollision] detects a leak by
+// comparing resolved plaintext against Value — two isolated tenants that
+// legitimately share a secret's value (e.g. a shared rotated credential)
+// would otherwise make a correctly-isolated resolution look identical to an
+// actual cross-tenant leak.
+func Test_validateFixtures_RejectsDuplicateValues(t *testing.T) {
+	sameValue := []NamespaceFixture{
+		{Namespace: "team-a", Ref: secrets.NewRef("env", "api-key"), Value: "shared-credential"},
+		{Namespace: "team-b", Ref: secrets.NewRef("env", "api-key"), Value: "shared-credential"},
+	}
+	if err := validateFixtures(sameValue); err == nil {
+		t.Fatal("validateFixtures accepted two fixtures with the same Value — checkNoCollision compares " +
+			"resolved plaintext against Value to detect a leak, so two fixtures sharing a Value would make a " +
+			"requester's own, correctly-isolated resolution indistinguishable from an actual cross-tenant leak")
+	}
+
+	// Sanity check: the same namespaces, but genuinely distinct values, is
+	// accepted — this test is about value duplication, not namespace
+	// duplication (already covered above).
+	distinctValues := []NamespaceFixture{
+		{Namespace: "team-a", Ref: secrets.NewRef("env", "api-key"), Value: "team-a-value"},
+		{Namespace: "team-b", Ref: secrets.NewRef("env", "api-key"), Value: "team-b-value"},
+	}
+	if err := validateFixtures(distinctValues); err != nil {
+		t.Fatalf("validateFixtures rejected a fixture list with two genuinely distinct values: %v", err)
+	}
+}
