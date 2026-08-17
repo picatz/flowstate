@@ -127,6 +127,25 @@ message ScheduleDescription {
   // is describable in every other respect, and failing the whole description over
   // one field would take away the answer along with the doubt.
   map<string, Value> inputs = 9;
+
+  // NumActionsMissedCatchupWindow is how many firings Temporal dropped because
+  // they came due while nothing could take them and the catch-up window had
+  // already passed.
+  //
+  // A non-zero value is the signal to widen `catchup_window` on the trigger or
+  // to backfill the missed range; see [CreateScheduleRequest.backfill]. It answers
+  // the question `num_actions` alone cannot: a schedule can report a healthy
+  // `RUNS TAKEN` and still be silently missing every firing since an outage
+  // longer than its window.
+  int64 num_actions_missed_catchup_window = 10;
+
+  // NumActionsSkippedOverlap is how many firings the trigger's overlap policy
+  // skipped because a previous run was still going.
+  //
+  // A non-zero value is `overlap: skip` (or one of the other non-allow
+  // policies) doing exactly what it was configured to do — and how much of it.
+  // See [ScheduleTrigger.overlap].
+  int64 num_actions_skipped_overlap = 11;
 }
 
 // CreateScheduleRequest asks for a schedule that runs a workflow on a cadence.

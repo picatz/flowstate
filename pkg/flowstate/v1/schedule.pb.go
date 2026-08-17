@@ -225,9 +225,26 @@ type ScheduleDescription struct {
 	// read back: a schedule created by a build whose message shape has since moved
 	// is describable in every other respect, and failing the whole description over
 	// one field would take away the answer along with the doubt.
-	Inputs        map[string]*Value `protobuf:"bytes,9,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Inputs map[string]*Value `protobuf:"bytes,9,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// NumActionsMissedCatchupWindow is how many firings Temporal dropped because
+	// they came due while nothing could take them and the catch-up window had
+	// already passed.
+	//
+	// A non-zero value is the signal to widen `catchup_window` on the trigger or
+	// to backfill the missed range; see [CreateScheduleRequest.backfill]. It answers
+	// the question `num_actions` alone cannot: a schedule can report a healthy
+	// `RUNS TAKEN` and still be silently missing every firing since an outage
+	// longer than its window.
+	NumActionsMissedCatchupWindow int64 `protobuf:"varint,10,opt,name=num_actions_missed_catchup_window,json=numActionsMissedCatchupWindow,proto3" json:"num_actions_missed_catchup_window,omitempty"`
+	// NumActionsSkippedOverlap is how many firings the trigger's overlap policy
+	// skipped because a previous run was still going.
+	//
+	// A non-zero value is `overlap: skip` (or one of the other non-allow
+	// policies) doing exactly what it was configured to do — and how much of it.
+	// See [ScheduleTrigger.overlap].
+	NumActionsSkippedOverlap int64 `protobuf:"varint,11,opt,name=num_actions_skipped_overlap,json=numActionsSkippedOverlap,proto3" json:"num_actions_skipped_overlap,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *ScheduleDescription) Reset() {
@@ -321,6 +338,20 @@ func (x *ScheduleDescription) GetInputs() map[string]*Value {
 		return x.Inputs
 	}
 	return nil
+}
+
+func (x *ScheduleDescription) GetNumActionsMissedCatchupWindow() int64 {
+	if x != nil {
+		return x.NumActionsMissedCatchupWindow
+	}
+	return 0
+}
+
+func (x *ScheduleDescription) GetNumActionsSkippedOverlap() int64 {
+	if x != nil {
+		return x.NumActionsSkippedOverlap
+	}
+	return 0
 }
 
 // CreateScheduleRequest asks for a schedule that runs a workflow on a cadence.
@@ -1064,7 +1095,7 @@ const file_flowstate_v1_schedule_proto_rawDesc = "" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06paused\x18\x02 \x01(\bR\x06paused\x12\x12\n" +
 	"\x04note\x18\x03 \x01(\tR\x04note\x12>\n" +
-	"\rnext_run_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRunTime\"\xf2\x03\n" +
+	"\rnext_run_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vnextRunTime\"\xfb\x04\n" +
 	"\x13ScheduleDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12#\n" +
 	"\rworkflow_name\x18\x02 \x01(\tR\fworkflowName\x127\n" +
@@ -1076,7 +1107,10 @@ const file_flowstate_v1_schedule_proto_rawDesc = "" +
 	"\x0enext_run_times\x18\a \x03(\v2\x1a.google.protobuf.TimestampR\fnextRunTimes\x12C\n" +
 	"\vrecent_runs\x18\b \x03(\v2\".flowstate.v1.ScheduleActionResultR\n" +
 	"recentRuns\x12E\n" +
-	"\x06inputs\x18\t \x03(\v2-.flowstate.v1.ScheduleDescription.InputsEntryR\x06inputs\x1aN\n" +
+	"\x06inputs\x18\t \x03(\v2-.flowstate.v1.ScheduleDescription.InputsEntryR\x06inputs\x12H\n" +
+	"!num_actions_missed_catchup_window\x18\n" +
+	" \x01(\x03R\x1dnumActionsMissedCatchupWindow\x12=\n" +
+	"\x1bnum_actions_skipped_overlap\x18\v \x01(\x03R\x18numActionsSkippedOverlap\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\x9f\x03\n" +

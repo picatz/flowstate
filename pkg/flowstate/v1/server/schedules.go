@@ -635,8 +635,10 @@ func (s *FlowstateServer) describeSchedule(ctx context.Context, temporal client.
 	}
 
 	reported := &v1.ScheduleDescription{
-		Name:       name,
-		NumActions: int64(description.Info.NumActions),
+		Name:                          name,
+		NumActions:                    int64(description.Info.NumActions),
+		NumActionsMissedCatchupWindow: int64(description.Info.NumActionsMissedCatchupWindow),
+		NumActionsSkippedOverlap:      int64(description.Info.NumActionsSkippedOverlap),
 	}
 
 	// Temporal's own types here are plain structs rather than generated messages,
