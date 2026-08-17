@@ -13,12 +13,14 @@ package plugin
 // caller can read is bounded to max+1, not the full oversized payload.
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -98,6 +100,49 @@ func TestBoundedTransportCapReachedAtBoundary(t *testing.T) {
 		assert.Len(t, got, max+1,
 			"a body over the limit is read to max+1, the sentinel that flags 'over'")
 	})
+}
+
+// theLeakedToken is the per-launch bearer token standing in for a real one in
+// TestTokenClientInterceptorNeverReflectsTheToken — distinctive enough that a
+// substring match cannot be an accident.
+const theLeakedToken = "s3cr3t-per-launch-bearer-token-must-never-print"
+
+// TestTokenClientInterceptorNeverReflectsTheToken is CLAUDE.md's "secrets
+// never enter workflow history" containment test, applied to
+// [tokenClientInterceptor]: a round-2 fix (6c888eb) added streaming coverage
+// by storing the per-launch token directly as a struct field, which reverses
+// the guarantee [authInterceptor]'s own doc comment states two paragraphs
+// above it — fmt reflects into an unexported field it cannot call a method
+// on, and a credential in a field is a credential that prints. Rendering the
+// interceptor itself, a struct wrapping one, and a slice of several — the
+// three containment shapes CLAUDE.md's own testing standard names — must
+// never surface the token under any of %v, %+v, %#v, or %s.
+func TestTokenClientInterceptorNeverReflectsTheToken(t *testing.T) {
+	interceptor := authInterceptor(theLeakedToken)
+
+	type wrapper struct {
+		one   connect.Interceptor
+		batch []connect.Interceptor
+	}
+	w := wrapper{one: interceptor, batch: []connect.Interceptor{interceptor, authInterceptor(theLeakedToken + "-2")}}
+
+	rendered := []string{
+		fmt.Sprintf("%v", interceptor),
+		fmt.Sprintf("%+v", interceptor),
+		fmt.Sprintf("%#v", interceptor),
+		fmt.Sprintf("%s", interceptor),
+		fmt.Sprintf("%v", w),
+		fmt.Sprintf("%+v", w),
+		fmt.Sprintf("%#v", w),
+		fmt.Sprintf("%v", w.batch),
+		fmt.Sprintf("%+v", w.batch),
+		fmt.Sprintf("%#v", w.batch),
+	}
+
+	for _, r := range rendered {
+		assert.NotContains(t, r, theLeakedToken,
+			"the per-launch token reached a formatted rendering of the client interceptor")
+	}
 }
 
 // TestBoundedTransportCapsAllStatuses shows the cap is a property of the

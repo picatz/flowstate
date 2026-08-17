@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -59,6 +63,29 @@ func runProgressPlugin() int {
 				Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 					flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 					flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
+					return &flowstatev1.Node_Outputs{}, nil
+				},
+			},
+			{
+				// telemetry_probe is the fixture
+				// TestExecuteStreamPropagatesTelemetry drives: it writes what
+				// the plugin process itself observed — whether [sdk.Tracer]
+				// came back non-nil, and the trace ID of the span the SDK's
+				// own telemetryInterceptor started — to the file its
+				// "message" input names, so the host-side test can read it
+				// back and compare against the trace ID of the span the host
+				// started before calling in.
+				Name:    "telemetry_probe",
+				Summary: "records whether an incoming trace propagated, for TestExecuteStreamPropagatesTelemetry",
+				Input:   &flowstatev1.Task_Log_Inputs{},
+				Output:  &flowstatev1.Task_Log_Outputs{},
+				Fn: func(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+					path := inputs["message"].GetLiteral().GetStringValue()
+					sc := trace.SpanContextFromContext(ctx)
+					line := fmt.Sprintf("tracer=%v traceid=%s\n", sdk.Tracer(ctx) != nil, sc.TraceID().String())
+					if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+						return nil, err
+					}
 					return &flowstatev1.Node_Outputs{}, nil
 				},
 			},
@@ -257,4 +284,72 @@ func TestExecuteStreamNeverRerunsATaskOnItsOwnApplicationError(t *testing.T) {
 	require.NoError(t, readErr, "the task's side effect never ran at all")
 	assert.Equal(t, "ran\n", string(data),
 		"the task's Fn ran more than once: its own CodeUnimplemented was mistaken for a missing route")
+}
+
+// TestExecuteStreamPropagatesTelemetry is Codex's round-3 finding on this PR
+// (picatz/flowstate#803): CAPABILITY_TASK_PROGRESS routes every task call
+// through ExecuteStream now, but both propagationInterceptor (this package,
+// telemetry.go) and the SDK's telemetryInterceptor (plugin/sdk/telemetry.go)
+// used to be built as connect.UnaryInterceptorFunc, whose streaming wrappers
+// Connect no-ops. A plugin's task therefore ran with no trace/baggage header
+// on the wire, no server span, and sdk.Tracer(ctx) == nil — a real
+// observability regression the moment a plugin advertised the capability
+// this PR adds.
+//
+// This drives the identical path [TestPluginProgressCrossesTheSubprocessBoundary]
+// does — a real subprocess over the real Unix socket, CAPABILITY_TASK_PROGRESS
+// confirmed so ExecuteStream is definitely the route taken — and proves
+// propagation rather than merely exercising the code: the host starts a real
+// span before calling in, and the plugin process (a different OS process
+// entirely, sharing no globals with this test) writes back the trace ID of
+// the span its own telemetryInterceptor started from the incoming header.
+// The two trace IDs matching is only possible if the header crossed the
+// socket at all.
+func TestExecuteStreamPropagatesTelemetry(t *testing.T) {
+	t.Parallel()
+
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	cfg := testConfig(t, pluginDir(t, "progress"))
+	cfg.TracerProvider = provider
+
+	host := openHost(t, cfg)
+	p, ok := host.Lookup("progress")
+	require.True(t, ok, "plugin was not launched")
+	require.True(t, p.HasCapability(pluginv1.Capability_CAPABILITY_TASK_PROGRESS),
+		"the fixture must advertise the capability, or this test is not exercising ExecuteStream at all")
+
+	def := findTaskDef(t, host, "progress.telemetry_probe")
+
+	probe := filepath.Join(t.TempDir(), "probe")
+
+	_, err := def.Fn(t.Context(), map[string]*flowstatev1.Value{
+		"message": flowstatev1.NewLiteral(probe),
+	}, nil)
+	require.NoError(t, err, "executing the plugin task")
+
+	// The host's telemetry records more than this one call — launching the
+	// plugin and opening the host both produce spans of their own — so pick
+	// out the execute span this call itself produced rather than assuming
+	// it is the only one recorded.
+	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
+	var executeSpan *tracetest.SpanStub
+	for i, stub := range stubs {
+		if stub.Name == "flowstate.plugin.execute" {
+			executeSpan = &stubs[i]
+		}
+	}
+	require.NotNil(t, executeSpan, "the host must have recorded a span for this call")
+	wantTraceID := executeSpan.SpanContext.TraceID().String()
+	require.NotEqual(t, trace.TraceID{}.String(), wantTraceID, "the host's own span must carry a real trace ID")
+
+	data, readErr := os.ReadFile(probe)
+	require.NoError(t, readErr, "the plugin process never wrote its probe, which means its Fn never ran")
+
+	got := strings.TrimSpace(string(data))
+	assert.Equal(t, fmt.Sprintf("tracer=true traceid=%s", wantTraceID), got,
+		"the plugin process must see a non-nil Tracer and a span continuing the host's own trace — "+
+			"if this shows tracer=false or a mismatched trace ID, the streaming path is not propagating telemetry")
 }
