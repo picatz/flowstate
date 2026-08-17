@@ -134,6 +134,34 @@ const (
 	// less.
 	MaxRunStateBytes = TemporalDefaultBlobLimitBytes - RunStateReserveBytes
 
+	// MaxTaskOutputBytes bounds one step's outputs — the payload a task's
+	// result becomes, which on the durable driver is an activity result
+	// Temporal weighs against the same blob limit as everything else here.
+	//
+	// This closes the one payload seam the other bounds miss (#787). A task's
+	// result is produced by a party the caller does not control — a remote
+	// endpoint, a plugin — and the admission bounds upstream of it admit more
+	// than Temporal will store: a plugin response may be
+	// [plugin.DefaultMaxResponseBytes] (4 MiB) on the wire, and the http
+	// task's default outputs carry a parsed JSON body twice (Body and Json).
+	// Without this bound an oversized result is refused by the server at
+	// activity completion, the activity retries against the same refusal, and
+	// the step dies ten minutes later as a ScheduleToClose *timeout* — a
+	// misdiagnosis, because the step finished repeatedly and its answer was
+	// too big to write down. The local driver, with no server to refuse,
+	// admitted it silently, which is the two drivers disagreeing in the worst
+	// direction: the rehearsal passing what production wedges on.
+	//
+	// Cut from [TemporalDefaultBlobLimitBytes] by the same reserve as
+	// [MaxRunStateBytes] rather than pinned to that constant, because the two
+	// answer different questions that happen to share their arithmetic today:
+	// an activity result travels in the same payload envelope, under the same
+	// codec, with the same framing as a carried run state, so the same
+	// claimants spend the same reserve. A result that fits here can still push
+	// the *carry* over [MaxRunStateBytes] once it sits beside every other
+	// step's outputs — [CheckRunStateSize] remains the backstop for the sum.
+	MaxTaskOutputBytes = TemporalDefaultBlobLimitBytes - RunStateReserveBytes
+
 	// MaxSignalPayloadBytes bounds one signal's payload, at the server's door.
 	//
 	// The payload is the one part of a run's carried state a party *other than
@@ -272,7 +300,11 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 func encodedPayloadSize(m proto.Message) int {
 	b, err := protojson.Marshal(m)
 	if err != nil {
-		return MaxRunStateBytes + 1
+		// Past the blob limit itself, which every bound in this package is
+		// cut under — so the fail-closed reading holds for every caller
+		// ([MaxRunStateBytes] and [MaxTaskOutputBytes] alike), not only the
+		// one whose constant happened to be named here first.
+		return TemporalDefaultBlobLimitBytes + 1
 	}
 	return len(b)
 }
@@ -324,6 +356,37 @@ func CheckRunResultSize(outputs *Workflow_StepOutputs) error {
 		"the completed run produced %d bytes of outputs, over the %d byte limit; "+
 			"write large results somewhere and return references to them instead",
 		size, MaxRunStateBytes)
+}
+
+// CheckTaskOutputSize reports whether one step's outputs fit in what Temporal
+// will store as an activity result.
+//
+// Called from [Task.EvalInScope], where the outputs become a fact — the same
+// choke point [checkTaskOutputElementBound] polices the element count at, and
+// for the same reason: every task's result, built-in or plugin, returns
+// through that one place on both drivers, so both refuse identically by
+// construction. That placement is activity-side on the durable driver, which
+// is what the rule at [TemporalDefaultBlobLimitBytes] requires: nothing in
+// workflow code may read the blob limit, and an activity has no determinism
+// exposure.
+//
+// Measured by [encodedPayloadSize], not proto.Size — the #716 lesson; an
+// activity result is handed to the same DataConverter as everything else and
+// is serialized as ProtoJSON, so a check measuring the binary encoding would
+// measure a payload nothing writes. A refusal is classified
+// [ErrorKindLimitExceeded] by the caller, so it is non-retryable: a too-large
+// output is the same output on attempt two.
+func CheckTaskOutputSize(out *Node_Outputs) error {
+	size := encodedPayloadSize(out)
+	if size <= MaxTaskOutputBytes {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"the step produced %d bytes of outputs, over the %d byte limit; "+
+			"write large results somewhere and return a reference, or select "+
+			"fields with the task's outputs: input rather than carrying the whole response",
+		size, MaxTaskOutputBytes)
 }
 
 // WorkerDeadlockDetectionTimeout is the workflow-task deadlock budget every

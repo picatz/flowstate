@@ -59,6 +59,16 @@ const (
 	// memory, via connect.WithReadMaxBytes. A plugin is not trusted because an
 	// operator installed it, and a response is the one thing it fully controls
 	// the size of.
+	//
+	// Deliberately larger than flowstatev1.MaxTaskOutputBytes, the bound on
+	// what a task's *outputs* may weigh (#787). This cap is about memory — how
+	// much of a response the host will read at all — and the output cap is
+	// about storage — what Temporal will hold as the activity's result. The
+	// gap between them exists for a plugin that reads a large response and
+	// reduces it before returning, the same pattern as the http task's
+	// `outputs:` selection: reading 4 MiB and emitting 10 KiB of outputs is
+	// legitimate, while returning the 4 MiB whole is refused at
+	// Task.EvalInScope with a diagnosis naming both numbers.
 	DefaultMaxResponseBytes = 4 << 20 // 4 MiB
 
 	// DefaultMaxRestarts is how many times a plugin that exits on its own is

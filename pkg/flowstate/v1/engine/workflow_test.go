@@ -1360,6 +1360,52 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputSizeBound is the durable half of #787: a single
+// task's result weighing more than Temporal will store as an activity result.
+// Without the shared check the server refuses the oversized completion, the
+// attempt retries against the same refusal, and the step dies as a
+// misdiagnosed ScheduleToClose timeout; with it the activity fails once,
+// non-retryably, with the sentence naming the size and the bound.
+//
+// See the local driver's identically-named test. Both reach the bound through
+// [v1.Task.EvalInScope] — the durable driver via the `Task`/`TaskInScope`
+// activities, activity-side as size.go requires — so the same cases must fail
+// (and succeed) the same way here.
+func TestRunWorkflowTaskOutputSizeBound(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.TaskOutputSizeBoundCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			// Megabytes of outputs are real work for the workflow goroutine
+			// to carry in one task, so the same deadlock-budget raise the
+			// element-bound cases need applies (#431).
+			env := atABound(testSuite.NewTestWorkflowEnvironment())
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the output byte bound must be refused")
+				require.Contains(t, err.Error(), `step "fetch"`,
+					"the refusal must name the step")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxTaskOutputBytes),
+					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
 // TestRunWorkflowForEachResultsBound is the durable half of #229's byte bound
 // for the `for_each` construct — see the local driver's identically-named test.
 //
