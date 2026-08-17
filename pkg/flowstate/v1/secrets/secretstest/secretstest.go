@@ -131,8 +131,8 @@ type Collision struct {
 func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures []NamespaceFixture) {
 	t.Helper()
 
-	if len(fixtures) < 2 {
-		t.Fatalf("VerifyNamespaceIsolation needs at least two fixtures to prove isolation between namespaces; got %d", len(fixtures))
+	if err := validateFixtures(fixtures); err != nil {
+		t.Fatal(err)
 	}
 
 	for _, f := range fixtures {
@@ -157,6 +157,34 @@ func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures 
 		}
 	}
 
+	// The loop above only ever probes as a requester a namespace that owns a
+	// fixture of its own. That leaves a real fallback uncaught: a provider
+	// that correctly separates every *configured* tenant but silently falls
+	// back to one tenant's storage for any namespace it was never told
+	// about would pass every subtest above, because none of them ever asks
+	// as a namespace with no fixture at all. That case can't be represented
+	// as a NamespaceFixture — giving it one would make it "own" a fixture,
+	// which is exactly the case the loop above already covers, and it would
+	// fail the distinct-namespace precondition if it collided with an
+	// existing one. So probe it explicitly: an unconfigured, sentinel
+	// requester namespace, guaranteed not to equal any fixture's Namespace,
+	// asking for each owner's own plain Ref.
+	const unconfiguredNamespace = "secretstest-unconfigured-tenant"
+	for _, f := range fixtures {
+		if f.Namespace == unconfiguredNamespace {
+			t.Fatalf("fixture list uses the sentinel unconfigured namespace %q as a real fixture's Namespace; "+
+				"VerifyNamespaceIsolation needs this value to name no configured tenant", unconfiguredNamespace)
+		}
+	}
+
+	for _, owner := range fixtures {
+		t.Run(fmt.Sprintf("%s-cannot-reach-%s", unconfiguredNamespace, owner.Namespace), func(t *testing.T) {
+			if err := checkNoCollision(t.Context(), provider, unconfiguredNamespace, owner, owner.Ref); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
 	// Collisions are checked separately from the loop above, and from each
 	// other fixture's Collisions: each one is tried only from the specific
 	// requester namespace it declares, never from every namespace the
@@ -171,6 +199,40 @@ func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures 
 			})
 		}
 	}
+}
+
+// validateFixtures checks the precondition [VerifyNamespaceIsolation] needs
+// to actually prove isolation: at least two fixtures, naming at least two
+// distinct namespace values.
+//
+// The distinct-namespace half exists because the count alone is not enough.
+// Two fixtures that share a Namespace string pass the ownership subtests
+// trivially — both are just the same namespace resolving its own ref — and
+// the negative-direction loop's `requester.Namespace == owner.Namespace`
+// guard then skips every pair, since every pair *is* that case. A provider
+// that ignores Request.Namespace entirely would pass undetected. It holds no
+// dependency on *testing.T for the same reason [checkOwnFixture] and
+// [checkNoCollision] don't: this package's own meta-regression tests need to
+// observe the failure without it propagating to every ancestor *testing.T
+// the way a failed t.Run subtest — or a t.Fatalf on the *testing.T passed
+// into this function — would.
+func validateFixtures(fixtures []NamespaceFixture) error {
+	if len(fixtures) < 2 {
+		return fmt.Errorf("VerifyNamespaceIsolation needs at least two fixtures to prove isolation between namespaces; got %d", len(fixtures))
+	}
+
+	distinct := make(map[string]struct{}, len(fixtures))
+	for _, f := range fixtures {
+		distinct[f.Namespace] = struct{}{}
+	}
+	if len(distinct) < 2 {
+		return fmt.Errorf("VerifyNamespaceIsolation needs at least two fixtures naming distinct namespaces to prove isolation "+
+			"between namespaces; got %d fixture(s) sharing %d namespace value(s) — two fixtures with the same "+
+			"Namespace make every ownership subtest trivially pass and the negative-direction loop skip every pair, "+
+			"so a provider that ignores Request.Namespace entirely would pass undetected", len(fixtures), len(distinct))
+	}
+
+	return nil
 }
 
 // checkOwnFixture resolves a fixture's own reference under its own namespace

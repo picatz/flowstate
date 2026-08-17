@@ -131,3 +131,132 @@ func Test_checkNoCollision_CatchesTheHistoricalCollision(t *testing.T) {
 			teamB.Namespace, err)
 	}
 }
+
+// fallbackToTeamAProvider reproduces, on purpose, a different bug shape than
+// naiveEnvProvider: it separates its two *configured* tenants correctly —
+// team-a and team-b each get their own storage slot — but silently falls
+// back to team-a's storage for any namespace it was never told about,
+// instead of failing closed. This is exactly the gap the third-round P1
+// review comment on this package described: a fixture list that only ever
+// probes as a requester a namespace that owns a fixture can never construct
+// an unconfigured requester, so it can never observe this fallback.
+type fallbackToTeamAProvider struct {
+	values map[string]string // namespace+"/"+name -> value
+}
+
+func (p *fallbackToTeamAProvider) Scheme() string { return "env" }
+
+func (p *fallbackToTeamAProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
+	namespace := req.Namespace
+	switch namespace {
+	case "team-a", "team-b":
+		// configured; use as given
+	default:
+		// unconfigured requester: silently fall back to team-a's storage
+		// rather than failing closed.
+		namespace = "team-a"
+	}
+
+	value, ok := p.values[namespace+"/"+req.Ref.GetName()]
+	if !ok {
+		return secrets.Secret{}, &secrets.ResolveError{Ref: req.Ref, Err: secrets.ErrNotFound}
+	}
+
+	return secrets.NewSecret(req.Ref, value), nil
+}
+
+// Test_checkNoCollision_CatchesTheUnconfiguredNamespaceFallback is the meta
+// regression for the fourth-round P1 finding: proof that probing an
+// unconfigured, sentinel requester namespace against each owner's own plain
+// Ref — the check [VerifyNamespaceIsolation] now runs in addition to the
+// owner-fixture loop — actually catches a provider that correctly separates
+// its configured tenants but falls back to one of them for anyone else.
+//
+// Without this probe, nothing in [VerifyNamespaceIsolation]'s fixture-driven
+// loops can construct an unconfigured requester at all: every requester the
+// existing loops try is itself a fixture's own Namespace, and a namespace
+// with no fixture representing it can't be added to the fixture list without
+// either failing the ownership subtest (if the provider genuinely rejects
+// it) or tautologically becoming "just another configured tenant" (if it
+// doesn't) — see [NamespaceFixture] and the unconfigured-namespace probe in
+// [VerifyNamespaceIsolation].
+func Test_checkNoCollision_CatchesTheUnconfiguredNamespaceFallback(t *testing.T) {
+	provider := &fallbackToTeamAProvider{
+		values: map[string]string{
+			"team-a/api-key": "team-a-value",
+			"team-b/api-key": "team-b-value",
+		},
+	}
+
+	teamA := NamespaceFixture{
+		Namespace: "team-a",
+		Ref:       secrets.NewRef("env", "api-key"),
+		Value:     "team-a-value",
+	}
+	teamB := NamespaceFixture{
+		Namespace: "team-b",
+		Ref:       secrets.NewRef("env", "api-key"),
+		Value:     "team-b-value",
+	}
+
+	// Sanity check: both tenants genuinely reach their own value, so the
+	// probe below isn't an artifact of a broken fixture — this provider does
+	// separate its configured tenants correctly.
+	if err := checkOwnFixture(t.Context(), provider, teamA); err != nil {
+		t.Fatalf("fixture setup is broken, not the thing under test: %v", err)
+	}
+	if err := checkOwnFixture(t.Context(), provider, teamB); err != nil {
+		t.Fatalf("fixture setup is broken, not the thing under test: %v", err)
+	}
+
+	// The existing cross-namespace check (team-a asking for team-b's ref and
+	// vice versa) also passes clean, because the fallback only ever fires
+	// for a namespace neither fixture names — confirming this provider would
+	// slip through the pre-existing loops undetected.
+	if err := checkNoCollision(t.Context(), provider, teamB.Namespace, teamA, teamA.Ref); err != nil {
+		t.Fatalf("checkNoCollision reported a collision between two correctly-separated configured tenants, "+
+			"which is not the bug this test targets: %v", err)
+	}
+
+	// The unconfigured-namespace probe: a sentinel requester namespace that
+	// owns no fixture at all must not reach team-a's value through team-a's
+	// own, ordinary reference.
+	const unconfiguredNamespace = "secretstest-unconfigured-tenant"
+	if err := checkNoCollision(t.Context(), provider, unconfiguredNamespace, teamA, teamA.Ref); err == nil {
+		t.Fatal("checkNoCollision did not catch a provider that falls back to team-a's storage for an " +
+			"unconfigured namespace — the exact gap the unconfigured-requester probe exists to close")
+	}
+}
+
+// Test_validateFixtures_RejectsDuplicateNamespaces is the meta regression for
+// the other half of the fourth-round review: proof that the precondition
+// [VerifyNamespaceIsolation] runs actually rejects a fixture list whose
+// entries share a Namespace value, rather than merely counting entries.
+//
+// It calls validateFixtures directly rather than VerifyNamespaceIsolation,
+// for the same reason the other tests in this file call checkOwnFixture and
+// checkNoCollision directly: VerifyNamespaceIsolation reports this failure
+// with t.Fatalf on the *testing.T it's given, and that has no way to be
+// observed without also failing whatever test called it.
+func Test_validateFixtures_RejectsDuplicateNamespaces(t *testing.T) {
+	same := []NamespaceFixture{
+		{Namespace: "team-a", Ref: secrets.NewRef("env", "api-key"), Value: "team-a-value"},
+		{Namespace: "team-a", Ref: secrets.NewRef("env", "other-key"), Value: "team-a-other-value"},
+	}
+	if err := validateFixtures(same); err == nil {
+		t.Fatal("validateFixtures accepted two fixtures sharing the same Namespace — a provider that ignores " +
+			"Request.Namespace entirely would pass VerifyNamespaceIsolation undetected with a fixture list " +
+			"shaped like this, since every ownership subtest trivially passes and the negative-direction loop " +
+			"skips the only pair there is")
+	}
+
+	// Sanity check: the same count, but genuinely distinct namespaces, is
+	// accepted — this test is about duplication, not fixture count.
+	distinct := []NamespaceFixture{
+		{Namespace: "team-a", Ref: secrets.NewRef("env", "api-key"), Value: "team-a-value"},
+		{Namespace: "team-b", Ref: secrets.NewRef("env", "api-key"), Value: "team-b-value"},
+	}
+	if err := validateFixtures(distinct); err != nil {
+		t.Fatalf("validateFixtures rejected a fixture list with two genuinely distinct namespaces: %v", err)
+	}
+}
