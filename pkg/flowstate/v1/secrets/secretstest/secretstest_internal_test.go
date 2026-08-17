@@ -101,10 +101,33 @@ func Test_checkNoCollision_CatchesTheHistoricalCollision(t *testing.T) {
 	// CLAUDE.md documents as the historical bug.
 	collision := secrets.NewRef("env", "TEAM_A_API_KEY")
 
-	err := checkNoCollision(t.Context(), provider, def, teamA, collision)
+	err := checkNoCollision(t.Context(), provider, def.Namespace, teamA, collision)
 	if err == nil {
 		t.Fatal("checkNoCollision did not catch the exact historical collision shape it exists to prevent: " +
 			"a naive prefix+NAMESPACE+\"_\"+name provider let the default namespace read team-a's secret " +
 			"through reference \"TEAM_A_API_KEY\"")
+	}
+
+	// The other half of the second-round P1 finding this test now also
+	// covers: the collision above only collides when tried from the empty
+	// namespace. Trying the identical reference from some *other* namespace
+	// present in a fixture list — say, team-b's — is not the attack at all,
+	// and a naive, genuinely vulnerable provider correctly (if
+	// coincidentally) fails closed against it. A check that iterated over
+	// every other fixture's namespace instead of the collision's own
+	// declared requester would have exercised exactly this non-attack and
+	// reported the naive provider clean — which is precisely how the second
+	// round of review found the first fix's loop unsound. Confirm that
+	// shape stays a miss, so nobody "fixes" checkNoCollision back into
+	// iterating over every fixture and has this pass by accident.
+	teamB := NamespaceFixture{
+		Namespace: "team-b",
+		Ref:       secrets.NewRef("env", "API_KEY"),
+		Value:     "team-b-value",
+	}
+	if err := checkNoCollision(t.Context(), provider, teamB.Namespace, teamA, collision); err != nil {
+		t.Fatalf("checkNoCollision reported a collision from namespace %q, which was never the attack "+
+			"(\"TEAM_A_API_KEY\" only collides from the empty namespace under this derivation scheme): %v",
+			teamB.Namespace, err)
 	}
 }

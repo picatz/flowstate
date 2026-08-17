@@ -34,10 +34,9 @@ type NamespaceFixture struct {
 	Value string
 
 	// Collisions names further references, distinct from Ref, that a
-	// requester in some *other* namespace might construct in an attempt to
-	// land on this fixture's Value — shaped the way a naive
-	// prefix-or-path-concatenation scheme would actually produce them, not
-	// merely Ref repeated.
+	// requester might construct in an attempt to land on this fixture's
+	// Value — shaped the way a naive prefix-or-path-concatenation scheme
+	// would actually produce them, not merely Ref repeated.
 	//
 	// This is what the plain Ref check above cannot catch. Resolving the
 	// same reference under someone else's namespace only ever proves a
@@ -51,14 +50,48 @@ type NamespaceFixture struct {
 	// $FLOWSTATE_SECRET_TEAM_A_ + "API_KEY" are the same string. A fixture
 	// whose Collisions field is empty is not exercising that shape at all.
 	//
-	// Populate it with references shaped like the provider's actual
-	// derivation scheme — the env provider's collision candidate looks like
-	// "TEAM_A_API_KEY" or "A_API_KEY"; the file provider's looks like a path
-	// segment crafted to land in another tenant's directory. Each entry is
-	// checked against every namespace other than this fixture's own, with
-	// the same fail-closed rule as Ref: an error is fine, this fixture's
-	// Value coming back is not.
-	Collisions []secrets.Ref
+	// A collision only actually collides under one specific requester
+	// namespace — "TEAM_A_API_KEY" only lands in team-a's slot when asked
+	// from the empty/default namespace; "A_API_KEY" only does when asked
+	// from a namespace literally called "team". Each [Collision] therefore
+	// names its own requester namespace rather than being tried from every
+	// other fixture in the list: trying "TEAM_A_API_KEY" from, say,
+	// "team-b" proves nothing, because that pairing was never the attack in
+	// the first place — it fails closed against both a naive provider and a
+	// correct one, so a check that only ever tries that pairing cannot tell
+	// the two apart.
+	//
+	// Shape each Ref like the provider's actual derivation scheme — the env
+	// provider's collision candidate looks like "TEAM_A_API_KEY" or
+	// "A_API_KEY"; the file provider's looks like a path segment crafted to
+	// land in another tenant's directory. Each entry is checked from its
+	// declared FromNamespace, with the same fail-closed rule as Ref: an
+	// error is fine, this fixture's Value coming back is not.
+	Collisions []Collision
+}
+
+// Collision is a requester-crafted reference [NamespaceFixture.Collisions]
+// declares, bound to the one requester namespace that actually makes it
+// collide with the owning fixture's secret.
+//
+// Binding matters because a collision is a property of *both* sides: the
+// requester namespace and the reference together determine what a naive
+// prefix-or-path-concatenation provider derives. Leaving the requester
+// namespace implicit — trying a collision reference from every other
+// namespace a test happens to define — can miss the one namespace that was
+// ever going to reproduce the bug, and silently pass against a genuinely
+// vulnerable provider. See [NamespaceFixture.Collisions].
+type Collision struct {
+	// FromNamespace is the requester namespace this reference must be tried
+	// under. It need not be one of the namespaces any [NamespaceFixture] in
+	// the list owns — the historical env bug's most damaging collision was
+	// reachable from the *empty* namespace, which owns nothing of its own.
+	FromNamespace string
+
+	// Ref is the requester's own reference, shaped the way the provider's
+	// actual derivation scheme would produce it — not the owner's Ref
+	// repeated.
+	Ref secrets.Ref
 }
 
 // VerifyNamespaceIsolation is the conformance check every [secrets.Provider]
@@ -76,9 +109,10 @@ type NamespaceFixture struct {
 // own secret — see CLAUDE.md, "Test that A cannot reach B, not that A can
 // reach A". This helper asserts that half too (each fixture must resolve
 // under its own namespace), and then asserts the half that actually catches
-// the bug class: no fixture's reference — nor any of its declared
-// [NamespaceFixture.Collisions] — resolved under any other fixture's
-// namespace, may return that fixture's value. A [secrets.Provider] that
+// the bug class: no fixture's reference, resolved under any other fixture's
+// namespace, may return that fixture's value — and none of its declared
+// [NamespaceFixture.Collisions], each resolved under its own declared
+// [Collision.FromNamespace], may either. A [secrets.Provider] that
 // derives its scoping from a prefix or a path segment that is not
 // collision-free — the exact shape both prior bugs took — fails here even
 // though every single-tenant case, tested alone, would pass.
@@ -116,18 +150,25 @@ func VerifyNamespaceIsolation(t *testing.T, provider secrets.Provider, fixtures 
 			}
 
 			t.Run(fmt.Sprintf("%s-cannot-reach-%s", requester.Namespace, owner.Namespace), func(t *testing.T) {
-				if err := checkNoCollision(t.Context(), provider, requester, owner, owner.Ref); err != nil {
+				if err := checkNoCollision(t.Context(), provider, requester.Namespace, owner, owner.Ref); err != nil {
 					t.Fatal(err)
 				}
 			})
+		}
+	}
 
-			for _, collision := range owner.Collisions {
-				t.Run(fmt.Sprintf("%s-cannot-collide-into-%s", requester.Namespace, owner.Namespace), func(t *testing.T) {
-					if err := checkNoCollision(t.Context(), provider, requester, owner, collision); err != nil {
-						t.Fatal(err)
-					}
-				})
-			}
+	// Collisions are checked separately from the loop above, and from each
+	// other fixture's Collisions: each one is tried only from the specific
+	// requester namespace it declares, never from every namespace the
+	// fixture list happens to define — see [Collision] for why substituting
+	// an arbitrary requester does not construct the attack.
+	for _, owner := range fixtures {
+		for _, collision := range owner.Collisions {
+			t.Run(fmt.Sprintf("%s-cannot-collide-into-%s", collision.FromNamespace, owner.Namespace), func(t *testing.T) {
+				if err := checkNoCollision(t.Context(), provider, collision.FromNamespace, owner, collision.Ref); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 }
@@ -151,20 +192,24 @@ func checkOwnFixture(ctx context.Context, provider secrets.Provider, f Namespace
 	return nil
 }
 
-// checkNoCollision resolves ref under requester's namespace and reports an
-// error only if that succeeds and returns owner's value — an error from the
+// checkNoCollision resolves ref under requesterNamespace and reports an error
+// only if that succeeds and returns owner's value — an error from the
 // provider is an acceptable, fail-closed answer, so it is never reported
 // here. See [checkOwnFixture] for why this returns a plain error rather than
 // taking a *testing.T.
-func checkNoCollision(ctx context.Context, provider secrets.Provider, requester, owner NamespaceFixture, ref secrets.Ref) error {
-	secret, err := provider.Resolve(ctx, secrets.Request{Namespace: requester.Namespace, Ref: ref})
+//
+// requesterNamespace is a plain string, not a [NamespaceFixture], because a
+// collision's requester namespace need not own a fixture of its own — see
+// [Collision.FromNamespace].
+func checkNoCollision(ctx context.Context, provider secrets.Provider, requesterNamespace string, owner NamespaceFixture, ref secrets.Ref) error {
+	secret, err := provider.Resolve(ctx, secrets.Request{Namespace: requesterNamespace, Ref: ref})
 	if err != nil {
 		return nil
 	}
 	if secret.Reveal() == owner.Value {
 		return fmt.Errorf(
 			"namespace %q reached namespace %q's secret through reference %q",
-			requester.Namespace, owner.Namespace, ref,
+			requesterNamespace, owner.Namespace, ref,
 		)
 	}
 	return nil
