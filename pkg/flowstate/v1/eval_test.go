@@ -367,6 +367,36 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputSizeBound covers the local driver's half of #787:
+// a single task's result weighing more than Temporal will store as an
+// activity result. The local driver has no server to refuse an oversized
+// result, so without the shared check it admits silently what the durable
+// driver wedges on — the rehearsal disagreeing with production in the worst
+// direction.
+//
+// The same cases run against the durable driver in the engine package — see
+// the identically-named test there. Both reach the bound through
+// [v1.Task.EvalInScope], the same choke point the element bound uses, which
+// is what invariant 3 asks a shared case to hold the two drivers to.
+func TestRunWorkflowTaskOutputSizeBound(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.TaskOutputSizeBoundCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a task result past the output byte bound must be refused")
+				require.Contains(t, err.Error(), `step "fetch"`,
+					"the refusal must name the step")
+				require.Contains(t, err.Error(), strconv.Itoa(v1.MaxTaskOutputBytes),
+					"the refusal must name the bound it reached")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowForEachResultsBound covers the local driver's half of #229's
 // byte bound for the `for_each` construct: its accumulated `results` are bounded
 // in bytes exactly as a `loop:`'s are, through the shared [v1.MaxLoopResultsBytes]

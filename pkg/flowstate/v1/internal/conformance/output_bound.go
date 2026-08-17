@@ -89,6 +89,100 @@ func jsonArrayPath(n int) string {
 	return "/json-array/" + strconv.Itoa(n)
 }
 
+// taskOutputChunkBytes is the body size each fetched copy below contributes to
+// the step's outputs — 256 KiB, comfortably under the 1 MiB response cap yet
+// large enough that a single-digit copy count brackets
+// [v1.MaxTaskOutputBytes]: seven copies sit under it, eight cross it.
+const taskOutputChunkBytes = 256 << 10
+
+// TaskOutputSizeBoundCases returns the shared cases for #787: a single task's
+// result weighing more than Temporal will store as an activity result. The
+// element bound above caps what a later expression pays to walk a result;
+// [v1.CheckTaskOutputSize] caps what the substrate is asked to store it as —
+// without it an oversized result is refused by the server at activity
+// completion and retries into a misdiagnosed ScheduleToClose timeout on the
+// durable driver, while the local driver admits it silently.
+//
+// Bounded at the same seam as the element bound — [v1.Task.EvalInScope], the
+// one place both drivers funnel every task's result through — so the same
+// cases must fail (and succeed) the same way on both.
+//
+// One fetch per case, referenced several times by the `outputs:` expression:
+// the response cap (1 MiB) is below the output bound, so no single body can
+// cross it, but a result that carries one body more than once can — which is
+// exactly the http task's own default-outputs shape (Body and Json carrying a
+// parsed body twice, see eval_task_http_run.go's defaultOuts).
+//
+// httpBaseURL should come from [NewHTTPServer].
+func TaskOutputSizeBoundCases(httpBaseURL string) []Case {
+	// Under the bound by less than one chunk: these must pass, which is what
+	// asserts the bound is *reached* rather than merely never exceeded — a
+	// result carrying real megabytes is still let through.
+	underCopies := v1.MaxTaskOutputBytes / taskOutputChunkBytes
+	// One more copy crosses the bound, ProtoJSON field-name overhead included.
+	overCopies := underCopies + 1
+
+	return []Case{
+		{
+			Name:     "a task result under the output byte bound succeeds",
+			Workflow: fetchesBytesCopies("under-output-bound", httpBaseURL, underCopies),
+			ExpectedOutputsPredicate: func(out *v1.Workflow_StepOutputs) bool {
+				return copiedBodyLen(out, "fetch") == taskOutputChunkBytes
+			},
+		},
+		{
+			Name:          "a task result over the output byte bound is refused",
+			Workflow:      fetchesBytesCopies("over-output-bound", httpBaseURL, overCopies),
+			ExpectFailure: true,
+		},
+	}
+}
+
+// fetchesBytesCopies builds a one-step workflow whose `http` step fetches one
+// [taskOutputChunkBytes] body and reports it n times over, under c0..c<n-1> —
+// the shape that puts a large *result* behind a small fetch, which is the
+// resource [v1.CheckTaskOutputSize] bounds.
+func fetchesBytesCopies(name, httpBaseURL string, n int) *v1.Workflow {
+	fields := make([]string, n)
+	for i := range fields {
+		fields[i] = `"c` + strconv.Itoa(i) + `": response.body`
+	}
+
+	return &v1.Workflow{
+		Name:    name,
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{
+			{
+				Id: "fetch",
+				Kind: &v1.Node_Task{Task: &v1.Task{
+					Name: "http",
+					Inputs: map[string]*v1.Value{
+						"method":  v1.NewLiteral(http.MethodGet),
+						"url":     v1.NewLiteral(httpBaseURL + "/bytes/" + strconv.Itoa(taskOutputChunkBytes)),
+						"outputs": v1.NewExpr("{" + strings.Join(fields, ", ") + "}"),
+					},
+				}},
+			},
+		},
+	}
+}
+
+// copiedBodyLen reads the length of the first copy a [fetchesBytesCopies] step
+// reported, or -1 when the step or the value is absent — one representative
+// field rather than all of them, since a passing case's claim is that a result
+// of real size was admitted, not the exact map shape.
+func copiedBodyLen(out *v1.Workflow_StepOutputs, stepID string) int {
+	step, ok := out.GetStepValues()[stepID]
+	if !ok {
+		return -1
+	}
+	body, ok := step.GetNamedValues()["c0"]
+	if !ok {
+		return -1
+	}
+	return len(body.GetLiteral().GetStringValue())
+}
+
 // forEachResultsByteBound mirrors [v1.MaxLoopResultsBytes] the same way
 // [taskOutputElementBound] mirrors the element ceiling: the real constant is
 // exported, and pinning the number a second time here is what proves the sizing

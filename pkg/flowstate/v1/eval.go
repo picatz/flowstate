@@ -2483,5 +2483,18 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
 	}
 
+	// And what it weighs (#787). The element bound above caps what a later
+	// expression pays to walk the result; this caps what the substrate is
+	// asked to store it as — on the durable driver the outputs returned here
+	// are an activity's result, refused past Temporal's blob limit, and a
+	// refusal at completion retries into a misdiagnosed ScheduleToClose
+	// timeout. The admission bounds upstream both admit more than that limit:
+	// a plugin response cap of 4 MiB, and the http task's default outputs
+	// carrying a parsed body twice. Same classification, same non-retryability
+	// reasoning: the size of a result does not change between attempts.
+	if err := CheckTaskOutputSize(out); err != nil {
+		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
+	}
+
 	return out, nil
 }
