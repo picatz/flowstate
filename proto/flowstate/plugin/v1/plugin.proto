@@ -355,6 +355,102 @@ message ResolveResponse {
 // TaskService executes tasks, for a plugin advertising CAPABILITY_TASKS.
 service TaskService {
   rpc Execute(ExecuteRequest) returns (ExecuteResponse) {}
+
+  // ExecuteStream is Execute, plus the phases a plugin passes through while it
+  // runs: the host reads a stream of zero or more TaskProgress messages
+  // followed by exactly one terminal ExecuteResponse, rather than waiting on
+  // one response for the call's whole duration.
+  //
+  // # Why a second RPC rather than changing Execute
+  //
+  // Adding an RPC is additive — an old plugin that never heard of this method
+  // answers with Connect's own Unimplemented, which the host reads as "this
+  // plugin predates progress relay" and falls back to Execute, unary, exactly
+  // as it called before this method existed (see [Plugin.taskFunc] in
+  // plugin/task.go for the fallback, and how the host remembers the answer
+  // per plugin rather than re-probing on every call). Changing Execute
+  // itself to stream would be the opposite: every plugin that only
+  // implements the old shape — in this repository's own three other plugin
+  // modules or in any language a third party wrote one in — would stop
+  // answering the call the engine makes to run its tasks at all. That is the
+  // same "a break here is every plugin in the wild" reasoning CLAUDE.md
+  // already gives for `buf breaking`, applied to a change that check cannot
+  // see: it lints message and field compatibility, not whether an RPC's
+  // streaming type changed.
+  //
+  // Best-effort, like the progress report it exists to carry: a plugin that
+  // never calls ReportProgress sends only the terminal message, and the host
+  // treats that exactly as it treats a plugin that never implemented this
+  // RPC at all — one fixed phase for the call's whole duration, the behavior
+  // that predates this method.
+  rpc ExecuteStream(ExecuteStreamRequest) returns (stream ExecuteStreamResponse) {}
+}
+
+// ExecuteStreamRequest is ExecuteRequest, under the name buf's lint rules
+// require of a distinct RPC's request type. The fields are identical and mean
+// the same thing; see ExecuteRequest for what each one is.
+message ExecuteStreamRequest {
+  flowstate.v1.Task task = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+  flowstate.v1.Scope scope = 2;
+  flowstate.v1.WorkloadIdentity identity = 3;
+  string namespace = 4 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// ExecuteStreamResponse is one message of an ExecuteStream call.
+//
+// A call answers with zero or more progress messages, then exactly one
+// response message, then the stream ends. A stream that ends without ever
+// sending a response is a protocol violation, not a call with an empty
+// result — see [Plugin.taskFunc]'s handling in plugin/task.go.
+message ExecuteStreamResponse {
+  oneof message {
+    // Progress is a phase the plugin has reached, sent best-effort at any
+    // point before the terminal response.
+    TaskProgress progress = 1;
+
+    // Response is the terminal message, and always comes last: the identical
+    // shape a unary Execute call answers with.
+    ExecuteResponse response = 2;
+  }
+}
+
+// TaskProgress is a plugin's own report of what phase it has reached while a
+// task is running, forwarded to the host's existing progress reporter — the
+// one behind flowstate.v1.ReportProgress inside the worker process
+// (pkg/flowstate/v1/progress.go), which `flow watch` and the durable driver's
+// activity heartbeat already read.
+//
+// It carries only a phase from the closed vocabulary below, never free text:
+// this is the plugin-protocol half of the same discipline
+// flowstate.v1.Phase's own doc comment describes for why that Go type has no
+// constructor. The value crosses into the worker process, and from there into
+// an activity heartbeat that Temporal writes into workflow history — durable
+// and broadly readable, which is exactly where nothing derived from a task's
+// own inputs may go.
+message TaskProgress {
+  TaskPhase phase = 1;
+}
+
+// TaskPhase mirrors flowstate.v1.Phase's closed vocabulary
+// (pkg/flowstate/v1/progress.go), one member per package-level Phase value
+// defined there. Adding a member here is the same deliberate, reviewed
+// change adding one there is — see that file's own doc comment for why the
+// vocabulary is closed — and the two must keep naming the same set, because
+// the mapping between them the host applies in plugin/task.go is total only
+// as long as they do.
+//
+// TASK_PHASE_UNSPECIFIED is never sent by a well-behaved plugin, and is
+// dropped rather than forwarded if it arrives: an unset phase is not a phase
+// report, and forwarding one would tell an operator a task said something it
+// did not.
+enum TaskPhase {
+  TASK_PHASE_UNSPECIFIED = 0;
+  TASK_PHASE_REQUESTING = 1;
+  TASK_PHASE_READING_RESPONSE = 2;
+  TASK_PHASE_CALLING_PLUGIN = 3;
 }
 
 message ExecuteRequest {

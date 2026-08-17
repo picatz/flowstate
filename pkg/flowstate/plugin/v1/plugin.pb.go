@@ -81,6 +81,70 @@ func (Capability) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{0}
 }
 
+// TaskPhase mirrors flowstate.v1.Phase's closed vocabulary
+// (pkg/flowstate/v1/progress.go), one member per package-level Phase value
+// defined there. Adding a member here is the same deliberate, reviewed
+// change adding one there is — see that file's own doc comment for why the
+// vocabulary is closed — and the two must keep naming the same set, because
+// the mapping between them the host applies in plugin/task.go is total only
+// as long as they do.
+//
+// TASK_PHASE_UNSPECIFIED is never sent by a well-behaved plugin, and is
+// dropped rather than forwarded if it arrives: an unset phase is not a phase
+// report, and forwarding one would tell an operator a task said something it
+// did not.
+type TaskPhase int32
+
+const (
+	TaskPhase_TASK_PHASE_UNSPECIFIED      TaskPhase = 0
+	TaskPhase_TASK_PHASE_REQUESTING       TaskPhase = 1
+	TaskPhase_TASK_PHASE_READING_RESPONSE TaskPhase = 2
+	TaskPhase_TASK_PHASE_CALLING_PLUGIN   TaskPhase = 3
+)
+
+// Enum value maps for TaskPhase.
+var (
+	TaskPhase_name = map[int32]string{
+		0: "TASK_PHASE_UNSPECIFIED",
+		1: "TASK_PHASE_REQUESTING",
+		2: "TASK_PHASE_READING_RESPONSE",
+		3: "TASK_PHASE_CALLING_PLUGIN",
+	}
+	TaskPhase_value = map[string]int32{
+		"TASK_PHASE_UNSPECIFIED":      0,
+		"TASK_PHASE_REQUESTING":       1,
+		"TASK_PHASE_READING_RESPONSE": 2,
+		"TASK_PHASE_CALLING_PLUGIN":   3,
+	}
+)
+
+func (x TaskPhase) Enum() *TaskPhase {
+	p := new(TaskPhase)
+	*p = x
+	return p
+}
+
+func (x TaskPhase) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TaskPhase) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_plugin_v1_plugin_proto_enumTypes[1].Descriptor()
+}
+
+func (TaskPhase) Type() protoreflect.EnumType {
+	return &file_flowstate_plugin_v1_plugin_proto_enumTypes[1]
+}
+
+func (x TaskPhase) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TaskPhase.Descriptor instead.
+func (TaskPhase) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{1}
+}
+
 type HealthResponse_Status int32
 
 const (
@@ -119,11 +183,11 @@ func (x HealthResponse_Status) String() string {
 }
 
 func (HealthResponse_Status) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_plugin_v1_plugin_proto_enumTypes[1].Descriptor()
+	return file_flowstate_plugin_v1_plugin_proto_enumTypes[2].Descriptor()
 }
 
 func (HealthResponse_Status) Type() protoreflect.EnumType {
-	return &file_flowstate_plugin_v1_plugin_proto_enumTypes[1]
+	return &file_flowstate_plugin_v1_plugin_proto_enumTypes[2]
 }
 
 func (x HealthResponse_Status) Number() protoreflect.EnumNumber {
@@ -785,6 +849,226 @@ func (x *ResolveResponse) GetExpiresIn() *durationpb.Duration {
 	return nil
 }
 
+// ExecuteStreamRequest is ExecuteRequest, under the name buf's lint rules
+// require of a distinct RPC's request type. The fields are identical and mean
+// the same thing; see ExecuteRequest for what each one is.
+type ExecuteStreamRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Task          *v1.Task               `protobuf:"bytes,1,opt,name=task,proto3" json:"task,omitempty"`
+	Scope         *v1.Scope              `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	Identity      *v1.WorkloadIdentity   `protobuf:"bytes,3,opt,name=identity,proto3" json:"identity,omitempty"`
+	Namespace     string                 `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecuteStreamRequest) Reset() {
+	*x = ExecuteStreamRequest{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecuteStreamRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecuteStreamRequest) ProtoMessage() {}
+
+func (x *ExecuteStreamRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecuteStreamRequest.ProtoReflect.Descriptor instead.
+func (*ExecuteStreamRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ExecuteStreamRequest) GetTask() *v1.Task {
+	if x != nil {
+		return x.Task
+	}
+	return nil
+}
+
+func (x *ExecuteStreamRequest) GetScope() *v1.Scope {
+	if x != nil {
+		return x.Scope
+	}
+	return nil
+}
+
+func (x *ExecuteStreamRequest) GetIdentity() *v1.WorkloadIdentity {
+	if x != nil {
+		return x.Identity
+	}
+	return nil
+}
+
+func (x *ExecuteStreamRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+// ExecuteStreamResponse is one message of an ExecuteStream call.
+//
+// A call answers with zero or more progress messages, then exactly one
+// response message, then the stream ends. A stream that ends without ever
+// sending a response is a protocol violation, not a call with an empty
+// result — see [Plugin.taskFunc]'s handling in plugin/task.go.
+type ExecuteStreamResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Message:
+	//
+	//	*ExecuteStreamResponse_Progress
+	//	*ExecuteStreamResponse_Response
+	Message       isExecuteStreamResponse_Message `protobuf_oneof:"message"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecuteStreamResponse) Reset() {
+	*x = ExecuteStreamResponse{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecuteStreamResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecuteStreamResponse) ProtoMessage() {}
+
+func (x *ExecuteStreamResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecuteStreamResponse.ProtoReflect.Descriptor instead.
+func (*ExecuteStreamResponse) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ExecuteStreamResponse) GetMessage() isExecuteStreamResponse_Message {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+func (x *ExecuteStreamResponse) GetProgress() *TaskProgress {
+	if x != nil {
+		if x, ok := x.Message.(*ExecuteStreamResponse_Progress); ok {
+			return x.Progress
+		}
+	}
+	return nil
+}
+
+func (x *ExecuteStreamResponse) GetResponse() *ExecuteResponse {
+	if x != nil {
+		if x, ok := x.Message.(*ExecuteStreamResponse_Response); ok {
+			return x.Response
+		}
+	}
+	return nil
+}
+
+type isExecuteStreamResponse_Message interface {
+	isExecuteStreamResponse_Message()
+}
+
+type ExecuteStreamResponse_Progress struct {
+	// Progress is a phase the plugin has reached, sent best-effort at any
+	// point before the terminal response.
+	Progress *TaskProgress `protobuf:"bytes,1,opt,name=progress,proto3,oneof"`
+}
+
+type ExecuteStreamResponse_Response struct {
+	// Response is the terminal message, and always comes last: the identical
+	// shape a unary Execute call answers with.
+	Response *ExecuteResponse `protobuf:"bytes,2,opt,name=response,proto3,oneof"`
+}
+
+func (*ExecuteStreamResponse_Progress) isExecuteStreamResponse_Message() {}
+
+func (*ExecuteStreamResponse_Response) isExecuteStreamResponse_Message() {}
+
+// TaskProgress is a plugin's own report of what phase it has reached while a
+// task is running, forwarded to the host's existing progress reporter — the
+// one behind flowstate.v1.ReportProgress inside the worker process
+// (pkg/flowstate/v1/progress.go), which `flow watch` and the durable driver's
+// activity heartbeat already read.
+//
+// It carries only a phase from the closed vocabulary below, never free text:
+// this is the plugin-protocol half of the same discipline
+// flowstate.v1.Phase's own doc comment describes for why that Go type has no
+// constructor. The value crosses into the worker process, and from there into
+// an activity heartbeat that Temporal writes into workflow history — durable
+// and broadly readable, which is exactly where nothing derived from a task's
+// own inputs may go.
+type TaskProgress struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Phase         TaskPhase              `protobuf:"varint,1,opt,name=phase,proto3,enum=flowstate.plugin.v1.TaskPhase" json:"phase,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TaskProgress) Reset() {
+	*x = TaskProgress{}
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskProgress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskProgress) ProtoMessage() {}
+
+func (x *TaskProgress) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskProgress.ProtoReflect.Descriptor instead.
+func (*TaskProgress) Descriptor() ([]byte, []int) {
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TaskProgress) GetPhase() TaskPhase {
+	if x != nil {
+		return x.Phase
+	}
+	return TaskPhase_TASK_PHASE_UNSPECIFIED
+}
+
 type ExecuteRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Task is the step's task, with its inputs already resolved unless the manifest
@@ -803,7 +1087,7 @@ type ExecuteRequest struct {
 
 func (x *ExecuteRequest) Reset() {
 	*x = ExecuteRequest{}
-	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[8]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -815,7 +1099,7 @@ func (x *ExecuteRequest) String() string {
 func (*ExecuteRequest) ProtoMessage() {}
 
 func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[8]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +1112,7 @@ func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ExecuteRequest) GetTask() *v1.Task {
@@ -890,7 +1174,7 @@ type ExecuteResponse struct {
 
 func (x *ExecuteResponse) Reset() {
 	*x = ExecuteResponse{}
-	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[9]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -902,7 +1186,7 @@ func (x *ExecuteResponse) String() string {
 func (*ExecuteResponse) ProtoMessage() {}
 
 func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[9]
+	mi := &file_flowstate_plugin_v1_plugin_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -915,7 +1199,7 @@ func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteResponse) Descriptor() ([]byte, []int) {
-	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{9}
+	return file_flowstate_plugin_v1_plugin_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ExecuteResponse) GetOutputs() *v1.Node_Outputs {
@@ -994,7 +1278,19 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\x0fResolveResponse\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\fR\x05value\x128\n" +
 	"\n" +
-	"expires_in\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\texpiresIn\"\xd3\x01\n" +
+	"expires_in\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\texpiresIn\"\xd9\x01\n" +
+	"\x14ExecuteStreamRequest\x122\n" +
+	"\x04task\x18\x01 \x01(\v2\x12.flowstate.v1.TaskB\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04task\x12)\n" +
+	"\x05scope\x18\x02 \x01(\v2\x13.flowstate.v1.ScopeR\x05scope\x12:\n" +
+	"\bidentity\x18\x03 \x01(\v2\x1e.flowstate.v1.WorkloadIdentityR\bidentity\x12&\n" +
+	"\tnamespace\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tnamespace\"\xa7\x01\n" +
+	"\x15ExecuteStreamResponse\x12?\n" +
+	"\bprogress\x18\x01 \x01(\v2!.flowstate.plugin.v1.TaskProgressH\x00R\bprogress\x12B\n" +
+	"\bresponse\x18\x02 \x01(\v2$.flowstate.plugin.v1.ExecuteResponseH\x00R\bresponseB\t\n" +
+	"\amessage\"D\n" +
+	"\fTaskProgress\x124\n" +
+	"\x05phase\x18\x01 \x01(\x0e2\x1e.flowstate.plugin.v1.TaskPhaseR\x05phase\"\xd3\x01\n" +
 	"\x0eExecuteRequest\x122\n" +
 	"\x04task\x18\x01 \x01(\v2\x12.flowstate.v1.TaskB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04task\x12)\n" +
@@ -1011,14 +1307,20 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12CAPABILITY_SECRETS\x10\x01\x12\x14\n" +
-	"\x10CAPABILITY_TASKS\x10\x022\xbf\x01\n" +
+	"\x10CAPABILITY_TASKS\x10\x02*\x82\x01\n" +
+	"\tTaskPhase\x12\x1a\n" +
+	"\x16TASK_PHASE_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15TASK_PHASE_REQUESTING\x10\x01\x12\x1f\n" +
+	"\x1bTASK_PHASE_READING_RESPONSE\x10\x02\x12\x1d\n" +
+	"\x19TASK_PHASE_CALLING_PLUGIN\x10\x032\xbf\x01\n" +
 	"\rPluginService\x12Y\n" +
 	"\bDescribe\x12$.flowstate.plugin.v1.DescribeRequest\x1a%.flowstate.plugin.v1.DescribeResponse\"\x00\x12S\n" +
 	"\x06Health\x12\".flowstate.plugin.v1.HealthRequest\x1a#.flowstate.plugin.v1.HealthResponse\"\x002g\n" +
 	"\rSecretService\x12V\n" +
-	"\aResolve\x12#.flowstate.plugin.v1.ResolveRequest\x1a$.flowstate.plugin.v1.ResolveResponse\"\x002e\n" +
+	"\aResolve\x12#.flowstate.plugin.v1.ResolveRequest\x1a$.flowstate.plugin.v1.ResolveResponse\"\x002\xd1\x01\n" +
 	"\vTaskService\x12V\n" +
-	"\aExecute\x12#.flowstate.plugin.v1.ExecuteRequest\x1a$.flowstate.plugin.v1.ExecuteResponse\"\x00B\xd2\x01\n" +
+	"\aExecute\x12#.flowstate.plugin.v1.ExecuteRequest\x1a$.flowstate.plugin.v1.ExecuteResponse\"\x00\x12j\n" +
+	"\rExecuteStream\x12).flowstate.plugin.v1.ExecuteStreamRequest\x1a*.flowstate.plugin.v1.ExecuteStreamResponse\"\x000\x01B\xd2\x01\n" +
 	"\x17com.flowstate.plugin.v1B\vPluginProtoP\x01Z<github.com/picatz/flowstate/pkg/flowstate/plugin/v1;pluginv1\xa2\x02\x03FPX\xaa\x02\x13Flowstate.Plugin.V1\xca\x02\x13Flowstate\\Plugin\\V1\xe2\x02\x1fFlowstate\\Plugin\\V1\\GPBMetadata\xea\x02\x15Flowstate::Plugin::V1b\x06proto3"
 
 var (
@@ -1033,54 +1335,66 @@ func file_flowstate_plugin_v1_plugin_proto_rawDescGZIP() []byte {
 	return file_flowstate_plugin_v1_plugin_proto_rawDescData
 }
 
-var file_flowstate_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_flowstate_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
-	(Capability)(0),             // 0: flowstate.plugin.v1.Capability
-	(HealthResponse_Status)(0),  // 1: flowstate.plugin.v1.HealthResponse.Status
-	(*PluginManifest)(nil),      // 2: flowstate.plugin.v1.PluginManifest
-	(*TaskManifest)(nil),        // 3: flowstate.plugin.v1.TaskManifest
-	(*DescribeRequest)(nil),     // 4: flowstate.plugin.v1.DescribeRequest
-	(*DescribeResponse)(nil),    // 5: flowstate.plugin.v1.DescribeResponse
-	(*HealthRequest)(nil),       // 6: flowstate.plugin.v1.HealthRequest
-	(*HealthResponse)(nil),      // 7: flowstate.plugin.v1.HealthResponse
-	(*ResolveRequest)(nil),      // 8: flowstate.plugin.v1.ResolveRequest
-	(*ResolveResponse)(nil),     // 9: flowstate.plugin.v1.ResolveResponse
-	(*ExecuteRequest)(nil),      // 10: flowstate.plugin.v1.ExecuteRequest
-	(*ExecuteResponse)(nil),     // 11: flowstate.plugin.v1.ExecuteResponse
-	(*v1.SecretRef)(nil),        // 12: flowstate.v1.SecretRef
-	(*v1.WorkloadIdentity)(nil), // 13: flowstate.v1.WorkloadIdentity
-	(*durationpb.Duration)(nil), // 14: google.protobuf.Duration
-	(*v1.Task)(nil),             // 15: flowstate.v1.Task
-	(*v1.Scope)(nil),            // 16: flowstate.v1.Scope
-	(*v1.Node_Outputs)(nil),     // 17: flowstate.v1.Node.Outputs
+	(Capability)(0),               // 0: flowstate.plugin.v1.Capability
+	(TaskPhase)(0),                // 1: flowstate.plugin.v1.TaskPhase
+	(HealthResponse_Status)(0),    // 2: flowstate.plugin.v1.HealthResponse.Status
+	(*PluginManifest)(nil),        // 3: flowstate.plugin.v1.PluginManifest
+	(*TaskManifest)(nil),          // 4: flowstate.plugin.v1.TaskManifest
+	(*DescribeRequest)(nil),       // 5: flowstate.plugin.v1.DescribeRequest
+	(*DescribeResponse)(nil),      // 6: flowstate.plugin.v1.DescribeResponse
+	(*HealthRequest)(nil),         // 7: flowstate.plugin.v1.HealthRequest
+	(*HealthResponse)(nil),        // 8: flowstate.plugin.v1.HealthResponse
+	(*ResolveRequest)(nil),        // 9: flowstate.plugin.v1.ResolveRequest
+	(*ResolveResponse)(nil),       // 10: flowstate.plugin.v1.ResolveResponse
+	(*ExecuteStreamRequest)(nil),  // 11: flowstate.plugin.v1.ExecuteStreamRequest
+	(*ExecuteStreamResponse)(nil), // 12: flowstate.plugin.v1.ExecuteStreamResponse
+	(*TaskProgress)(nil),          // 13: flowstate.plugin.v1.TaskProgress
+	(*ExecuteRequest)(nil),        // 14: flowstate.plugin.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),       // 15: flowstate.plugin.v1.ExecuteResponse
+	(*v1.SecretRef)(nil),          // 16: flowstate.v1.SecretRef
+	(*v1.WorkloadIdentity)(nil),   // 17: flowstate.v1.WorkloadIdentity
+	(*durationpb.Duration)(nil),   // 18: google.protobuf.Duration
+	(*v1.Task)(nil),               // 19: flowstate.v1.Task
+	(*v1.Scope)(nil),              // 20: flowstate.v1.Scope
+	(*v1.Node_Outputs)(nil),       // 21: flowstate.v1.Node.Outputs
 }
 var file_flowstate_plugin_v1_plugin_proto_depIdxs = []int32{
 	0,  // 0: flowstate.plugin.v1.PluginManifest.capabilities:type_name -> flowstate.plugin.v1.Capability
-	3,  // 1: flowstate.plugin.v1.PluginManifest.tasks:type_name -> flowstate.plugin.v1.TaskManifest
-	2,  // 2: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
-	1,  // 3: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
-	12, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
-	13, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	14, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
-	15, // 7: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
-	16, // 8: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
-	13, // 9: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	17, // 10: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
-	14, // 11: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
-	4,  // 12: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
-	6,  // 13: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
-	8,  // 14: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
-	10, // 15: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
-	5,  // 16: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
-	7,  // 17: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
-	9,  // 18: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
-	11, // 19: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
-	16, // [16:20] is the sub-list for method output_type
-	12, // [12:16] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	4,  // 1: flowstate.plugin.v1.PluginManifest.tasks:type_name -> flowstate.plugin.v1.TaskManifest
+	3,  // 2: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
+	2,  // 3: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
+	16, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
+	17, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	18, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
+	19, // 7: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
+	20, // 8: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
+	17, // 9: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	13, // 10: flowstate.plugin.v1.ExecuteStreamResponse.progress:type_name -> flowstate.plugin.v1.TaskProgress
+	15, // 11: flowstate.plugin.v1.ExecuteStreamResponse.response:type_name -> flowstate.plugin.v1.ExecuteResponse
+	1,  // 12: flowstate.plugin.v1.TaskProgress.phase:type_name -> flowstate.plugin.v1.TaskPhase
+	19, // 13: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
+	20, // 14: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
+	17, // 15: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	21, // 16: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
+	18, // 17: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
+	5,  // 18: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
+	7,  // 19: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
+	9,  // 20: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
+	14, // 21: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
+	11, // 22: flowstate.plugin.v1.TaskService.ExecuteStream:input_type -> flowstate.plugin.v1.ExecuteStreamRequest
+	6,  // 23: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
+	8,  // 24: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
+	10, // 25: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
+	15, // 26: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
+	12, // 27: flowstate.plugin.v1.TaskService.ExecuteStream:output_type -> flowstate.plugin.v1.ExecuteStreamResponse
+	23, // [23:28] is the sub-list for method output_type
+	18, // [18:23] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_plugin_v1_plugin_proto_init() }
@@ -1088,13 +1402,17 @@ func file_flowstate_plugin_v1_plugin_proto_init() {
 	if File_flowstate_plugin_v1_plugin_proto != nil {
 		return
 	}
+	file_flowstate_plugin_v1_plugin_proto_msgTypes[9].OneofWrappers = []any{
+		(*ExecuteStreamResponse_Progress)(nil),
+		(*ExecuteStreamResponse_Response)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_plugin_v1_plugin_proto_rawDesc), len(file_flowstate_plugin_v1_plugin_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   10,
+			NumEnums:      3,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

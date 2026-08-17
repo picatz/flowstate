@@ -1003,12 +1003,10 @@ type taskService struct {
 
 // Execute runs a task.
 func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1.ExecuteRequest]) (*connect.Response[pluginv1.ExecuteResponse], error) {
-	name := req.Msg.GetTask().GetName()
-
-	task, ok := s.tasks[name]
+	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(name, 64)))
+			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	// Installed on every call, whether or not the request named an identity:
@@ -1022,6 +1020,92 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	}
 
 	return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: outputs}), nil
+}
+
+// ExecuteStream runs a task exactly as Execute does, plus relaying the task's
+// own [flowstatev1.ReportProgress] calls to the host as they happen, rather
+// than only once the task is done.
+//
+// The relay is installed on ctx before Fn ever runs, and torn down as soon as
+// Fn returns — a stream.Send call after that would race the terminal message
+// this handler sends next, with nothing left reading its result. Fn runs on
+// this same goroutine, so every report a task makes is sent synchronously,
+// in the order the task made it, with no buffering and no goroutine of its
+// own to leak.
+func (s *taskService) ExecuteStream(
+	ctx context.Context,
+	req *connect.Request[pluginv1.ExecuteStreamRequest],
+	stream *connect.ServerStream[pluginv1.ExecuteStreamResponse],
+) error {
+	task, ok := s.tasks[req.Msg.GetTask().GetName()]
+	if !ok {
+		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
+			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+	}
+
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
+
+	// sendErr is read only after Fn has returned, by this same goroutine, so
+	// it needs no synchronization despite being written from inside the
+	// reporter closure Fn calls back into.
+	var sendErr error
+	ctx = flowstatev1.ContextWithProgress(ctx, func(phase flowstatev1.Phase) {
+		if sendErr != nil {
+			// A send has already failed once; the connection is gone, and
+			// every report after that would fail the identical way for the
+			// identical reason. Reporting progress must never be able to
+			// make a task retry or fail on its own — see ReportProgress's own
+			// doc comment — so this is silently dropped rather than
+			// escalated.
+			return
+		}
+		wireVal, ok := phaseToWire(phase)
+		if !ok {
+			// Nothing outside this package can construct a flowstatev1.Phase
+			// that phaseToWire does not recognize — see that function's own
+			// doc comment — so this branch exists for the day a phase is
+			// added to progress.go and this mapping is not updated beside
+			// it, and it fails silent rather than sending a zero value the
+			// host would have to guess the meaning of.
+			return
+		}
+		sendErr = stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Progress{
+				Progress: &pluginv1.TaskProgress{Phase: wireVal},
+			},
+		})
+	})
+
+	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	if err != nil {
+		return asConnectError(err)
+	}
+
+	return stream.Send(&pluginv1.ExecuteStreamResponse{
+		Message: &pluginv1.ExecuteStreamResponse_Response{
+			Response: &pluginv1.ExecuteResponse{Outputs: outputs},
+		},
+	})
+}
+
+// phaseToWire maps a task's [flowstatev1.Phase] onto the plugin protocol's
+// own closed vocabulary, reporting false for a phase this SDK build predates
+// — which cannot happen for anything compiled against the same module, and
+// is handled rather than assumed away because a phase is a value, not a
+// literal, and this function must never guess at one it does not recognize.
+// See plugin.proto's TaskPhase for why the two enumerations must keep naming
+// the same set.
+func phaseToWire(phase flowstatev1.Phase) (pluginv1.TaskPhase, bool) {
+	switch phase {
+	case flowstatev1.PhaseRequesting:
+		return pluginv1.TaskPhase_TASK_PHASE_REQUESTING, true
+	case flowstatev1.PhaseReadingResponse:
+		return pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE, true
+	case flowstatev1.PhaseCallingPlugin:
+		return pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN, true
+	default:
+		return pluginv1.TaskPhase_TASK_PHASE_UNSPECIFIED, false
+	}
 }
 
 // truncate bounds text on its way into a response or an error.

@@ -101,16 +101,48 @@ func (s taskService) Execute(
 	return inst.clients.task.Execute(ctx, req)
 }
 
+// ExecuteStream implements [pluginv1connect.TaskServiceClient] only.
+//
+// It is the one place the symmetry the package doc comment describes does not
+// hold, and it cannot: a streaming client's method returns a stream for its
+// caller to read from, and a streaming handler's method is instead *handed*
+// one to write into and returns only an error, so the client and handler
+// shapes for one streaming RPC are never the same Go signature — no
+// implementation, however written, satisfies both. taskService is used only
+// as a client (see [Plugin.TaskService]'s own doc comment; nothing in this
+// package ever serves it as a handler), so that is a gap in the pattern
+// rather than in what this type needs to do.
+//
+// Unlike Execute, this does not also apply [Plugin.callContext]'s own
+// per-call timeout: that timeout is scoped by a deferred cancel fired when
+// the wrapping call returns, which is right for Execute because it does not
+// return until the whole call is done, and wrong here because ExecuteStream
+// returns as soon as the stream exists — before its caller has read anything
+// from it. Applying the same pattern would cancel a stream nobody had
+// started reading yet. The caller's own ctx still bounds this call exactly as
+// it always did before this method existed.
+func (s taskService) ExecuteStream(
+	ctx context.Context,
+	req *connect.Request[pluginv1.ExecuteStreamRequest],
+) (*connect.ServerStreamForClient[pluginv1.ExecuteStreamResponse], error) {
+	inst, err := s.plugin.ready()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
+	}
+
+	return inst.clients.task.ExecuteStream(ctx, req)
+}
+
 // Compile-time proof that one implementation satisfies both sides of the
-// contract, which is the whole basis for the generated service being the
-// extension point. If a future change to the schema broke the symmetry — a
-// streaming method, say, whose client and handler shapes differ — it would fail
-// here rather than wherever someone first tried to substitute one for the other.
+// contract for every method where that is possible, which is the whole basis
+// for the generated service being the extension point. secretService still
+// proves the full symmetry; taskService proves only the client half, because
+// ExecuteStream's client and handler shapes differ by construction — see that
+// method's own doc comment.
 var (
 	_ pluginv1connect.SecretServiceClient  = secretService{}
 	_ pluginv1connect.SecretServiceHandler = secretService{}
 	_ pluginv1connect.TaskServiceClient    = taskService{}
-	_ pluginv1connect.TaskServiceHandler   = taskService{}
 )
 
 // SecretServiceForScheme returns the service resolving a secret scheme, and

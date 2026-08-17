@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -58,7 +59,14 @@ func TestServiceIsTheContract(t *testing.T) {
 			t.Fatalf("TaskService: %v", err)
 		}
 
-		var handler pluginv1connect.TaskServiceHandler = service
+		// Execute alone is checked against the handler interface: ExecuteStream
+		// is a client-only method on this type, since a streaming RPC's client
+		// and handler shapes differ — see taskService.ExecuteStream's own doc
+		// comment in service.go.
+		var handler interface {
+			Execute(context.Context, *connect.Request[pluginv1.ExecuteRequest]) (*connect.Response[pluginv1.ExecuteResponse], error)
+		} = service
+		var _ pluginv1connect.TaskServiceClient = service
 
 		resp, err := handler.Execute(t.Context(), connect.NewRequest(&pluginv1.ExecuteRequest{
 			Task: &flowstatev1.Task{

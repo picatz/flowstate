@@ -151,7 +151,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// decided by code this repository did not write.
 		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
 
-		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+		resp, err := p.executeTask(ctx, callCtx, inst, request)
 		if err != nil {
 			// Classified before it is scrubbed — see [taskError] for why the
 			// order is load-bearing — and scrubbed before it is wrapped, so
@@ -167,13 +167,139 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 			return nil, scrubbed
 		}
 
-		outputs := resp.Msg.GetOutputs()
+		outputs := resp.GetOutputs()
 		if err := scrubPluginOutputs(scrubber, outputs); err != nil {
 			callErr = err
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, err)
 		}
 
 		return outputs, nil
+	}
+}
+
+// executeTask asks the plugin to run one task, relaying any progress it
+// reports along the way to ctx's own reporter (see [flowstatev1.ReportProgress]),
+// and returns the terminal ExecuteResponse.
+//
+// It prefers ExecuteStream, which is the only path a plugin's own progress
+// reports can travel — but a plugin's binary may predate that RPC entirely,
+// and Connect answers a route nothing registered with CodeUnimplemented
+// (an unmatched route arrives as a bare HTTP 404, which the client maps onto
+// that code) before any of the plugin's own code has run, so that answer can
+// only mean "this plugin does not implement ExecuteStream", never "the task
+// failed". [Plugin.noProgressStream] remembers that the first time it
+// happens, so every later call to this plugin goes straight to Execute,
+// unary, rather than spending a request finding out again what cannot have
+// changed until the plugin is rebuilt.
+func (p *Plugin) executeTask(
+	ctx, callCtx context.Context,
+	inst *instance,
+	request *pluginv1.ExecuteRequest,
+) (*pluginv1.ExecuteResponse, error) {
+	if p.noProgressStream.Load() {
+		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+		if err != nil {
+			return nil, err
+		}
+		return resp.Msg, nil
+	}
+
+	streamReq := &pluginv1.ExecuteStreamRequest{
+		Task:      request.GetTask(),
+		Scope:     request.GetScope(),
+		Identity:  request.GetIdentity(),
+		Namespace: request.GetNamespace(),
+	}
+
+	stream, err := inst.clients.task.ExecuteStream(callCtx, connect.NewRequest(streamReq))
+	if err != nil {
+		if isUnimplemented(err) {
+			p.noProgressStream.Store(true)
+			resp, fallbackErr := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			return resp.Msg, nil
+		}
+		return nil, err
+	}
+
+	for stream.Receive() {
+		msg := stream.Msg()
+
+		if progress := msg.GetProgress(); progress != nil {
+			if phase, ok := phaseFromWire(progress.GetPhase()); ok {
+				flowstatev1.ReportProgress(ctx, phase)
+			}
+			continue
+		}
+
+		if resp := msg.GetResponse(); resp != nil {
+			// The terminal message has arrived; nothing about the call's
+			// outcome depends on how the stream itself ends from here, so a
+			// close error is a diagnostic and never this call's error.
+			if closeErr := stream.Close(); closeErr != nil {
+				p.log.Debug("closing plugin progress stream after its terminal response",
+					"task", request.GetTask().GetName(), "error", closeErr)
+			}
+			return resp, nil
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		if isUnimplemented(err) {
+			// The plugin's mux answered for a route it never registered
+			// without reaching any of its own code — the generated
+			// UnimplementedTaskServiceHandler embed a plugin built before
+			// this method existed does not even carry — so nothing about the
+			// task has happened yet and running it again on the plain path
+			// is safe.
+			p.noProgressStream.Store(true)
+			resp, fallbackErr := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			return resp.Msg, nil
+		}
+		return nil, err
+	}
+
+	// The stream ended without a terminal response and without an error,
+	// which ExecuteStream's contract does not allow a well-behaved plugin to
+	// produce — see the message's own doc comment in plugin.proto.
+	return nil, fmt.Errorf("plugin %q: task %q: ExecuteStream ended without a response",
+		p.name, request.GetTask().GetName())
+}
+
+// isUnimplemented reports whether err is the plugin protocol's own signal
+// that a route was never registered: a Connect client maps an unmatched
+// route's bare HTTP 404 onto CodeUnimplemented, which is also the code a
+// generated UnimplementedTaskServiceHandler embed answers with directly. A
+// caller cannot and need not tell those two paths apart — both mean the
+// plugin's binary does not serve this RPC, before any of its own code runs.
+func isUnimplemented(err error) bool {
+	code, ok := connectError(err)
+	return ok && code == connect.CodeUnimplemented
+}
+
+// phaseFromWire maps a plugin's TaskPhase onto the closed [flowstatev1.Phase]
+// vocabulary the host's own progress reporter expects, reporting false for
+// TASK_PHASE_UNSPECIFIED and for any value newer than this build knows about
+// — both are dropped rather than forwarded, which is the fail-closed
+// direction for a value on its way into an activity heartbeat and, from
+// there, workflow history. See progress.go's own doc comment for why that
+// vocabulary is closed, and plugin.proto's TaskPhase for why the two must
+// keep naming the same set.
+func phaseFromWire(phase pluginv1.TaskPhase) (flowstatev1.Phase, bool) {
+	switch phase {
+	case pluginv1.TaskPhase_TASK_PHASE_REQUESTING:
+		return flowstatev1.PhaseRequesting, true
+	case pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE:
+		return flowstatev1.PhaseReadingResponse, true
+	case pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN:
+		return flowstatev1.PhaseCallingPlugin, true
+	default:
+		return flowstatev1.Phase{}, false
 	}
 }
 

@@ -74,6 +74,15 @@ func runFakePlugin() int {
 		return runErrorsPlugin()
 	}
 
+	// The progress-relay conformance fixture is likewise a real SDK plugin
+	// rather than a hand-rolled handler, for the identical reason: it exists
+	// to prove ReportProgress crosses the wire the SDK's own ExecuteStream
+	// handler serves, not a hand-built one — see
+	// [TestPluginProgressCrossesTheSubprocessBoundary].
+	if mode == "progress" {
+		return runProgressPlugin()
+	}
+
 	// Every fake exits when the host goes away, which is what a real plugin's
 	// SDK does and what the orphan tests rely on.
 	go exitWhenHostExits()

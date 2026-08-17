@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -179,6 +180,20 @@ type Plugin struct {
 	restarts  int
 	health    Health
 	telemetry telemetry
+
+	// noProgressStream records that this plugin's binary does not implement
+	// TaskService.ExecuteStream, once a call has found that out.
+	//
+	// Set at most once per binary, never cleared: whether ExecuteStream exists
+	// is a fact about the compiled plugin, not about the process currently
+	// serving it, so it survives a restart the same manifest does. Read and
+	// written without p.mu — a bool that only ever moves from false to true
+	// needs no more than atomicity, and taking the struct's lock on every task
+	// call to check it would contend a lock this call has no other reason to
+	// need. See [Plugin.taskFunc] in task.go for what it's for: skipping a
+	// stream attempt already known to answer Unimplemented, rather than
+	// re-probing every call.
+	noProgressStream atomic.Bool
 
 	supervisorDone chan struct{}
 	closeOnce      sync.Once
