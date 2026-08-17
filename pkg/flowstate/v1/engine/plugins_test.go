@@ -18,7 +18,7 @@ import (
 // that the workload never starts, not that a step failed.
 
 func pluginCatalog(digest string) *v1.PluginCatalog {
-	return &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{
+	return &v1.PluginCatalog{ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion, Plugins: []*v1.PluginDescription{{
 		Name:               "slack",
 		Version:            "v2.1.0",
 		ProtocolVersion:    2,

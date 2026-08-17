@@ -203,6 +203,20 @@ func resolveOne(wf *Workflow, available map[string]*PluginDescription, claimsSch
 				"distribution digest, and this deployment reported %q at protocol %d",
 				p.GetName(), p.GetVersion(), p.GetProtocolVersion())
 		}
+		// A new pin is refused rather than left unversioned: sameResolvedPlugin's
+		// leniency for a zero ClaimsSchemaVersion exists for a pin made *before*
+		// this field did, not for one made now under a build that could have set
+		// it correctly. Pinning zero (or any version this build did not compute
+		// its ClaimsDigest under) would permanently exempt that run's replay
+		// guard from the version check CurrentClaimsSchemaVersion's own doc
+		// comment says a redefined claim needs — the exact hole TaskSchemaDigest
+		// review found and closed for TaskDescriptionClaimsKnown (#763), one
+		// layer over.
+		if claimsSchemaVersion != CurrentClaimsSchemaVersion {
+			return nil, fmt.Errorf("plugin %q catalog reports claims schema version %d, this build understands only %d; "+
+				"a run cannot be pinned to claim semantics this deployment cannot assert",
+				p.GetName(), claimsSchemaVersion, CurrentClaimsSchemaVersion)
+		}
 		resolved = append(resolved, pinOf(p, claimsSchemaVersion))
 	}
 
