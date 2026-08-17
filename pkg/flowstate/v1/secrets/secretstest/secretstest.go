@@ -299,10 +299,10 @@ func validateFixtures(fixtures []NamespaceFixture) error {
 		if owner, ok := valueOwners[f.Value]; ok {
 			return fmt.Errorf("VerifyNamespaceIsolation needs every fixture's Value to be distinct, because "+
 				"the isolation check detects a leak by comparing resolved plaintext against it; namespace %q and "+
-				"namespace %q share the value %q — if that is deliberate (e.g. both tenants use the same rotated "+
+				"namespace %q share a Value — if that is deliberate (e.g. both tenants use the same rotated "+
 				"credential), give each fixture a distinct canary Value instead, since a shared one makes a "+
 				"correctly-isolated resolution indistinguishable from an actual cross-tenant leak",
-				owner, f.Namespace, f.Value)
+				owner, f.Namespace)
 		}
 		valueOwners[f.Value] = f.Namespace
 	}
