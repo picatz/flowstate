@@ -38,3 +38,21 @@ func TestTimeoutKindText(t *testing.T) {
 	}
 	require.Len(t, seen, len(cases), "every timeout kind must read as a distinct sentence")
 }
+
+// TestTimeoutKindTextDescribesWorkflowNotActivityScope is the regression for a
+// Codex finding on #788: this function's call site (failureError's fallback)
+// is reached only for a *workflow*-level timeout — an ordinary step timeout is
+// translated before it gets here — so its wording must not borrow
+// activity-attempt language ("a single attempt exceeded its time budget") that
+// would misdescribe a timeout covering the whole run, including every
+// Continue-As-New segment, as if it were one activity's retry budget.
+func TestTimeoutKindTextDescribesWorkflowNotActivityScope(t *testing.T) {
+	for _, kind := range []enums.TimeoutType{
+		enums.TIMEOUT_TYPE_START_TO_CLOSE,
+		enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE,
+	} {
+		text := timeoutKindText(kind)
+		require.NotContains(t, text, "attempt",
+			"kind=%s reads as activity-attempt scope, not workflow/run scope: %q", kind, text)
+	}
+}

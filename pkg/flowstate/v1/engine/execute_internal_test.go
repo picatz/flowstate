@@ -264,6 +264,27 @@ func TestDurableStepTimeoutMessage(t *testing.T) {
 			"a classified task failure already said everything there is to say and must not be overwritten with a guess about the budget")
 	})
 
+	// A schedule-to-close budget that expires after a retryable failure wraps
+	// the last attempt's classified error as the *outer* TimeoutError's cause
+	// — Temporal's own documented shape (Codex review on #796/#788). Checking
+	// for an application error before checking for the timeout would have
+	// errors.As walk straight through the timeout to find that nested cause,
+	// mistaking a real budget expiry for the task's own account of one and
+	// reporting the stale prior attempt's message while hiding that the
+	// retry budget was what actually ended the run.
+	t.Run("a schedule-to-close timeout still translates when its cause is a classified failure", func(t *testing.T) {
+		cause := activityError("http", v1.NewTaskError("http", v1.ErrorKindUpstream, errors.New("503")), false)
+		err := temporal.NewTimeoutError(enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE, cause)
+
+		got, ok := durableStepTimeoutMessage(err, &v1.StepPolicy{}).(*durableStepTimeoutError)
+		require.True(t, ok,
+			"a schedule-to-close timeout must be translated even when its cause is a classified failure")
+
+		require.Contains(t, got.message, "every attempt together exceeded "+v1.DefaultScheduleToCloseTimeout.String())
+		require.NotContains(t, got.message, "503",
+			"the translated message must name the budget that ended the run, not the stale prior attempt's own failure")
+	})
+
 	t.Run("a schedule-to-start timeout is left untranslated", func(t *testing.T) {
 		// No per-step budget this engine sets names it, unlike StartToClose and
 		// ScheduleToClose — see [durableStepTimeoutMessage]'s doc.

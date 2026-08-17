@@ -841,16 +841,22 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 // timeout into a [v1.TaskError] — an http task observing context deadline
 // exceeded, say — already said everything there is to say about why it
 // failed, and this must not overwrite that account with a guess about the
-// budget; the [temporal.ApplicationError] check below is what
-// [isUndoActivityTimeout]'s caller draws the identical line for on the undo
+// budget. That case is exactly "err carries no [temporal.TimeoutError] at
+// all" (Temporal never imposed a deadline; the task returned its own
+// classified failure before one would have fired) — checked by testing for
+// the timeout first, not by testing for an application error first: a
+// ScheduleToClose budget that expires after a retryable failure wraps the
+// last attempt's [temporal.ApplicationError] as the outer
+// [temporal.TimeoutError]'s cause (Temporal's own documented shape for that
+// case), and `errors.As` walks straight through that wrapping to find it, so
+// checking for an application error before checking for the timeout matched
+// on the inner cause and mistook a real, budget-imposed timeout for a
+// task's own account of one — reporting the stale prior attempt's message
+// and hiding that the retry budget was what actually ended the run. This is
+// the identical line [isUndoActivityTimeout]'s caller draws on the undo
 // path, read here instead of there because a step's own policy — not a
 // compensation's narrowed budget — is what names the origin.
 func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
-	var app *temporal.ApplicationError
-	if errors.As(err, &app) {
-		return err
-	}
-
 	var timeoutErr *temporal.TimeoutError
 	if !errors.As(err, &timeoutErr) {
 		return err

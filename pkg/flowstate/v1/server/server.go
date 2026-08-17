@@ -1590,12 +1590,22 @@ func failureError(
 // timeoutKindText names a Temporal timeout type in words an author's Flowfile
 // never uses, for [failureError]'s fallback: "StartToClose" and its siblings
 // are Temporal's own vocabulary, not Flowstate's.
+//
+// [failureError]'s call site is specifically the *workflow*-level timeout —
+// an ordinary step timeout is already translated before it gets there — so
+// START_TO_CLOSE and SCHEDULE_TO_CLOSE here name Temporal's
+// WorkflowRunTimeout and WorkflowExecutionTimeout respectively, not an
+// activity's attempt/retry budget (Codex review on #788: reusing
+// activity-attempt wording — "a single attempt" — for a timeout that can
+// cover the whole run, including every Continue-As-New segment, gave an
+// operator a false diagnosis of the primary timeout this branch exists to
+// explain).
 func timeoutKindText(kind enums.TimeoutType) string {
 	switch kind {
 	case enums.TIMEOUT_TYPE_START_TO_CLOSE:
-		return "a single attempt exceeded its time budget"
+		return "this run exceeded its execution timeout"
 	case enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE:
-		return "every attempt together exceeded the time budget"
+		return "the workflow exceeded its total execution timeout across every continue-as-new"
 	case enums.TIMEOUT_TYPE_SCHEDULE_TO_START:
 		return "it waited too long to start"
 	case enums.TIMEOUT_TYPE_HEARTBEAT:
