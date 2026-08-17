@@ -1560,6 +1560,73 @@ func TestAConcurrentForEachCountsItsBodyStepsAgainstTheBudget(t *testing.T) {
 		"the next segment resumes from the beginning, so the loop would run twice")
 }
 
+// TestAConcurrentForEachCountsFailedIterationsAgainstTheBudget is the failing
+// half of the copy-back claim above: an attempted step is history whether or
+// not it succeeded, and whether or not its failure is tolerated *above* it.
+// runNodes used to return before its `processed++` on a propagating failure,
+// so a concurrent iteration whose first body step failed copied a count of
+// zero back to the join — and a loop marked `continue_on_error:` whose every
+// iteration failed advanced the budget by one however many activities it had
+// scheduled, which is the history protection bypassed by failing.
+//
+// Three iterations of one permanently-failing task under a budget of three,
+// tolerated at the loop step: the attempted steps plus the loop itself are
+// four, so the seam after the loop suspends. Reverting either the counting of
+// a failed attempt in runNodes or the join's copy-back completes the run in
+// one segment and turns this red.
+func TestAConcurrentForEachCountsFailedIterationsAgainstTheBudget(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	env := budgetEnv(t)
+
+	wf := &v1.Workflow{
+		Name: "concurrent-budget-failing",
+		Steps: []*v1.Node{
+			{
+				Id:     "fan",
+				Policy: &v1.StepPolicy{ContinueOnError: true},
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:       v1.NewExpr("[0, 1, 2]"),
+					MaxParallel: 2,
+					Body: []*v1.Node{
+						{
+							Id: "fails",
+							Kind: &v1.Node_Task{Task: &v1.Task{
+								Name: "http",
+								Inputs: map[string]*v1.Value{
+									"method": v1.NewLiteral("GET"),
+									"url":    v1.NewLiteral(baseURL + "/status/404"),
+								},
+							}},
+						},
+					},
+				}},
+			},
+			{
+				Id: "after",
+				Kind: &v1.Node_Task{Task: &v1.Task{
+					Name: "http",
+					Inputs: map[string]*v1.Value{
+						"method": v1.NewLiteral("GET"),
+						"url":    v1.NewLiteral(baseURL + "/status/200"),
+					},
+				}},
+			},
+		},
+	}
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 3})
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err,
+		"a tolerated all-failing concurrent loop under a budget of three finished in one segment, "+
+			"so failed attempts are not being counted against the budget")
+
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continued,
+		"the run failed instead of continuing as new: %v", err)
+}
+
 // TestAStepsVarsSurviveContinueAsNew is the same claim as
 // [TestABudgetSmallerThanTheWorkflowContinuesAsNew], written the way the language
 // actually encourages — and the way that used to lose the value.

@@ -315,12 +315,21 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 
 		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
+			// Counted before the failure decides anything: the attempt
+			// scheduled real history whether or not the failure is tolerated
+			// here — or tolerated *above*, which is the case that used to
+			// vanish. A concurrent iteration whose first body step failed
+			// copied a count of zero back to the join, so a loop marked
+			// `continue_on_error:` whose every iteration failed advanced the
+			// budget by one however many activities it had scheduled.
+			e.processed++
 			if propagate := e.recordOutcome(node, err); propagate != nil {
 				return propagate
 			}
+		} else {
+			e.processed++
 		}
 
-		e.processed++
 		e.progress.finished()
 
 		// Suspending is only possible where the position is representable, and
