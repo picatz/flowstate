@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"connectrpc.com/connect"
 
@@ -113,14 +114,30 @@ func (s taskService) Execute(
 // package ever serves it as a handler), so that is a gap in the pattern
 // rather than in what this type needs to do.
 //
-// Unlike Execute, this does not also apply [Plugin.callContext]'s own
-// per-call timeout: that timeout is scoped by a deferred cancel fired when
-// the wrapping call returns, which is right for Execute because it does not
-// return until the whole call is done, and wrong here because ExecuteStream
-// returns as soon as the stream exists — before its caller has read anything
-// from it. Applying the same pattern would cancel a stream nobody had
-// started reading yet. The caller's own ctx still bounds this call exactly as
-// it always did before this method existed.
+// This still applies [Plugin.callContext]'s own per-call timeout, but not with
+// Execute's `defer cancel()` — that scopes the cancel to when the *wrapping*
+// call returns, which for Execute is right (it does not return until the
+// whole call is done) and wrong here, because ExecuteStream returns as soon
+// as the stream exists, before its caller has read anything from it. A
+// deferred cancel at that point would tear the stream down before its first
+// Receive. The package's own promise is the other direction: every service
+// this file hands back — including this one — is bounded by the host's
+// per-call timeout, so a plugin that opens a stream and then never sends a
+// terminal ExecuteStreamResponse cannot hold the call open past
+// Config.CallTimeout; only a plugin that finishes within it, or a reader that
+// keeps calling Receive, gets to run longer than that under its own context's
+// deadline.
+//
+// The bounded context is kept alive for exactly that reason: it is not
+// canceled here, so it lives for the stream's whole read, and it is released
+// once the stream is no longer reachable rather than left to leak — this
+// method has no hook into [connect.ServerStreamForClient.Close] to run cancel
+// eagerly on a normal close (the interface this method fills in returns that
+// concrete type, not a wrapper this package controls), so a
+// [runtime.AddCleanup] backstop releases it once the stream is garbage
+// collected. That is a cleanliness guarantee, not the security one: the
+// timeout itself is what stops an indefinite hold, whether or not anything
+// ever reads to completion or closes explicitly.
 func (s taskService) ExecuteStream(
 	ctx context.Context,
 	req *connect.Request[pluginv1.ExecuteStreamRequest],
@@ -130,7 +147,17 @@ func (s taskService) ExecuteStream(
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 
-	return inst.clients.task.ExecuteStream(ctx, req)
+	ctx, cancel := s.plugin.callContext(ctx)
+
+	stream, err := inst.clients.task.ExecuteStream(ctx, req)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	runtime.AddCleanup(stream, func(cancel context.CancelFunc) { cancel() }, cancel)
+
+	return stream, nil
 }
 
 // Compile-time proof that one implementation satisfies both sides of the

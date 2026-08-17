@@ -101,6 +101,83 @@ func TestServiceIsTheContract(t *testing.T) {
 	})
 }
 
+// TestTaskServiceExecuteStreamIsBoundedByCallTimeout checks that
+// [Plugin.TaskService]'s ExecuteStream cannot be held open past
+// Config.CallTimeout, the way unary Execute already cannot.
+//
+// taskService.ExecuteStream (service.go) used to pass the caller's ctx
+// straight through with no bound of its own, unlike every other method this
+// package hands back — the package doc comment promises every returned
+// service "is bounded by the host's per-call timeout", and this was the one
+// path where that promise did not hold. A plugin that opens a stream and
+// then never sends anything — "hang-stream" here, via
+// [fakeTaskService.ExecuteStream] — could hold the call open for as long as
+// the caller's own context allowed, which for a caller using
+// context.Background() is forever.
+func TestTaskServiceExecuteStreamIsBoundedByCallTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, pluginDir(t, "hang-stream"))
+	cfg.CallTimeout = 2 * time.Second
+
+	host := openHost(t, cfg)
+
+	p, ok := host.Lookup("hang-stream")
+	if !ok {
+		t.Fatal("plugin was not launched")
+	}
+
+	service, err := p.TaskService()
+	if err != nil {
+		t.Fatalf("TaskService: %v", err)
+	}
+
+	// No deadline of the caller's own, exactly the shape that would hang
+	// forever without the package's own bound: a worker calling this through
+	// context.Background() (or any context.Context with no shorter deadline)
+	// relies entirely on CallTimeout to keep a stalled plugin from holding
+	// the call open indefinitely.
+	start := time.Now()
+
+	stream, err := service.ExecuteStream(context.Background(), connect.NewRequest(&pluginv1.ExecuteStreamRequest{
+		Task: &flowstatev1.Task{Name: "hang_task"},
+	}))
+	if err != nil {
+		// Opening the stream itself is allowed to fail once CallTimeout has
+		// already elapsed on a slow machine; either shape proves the bound,
+		// so this is not itself a failure.
+		if time.Since(start) > 10*time.Second {
+			t.Fatalf("ExecuteStream took %s to fail, want it bounded near CallTimeout (%s)", time.Since(start), cfg.CallTimeout)
+		}
+		return
+	}
+	defer stream.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for stream.Receive() {
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ExecuteStream was still open 10s after a plugin that never sends anything, want it bounded by CallTimeout")
+	}
+
+	elapsed := time.Since(start)
+	if elapsed > 8*time.Second {
+		t.Errorf("ExecuteStream ran for %s against a %s CallTimeout, want it cut off close to the bound", elapsed, cfg.CallTimeout)
+	}
+
+	if err := stream.Err(); err == nil {
+		t.Error("the stream ended with no error, want the timeout's DeadlineExceeded")
+	} else if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
+		t.Errorf("stream error code = %v, want DeadlineExceeded (err: %v)", connect.CodeOf(err), err)
+	}
+}
+
 // TestServiceRefusesUnadvertisedCapability checks that a plugin is not asked for
 // something it never offered.
 func TestServiceRefusesUnadvertisedCapability(t *testing.T) {

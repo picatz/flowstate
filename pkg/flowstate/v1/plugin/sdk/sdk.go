@@ -897,23 +897,58 @@ func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, 
 	return mux, nil
 }
 
-// requireToken refuses a request that does not carry the per-launch secret.
+// requireToken refuses a request that does not carry the per-launch secret,
+// whether it arrives through a unary or a streaming RPC.
+//
+// This has to be a full [connect.Interceptor], not a
+// [connect.UnaryInterceptorFunc]: the latter's WrapStreamingHandler is a
+// documented no-op, which is precisely how ExecuteStream shipped with no
+// authentication on this side either — a caller who could reach the socket
+// could invoke it, with any identity it cared to claim in the request, and
+// nothing here noticed. See authInterceptor in the plugin package
+// (transport.go) for the client-side half of the same mistake.
 //
 // The socket's directory is what keeps other users out; this is what keeps
 // anything that reaches the socket anyway from acting as the host. The
 // comparison is constant time because the alternative leaks the token one byte
 // at a time to whatever can retry.
 func requireToken(token func() string) connect.Interceptor {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			presented := req.Header().Get(protocol.TokenHeader)
-			if subtle.ConstantTimeCompare([]byte(presented), []byte(token())) != 1 {
-				return nil, connect.NewError(connect.CodePermissionDenied, errors.New(
-					"this plugin serves only the worker that launched it"))
-			}
-			return next(ctx, req)
+	return &tokenServerInterceptor{token: token}
+}
+
+// tokenServerInterceptor rejects any request, unary or streaming, that does
+// not present the per-launch token.
+type tokenServerInterceptor struct{ token func() string }
+
+func (t *tokenServerInterceptor) authorized(presented string) bool {
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(t.token())) == 1
+}
+
+func (t *tokenServerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if !t.authorized(req.Header().Get(protocol.TokenHeader)) {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New(
+				"this plugin serves only the worker that launched it"))
 		}
-	})
+		return next(ctx, req)
+	}
+}
+
+// WrapStreamingClient is a no-op: this interceptor is only ever installed on
+// a handler (see [Plugin.handler]), and a plugin never calls itself as a
+// streaming client.
+func (t *tokenServerInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (t *tokenServerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if !t.authorized(conn.RequestHeader().Get(protocol.TokenHeader)) {
+			return connect.NewError(connect.CodePermissionDenied, errors.New(
+				"this plugin serves only the worker that launched it"))
+		}
+		return next(ctx, conn)
+	}
 }
 
 // pluginService implements the capability handshake every plugin must serve.
