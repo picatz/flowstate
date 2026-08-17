@@ -298,6 +298,28 @@ func CheckSignalPayloadSize(payload *Node_Outputs) error {
 // follows. proto.Size cannot fail, which is why every caller below still
 // checks it for context even when protojson does the enforcing.
 func encodedPayloadSize(m proto.Message) int {
+	// Refuse to materialize an encoding the answer cannot need. Marshaling
+	// allocates the whole output before any caller compares it to a bound, and
+	// the party who shaped the message controls how big that is: an `outputs:`
+	// map of thousands of fields referencing one 1 MiB response body holds its
+	// copies as shared Go strings — cheap in memory — while the encoding spells
+	// every copy out, so measuring an attacker-shaped result by marshaling it
+	// is itself the memory explosion the bound exists to prevent. proto.Size
+	// walks the message without allocating its encoding, and ProtoJSON output
+	// is never smaller than the binary encoding for these message shapes —
+	// field names versus one-or-two-byte tags, base64 versus raw bytes; #716
+	// measured 1.03x-1.32x — so a message already past the blob limit in
+	// binary is past every bound this package cuts under it, and can be
+	// refused on the cheap walk alone. Anything that passes the walk encodes
+	// to at most ~1.32x the blob limit, which bounds the marshal below.
+	//
+	// The binary size is returned rather than a sentinel so the diagnosis
+	// still reports a real measurement; it understates what ProtoJSON would
+	// produce, which only makes the sentence conservative, never wrong.
+	if binary := proto.Size(m); binary > TemporalDefaultBlobLimitBytes {
+		return binary
+	}
+
 	b, err := protojson.Marshal(m)
 	if err != nil {
 		// Past the blob limit itself, which every bound in this package is

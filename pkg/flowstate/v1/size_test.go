@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -140,4 +141,38 @@ func TestTaskOutputSizeIsMeasuredAgainstWhatIsActuallySerialized(t *testing.T) {
 		"test premise broken: this result needs to pass a binary-protobuf-sized check")
 	require.Error(t, v1.CheckTaskOutputSize(out),
 		"a result proto.Size measures as within bound, but that ProtoJSON serializes over it, was accepted")
+}
+
+// TestOversizedOutputsAreRefusedWithoutMaterializingTheirEncoding pins the
+// Codex P1 on #793: measuring by marshaling allocates the whole encoding
+// before any bound sees it, so an attacker-shaped result — many fields
+// sharing one large Go string, cheap in memory, enormous once every copy is
+// spelled out — would make the size check itself the memory explosion it
+// exists to prevent. A result already past the blob limit on proto.Size's
+// allocation-free walk must be refused without the ProtoJSON encoding ever
+// being built.
+//
+// Not parallel: the assertion reads the runtime's cumulative allocation
+// counter across the call, and a sibling test allocating concurrently would
+// be counted against it.
+func TestOversizedOutputsAreRefusedWithoutMaterializingTheirEncoding(t *testing.T) {
+	// 200 fields sharing one 1 MiB string: ~1 MiB resident, ~200 MiB encoded.
+	shared := v1.NewLiteral(strings.Repeat("x", 1<<20))
+	out := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{}}
+	for i := range 200 {
+		out.NamedValues[fmt.Sprintf("copy-%03d", i)] = shared
+	}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err := v1.CheckTaskOutputSize(out)
+	runtime.ReadMemStats(&after)
+
+	require.Error(t, err, "two hundred copies of a mebibyte are over the bound")
+	require.Contains(t, err.Error(), "byte limit")
+
+	// Far under the ~200 MiB the encoding would weigh: the check must have
+	// answered from the walk, not from building the attacker's payload.
+	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(32<<20),
+		"the check allocated on the order of the encoding it was supposed to refuse to build")
 }
