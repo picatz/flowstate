@@ -551,7 +551,7 @@ flow lsp --plugin-dir ./plugins
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow mcp`
@@ -605,7 +605,7 @@ flow mcp --plugin-dir ./plugins
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing the http task (default $FLOWSTATE_EGRESS_POLICY); when set it replaces the default policy entirely, and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is ignored; a file that wants loopback says allow_loopback: true |
 | `--identity-key <string>` | `string` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--run-local-timeout <duration>` | `duration` | `2m0s` | — | how long a flowstate_run_local call may execute for before the run is stopped and reported as timed out |
@@ -664,7 +664,7 @@ flow plugins -o json | jq -r '.plugins[] | select(.tasks[].name == "example.gree
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow run`
@@ -804,7 +804,7 @@ flow run local examples/plugins/greet/workflow.yaml --plugin-dir ./plugins --sec
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
@@ -1131,7 +1131,7 @@ flow server --verbose
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as a bare host:port for net.Listen (default $FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, refusePlaintextListener requires --tls-cert-file/--tls-key-file or --tls-terminated-upstream |
 | `--namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
@@ -1215,7 +1215,7 @@ flow server dev -o json
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); loopback only, and a port of 0 takes a free one |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
@@ -1358,7 +1358,7 @@ flow task run example.greet --input name=world --plugin-dir ./plugins
 | `--input-file <string>` | `string` | — | — | a JSON object of arguments, keyed by input name. Values arrive with the types JSON gives them; a --input flag of the same name wins over the file |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
@@ -1644,7 +1644,7 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--max-concurrent-workflow-tasks <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS` | maximum number of workflow tasks executing at once in this process; 0 takes the Temporal SDK default (1000). The value 1 is refused: a worker with a single workflow-task slot never polls its regular queue, which the SDK enforces by panicking |
 | `--namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | — | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |

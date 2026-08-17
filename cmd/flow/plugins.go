@@ -72,9 +72,12 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	schemes, _ := cmd.Flags().GetStringArray("plugin-scheme")
 	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
 
-	if len(dirs) == 0 {
-		dirs = splitSearchPath(os.Getenv(pluginSearchPathEnv))
-	}
+	// The $FLOWSTATE_PLUGIN_DIR fallback is bound at registration time, in
+	// addPluginFlags, as the flag's own default — not here — so that the
+	// generated CLI reference's environment-mirror detection (which works by
+	// scanning DefValue for a sentinel written through os.Setenv before the
+	// tree is rebuilt) can see it. A read-time fallback here would be invisible
+	// to that scan the same way it was before #725.
 
 	// Resolved here rather than left to fail inside the host, because the message
 	// a person needs names the path they typed and the directory it resolved
@@ -144,7 +147,7 @@ func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 
 // addPluginFlags declares them on a command.
 func addPluginFlags(cmd *cobra.Command) {
-	cmd.Flags().StringArray("plugin-dir", nil,
+	cmd.Flags().StringArray("plugin-dir", splitSearchPath(os.Getenv(pluginSearchPathEnv)),
 		"directory to discover plugins in, repeatable, in precedence order "+
 			"(default $"+pluginSearchPathEnv+")")
 	cmd.Flags().StringArray("plugin", nil,

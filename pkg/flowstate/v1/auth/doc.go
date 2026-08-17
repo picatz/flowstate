@@ -12,7 +12,13 @@
 //
 // Neither direction uses a shared secret. That is the point: a deployment holds
 // one signing key, publishes the public half, and everything else is a trust
-// relationship an operator can read, review, and revoke.
+// relationship an operator can read and review. Reviewing it is prospective, not
+// retroactive: withdrawing an issuer or narrowing a policy stops trust from being
+// extended again, but does nothing to a token or workload assertion already
+// minted under it — there is no revocation of a credential already issued within
+// its lifetime (see THREAT_MODEL.md, "The issuer as a single point of failure"
+// and "Non-goals and honest gaps"). Short token and assertion lifetimes are what
+// bound the exposure instead.
 //
 // # Inbound: authenticating callers
 //
