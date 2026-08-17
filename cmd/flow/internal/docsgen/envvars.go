@@ -419,6 +419,30 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND",
+			value:   "0",
+			purpose: "Default for `--max-activities-per-second` on `flow worker`: maximum rate, per second, at which this worker process starts activity tasks. `0` takes the Temporal SDK's own default (effectively unlimited). Enforced locally, per worker process — see `FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND` for the server-enforced, per-queue limit. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES",
+			value:   "0",
+			purpose: "Default for `--max-concurrent-activities` on `flow worker`: maximum number of activity tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). Raising this trades worker CPU/memory for throughput on a single replica rather than scaling out — see docs/DEPLOYMENT.md's capacity section. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS",
+			value:   "0",
+			purpose: "Default for `--max-concurrent-workflow-tasks` on `flow worker`: maximum number of workflow tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). The value `1` refuses to start: the Temporal SDK panics on it, because a worker with a single workflow-task slot never polls its regular queue (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND",
+			value:   "0",
+			purpose: "Default for `--task-queue-activities-per-second` on `flow worker`: maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue (last-writer-wins if they disagree). `0` takes the Temporal SDK's own default (effectively unlimited); setting it disables eager activity execution for this worker. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
 			name:    "FLOWSTATE_WORKER_STOP_TIMEOUT",
 			value:   "2m0s",
 			purpose: "Default for `--worker-stop-timeout` on `flow worker`: how long a shutdown (SIGINT or SIGTERM) waits for in-flight activities and workflow tasks to finish before the worker exits regardless. Parsed with v1.ParseDuration, the same grammar the DSL itself accepts (Go's duration syntax plus days); an unparsable value refuses to start rather than silently keep the default. Keep it under whatever grace period the deployment shape actually gives the process — see docs/DEPLOYMENT.md.",

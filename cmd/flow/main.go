@@ -14,11 +14,13 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -391,6 +393,127 @@ func workerStopTimeout(cmd *cobra.Command) (time.Duration, error) {
 	return stopTimeout, nil
 }
 
+// workerCapacity holds the subset of worker.Options this worker exposes as
+// flags: what Temporal's slot-exhaustion runbook names first
+// (MaxConcurrentActivityExecutionSize, MaxConcurrentWorkflowTaskExecutionSize),
+// plus the two rate limits #785 folded into this issue's scope
+// (WorkerActivitiesPerSecond, TaskQueueActivitiesPerSecond). Poller counts and
+// the sticky workflow cache size are the next tier (#783's own scoping call)
+// and are not represented here.
+type workerCapacity struct {
+	maxConcurrentActivities      int
+	maxConcurrentWorkflowTasks   int
+	activitiesPerSecond          float64
+	taskQueueActivitiesPerSecond float64
+}
+
+// workerCapacityOptions reads --max-concurrent-activities,
+// --max-concurrent-workflow-tasks, --max-activities-per-second, and
+// --task-queue-activities-per-second, each defaulted from a FLOWSTATE_WORKER_*
+// environment variable exactly like --worker-stop-timeout above.
+//
+// Every one of these arrives as a string flag, not cobra's Int or Float64,
+// for the identical reason workerStopTimeout's doc comment gives: pflag
+// reprints a typed default in its own canonical form, which
+// `flow docs generate`'s environment-mirror detection cannot tell apart from
+// a literal constant. A plain string default passes the sentinel through
+// unchanged, so these stay visible to the docs generator the same way
+// --worker-stop-timeout is.
+//
+// Zero is the sentinel for "take the Temporal SDK's own default" on all four
+// fields — verified against the SDK's own augmentWorkerOptions
+// (go.temporal.io/sdk@v1.47.0/internal/internal_worker.go:2807-2834), which
+// substitutes its default whenever MaxConcurrentActivityExecutionSize is <= 0
+// or WorkerActivitiesPerSecond/TaskQueueActivitiesPerSecond equal 0. So an
+// unset flag changes nothing: it produces the same zero value worker.Options
+// already had before this flag existed.
+//
+// A negative value is refused before it reaches worker.New, the same posture
+// workerStopTimeout takes: passed through unchecked, a negative
+// MaxConcurrentActivityExecutionSize or rate limit does not mean what an
+// operator typing "-1" for "no limit" would expect, and each field would
+// silently take a different meaning than the zero sentinel this flag
+// documents. And --max-concurrent-workflow-tasks=1 is refused explicitly:
+// the SDK panics on that exact value (internal_worker.go:2308,
+// "cannot set MaxConcurrentWorkflowTaskExecutionSize to 1", because a worker
+// with one workflow-task slot only ever polls the sticky queue) — a refusal
+// here is a command-line error message; the same value reaching worker.New
+// is a crashed process.
+func workerCapacityOptions(cmd *cobra.Command) (workerCapacity, error) {
+	maxActivities, err := parseWorkerCapacityInt(cmd, "max-concurrent-activities")
+	if err != nil {
+		return workerCapacity{}, err
+	}
+
+	maxWorkflowTasks, err := parseWorkerCapacityInt(cmd, "max-concurrent-workflow-tasks")
+	if err != nil {
+		return workerCapacity{}, err
+	}
+	if maxWorkflowTasks == 1 {
+		return workerCapacity{}, fmt.Errorf(
+			"invalid --max-concurrent-workflow-tasks \"1\": the Temporal SDK refuses this exact " +
+				"value (a worker with one workflow-task slot never polls its regular queue); use 0 " +
+				"for the SDK default or a value of 2 or more")
+	}
+
+	activitiesPerSecond, err := parseWorkerCapacityFloat(cmd, "max-activities-per-second")
+	if err != nil {
+		return workerCapacity{}, err
+	}
+
+	taskQueueActivitiesPerSecond, err := parseWorkerCapacityFloat(cmd, "task-queue-activities-per-second")
+	if err != nil {
+		return workerCapacity{}, err
+	}
+
+	return workerCapacity{
+		maxConcurrentActivities:      maxActivities,
+		maxConcurrentWorkflowTasks:   maxWorkflowTasks,
+		activitiesPerSecond:          activitiesPerSecond,
+		taskQueueActivitiesPerSecond: taskQueueActivitiesPerSecond,
+	}, nil
+}
+
+// parseWorkerCapacityInt parses one of the two execution-size flags: a
+// non-negative integer, with 0 meaning "take the SDK default" (see
+// workerCapacityOptions).
+func parseWorkerCapacityInt(cmd *cobra.Command, flag string) (int, error) {
+	raw, _ := cmd.Flags().GetString(flag)
+
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("invalid --%s %q: must be a whole number; 0 takes the Temporal SDK default", flag, raw)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid --%s %q: must not be negative; use 0 for the Temporal SDK default", flag, raw)
+	}
+
+	return n, nil
+}
+
+// parseWorkerCapacityFloat parses one of the two rate-limit flags: a
+// non-negative number, with 0 meaning "take the SDK default" (effectively
+// unlimited — see workerCapacityOptions).
+func parseWorkerCapacityFloat(cmd *cobra.Command, flag string) (float64, error) {
+	raw, _ := cmd.Flags().GetString(flag)
+
+	n, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --%s %q: must be a number; 0 takes the Temporal SDK default", flag, raw)
+	}
+	// NaN and Inf both parse successfully and both fail "< 0" (NaN compares
+	// false to everything, +Inf is not negative), so neither is caught by the
+	// bound below — checked explicitly rather than trusted to it.
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, fmt.Errorf("invalid --%s %q: must be a finite number; 0 takes the Temporal SDK default", flag, raw)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("invalid --%s %q: must not be negative; use 0 for the Temporal SDK default", flag, raw)
+	}
+
+	return n, nil
+}
+
 // runWorker implements the worker sub-command to start a Temporal worker
 // to process Flowstate workflows and activities.
 func runWorker(cmd *cobra.Command, args []string) error {
@@ -432,6 +555,14 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	// the command line, not something that should wait until Temporal is dialed,
 	// a plugin is launched, and a secret provider is opened to surface.
 	stopTimeout, err := workerStopTimeout(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Same reasoning, one flag family later: an unparsable or out-of-range
+	// capacity flag is a command-line mistake, not something a connection
+	// failure or a plugin-launch failure should be the first sign of (#783).
+	capacity, err := workerCapacityOptions(cmd)
 	if err != nil {
 		return err
 	}
@@ -493,11 +624,15 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	identity := workerIdentity(cmd, deployment, flags)
 
 	w := worker.New(c, taskQueue, worker.Options{
-		DeploymentOptions:        deployment,
-		Interceptors:             interceptors,
-		DeadlockDetectionTimeout: v1.WorkerDeadlockDetectionTimeout,
-		Identity:                 identity,
-		WorkerStopTimeout:        stopTimeout,
+		DeploymentOptions:                      deployment,
+		Interceptors:                           interceptors,
+		DeadlockDetectionTimeout:               v1.WorkerDeadlockDetectionTimeout,
+		Identity:                               identity,
+		WorkerStopTimeout:                      stopTimeout,
+		MaxConcurrentActivityExecutionSize:     capacity.maxConcurrentActivities,
+		MaxConcurrentWorkflowTaskExecutionSize: capacity.maxConcurrentWorkflowTasks,
+		WorkerActivitiesPerSecond:              capacity.activitiesPerSecond,
+		TaskQueueActivitiesPerSecond:           capacity.taskQueueActivitiesPerSecond,
 	})
 
 	engine.Register(w, runtime)
@@ -1871,6 +2006,36 @@ flow server --verbose`,
 		cmp.Or(os.Getenv("FLOWSTATE_WORKER_STOP_TIMEOUT"), v1.DefaultWorkerStopTimeout.String()),
 		"how long to wait for in-flight activities and workflow tasks to finish once a shutdown "+
 			"signal (SIGINT or SIGTERM) arrives, before this worker exits regardless")
+
+	// Worker capacity (#783): the two execution sizes Temporal's slot-exhaustion
+	// runbook names first, plus the two rate limits #785 folded into this same
+	// issue. All four are string flags for the identical reason
+	// --worker-stop-timeout above is one, and all four take 0 to mean "the
+	// Temporal SDK's own default" — see workerCapacityOptions for the full
+	// reasoning and the SDK line numbers this is verified against.
+	workerCmd.Flags().String("max-concurrent-activities",
+		cmp.Or(os.Getenv("FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES"), "0"),
+		"maximum number of activity tasks executing at once in this process; 0 takes the Temporal "+
+			"SDK default (1000). Raising this trades worker CPU/memory for throughput on a single "+
+			"replica; see docs/DEPLOYMENT.md's capacity section for when to raise this versus "+
+			"scaling out")
+	workerCmd.Flags().String("max-concurrent-workflow-tasks",
+		cmp.Or(os.Getenv("FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS"), "0"),
+		"maximum number of workflow tasks executing at once in this process; 0 takes the Temporal "+
+			"SDK default (1000). The value 1 is refused: a worker with a single workflow-task slot "+
+			"never polls its regular queue, which the SDK enforces by panicking")
+	workerCmd.Flags().String("max-activities-per-second",
+		cmp.Or(os.Getenv("FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND"), "0"),
+		"maximum rate, per second, at which this worker process starts activity tasks; 0 takes "+
+			"the Temporal SDK default (effectively unlimited). Enforced locally, per worker process "+
+			"— see --task-queue-activities-per-second for the server-enforced, per-queue limit")
+	workerCmd.Flags().String("task-queue-activities-per-second",
+		cmp.Or(os.Getenv("FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND"), "0"),
+		"maximum rate, per second, at which the Temporal server dispatches activity tasks from "+
+			"this worker's task queue, shared across every worker polling that queue; 0 takes the "+
+			"Temporal SDK default (effectively unlimited). Per queue, not per worker: setting this "+
+			"differently on two workers sharing a queue is last-writer-wins on the server, and "+
+			"setting it disables eager activity execution for this worker (DisableEagerActivities)")
 
 	addPluginFlags(workerCmd)
 	addPluginFlags(serverCmd)
