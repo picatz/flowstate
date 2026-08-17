@@ -62,6 +62,17 @@ const (
 	maxPatchBytes = 1 << 20 // 1 MiB
 	maxDiffFiles  = 500
 
+	// maxGitConfigBytes bounds the key listing safeDiffArgs reads to discover
+	// the content filters it must disable. Its own bound rather than
+	// maxPatchBytes, because the two answer different questions and sharing
+	// one couples them the wrong way round: a repository with a great many
+	// config keys would truncate the listing, and a truncated listing is
+	// fail-closed - no patch at all - for a reason that has nothing to do with
+	// how large the patch is. Keys are short and a repository has few, so this
+	// is generous enough that reaching it means something is wrong rather than
+	// merely large.
+	maxGitConfigBytes = 1 << 20 // 1 MiB
+
 	// maxSubprocessBytes bounds the codex CLI's combined stdout before this
 	// task ever decodes a line of it - the backstop underneath every other
 	// bound in this file, the same role plugins/vcs's maxResponseBytes plays
