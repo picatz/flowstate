@@ -228,9 +228,7 @@ func (p *Plugin) executeTask(
 		msg := stream.Msg()
 
 		if progress := msg.GetProgress(); progress != nil {
-			if phase, ok := phaseFromWire(progress.GetPhase()); ok {
-				flowstatev1.ReportProgress(ctx, phase)
-			}
+			reportWirePhase(ctx, progress.GetPhase())
 			continue
 		}
 
@@ -282,24 +280,33 @@ func isUnimplemented(err error) bool {
 	return ok && code == connect.CodeUnimplemented
 }
 
-// phaseFromWire maps a plugin's TaskPhase onto the closed [flowstatev1.Phase]
-// vocabulary the host's own progress reporter expects, reporting false for
-// TASK_PHASE_UNSPECIFIED and for any value newer than this build knows about
-// — both are dropped rather than forwarded, which is the fail-closed
-// direction for a value on its way into an activity heartbeat and, from
-// there, workflow history. See progress.go's own doc comment for why that
-// vocabulary is closed, and plugin.proto's TaskPhase for why the two must
-// keep naming the same set.
-func phaseFromWire(phase pluginv1.TaskPhase) (flowstatev1.Phase, bool) {
+// reportWirePhase forwards a plugin's TaskPhase to ctx's own reporter, if it
+// names one of the closed vocabulary [flowstatev1.ReportProgress] accepts.
+// TASK_PHASE_UNSPECIFIED and any value newer than this build knows about are
+// dropped rather than forwarded — the fail-closed direction for a value on
+// its way into an activity heartbeat and, from there, workflow history. See
+// progress.go's own doc comment for why that vocabulary is closed, and
+// plugin.proto's TaskPhase for why the two must keep naming the same set.
+//
+// Each branch below calls ReportProgress with a declared phase named
+// directly, rather than through a variable computed from the switch: that is
+// not a style choice, it is what
+// [flowstatev1.TestEveryPhaseReportedIsOneOfTheDeclaredOnes] in progress_test.go
+// requires of every call site in the tree, on purpose — a variable holding a
+// phase reads identically at that AST walk whether it can only ever hold one
+// of the three constants below, as this one can, or whether it holds
+// something built from a task's own inputs, which is exactly the mistake the
+// walk exists to catch. Spelling each branch as a literal call is what keeps
+// this call site indistinguishable, to that check, from every other one that
+// was always written by hand.
+func reportWirePhase(ctx context.Context, phase pluginv1.TaskPhase) {
 	switch phase {
 	case pluginv1.TaskPhase_TASK_PHASE_REQUESTING:
-		return flowstatev1.PhaseRequesting, true
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 	case pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE:
-		return flowstatev1.PhaseReadingResponse, true
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
 	case pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN:
-		return flowstatev1.PhaseCallingPlugin, true
-	default:
-		return flowstatev1.Phase{}, false
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
 	}
 }
 
