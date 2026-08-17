@@ -28,13 +28,19 @@ import "fmt"
 // dispatched.
 //
 // The number is sized from the history math, spending headroom in the safe
-// direction exactly as size.go's reserves do: Temporal terminates an
-// execution at 51,200 history events, an activity costs at least three
-// (scheduled, started, completed) before counting workflow tasks, and the
-// segment holding the loop also carries whatever ran before it. 10,000
-// activities is roughly 30,000 activity events — under the cap with room for
-// the rest of the segment, and far past any fan-out that should be one
-// atomic block rather than a paged workload.
+// direction exactly as size.go's reserves do — and sized for the *worst*
+// dispatch shape the atomic placements admit, which is sequential. Temporal
+// terminates an execution at 51,200 history events. An activity costs three
+// of its own (scheduled, started, completed), and a sequential atomic
+// stretch — a plain `for_each` inside a `parallel:` branch, a loop body or a
+// `switch:` arm — pays a workflow-task triplet per activity on top, because
+// each completion wakes the workflow to dispatch the next: the checked-in
+// replay recording of three sequential tasks
+// (engine/testdata/replay/2026-08-08/multi-step-tasks.json) is 23 events,
+// seven-ish per activity. 5,000 activities at that ratio is roughly 35,000
+// events — under the cap with room for whatever the segment ran before the
+// loop, and far past any fan-out that should be one atomic block rather
+// than a paged workload.
 //
 // A compiled-in constant rather than configuration, for [MaxRunStateBytes]'s
 // reason: it is read in workflow code, so it is a determinism input. And a
@@ -43,7 +49,7 @@ import "fmt"
 // workload genuinely this large pages its items across runs — the shape
 // examples/paged-fan-out demonstrates — rather than holding one history
 // segment open across all of them.
-const MaxAtomicBlockActivities = 10_000
+const MaxAtomicBlockActivities = 5_000
 
 // atomicBlockSaturated is the value the worst-case walk saturates at: one
 // past the ceiling, because every count past the ceiling is refused the same

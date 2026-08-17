@@ -3404,8 +3404,10 @@ events. A termination delivers no workflow task, so the run's compensation log
 never executes — which is why 1,000 items over a 60-step body, every number inside
 the bounds above, must not be allowed to start. So when a `for_each` will run
 atomically, both drivers weigh `len(items) ×` the body's worst-case activity count
-against `v1.MaxAtomicBlockActivities` (10,000 — sized under the event cap at
-roughly three history events per activity, headroom spent in the safe direction) at
+against `v1.MaxAtomicBlockActivities` (5,000 — sized under the event cap at the
+worst dispatch shape the atomic placements admit, sequential, where every activity
+costs its own three events plus a workflow-task triplet to dispatch the next;
+headroom spent in the safe direction) at
 the same pre-dispatch moment `v1.CheckForEachItems` runs, and refuse the crossing
 with one shared sentence naming the step, the item count, the per-iteration count
 and the ceiling (`v1.AtomicBlockActivitiesError`). The body is weighed at static
