@@ -119,6 +119,20 @@ func TestWorstCaseBodyActivities(t *testing.T) {
 			want: 3,
 		},
 		{
+			name: "a callee declaring vars costs one more: the engine evaluates them in an activity per fresh call",
+			body: []*Node{{
+				Id: "c",
+				Kind: &Node_Call{Call: &Call{
+					Workflow: &Workflow{
+						Name:  "callee",
+						Vars:  map[string]*Value{"v": NewExpr("1")},
+						Steps: tasks(3),
+					},
+				}},
+			}},
+			want: 4,
+		},
+		{
 			name: "a nested for_each multiplies by its trip ceiling: its own items are an expression this walk cannot see",
 			body: []*Node{{
 				Id: "inner",

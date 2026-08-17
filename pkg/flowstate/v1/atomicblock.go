@@ -202,6 +202,14 @@ func worstCaseActivities(nodes []*Node, nodesLeft *int, callDepth int) int {
 				// beneath it is work nothing will ever schedule.
 				continue
 			}
+			// A callee declaring `vars:` costs one activity of its own on the
+			// durable driver — the engine evaluates them through a
+			// WorkflowVars activity on every fresh call — so a call inside a
+			// loop body multiplies that activity by the trip count exactly as
+			// it multiplies the callee's steps.
+			if len(callee.GetVars()) > 0 {
+				total = satAdd(total, 1)
+			}
 			// A callee runs atomically at the caller's suspend level — the
 			// fact CheckLoopNesting's walk records the same way — so its
 			// steps join the block being weighed.
