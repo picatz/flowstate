@@ -26,8 +26,33 @@ func TestVerifyNamespaceIsolation_EnvProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	secretstest.VerifyNamespaceIsolation(t, provider, []secretstest.NamespaceFixture{
-		{Namespace: "team-a", Ref: secrets.NewRef("env", "API_KEY"), Value: "team-a-value"},
-		{Namespace: "team-b", Ref: secrets.NewRef("env", "API_KEY"), Value: "team-b-value"},
+		{
+			Namespace: "team-a",
+			Ref:       secrets.NewRef("env", "API_KEY"),
+			Value:     "team-a-value",
+			// "TEAM_A_API_KEY" is exactly what a requester with no namespace
+			// mapping (reading under the bare DefaultEnvPrefix) would have to
+			// name in order to land on $FLOWSTATE_SECRET_TEAM_A_API_KEY under
+			// the naive prefix+NAMESPACE+"_"+name scheme CLAUDE.md documents
+			// — the same string a *correctly* fixed provider derives for
+			// "team-a"+"API_KEY" only because it is told to, not because it
+			// concatenates. "A_API_KEY" is the same collision from the other
+			// side: what a namespace literally called "team" would have to
+			// name under that scheme to land on the same variable.
+			Collisions: []secrets.Ref{
+				secrets.NewRef("env", "TEAM_A_API_KEY"),
+				secrets.NewRef("env", "A_API_KEY"),
+			},
+		},
+		{
+			Namespace: "team-b",
+			Ref:       secrets.NewRef("env", "API_KEY"),
+			Value:     "team-b-value",
+			Collisions: []secrets.Ref{
+				secrets.NewRef("env", "TEAM_B_API_KEY"),
+				secrets.NewRef("env", "B_API_KEY"),
+			},
+		},
 	})
 }
 
@@ -50,7 +75,26 @@ func TestVerifyNamespaceIsolation_FileProvider(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, provider.Close()) })
 
 	secretstest.VerifyNamespaceIsolation(t, provider, []secretstest.NamespaceFixture{
-		{Namespace: "team-a", Ref: secrets.NewRef("file", "api-key"), Value: "team-a-value"},
-		{Namespace: "team-b", Ref: secrets.NewRef("file", "api-key"), Value: "team-b-value"},
+		{
+			Namespace: "team-a",
+			Ref:       secrets.NewRef("file", "api-key"),
+			Value:     "team-a-value",
+			// A path-segment analogue of the env collision: a reference that
+			// climbs out of the requester's own namespace directory and back
+			// into team-a's, the way a provider that joined the namespace and
+			// name with plain string concatenation — rather than a real path
+			// segment plus os.Root confinement — would resolve it.
+			Collisions: []secrets.Ref{
+				secrets.NewRef("file", "../team-a/api-key"),
+			},
+		},
+		{
+			Namespace: "team-b",
+			Ref:       secrets.NewRef("file", "api-key"),
+			Value:     "team-b-value",
+			Collisions: []secrets.Ref{
+				secrets.NewRef("file", "../team-b/api-key"),
+			},
+		},
 	})
 }
