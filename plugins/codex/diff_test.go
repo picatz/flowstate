@@ -226,6 +226,74 @@ func TestComputePatchDoesNotRunRepositoryHelpers(t *testing.T) {
 	}
 }
 
+// TestComputePatchOverridesFiltersInstalledDuringTheRun is the
+// time-of-check gap TestComputePatchDoesNotRunRepositoryHelpers cannot see:
+// there, every helper exists before hardening is computed, so a stale
+// override list still names them all. Here the repository is clean when
+// prepareHardenedGit enumerates its filter keys - the enumeration
+// legitimately finds nothing to override - and the filter is installed only
+// *after* the baseline observation, standing in for what a WORKSPACE_WRITE
+// codex run can do to its own working_context mid-run (the repository's
+// config is just another file under it). computePatch must still refuse to
+// run that filter, which it can only do by re-enumerating the mutated
+// config rather than reusing the pre-run list.
+func TestComputePatchOverridesFiltersInstalledDuringTheRun(t *testing.T) {
+	gitBin := realGitBinary(t)
+	t.Setenv(gitBinaryEnv, gitBin)
+
+	dir := t.TempDir()
+	initRepoWithCommit(t, gitBin, dir)
+
+	// Mirrors codexExec's ordering: hardening prepared and the baseline read
+	// while the repository is still clean - no filters configured, so the
+	// enumerated override list is legitimately empty of them.
+	gitBin, hardened := prepareForTest(t, dir)
+	baseline := observeWorkspace(context.Background(), gitBin, hardened, dir, true)
+	if !baseline.observed || baseline.dirty {
+		t.Fatalf("baseline = %+v, want observed and clean before the simulated run", baseline)
+	}
+
+	// "The run": install a filter the pre-run enumeration never saw, wire it
+	// to files via gitattributes, and make the edits that give the post-run
+	// git commands content to convert - a tracked modification for the diff,
+	// an untracked file for the intent-to-add.
+	marker := filepath.Join(t.TempDir(), "mid-run-filter-ran")
+	helper := filepath.Join(dir, "git-helper.sh")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\ntouch \""+marker+"\"\ncat\n"), 0o700); err != nil {
+		t.Fatalf("WriteFile helper: %v", err)
+	}
+	for key, value := range map[string]string{
+		"filter.midrun.clean":   helper,
+		"filter.sneaky.process": helper,
+	} {
+		cmd := exec.Command(gitBin, "-C", dir, "config", key, value)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("configure repository %s: %v: %s", key, err, out)
+		}
+	}
+	attributes := filepath.Join(dir, ".git", "info", "attributes")
+	if err := os.WriteFile(attributes, []byte("a.txt filter=midrun\nc.txt filter=sneaky\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile attributes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile change: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("new file\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile untracked: %v", err)
+	}
+
+	// computePatch gets exactly what codexExec would hand it: the pre-run
+	// binary and override list, and a baseline that observed a clean tree.
+	patch, _, truncated := computePatch(context.Background(), gitBin, hardened, dir, true, baseline,
+		[]fileChange{{Path: "a.txt", ChangeType: "update"}})
+	if truncated || !strings.Contains(patch, "+changed") {
+		t.Fatalf("computePatch = (%q, truncated %v), want an ordinary unified diff", patch, truncated)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("filter installed mid-run executed outside the Codex sandbox: Stat marker error = %v", err)
+	}
+}
+
 // TestHardenedGitConfigRejectsUnsafeFilterKeys proves the fail-closed
 // response to a filter name that cannot be safely disabled via `-c
 // NAME=VALUE`: Git parses that argument by splitting at the first `=`, and a

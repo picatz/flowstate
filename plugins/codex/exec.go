@@ -133,12 +133,15 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 
 	mutating := workDir != "" && sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY
 
-	// Hardening is computed once, before the *first* Git command touches the
-	// repository - including the baseline read immediately below - and
-	// shared with computePatch after the run finishes. See
-	// prepareHardenedGit's doc comment for why splitting this in two (each
-	// side computing its own) left the baseline read exposed to whatever the
-	// later hardening was built to stop.
+	// Hardening is computed before the *first* Git command touches the
+	// repository - including the baseline read immediately below. See
+	// prepareHardenedGit's doc comment for why a version that computed it
+	// only later left the baseline read exposed to whatever the later
+	// hardening was built to stop. computePatch receives this pre-run
+	// result only as its gate: it re-enumerates the filter overrides
+	// against the config as the run left it, because a WORKSPACE_WRITE run
+	// can install new filter keys this list has never heard of - see
+	// computePatch's doc comment.
 	var gitBin string
 	var hardened []string
 	if mutating {

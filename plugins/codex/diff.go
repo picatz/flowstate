@@ -31,19 +31,28 @@ const gitBinaryEnv = "FLOWSTATE_CODEX_GIT_BIN"
 const gitTimeout = 30 * time.Second
 
 // prepareHardenedGit resolves the git binary, confirms workDir is a
-// checkout, and computes the -c overrides every subsequent Git invocation
-// over it must carry - once, shared by both observeWorkspace and
-// computePatch, rather than each recomputing its own.
+// checkout, and computes the -c overrides the *pre-run* Git invocations
+// over it must carry - once, before the first Git command touches the
+// repository.
 //
-// That sharing matters for more than avoiding duplicate work: the baseline
-// read (`git status`, in observeWorkspace) and the patch computation
-// (`git add` and `git diff`, in computePatch) both touch a task-controlled
-// checkout, and both run repository-configured programs if either runs
-// unhardened. A version of this that computed hardening only inside
-// computePatch left the baseline read - which runs *first*, before the
-// codex subprocess even starts - exposed to exactly the fsmonitor hook and
-// content filters the later hardening was built to stop. Calling this once,
-// before the first Git command touches the repository, closes that gap.
+// Computing this before anything else matters for more than avoiding
+// duplicate work: the baseline read (`git status`, in observeWorkspace)
+// touches a task-controlled checkout and runs repository-configured
+// programs if it runs unhardened. A version of this that computed hardening
+// only inside computePatch left the baseline read - which runs *first*,
+// before the codex subprocess even starts - exposed to exactly the
+// fsmonitor hook and content filters the later hardening was built to
+// stop. Calling this once, before the first Git command touches the
+// repository, closes that gap.
+//
+// What this return is *not* is a prefix computePatch can reuse verbatim.
+// The filter overrides in it are enumerated by name from the repository's
+// config as it stands now, and a WORKSPACE_WRITE run mutates that config
+// as freely as it mutates any other file under working_context - so
+// computePatch, which runs after the subprocess finishes, re-enumerates
+// against the mutated config rather than carrying this list across the
+// run. See computePatch's own doc comment for the attack that reuse
+// enables.
 //
 // Fails closed on the empty return: a caller that gets ok=false must treat
 // the workspace exactly as it would treat "not a git checkout" - see
@@ -74,8 +83,20 @@ func prepareHardenedGit(ctx context.Context, workDir string) (gitBin string, har
 // same no-shared-workspace reason plugins/vcs has no vcs.clone (see doc.go).
 //
 // gitBin and hardened come from prepareHardenedGit, computed once by the
-// caller and shared with observeWorkspace - see that function's doc comment
-// for why this cannot recompute its own.
+// caller before the run started and shared with observeWorkspace. This
+// function uses them only as its fail-closed gate: the Git commands it runs
+// carry a *fresh* set of overrides, enumerated after the codex subprocess
+// finished. The pre-run list cannot be reused, because its filter overrides
+// name the drivers the repository configured *then* - and in
+// WORKSPACE_WRITE mode the repository's config is the run's to mutate. A
+// run that adds a new `filter.<name>.clean` or `.process` key (a config
+// include under working_context plus a .gitattributes entry is enough)
+// would have the `git add` and `git diff` below reload the mutated config
+// while overriding only the stale key list, executing the newly named
+// filter as this worker, outside the Codex sandbox. The static overrides
+// (fsmonitor, hooksPath, protocol.ext.allow, submodule.recurse) do not
+// have this time-of-check gap - only the enumerated-by-name sweep does -
+// but re-running hardenedGitConfig refreshes everything at once.
 //
 // It returns filesChanged unchanged, and no patch, whenever there is
 // nothing to diff: a read-only run (mutating false) cannot have changed
@@ -104,6 +125,18 @@ func computePatch(ctx context.Context, gitBin string, hardened []string, workDir
 		return "", filesChanged, false
 	}
 
+	// Re-enumerate the overrides against the config as the run left it, not
+	// as it was found - see this function's doc comment. Fails closed the
+	// same way the pre-run computation does: a config that can no longer be
+	// safely swept (unreadable, over its bound, or holding a key no `-c`
+	// override can disable) means no patch rather than a patch computed with
+	// a repository-named program still live.
+	fresh, freshCleanup, ok := hardenedGitConfig(ctx, gitBin, workDir)
+	if !ok {
+		return "", filesChanged, false
+	}
+	defer freshCleanup()
+
 	// Files the run created are untracked, and `git diff` does not report an
 	// untracked file at all - so without this the patch would silently omit
 	// exactly the new files a downstream commit most needs. --intent-to-add
@@ -111,7 +144,7 @@ func computePatch(ctx context.Context, gitBin string, hardened []string, workDir
 	// them appear below as additions. Best-effort like the rest of this
 	// function: if it fails, the tracked changes still diff.
 	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
-		append(slices.Clone(hardened), "add", "--intent-to-add", "--", ".")...)
+		append(slices.Clone(fresh), "add", "--intent-to-add", "--", ".")...)
 
 	// --no-ext-diff and --no-textconv cover the two diff drivers; the content
 	// filters, the hooks, the fsmonitor hook, and the promisor/submodule
@@ -120,7 +153,7 @@ func computePatch(ctx context.Context, gitBin string, hardened []string, workDir
 	// submodule.recurse=false in hardened: this command has no business
 	// entering a nested checkout at all to render a patch of this one.
 	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
-		append(slices.Clone(hardened), "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all", "-M", "HEAD")...)
+		append(slices.Clone(fresh), "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all", "-M", "HEAD")...)
 	if !ok {
 		return "", filesChanged, false
 	}
