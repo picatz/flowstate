@@ -137,13 +137,44 @@ func nodeFailed(err error) error {
 func failedAt(err error, position string) error {
 	recorded, fromTask := recordedStepError(err)
 
-	// Composed from the inner failure's own message rather than from its
-	// Error(), which restates the `engine: flowstate run failed:` preamble at
-	// every level a position is added at.
-	message := err.Error()
+	// Composed from the same envelope-free extraction Recorded uses, rather
+	// than from err.Error() — which, for a failure that just crossed the
+	// activity boundary, is Temporal's own words: the whole cause including
+	// scheduledEventID, startedEventID and a worker identity. That was the
+	// bug (#788): recordedStepError already existed to shed exactly this for
+	// the recorded ${steps.<id>.error} value, and Message read err.Error()
+	// one line below it instead of the same extraction.
+	//
+	// Message still diverges from Recorded in the one way it always has: a
+	// classified task failure's Recorded text absorbs every structural prefix
+	// around it (so an author's `if:` compares the identical sentence the
+	// local driver would record), while Message accumulates a position at
+	// every level, because a person reading `flow get` benefits from the path
+	// to the failure and an expression comparing a value does not. That is
+	// why this does not simply assign message = recorded and stop: the
+	// unconditional prepend below, versus Recorded's fromTask-gated one, is
+	// what keeps that divergence intact.
+	message := recorded
+	if message == "" {
+		message = err.Error()
+	}
+
 	var inner *ErrRunFailed
-	if errors.As(err, &inner) {
+	switch {
+	case errors.As(err, &inner):
+		// A nested failure already carries Message built the identical way one
+		// level down — recursing into inner.Message rather than inner.Recorded
+		// is what lets Message keep accumulating position while Recorded does
+		// not (see above).
 		message = inner.Message
+	default:
+		// Not yet wrapped, so this is the one place a translation attached
+		// directly at the failure site — see [durableStepTimeoutMessage] — can
+		// still be read off err itself rather than out of a chain a later
+		// wrap would hide it in.
+		if friendly, ok := err.(interface{ runMessageText() string }); ok {
+			message = friendly.runMessageText()
+		}
 	}
 
 	if position != "" {

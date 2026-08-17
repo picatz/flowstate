@@ -1563,13 +1563,56 @@ func failureError(
 
 	// No application error in the chain, which is what an uncompensated
 	// cancellation or a timeout looks like: the run ended for a reason Temporal
-	// knows and the workload never said anything about. Its own text is then the
-	// best there is.
+	// knows and the workload never said anything about. A raw timeout is the one
+	// shape of that worth naming rather than repeating verbatim — an ordinary
+	// step timeout is already translated before it gets here (#788,
+	// [engine.durableStepTimeoutMessage]), so a *temporal.TimeoutError reaching
+	// this branch is the workflow's own execution or run timeout, which this
+	// engine never sets a policy-derived value for the way it does a step's. So:
+	// name that it was a timeout and which kind, in place of Temporal's own
+	// "activity StartToClose timeout (type: StartToClose)" — one line, not a
+	// budget value this layer has nothing to compute it from.
+	var timeoutErr *temporal.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return &v1.RunResponse_Error{
+			Message: status.String() + ": timed out (" + timeoutKindText(timeoutErr.TimeoutType()) + ")",
+		}
+	}
+
+	// Its own text is then the best there is.
 	if text := err.Error(); text != "" {
 		return &v1.RunResponse_Error{Message: text}
 	}
 
 	return &v1.RunResponse_Error{Message: status.String()}
+}
+
+// timeoutKindText names a Temporal timeout type in words an author's Flowfile
+// never uses, for [failureError]'s fallback: "StartToClose" and its siblings
+// are Temporal's own vocabulary, not Flowstate's.
+//
+// [failureError]'s call site is specifically the *workflow*-level timeout —
+// an ordinary step timeout is already translated before it gets there — so
+// START_TO_CLOSE and SCHEDULE_TO_CLOSE here name Temporal's
+// WorkflowRunTimeout and WorkflowExecutionTimeout respectively, not an
+// activity's attempt/retry budget (Codex review on #788: reusing
+// activity-attempt wording — "a single attempt" — for a timeout that can
+// cover the whole run, including every Continue-As-New segment, gave an
+// operator a false diagnosis of the primary timeout this branch exists to
+// explain).
+func timeoutKindText(kind enums.TimeoutType) string {
+	switch kind {
+	case enums.TIMEOUT_TYPE_START_TO_CLOSE:
+		return "this run exceeded its execution timeout"
+	case enums.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE:
+		return "the workflow exceeded its total execution timeout across every continue-as-new"
+	case enums.TIMEOUT_TYPE_SCHEDULE_TO_START:
+		return "it waited too long to start"
+	case enums.TIMEOUT_TYPE_HEARTBEAT:
+		return "it stopped reporting progress"
+	default:
+		return "the run's own time budget was exceeded"
+	}
 }
 
 // heartbeatPhase reads the phase a running attempt last heartbeated.
