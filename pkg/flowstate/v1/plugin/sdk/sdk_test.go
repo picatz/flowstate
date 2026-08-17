@@ -49,7 +49,15 @@ func TestManifestIsDerived(t *testing.T) {
 				Name:  "t",
 				Tasks: []Task{{Name: "t_do", Fn: run}},
 			},
-			wantCapabilities: []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS},
+			// CAPABILITY_TASK_PROGRESS travels alongside CAPABILITY_TASKS
+			// unconditionally: this package's own taskService always
+			// implements ExecuteStream, so there is no author-facing switch
+			// to derive this from — see manifest()'s own comment on the
+			// append.
+			wantCapabilities: []pluginv1.Capability{
+				pluginv1.Capability_CAPABILITY_TASKS,
+				pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
+			},
 		},
 		{
 			name: "both",
@@ -61,6 +69,7 @@ func TestManifestIsDerived(t *testing.T) {
 			wantCapabilities: []pluginv1.Capability{
 				pluginv1.Capability_CAPABILITY_SECRETS,
 				pluginv1.Capability_CAPABILITY_TASKS,
+				pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
 			},
 		},
 		{

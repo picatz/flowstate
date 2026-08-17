@@ -151,7 +151,16 @@ type boundedBody struct {
 	io.Closer
 }
 
-// authInterceptor presents the per-launch secret on every request.
+// authInterceptor presents the per-launch secret on every request, unary or
+// streaming.
+//
+// This has to be a full [connect.Interceptor], not a
+// [connect.UnaryInterceptorFunc]: the latter's WrapStreamingClient is a
+// documented no-op, so ExecuteStream — the one streaming RPC this package's
+// client calls — would leave the socket with no token attached at all,
+// silently, rather than failing to compile or to run. See
+// [requireToken] in the sdk package for the handler side of the same
+// mistake.
 //
 // The token is held in this closure rather than in a struct field for the reason
 // the secrets package gives for doing the same with a resolved value: fmt
@@ -159,12 +168,40 @@ type boundedBody struct {
 // methods, and a credential in a field is a credential that prints. Nothing can
 // reflect into a captured variable.
 func authInterceptor(token string) connect.Interceptor {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			req.Header().Set(protocol.TokenHeader, token)
-			return next(ctx, req)
-		}
-	})
+	return &tokenClientInterceptor{token: func() string { return token }}
+}
+
+// tokenClientInterceptor sets the per-launch token header on every request
+// this plugin's client makes, unary or streaming.
+//
+// The token is held as a closure, not as a bare string field: this struct can
+// reach a log line or an error's %+v the moment anything holding one is
+// formatted for diagnostics, and fmt reflects into an unexported field it
+// cannot call a method on. A closure is opaque to that reflection — see the
+// doc comment on [authInterceptor] above, which this field used to violate
+// after round 2's streaming fix stored the token directly.
+type tokenClientInterceptor struct{ token func() string }
+
+func (t *tokenClientInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		req.Header().Set(protocol.TokenHeader, t.token())
+		return next(ctx, req)
+	}
+}
+
+func (t *tokenClientInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		conn.RequestHeader().Set(protocol.TokenHeader, t.token())
+		return conn
+	}
+}
+
+// WrapStreamingHandler is a no-op: this interceptor is only ever installed on
+// a client (see [newClients]), and a plugin's client never serves as a
+// streaming handler.
+func (t *tokenClientInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
 }
 
 // maxSocketPathLen bounds a Unix socket path.

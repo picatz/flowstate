@@ -704,7 +704,15 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 	}
 
 	if len(p.Tasks) > 0 {
-		manifest.Capabilities = append(manifest.Capabilities, pluginv1.Capability_CAPABILITY_TASKS)
+		manifest.Capabilities = append(manifest.Capabilities,
+			pluginv1.Capability_CAPABILITY_TASKS,
+			// This package's own taskService always implements ExecuteStream
+			// (see its own method below), so every plugin built with this SDK
+			// can advertise the capability unconditionally — there is no
+			// author-facing switch to get wrong or forget, the same way an
+			// author cannot under-advertise CAPABILITY_TASKS itself.
+			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
+		)
 		for _, task := range p.Tasks {
 			entry, err := task.manifest()
 			if err != nil {
@@ -889,23 +897,58 @@ func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, 
 	return mux, nil
 }
 
-// requireToken refuses a request that does not carry the per-launch secret.
+// requireToken refuses a request that does not carry the per-launch secret,
+// whether it arrives through a unary or a streaming RPC.
+//
+// This has to be a full [connect.Interceptor], not a
+// [connect.UnaryInterceptorFunc]: the latter's WrapStreamingHandler is a
+// documented no-op, which is precisely how ExecuteStream shipped with no
+// authentication on this side either — a caller who could reach the socket
+// could invoke it, with any identity it cared to claim in the request, and
+// nothing here noticed. See authInterceptor in the plugin package
+// (transport.go) for the client-side half of the same mistake.
 //
 // The socket's directory is what keeps other users out; this is what keeps
 // anything that reaches the socket anyway from acting as the host. The
 // comparison is constant time because the alternative leaks the token one byte
 // at a time to whatever can retry.
 func requireToken(token func() string) connect.Interceptor {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			presented := req.Header().Get(protocol.TokenHeader)
-			if subtle.ConstantTimeCompare([]byte(presented), []byte(token())) != 1 {
-				return nil, connect.NewError(connect.CodePermissionDenied, errors.New(
-					"this plugin serves only the worker that launched it"))
-			}
-			return next(ctx, req)
+	return &tokenServerInterceptor{token: token}
+}
+
+// tokenServerInterceptor rejects any request, unary or streaming, that does
+// not present the per-launch token.
+type tokenServerInterceptor struct{ token func() string }
+
+func (t *tokenServerInterceptor) authorized(presented string) bool {
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(t.token())) == 1
+}
+
+func (t *tokenServerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if !t.authorized(req.Header().Get(protocol.TokenHeader)) {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New(
+				"this plugin serves only the worker that launched it"))
 		}
-	})
+		return next(ctx, req)
+	}
+}
+
+// WrapStreamingClient is a no-op: this interceptor is only ever installed on
+// a handler (see [Plugin.handler]), and a plugin never calls itself as a
+// streaming client.
+func (t *tokenServerInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (t *tokenServerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if !t.authorized(conn.RequestHeader().Get(protocol.TokenHeader)) {
+			return connect.NewError(connect.CodePermissionDenied, errors.New(
+				"this plugin serves only the worker that launched it"))
+		}
+		return next(ctx, conn)
+	}
 }
 
 // pluginService implements the capability handshake every plugin must serve.
@@ -1003,12 +1046,10 @@ type taskService struct {
 
 // Execute runs a task.
 func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1.ExecuteRequest]) (*connect.Response[pluginv1.ExecuteResponse], error) {
-	name := req.Msg.GetTask().GetName()
-
-	task, ok := s.tasks[name]
+	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(name, 64)))
+			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	// Installed on every call, whether or not the request named an identity:
@@ -1022,6 +1063,111 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	}
 
 	return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: outputs}), nil
+}
+
+// ExecuteStream runs a task exactly as Execute does, plus relaying the task's
+// own [flowstatev1.ReportProgress] calls to the host as they happen, rather
+// than only once the task is done.
+//
+// The relay is installed on ctx before Fn ever runs. Nothing here assumes Fn
+// calls it from only one goroutine — a [context.Context] is explicitly safe
+// for concurrent use, and so is [flowstatev1.ReportProgress], so a task that
+// fans work out across goroutines and reports from more than one of them is
+// working within the contract both already promise. A connect stream's Send
+// is not safe for concurrent use, so a mutex here is what makes this
+// handler's own promise — every report reaches the host, each one sent
+// whole and in the order its call to ReportProgress returned — true under
+// that contract rather than only under the common case of a task that
+// happens to report from a single goroutine.
+func (s *taskService) ExecuteStream(
+	ctx context.Context,
+	req *connect.Request[pluginv1.ExecuteStreamRequest],
+	stream *connect.ServerStream[pluginv1.ExecuteStreamResponse],
+) error {
+	task, ok := s.tasks[req.Msg.GetTask().GetName()]
+	if !ok {
+		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
+			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+	}
+
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
+
+	// Guards every Send on this stream, progress and terminal alike, and the
+	// sendErr short-circuit beside it — both are shared state a reporter
+	// invoked from more than one goroutine would otherwise touch without
+	// synchronization.
+	var (
+		mu      sync.Mutex
+		sendErr error
+	)
+	ctx = flowstatev1.ContextWithProgress(ctx, func(phase flowstatev1.Phase) {
+		wireVal, ok := phaseToWire(phase)
+		if !ok {
+			// Nothing outside this package can construct a flowstatev1.Phase
+			// that phaseToWire does not recognize — see that function's own
+			// doc comment — so this branch exists for the day a phase is
+			// added to progress.go and this mapping is not updated beside
+			// it, and it fails silent rather than sending a zero value the
+			// host would have to guess the meaning of.
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if sendErr != nil {
+			// A send has already failed once; the connection is gone, and
+			// every report after that would fail the identical way for the
+			// identical reason. Reporting progress must never be able to
+			// make a task retry or fail on its own — see ReportProgress's own
+			// doc comment — so this is silently dropped rather than
+			// escalated.
+			return
+		}
+		sendErr = stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Progress{
+				Progress: &pluginv1.TaskProgress{Phase: wireVal},
+			},
+		})
+	})
+
+	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	if err != nil {
+		return asConnectError(err)
+	}
+
+	// Fn has returned, so no goroutine it started should still be calling the
+	// reporter — but taking the same lock here, rather than sending directly,
+	// means a task that violates that (a leaked goroutine still reporting)
+	// cannot interleave a torn write with this one either.
+	mu.Lock()
+	defer mu.Unlock()
+
+	return stream.Send(&pluginv1.ExecuteStreamResponse{
+		Message: &pluginv1.ExecuteStreamResponse_Response{
+			Response: &pluginv1.ExecuteResponse{Outputs: outputs},
+		},
+	})
+}
+
+// phaseToWire maps a task's [flowstatev1.Phase] onto the plugin protocol's
+// own closed vocabulary, reporting false for a phase this SDK build predates
+// — which cannot happen for anything compiled against the same module, and
+// is handled rather than assumed away because a phase is a value, not a
+// literal, and this function must never guess at one it does not recognize.
+// See plugin.proto's TaskPhase for why the two enumerations must keep naming
+// the same set.
+func phaseToWire(phase flowstatev1.Phase) (pluginv1.TaskPhase, bool) {
+	switch phase {
+	case flowstatev1.PhaseRequesting:
+		return pluginv1.TaskPhase_TASK_PHASE_REQUESTING, true
+	case flowstatev1.PhaseReadingResponse:
+		return pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE, true
+	case flowstatev1.PhaseCallingPlugin:
+		return pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN, true
+	default:
+		return pluginv1.TaskPhase_TASK_PHASE_UNSPECIFIED, false
+	}
 }
 
 // truncate bounds text on its way into a response or an error.

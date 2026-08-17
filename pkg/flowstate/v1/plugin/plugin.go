@@ -525,7 +525,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	var known []pluginv1.Capability
 	for _, c := range manifest.GetCapabilities() {
 		switch c {
-		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS:
+		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS, pluginv1.Capability_CAPABILITY_TASK_PROGRESS:
 			if !slices.Contains(known, c) {
 				known = append(known, c)
 			}
@@ -548,6 +548,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 
 	secrets := slices.Contains(known, pluginv1.Capability_CAPABILITY_SECRETS)
 	tasks := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASKS)
+	taskProgress := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASK_PROGRESS)
 
 	switch {
 	case secrets && len(manifest.GetSchemes()) == 0:
@@ -560,6 +561,12 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	case !tasks && len(manifest.GetTasks()) > 0:
 		p.log.Warn("plugin lists tasks without advertising CAPABILITY_TASKS; they will not be registered",
 			"tasks", taskNames(manifest.GetTasks()))
+	case taskProgress && !tasks:
+		// Harmless rather than refused — nothing dispatches ExecuteStream for a
+		// plugin that has no tasks to run it against either way — but worth a
+		// line, since a manifest built by hand rather than by this package's
+		// own [sdk.Plugin.manifest] could set this without meaning to.
+		p.log.Warn("plugin advertises CAPABILITY_TASK_PROGRESS without CAPABILITY_TASKS, so it will never be asked")
 	}
 
 	if secrets {

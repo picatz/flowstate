@@ -74,6 +74,15 @@ func runFakePlugin() int {
 		return runErrorsPlugin()
 	}
 
+	// The progress-relay conformance fixture is likewise a real SDK plugin
+	// rather than a hand-rolled handler, for the identical reason: it exists
+	// to prove ReportProgress crosses the wire the SDK's own ExecuteStream
+	// handler serves, not a hand-built one — see
+	// [TestPluginProgressCrossesTheSubprocessBoundary].
+	if mode == "progress" {
+		return runProgressPlugin()
+	}
+
 	// Every fake exits when the host goes away, which is what a real plugin's
 	// SDK does and what the orphan tests rely on.
 	go exitWhenHostExits()
@@ -380,6 +389,20 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
+	case "hang-stream":
+		// Advertises tasks but no progress-streaming capability, since this
+		// fixture is reached only through [Plugin.TaskService]'s
+		// ExecuteStream directly (service.go), never through the manifest-
+		// driven dispatch in task.go that CAPABILITY_TASK_PROGRESS gates.
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
+		base.Tasks = []*pluginv1.TaskManifest{{
+			Name:          "hang_task",
+			Summary:       "a fake task whose stream never ends on its own",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
+		}}
+		return base, nil
+
 	case "scoped":
 		// Otherwise identical to the default fake below, except that it
 		// declares NeedsScope — which is what routes the durable driver to
@@ -613,6 +636,21 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 			},
 		},
 	}), nil
+}
+
+// ExecuteStream never sends anything and never returns on its own for the
+// "hang-stream" mode: it blocks until its context ends, the way a plugin
+// stuck mid-task — or one deliberately holding the call open — would. It
+// exists for [TestTaskServiceExecuteStreamIsBoundedByCallTimeout], which
+// proves [taskService.ExecuteStream] (service.go) cannot be held open past
+// Config.CallTimeout the way unary Execute's "slow" case above proves for
+// Execute.
+func (s *fakeTaskService) ExecuteStream(ctx context.Context, req *connect.Request[pluginv1.ExecuteStreamRequest], stream *connect.ServerStream[pluginv1.ExecuteStreamResponse]) error {
+	if s.mode != "hang-stream" {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("this fake does not stream"))
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // --- test-side helpers ---
