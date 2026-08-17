@@ -427,6 +427,41 @@ func TestRunWorkflowForEachTripCount(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowAtomicBlockBound covers the local driver's half of the
+// suspension-opaque fan-out ceiling, [v1.MaxAtomicBlockActivities]: the bound
+// on the items × body-activities product of a `for_each` the durable driver
+// runs with no Continue-As-New seam — one declaring `max_parallel:` above
+// one, or one written inside a `parallel:` branch.
+//
+// This driver runs iterations sequentially and has no history to protect; it
+// refuses anyway, at the identical pre-dispatch point with the identical
+// sentence, because a fan-out the rehearsal admits and production refuses is
+// the drivers disagreeing about what the file means. The same cases run
+// against the durable driver in the engine package, see the
+// identically-named test there.
+func TestRunWorkflowAtomicBlockBound(t *testing.T) {
+	for _, test := range conformance.ForEachAtomicBlockCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the atomic-activity ceiling must be refused")
+				// The same pieces the durable half asserts, in the same
+				// sentence: the step, the item count, the per-iteration count
+				// and the ceiling must not depend on where the workload ran.
+				require.Contains(t, err.Error(), `step "fan"`,
+					"the refusal must name the step")
+				for _, want := range conformance.AtomicBlockRefusalSubstrings() {
+					require.Contains(t, err.Error(), want,
+						"the refusal must name the counts and the ceiling")
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowCall covers `call:` in the local driver.
 //
 // The same cases run against the durable driver in the engine package — see

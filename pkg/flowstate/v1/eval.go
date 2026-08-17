@@ -1763,11 +1763,39 @@ func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, pla
 		return nil, err
 	}
 
-	if err := runNodes(ctx, body, scope, undo, placement, depth, tolerated); err != nil {
+	// enterAtomicBlock because the durable driver runs the taken body at
+	// `susp + 1` — a switch is never a suspension position — so a for_each
+	// written in a switch arm runs atomically there and is weighed here too
+	// ([CheckAtomicBlockActivities]).
+	if err := runNodes(enterAtomicBlock(ctx), body, scope, undo, placement, depth, tolerated); err != nil {
 		return nil, err
 	}
 
 	return outputs, nil
+}
+
+// atomicBlockKey marks a context as being inside work the durable driver runs
+// with no Continue-As-New seam: a `parallel:` branch, a loop body, or a
+// `switch:` arm. It is this driver's mirror of the engine's suspend depth
+// (`susp` in engine/execute.go): the engine increments that counter at exactly
+// the descents that mark this context, so "is this for_each atomic in
+// production" gets the same answer from both drivers. A context value rather
+// than a parameter for the reason the wait-reporting markers are
+// ([enterConcurrentWait]): the fact is monotone — nothing inside an atomic
+// stretch un-enters it, calls included — and every descent already threads a
+// context.
+type atomicBlockKey struct{}
+
+// enterAtomicBlock marks the context as suspension-opaque; see [atomicBlockKey].
+func enterAtomicBlock(ctx context.Context) context.Context {
+	return context.WithValue(ctx, atomicBlockKey{}, true)
+}
+
+// inAtomicBlock reports whether the durable driver would be unable to suspend
+// at this position — the local half of the engine's `susp > 0`.
+func inAtomicBlock(ctx context.Context) bool {
+	v, _ := ctx.Value(atomicBlockKey{}).(bool)
+	return v
 }
 
 // runForEach runs a loop body once per item.
@@ -1792,6 +1820,20 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		return nil, err
 	}
 
+	// A loop the durable driver would run as one atomic stretch of history —
+	// one declaring concurrency, or one reached where suspension is already
+	// illegal ([inAtomicBlock], the engine's `susp > 0`) — is weighed before
+	// anything runs, through the same [CheckAtomicBlockActivities] at the same
+	// point. This driver runs iterations sequentially and has no history to
+	// protect; it refuses anyway, because a fan-out the rehearsal admits and
+	// production refuses is the drivers disagreeing about what the file means,
+	// [CheckForEachItems]'s exact reasoning one bound over.
+	if loop.GetMaxParallel() > 1 || inAtomicBlock(ctx) {
+		if err := CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
+			return nil, err
+		}
+	}
+
 	name := IteratorName(loop)
 	iterations := make([]*Workflow_StepOutputs, 0, len(items))
 	resultsBytes := 0
@@ -1801,6 +1843,11 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 	// MaxParallel of one means later iterations were genuinely never started,
 	// on either driver, so stopping at the failure is the honest account.
 	var firstErr error
+
+	// The body runs where the durable driver cannot suspend — its runForEach
+	// passes `susp + 1` into every iteration — so a for_each nested in this
+	// body is atomic there and must be weighed here too.
+	bodyCtx := enterAtomicBlock(ctx)
 
 	for i, item := range items {
 		// Each iteration gets its own output scope, seeded with what was visible
@@ -1826,7 +1873,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// named `error` is never mistaken for a failure.
 		iterationUndo := NewUndoLog(nil)
 		toleratedSteps := map[string]struct{}{}
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
+		if err := runNodes(bodyCtx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
 			undo.Append(iterationUndo)
 			if loop.GetMaxParallel() > 1 {
 				// A concurrent fan-out launches every iteration before it can
@@ -1958,7 +2005,11 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// step that merely declares an output named `error` is never mistaken
 		// for a failure.
 		toleratedSteps := map[string]struct{}{}
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
+		// enterAtomicBlock because the durable driver's runLoop passes
+		// `susp + 1` into every iteration: a for_each written in a loop body
+		// runs atomically inside that iteration there, so it is weighed here
+		// too ([CheckAtomicBlockActivities]).
+		if err := runNodes(enterAtomicBlock(ctx), loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
@@ -2049,7 +2100,11 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		branchScope := scope.WithOutputs(branchOutputs)
 		branchUndo := NewUndoLog(nil)
 		branchUndos[i] = branchUndo
-		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
+		// enterAtomicBlock because the durable driver runs a branch at
+		// `susp + 1`: a for_each written inside a `parallel:` branch runs
+		// atomically there whatever its `max_parallel:` says, so it is
+		// weighed here too ([CheckAtomicBlockActivities]).
+		if err := runNodes(enterAtomicBlock(ctx), branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
 			// Branches are concurrent by declaration: the durable driver has
 			// launched every one of them before it can learn that any failed,
 			// then joins, merges every private log, and reports the first
