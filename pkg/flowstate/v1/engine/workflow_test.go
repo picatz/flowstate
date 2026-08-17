@@ -1575,6 +1575,67 @@ func TestToleratedFailureTextCarriesNoTransportWrapping(t *testing.T) {
 	}
 }
 
+// TestRunFailureMessageCarriesNoTransportWrapping is #788's negative
+// direction, pointed at the sentence [ErrRunFailed.Message] renders rather
+// than at the recorded ${steps.<id>.error} value
+// [TestToleratedFailureTextCarriesNoTransportWrapping] already covers.
+//
+// The two fail differently for the identical reason that test's own comment
+// gives: a regression that reintroduces the activity envelope would make the
+// message a person reads through `flow get`/`flow watch` grow a per-run event
+// id and a worker's pid — unstable in the one sentence whose whole job is
+// telling an author what happened, and read here through
+// [temporal.ApplicationError.Message], which is exactly what a real client
+// reads back (see [failureError]'s primary branch in server.go, which returns
+// this text unchanged).
+func TestRunFailureMessageCarriesNoTransportWrapping(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+
+	// The identical failure [TestToleratedFailureTextCarriesNoTransportWrapping]
+	// drives, minus `continue_on_error:` — so this fails the whole run instead
+	// of being tolerated, which is the one thing that test cannot exercise.
+	wf := &v1.Workflow{
+		Name: "run-failure-message-no-transport",
+		Steps: []*v1.Node{
+			{
+				Id: "flaky",
+				Kind: &v1.Node_Task{Task: &v1.Task{
+					Name:   "http",
+					Inputs: map[string]*v1.Value{"url": v1.NewValue(baseURL + "/status/404")},
+				}},
+			},
+		},
+	}
+
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf})
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err, "a step with no continue_on_error: must fail the run")
+
+	var app *temporal.ApplicationError
+	require.True(t, errors.As(err, &app),
+		"a terminal run failure must reach the client as an ApplicationError, got: %v", err)
+
+	message := app.Message()
+	require.Contains(t, message, `step "flaky"`, "the message must still say which step failed")
+	require.Contains(t, message, `task "http" failed`, "the message must still say what went wrong")
+
+	for _, leaked := range []string{
+		"activity error", "scheduledEventID", "startedEventID", "identity:", "retryable:", "Attempt", "attempt",
+	} {
+		require.NotContains(t, message, leaked,
+			"the run-level message carries %q from the transport that delivered it", leaked)
+	}
+}
+
 // TestRunWorkflowCall is the durable half of `call:` — see the local driver's
 // TestRunWorkflowCall. Isolation, argument scope, outputs under the step id, the
 // depth bound and a tolerated callee failure all have to hold here exactly as

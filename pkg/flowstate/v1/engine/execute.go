@@ -816,12 +816,97 @@ func (e *executor) runTask(node *v1.Node, task *v1.Task) error {
 		evalErr = e.dispatch(stepCtx, resolved, nil, needsAuthority, node.GetId(), node.GetPolicy().GetContinueOnError(), &out)
 	}
 	if evalErr != nil {
-		return nodeFailed(evalErr)
+		return nodeFailed(durableStepTimeoutMessage(evalErr, node.GetPolicy()))
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = &out
 	return nil
 }
+
+// durableStepTimeoutMessage translates a raw Temporal StartToClose or
+// ScheduleToClose timeout into the sentence CLAUDE.md's diagnostics standard
+// asks for — which budget expired, its value, and where the value came from —
+// in place of Temporal's own "activity StartToClose timeout (type:
+// StartToClose)".
+//
+// It wraps err rather than replacing it, and only for [ErrRunFailed.Message]:
+// [durableStepTimeoutError.Unwrap] returns err unchanged, so
+// [recordedStepError]'s envelope scrub for the recorded
+// `${steps.<id>.error}` value reaches straight through to the same
+// [temporal.ActivityError]/[temporal.TimeoutError] it already reads, and that
+// value — deliberately allowed to differ from the local driver's for a
+// timeout, per [StepTimeoutsFor]'s doc — is untouched by this.
+//
+// Only a plain Temporal timeout is translated. A task that classified its own
+// timeout into a [v1.TaskError] — an http task observing context deadline
+// exceeded, say — already said everything there is to say about why it
+// failed, and this must not overwrite that account with a guess about the
+// budget; the [temporal.ApplicationError] check below is what
+// [isUndoActivityTimeout]'s caller draws the identical line for on the undo
+// path, read here instead of there because a step's own policy — not a
+// compensation's narrowed budget — is what names the origin.
+func durableStepTimeoutMessage(err error, policy *v1.StepPolicy) error {
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		return err
+	}
+
+	var timeoutErr *temporal.TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		return err
+	}
+
+	origin := "the step default; set timeout: on the step to change it"
+	if policy.GetTimeout().AsDuration() > 0 {
+		origin = "the step's declared timeout:"
+	}
+
+	timeouts := v1.StepTimeoutsFor(policy, v1.DefaultStepTimeouts())
+
+	var budgeted string
+	switch timeoutErr.TimeoutType() {
+	case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
+		budgeted = fmt.Sprintf("one attempt exceeded %s", timeouts.StartToClose)
+	case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_CLOSE:
+		budgeted = fmt.Sprintf("every attempt together exceeded %s", timeouts.ScheduleToClose)
+	default:
+		// A schedule-to-start or heartbeat timeout names no per-step budget this
+		// engine sets, so there is nothing this can say beyond Temporal's own
+		// sentence — err reaches recordedStepError unchanged, exactly as it did
+		// before this translation existed.
+		return err
+	}
+
+	return &durableStepTimeoutError{
+		err:     err,
+		message: fmt.Sprintf("timed out: %s (%s)", budgeted, origin),
+	}
+}
+
+// durableStepTimeoutError carries [durableStepTimeoutMessage]'s translated
+// sentence alongside the untouched Temporal error, so the run-level Message
+// and the recorded `${steps.<id>.error}` value can each read what they are
+// meant to without one having to be reconstructed from the other.
+type durableStepTimeoutError struct {
+	err     error
+	message string
+}
+
+// Error returns the wrapped Temporal error's own text, unchanged — this type
+// exists to carry a second rendering alongside it (see runMessageText),
+// not to replace what err.Error() already answers, which nothing here reads.
+func (d *durableStepTimeoutError) Error() string { return d.err.Error() }
+
+// Unwrap reaches straight through to the Temporal error this wraps, which is
+// what keeps [recordedStepError] and [recordedStepKind]'s own errors.As calls
+// finding the same [temporal.ActivityError]/[temporal.TimeoutError] they
+// would have found without this wrapper in the way.
+func (d *durableStepTimeoutError) Unwrap() error { return d.err }
+
+// runMessageText is [failedAt]'s translated sentence for the run-level
+// Message, read only when err reaches it directly (not through a nested
+// [ErrRunFailed], which already carries its own).
+func (d *durableStepTimeoutError) runMessageText() string { return d.message }
 
 // dispatch schedules the activity for one resolved task.
 //
