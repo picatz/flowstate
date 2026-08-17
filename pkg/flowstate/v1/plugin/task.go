@@ -181,22 +181,30 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 // reports along the way to ctx's own reporter (see [flowstatev1.ReportProgress]),
 // and returns the terminal ExecuteResponse.
 //
-// It prefers ExecuteStream, which is the only path a plugin's own progress
-// reports can travel — but a plugin's binary may predate that RPC entirely,
-// and Connect answers a route nothing registered with CodeUnimplemented
-// (an unmatched route arrives as a bare HTTP 404, which the client maps onto
-// that code) before any of the plugin's own code has run, so that answer can
-// only mean "this plugin does not implement ExecuteStream", never "the task
-// failed". [Plugin.noProgressStream] remembers that the first time it
-// happens, so every later call to this plugin goes straight to Execute,
-// unary, rather than spending a request finding out again what cannot have
-// changed until the plugin is rebuilt.
+// Whether to attempt ExecuteStream at all is decided once, from the manifest
+// this plugin already described itself with — CAPABILITY_TASK_PROGRESS — never
+// by dialing the RPC and reading whatever error comes back.
+//
+// That is deliberate rather than an optimization avoiding a wasted round
+// trip. An unregistered route and a task's own application-level failure
+// that happens to classify as CodeUnimplemented are indistinguishable on the
+// wire: [sdk.asConnectError] passes an author's own *connect.Error straight
+// through, so a task can legitimately fail with that exact code after doing
+// real work — the same way [sdk.NotFound] fails with CodeNotFound. A host
+// that treated any CodeUnimplemented from ExecuteStream as "this plugin
+// predates the method" and retried on Execute, unary, would rerun such a
+// task's Fn a second time on the strength of an error the task deliberately
+// chose to return — corruption for a plugin whose task has side effects, and
+// exactly the shape of bug CLAUDE.md's rewriter section warns rewriting the
+// wrong scope always turns into. Reading the manifest is unambiguous: it is
+// what the plugin said before this or any other call happened, not something
+// inferred from how one call's failure happens to be coded.
 func (p *Plugin) executeTask(
 	ctx, callCtx context.Context,
 	inst *instance,
 	request *pluginv1.ExecuteRequest,
 ) (*pluginv1.ExecuteResponse, error) {
-	if p.noProgressStream.Load() {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_TASK_PROGRESS) {
 		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
 		if err != nil {
 			return nil, err
@@ -213,14 +221,6 @@ func (p *Plugin) executeTask(
 
 	stream, err := inst.clients.task.ExecuteStream(callCtx, connect.NewRequest(streamReq))
 	if err != nil {
-		if isUnimplemented(err) {
-			p.noProgressStream.Store(true)
-			resp, fallbackErr := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
-			if fallbackErr != nil {
-				return nil, fallbackErr
-			}
-			return resp.Msg, nil
-		}
 		return nil, err
 	}
 
@@ -245,20 +245,6 @@ func (p *Plugin) executeTask(
 	}
 
 	if err := stream.Err(); err != nil {
-		if isUnimplemented(err) {
-			// The plugin's mux answered for a route it never registered
-			// without reaching any of its own code — the generated
-			// UnimplementedTaskServiceHandler embed a plugin built before
-			// this method existed does not even carry — so nothing about the
-			// task has happened yet and running it again on the plain path
-			// is safe.
-			p.noProgressStream.Store(true)
-			resp, fallbackErr := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
-			if fallbackErr != nil {
-				return nil, fallbackErr
-			}
-			return resp.Msg, nil
-		}
 		return nil, err
 	}
 
@@ -267,17 +253,6 @@ func (p *Plugin) executeTask(
 	// produce — see the message's own doc comment in plugin.proto.
 	return nil, fmt.Errorf("plugin %q: task %q: ExecuteStream ended without a response",
 		p.name, request.GetTask().GetName())
-}
-
-// isUnimplemented reports whether err is the plugin protocol's own signal
-// that a route was never registered: a Connect client maps an unmatched
-// route's bare HTTP 404 onto CodeUnimplemented, which is also the code a
-// generated UnimplementedTaskServiceHandler embed answers with directly. A
-// caller cannot and need not tell those two paths apart — both mean the
-// plugin's binary does not serve this RPC, before any of its own code runs.
-func isUnimplemented(err error) bool {
-	code, ok := connectError(err)
-	return ok && code == connect.CodeUnimplemented
 }
 
 // reportWirePhase forwards a plugin's TaskPhase to ctx's own reporter, if it

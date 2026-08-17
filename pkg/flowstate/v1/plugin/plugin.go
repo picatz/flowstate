@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -180,20 +179,6 @@ type Plugin struct {
 	restarts  int
 	health    Health
 	telemetry telemetry
-
-	// noProgressStream records that this plugin's binary does not implement
-	// TaskService.ExecuteStream, once a call has found that out.
-	//
-	// Set at most once per binary, never cleared: whether ExecuteStream exists
-	// is a fact about the compiled plugin, not about the process currently
-	// serving it, so it survives a restart the same manifest does. Read and
-	// written without p.mu — a bool that only ever moves from false to true
-	// needs no more than atomicity, and taking the struct's lock on every task
-	// call to check it would contend a lock this call has no other reason to
-	// need. See [Plugin.taskFunc] in task.go for what it's for: skipping a
-	// stream attempt already known to answer Unimplemented, rather than
-	// re-probing every call.
-	noProgressStream atomic.Bool
 
 	supervisorDone chan struct{}
 	closeOnce      sync.Once
@@ -540,7 +525,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	var known []pluginv1.Capability
 	for _, c := range manifest.GetCapabilities() {
 		switch c {
-		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS:
+		case pluginv1.Capability_CAPABILITY_SECRETS, pluginv1.Capability_CAPABILITY_TASKS, pluginv1.Capability_CAPABILITY_TASK_PROGRESS:
 			if !slices.Contains(known, c) {
 				known = append(known, c)
 			}
@@ -563,6 +548,7 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 
 	secrets := slices.Contains(known, pluginv1.Capability_CAPABILITY_SECRETS)
 	tasks := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASKS)
+	taskProgress := slices.Contains(known, pluginv1.Capability_CAPABILITY_TASK_PROGRESS)
 
 	switch {
 	case secrets && len(manifest.GetSchemes()) == 0:
@@ -575,6 +561,12 @@ func (p *Plugin) checkManifest(manifest *pluginv1.PluginManifest) error {
 	case !tasks && len(manifest.GetTasks()) > 0:
 		p.log.Warn("plugin lists tasks without advertising CAPABILITY_TASKS; they will not be registered",
 			"tasks", taskNames(manifest.GetTasks()))
+	case taskProgress && !tasks:
+		// Harmless rather than refused — nothing dispatches ExecuteStream for a
+		// plugin that has no tasks to run it against either way — but worth a
+		// line, since a manifest built by hand rather than by this package's
+		// own [sdk.Plugin.manifest] could set this without meaning to.
+		p.log.Warn("plugin advertises CAPABILITY_TASK_PROGRESS without CAPABILITY_TASKS, so it will never be asked")
 	}
 
 	if secrets {

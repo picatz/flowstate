@@ -2,14 +2,18 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
@@ -46,17 +50,53 @@ func runProgressPlugin() int {
 		Name:        "progress",
 		Version:     "0.0.1",
 		Description: "a fixture plugin that reports progress before returning",
-		Tasks: []sdk.Task{{
-			Name:    "reporting",
-			Summary: "reports two phases, in order, before returning",
-			Input:   &flowstatev1.Task_Log_Inputs{},
-			Output:  &flowstatev1.Task_Log_Outputs{},
-			Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
-				flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
-				flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
-				return &flowstatev1.Node_Outputs{}, nil
+		Tasks: []sdk.Task{
+			{
+				Name:    "reporting",
+				Summary: "reports two phases, in order, before returning",
+				Input:   &flowstatev1.Task_Log_Inputs{},
+				Output:  &flowstatev1.Task_Log_Outputs{},
+				Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+					flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
+					flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
+					return &flowstatev1.Node_Outputs{}, nil
+				},
 			},
-		}},
+			{
+				// app_unimplemented is the fixture TestExecuteStreamNeverRerunsATaskOnItsOwnApplicationError
+				// exercises: it does real, observable work — appending a line to
+				// the file its "message" input names — and then fails with the
+				// exact Connect code (CodeUnimplemented) an unregistered
+				// ExecuteStream route would also answer with. A host that told
+				// the two apart by error code alone would rerun this Fn a second
+				// time on the strength of an error it deliberately chose to
+				// return, which is exactly what CAPABILITY_TASK_PROGRESS-based
+				// dispatch (rather than probe-and-fallback) exists to make
+				// impossible: see [Plugin.executeTask]'s own doc comment.
+				Name:    "app_unimplemented",
+				Summary: "does real work, then fails with CodeUnimplemented on purpose",
+				Input:   &flowstatev1.Task_Log_Inputs{},
+				Output:  &flowstatev1.Task_Log_Outputs{},
+				Fn: func(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+					path := inputs["message"].GetLiteral().GetStringValue()
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+					if err != nil {
+						return nil, err
+					}
+					_, writeErr := f.WriteString("ran\n")
+					closeErr := f.Close()
+					if writeErr != nil {
+						return nil, writeErr
+					}
+					if closeErr != nil {
+						return nil, closeErr
+					}
+
+					return nil, connect.NewError(connect.CodeUnimplemented,
+						errors.New("this backend does not support this operation"))
+				},
+			},
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "progress fixture: %v\n", err)
@@ -146,19 +186,20 @@ func TestPluginProgressCrossesTheSubprocessBoundary(t *testing.T) {
 // was fixed — one fixed phase, PhaseCallingPlugin, for the call's whole
 // duration, and nothing else.
 //
-// The "ok" fixture plugin (helper_test.go's fakeTaskService) never overrides
-// ExecuteStream, so it answers through the generated
-// UnimplementedTaskServiceHandler embed — CodeUnimplemented, without any of
-// its own code running — which is what a plugin built before this issue's
-// fix looks like from the host's side of the wire: a route nothing
-// registered. [Plugin.executeTask] must fall back to Execute, unary, exactly
-// as every call went before ExecuteStream existed.
+// The "ok" fixture plugin (helper_test.go's fakeTaskService) never
+// advertises CAPABILITY_TASK_PROGRESS, which is what a plugin built before
+// this issue's fix looks like from the host's side: [Plugin.executeTask]
+// reads that once, from the manifest, and never attempts ExecuteStream for
+// this plugin at all — calling Execute, unary, exactly as every call went
+// before ExecuteStream existed.
 func TestPluginThatNeverReportsProgressIsUnaffected(t *testing.T) {
 	t.Parallel()
 
 	host := openHost(t, testConfig(t, pluginDir(t, "ok")))
 	p, ok := host.Lookup("ok")
 	require.True(t, ok, "plugin was not launched")
+	require.False(t, p.HasCapability(pluginv1.Capability_CAPABILITY_TASK_PROGRESS),
+		"the fixture must not advertise the capability, or this test is not exercising the fallback path")
 
 	def := findTaskDef(t, host, "ok.ok_task")
 
@@ -170,26 +211,50 @@ func TestPluginThatNeverReportsProgressIsUnaffected(t *testing.T) {
 	}, nil)
 	require.NoError(t, err, "executing the plugin task")
 	assert.Equal(t, "hi", outputs.GetNamedValues()["result"].GetLiteral().GetStringValue(),
-		"the task's own result did not survive the fallback path")
+		"the task's own result did not survive the plain Execute path")
 
 	assert.Equal(t,
 		[]flowstatev1.Phase{flowstatev1.PhaseCallingPlugin},
 		reporter.recorded(),
 		"a plugin that never reports progress must show exactly the phase the host always reported, nothing more",
 	)
+}
 
-	assert.True(t, p.noProgressStream.Load(),
-		"the host should have learned this plugin does not implement ExecuteStream, so later calls skip straight to Execute")
+// TestExecuteStreamNeverRerunsATaskOnItsOwnApplicationError is Codex's review
+// finding on this PR (picatz/flowstate#803): a task built with the SDK is
+// free to fail an RPC with connect.CodeUnimplemented directly — the same code
+// an unregistered ExecuteStream route answers with — after doing real,
+// non-idempotent work. A host that used the error code alone to decide
+// "this plugin does not implement ExecuteStream, retry on Execute" would run
+// that task's Fn a second time on the strength of an error the task chose on
+// purpose. [Plugin.executeTask] reads CAPABILITY_TASK_PROGRESS from the
+// manifest instead of probing, so this never happens; this test proves it by
+// counting how many times the fixture task's side effect actually occurred.
+func TestExecuteStreamNeverRerunsATaskOnItsOwnApplicationError(t *testing.T) {
+	t.Parallel()
 
-	// A second call proves the cached answer is actually used, not merely
-	// set: with noProgressStream true, executeTask never attempts
-	// ExecuteStream again, so this exercises the plain Execute path directly
-	// rather than re-discovering the same Unimplemented every time.
-	reporter2 := &recordingReporter{}
-	ctx2 := flowstatev1.ContextWithProgress(t.Context(), reporter2.report)
-	_, err = def.Fn(ctx2, map[string]*flowstatev1.Value{
-		"message": flowstatev1.NewLiteral("again"),
+	host := openHost(t, testConfig(t, pluginDir(t, "progress")))
+	p, ok := host.Lookup("progress")
+	require.True(t, ok, "plugin was not launched")
+	require.True(t, p.HasCapability(pluginv1.Capability_CAPABILITY_TASK_PROGRESS),
+		"the fixture must advertise the capability, or this test is not exercising ExecuteStream at all")
+
+	def := findTaskDef(t, host, "progress.app_unimplemented")
+
+	counter := filepath.Join(t.TempDir(), "ran")
+
+	_, err := def.Fn(t.Context(), map[string]*flowstatev1.Value{
+		"message": flowstatev1.NewLiteral(counter),
 	}, nil)
-	require.NoError(t, err, "executing the plugin task a second time")
-	assert.Equal(t, []flowstatev1.Phase{flowstatev1.PhaseCallingPlugin}, reporter2.recorded())
+	require.Error(t, err, "the task was supposed to fail")
+
+	var connectErr *connect.Error
+	require.ErrorAs(t, err, &connectErr, "the task's own connect.Error must survive to the caller")
+	assert.Equal(t, connect.CodeUnimplemented, connectErr.Code(),
+		"the task's own chosen code must reach the caller unchanged")
+
+	data, readErr := os.ReadFile(counter)
+	require.NoError(t, readErr, "the task's side effect never ran at all")
+	assert.Equal(t, "ran\n", string(data),
+		"the task's Fn ran more than once: its own CodeUnimplemented was mistaken for a missing route")
 }

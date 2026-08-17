@@ -38,6 +38,28 @@ const (
 	Capability_CAPABILITY_SECRETS Capability = 1
 	// Provides tasks that workflow steps can run. See TaskService.
 	Capability_CAPABILITY_TASKS Capability = 2
+	// Serves TaskService.ExecuteStream, meaningful only alongside
+	// CAPABILITY_TASKS.
+	//
+	// This is what the host asks instead of finding out by calling: a plugin
+	// that has not rebuilt against a version of the SDK new enough to answer
+	// ExecuteStream leaves this capability off its manifest, and the host
+	// dispatches every task on this plugin through the unary Execute it always
+	// called before ExecuteStream existed — deciding once, at Describe, rather
+	// than probing per call.
+	//
+	// Answering by dialing the RPC and reading the error would not work: an
+	// unregistered route and a task's own application-level failure that
+	// happens to classify as CodeUnimplemented are indistinguishable on the
+	// wire (`connect.CodeUnimplemented` either way — see
+	// asConnectError's pass-through of an author's own *connect.Error in
+	// plugin/sdk/errors.go), and a task can legitimately return that code
+	// after doing real work. A probe-then-fallback host would rerun such a
+	// task's Fn a second time on the strength of an error the task deliberately
+	// chose, which is corruption for a plugin whose task has side effects.
+	// Declaring the capability up front removes the ambiguity entirely: the
+	// host never attempts a call whose outcome it would have to reinterpret.
+	Capability_CAPABILITY_TASK_PROGRESS Capability = 3
 )
 
 // Enum value maps for Capability.
@@ -46,11 +68,13 @@ var (
 		0: "CAPABILITY_UNSPECIFIED",
 		1: "CAPABILITY_SECRETS",
 		2: "CAPABILITY_TASKS",
+		3: "CAPABILITY_TASK_PROGRESS",
 	}
 	Capability_value = map[string]int32{
-		"CAPABILITY_UNSPECIFIED": 0,
-		"CAPABILITY_SECRETS":     1,
-		"CAPABILITY_TASKS":       2,
+		"CAPABILITY_UNSPECIFIED":   0,
+		"CAPABILITY_SECRETS":       1,
+		"CAPABILITY_TASKS":         2,
+		"CAPABILITY_TASK_PROGRESS": 3,
 	}
 )
 
@@ -1302,12 +1326,13 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\tretryable\x18\x02 \x01(\bR\tretryable\x12'\n" +
 	"\x0funknown_outcome\x18\x03 \x01(\bR\x0eunknownOutcome\x12:\n" +
 	"\vretry_after\x18\x04 \x01(\v2\x19.google.protobuf.DurationR\n" +
-	"retryAfter*V\n" +
+	"retryAfter*t\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12CAPABILITY_SECRETS\x10\x01\x12\x14\n" +
-	"\x10CAPABILITY_TASKS\x10\x02*\x82\x01\n" +
+	"\x10CAPABILITY_TASKS\x10\x02\x12\x1c\n" +
+	"\x18CAPABILITY_TASK_PROGRESS\x10\x03*\x82\x01\n" +
 	"\tTaskPhase\x12\x1a\n" +
 	"\x16TASK_PHASE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15TASK_PHASE_REQUESTING\x10\x01\x12\x1f\n" +

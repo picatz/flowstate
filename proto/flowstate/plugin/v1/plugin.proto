@@ -59,6 +59,29 @@ enum Capability {
 
   // Provides tasks that workflow steps can run. See TaskService.
   CAPABILITY_TASKS = 2;
+
+  // Serves TaskService.ExecuteStream, meaningful only alongside
+  // CAPABILITY_TASKS.
+  //
+  // This is what the host asks instead of finding out by calling: a plugin
+  // that has not rebuilt against a version of the SDK new enough to answer
+  // ExecuteStream leaves this capability off its manifest, and the host
+  // dispatches every task on this plugin through the unary Execute it always
+  // called before ExecuteStream existed — deciding once, at Describe, rather
+  // than probing per call.
+  //
+  // Answering by dialing the RPC and reading the error would not work: an
+  // unregistered route and a task's own application-level failure that
+  // happens to classify as CodeUnimplemented are indistinguishable on the
+  // wire (`connect.CodeUnimplemented` either way — see
+  // asConnectError's pass-through of an author's own *connect.Error in
+  // plugin/sdk/errors.go), and a task can legitimately return that code
+  // after doing real work. A probe-then-fallback host would rerun such a
+  // task's Fn a second time on the strength of an error the task deliberately
+  // chose, which is corruption for a plugin whose task has side effects.
+  // Declaring the capability up front removes the ambiguity entirely: the
+  // host never attempts a call whose outcome it would have to reinterpret.
+  CAPABILITY_TASK_PROGRESS = 3;
 }
 
 // PluginManifest is what a plugin says about itself.
@@ -361,28 +384,29 @@ service TaskService {
   // followed by exactly one terminal ExecuteResponse, rather than waiting on
   // one response for the call's whole duration.
   //
+  // The host calls this only for a plugin that advertised
+  // CAPABILITY_TASK_PROGRESS, and calls Execute, unary, for one that did not
+  // — see that capability's own doc comment for why the choice is made once,
+  // from the manifest, rather than discovered by dialing this RPC and reading
+  // whatever error comes back.
+  //
   // # Why a second RPC rather than changing Execute
   //
-  // Adding an RPC is additive — an old plugin that never heard of this method
-  // answers with Connect's own Unimplemented, which the host reads as "this
-  // plugin predates progress relay" and falls back to Execute, unary, exactly
-  // as it called before this method existed (see [Plugin.taskFunc] in
-  // plugin/task.go for the fallback, and how the host remembers the answer
-  // per plugin rather than re-probing on every call). Changing Execute
-  // itself to stream would be the opposite: every plugin that only
-  // implements the old shape — in this repository's own three other plugin
-  // modules or in any language a third party wrote one in — would stop
-  // answering the call the engine makes to run its tasks at all. That is the
-  // same "a break here is every plugin in the wild" reasoning CLAUDE.md
-  // already gives for `buf breaking`, applied to a change that check cannot
-  // see: it lints message and field compatibility, not whether an RPC's
-  // streaming type changed.
+  // Adding an RPC is additive — a plugin that never advertises
+  // CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
+  // this at all. Changing Execute itself to stream would be the opposite:
+  // every plugin that only implements the old shape — in this repository's
+  // own three other plugin modules or in any language a third party wrote
+  // one in — would stop answering the call the engine makes to run its tasks
+  // at all. That is the same "a break here is every plugin in the wild"
+  // reasoning CLAUDE.md already gives for `buf breaking`, applied to a
+  // change that check cannot see: it lints message and field compatibility,
+  // not whether an RPC's streaming type changed.
   //
   // Best-effort, like the progress report it exists to carry: a plugin that
-  // never calls ReportProgress sends only the terminal message, and the host
-  // treats that exactly as it treats a plugin that never implemented this
-  // RPC at all — one fixed phase for the call's whole duration, the behavior
-  // that predates this method.
+  // never calls ReportProgress sends only the terminal message, which reads
+  // to the host exactly as it always has — one fixed phase for the call's
+  // whole duration.
   rpc ExecuteStream(ExecuteStreamRequest) returns (stream ExecuteStreamResponse) {}
 }
 

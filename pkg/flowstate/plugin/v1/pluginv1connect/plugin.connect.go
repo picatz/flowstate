@@ -240,28 +240,29 @@ type TaskServiceClient interface {
 	// followed by exactly one terminal ExecuteResponse, rather than waiting on
 	// one response for the call's whole duration.
 	//
+	// The host calls this only for a plugin that advertised
+	// CAPABILITY_TASK_PROGRESS, and calls Execute, unary, for one that did not
+	// — see that capability's own doc comment for why the choice is made once,
+	// from the manifest, rather than discovered by dialing this RPC and reading
+	// whatever error comes back.
+	//
 	// # Why a second RPC rather than changing Execute
 	//
-	// Adding an RPC is additive — an old plugin that never heard of this method
-	// answers with Connect's own Unimplemented, which the host reads as "this
-	// plugin predates progress relay" and falls back to Execute, unary, exactly
-	// as it called before this method existed (see [Plugin.taskFunc] in
-	// plugin/task.go for the fallback, and how the host remembers the answer
-	// per plugin rather than re-probing on every call). Changing Execute
-	// itself to stream would be the opposite: every plugin that only
-	// implements the old shape — in this repository's own three other plugin
-	// modules or in any language a third party wrote one in — would stop
-	// answering the call the engine makes to run its tasks at all. That is the
-	// same "a break here is every plugin in the wild" reasoning CLAUDE.md
-	// already gives for `buf breaking`, applied to a change that check cannot
-	// see: it lints message and field compatibility, not whether an RPC's
-	// streaming type changed.
+	// Adding an RPC is additive — a plugin that never advertises
+	// CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
+	// this at all. Changing Execute itself to stream would be the opposite:
+	// every plugin that only implements the old shape — in this repository's
+	// own three other plugin modules or in any language a third party wrote
+	// one in — would stop answering the call the engine makes to run its tasks
+	// at all. That is the same "a break here is every plugin in the wild"
+	// reasoning CLAUDE.md already gives for `buf breaking`, applied to a
+	// change that check cannot see: it lints message and field compatibility,
+	// not whether an RPC's streaming type changed.
 	//
 	// Best-effort, like the progress report it exists to carry: a plugin that
-	// never calls ReportProgress sends only the terminal message, and the host
-	// treats that exactly as it treats a plugin that never implemented this
-	// RPC at all — one fixed phase for the call's whole duration, the behavior
-	// that predates this method.
+	// never calls ReportProgress sends only the terminal message, which reads
+	// to the host exactly as it always has — one fixed phase for the call's
+	// whole duration.
 	ExecuteStream(context.Context, *connect.Request[v1.ExecuteStreamRequest]) (*connect.ServerStreamForClient[v1.ExecuteStreamResponse], error)
 }
 
@@ -315,28 +316,29 @@ type TaskServiceHandler interface {
 	// followed by exactly one terminal ExecuteResponse, rather than waiting on
 	// one response for the call's whole duration.
 	//
+	// The host calls this only for a plugin that advertised
+	// CAPABILITY_TASK_PROGRESS, and calls Execute, unary, for one that did not
+	// — see that capability's own doc comment for why the choice is made once,
+	// from the manifest, rather than discovered by dialing this RPC and reading
+	// whatever error comes back.
+	//
 	// # Why a second RPC rather than changing Execute
 	//
-	// Adding an RPC is additive — an old plugin that never heard of this method
-	// answers with Connect's own Unimplemented, which the host reads as "this
-	// plugin predates progress relay" and falls back to Execute, unary, exactly
-	// as it called before this method existed (see [Plugin.taskFunc] in
-	// plugin/task.go for the fallback, and how the host remembers the answer
-	// per plugin rather than re-probing on every call). Changing Execute
-	// itself to stream would be the opposite: every plugin that only
-	// implements the old shape — in this repository's own three other plugin
-	// modules or in any language a third party wrote one in — would stop
-	// answering the call the engine makes to run its tasks at all. That is the
-	// same "a break here is every plugin in the wild" reasoning CLAUDE.md
-	// already gives for `buf breaking`, applied to a change that check cannot
-	// see: it lints message and field compatibility, not whether an RPC's
-	// streaming type changed.
+	// Adding an RPC is additive — a plugin that never advertises
+	// CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
+	// this at all. Changing Execute itself to stream would be the opposite:
+	// every plugin that only implements the old shape — in this repository's
+	// own three other plugin modules or in any language a third party wrote
+	// one in — would stop answering the call the engine makes to run its tasks
+	// at all. That is the same "a break here is every plugin in the wild"
+	// reasoning CLAUDE.md already gives for `buf breaking`, applied to a
+	// change that check cannot see: it lints message and field compatibility,
+	// not whether an RPC's streaming type changed.
 	//
 	// Best-effort, like the progress report it exists to carry: a plugin that
-	// never calls ReportProgress sends only the terminal message, and the host
-	// treats that exactly as it treats a plugin that never implemented this
-	// RPC at all — one fixed phase for the call's whole duration, the behavior
-	// that predates this method.
+	// never calls ReportProgress sends only the terminal message, which reads
+	// to the host exactly as it always has — one fixed phase for the call's
+	// whole duration.
 	ExecuteStream(context.Context, *connect.Request[v1.ExecuteStreamRequest], *connect.ServerStream[v1.ExecuteStreamResponse]) error
 }
 

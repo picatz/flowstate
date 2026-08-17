@@ -704,7 +704,15 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 	}
 
 	if len(p.Tasks) > 0 {
-		manifest.Capabilities = append(manifest.Capabilities, pluginv1.Capability_CAPABILITY_TASKS)
+		manifest.Capabilities = append(manifest.Capabilities,
+			pluginv1.Capability_CAPABILITY_TASKS,
+			// This package's own taskService always implements ExecuteStream
+			// (see its own method below), so every plugin built with this SDK
+			// can advertise the capability unconditionally — there is no
+			// author-facing switch to get wrong or forget, the same way an
+			// author cannot under-advertise CAPABILITY_TASKS itself.
+			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
+		)
 		for _, task := range p.Tasks {
 			entry, err := task.manifest()
 			if err != nil {
@@ -1026,12 +1034,16 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 // own [flowstatev1.ReportProgress] calls to the host as they happen, rather
 // than only once the task is done.
 //
-// The relay is installed on ctx before Fn ever runs, and torn down as soon as
-// Fn returns — a stream.Send call after that would race the terminal message
-// this handler sends next, with nothing left reading its result. Fn runs on
-// this same goroutine, so every report a task makes is sent synchronously,
-// in the order the task made it, with no buffering and no goroutine of its
-// own to leak.
+// The relay is installed on ctx before Fn ever runs. Nothing here assumes Fn
+// calls it from only one goroutine — a [context.Context] is explicitly safe
+// for concurrent use, and so is [flowstatev1.ReportProgress], so a task that
+// fans work out across goroutines and reports from more than one of them is
+// working within the contract both already promise. A connect stream's Send
+// is not safe for concurrent use, so a mutex here is what makes this
+// handler's own promise — every report reaches the host, each one sent
+// whole and in the order its call to ReportProgress returned — true under
+// that contract rather than only under the common case of a task that
+// happens to report from a single goroutine.
 func (s *taskService) ExecuteStream(
 	ctx context.Context,
 	req *connect.Request[pluginv1.ExecuteStreamRequest],
@@ -1045,20 +1057,15 @@ func (s *taskService) ExecuteStream(
 
 	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
 
-	// sendErr is read only after Fn has returned, by this same goroutine, so
-	// it needs no synchronization despite being written from inside the
-	// reporter closure Fn calls back into.
-	var sendErr error
+	// Guards every Send on this stream, progress and terminal alike, and the
+	// sendErr short-circuit beside it — both are shared state a reporter
+	// invoked from more than one goroutine would otherwise touch without
+	// synchronization.
+	var (
+		mu      sync.Mutex
+		sendErr error
+	)
 	ctx = flowstatev1.ContextWithProgress(ctx, func(phase flowstatev1.Phase) {
-		if sendErr != nil {
-			// A send has already failed once; the connection is gone, and
-			// every report after that would fail the identical way for the
-			// identical reason. Reporting progress must never be able to
-			// make a task retry or fail on its own — see ReportProgress's own
-			// doc comment — so this is silently dropped rather than
-			// escalated.
-			return
-		}
 		wireVal, ok := phaseToWire(phase)
 		if !ok {
 			// Nothing outside this package can construct a flowstatev1.Phase
@@ -1067,6 +1074,19 @@ func (s *taskService) ExecuteStream(
 			// added to progress.go and this mapping is not updated beside
 			// it, and it fails silent rather than sending a zero value the
 			// host would have to guess the meaning of.
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if sendErr != nil {
+			// A send has already failed once; the connection is gone, and
+			// every report after that would fail the identical way for the
+			// identical reason. Reporting progress must never be able to
+			// make a task retry or fail on its own — see ReportProgress's own
+			// doc comment — so this is silently dropped rather than
+			// escalated.
 			return
 		}
 		sendErr = stream.Send(&pluginv1.ExecuteStreamResponse{
@@ -1080,6 +1100,13 @@ func (s *taskService) ExecuteStream(
 	if err != nil {
 		return asConnectError(err)
 	}
+
+	// Fn has returned, so no goroutine it started should still be calling the
+	// reporter — but taking the same lock here, rather than sending directly,
+	// means a task that violates that (a leaked goroutine still reporting)
+	// cannot interleave a torn write with this one either.
+	mu.Lock()
+	defer mu.Unlock()
 
 	return stream.Send(&pluginv1.ExecuteStreamResponse{
 		Message: &pluginv1.ExecuteStreamResponse_Response{
