@@ -12,7 +12,21 @@
 //
 // Neither direction uses a shared secret. That is the point: a deployment holds
 // one signing key, publishes the public half, and everything else is a trust
-// relationship an operator can read, review, and revoke.
+// relationship an operator can read and review. The two directions differ in
+// how withdrawing that trust takes effect. Outbound, reviewing it is
+// prospective, not retroactive: withdrawing an issuer or narrowing a policy
+// stops [Broker] from minting further assertions or exchanging them for new
+// credentials, but does nothing to an assertion or exchanged credential
+// already issued within its lifetime — there is no revocation of those (see
+// THREAT_MODEL.md, "The issuer as a single point of failure" and "Non-goals
+// and honest gaps"). Short assertion and credential lifetimes are what bound
+// that exposure. Inbound is different: [OIDCVerifier] checks issuer
+// membership and claim rules against the [Policy] it was built with, and it
+// checks them on every request, not only at token mint time. Removing an
+// issuer or tightening a claim rule and reconstructing the verifier with the
+// new policy does invalidate access for previously-valid inbound tokens,
+// starting with the next request each one presents — even though the token
+// itself, as a JWT, is not and cannot be revoked.
 //
 // # Inbound: authenticating callers
 //

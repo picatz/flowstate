@@ -18,6 +18,20 @@ pipelines with approval gates, and scheduled maintenance work.
 [Temporal]: https://temporal.io/
 [durable execution]: https://docs.temporal.io/temporal#durable-execution
 
+Hand-rolled Temporal gives you the durable execution but leaves policy, egress
+control, secret handling, and the authoring surface to build yourself, workflow by
+workflow, in Go. Airflow gives you an authoring surface and a scheduler, but its
+retries and state live at the DAG level, not inside a durably-resumable step, so a
+long wait or a worker crash mid-task is a different problem than the one it was
+built to solve. Flowstate keeps Temporal's durability, replaces hand-written Go
+workflow code with a typed, checkable specification, and puts signal
+authorization in the file the workload's author already owns rather than in a
+separate system they have to keep in sync. Egress and secret access are
+governed the same way, in CEL, but by the operator: a worker's separate
+`--egress-policy` and `--auth-policy` files, not the Flowfile. See
+[docs/USE_CASES.md](docs/USE_CASES.md) for four worked examples of what that buys
+in practice.
+
 ## See it work
 
 A deploy that waits for a human to approve it, however long that takes. Nothing holds
@@ -255,6 +269,8 @@ Both are in the [Reference](#reference) below.
 - **An agent using Flowstate?** `flow mcp` serves the same surface over stdio:
   validate, compile, run locally, run durably, all without a Go compiler in the loop.
   See [flow mcp: the same surface, for an agent](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent).
+- **Deciding whether Flowstate fits?** [docs/USE_CASES.md](docs/USE_CASES.md) walks
+  four worked enterprise examples end to end.
 
 ## Quickstart
 
@@ -270,6 +286,10 @@ NEXT
   flow run local my-pipeline/workflow.yaml
   flow test my-pipeline
 
+  then, durably, in two commands:
+  flow server dev
+  flow run my-pipeline/workflow.yaml
+
 $ go run ./cmd/flow run local my-pipeline/workflow.yaml
 running locally
 INFO hello, world
@@ -277,6 +297,7 @@ COMPLETED workflow my-pipeline
 
 $ go run ./cmd/flow test my-pipeline
 PASS  my-pipeline/workflow.test.yaml: the greeting uses the input it was given
+my-pipeline/workflow.test.yaml  1/1 steps reached
 ```
 
 That is the whole of the local loop, and it is worth rehearsing with: the two drivers
@@ -484,3 +505,7 @@ prerequisite. A credential is never sent over plain HTTP to anywhere but this
 machine. `flow` refuses rather than warns, unless an operator sets
 `FLOWSTATE_INSECURE_PLAINTEXT_TOKEN=true` to say that something else (a sidecar, a
 service mesh) is terminating TLS in front of it.
+
+## License
+
+[MIT](LICENSE).
