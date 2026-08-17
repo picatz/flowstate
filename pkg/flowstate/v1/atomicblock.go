@@ -97,11 +97,14 @@ func AtomicBlockActivitiesError(items, perIteration, max int) error {
 // exact reasoning.
 //
 // The body is weighed at its static worst case: every task counts whatever
-// its `if:` would decide, a `switch:` counts its widest arm, a `call:`
-// counts its callee's steps, and a nested loop counts its iteration ceiling
-// times its own body ([MaxForEachItems] for a nested `for_each`, whose trip
-// count is an expression this walk cannot evaluate; [LoopMaxIterations] for
-// a nested `loop:`). That refuses some specifications whose taken branches
+// its `if:` would decide — twice when it declares an `undo:`, since the
+// compensation is a second activity the same execution schedules when the
+// run unwinds — a wait counts one, because a durable timer's events are
+// history too, a `switch:` counts its widest arm, a `call:` counts its
+// callee's steps, and a nested loop counts its iteration ceiling times its
+// own body ([MaxForEachItems] for a nested `for_each`, whose trip count is
+// an expression this walk cannot evaluate; [LoopMaxIterations] for a nested
+// `loop:`). That refuses some specifications whose taken branches
 // would have fit, which is size.go's trade made on size.go's grounds: the
 // alternative to refusing a little early is not "it fits", it is a
 // termination that skips compensation. Fails closed in the other direction
@@ -144,7 +147,24 @@ func worstCaseActivities(nodes []*Node, nodesLeft *int, callDepth int) int {
 		case *Node_Task:
 			// Counted whatever the step's `if:` would decide: a condition is
 			// evaluated per iteration against a scope this walk cannot see,
-			// so the worst case is that every guard holds.
+			// so the worst case is that every guard holds. A task declaring
+			// `undo:` counts twice, because its compensation is a second
+			// activity scheduled in the same execution when the run unwinds
+			// — and the unwind is precisely what this bound exists to keep
+			// reachable: a fan-out sized so that only its forward half fits
+			// recreates the termination-skips-compensation ending during the
+			// rollback itself.
+			total = satAdd(total, 1)
+			if node.GetUndo() != nil {
+				total = satAdd(total, 1)
+			}
+		case *Node_Wait:
+			// Not an activity, but not free history either: a durable sleep
+			// is a Temporal timer (started and fired are both events), and a
+			// signal wait records what wakes it. Counted as one so a body of
+			// waits cannot multiply an unbounded number of timers into one
+			// atomic stretch under a bound that assumed fixed headroom
+			// covered them.
 			total = satAdd(total, 1)
 		case *Node_ForEach:
 			// A nested for_each's trip count is an expression, unknowable
@@ -187,9 +207,8 @@ func worstCaseActivities(nodes []*Node, nodesLeft *int, callDepth int) int {
 			// steps join the block being weighed.
 			total = satAdd(total, worstCaseActivities(callee.GetSteps(), nodesLeft, nextDepth))
 		}
-		// Wait and value nodes schedule no activity: a value is evaluated in
-		// workflow code, and a wait is timers and signals, which the
-		// constant's headroom already leaves room for.
+		// A value node counts nothing: it is an expression evaluated in
+		// workflow code, writing no command into history.
 
 		if total >= atomicBlockSaturated {
 			return atomicBlockSaturated

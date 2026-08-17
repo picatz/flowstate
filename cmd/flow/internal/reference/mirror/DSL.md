@@ -3410,7 +3410,10 @@ the same pre-dispatch moment `v1.CheckForEachItems` runs, and refuse the crossin
 with one shared sentence naming the step, the item count, the per-iteration count
 and the ceiling (`v1.AtomicBlockActivitiesError`). The body is weighed at static
 worst case — a `switch:` counts its widest arm, a `call:` its callee, a nested loop
-its ceiling times its body, and an `if:` is assumed to hold — which refuses some
+its ceiling times its body, an `if:` is assumed to hold, a task with `undo:` counts
+twice because the compensation is a second activity the same execution schedules
+when the run unwinds, and a wait counts once because a durable timer's events are
+history too — which refuses some
 files whose taken branches would have fit; that is the same trade `size.go` makes,
 because the alternative to refusing a little early is a termination that skips
 compensation. The remedies are the sentence's: run the loop sequentially at the top

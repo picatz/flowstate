@@ -54,13 +54,31 @@ func TestWorstCaseBodyActivities(t *testing.T) {
 			want: 1,
 		},
 		{
-			name: "a value and a wait schedule no activity",
+			name: "a value counts nothing: it writes no command into history",
 			body: []*Node{
 				{Id: "v", Kind: &Node_Value{Value: NewExpr("1")}},
-				{Id: "w", Kind: &Node_Wait{Wait: &Wait{}}},
 				task("a"),
 			},
 			want: 1,
+		},
+		{
+			name: "a wait counts one: a durable timer's events are history too",
+			body: []*Node{
+				{Id: "w", Kind: &Node_Wait{Wait: &Wait{}}},
+				task("a"),
+			},
+			want: 2,
+		},
+		{
+			name: "a task declaring undo counts twice: its compensation is a second activity in the same execution",
+			body: []*Node{
+				func() *Node {
+					n := task("a")
+					n.Undo = &Compensation{Task: &Task{Name: "http"}}
+					return n
+				}(),
+			},
+			want: 2,
 		},
 		{
 			name: "a switch counts its widest arm, default included",
