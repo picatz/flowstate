@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -499,6 +500,12 @@ func parseWorkerCapacityFloat(cmd *cobra.Command, flag string) (float64, error) 
 	n, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid --%s %q: must be a number; 0 takes the Temporal SDK default", flag, raw)
+	}
+	// NaN and Inf both parse successfully and both fail "< 0" (NaN compares
+	// false to everything, +Inf is not negative), so neither is caught by the
+	// bound below — checked explicitly rather than trusted to it.
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, fmt.Errorf("invalid --%s %q: must be a finite number; 0 takes the Temporal SDK default", flag, raw)
 	}
 	if n < 0 {
 		return 0, fmt.Errorf("invalid --%s %q: must not be negative; use 0 for the Temporal SDK default", flag, raw)

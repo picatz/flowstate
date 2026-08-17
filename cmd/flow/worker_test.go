@@ -495,6 +495,29 @@ func TestWorkerCapacityOptionsRefuseNegativeValues(t *testing.T) {
 	}
 }
 
+// TestWorkerCapacityOptionsRefuseNonFiniteRateValues covers the two rate
+// flags specifically: strconv.ParseFloat accepts "NaN" and "Inf" without
+// error, and neither is caught by the negative-value check below it — NaN
+// compares false to everything, and +Inf is not negative — so both need
+// their own refusal rather than falling through into an undefined value
+// reaching Temporal's rate-limit configuration.
+func TestWorkerCapacityOptionsRefuseNonFiniteRateValues(t *testing.T) {
+	for _, flag := range []string{"max-activities-per-second", "task-queue-activities-per-second"} {
+		for _, value := range []string{"NaN", "Inf", "+Inf", "-Inf"} {
+			t.Run(flag+"/"+value, func(t *testing.T) {
+				cmd := workerCommand(t)
+				require.NoError(t, cmd.Flags().Set(flag, value))
+
+				_, err := workerCapacityOptions(cmd)
+
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "--"+flag)
+				require.Contains(t, err.Error(), "finite")
+			})
+		}
+	}
+}
+
 // TestWorkerCapacityOptionsRefuseUnparsableValues covers all four flags: a
 // non-numeric value is a mistake in the command line, refused with the flag
 // named, not left to fail obscurely once worker.New rejects it.
