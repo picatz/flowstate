@@ -315,12 +315,21 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		}
 
 		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
+			// Counted before the failure decides anything: the attempt
+			// scheduled real history whether or not the failure is tolerated
+			// here — or tolerated *above*, which is the case that used to
+			// vanish. A concurrent iteration whose first body step failed
+			// copied a count of zero back to the join, so a loop marked
+			// `continue_on_error:` whose every iteration failed advanced the
+			// budget by one however many activities it had scheduled.
+			e.processed++
 			if propagate := e.recordOutcome(node, err); propagate != nil {
 				return propagate
 			}
+		} else {
+			e.processed++
 		}
 
-		e.processed++
 		e.progress.finished()
 
 		// Suspending is only possible where the position is representable, and
@@ -1106,6 +1115,22 @@ func (e *executor) runForEach(node *v1.Node, loop *v1.ForEach, depth, susp int, 
 		return nodeFailed(err)
 	}
 
+	// A loop that will run with no Continue-As-New seam inside it — one that
+	// declares concurrency, or one reached at a suspend depth where suspension
+	// is already illegal (a `parallel:` branch, another loop's body, a
+	// `switch:` arm) — is one atomic stretch of history, so the product of its
+	// items and its body's worst case is weighed before anything is
+	// dispatched, through the same [v1.CheckAtomicBlockActivities] the local
+	// driver applies at the same point under the same condition. A sequential
+	// top-level for_each is deliberately exempt: it suspends between
+	// iterations, where [shouldSuspend] also reads the server's own
+	// history-pressure hint, so it is paced rather than atomic.
+	if loop.GetMaxParallel() > 1 || susp > 0 {
+		if err := v1.CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
+			return nodeFailed(err)
+		}
+	}
+
 	name := v1.IteratorName(loop)
 	inner := depth + 1
 	innerSusp := susp + 1
@@ -1500,6 +1525,14 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 	results := make([]*v1.Workflow_StepOutputs, len(items))
 	errs := make([]error, len(items))
 	undos := make([]*v1.UndoLog, len(items))
+	// Each iteration's own count of body steps run, copied back at the join —
+	// the concurrent mirror of the `e.processed = nested.processed` the
+	// sequential [runIteration] path does inline. Without it the whole loop
+	// counted as one step against the budget, so the between-siblings seam
+	// after a concurrent loop fired only on the history hint, however much the
+	// loop had actually scheduled. Kept per index and summed in input order,
+	// so the total is the same whatever order the coroutines finished in.
+	processed := make([]int, len(items))
 
 	// A bounded number of workers pull from a shared index, which keeps at most
 	// MaxParallel iterations in flight without needing a semaphore.
@@ -1549,9 +1582,15 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 				if err := worker.runNodes(loop.GetBody(), depth, susp); err != nil {
 					undos[i] = iterationUndo
 					errs[i] = err
+					// Copied back on failure too, exactly as the sequential
+					// path copies before it checks the error: the steps that
+					// ran before the failure were still scheduled and are
+					// still history.
+					processed[i] = worker.processed
 					continue
 				}
 				undos[i] = iterationUndo
+				processed[i] = worker.processed
 				// The item attaches to tolerated failures here exactly as the
 				// sequential path's runIteration attaches it, so which
 				// scheduling ran an iteration cannot change what its failure
@@ -1570,6 +1609,13 @@ func (e *executor) runIterationsConcurrently(loop *v1.ForEach, iterator string, 
 	for _, child := range undos {
 		e.undo.Append(child)
 	}
+	// The loop's true cost joins the budget here, at the join, where the sum
+	// over all iterations is deterministic regardless of scheduling — so the
+	// seams that follow this loop weigh what it actually ran rather than
+	// counting the whole fan-out as a single step.
+	for _, n := range processed {
+		e.processed += n
+	}
 
 	for i, err := range errs {
 		if err != nil {
@@ -1585,6 +1631,11 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 	scopes := make([]*v1.Workflow_StepOutputs, len(branches))
 	errs := make([]error, len(branches))
 	undos := make([]*v1.UndoLog, len(branches))
+	// Each branch's own count of steps run, summed at the join in declaration
+	// order — the same copy-back the concurrent for_each join does, for the
+	// same reason: a block that ran fifty steps and advanced the budget by one
+	// leaves every seam after it weighing history that is not there.
+	processed := make([]int, len(branches))
 
 	done := workflow.NewChannel(e.ctx)
 
@@ -1624,6 +1675,7 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 			}
 			undos[i] = branchUndo
 			scopes[i] = branchOutputs
+			processed[i] = worker.processed
 			done.Send(gctx, nil)
 		})
 	}
@@ -1634,6 +1686,11 @@ func (e *executor) runParallel(parallel *v1.Parallel, depth, susp int) error {
 	// Branch declaration index is the parallel form of the same structural key.
 	for _, child := range undos {
 		e.undo.Append(child)
+	}
+	// The block's true cost, summed deterministically at the join exactly as
+	// the concurrent for_each's is.
+	for _, n := range processed {
+		e.processed += n
 	}
 
 	for i, err := range errs {

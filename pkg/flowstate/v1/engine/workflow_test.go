@@ -1492,6 +1492,187 @@ func TestRunWorkflowForEachTripCount(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowAtomicBlockBound is the durable half of the
+// suspension-opaque fan-out ceiling, [v1.MaxAtomicBlockActivities]; see the
+// local driver's identically-named test.
+//
+// The durable driver is the one with history to protect: a `for_each` with
+// `max_parallel:` above one, or one inside a `parallel:` branch, runs with no
+// Continue-As-New seam, so its items × body product accumulates in a single
+// execution against Temporal's 51,200-event termination limit — and a
+// termination skips the compensation log. [v1.CheckAtomicBlockActivities]
+// refuses the product before any iteration is dispatched, at the same point
+// [v1.CheckForEachItems] already runs, so a refusal costs no activity. The
+// at-ceiling cases assert the full trip count ran, which is what makes this a
+// claim the bound is reached rather than only not exceeded.
+func TestRunWorkflowAtomicBlockBound(t *testing.T) {
+	for _, test := range conformance.ForEachAtomicBlockCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			// The at-ceiling cases evaluate ten thousand `if:` guards inside
+			// single workflow tasks on purpose — that product is the point —
+			// which is exactly the stretch the boundary deadlock budget
+			// exists for (#431).
+			env := atABound(budgetEnv(t))
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a for_each past the atomic-activity ceiling must be refused")
+				// The same pieces the local driver's half asserts, in the same
+				// sentence: the step, the item count, the per-iteration count
+				// and the ceiling must not depend on where the workload ran.
+				require.Contains(t, err.Error(), `step "fan"`,
+					"the refusal must name the step")
+				for _, want := range conformance.AtomicBlockRefusalSubstrings() {
+					require.Contains(t, err.Error(), want,
+						"the refusal must name the counts and the ceiling")
+				}
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
+// TestAConcurrentForEachCountsItsBodyStepsAgainstTheBudget pins the
+// `processed` copy-back at the concurrent join: a `max_parallel > 1` loop
+// used to advance the step budget by one however many body steps its workers
+// ran, so the between-siblings seam after a concurrent loop fired only on the
+// history hint.
+//
+// The workflow runs a concurrent for_each of three iterations, two real
+// activities each, then one more top-level step, under a budget of five. With
+// the copy-back the loop contributes its six body steps plus itself — over
+// budget, so the seam after the loop suspends and the run continues as new
+// with a position past the loop. Without it the loop counts as one step and
+// the run completes in a single segment, which is exactly how this test fails
+// when the copy-back is reverted.
+func TestAConcurrentForEachCountsItsBodyStepsAgainstTheBudget(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	env := budgetEnv(t)
+
+	get := func(id string) *v1.Node {
+		return &v1.Node{
+			Id: id,
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "http",
+				Inputs: map[string]*v1.Value{
+					"method": v1.NewLiteral("GET"),
+					"url":    v1.NewLiteral(baseURL + "/status/200"),
+				},
+			}},
+		}
+	}
+
+	wf := &v1.Workflow{
+		Name: "concurrent-budget",
+		Steps: []*v1.Node{
+			{
+				Id: "fan",
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:       v1.NewExpr("[0, 1, 2]"),
+					MaxParallel: 2,
+					Body:        []*v1.Node{get("first"), get("second")},
+				}},
+			},
+			get("after"),
+		},
+	}
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 5})
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err,
+		"a concurrent loop that ran six body steps under a budget of five finished in one segment, "+
+			"so the join is not copying worker step counts back into the budget")
+
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continued,
+		"the run failed instead of continuing as new: %v", err)
+
+	// The seam that fired is the one after the loop, so the next segment
+	// resumes past it rather than re-running the fan-out.
+	var next v1.RunState
+	require.NoError(t, converter.GetDefaultDataConverter().
+		FromPayload(continued.Input.GetPayloads()[0], &next))
+	require.NotEmpty(t, resumedPosition(&next),
+		"the next segment resumes from the beginning, so the loop would run twice")
+}
+
+// TestAConcurrentForEachCountsFailedIterationsAgainstTheBudget is the failing
+// half of the copy-back claim above: an attempted step is history whether or
+// not it succeeded, and whether or not its failure is tolerated *above* it.
+// runNodes used to return before its `processed++` on a propagating failure,
+// so a concurrent iteration whose first body step failed copied a count of
+// zero back to the join — and a loop marked `continue_on_error:` whose every
+// iteration failed advanced the budget by one however many activities it had
+// scheduled, which is the history protection bypassed by failing.
+//
+// Three iterations of one permanently-failing task under a budget of three,
+// tolerated at the loop step: the attempted steps plus the loop itself are
+// four, so the seam after the loop suspends. Reverting either the counting of
+// a failed attempt in runNodes or the join's copy-back completes the run in
+// one segment and turns this red.
+func TestAConcurrentForEachCountsFailedIterationsAgainstTheBudget(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	env := budgetEnv(t)
+
+	wf := &v1.Workflow{
+		Name: "concurrent-budget-failing",
+		Steps: []*v1.Node{
+			{
+				Id:     "fan",
+				Policy: &v1.StepPolicy{ContinueOnError: true},
+				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+					Items:       v1.NewExpr("[0, 1, 2]"),
+					MaxParallel: 2,
+					Body: []*v1.Node{
+						{
+							Id: "fails",
+							Kind: &v1.Node_Task{Task: &v1.Task{
+								Name: "http",
+								Inputs: map[string]*v1.Value{
+									"method": v1.NewLiteral("GET"),
+									"url":    v1.NewLiteral(baseURL + "/status/404"),
+								},
+							}},
+						},
+					},
+				}},
+			},
+			{
+				Id: "after",
+				Kind: &v1.Node_Task{Task: &v1.Task{
+					Name: "http",
+					Inputs: map[string]*v1.Value{
+						"method": v1.NewLiteral("GET"),
+						"url":    v1.NewLiteral(baseURL + "/status/200"),
+					},
+				}},
+			},
+		},
+	}
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf, StepsBudget: 3})
+	require.True(t, env.IsWorkflowCompleted())
+
+	err := env.GetWorkflowError()
+	require.Error(t, err,
+		"a tolerated all-failing concurrent loop under a budget of three finished in one segment, "+
+			"so failed attempts are not being counted against the budget")
+
+	var continued *workflow.ContinueAsNewError
+	require.ErrorAs(t, err, &continued,
+		"the run failed instead of continuing as new: %v", err)
+}
+
 // TestAStepsVarsSurviveContinueAsNew is the same claim as
 // [TestABudgetSmallerThanTheWorkflowContinuesAsNew], written the way the language
 // actually encourages — and the way that used to lose the value.
