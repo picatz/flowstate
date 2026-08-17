@@ -29,6 +29,12 @@ func workerCommand(t *testing.T) *cobra.Command {
 	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 	t.Setenv("FLOWSTATE_WORKER_IDENTITY", "")
+	// Same reasoning, for #783's capacity flags: a developer's shell should not
+	// decide whether these tests exercise the SDK default or a tuned value.
+	t.Setenv("FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES", "")
+	t.Setenv("FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS", "")
+	t.Setenv("FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND", "")
+	t.Setenv("FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND", "")
 
 	cmd, _, err := newRootCommand().Find([]string{"worker"})
 	require.NoError(t, err)
@@ -391,4 +397,160 @@ func TestWorkerStopTimeoutRefusesANegativeValue(t *testing.T) {
 	require.Contains(t, err.Error(), "--worker-stop-timeout")
 	require.Contains(t, err.Error(), "-1s")
 	require.Contains(t, err.Error(), "negative")
+}
+
+// TestWorkerCapacityOptionsDefaultToTheSDKsOwnDefault is the byte-identical
+// requirement #783's acceptance criteria states: an unset flag must produce
+// exactly the zero value worker.Options already had, so any existing
+// deployment sees no behavior change.
+func TestWorkerCapacityOptionsDefaultToTheSDKsOwnDefault(t *testing.T) {
+	cmd := workerCommand(t)
+
+	got, err := workerCapacityOptions(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, workerCapacity{}, got)
+}
+
+// TestWorkerCapacityOptionsFromFlags pins that all four flags reach
+// worker.Options's fields of the same meaning.
+func TestWorkerCapacityOptionsFromFlags(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("max-concurrent-activities", "50"))
+	require.NoError(t, cmd.Flags().Set("max-concurrent-workflow-tasks", "25"))
+	require.NoError(t, cmd.Flags().Set("max-activities-per-second", "10.5"))
+	require.NoError(t, cmd.Flags().Set("task-queue-activities-per-second", "20"))
+
+	got, err := workerCapacityOptions(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, workerCapacity{
+		maxConcurrentActivities:      50,
+		maxConcurrentWorkflowTasks:   25,
+		activitiesPerSecond:          10.5,
+		taskQueueActivitiesPerSecond: 20,
+	}, got)
+}
+
+// TestWorkerCapacityOptionsDefaultFromTheEnvironment mirrors
+// TestWorkerStopTimeoutDefaultsFromTheEnvironment for the four new variables:
+// an operator's deployment sets them once and every worker in the fleet picks
+// them up.
+func TestWorkerCapacityOptionsDefaultFromTheEnvironment(t *testing.T) {
+	t.Setenv("FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES", "100")
+	t.Setenv("FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS", "40")
+	t.Setenv("FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND", "5")
+	t.Setenv("FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND", "15")
+
+	cmd, _, err := newRootCommand().Find([]string{"worker"})
+	require.NoError(t, err)
+
+	got, err := workerCapacityOptions(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, workerCapacity{
+		maxConcurrentActivities:      100,
+		maxConcurrentWorkflowTasks:   40,
+		activitiesPerSecond:          5,
+		taskQueueActivitiesPerSecond: 15,
+	}, got)
+}
+
+// TestWorkerCapacityOptionsFlagWinsOverTheEnvironment is the same precedence
+// every other overridable flag in this command promises.
+func TestWorkerCapacityOptionsFlagWinsOverTheEnvironment(t *testing.T) {
+	t.Setenv("FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES", "100")
+
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("max-concurrent-activities", "7"))
+
+	got, err := workerCapacityOptions(cmd)
+
+	require.NoError(t, err)
+	require.Equal(t, 7, got.maxConcurrentActivities)
+}
+
+// TestWorkerCapacityOptionsRefuseNegativeValues covers all four flags: a
+// negative execution size or rate limit does not mean what an operator typing
+// "-1" for "no limit" would expect, since 0 is the sentinel that already means
+// that, so each is refused before Temporal is dialed, a plugin is launched, or
+// a secret provider is opened.
+func TestWorkerCapacityOptionsRefuseNegativeValues(t *testing.T) {
+	for _, flag := range []string{
+		"max-concurrent-activities",
+		"max-concurrent-workflow-tasks",
+		"max-activities-per-second",
+		"task-queue-activities-per-second",
+	} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := workerCommand(t)
+			require.NoError(t, cmd.Flags().Set(flag, "-1"))
+
+			_, err := workerCapacityOptions(cmd)
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "--"+flag)
+			require.Contains(t, err.Error(), "negative")
+		})
+	}
+}
+
+// TestWorkerCapacityOptionsRefuseUnparsableValues covers all four flags: a
+// non-numeric value is a mistake in the command line, refused with the flag
+// named, not left to fail obscurely once worker.New rejects it.
+func TestWorkerCapacityOptionsRefuseUnparsableValues(t *testing.T) {
+	for _, flag := range []string{
+		"max-concurrent-activities",
+		"max-concurrent-workflow-tasks",
+		"max-activities-per-second",
+		"task-queue-activities-per-second",
+	} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := workerCommand(t)
+			require.NoError(t, cmd.Flags().Set(flag, "not-a-number"))
+
+			_, err := workerCapacityOptions(cmd)
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "--"+flag)
+			require.Contains(t, err.Error(), "not-a-number")
+		})
+	}
+}
+
+// TestWorkerCapacityOptionsRefusesMaxConcurrentWorkflowTasksOfOne is the
+// SDK-specific case: internal_worker.go panics on this exact value ("cannot
+// set MaxConcurrentWorkflowTaskExecutionSize to 1"), so this is refused here
+// as an ordinary command-line error instead of reaching worker.New as a
+// crashed process.
+func TestWorkerCapacityOptionsRefusesMaxConcurrentWorkflowTasksOfOne(t *testing.T) {
+	cmd := workerCommand(t)
+	require.NoError(t, cmd.Flags().Set("max-concurrent-workflow-tasks", "1"))
+
+	_, err := workerCapacityOptions(cmd)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--max-concurrent-workflow-tasks")
+}
+
+// TestWorkerCapacityOptionsRefusalIsReachedBeforeTemporalIs mirrors
+// TestWorkerRefusalIsReachedBeforeTemporalIs for the capacity flags: nothing
+// in this test provides a Temporal server, so the refusal is proof the gate
+// sits before any I/O.
+func TestWorkerCapacityOptionsRefusalIsReachedBeforeTemporalIs(t *testing.T) {
+	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
+	t.Setenv("FLOWSTATE_BUILD_ID", "")
+
+	root := newRootCommand()
+	var out, errOut strings.Builder
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetArgs([]string{
+		"worker", "--address", "127.0.0.1:1",
+		"--" + allowUnversionedFlag, "--max-concurrent-activities", "-5",
+	})
+
+	err := root.ExecuteContext(t.Context())
+
+	require.ErrorContains(t, err, "--max-concurrent-activities")
 }

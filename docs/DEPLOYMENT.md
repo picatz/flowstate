@@ -892,6 +892,75 @@ against Temporal visibility, not from a counter. That is a real gap, not a
 documentation one — file it separately rather than treat this catalog as
 covering it.
 
+## Worker capacity
+
+`flow worker` builds its Temporal worker from exactly five fixed fields —
+`DeploymentOptions`, `Interceptors`, `DeadlockDetectionTimeout`, `Identity`,
+`WorkerStopTimeout` — plus, as of #783, four capacity options an operator can
+set: `--max-concurrent-activities`, `--max-concurrent-workflow-tasks`,
+`--max-activities-per-second`, and `--task-queue-activities-per-second`
+(`FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES`,
+`FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS`,
+`FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND`,
+`FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND`; `cmd/flow/main.go`). All
+four default to `0`, which the flag help text and `workerCapacityOptions`'s
+doc comment both spell out as "take the Temporal SDK's own default" — an
+unset flag changes no behavior on any existing deployment. `flow server
+dev`'s embedded worker does not read any of these; it exists for the laptop,
+where the SDK defaults are the right answer.
+
+**Defaults, unset.** The Go SDK sizes an untuned worker at
+`MaxConcurrentActivityExecutionSize` = 1000, `MaxConcurrentWorkflowTaskExecutionSize`
+= 1000, and both rate limits at 100000/s (`go.temporal.io/sdk@v1.47.0/internal/internal_worker.go:55-64`
+— effectively unlimited for the rate limits). That is generous enough that
+most single-tenant deployments never touch these flags; they exist for the
+deployment that does.
+
+**When to raise slots versus scale out.** Temporal's own troubleshooting
+guidance for slot exhaustion — `temporal_worker_task_slots_available` sitting
+at zero, schedule-to-start latency climbing (watch both; see
+[Metrics](#metrics) above for how Flowstate wires the SDK's metrics handler
+that emits them) — names two remedies, and they cost differently here:
+
+- **Raise `--max-concurrent-activities` / `--max-concurrent-workflow-tasks`.**
+  Free if the process has CPU and memory headroom: no new connection, no new
+  plugin launch, no new secret-provider handshake, just more of this worker's
+  own goroutines running at once. The cost moves downstream instead —
+  Temporal's own caveat applies unchanged: raising how much a worker
+  *dispatches* raises the load on whatever its activities *call*, so a higher
+  slot count without a matching `--task-queue-activities-per-second` (or a
+  more forgiving downstream) trades one bottleneck for another. And it does
+  not help once the process itself is the constraint: CPU-bound workflow
+  determinism or memory-bound activities top out before the slot count does.
+- **Scale out (add a replica).** The expensive remedy in this system
+  specifically, not scale-out in general: each `flow worker` process launches
+  its own plugin fleet and opens its own secret providers (`cmd/flow/main.go`,
+  the ordering documented at the top of `runWorker`), so a new replica pays
+  for a whole plugin fleet and a secret-provider handshake to buy additional
+  slots, where raising the existing process's slots buys the same slots for
+  free if the headroom is there. Scale out when the constraint is the
+  process's own CPU/memory, when durability against a single host failing
+  matters more than this replica's plugin-launch cost, or once raising slots
+  has pushed the bottleneck downstream far enough that more of this process
+  would not help.
+
+**`--task-queue-activities-per-second` is per queue, not per worker.**
+Server-enforced across every worker polling the queue, so on a dedicated
+per-tenant queue (`--task-queue-prefix`/`--tenant`, [Tier
+2](#tier-2--per-tenant-temporal-namespace--per-tenant-worker) above) it is a
+real per-tenant dispatch cap today. Two workers on the same queue setting it
+differently is last-writer-wins on the server — treat it as a fleet-wide
+setting, not a per-process one. Setting it also disables the SDK's eager
+activity execution for this worker.
+
+**Metrics to watch while tuning either lever**: the Temporal SDK slot and
+poller instruments named in [Metrics](#metrics) above (task-queue backlog,
+poller counts, schedule-to-start latency — see the [SDK metrics
+reference](https://docs.temporal.io/references/sdk-metrics) for exact names),
+plus this process's own CPU/memory if raising slots is the lever being
+pulled, since that is what tells you when the free remedy has run out of
+room.
+
 ## Worker versioning, every time
 
 Every recipe in this document that starts a production worker sets
