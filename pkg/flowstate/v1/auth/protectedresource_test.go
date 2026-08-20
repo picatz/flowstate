@@ -1,0 +1,285 @@
+package auth_test
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/stretchr/testify/require"
+)
+
+// trustingPolicy is a [auth.Policy] that trusts exactly the given issuer
+// URLs as kind: oidc authorization servers — the minimum a test needs to
+// exercise [auth.NewProtectedResource]'s cross-check against policy.
+func trustingPolicy(issuers ...string) *auth.Policy {
+	policy := &auth.Policy{}
+	for _, issuer := range issuers {
+		policy.Issuers = append(policy.Issuers, auth.TrustedIssuer{
+			Name:      "as-" + issuer,
+			Issuer:    issuer,
+			Audiences: []string{"https://flowstate.example.com/mcp"},
+		})
+	}
+	return policy
+}
+
+// TestNewProtectedResourceRefusesUntrustedAuthorizationServer is the fail-closed
+// case #558's decision names explicitly: an authorization server this
+// deployment would advertise but its own trust policy would never accept a
+// token from is a start-up failure, not a per-request 401 a client discovers
+// only after it already trusts the document.
+func TestNewProtectedResourceRefusesUntrustedAuthorizationServer(t *testing.T) {
+	t.Parallel()
+
+	policy := trustingPolicy("https://trusted.example.com")
+
+	_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com", "https://rogue.example.com"},
+	}, policy)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "rogue.example.com",
+		"the diagnostic must name the untrusted authorization server, not just say something is wrong")
+}
+
+// TestNewProtectedResourceRefusesEveryAuthorizationServerWhenPolicyIsNil pins
+// the fail-closed default: no policy trusts nobody, so any --authorization-server
+// is refused, exactly as an untrusted one is.
+func TestNewProtectedResourceRefusesEveryAuthorizationServerWhenPolicyIsNil(t *testing.T) {
+	t.Parallel()
+
+	_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, nil)
+
+	require.Error(t, err)
+}
+
+// TestNewProtectedResourceValidatesResource covers the two shapes that make a
+// resource identifier ambiguous as an audience, per RFC 8707 section 2 and
+// RFC 9728: a fragment, and a trailing slash.
+func TestNewProtectedResourceValidatesResource(t *testing.T) {
+	t.Parallel()
+
+	policy := trustingPolicy("https://trusted.example.com")
+
+	for _, tc := range []struct {
+		name     string
+		resource string
+	}{
+		{"fragment", "https://flowstate.example.com/mcp#frag"},
+		{"trailing slash", "https://flowstate.example.com/mcp/"},
+		{"trailing slash at root", "https://flowstate.example.com/"},
+		{"empty", ""},
+		{"not a URL", "not a url"},
+		{"plain http off loopback", "http://flowstate.example.com/mcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+				Resource:             tc.resource,
+				AuthorizationServers: []string{"https://trusted.example.com"},
+			}, policy)
+
+			require.Error(t, err, "resource %q should have been refused at load", tc.resource)
+		})
+	}
+}
+
+// TestNewProtectedResourceRequiresAtLeastOneAuthorizationServer pins RFC
+// 9728's own requirement, checked at load rather than left to fail silently
+// at the wire.
+func TestNewProtectedResourceRequiresAtLeastOneAuthorizationServer(t *testing.T) {
+	t.Parallel()
+
+	_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource: "https://flowstate.example.com/mcp",
+	}, trustingPolicy())
+
+	require.Error(t, err)
+}
+
+// TestProtectedResourceMetadataURLIsOriginDerived pins the well-known-URI
+// construction this package uses: the resource's scheme and host, plus the
+// fixed well-known path — never anything read from a request.
+func TestProtectedResourceMetadataURLIsOriginDerived(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	require.Equal(t, "https://flowstate.example.com"+auth.ProtectedResourceMetadataPath, pr.MetadataURL())
+}
+
+// TestProtectedResourceDocumentOmitsScopesSupported pins D1's deferral
+// (picatz/flowstate#567): this slice defines no action/scope vocabulary, so
+// the document must not carry the key at all — not an empty list, which
+// would itself be a claim ("this resource supports zero scopes").
+func TestProtectedResourceDocumentOmitsScopesSupported(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	server := httptest.NewServer(pr.Handler())
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(body, &raw))
+
+	require.NotContains(t, raw, "scopes_supported",
+		"the document must omit scopes_supported entirely, not carry an empty list")
+	require.Equal(t, "https://flowstate.example.com/mcp", raw["resource"])
+	require.Equal(t, []any{"https://trusted.example.com"}, raw["authorization_servers"])
+}
+
+// TestProtectedResourceHandlerAllowsOnlyGETAndHEAD pins the method
+// discipline this route keeps, matching the identity documents' handler
+// elsewhere in this package.
+func TestProtectedResourceHandlerAllowsOnlyGETAndHEAD(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	server := httptest.NewServer(pr.Handler())
+	t.Cleanup(server.Close)
+
+	get, err := http.Get(server.URL)
+	require.NoError(t, err)
+	defer get.Body.Close()
+	require.Equal(t, http.StatusOK, get.StatusCode)
+	getBody, err := io.ReadAll(get.Body)
+	require.NoError(t, err)
+	require.NotEmpty(t, getBody)
+
+	head, err := http.Head(server.URL)
+	require.NoError(t, err)
+	defer head.Body.Close()
+	require.Equal(t, http.StatusOK, head.StatusCode)
+	headBody, err := io.ReadAll(head.Body)
+	require.NoError(t, err)
+	require.Empty(t, headBody, "a HEAD response must carry no body")
+	require.Equal(t, get.Header.Get("Content-Type"), head.Header.Get("Content-Type"),
+		"HEAD should answer with the same headers GET would")
+
+	post, err := http.Post(server.URL, "application/json", nil)
+	require.NoError(t, err)
+	defer post.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, post.StatusCode)
+
+	req, err := http.NewRequest(http.MethodOptions, server.URL, nil)
+	require.NoError(t, err)
+	options, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer options.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, options.StatusCode,
+		"this route's threat model has no browser client, so even the SDK handler's own OPTIONS support is refused")
+}
+
+// TestWithProtectedResourceUnconfiguredChallengeIsUnchanged is the
+// byte-identical guarantee: a deployment that never configures a protected
+// resource must see today's challenge, exactly, whether or not this option
+// was compiled in.
+func TestWithProtectedResourceUnconfiguredChallengeIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	authenticator := auth.NewAuthenticator(nil) // nil verifier refuses everyone
+
+	server := serveAuthenticated(t, authenticator)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, `Bearer error="invalid_token"`, resp.Header.Get("WWW-Authenticate"))
+}
+
+// TestWithProtectedResourceChallengeNamesTheMetadataURL is the positive
+// direction: once configured, the challenge carries resource_metadata
+// pointing exactly at the URL the document is served at, and no scope
+// parameter (D1's deferral).
+func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	authenticator := auth.NewAuthenticator(nil, auth.WithProtectedResource(pr))
+	server := serveAuthenticated(t, authenticator)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
+	require.NoError(t, err)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	challenge := resp.Header.Get("WWW-Authenticate")
+	require.Contains(t, challenge, `error="invalid_token"`)
+	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+`"`)
+	require.NotContains(t, challenge, "scope=",
+		"D1 is deferred: this slice defines no scope vocabulary to challenge with")
+}
+
+// TestWithProtectedResourceChallengeIgnoresForgedHost is the #1 named risk in
+// the design: a forged Host header on the rejected request must not steer
+// the advertised metadata URL anywhere. The URL comes from configuration,
+// resolved once at start-up, never from req.
+func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	authenticator := auth.NewAuthenticator(nil, auth.WithProtectedResource(pr))
+	server := serveAuthenticated(t, authenticator)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run", nil)
+	require.NoError(t, err)
+	req.Host = "attacker.example.com"
+	req.Header.Set("Host", "attacker.example.com")
+	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	challenge := resp.Header.Get("WWW-Authenticate")
+	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+`"`,
+		"a forged Host header changed the advertised metadata URL")
+	require.NotContains(t, challenge, "attacker.example.com")
+}

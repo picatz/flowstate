@@ -35,9 +35,10 @@ import (
 // verified. See mtls.go's package doc for why that is the seam and not a
 // widened [Verifier] signature.
 type Authenticator struct {
-	verifier     Verifier
-	peerVerifier PeerVerifier
-	observe      func(context.Context, *http.Request, error)
+	verifier                     Verifier
+	peerVerifier                 PeerVerifier
+	observe                      func(context.Context, *http.Request, error)
+	protectedResourceMetadataURL string
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -72,6 +73,25 @@ func WithFailureObserver(observe func(ctx context.Context, req *http.Request, er
 func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 	return func(a *Authenticator) {
 		a.peerVerifier = p
+	}
+}
+
+// WithProtectedResource makes a 401 challenge this Authenticator issues carry
+// a "resource_metadata" parameter naming pr's RFC 9728 metadata URL, per the
+// MCP specification's requirement that the challenge point a client at the
+// document before it holds any credential.
+//
+// The URL always comes from pr, which is itself built from configuration —
+// never from the request this Authenticator is rejecting. A forged Host
+// header on the request cannot change what this challenge advertises.
+//
+// A nil pr, or the option omitted entirely, leaves the challenge exactly as
+// it reads without this option: "Bearer error=\"invalid_token\"" and nothing
+// more, byte-identical to every deployment that has not configured a
+// protected resource.
+func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.protectedResourceMetadataURL = pr.MetadataURL()
 	}
 }
 
@@ -147,7 +167,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, tokenErr)
 			}
-			return nil, unauthenticated(tokenErr)
+			return nil, a.unauthenticated(tokenErr)
 		}
 		return tokenPrincipal, nil
 	}
@@ -160,7 +180,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		if a.observe != nil {
 			a.observe(ctx, req, peerErr)
 		}
-		return nil, unauthenticated(peerErr)
+		return nil, a.unauthenticated(peerErr)
 	}
 
 	if rawToken != "" {
@@ -173,7 +193,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, tokenErr)
 			}
-			return nil, unauthenticated(tokenErr)
+			return nil, a.unauthenticated(tokenErr)
 		}
 		if tokenPrincipal.ID() != peerPrincipal.ID() {
 			err := fmt.Errorf("%w: certificate names %q, token names %q",
@@ -181,7 +201,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, err)
 			}
-			return nil, unauthenticated(err)
+			return nil, a.unauthenticated(err)
 		}
 	}
 
@@ -191,9 +211,19 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 // unauthenticated renders a verification failure as the error a caller sees: the
 // RFC 6750 challenge that tells a client its token is the problem, and a short
 // reason that describes the failure without describing the trust policy.
-func unauthenticated(cause error) error {
+//
+// When a.protectedResourceMetadataURL is set, the challenge carries a
+// "resource_metadata" parameter naming it, per the MCP specification — see
+// [WithProtectedResource]. Deliberately no "scope" parameter: D1 in
+// picatz/flowstate#567 defers the action/scope vocabulary, and this
+// deployment has not defined one to name here.
+func (a *Authenticator) unauthenticated(cause error) error {
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New(publicReason(cause)))
-	err.Meta().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+	challenge := `Bearer error="invalid_token"`
+	if a.protectedResourceMetadataURL != "" {
+		challenge += fmt.Sprintf(`, resource_metadata=%q`, a.protectedResourceMetadataURL)
+	}
+	err.Meta().Set("WWW-Authenticate", challenge)
 	return err
 }
 

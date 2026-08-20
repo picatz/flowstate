@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -39,7 +40,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
 		},
-	), nil)
+	), nil, nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -92,7 +93,7 @@ func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 
 	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
-	), nil)
+	), nil, nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -144,7 +145,7 @@ func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a health probe reached the RPC handler")
-		}), nil)
+		}), nil, nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -188,7 +189,7 @@ func TestARejectionIsLoggedWithoutTheToken(t *testing.T) {
 	handler := serverHandler(logger, refusingVerifier{}, nil, nil, http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a rejected request reached the RPC handler")
-		}), nil)
+		}), nil, nil)
 
 	const token = "not-a-real-credential-but-must-not-appear"
 
@@ -253,7 +254,7 @@ func TestPublicMuxDoesNotServePprof(t *testing.T) {
 	t.Parallel()
 
 	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil)
+		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil, nil)
 
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -298,7 +299,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a delivery reached the RPC handler")
-		}), receiver))
+		}), receiver, nil))
 	defer served.Close()
 
 	resp, err := served.Client().Post(served.URL+"/webhooks/order-webhook/storefront",
@@ -312,7 +313,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 		"a delivery was answered by something other than the receiver")
 
 	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil))
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil, nil))
 	defer unconfigured.Close()
 
 	absent, err := unconfigured.Client().Post(unconfigured.URL+"/webhooks/order-webhook/storefront",
@@ -322,6 +323,206 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, absent.StatusCode,
 		"a deployment that configured no webhooks served the webhook route anyway")
+}
+
+// TestTheServerTakesTheProtectedResourceFlags is the wiring check for
+// picatz/flowstate#558's RFC 9728 slice, the same shape as
+// TestTheServerTakesTheIdentityFlags above.
+func TestTheServerTakesTheProtectedResourceFlags(t *testing.T) {
+	t.Parallel()
+
+	var server *cobra.Command
+	for _, c := range newRootCommand().Commands() {
+		if c.Name() == "server" {
+			server = c
+
+			break
+		}
+	}
+	require.NotNil(t, server, "there is no server command")
+
+	for _, name := range []string{"protected-resource", "authorization-server"} {
+		require.NotNil(t, server.Flags().Lookup(name),
+			"`flow server` does not take --%s, so a deployment cannot configure it", name)
+	}
+}
+
+// TestProtectedResourceRouteMountedOnlyWhenConfigured pins both halves of
+// #558's decision: unconfigured means the route does not exist at all — a
+// 404, not an empty document — and configured means it serves the exact
+// document [resolveProtectedResource] built.
+func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+	}}
+
+	pr, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             "https://flowstate.example.com/mcp",
+		authorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+	require.NotNil(t, pr)
+
+	configured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+		nil, pr))
+	defer configured.Close()
+
+	resp, err := configured.Client().Get(configured.URL + auth.ProtectedResourceMetadataPath)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var doc map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.Equal(t, "https://flowstate.example.com/mcp", doc["resource"])
+	require.NotContains(t, doc, "scopes_supported")
+
+	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+		nil, nil))
+	defer unconfigured.Close()
+
+	// No route is mounted at all: the mux's "/" pattern is what answers, and
+	// that is the authenticated default route — so a GET with no credential
+	// meets the authenticator, exactly as an unconfigured --webhook does (see
+	// TestTheWebhookRouteIsMountedOnlyWhenConfigured). What must NOT happen is
+	// the request reaching an RFC 9728 handler that serves an empty document.
+	absent, err := unconfigured.Client().Get(unconfigured.URL + auth.ProtectedResourceMetadataPath)
+	require.NoError(t, err)
+	defer absent.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, absent.StatusCode,
+		"an unconfigured deployment must have no such route: this path meets the authenticated "+
+			"default instead of an RFC 9728 handler serving an empty document")
+}
+
+// TestProtectedResourceChallengeMatchesServedDocument is the end-to-end check
+// that the 401 challenge points a caller at wherever the document is
+// actually reachable — not merely at some URL that happens to look right.
+func TestProtectedResourceChallengeMatchesServedDocument(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+	}}
+
+	pr, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             "https://flowstate.example.com/mcp",
+		authorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+
+	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+		nil, pr))
+	defer server.Close()
+
+	resp, err := server.Client().Post(server.URL+"/flowstate.v1.WorkflowService/Run",
+		"application/json", strings.NewReader("{}"))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	challenge := resp.Header.Get("WWW-Authenticate")
+	require.Contains(t, challenge, `resource_metadata="`+pr.MetadataURL()+`"`)
+
+	// The URL the challenge names is not merely well-formed; it is fetched
+	// from this same server (rewritten onto the test server's own address,
+	// since pr.MetadataURL() names the configured production host) and must
+	// answer with a document RFC 9728 accepts.
+	metadataPath := auth.ProtectedResourceMetadataPath
+	docResp, err := server.Client().Get(server.URL + metadataPath)
+	require.NoError(t, err)
+	defer docResp.Body.Close()
+	require.Equal(t, http.StatusOK, docResp.StatusCode)
+
+	var doc map[string]any
+	require.NoError(t, json.NewDecoder(docResp.Body).Decode(&doc))
+	require.Equal(t, "https://flowstate.example.com/mcp", doc["resource"])
+	require.Equal(t, []any{"https://trusted.example.com"}, doc["authorization_servers"])
+}
+
+// TestProtectedResourceChallengeUnaffectedByForgedHost is the #1 named risk:
+// a caller forging the Host header on its own rejected request must not be
+// able to steer the challenge, or the document it points at, toward
+// anywhere but the configured resource.
+func TestProtectedResourceChallengeUnaffectedByForgedHost(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+	}}
+
+	pr, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             "https://flowstate.example.com/mcp",
+		authorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+
+	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
+		nil, pr))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/flowstate.v1.WorkflowService/Run",
+		strings.NewReader("{}"))
+	require.NoError(t, err)
+	req.Host = "attacker.example.com"
+	req.Header.Set("X-Forwarded-Host", "attacker.example.com")
+
+	resp, err := server.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	challenge := resp.Header.Get("WWW-Authenticate")
+	require.Equal(t, `Bearer error="invalid_token", resource_metadata="https://flowstate.example.com`+
+		auth.ProtectedResourceMetadataPath+`"`, challenge)
+	require.NotContains(t, challenge, "attacker.example.com")
+}
+
+// TestResolveProtectedResourceRefusesUntrustedAuthorizationServer is
+// cmd/flow's wiring layer over auth.NewProtectedResource's own fail-closed
+// check, pinned here so a regression that skipped passing policy through
+// would be caught at this seam too.
+func TestResolveProtectedResourceRefusesUntrustedAuthorizationServer(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+	}}
+
+	_, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             "https://flowstate.example.com/mcp",
+		authorizationServers: []string{"https://rogue.example.com"},
+	}, policy)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "rogue.example.com")
+}
+
+// TestResolveProtectedResourceRejectsAuthorizationServerWithoutResource pins
+// the flag-pairing check: --authorization-server names something to
+// advertise it *for*, and without --protected-resource there is nothing.
+func TestResolveProtectedResourceRejectsAuthorizationServerWithoutResource(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveProtectedResource(protectedResourceFlags{
+		authorizationServers: []string{"https://trusted.example.com"},
+	}, nil)
+
+	require.Error(t, err)
+}
+
+// TestResolveProtectedResourceUnconfiguredIsNil pins the "absence is the
+// whole answer" default: no flags given, no error, and nothing to mount.
+func TestResolveProtectedResourceUnconfiguredIsNil(t *testing.T) {
+	t.Parallel()
+
+	pr, err := resolveProtectedResource(protectedResourceFlags{}, nil)
+	require.NoError(t, err)
+	require.Nil(t, pr)
 }
 
 // staticProvider resolves any reference to a fixed value, standing in for
