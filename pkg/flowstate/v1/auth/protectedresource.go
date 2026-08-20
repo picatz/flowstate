@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 
@@ -114,9 +115,16 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 	// component is inserted after the authority but before the resource's own
 	// path — see [ProtectedResourceMetadataPath]'s doc for why the bare prefix
 	// is not the whole answer whenever the resource carries a path.
+	//
+	// Built from EscapedPath, not Path: Path is the percent-*decoded* form, so
+	// a resource whose path contains an escaped reserved character (a literal
+	// "%2F" naming one path segment, not a "/" separating two) would have that
+	// distinction silently erased if it were used here — the mount pattern
+	// and the advertised URL both have to preserve exactly what the operator
+	// wrote, not net/url's decoded reading of it.
 	metadataPath := ProtectedResourceMetadataPath
-	if resourceURL.Path != "" {
-		metadataPath += resourceURL.Path
+	if escapedPath := resourceURL.EscapedPath(); escapedPath != "" {
+		metadataPath += escapedPath
 	}
 	metadataURL := resourceURL.Scheme + "://" + resourceURL.Host + metadataPath
 
@@ -232,6 +240,33 @@ func validateResourceURI(raw string) (*url.URL, error) {
 	if strings.HasSuffix(parsed.Path, "/") {
 		return nil, fmt.Errorf("resource %q must not end in a trailing slash: it would leave the audience "+
 			"a token names ambiguous against the same resource written without one", raw)
+	}
+
+	// The resource's path becomes part of an [http.ServeMux] registration
+	// pattern (see [ProtectedResource.Path]), and ServeMux's own pattern
+	// syntax treats "{...}" as a wildcard segment — so an unescaped "{" or
+	// "}" here would not name a literal path component, it would register a
+	// wildcard route nobody asked for. Refused outright rather than escaped
+	// around: a resource identifier with either character is not a shape
+	// RFC 8707 needs to support.
+	if strings.ContainsAny(parsed.Path, "{}") {
+		return nil, fmt.Errorf(`resource %q must not contain "{" or "}" in its path: that syntax is `+
+			"reserved by Go's http.ServeMux for wildcard route segments, and this resource's path becomes "+
+			"part of the pattern the metadata route is registered under", raw)
+	}
+
+	// ServeMux redirects a request for a non-canonical path (repeated
+	// slashes, "." or ".." segments) to its cleaned form before matching a
+	// registered pattern. A resource path is otherwise served exactly where
+	// this package computes it, so a non-canonical one would register a
+	// pattern the redirect always bypasses — the metadata route would never
+	// actually answer.
+	if parsed.Path != "" {
+		if cleaned := path.Clean(parsed.Path); cleaned != parsed.Path {
+			return nil, fmt.Errorf("resource %q has a non-canonical path %q: write it as %q, or "+
+				"http.ServeMux's own redirect-to-clean-path behavior means a request for it would never "+
+				"reach the registered metadata route", raw, parsed.Path, cleaned)
+		}
 	}
 
 	return parsed, nil

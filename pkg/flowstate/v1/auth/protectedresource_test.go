@@ -78,6 +78,18 @@ func TestNewProtectedResourceValidatesResource(t *testing.T) {
 		{"empty", ""},
 		{"not a URL", "not a url"},
 		{"plain http off loopback", "http://flowstate.example.com/mcp"},
+		// ServeMux's own pattern syntax reserves "{...}" for a wildcard
+		// segment; an unescaped one in the resource's path would silently
+		// register a wildcard route rather than the literal path an operator
+		// wrote.
+		{"brace in path", "https://flowstate.example.com/mcp/{tenant}"},
+		{"percent-encoded brace in path", "https://flowstate.example.com/mcp/%7Btenant%7D"},
+		// ServeMux redirects a non-canonical request path to its cleaned form
+		// before matching, so a pattern registered under any of these would
+		// never actually be reached.
+		{"repeated slash", "https://flowstate.example.com/mcp//api"},
+		{"dot segment", "https://flowstate.example.com/mcp/./api"},
+		{"dot-dot segment", "https://flowstate.example.com/mcp/../api"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -145,6 +157,28 @@ func TestProtectedResourceMetadataURLIsOriginDerived(t *testing.T) {
 		require.Equal(t, want, pr.MetadataURL())
 		require.Equal(t, auth.ProtectedResourceMetadataPath, pr.Path())
 	})
+}
+
+// TestProtectedResourceMetadataURLPreservesPathEscaping pins the fix for a
+// review finding: an escaped reserved character in the resource's path (a
+// literal "%2F" naming one path segment, not a "/" separating two) must
+// survive into both the metadata URL and the mount path exactly as written,
+// not be silently decoded into a different path shape.
+func TestProtectedResourceMetadataURLPreservesPathEscaping(t *testing.T) {
+	t.Parallel()
+
+	policy := trustingPolicy("https://trusted.example.com")
+	policy.Issuers[0].Audiences = []string{"https://flowstate.example.com/mcp/a%2Fb"}
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp/a%2Fb",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+
+	want := "https://flowstate.example.com" + auth.ProtectedResourceMetadataPath + "/mcp/a%2Fb"
+	require.Equal(t, want, pr.MetadataURL())
+	require.Equal(t, auth.ProtectedResourceMetadataPath+"/mcp/a%2Fb", pr.Path())
 }
 
 // TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudience
