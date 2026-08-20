@@ -214,6 +214,20 @@ type Deps struct {
 	// fix, one level up — an answer that looks like the deployment's and
 	// is not. See remoteCatalogCall.
 	RemoteCatalogAddress string
+
+	// WrapHandler, when set, wraps every tool handler [AddLocalCapabilities]
+	// registers — derived and caller-supplied alike — with the tool's own
+	// name in hand.
+	//
+	// Read only there, deliberately. It exists for a serving surface with
+	// several callers at once, where a tool that mutates process-wide state
+	// for the duration of one call needs that call serialized against every
+	// other tool that reads the same state — `flow mcp serve`'s guard around
+	// [v1.DefaultRegistry] (cmd/flow/mcpserve.go) is the whole reason it is
+	// here. Stdio has one caller and needs none of it, so [AddTools] ignores
+	// this field and the surface an agent host launches is byte for byte the
+	// one it always was.
+	WrapHandler func(tool string, next mcp.ToolHandler) mcp.ToolHandler
 }
 
 // ToolRegistration is one tool this package does not itself derive from the
@@ -303,21 +317,32 @@ func AddLocalCapabilities(
 			continue
 		}
 
+		name := ToolName(method.Name)
 		srv.AddTool(&mcp.Tool{
-			Name:        ToolName(method.Name),
+			Name:        name,
 			Description: ToolDescription(method.Name),
 			InputSchema: SchemaForMessage(method.Input),
 			// No Meta: [ToolViews] names no local tool today, and a view
 			// declared here would point at a resource this function does not
 			// mount. If that ever changes, it changes here deliberately.
-		}, dispatch(method, local, noRemoteClient, deps))
+		}, wrapToolHandler(deps, name, dispatch(method, local, noRemoteClient, deps)))
 	}
 
 	for _, reg := range extra {
-		srv.AddTool(reg.Tool, reg.Handler)
+		srv.AddTool(reg.Tool, wrapToolHandler(deps, reg.Tool.Name, reg.Handler))
 	}
 
 	addResources(srv, local)
+}
+
+// wrapToolHandler applies [Deps.WrapHandler] when one was given, and is the
+// identity otherwise.
+func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHandler {
+	if deps.WrapHandler == nil {
+		return handler
+	}
+
+	return deps.WrapHandler(name, handler)
 }
 
 // noRemoteClient is the client [AddLocalCapabilities] hands its dispatchers.

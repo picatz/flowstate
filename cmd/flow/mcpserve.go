@@ -600,6 +600,11 @@ func mcpServeTools() *mcp.Server {
 		// client is safe for exactly those.
 		server.New(nil),
 		flowmcp.Deps{
+			// Every served handler runs under the registry guard below: the
+			// test tool exclusively, everything else shared. See
+			// [newMCPServeRegistryGuard].
+			WrapHandler: newMCPServeRegistryGuard().wrap,
+
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
 			// nil Redact as "nothing is ever withheld", and a field that means
@@ -616,6 +621,99 @@ func mcpServeTools() *mcp.Server {
 	)
 
 	return srv
+}
+
+// mcpServeRegistryGuard serializes this surface's tools against the one piece
+// of process-wide state a caller can make them mutate: [v1.DefaultRegistry].
+//
+// The problem it solves, reported by Codex on picatz/flowstate#807. A
+// flowstate_test case may stub a task this build does not register — a plugin
+// task, typically — and [flowtest.RunSource] handles that by registering a
+// synthetic definition into the *global* registry so the submitted workflow
+// can be compiled at all, then putting the registry back (see swapRegistry in
+// pkg/flowstate/v1/flowtest/run.go). Two consequences are harmless on stdio
+// and are not here:
+//
+//   - **The synthetic names are left behind.** Over stdio that is one trusted
+//     caller in a short-lived process. Over HTTP the stub names are chosen by
+//     whoever holds a token, so the global registry grows without bound across
+//     calls, and flowstate_get_catalog — which reads that same registry —
+//     starts advertising one caller's invented tasks to every other caller,
+//     until the catalog no longer fits under [flowmcp.MaxResultBytes] and
+//     answers nobody. That is a caller writing into state every other
+//     caller reads, which is the tenancy failure CLAUDE.md is about, arriving
+//     through a test harness.
+//   - **The swap is not concurrency-safe by design.** flowtest's own comment
+//     says so: cases run in sequence and must not run concurrently with
+//     anything else touching the same registry. On stdio nothing does. Here
+//     two callers would.
+//
+// So this guard does two things. It takes the write lock for the duration of
+// a flowstate_test call and the read lock for every other tool, so no caller
+// ever observes the registry mid-swap; and it removes, after the call, every
+// name that appeared during it — [v1.Registry.Unregister], the operation
+// flowtest's own comment predates.
+//
+// Repair rather than a fix in flowtest: leaving a synthetic name registered
+// is deliberate there ("fails loudly rather than silently resolving to a task
+// that does not exist anywhere else") and is the right answer for a one-shot
+// `flow test` process. What is wrong is not that behavior but this surface
+// inheriting it, so the correction belongs to the surface.
+type mcpServeRegistryGuard struct {
+	mu sync.RWMutex
+}
+
+// newMCPServeRegistryGuard builds one.
+func newMCPServeRegistryGuard() *mcpServeRegistryGuard {
+	return &mcpServeRegistryGuard{}
+}
+
+// wrap is [flowmcp.Deps.WrapHandler]: exclusive for the tool that mutates the
+// registry, shared for every tool that reads it.
+func (g *mcpServeRegistryGuard) wrap(tool string, next mcp.ToolHandler) mcp.ToolHandler {
+	if tool == flowmcp.TestToolName {
+		return g.exclusive(next)
+	}
+
+	return g.shared(next)
+}
+
+// exclusive runs the registry-mutating tool alone, and repairs what it left.
+func (g *mcpServeRegistryGuard) exclusive(next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+
+		registry := v1.DefaultRegistry()
+		before := make(map[string]bool)
+		for _, name := range registry.Names() {
+			before[name] = true
+		}
+
+		// Deferred rather than run after the call returns, so a handler that
+		// panics still leaves the registry as it found it: a panic mid-swap
+		// is exactly when a leaked name would be least noticed.
+		defer func() {
+			for _, name := range registry.Names() {
+				if !before[name] {
+					registry.Unregister(name)
+				}
+			}
+		}()
+
+		return next(ctx, req)
+	}
+}
+
+// shared runs a tool that only reads the registry, excluded from the window
+// in which the tool above has it swapped.
+func (g *mcpServeRegistryGuard) shared(next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		g.mu.RLock()
+		defer g.mu.RUnlock()
+
+		return next(ctx, req)
+	}
 }
 
 // runMCPServe implements the `mcp serve` sub-command.

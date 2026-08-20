@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 )
@@ -747,4 +748,54 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestMCPServeTestToolLeavesNoTaskInTheGlobalRegistry is Codex's P1 finding on
+// #807: a caller's flowstate_test call must not write into state every other
+// caller reads.
+//
+// The mechanism: a stub naming a task this build does not register makes
+// flowtest register a synthetic definition into the process-wide
+// v1.DefaultRegistry so the submitted workflow can be compiled, and leave it
+// there. On stdio that is one trusted caller in a short-lived process; here
+// the stub names are chosen by whoever holds a token, so the registry grows
+// across calls and flowstate_get_catalog — reading that same registry — starts
+// advertising one caller's invented tasks to everyone else, until the catalog
+// no longer fits under the surface's byte bound and answers nobody.
+//
+// Asserted in both places it shows: the registry itself, and the catalog a
+// second caller reads.
+func TestMCPServeTestToolLeavesNoTaskInTheGlobalRegistry(t *testing.T) {
+	// Not parallel: it asserts against the process-wide task registry, which
+	// a parallel sibling registering a task of its own would make unreadable.
+
+	const invented = "attacker_chosen_task_from_807"
+
+	require.NotContains(t, v1.DefaultRegistry().Names(), invented,
+		"the premise is that this build does not have this task")
+
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+	session := fixture.connect(t, fixture.goodToken("agent"))
+
+	_, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.TestToolName,
+		Arguments: map[string]any{
+			"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: reach\n  " + invented + ":\n    anything: 1\n",
+			"tests":    "tests:\n  - name: it runs\n    stubs:\n      - task: " + invented + "\n        returns: {}\n    expect:\n      failed: false\n",
+		},
+	})
+	require.NoError(t, err)
+
+	require.NotContains(t, v1.DefaultRegistry().Names(), invented,
+		"a caller's stub name must not outlive its own call in the process-wide registry")
+
+	// And the surface a second caller reads: the catalog must not advertise
+	// somebody else's invented task.
+	catalog, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      flowmcp.ToolName("GetCatalog"),
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.NotContains(t, renderEveryShape(catalog), invented,
+		"flowstate_get_catalog must not advertise a task one caller invented")
 }
