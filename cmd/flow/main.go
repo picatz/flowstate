@@ -852,6 +852,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// RFC 9728 protected resource metadata, resolved against the same policy
+	// the verifier was built from: an advertised authorization server this
+	// policy would not trust a token from is a start-up failure here, not a
+	// per-request 401 a client discovers after already trusting the document.
+	// See cmd/flow/protectedresource.go.
+	protectedResource, err := resolveProtectedResource(protectedResourceFlagsOf(cmd), policy)
+	if err != nil {
+		return err
+	}
+	if err := checkProtectedResourceRouteCollision(protectedResource, broker); err != nil {
+		return err
+	}
+
 	// The public listener's certificate, and whether the address it is about
 	// to bind may go without one. Checked before any further I/O beyond the
 	// files and policy already read above: a certificate this process cannot
@@ -1102,7 +1115,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr:    publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver),
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver, protectedResource),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
@@ -1140,6 +1153,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// reading source is the sort of friction that gets solved by guessing.
 		logger.Info("issuing workload identity assertions",
 			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
+	}
+	if protectedResource != nil {
+		logger.Info("serving RFC 9728 protected resource metadata",
+			"metadata_url", protectedResource.MetadataURL())
 	}
 
 	// The internal listener binds only now, once the public one is already
@@ -2112,6 +2129,11 @@ flow server --verbose`,
 	addACMEFlags(serverCmd)
 	addMTLSFlags(serverCmd)
 	addInternalListenerFlags(serverCmd)
+
+	// RFC 9728 protected resource metadata for the MCP surface — see
+	// cmd/flow/protectedresource.go. Server only, for the same reason as the
+	// listener flags above: a worker serves no HTTP surface to advertise.
+	addProtectedResourceFlags(serverCmd)
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{

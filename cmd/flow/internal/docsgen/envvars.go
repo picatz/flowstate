@@ -202,6 +202,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
 		},
 		{
+			name:    "FLOWSTATE_PROTECTED_RESOURCE",
+			value:   "unset",
+			purpose: "Default for `--protected-resource` on `flow server`: the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as. Given together with one or more `--authorization-server`, this deployment serves RFC 9728 protected resource metadata and every 401 challenge names it. Unset: the route does not exist, and every challenge reads exactly as it does without this slice.",
+			read:    "cmd/flow/protectedresource.go",
+		},
+		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
 			value:   "unset",
 			purpose: "Default for `--secret-command`: the argv of the command that resolves `command:` secrets, `$PATH`-list-separated (the executable first). `{{name}}` and, with `--secret-command-namespaced`, `{{namespace}}` are substituted literally into one argument, never through a shell.",
