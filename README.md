@@ -465,6 +465,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow server dev` | Start the whole stack in one command on loopback: Temporal, the server, and a worker. Ephemeral unless `--db`, and every insecure posture it takes is stated at start-up. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 | `flow mcp` | Serve the control plane to an AI agent over stdin and stdout. See [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent). |
+| `flow mcp serve` | Serve a reduced control plane over HTTP as an OAuth 2.1 protected resource, requiring an audience-bound bearer token from a configured identity provider. See [MCP over HTTP, authorized](docs/MCP_AUTHORIZATION.md). |
 | `flow keys` | Generate and inspect signing keys for workload identity. |
 | `flow keys generate` | Generate a signing key, write it PKCS#8-PEM at file mode 0600, and print its public JWK. |
 | `flow keys public` | Print the public JWK for an existing signing key, without touching the private half. |

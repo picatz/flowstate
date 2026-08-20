@@ -665,10 +665,6 @@ flow mcp serve --listen :8617 \
   --auth-policy /etc/flowstate/policy.yaml \
   --protected-resource https://flowstate.example.com/mcp \
   --authorization-server https://acme.okta.com
-
-# What a client sees before it holds a token:
-curl -i https://flowstate.example.com/mcp
-curl -s https://flowstate.example.com/.well-known/oauth-protected-resource/mcp
 ```
 
 | Flag | Type | Default | Environment | Description |
