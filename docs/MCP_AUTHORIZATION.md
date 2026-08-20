@@ -130,8 +130,15 @@ Two things, both already-familiar shapes rather than new machinery:
   ```
 
 With both in place, the wire exchange in the diagram above is the whole of
-what a compliant MCP client needs — no flowstate-specific client library, no
-extra registration step, and no credential the operator hands out by hand.
+what a compliant MCP client needs from *flowstate* — no flowstate-specific
+client library, and no credential flowstate itself hands out. One step may
+remain at the identity provider: an authorization-code client still needs a
+`client_id` the AS recognizes (OAuth 2.0 §2.2). An IdP supporting dynamic
+client registration or Client ID Metadata Documents grants one on the fly;
+against an IdP supporting neither, the operator must pre-register the MCP
+client there and configure the client with the ID it was given, before the
+flow above can start. That registration belongs to the IdP, not to
+flowstate — nothing here reads or stores it.
 
 ## What this deliberately does not do (yet)
 

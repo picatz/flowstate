@@ -150,6 +150,21 @@ func WrongIssuerToken(claims map[string]any, tokenOptions []TokenOption, issuerO
 			panic(r)
 		}
 	}()
+	// The foreign issuer's own URL always wins as "iss", the same way
+	// WrongAudienceToken's named audience always wins: MintToken preserves a
+	// caller-supplied claim over its own default, so claims copied from an
+	// existing token would carry the trusted issuer's "iss" into this one —
+	// and a token claiming a trusted issuer while signed by a foreign key is
+	// refused for its *signature*, not its issuer, letting a test built on
+	// this helper pass on the wrong defect.
+	if _, has := claims[claimIssuer]; has {
+		forced := make(map[string]any, len(claims))
+		for k, v := range claims {
+			forced[k] = v
+		}
+		forced[claimIssuer] = foreign.URL()
+		claims = forced
+	}
 	token = foreign.MintToken(claims, tokenOptions...)
 	return token, foreign
 }

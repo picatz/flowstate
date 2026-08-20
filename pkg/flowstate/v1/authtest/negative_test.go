@@ -189,6 +189,49 @@ func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
 	assert.Equal(t, "agent", principal.Subject)
 }
 
+// TestWrongIssuerTokenForcesItsOwnIssuerClaim is the regression for a Codex
+// finding: MintToken preserves a caller-supplied "iss" claim over its own
+// default, so claims copied from a real token — the natural way to build a
+// negative case from a positive one — carried the trusted issuer's "iss"
+// into the foreign token. A token claiming a trusted issuer while signed by
+// a foreign key is refused for its signature, not its issuer, so a test
+// built on the helper could pass on the wrong defect. The foreign issuer's
+// own URL must win.
+func TestWrongIssuerTokenForcesItsOwnIssuerClaim(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	trusted := newIssuer(t, authtest.WithClock(clock.Now))
+
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:      "trusted",
+		Issuer:    trusted.URL(),
+		Audiences: []string{"flowstate"},
+	}}}, auth.WithClock(clock.Now))
+	require.NoError(t, err)
+
+	// Claims copied from an existing token, "iss" included — the shape a
+	// test naturally builds by decoding a positive-case token.
+	token, foreign := authtest.WrongIssuerToken(
+		map[string]any{"iss": trusted.URL(), "team": "platform"},
+		[]authtest.TokenOption{
+			authtest.WithSubject("agent"),
+			authtest.WithAudience("flowstate"),
+		},
+		authtest.WithClock(clock.Now),
+	)
+	t.Cleanup(func() { _ = foreign.Close() })
+
+	// Refused as an untrusted issuer — not as a bad signature, which is what
+	// a preserved trusted-issuer "iss" over a foreign key would produce.
+	_, err = verifier.Verify(t.Context(), token)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, auth.ErrUntrustedIssuer,
+		"a caller-supplied iss must not survive into the foreign token")
+	assert.False(t, errors.Is(err, auth.ErrInvalidSignature),
+		"refusal by signature means the trusted iss claim survived and the JWKS lookup went to the wrong issuer")
+}
+
 // TestWrongIssuerTokenClosesItsIssuerOnPanic is the regression for a Codex
 // finding: MintToken panics on invalid token options (no audience named, for
 // one) after the foreign issuer's HTTP server is already listening, and the
