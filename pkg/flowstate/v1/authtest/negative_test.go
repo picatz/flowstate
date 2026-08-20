@@ -1,0 +1,258 @@
+package authtest_test
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+)
+
+// TestWrongAudienceTokenHasExactlyOneDefect proves the thing a negative test
+// that consumes this helper depends on: the token WrongAudienceToken mints is
+// refused only by the audience check, and would otherwise verify. If it were
+// also refused by, say, an expired lifetime or an untrusted issuer, a
+// resource-server negative test built on it could pass for the wrong reason —
+// CLAUDE.md's "green by not running" failure, one helper away from the
+// verifier it is meant to exercise.
+func TestWrongAudienceTokenHasExactlyOneDefect(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	issuer := newIssuer(t, authtest.WithClock(clock.Now))
+
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Audiences: []string{"https://mcp.example.com/"}})
+
+	token := issuer.WrongAudienceToken(
+		"https://someone-else.example.com/",
+		map[string]any{"team": "platform"},
+		authtest.WithSubject("agent"),
+	)
+
+	_, err := verifier.Verify(t.Context(), token)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, auth.ErrInvalidAudience,
+		"a wrong-audience token must be refused precisely because of its audience")
+	assert.False(t, errors.Is(err, auth.ErrUntrustedIssuer))
+	assert.False(t, errors.Is(err, auth.ErrTokenExpired))
+	assert.False(t, errors.Is(err, auth.ErrInvalidSignature))
+
+	// The same claims, correctly addressed, verify: proof the only thing
+	// wrong with the token above was its audience, not its signature,
+	// issuer, claims, or lifetime.
+	correctlyAddressed := issuer.MintToken(
+		map[string]any{"team": "platform"},
+		authtest.WithSubject("agent"),
+		authtest.WithAudience("https://mcp.example.com/"),
+	)
+	principal, err := verifier.Verify(t.Context(), correctlyAddressed)
+	require.NoError(t, err)
+	assert.Equal(t, "agent", principal.Subject)
+}
+
+// TestWrongAudienceTokenLastAudienceWins checks that the audience passed to
+// WrongAudienceToken always decides the token's "aud" claim, even if options
+// also names one — the same "last option wins" rule every functional option
+// in this package follows, and the property WrongAudienceToken's own doc
+// promises.
+func TestWrongAudienceTokenLastAudienceWins(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	issuer := newIssuer(t, authtest.WithClock(clock.Now))
+
+	token := issuer.WrongAudienceToken(
+		"https://wrong.example.com/",
+		nil,
+		authtest.WithAudience("https://ignored.example.com/"),
+	)
+
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{
+		Audiences: []string{"https://wrong.example.com/"},
+	})
+	principal, err := verifier.Verify(t.Context(), token)
+	require.NoError(t, err, "the audience WrongAudienceToken was given must win")
+	assert.True(t, principal.HasAudience("https://wrong.example.com/"))
+}
+
+// TestWrongAudienceTokenRejectsEmptyAudience checks the fail-closed rule this
+// package applies everywhere an omission needs one spelling: an audience
+// argument of "" would mint the very no-audience hole this package's own doc
+// warns about, dressed up as a "wrong" one.
+func TestWrongAudienceTokenRejectsEmptyAudience(t *testing.T) {
+	t.Parallel()
+
+	issuer := newIssuer(t)
+
+	assert.Panics(t, func() {
+		issuer.WrongAudienceToken("", nil)
+	})
+}
+
+// TestWrongIssuerTokenHasExactlyOneDefect proves the token WrongIssuerToken
+// mints is refused only because it comes from an issuer the policy does not
+// trust, and would otherwise verify had that issuer been the trusted one.
+func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
+	t.Parallel()
+
+	// Real time throughout: WrongIssuerToken's foreign issuer runs on its own
+	// clock, so pinning the trusted issuer's clock to a fixed instant here
+	// would only manufacture a spurious not-yet-valid failure between the
+	// two, unrelated to the thing this test is proving.
+	trusted := newIssuer(t)
+
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:      "trusted",
+		Issuer:    trusted.URL(),
+		Audiences: []string{"flowstate"},
+	}}})
+	require.NoError(t, err)
+
+	token, foreign := authtest.WrongIssuerToken(
+		map[string]any{"team": "platform"},
+		authtest.WithSubject("agent"),
+		authtest.WithAudience("flowstate"),
+	)
+	t.Cleanup(func() { _ = foreign.Close() })
+
+	_, err = verifier.Verify(t.Context(), token)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, auth.ErrUntrustedIssuer,
+		"a wrong-issuer token must be refused precisely because of who signed it")
+	assert.False(t, errors.Is(err, auth.ErrInvalidAudience))
+	assert.False(t, errors.Is(err, auth.ErrTokenExpired))
+	assert.False(t, errors.Is(err, auth.ErrInvalidSignature))
+
+	// The identical claims, minted by the trusted issuer instead, verify:
+	// proof the foreign token's only defect was its issuer, not its shape.
+	fromTrusted := trusted.MintToken(
+		map[string]any{"team": "platform"},
+		authtest.WithSubject("agent"),
+		authtest.WithAudience("flowstate"),
+	)
+	principal, err := verifier.Verify(t.Context(), fromTrusted)
+	require.NoError(t, err)
+	assert.Equal(t, "agent", principal.Subject)
+
+	// And a policy that trusts the foreign issuer instead admits the very
+	// same token, which pins the refusal above to the issuer specifically,
+	// not to some other difference between the two issuers (a different key
+	// algorithm, for instance).
+	verifierForForeign := verifierFor(t, foreign, authtest.NewClock(time.Now()), auth.TrustedIssuer{})
+	principal, err = verifierForForeign.Verify(t.Context(), token)
+	require.NoError(t, err)
+	assert.Equal(t, "agent", principal.Subject)
+}
+
+// TestWithDelegationCarriesActAndNothingElseWrong proves the token
+// WithDelegation produces otherwise verifies cleanly — correct signature,
+// trusted issuer, accepted audience, unexpired — and carries exactly the
+// "act" claim asked for. A resource server's own refusal of a
+// delegation-bearing token (S7a's decision, per #567) is a policy this
+// repository does not yet write; what this package owes is a token whose
+// only distinguishing feature is the claim, so that whichever rule PR-2
+// writes to refuse it is provably what caught it and not some other defect.
+func TestWithDelegationCarriesActAndNothingElseWrong(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	issuer := newIssuer(t, authtest.WithClock(clock.Now))
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{})
+
+	token := issuer.MintToken(
+		map[string]any{"team": "platform"},
+		authtest.WithSubject("agent:deploy-bot"),
+		authtest.WithAudience("flowstate"),
+		authtest.WithDelegation(map[string]any{"sub": "alice@example.com"}),
+	)
+
+	principal, err := verifier.Verify(t.Context(), token)
+	require.NoError(t, err, "a delegation-bearing token must otherwise verify cleanly")
+	assert.Equal(t, "agent:deploy-bot", principal.Subject)
+
+	act, ok := principal.Claim("act")
+	require.True(t, ok, "the \"act\" claim must be present on the verified principal")
+	actMap, ok := act.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "alice@example.com", actMap["sub"])
+
+	_, hasMayAct := principal.Claim("may_act")
+	assert.False(t, hasMayAct, "WithDelegation must not also set \"may_act\"")
+}
+
+// TestWithMayActCarriesMayActAndNothingElseWrong is
+// TestWithDelegationCarriesActAndNothingElseWrong for "may_act", and also
+// proves the two claims are independent: a token built with WithMayAct alone
+// carries no "act" claim, since "may_act" is a grant of permission to
+// delegate, not a record that delegation happened.
+func TestWithMayActCarriesMayActAndNothingElseWrong(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	issuer := newIssuer(t, authtest.WithClock(clock.Now))
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{})
+
+	token := issuer.MintToken(
+		map[string]any{"team": "platform"},
+		authtest.WithSubject("alice@example.com"),
+		authtest.WithAudience("flowstate"),
+		authtest.WithMayAct(map[string]any{"sub": "agent:deploy-bot"}),
+	)
+
+	principal, err := verifier.Verify(t.Context(), token)
+	require.NoError(t, err, "a may_act-bearing token must otherwise verify cleanly")
+	assert.Equal(t, "alice@example.com", principal.Subject)
+
+	mayAct, ok := principal.Claim("may_act")
+	require.True(t, ok)
+	mayActMap, ok := mayAct.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "agent:deploy-bot", mayActMap["sub"])
+
+	_, hasAct := principal.Claim("act")
+	assert.False(t, hasAct, "WithMayAct must not also set \"act\"")
+}
+
+// TestWithDelegationRejectsEmptyActor and its "may_act" sibling below pin the
+// fail-closed rule stated in each option's doc: an empty grant is not a shape
+// any issuer mints, so minting one would let a test claim delegation without
+// ever exercising what the claim says.
+func TestWithDelegationRejectsEmptyActor(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { authtest.WithDelegation(nil) })
+	assert.Panics(t, func() { authtest.WithDelegation(map[string]any{}) })
+}
+
+func TestWithMayActRejectsEmptyPrincipal(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() { authtest.WithMayAct(nil) })
+	assert.Panics(t, func() { authtest.WithMayAct(map[string]any{}) })
+}
+
+// TestWithDelegationCarriesNestedActor checks the claim lands on the wire
+// exactly as given, including a nested "act" modelling a delegation chain —
+// the same "claims win exactly as written" contract MintToken documents for
+// every claim.
+func TestWithDelegationCarriesNestedActor(t *testing.T) {
+	t.Parallel()
+
+	issuer := newIssuer(t)
+	claims := issuer.Claims(
+		authtest.WithAudience("flowstate"),
+		authtest.WithDelegation(map[string]any{
+			"sub": "agent:deploy-bot",
+			"act": map[string]any{"sub": "agent:planner"},
+		}),
+	)
+
+	act, ok := claims["act"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "agent:deploy-bot", act["sub"])
+	nested, ok := act["act"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "agent:planner", nested["sub"])
+}

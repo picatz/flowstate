@@ -43,6 +43,7 @@ type tokenOptions struct {
 	keyIDNamed      bool
 	algorithm       jwa.Algorithm
 	omit            []string
+	extraClaims     map[string]any
 }
 
 // WithSubject names the workload or person the token is about, which becomes
@@ -249,6 +250,9 @@ func (i *Issuer) claims(claims map[string]any, settings tokenOptions) map[string
 	setDefault(minted, claimSubject, settings.subject)
 	setDefault(minted, claimIssuedAt, issuedAt.Unix())
 	setDefault(minted, claimExpiration, expiresAt.Unix())
+	for name, value := range settings.extraClaims {
+		setDefault(minted, name, value)
+	}
 
 	switch {
 	case settings.audienceNamed && len(settings.audience) == 1:
