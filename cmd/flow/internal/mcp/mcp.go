@@ -272,6 +272,66 @@ func AddCapabilities(
 	addUIResources(srv)
 }
 
+// AddLocalCapabilities registers only what answers in *this* process:
+// the [LocalTools] RPCs, plus whatever extra tools the caller supplies, plus
+// the read-only reference resources. It is what `flow mcp serve` — the
+// token-gated HTTP surface, picatz/flowstate#558 — builds its server from.
+//
+// Three differences from [AddCapabilities], each of them a thing that surface
+// must not have:
+//
+//   - No RPC tool that dispatches to a deployment. Those call through a
+//     client this process authenticates as *itself*, so serving them to a
+//     caller whose own authority nothing here checks yet would make this
+//     process a deputy for whoever holds a token. That is why there is no
+//     remote parameter to pass: a registration that cannot name a client
+//     cannot dispatch to one.
+//   - No UI resources. The one card this surface publishes renders
+//     flowstate_get ([ToolViews]), which is one of the tools above, so
+//     mounting it would advertise a view of a tool that is not there.
+//   - Nothing derived from [Deps.RemoteCatalogAddress]: GetCatalog answers
+//     from this binary's own build, which is the only answer available when
+//     no deployment is addressed.
+func AddLocalCapabilities(
+	srv *mcp.Server,
+	local *server.FlowstateServer,
+	deps Deps,
+	extra ...ToolRegistration,
+) {
+	for _, method := range WorkflowServiceMethods() {
+		if !LocalTools[method.Name] {
+			continue
+		}
+
+		srv.AddTool(&mcp.Tool{
+			Name:        ToolName(method.Name),
+			Description: ToolDescription(method.Name),
+			InputSchema: SchemaForMessage(method.Input),
+			// No Meta: [ToolViews] names no local tool today, and a view
+			// declared here would point at a resource this function does not
+			// mount. If that ever changes, it changes here deliberately.
+		}, dispatch(method, local, noRemoteClient, deps))
+	}
+
+	for _, reg := range extra {
+		srv.AddTool(reg.Tool, reg.Handler)
+	}
+
+	addResources(srv, local)
+}
+
+// noRemoteClient is the client [AddLocalCapabilities] hands its dispatchers.
+// It is never called: every method registered there is a [LocalTools] one,
+// whose Call closure takes the local server and ignores this argument
+// entirely (see [WorkflowServiceMethods]). It panics rather than returning
+// nil so that a future method added to LocalTools which *does* dial fails
+// loudly in a test rather than nil-dereferencing in production — the
+// registration filter is the guarantee, and this is the alarm on it.
+func noRemoteClient() flowstatev1connect.WorkflowServiceClient {
+	panic("mcp: a tool registered by AddLocalCapabilities tried to dispatch to a deployment; " +
+		"only LocalTools may be registered there, because this process would dispatch as itself")
+}
+
 // AddTools registers one tool per RPC, plus whatever tools the caller passes
 // as extra — flowstate_run_local and flowstate_test, in cmd/flow's own
 // wiring.

@@ -64,9 +64,11 @@ type ProtectedResourceConfig struct {
 // vocabulary, and a document that named scopes here would need renaming the
 // day one exists.
 type ProtectedResource struct {
-	metadataURL string
-	path        string
-	handler     http.Handler
+	resource     string
+	resourcePath string
+	metadataURL  string
+	path         string
+	handler      http.Handler
 }
 
 // NewProtectedResource validates cfg against policy and builds the metadata
@@ -135,11 +137,50 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		// ScopesSupported deliberately omitted: see [ProtectedResource]'s doc.
 	}
 
+	// The resource's own path, kept for the same reason the metadata path is
+	// computed rather than configured: a surface that serves this resource
+	// (cmd/flow's `flow mcp serve`) has to mount itself at exactly the path
+	// the advertised identifier names, and deriving it here means the mount
+	// point and the published document cannot disagree. EscapedPath for the
+	// reason given above; "/" for a resource at the bare origin, since that
+	// is the request path such a resource is fetched at.
+	resourcePath := resourceURL.EscapedPath()
+	if resourcePath == "" {
+		resourcePath = "/"
+	}
+
 	return &ProtectedResource{
-		metadataURL: metadataURL,
-		path:        metadataPath,
-		handler:     protectedResourceHandler(metadata),
+		resource:     cfg.Resource,
+		resourcePath: resourcePath,
+		metadataURL:  metadataURL,
+		path:         metadataPath,
+		handler:      protectedResourceHandler(metadata),
 	}, nil
+}
+
+// Resource is the canonical resource identifier this document advertises —
+// [ProtectedResourceConfig.Resource], validated. It is the exact string every
+// accepted token's "aud" claim must carry (RFC 8707 section 2), which is what
+// [MCPTokenVerifier] checks it against.
+//
+// The empty string for a nil receiver, so an unconfigured deployment reads as
+// "no resource" rather than panicking — the same shape [MetadataURL] takes.
+func (p *ProtectedResource) Resource() string {
+	if p == nil {
+		return ""
+	}
+	return p.resource
+}
+
+// ResourcePath is the path component of [Resource] — where a surface serving
+// this resource mounts itself, so that the URI a client was handed in the
+// metadata document is the URI it can actually reach. "/" when the resource
+// names a bare origin.
+func (p *ProtectedResource) ResourcePath() string {
+	if p == nil {
+		return ""
+	}
+	return p.resourcePath
 }
 
 // MetadataURL is where this deployment serves its RFC 9728 document — always

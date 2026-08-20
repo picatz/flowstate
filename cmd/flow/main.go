@@ -2428,6 +2428,56 @@ flow mcp --plugin-dir ./plugins`,
 	// process any more than a keystroke is.
 	addPluginFlags(mcpCmd)
 
+	// The HTTP half, as its own verb rather than a flag on the command above:
+	// picatz/flowstate#558's decision 2, and see cmd/flow/mcpserve.go's header
+	// for the reasoning. `flow mcp` with no subcommand still runs runMCP over
+	// stdio, byte for byte as it did.
+	mcpServeCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Serve Flowstate to an AI agent over MCP on HTTP, as an OAuth 2.1 protected resource",
+		Long: "Serve the Model Context Protocol over streamable HTTP, requiring every caller to " +
+			"present a bearer token this deployment's own trust policy accepts and whose audience " +
+			"names this resource specifically (RFC 8707 section 2). A request with no token is " +
+			"answered 401 with a WWW-Authenticate header naming the RFC 9728 protected resource " +
+			"metadata document, which this command also serves, so a compliant MCP client can " +
+			"bootstrap from the refusal alone.\n\n" +
+			"This is a different surface from `flow mcp`, not a transport switch on it. Over stdio " +
+			"there is exactly one caller and it is the process that spawned this one, which is what " +
+			"makes every posture flag there a decision taken once at start-up; over HTTP there are " +
+			"many callers and those flags would silently change meaning. So the tools that execute " +
+			"or dispatch anything are not served here: flowstate_run_local is absent, because over " +
+			"HTTP it is remote code execution as a feature, and the run-lifecycle tools are absent " +
+			"because they would spend this process's own credential on a caller's behalf. What is " +
+			"served is what answers in this process and reaches nothing — flowstate_validate, " +
+			"flowstate_compile, flowstate_get_catalog — plus flowstate_test, whose stubbed runs " +
+			"replace every task implementation before a step executes.\n\n" +
+			"Flowstate is not an authorization server: it issues no tokens, runs no authorization " +
+			"or token endpoint, and verifies nothing it did not receive from the identity provider " +
+			"an operator configured. No scope vocabulary is advertised or challenged for yet, and a " +
+			"token carrying an RFC 8693 `act` or `may_act` delegation claim is refused rather than " +
+			"read as its bare subject. See docs/MCP_AUTHORIZATION.md.",
+		Args: cobra.NoArgs,
+		RunE: runMCPServe,
+		Example: `# Behind a TLS-terminating proxy, advertising one identity provider:
+flow mcp serve --listen 127.0.0.1:8617 \
+  --auth-policy /etc/flowstate/policy.yaml \
+  --protected-resource https://flowstate.example.com/mcp \
+  --authorization-server https://acme.okta.com
+
+# Terminating TLS here instead:
+flow mcp serve --listen :8617 \
+  --tls-cert-file /etc/flowstate/tls.crt --tls-key-file /etc/flowstate/tls.key \
+  --auth-policy /etc/flowstate/policy.yaml \
+  --protected-resource https://flowstate.example.com/mcp \
+  --authorization-server https://acme.okta.com
+
+# What a client sees before it holds a token:
+curl -i https://flowstate.example.com/mcp
+curl -s https://flowstate.example.com/.well-known/oauth-protected-resource/mcp`,
+	}
+	addMCPServeFlags(mcpServeCmd)
+	mcpCmd.AddCommand(mcpServeCmd)
+
 	// LSP command, which starts a Language Server Protocol (LSP) server for Flowfile files.
 	lspCmd := &cobra.Command{
 		Use:   "lsp",
