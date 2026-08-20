@@ -14,12 +14,16 @@ describes S7a of that sequence: a token-gated HTTP MCP surface with no scope
 vocabulary and no delegation claims accepted. Read those issues for the
 reasoning; this page is the operator-facing result.
 
+The surface is `flow mcp serve` — its own verb, not a flag on `flow mcp`.
+That is #558's decision 2, and the reasoning is in the section below on what
+this surface deliberately does not serve.
+
 ## Nothing changes for stdio
 
 The Model Context Protocol's own authorization spec says implementations using
 stdio SHOULD NOT run this flow at all, and SHOULD take credentials from the
-environment instead. `flow mcp` without `--http` (or whatever flag PR-1 lands
-under) keeps doing exactly that: it serves the control plane to the process
+environment instead. `flow mcp` — the bare verb, with no subcommand — keeps
+doing exactly that: it serves the control plane to the process
 that spawned it, with that process's own identity, and the tool description
 `flow mcp` prints already says so plainly. None of what follows applies to
 that mode. It is not a stopgap on the way to HTTP — the spec treats it as a
@@ -35,7 +39,7 @@ to be told out of band — the server hands it the map on the first request:
 ```mermaid
 sequenceDiagram
     participant A as agent (MCP client)
-    participant F as flow mcp --http<br/>(resource server)
+    participant F as flow mcp serve<br/>(resource server)
     participant AS as authorization server<br/>(the operator's IdP)
 
     A->>F: MCP request, no token
@@ -76,7 +80,7 @@ Six steps, and every one of them already has a name in a spec:
    what makes the resulting token unusable against any other resource.
 5. **The token comes back audience-bound.** Its `aud` claim names this MCP
    server's resource URI specifically.
-6. **`flow mcp` verifies it the same way every other Connect RPC's bearer
+6. **`flow mcp serve` verifies it the same way every other Connect RPC's bearer
    token is verified** — signature against the issuer's published keys, `iss`
    exact match against a trusted issuer, `aud` contains the accepted
    resource, `exp`/`iat`/`nbf` — because this is the same verifier
@@ -114,20 +118,37 @@ Two things, both already-familiar shapes rather than new machinery:
   matches the resource this server advertises.
 
 - **The protected-resource metadata and its authorization server list**,
-  which PR-1 adds as `--protected-resource` (this server's own resource URI)
-  and `--authorization-server` (repeatable, one per trusted issuer this
-  surface should advertise) on `flow mcp`. Every value passed to
+  spelled `--protected-resource` (this server's own resource URI) and
+  `--authorization-server` (repeatable, one per trusted issuer this surface
+  should advertise). Both are required — a `flow mcp serve` with neither
+  refuses to start rather than serving an unauthenticated surface — and both
+  also exist on `flow server`, which serves the same RFC 9728 document for
+  its Connect RPC surface. Every value passed to
   `--authorization-server` must already be a trusted issuer in the policy
   above — advertising one the trust policy does not accept is refused at
   start-up, on the fail-closed principle that a resource server should never
   point a client at a door the policy itself keeps locked.
 
   ```sh
-  flow mcp --http :8443 \
+  flow mcp serve --listen 127.0.0.1:8617 \
     --auth-policy /etc/flowstate/policy.yaml \
     --protected-resource https://flowstate.example.com/mcp \
     --authorization-server https://acme.okta.com
   ```
+
+  `--listen` defaults to loopback. Any other address requires
+  `--tls-cert-file`/`--tls-key-file` here, or `--tls-terminated-upstream` when
+  a proxy in front of this process already terminates TLS — the same refusal
+  `flow server` makes, for the same reason: a bearer token on a cleartext
+  connection that leaves this machine is a credential handed to whatever sits
+  in between.
+
+  The metadata document is served at RFC 9728 §3.1's constructed location,
+  which inserts the well-known component *before* the resource's own path. A
+  resource of `https://flowstate.example.com/mcp` publishes its document at
+  `https://flowstate.example.com/.well-known/oauth-protected-resource/mcp`,
+  not at the bare prefix, and that exact URL is what the `WWW-Authenticate`
+  challenge names.
 
 With both in place, the wire exchange in the diagram above is the whole of
 what a compliant MCP client needs from *flowstate* — no flowstate-specific
@@ -139,6 +160,29 @@ against an IdP supporting neither, the operator must pre-register the MCP
 client there and configure the client with the ID it was given, before the
 flow above can start. That registration belongs to the IdP, not to
 flowstate — nothing here reads or stores it.
+
+## Two bounds, and why they are two
+
+An authenticated client controls two resources on this surface
+independently, so each has its own bound — bounding one does not bound the
+other:
+
+- `--max-request-bytes` (default 1 MiB) caps one request body. A tool call
+  here carries a Flowfile and a test document, so the default is generous by
+  two orders of magnitude; anything over it is refused with `413` rather than
+  buffered. The cap is applied below the MCP library as well as through it,
+  so no path the library treats specially can miss it.
+- `--max-sessions` (default 32) caps how many streamable-HTTP sessions are
+  open at once. Each holds a goroutine and an initialized server, and how
+  many exist is the client's choice: one POST without an `Mcp-Session-Id`
+  header opens another. A request that would open one past the limit gets
+  `503` with a `Retry-After` hint. Sessions idle for five minutes are closed
+  and their slots returned.
+
+Sessions are also pinned to the principal that opened them: the verified
+token's issuer and subject become the session's owner, and a request carrying
+a different principal's token on that session is refused with `403` even
+though the token itself is perfectly valid.
 
 ## What this deliberately does not do (yet)
 
@@ -177,11 +221,37 @@ says plainly what it is missing.
   resource server needs neither — client registration is an authorization
   server's obligation, and flowstate is not one. Revisit only alongside the
   authorization-server work above, if it is ever taken on.
-- **Local execution is off by default on this surface.** `flowstate_run_local`
-  executes submitted code in the server process; over HTTP that is remote
-  code execution as a feature, and it stays opt-in, separately from
-  everything above. `flowstate_test` — a stubbed rehearsal that reaches
-  nothing by construction — is served.
+- **A reduced tool list, by absence rather than by a flag.** Two groups are
+  not registered on this surface at all, so a model does not see them and
+  there is no flag that turns either on:
+
+  - `flowstate_run_local` executes submitted code in the server process. Over
+    HTTP that is remote code execution as a feature (#558's decision 3). It
+    is absent rather than disabled because a tool a model can see is a tool it
+    will try, and a tool list is the honest place to say no.
+  - The run-lifecycle tools — `flowstate_run`, `flowstate_get`,
+    `flowstate_signal`, `flowstate_signal_with_start`, `flowstate_list`,
+    `flowstate_cancel`, `flowstate_terminate` — dispatch to a *deployment*
+    through a client this process authenticates as **itself**. Serving them
+    to a caller this surface cannot yet authorize per principal would spend
+    this process's authority on that caller's behalf, which is the confused
+    deputy the specification's "MUST NOT pass the client's token through"
+    rule is about, arrived at from the other direction. They return when this
+    surface can authorize per principal (S7b).
+
+  What is served is what answers in this process and touches no run and no
+  tenant: `flowstate_validate`, `flowstate_compile`, `flowstate_get_catalog`
+  — plus `flowstate_test`, which is served deliberately (#558's Q3) because a
+  stubbed run replaces every task implementation before a step executes and
+  so reaches nothing whatever the process was started with.
+
+- **`--reveal-sensitive` is refused here.** Over stdio it is one deliberate
+  decision by the person who started the process and is its only caller. Over
+  HTTP the same sentence reads "show declared-sensitive values in the clear
+  to whoever authenticates", so this surface refuses the flag at start-up
+  rather than honouring it. `--insecure-no-auth` is refused for the
+  corresponding reason: a protected resource that authenticates nobody is not
+  one.
 
 ## Relation to stdio's identity caveat
 
