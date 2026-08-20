@@ -258,7 +258,7 @@ Both are in the [Reference](#reference) below.
 | **Plugins** | Out-of-process tasks and secret backends over Connect RPC: `vcs`, `git`, `github`, `sql` (sqlite and postgres), `codex` (a bounded agentic run as a durable step), and an SDK to write your own | [plugins/](plugins) · [plugin/sdk](pkg/flowstate/v1/plugin/sdk) |
 | **Embedding** | Compile a Flowfile from bytes, register your own Go functions as tasks, and run locally or durably from your own Go program | [EMBEDDING.md](docs/EMBEDDING.md) · [examples/embedding](examples/embedding) |
 | **Examples** | Fifty-five worked Flowfiles, indexed by what each one demonstrates | [examples/README.md](examples/README.md) |
-| **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) · [MCP over HTTP, authorized — the design; the serving flags land in a follow-up PR](docs/MCP_AUTHORIZATION.md) |
+| **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) · [MCP over HTTP, authorized (`flow mcp serve`)](docs/MCP_AUTHORIZATION.md) |
 
 ## Start here
 
@@ -465,6 +465,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow server dev` | Start the whole stack in one command on loopback: Temporal, the server, and a worker. Ephemeral unless `--db`, and every insecure posture it takes is stated at start-up. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 | `flow mcp` | Serve the control plane to an AI agent over stdin and stdout. See [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent). |
+| `flow mcp serve` | Serve a reduced control plane over HTTP as an OAuth 2.1 protected resource, requiring an audience-bound bearer token from a configured identity provider. See [MCP over HTTP, authorized](docs/MCP_AUTHORIZATION.md). |
 | `flow keys` | Generate and inspect signing keys for workload identity. |
 | `flow keys generate` | Generate a signing key, write it PKCS#8-PEM at file mode 0600, and print its public JWK. |
 | `flow keys public` | Print the public JWK for an existing signing key, without touching the private half. |

@@ -64,9 +64,11 @@ type ProtectedResourceConfig struct {
 // vocabulary, and a document that named scopes here would need renaming the
 // day one exists.
 type ProtectedResource struct {
-	metadataURL string
-	path        string
-	handler     http.Handler
+	resource     string
+	resourcePath string
+	metadataURL  string
+	path         string
+	handler      http.Handler
 }
 
 // NewProtectedResource validates cfg against policy and builds the metadata
@@ -135,11 +137,50 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		// ScopesSupported deliberately omitted: see [ProtectedResource]'s doc.
 	}
 
+	// The resource's own path, kept for the same reason the metadata path is
+	// computed rather than configured: a surface that serves this resource
+	// (cmd/flow's `flow mcp serve`) has to mount itself at exactly the path
+	// the advertised identifier names, and deriving it here means the mount
+	// point and the published document cannot disagree. EscapedPath for the
+	// reason given above; "/" for a resource at the bare origin, since that
+	// is the request path such a resource is fetched at.
+	resourcePath := resourceURL.EscapedPath()
+	if resourcePath == "" {
+		resourcePath = "/"
+	}
+
 	return &ProtectedResource{
-		metadataURL: metadataURL,
-		path:        metadataPath,
-		handler:     protectedResourceHandler(metadata),
+		resource:     cfg.Resource,
+		resourcePath: resourcePath,
+		metadataURL:  metadataURL,
+		path:         metadataPath,
+		handler:      protectedResourceHandler(metadata),
 	}, nil
+}
+
+// Resource is the canonical resource identifier this document advertises —
+// [ProtectedResourceConfig.Resource], validated. It is the exact string every
+// accepted token's "aud" claim must carry (RFC 8707 section 2), which is what
+// [MCPTokenVerifier] checks it against.
+//
+// The empty string for a nil receiver, so an unconfigured deployment reads as
+// "no resource" rather than panicking — the same shape [MetadataURL] takes.
+func (p *ProtectedResource) Resource() string {
+	if p == nil {
+		return ""
+	}
+	return p.resource
+}
+
+// ResourcePath is the path component of [Resource] — where a surface serving
+// this resource mounts itself, so that the URI a client was handed in the
+// metadata document is the URI it can actually reach. "/" when the resource
+// names a bare origin.
+func (p *ProtectedResource) ResourcePath() string {
+	if p == nil {
+		return ""
+	}
+	return p.resourcePath
 }
 
 // MetadataURL is where this deployment serves its RFC 9728 document — always
@@ -235,6 +276,25 @@ func validateResourceURI(raw string) (*url.URL, error) {
 	parsed, err := validateHTTPSURL(raw, "resource")
 	if err != nil {
 		return nil, err
+	}
+
+	// RFC 8707 section 2's other component rule — the resource identifier
+	// SHOULD NOT include a query — enforced rather than tolerated, because
+	// this deployment cannot honour one even if it wanted to. The identifier's
+	// path is what a serving surface mounts itself at (see [ResourcePath]) and
+	// [http.ServeMux] does not distinguish requests by query, so a resource of
+	// "https://host/mcp?tenant=a" would be served at "/mcp" and at
+	// "/mcp?tenant=b" alike — neither of which is the identifier advertised in
+	// the document or required in a token's audience. Refusing is the honest
+	// answer: the alternative is a resource identifier whose distinguishing
+	// part nothing distinguishes on. Reported by Codex on
+	// picatz/flowstate#807.
+	if parsed.RawQuery != "" || strings.Contains(raw, "?") {
+		return nil, fmt.Errorf("resource %q must not include a query: RFC 8707 section 2 says a "+
+			"resource identifier should not carry one, and this deployment cannot serve one "+
+			"faithfully — the surface mounts itself at the identifier's path, and routing does "+
+			"not distinguish one query from another, so the identifier would answer at URIs it "+
+			"does not name. Use a path segment instead", raw)
 	}
 
 	if strings.HasSuffix(parsed.Path, "/") {

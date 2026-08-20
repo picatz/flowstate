@@ -20,7 +20,17 @@ import (
 // Flags, matching TLS's own pattern (cmd/flow/tls.go), not schema: this is a
 // serving-surface concern an operator sets per deployment, and #567's review
 // of #558 endorses flags over proto config for exactly that kind of setting.
-func addProtectedResourceFlags(cmd *cobra.Command) {
+//
+// unsetBehavior is the one sentence that differs between the two commands
+// that declare these, and it is not cosmetic: on `flow server` an unset
+// --protected-resource means the route simply does not exist, and on
+// `flow mcp serve` it means the command refuses to start, because that
+// surface *is* the protected resource. Help text that described one while
+// the command did the other would be a diagnostic that lies, which this
+// repository counts as worse than a missing one. Passed rather than derived,
+// so adding a third caller is a moment somebody has to decide what it says.
+// Reported by Codex on picatz/flowstate#807.
+func addProtectedResourceFlags(cmd *cobra.Command, unsetBehavior string) {
 	cmd.Flags().String("protected-resource", os.Getenv("FLOWSTATE_PROTECTED_RESOURCE"),
 		"the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface "+
 			"identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing "+
@@ -29,8 +39,7 @@ func addProtectedResourceFlags(cmd *cobra.Command) {
 			", plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI "+
 			"construction — a resource ending in /mcp serves its document at "+
 			auth.ProtectedResourceMetadataPath+"/mcp, not at the bare prefix), and every 401 "+
-			"challenge names that exact document. Unset (the default): the route does not exist "+
-			"and every challenge reads exactly as it does today")
+			"challenge names that exact document. "+unsetBehavior)
 
 	cmd.Flags().StringArray("authorization-server", nil,
 		"an authorization server this deployment advertises as able to mint tokens for "+

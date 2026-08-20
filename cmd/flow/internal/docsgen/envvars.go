@@ -84,8 +84,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUTH_POLICY",
 			value:   "unset",
-			purpose: "Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
+			purpose: "Default for `--auth-policy`: on `flow server` and `flow mcp serve` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/mcpserve.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_BACKGROUND",

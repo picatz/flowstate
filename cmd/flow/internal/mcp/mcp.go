@@ -87,18 +87,53 @@ const MaxResultBytes = 256 << 10
 // TestEveryToolHasADescription fails rather than an agent being handed a mute
 // tool.
 func ToolDescription(rpc string) string {
+	return toolDescription(rpc, false)
+}
+
+// toolDescription is [ToolDescription] with the reduced surface's answer
+// available.
+//
+// reduced is [AddLocalCapabilities]'s registration: `flow mcp serve`, where
+// several of the notes below are simply false. A description is what a model
+// chooses a tool by and is the only account of the surface it ever reads, so
+// one describing behavior this surface does not have is a diagnostic that
+// lies — the failure "Diagnostics are a feature" names, pointed at a
+// non-human reader. Reported by Codex on picatz/flowstate#807.
+func toolDescription(rpc string, reduced bool) string {
 	description, ok := protodoc.Method(WorkflowServiceName, protoreflect.Name(rpc))
 	if !ok {
 		return ""
 	}
 
-	for _, note := range []string{toolNotes[rpc], localToolNote(rpc)} {
-		if note != "" {
-			description += "\n\n" + note
+	note := toolNotes[rpc]
+	if reduced {
+		note = reducedToolNotes[rpc]
+	}
+
+	for _, extra := range []string{note, localToolNote(rpc)} {
+		if extra != "" {
+			description += "\n\n" + extra
 		}
 	}
 
 	return description
+}
+
+// reducedToolNotes replaces [toolNotes] on the surface [AddLocalCapabilities]
+// registers, for the tools whose stdio note is untrue there.
+//
+// One entry, and the absence of the others is the point: a tool with no entry
+// here gets no surface note rather than an inherited one, because an empty
+// map would silently reintroduce every note this exists to suppress.
+// GetCatalog's stdio note describes dispatching to a deployment named by
+// --address, a flag `flow mcp serve` does not have and a dispatch it
+// deliberately does not do (see cmd/flow/mcpserve.go on why no tool here
+// reaches a deployment).
+var reducedToolNotes = map[string]string{
+	"GetCatalog": "This surface always answers from this binary's own build: its task registry and " +
+		"any plugins this process started. It never dispatches to another deployment, so what is " +
+		"reported here is what this process can validate and rehearse against, which may differ " +
+		"from what the deployment that will eventually run a submitted workflow can execute.",
 }
 
 // toolNotes are the per-tool paragraphs that are about this surface rather
@@ -214,6 +249,38 @@ type Deps struct {
 	// fix, one level up — an answer that looks like the deployment's and
 	// is not. See remoteCatalogCall.
 	RemoteCatalogAddress string
+
+	// WrapHandler, when set, wraps every tool handler [AddLocalCapabilities]
+	// registers — derived and caller-supplied alike — with the tool's own
+	// name in hand.
+	//
+	// Read only there, deliberately. It exists for a serving surface with
+	// several callers at once, where a tool that mutates process-wide state
+	// for the duration of one call needs that call serialized against every
+	// other tool that reads the same state — `flow mcp serve`'s guard around
+	// [v1.DefaultRegistry] (cmd/flow/mcpserve.go) is the whole reason it is
+	// here. Stdio has one caller and needs none of it, so [AddTools] ignores
+	// this field and the surface an agent host launches is byte for byte the
+	// one it always was.
+	WrapHandler func(tool string, next mcp.ToolHandler) mcp.ToolHandler
+
+	// WrapResourceHandler is [WrapHandler] for the read-only half of the
+	// surface, with the resource's URI in hand.
+	//
+	// Separate because the two handler types are: a resource is read through
+	// [mcp.ResourceHandler], not [mcp.ToolHandler]. It exists for the same
+	// reason and would be pointless without it — flowstate://catalog/tasks
+	// answers from [v1.DefaultRegistry] exactly as flowstate_get_catalog
+	// does, so a guard applied only to tools leaves the identical read
+	// reachable one request away. Also read only by [AddLocalCapabilities].
+	WrapResourceHandler func(uri string, next mcp.ResourceHandler) mcp.ResourceHandler
+
+	// reduced marks the registration [AddLocalCapabilities] performs, where
+	// several tools and resources the full surface serves are absent. It
+	// selects the descriptions that are true there — see [toolDescription]
+	// and addResources — and is set by that function rather than by a
+	// caller, because a caller who had to remember would eventually not.
+	reduced bool
 }
 
 // ToolRegistration is one tool this package does not itself derive from the
@@ -268,8 +335,96 @@ func AddCapabilities(
 	extra ...ToolRegistration,
 ) {
 	AddTools(srv, local, remote, deps, extra...)
-	addResources(srv, local)
+	addResources(srv, local, deps)
 	addUIResources(srv)
+}
+
+// AddLocalCapabilities registers only what answers in *this* process:
+// the [LocalTools] RPCs, plus whatever extra tools the caller supplies, plus
+// the read-only reference resources. It is what `flow mcp serve` — the
+// token-gated HTTP surface, picatz/flowstate#558 — builds its server from.
+//
+// Three differences from [AddCapabilities], each of them a thing that surface
+// must not have:
+//
+//   - No RPC tool that dispatches to a deployment. Those call through a
+//     client this process authenticates as *itself*, so serving them to a
+//     caller whose own authority nothing here checks yet would make this
+//     process a deputy for whoever holds a token. That is why there is no
+//     remote parameter to pass: a registration that cannot name a client
+//     cannot dispatch to one.
+//   - No UI resources. The one card this surface publishes renders
+//     flowstate_get ([ToolViews]), which is one of the tools above, so
+//     mounting it would advertise a view of a tool that is not there.
+//   - Nothing derived from [Deps.RemoteCatalogAddress]: GetCatalog answers
+//     from this binary's own build, which is the only answer available when
+//     no deployment is addressed.
+func AddLocalCapabilities(
+	srv *mcp.Server,
+	local *server.FlowstateServer,
+	deps Deps,
+	extra ...ToolRegistration,
+) {
+	// Set here rather than asked of the caller: this function *is* the
+	// reduced surface, so a caller that had to remember to say so could
+	// forget, and the failure would be a tool description promising a
+	// capability that is not there. deps is a value, so nothing the caller
+	// holds is changed.
+	deps.reduced = true
+
+	for _, method := range WorkflowServiceMethods() {
+		if !LocalTools[method.Name] {
+			continue
+		}
+
+		name := ToolName(method.Name)
+		srv.AddTool(&mcp.Tool{
+			Name:        name,
+			Description: toolDescription(method.Name, deps.reduced),
+			InputSchema: SchemaForMessage(method.Input),
+			// No Meta: [ToolViews] names no local tool today, and a view
+			// declared here would point at a resource this function does not
+			// mount. If that ever changes, it changes here deliberately.
+		}, wrapToolHandler(deps, name, dispatch(method, local, noRemoteClient, deps)))
+	}
+
+	for _, reg := range extra {
+		srv.AddTool(reg.Tool, wrapToolHandler(deps, reg.Tool.Name, reg.Handler))
+	}
+
+	addResources(srv, local, deps)
+}
+
+// wrapToolHandler applies [Deps.WrapHandler] when one was given, and is the
+// identity otherwise.
+func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHandler {
+	if deps.WrapHandler == nil {
+		return handler
+	}
+
+	return deps.WrapHandler(name, handler)
+}
+
+// wrapResourceHandler applies [Deps.WrapResourceHandler] when one was given,
+// and is the identity otherwise.
+func wrapResourceHandler(deps Deps, uri string, handler mcp.ResourceHandler) mcp.ResourceHandler {
+	if deps.WrapResourceHandler == nil {
+		return handler
+	}
+
+	return deps.WrapResourceHandler(uri, handler)
+}
+
+// noRemoteClient is the client [AddLocalCapabilities] hands its dispatchers.
+// It is never called: every method registered there is a [LocalTools] one,
+// whose Call closure takes the local server and ignores this argument
+// entirely (see [WorkflowServiceMethods]). It panics rather than returning
+// nil so that a future method added to LocalTools which *does* dial fails
+// loudly in a test rather than nil-dereferencing in production — the
+// registration filter is the guarantee, and this is the alarm on it.
+func noRemoteClient() flowstatev1connect.WorkflowServiceClient {
+	panic("mcp: a tool registered by AddLocalCapabilities tried to dispatch to a deployment; " +
+		"only LocalTools may be registered there, because this process would dispatch as itself")
 }
 
 // AddTools registers one tool per RPC, plus whatever tools the caller passes
@@ -716,14 +871,38 @@ const TestToolName = ToolPrefix + "test"
 
 // TestToolDescription is written for the model choosing between this tool and
 // flowstate_run_local.
-const TestToolDescription = "Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml " +
-	"beside a workflow on disk: the identical machinery (flowtest.RunSource), on bytes submitted here " +
-	"instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with " +
-	"its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no " +
-	"matching stub is refused rather than run for real, naming the task and how many stubs were declared " +
-	"for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a " +
-	"wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.\n\n" +
-	"Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never " +
+//
+// Assembled from three parts rather than written as one string, because the
+// middle part is the only one that is not true everywhere: a surface that does
+// not serve flowstate_run_local (see [AddLocalCapabilities]) must not tell a
+// model to reach for it afterward. Derived rather than duplicated, so the four
+// paragraphs both surfaces share cannot drift into two versions — see
+// [ReducedTestToolDescription]. Reported by Codex on picatz/flowstate#807.
+const TestToolDescription = testToolDescriptionOpening + testToolRunLocalComparison + testToolDescriptionRest
+
+// ReducedTestToolDescription is [TestToolDescription] with the two paragraphs
+// that compare this tool against flowstate_run_local replaced by the one
+// sentence that is true where that tool is not served: it is not there.
+//
+// Replaced rather than dropped, because "reach for the other tool afterward"
+// is real advice a model needs an answer to, and silence would leave it
+// looking for one.
+const ReducedTestToolDescription = testToolDescriptionOpening + testToolNoRunLocal + testToolDescriptionRest
+
+// testToolNoRunLocal is the reduced surface's replacement for
+// [testToolRunLocalComparison].
+const testToolNoRunLocal = "Needs no egress policy and no operator opt-in: a stubbed run never invokes a real " +
+	"task's implementation at all (not `http`, not a plugin task registered by --plugin-dir) so there " +
+	"is no network for a policy to govern, and no secret this tool could resolve even where one is " +
+	"configured. That is why it is served here at all: this surface deliberately serves no tool that " +
+	"executes a submitted workflow for real, so there is nothing to reach for afterward — rehearse " +
+	"here, and run the workflow where you would run it in earnest.\n\n" +
+	"What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it " +
+	"does, or anything about durability.\n\n"
+
+// testToolRunLocalComparison is the pair of paragraphs that only make sense
+// where flowstate_run_local is also served.
+const testToolRunLocalComparison = "Needs no egress policy and no operator opt-in, unlike flowstate_run_local: a stubbed run never " +
 	"invokes a real task's implementation at all (not `http`, not a plugin task registered by " +
 	"--plugin-dir) so there is no network for a policy to govern, and no secret this tool could resolve " +
 	"even where one is configured. Reach for this first, while authoring: it proves conditions, retries, " +
@@ -732,8 +911,20 @@ const TestToolDescription = "Run a Flowfile against inline test cases the way `f
 	"task you deliberately left unstubbed.\n\n" +
 	"What it does not prove: that a real task behaves the way a stub's `returns:` or `fails:` says it " +
 	"does, or anything about durability: flowstate_run_local's own limits, on top of never running a " +
-	"real task at all.\n\n" +
-	"`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional " +
+	"real task at all.\n\n"
+
+// testToolDescriptionOpening is what the tool is, true on every surface.
+const testToolDescriptionOpening = "Run a Flowfile against inline test cases the way `flow test` runs a *.test.yaml " +
+	"beside a workflow on disk: the identical machinery (flowtest.RunSource), on bytes submitted here " +
+	"instead of two files. Every task the workflow would otherwise call is replaced: a stub answers with " +
+	"its `returns:`, or fails the way its `fails:` describes, and any task this case invokes with no " +
+	"matching stub is refused rather than run for real, naming the task and how many stubs were declared " +
+	"for it. Time is virtual, so a case with `sleep: 24h` resolves in under a second, and a " +
+	"wait_for_signal step is answered by `signals:` scripted for a chosen offset from the run's start.\n\n"
+
+// testToolDescriptionRest is the argument and answer reference, likewise true
+// everywhere.
+const testToolDescriptionRest = "`tests` is a `*.test.yaml` document: `tests:` names one or more cases, each with an optional " +
 	"`inputs:`, `stubs:`, `signals:`, `starter:`, and an `expect:` the run must satisfy: `expect.outputs` compares " +
 	"the workflow's declared `outputs:`, `expect.failed`/`expect.error_contains` assert the run failing " +
 	"outright, `expect.compensated` the undo log, and `expect.ran`/`expect.skipped` step presence. A " +
@@ -759,6 +950,17 @@ func TestTool() *mcp.Tool {
 		Description: TestToolDescription,
 		InputSchema: testInputSchema(),
 	}
+}
+
+// ReducedTestTool declares the tool for a surface that serves no
+// flowstate_run_local — see [ReducedTestToolDescription]. Identical in every
+// other respect, and deliberately built from the same schema, because the two
+// differ in what they say and never in what they accept.
+func ReducedTestTool() *mcp.Tool {
+	tool := TestTool()
+	tool.Description = ReducedTestToolDescription
+
+	return tool
 }
 
 // NewMessage constructs an empty message for a descriptor.
