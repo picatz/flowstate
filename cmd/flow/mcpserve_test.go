@@ -628,3 +628,123 @@ func TestStdioMCPCommandDeclaresNoListener(t *testing.T) {
 			"`flow mcp serve` must not declare --%s: the tool it would govern is not served here", flag)
 	}
 }
+
+// TestMCPSessionLimiterReleasesASlotTheSDKDoesNotKnow is Codex's finding on
+// #807, as a test: a session slot must not outlive the session it counts.
+//
+// The mechanism it guards is a loop. The SDK closes an idle session on its own
+// clock; a request naming that id afterwards is refused with 404, but the
+// limiter's own idle timer had already been refreshed by the touch on the way
+// in — so the slot survives another window, and another such request refreshes
+// it again. Repeat and the bound fills with sessions that do not exist,
+// refusing every real caller: the bound becoming the outage it exists to
+// prevent.
+//
+// Driven against the wrapper directly, with an inner handler standing in for
+// the SDK, because the loop is a property of what the limiter does with a
+// status code and reproducing it end to end would mean waiting out an idle
+// timeout for no extra confidence.
+func TestMCPSessionLimiterReleasesASlotTheSDKDoesNotKnow(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	limiter := newMCPSessionLimiter(1, time.Minute, func() time.Time { return now })
+
+	// One session, opened the way a real initialize opens one: the inner
+	// handler names it in the response header.
+	opened := limiter.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(mcpSessionHeader, "session-one")
+		w.WriteHeader(http.StatusOK)
+	}))
+	opened.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	require.Equal(t, 1, limiter.open())
+
+	// Time passes — less than the idle window, so nothing expires on its own
+	// — and the SDK has meanwhile forgotten the session.
+	now = now.Add(30 * time.Second)
+
+	unknown := limiter.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "session not found", http.StatusNotFound)
+	}))
+	stale := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	stale.Header.Set(mcpSessionHeader, "session-one")
+	unknown.ServeHTTP(httptest.NewRecorder(), stale)
+
+	require.Equal(t, 0, limiter.open(),
+		"a slot counting a session the SDK does not have must be released, not refreshed")
+}
+
+// TestMCPServeAtABareOriginServesOnlyTheRootPath is Codex's other finding on
+// #807: a resource identifier naming a bare origin has the path "/", and
+// [http.ServeMux] reads a pattern ending in "/" as a *subtree*, so registering
+// it verbatim serves the MCP endpoint at every path on the listener rather
+// than at the one URI the advertised identifier names.
+//
+// The assertion is about a path nobody configured answering as MCP, which is
+// the surface being larger than the document it published.
+func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
+	t.Parallel()
+
+	const bareOrigin = "https://flowstate-bare.example.test"
+
+	issuer := authtest.NewIssuer()
+	t.Cleanup(func() { _ = issuer.Close() })
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name: "agent-idp", Issuer: issuer.URL(), Audiences: []string{bareOrigin},
+	}}}
+
+	verifier, err := auth.NewOIDCVerifier(*policy)
+	require.NoError(t, err)
+
+	protectedResource, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             bareOrigin,
+		AuthorizationServers: []string{issuer.URL()},
+	}, policy)
+	require.NoError(t, err)
+	require.Equal(t, "/", protectedResource.ResourcePath(),
+		"a bare-origin resource is the shape this test exists for")
+
+	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),
+		mcpServeTools(), verifier, protectedResource, mcpServeLimits{
+			maxRequestBytes: mcpServeDefaultMaxRequestBytes,
+			maxSessions:     mcpServeDefaultMaxSessions,
+			sessionIdle:     mcpServeSessionIdleTimeout,
+		})
+	require.NoError(t, err)
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	token := issuer.MintToken(nil, authtest.WithSubject("agent"), authtest.WithAudience(bareOrigin))
+
+	for _, path := range []string{"/healthz", "/anything", "/mcp", "/a/b/c"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+path, strings.NewReader("{}"))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := server.Client().Do(req)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+
+		require.Equal(t, http.StatusNotFound, resp.StatusCode,
+			"%s is not the resource this deployment advertises and must not answer as MCP", path)
+	}
+
+	// And the root itself still does, so the fix is a narrowing rather than a
+	// surface that stopped working.
+	root, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":`+
+			`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
+	require.NoError(t, err)
+	root.Header.Set("Content-Type", "application/json")
+	root.Header.Set("Accept", "application/json, text/event-stream")
+	root.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := server.Client().Do(root)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}

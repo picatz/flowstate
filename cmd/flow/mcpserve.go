@@ -336,10 +336,32 @@ func mcpServeHandler(
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(protectedResource.ResourcePath(), protection.Handler(authenticated))
+	mux.Handle(exactPattern(protectedResource.ResourcePath()), protection.Handler(authenticated))
 	mux.Handle(protectedResource.Path(), protectedResource.Handler())
 
 	return maxRequestBodyBytes(mux, limits.maxRequestBytes), nil
+}
+
+// exactPattern renders a path as an [http.ServeMux] pattern that matches that
+// path and nothing below it.
+//
+// Every pattern ServeMux registers is exact *except* one ending in "/", which
+// is a subtree match. A resource identifier naming a bare origin has the path
+// "/" (see [auth.ProtectedResource.ResourcePath]), so registering it verbatim
+// would serve the MCP endpoint at every path on the listener — /healthz,
+// /anything, a mistyped route — rather than at the one URI the advertised
+// identifier names. "{$}" is ServeMux's own spelling for "end of path", which
+// makes the root exact; [auth.validateResourceURI] refuses "{" and "}" in a
+// resource path, so this can never collide with a path an operator wrote.
+//
+// Any other path is already exact, because the same validation refuses a
+// trailing slash.
+func exactPattern(path string) string {
+	if path == "/" {
+		return "/{$}"
+	}
+
+	return path
 }
 
 // maxRequestBodyBytes caps every request body below the MCP library, so that
@@ -408,9 +430,21 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 			recorder := &mcpSessionRecorder{ResponseWriter: w}
 			next.ServeHTTP(recorder, r)
 
+			switch {
 			// A DELETE the SDK accepted is the client saying the session is
-			// over; anything else leaves it alive to idle out on its own.
-			if r.Method == http.MethodDelete && recorder.status >= 200 && recorder.status < 300 {
+			// over.
+			case r.Method == http.MethodDelete && recorder.status >= 200 && recorder.status < 300:
+				l.release(id)
+
+			// The SDK does not know this session, so neither should this
+			// accounting. Without it, a slot outlives the session it counted:
+			// the SDK closes an idle session on its own clock, and a request
+			// naming that id afterwards would be refreshed by the touch above
+			// — held for another idle window, refreshable again, indefinitely.
+			// Slots that count nothing eventually refuse every real caller,
+			// which is this bound becoming the outage it exists to prevent.
+			// Reported by Codex on #807.
+			case recorder.status == http.StatusNotFound:
 				l.release(id)
 			}
 
