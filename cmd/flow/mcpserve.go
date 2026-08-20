@@ -590,7 +590,15 @@ func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
 // mcpServeTools builds the server this surface serves: the RPC tools that
 // answer in this process, plus flowstate_test, and nothing else. See this
 // file's package comment for why the rest are absent rather than disabled.
-func mcpServeTools() *mcp.Server {
+//
+// Every tool and every resource it registers runs behind guard, so no caller
+// ever reads the task registry while another caller's flowstate_test has it
+// swapped — see [mcpServeRegistryGuard].
+// guard is taken rather than made here so a test can hold its lock from the
+// outside and prove that every served handler — tools and resources alike —
+// really is behind it, which is a property of this wiring rather than of the
+// guard itself.
+func mcpServeTools(guard *mcpServeRegistryGuard) *mcp.Server {
 	srv := flowmcp.NewServer(version)
 
 	flowmcp.AddLocalCapabilities(
@@ -600,10 +608,6 @@ func mcpServeTools() *mcp.Server {
 		// client is safe for exactly those.
 		server.New(nil),
 		flowmcp.Deps{
-			// Every served handler runs under the registry guard below: the
-			// test tool exclusively, everything else shared. See
-			// [newMCPServeRegistryGuard].
-			WrapHandler: newMCPServeRegistryGuard().wrap,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -616,6 +620,9 @@ func mcpServeTools() *mcp.Server {
 			Redact: func(response *v1.GetResponse) *v1.GetResponse {
 				return redactGetResponse(response, nil, false)
 			},
+
+			WrapHandler:         guard.wrapTool,
+			WrapResourceHandler: guard.wrapResource,
 		},
 		flowmcp.ToolRegistration{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
 	)
@@ -668,14 +675,36 @@ func newMCPServeRegistryGuard() *mcpServeRegistryGuard {
 	return &mcpServeRegistryGuard{}
 }
 
-// wrap is [flowmcp.Deps.WrapHandler]: exclusive for the tool that mutates the
-// registry, shared for every tool that reads it.
-func (g *mcpServeRegistryGuard) wrap(tool string, next mcp.ToolHandler) mcp.ToolHandler {
+// wrapTool is [flowmcp.Deps.WrapHandler]: exclusive for the tool that mutates
+// the registry, shared for every tool that reads it.
+func (g *mcpServeRegistryGuard) wrapTool(tool string, next mcp.ToolHandler) mcp.ToolHandler {
 	if tool == flowmcp.TestToolName {
 		return g.exclusive(next)
 	}
 
 	return g.shared(next)
+}
+
+// wrapResource is [flowmcp.Deps.WrapResourceHandler]: the read side, for the
+// half of the surface a guard applied only to tools would miss.
+//
+// flowstate://catalog/tasks answers from [v1.DefaultRegistry] exactly as
+// flowstate_get_catalog does, so without this a caller could read one
+// caller's synthetic task names through a resources/read while the tool form
+// of the same answer was properly excluded — the same disclosure, one request
+// away. Reported by Codex on picatz/flowstate#807.
+//
+// Applied to every resource rather than only that one: the others read
+// embedded bytes and taking a read lock costs them nothing, and a guard that
+// has to be remembered for each new resource is a guard that will be
+// forgotten for one.
+func (g *mcpServeRegistryGuard) wrapResource(_ string, next mcp.ResourceHandler) mcp.ResourceHandler {
+	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		g.mu.RLock()
+		defer g.mu.RUnlock()
+
+		return next(ctx, req)
+	}
 }
 
 // exclusive runs the registry-mutating tool alone, and repairs what it left.
@@ -769,7 +798,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	handler, err := mcpServeHandler(logger, mcpServeTools(), verifier, protectedResource, mcpServeLimits{
+	handler, err := mcpServeHandler(logger, mcpServeTools(newMCPServeRegistryGuard()), verifier, protectedResource, mcpServeLimits{
 		maxRequestBytes: flags.maxRequestBytes,
 		maxSessions:     flags.maxSessions,
 		sessionIdle:     mcpServeSessionIdleTimeout,

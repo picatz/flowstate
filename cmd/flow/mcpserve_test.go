@@ -51,6 +51,10 @@ type mcpServeFixture struct {
 	issuer   *authtest.Issuer
 	resource *auth.ProtectedResource
 	logs     *bytes.Buffer
+
+	// guard is the one the served surface was built with, kept so a test can
+	// hold its lock from outside and prove a handler really is behind it.
+	guard *mcpServeRegistryGuard
 }
 
 // newMCPServeFixture stands up the surface under test.
@@ -84,7 +88,9 @@ func newMCPServeFixture(t *testing.T, maxSessions int, maxRequestBytes int64) *m
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	handler, err := mcpServeHandler(logger, mcpServeTools(), verifier, protectedResource, mcpServeLimits{
+	guard := newMCPServeRegistryGuard()
+
+	handler, err := mcpServeHandler(logger, mcpServeTools(guard), verifier, protectedResource, mcpServeLimits{
 		maxRequestBytes: maxRequestBytes,
 		maxSessions:     maxSessions,
 		sessionIdle:     mcpServeSessionIdleTimeout,
@@ -94,7 +100,9 @@ func newMCPServeFixture(t *testing.T, maxSessions int, maxRequestBytes int64) *m
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return &mcpServeFixture{server: server, issuer: issuer, resource: protectedResource, logs: logs}
+	return &mcpServeFixture{
+		server: server, issuer: issuer, resource: protectedResource, logs: logs, guard: guard,
+	}
 }
 
 // endpoint is where the MCP surface answers: the resource's own path, which is
@@ -591,7 +599,7 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, sessionIdle: time.Minute}
 
-	_, err := mcpServeHandler(slog.Default(), mcpServeTools(), nil, nil, limits)
+	_, err := mcpServeHandler(slog.Default(), mcpServeTools(newMCPServeRegistryGuard()), nil, nil, limits)
 	require.Error(t, err, "no protected resource and no verifier must not produce a servable handler")
 }
 
@@ -707,7 +715,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 		"a bare-origin resource is the shape this test exists for")
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),
-		mcpServeTools(), verifier, protectedResource, mcpServeLimits{
+		mcpServeTools(newMCPServeRegistryGuard()), verifier, protectedResource, mcpServeLimits{
 			maxRequestBytes: mcpServeDefaultMaxRequestBytes,
 			maxSessions:     mcpServeDefaultMaxSessions,
 			sessionIdle:     mcpServeSessionIdleTimeout,
@@ -798,4 +806,65 @@ func TestMCPServeTestToolLeavesNoTaskInTheGlobalRegistry(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, renderEveryShape(catalog), invented,
 		"flowstate_get_catalog must not advertise a task one caller invented")
+
+	// And the same answer through the read-only half of the surface, which a
+	// guard applied only to tool handlers would miss: flowstate://catalog/tasks
+	// reads the identical registry, one request away. Codex's follow-up on
+	// #807.
+	resource, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.CatalogResourceURI})
+	require.NoError(t, err)
+	require.NotContains(t, renderEveryShape(resource), invented,
+		"the catalog resource must not advertise a task one caller invented either")
+}
+
+// TestMCPServeRegistryGuardCoversTheServedResources is Codex's follow-up on
+// #807: the guard has to cover the read-only half of the surface too.
+//
+// flowstate://catalog/tasks answers from v1.DefaultRegistry exactly as
+// flowstate_get_catalog does, so a guard applied only to tool handlers leaves
+// the identical read reachable one request away — and while one caller's
+// flowstate_test has the registry swapped, that read hands their synthetic,
+// caller-chosen task names to somebody else.
+//
+// Asserted as the exclusion rather than as a sighting of the leak, because the
+// leak is a race: a sequential test reads the registry after the tool call has
+// already repaired it and passes whether or not the guard is wired. What is
+// checkable without a race is that a resources/read over the real served
+// surface cannot proceed while the registry-mutating half holds the lock — so
+// this holds that lock directly, through the guard the surface was built with.
+func TestMCPServeRegistryGuardCoversTheServedResources(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+	session := fixture.connect(t, fixture.goodToken("agent"))
+
+	// The premise: it answers at all when nothing holds the lock.
+	_, err := session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.CatalogResourceURI})
+	require.NoError(t, err)
+
+	// Stand in for a flowstate_test call in flight, which is exactly what
+	// holds this lock in production.
+	fixture.guard.mu.Lock()
+
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		_, _ = session.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: flowmcp.CatalogResourceURI})
+	}()
+
+	select {
+	case <-read:
+		fixture.guard.mu.Unlock()
+		t.Fatal("the catalog resource answered while the registry-mutating half held the lock: " +
+			"a resources/read can observe another caller's synthetic task names")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	fixture.guard.mu.Unlock()
+
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the catalog resource never answered after the lock was released")
+	}
 }

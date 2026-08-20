@@ -228,6 +228,17 @@ type Deps struct {
 	// this field and the surface an agent host launches is byte for byte the
 	// one it always was.
 	WrapHandler func(tool string, next mcp.ToolHandler) mcp.ToolHandler
+
+	// WrapResourceHandler is [WrapHandler] for the read-only half of the
+	// surface, with the resource's URI in hand.
+	//
+	// Separate because the two handler types are: a resource is read through
+	// [mcp.ResourceHandler], not [mcp.ToolHandler]. It exists for the same
+	// reason and would be pointless without it — flowstate://catalog/tasks
+	// answers from [v1.DefaultRegistry] exactly as flowstate_get_catalog
+	// does, so a guard applied only to tools leaves the identical read
+	// reachable one request away. Also read only by [AddLocalCapabilities].
+	WrapResourceHandler func(uri string, next mcp.ResourceHandler) mcp.ResourceHandler
 }
 
 // ToolRegistration is one tool this package does not itself derive from the
@@ -282,7 +293,7 @@ func AddCapabilities(
 	extra ...ToolRegistration,
 ) {
 	AddTools(srv, local, remote, deps, extra...)
-	addResources(srv, local)
+	addResources(srv, local, deps)
 	addUIResources(srv)
 }
 
@@ -332,7 +343,7 @@ func AddLocalCapabilities(
 		srv.AddTool(reg.Tool, wrapToolHandler(deps, reg.Tool.Name, reg.Handler))
 	}
 
-	addResources(srv, local)
+	addResources(srv, local, deps)
 }
 
 // wrapToolHandler applies [Deps.WrapHandler] when one was given, and is the
@@ -343,6 +354,16 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 	}
 
 	return deps.WrapHandler(name, handler)
+}
+
+// wrapResourceHandler applies [Deps.WrapResourceHandler] when one was given,
+// and is the identity otherwise.
+func wrapResourceHandler(deps Deps, uri string, handler mcp.ResourceHandler) mcp.ResourceHandler {
+	if deps.WrapResourceHandler == nil {
+		return handler
+	}
+
+	return deps.WrapResourceHandler(uri, handler)
 }
 
 // noRemoteClient is the client [AddLocalCapabilities] hands its dispatchers.

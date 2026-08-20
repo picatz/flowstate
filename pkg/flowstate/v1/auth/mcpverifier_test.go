@@ -82,8 +82,8 @@ func TestMCPTokenVerifierAdmitsAToken(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, info)
-	require.Equal(t, issuer.URL()+"|agent", info.UserID,
-		"UserID is what the SDK pins a session to; it must name both the issuer and the subject")
+	require.Equal(t, auth.MCPSessionUserID(auth.Principal{Issuer: issuer.URL(), Subject: "agent"}), info.UserID,
+		"UserID is what the SDK pins a session to, and it must be derived from the verified principal")
 	require.False(t, info.Expiration.IsZero(),
 		"the middleware refuses a TokenInfo with no expiration unless AllowMissingExpiration is set")
 	require.Empty(t, info.Scopes,
@@ -297,6 +297,64 @@ func TestMCPSessionUserIDDistinguishesSubjectsAcrossIssuers(t *testing.T) {
 
 	require.NotEqual(t, a, b)
 	require.NotEqual(t, a, c)
+}
+
+// TestMCPSessionUserIDIsUnambiguous is the ambiguous-encoding defect CLAUDE.md
+// records against the env secret provider, checked on this boundary before it
+// can be shipped again — reported by Codex on picatz/flowstate#807.
+//
+// Each pair below is two genuinely different principals whose (issuer,
+// subject) fields, concatenated with any single separator, produce one string.
+// The first pair is the one Codex named, with "|"; the rest are the same trick
+// with every other plausible separator, because the point is not that "|" was
+// the wrong character — it is that no character is the right one, since every
+// character legal in an issuer is legal in a subject. A collision here is the
+// SDK treating two principals as one session owner, which is the session
+// hijacking [auth.MCPSessionUserID] exists to prevent, arriving through the
+// encoding rather than through a missing check.
+func TestMCPSessionUserIDIsUnambiguous(t *testing.T) {
+	t.Parallel()
+
+	for separator, pair := range map[string][2]auth.Principal{
+		"|": {
+			{Issuer: "https://idp.example/a", Subject: "b|victim"},
+			{Issuer: "https://idp.example/a|b", Subject: "victim"},
+		},
+		"#": {
+			{Issuer: "https://idp.example/a", Subject: "b#victim"},
+			{Issuer: "https://idp.example/a#b", Subject: "victim"},
+		},
+		"/": {
+			{Issuer: "https://idp.example/a", Subject: "b/victim"},
+			{Issuer: "https://idp.example/a/b", Subject: "victim"},
+		},
+		"the empty string": {
+			{Issuer: "https://idp.example/ab", Subject: "victim"},
+			{Issuer: "https://idp.example/a", Subject: "bvictim"},
+		},
+	} {
+		require.NotEqual(t,
+			auth.MCPSessionUserID(pair[0]), auth.MCPSessionUserID(pair[1]),
+			"two principals collide under a %s-joined encoding: %+v and %+v", separator, pair[0], pair[1])
+	}
+}
+
+// TestMCPSessionUserIDCarriesNoIdentityInTheClear: the SDK holds this value
+// for a session's lifetime and logs around it, so no part of the principal may
+// be readable in it. A property of the digest rather than of the caller, and
+// worth pinning because the obvious "simplification" back to a joined string
+// would silently undo it along with the collision-freedom above.
+func TestMCPSessionUserIDCarriesNoIdentityInTheClear(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "https://idp.example.com/tenant"
+	const subject = "alice@example.com"
+
+	id := auth.MCPSessionUserID(auth.Principal{Issuer: issuer, Subject: subject})
+
+	require.NotContains(t, id, issuer)
+	require.NotContains(t, id, subject)
+	require.Len(t, id, 64, "a SHA-256 digest, hex encoded")
 }
 
 // TestMCPTokenVerifierIsDeterministicOnAClock is the deterministic-clock

@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 
@@ -71,17 +73,12 @@ const (
 //
 // # What the returned TokenInfo carries, and what it deliberately does not
 //
-//   - UserID is "<issuer>|<subject>", which is what pins a streamable-HTTP
-//     session to the principal that opened it: the SDK compares this field on
-//     every subsequent request against the one the session was created with
-//     (mcp/streamable.go's lookupSession) and answers 403 on a mismatch, so a
-//     session opened by one principal refuses another's token. Both halves
-//     are needed because a subject is only unique within its issuer — the
-//     same reasoning [Principal.ID] gives. The separator differs from that
-//     method's "#" on purpose: this value is an opaque session key the SDK
-//     compares byte for byte, never a Flowstate identity anything parses, and
-//     spelling it identically would invite one to be passed where the other
-//     was meant.
+//   - UserID is [MCPSessionUserID] of the verified principal, which is what
+//     pins a streamable-HTTP session to whoever opened it: the SDK compares
+//     this field on every subsequent request against the one the session was
+//     created with (mcp/streamable.go's lookupSession) and answers 403 on a
+//     mismatch, so a session opened by one principal refuses another's token.
+//     See that function for why it is a digest rather than two strings joined.
 //   - Expiration is the token's own "exp". A token without one is refused:
 //     the middleware would refuse it too unless AllowMissingExpiration were
 //     set, and this says so in the verifier where the reason is legible.
@@ -167,8 +164,38 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 // [mcpauth.TokenInfo.UserID]: the opaque key a streamable-HTTP session is
 // pinned to. Exported so a test can assert the pin without reproducing the
 // spelling, which is the one way two copies of it could disagree.
+//
+// Both the issuer and the subject go into it, because a subject is only unique
+// within its issuer — the same reasoning [Principal.ID] gives.
+//
+// # Why this is a digest of a length-prefixed encoding rather than a joined string
+//
+// The obvious spelling, issuer + separator + subject, is the ambiguous-encoding
+// defect CLAUDE.md already records against the env secret provider, on a new
+// boundary. Every character legal in an issuer is legal in a subject, so no
+// separator makes the pair unambiguous: with "|", the principal
+// (https://idp.example/a, "b|victim") and the principal
+// (https://idp.example/a|b, "victim") produce one identical key. A subject is
+// an arbitrary string the issuer chooses, and an issuer identifier is a URL
+// whose path may carry the separator too, so both halves of that collision are
+// reachable — and what it buys is the SDK treating two different principals as
+// one session owner, which is the session hijacking this field exists to
+// prevent, arriving through the encoding rather than through a missing check.
+// Reported by Codex on picatz/flowstate#807.
+//
+// Length-prefixing each field makes the encoding injective: two different
+// (issuer, subject) pairs cannot produce one string, because the prefix says
+// where the first field ends before its contents are read. The digest over
+// that is a second, independent property rather than the fix — the SDK holds
+// this value for a session's lifetime and logs around it, and a fixed-width
+// opaque key means no part of a caller's identity is sitting in the
+// transport's state waiting to be printed. It is compared byte for byte and
+// never parsed, so nothing is lost by it being unreadable.
 func MCPSessionUserID(p Principal) string {
-	return p.Issuer + "|" + p.Subject
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%d:%s%d:%s", len(p.Issuer), p.Issuer, len(p.Subject), p.Subject)
+
+	return hex.EncodeToString(sum.Sum(nil))
 }
 
 // refusedDelegationClaim reports the first delegation claim present in a
