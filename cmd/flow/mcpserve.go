@@ -323,6 +323,18 @@ func mcpServeHandler(
 
 	protection := http.NewCrossOriginProtection()
 
+	// Both paths are derived from the one configured resource, so they cannot
+	// collide for any input [auth.NewProtectedResource] accepts — the
+	// metadata path is the well-known prefix *plus* the resource's own path.
+	// Checked anyway, because the failure if it ever became reachable is an
+	// http.ServeMux panic at start-up rather than a diagnosis, and a
+	// second registration of one pattern is exactly what ServeMux panics on.
+	if protectedResource.ResourcePath() == protectedResource.Path() {
+		return nil, fmt.Errorf("--protected-resource: the resource's own path %q is identical to the "+
+			"RFC 9728 metadata path computed for it; the two would register one route and this "+
+			"server would panic rather than serve either", protectedResource.ResourcePath())
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle(protectedResource.ResourcePath(), protection.Handler(authenticated))
 	mux.Handle(protectedResource.Path(), protectedResource.Handler())
@@ -455,6 +467,14 @@ func (l *mcpSessionLimiter) settle(id string) {
 // session id this limiter has never seen is deliberately not added: it
 // belongs to no reservation, and adding it would let a caller inflate the
 // count with invented ids the SDK will answer 404 for anyway.
+//
+// It runs before the request is served rather than after, so that a session
+// held open by a long-lived stream keeps its slot for the whole stream rather
+// than expiring underneath it. The cost is small and worth naming: an
+// authenticated caller who guesses another principal's session id can defer
+// that session's idle expiry, while still being refused the session itself
+// (the SDK answers 403 on a principal mismatch). Deferring somebody's expiry
+// grants nothing and reaches nothing; losing a live stream's slot would.
 func (l *mcpSessionLimiter) touch(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -524,6 +544,15 @@ func (r *mcpSessionRecorder) Flush() {
 	}
 }
 
+// Unwrap exposes the writer underneath, which is how [http.ResponseController]
+// reaches capabilities this wrapper does not itself implement — a write
+// deadline, most relevantly, which is what an SSE stream extends as it goes.
+// Without it a wrapped writer silently loses every such capability, and the
+// symptom is a stream that dies at a deadline nobody set.
+func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // mcpServeTools builds the server this surface serves: the RPC tools that
 // answer in this process, plus flowstate_test, and nothing else. See this
 // file's package comment for why the rest are absent rather than disabled.
@@ -588,18 +617,6 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		return errors.New("`flow mcp serve`: no protected resource was resolved")
 	}
 
-	// The metadata document's path and the resource's own path are both
-	// derived from the configured resource, and a resource whose path *is*
-	// the well-known prefix would have the two collide on one mux. ServeMux
-	// panics on a duplicate pattern, so this is a diagnosis rather than a
-	// crash — the same check cmd/flow/protectedresource.go makes against the
-	// server's fixed routes.
-	if protectedResource.ResourcePath() == protectedResource.Path() {
-		return fmt.Errorf("--protected-resource: the resource's own path %q is identical to the "+
-			"RFC 9728 metadata path computed for it; choose a resource path that does not spell "+
-			"the well-known location", protectedResource.ResourcePath())
-	}
-
 	tlsCfg, err := serverTLSConfig(flags.tls)
 	if err != nil {
 		return err
@@ -644,8 +661,17 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		// peer this would otherwise be protecting against, and the session
 		// idle timeout above bounds a stream nobody is using.
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    1 << 20,
+
+		// Bounds how long a peer may take to deliver a request *body*, which
+		// --max-request-bytes bounds the size of and not the pace of: a
+		// megabyte delivered one byte a minute is within every byte bound
+		// this surface has and holds a connection for a year. It does not cut
+		// a server-sent-event response, which is a write; Go sets this
+		// deadline when it begins reading a request and resets it for the
+		// next one on the same connection.
+		ReadTimeout:    1 * time.Minute,
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	listener, err := net.Listen("tcp", httpServer.Addr)
