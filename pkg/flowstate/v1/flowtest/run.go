@@ -145,6 +145,26 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 	}
 
 	for _, test := range file.Tests {
+		// Checked before the case rather than only inside the run, because
+		// most of what a case costs happens before its context is ever
+		// consulted: compiling its stubs, parsing the workflow again, binding
+		// the stubs against it. A file may declare [MaxTestsPerFile] cases,
+		// so a deadline that expired during an early one would otherwise be
+		// followed by hundreds of expensive parses — and on a serving surface
+		// those run while the caller's whole budget is already spent and,
+		// worse, while it still holds whatever lock it took (see
+		// cmd/flow/mcpserve.go's registry guard). The bound has to stop the
+		// *work*, not only the execution. Reported by Codex on
+		// picatz/flowstate#807.
+		if err := ctx.Err(); err != nil {
+			report.Cases = append(report.Cases, &v1.TestCase{
+				Name:  test.Name,
+				Error: fmt.Sprintf("not run: the run was stopped before this case started (%v)", err),
+			})
+
+			continue
+		}
+
 		// No delivery path: bytes have no directory to resolve a fixture against,
 		// which is why [checkTrigger] refuses a trigger case in this shape rather
 		// than letting one arrive here with nowhere to read from.

@@ -2133,7 +2133,8 @@ flow server --verbose`,
 	// RFC 9728 protected resource metadata for the MCP surface — see
 	// cmd/flow/protectedresource.go. Server only, for the same reason as the
 	// listener flags above: a worker serves no HTTP surface to advertise.
-	addProtectedResourceFlags(serverCmd)
+	addProtectedResourceFlags(serverCmd, "Unset (the default): the route does not exist "+
+		"and every challenge reads exactly as it does today")
 
 	// Validate command, which checks Flowfiles without executing them.
 	validateCmd := &cobra.Command{

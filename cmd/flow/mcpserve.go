@@ -161,7 +161,9 @@ func addMCPServeFlags(cmd *cobra.Command) {
 			"(overrides FLOWSTATE_AUTH_POLICY). Required: there is no anonymous variant of "+
 			"this surface, and --insecure-no-auth is refused here")
 
-	addProtectedResourceFlags(cmd)
+	addProtectedResourceFlags(cmd, "Required on this command: this surface is the protected "+
+		"resource, so without one there is nothing to bind a token's audience to and `flow mcp "+
+		"serve` refuses to start rather than serving an unauthenticated MCP endpoint")
 	addTLSFlags(cmd)
 
 	cmd.Flags().Int64("max-request-bytes", mcpServeDefaultMaxRequestBytes,
