@@ -103,6 +103,26 @@ const (
 	// closed would be a leak that eventually refuses every new caller.
 	mcpServeSessionIdleTimeout = 5 * time.Minute
 
+	// mcpServeDefaultMaxSessionRequests bounds how many requests one session
+	// may have in flight at once.
+	//
+	// --max-sessions bounds how many sessions exist and bounds nothing about
+	// what a caller does inside one: an established session id can be replayed
+	// over arbitrarily many parallel connections or HTTP/2 streams, each
+	// getting a goroutine and each either running under the registry guard or
+	// queued behind an exclusive flowstate_test. That is a third resource the
+	// peer controls the ratio to, so per CLAUDE.md it gets its own bound
+	// rather than being assumed covered by the other two. Reported by Codex on
+	// picatz/flowstate#807.
+	//
+	// Per session rather than global, because sessions are already bounded:
+	// the product is what bounds the whole surface, and a per-session share
+	// keeps one caller's parallelism from being spendable on another's
+	// allowance. Eight leaves room for the standalone SSE stream a client
+	// holds open plus ordinary request concurrency, and is far above what any
+	// real MCP client does.
+	mcpServeDefaultMaxSessionRequests = 8
+
 	// mcpServeDefaultTestTimeout bounds one flowstate_test call, mirroring
 	// `flow mcp`'s own --run-local-timeout default for the same reason that
 	// flag gives: a tool call that never returns holds a model's turn open for
@@ -147,6 +167,11 @@ func addMCPServeFlags(cmd *cobra.Command) {
 		"largest request body this surface will read, in bytes. A request over the limit is "+
 			"refused with 413 rather than buffered")
 
+	cmd.Flags().Int("max-session-requests", mcpServeDefaultMaxSessionRequests,
+		"how many requests one MCP session may have in flight at once. A request past the limit "+
+			"is refused with 503: --max-sessions bounds how many sessions exist and says nothing "+
+			"about how many connections one of them is replayed over")
+
 	cmd.Flags().Duration("test-timeout", mcpServeDefaultTestTimeout,
 		"how long one flowstate_test call may run before it is stopped and reported as timed out. "+
 			"A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout "+
@@ -180,6 +205,7 @@ type mcpServeFlags struct {
 	revealSensitive        bool
 	maxRequestBytes        int64
 	maxSessions            int
+	maxSessionRequests     int
 	testTimeout            time.Duration
 	protectedResourceFlags protectedResourceFlags
 	tls                    tlsFlags
@@ -192,6 +218,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	maxRequestBytes, _ := cmd.Flags().GetInt64("max-request-bytes")
 	maxSessions, _ := cmd.Flags().GetInt("max-sessions")
+	maxSessionRequests, _ := cmd.Flags().GetInt("max-session-requests")
 	testTimeout, _ := cmd.Flags().GetDuration("test-timeout")
 
 	return mcpServeFlags{
@@ -201,6 +228,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 		revealSensitive:        revealSensitiveRequested(cmd),
 		maxRequestBytes:        maxRequestBytes,
 		maxSessions:            maxSessions,
+		maxSessionRequests:     maxSessionRequests,
 		testTimeout:            testTimeout,
 		protectedResourceFlags: protectedResourceFlagsOf(cmd),
 		tls:                    tlsFlagsOf(cmd),
@@ -258,6 +286,12 @@ func checkMCPServeFlags(flags mcpServeFlags) error {
 			flags.maxSessions)
 	}
 
+	if flags.maxSessionRequests <= 0 {
+		return fmt.Errorf("--max-session-requests must be positive; got %d. There is no \"unlimited\" "+
+			"spelling: how many requests one session has in flight is chosen by the peer, and this "+
+			"surface bounds it", flags.maxSessionRequests)
+	}
+
 	if flags.testTimeout <= 0 {
 		return fmt.Errorf("--test-timeout must be positive; got %s. There is no \"unlimited\" "+
 			"spelling: a submitted workflow decides how long its own run takes, and a case the "+
@@ -270,9 +304,10 @@ func checkMCPServeFlags(flags mcpServeFlags) error {
 
 // mcpServeLimits is the two bounds, resolved.
 type mcpServeLimits struct {
-	maxRequestBytes int64
-	maxSessions     int
-	sessionIdle     time.Duration
+	maxRequestBytes    int64
+	maxSessions        int
+	maxSessionRequests int
+	sessionIdle        time.Duration
 }
 
 // mcpServeHandler assembles the whole HTTP surface: the RFC 9728 document
@@ -337,7 +372,7 @@ func mcpServeHandler(
 		},
 	)
 
-	limiter := newMCPSessionLimiter(limits.maxSessions, limits.sessionIdle, time.Now)
+	limiter := newMCPSessionLimiter(limits.maxSessions, limits.maxSessionRequests, limits.sessionIdle, time.Now)
 
 	authenticated := mcpauth.RequireBearerToken(
 		auth.MCPTokenVerifier(verifier, protectedResource.Resource()),
@@ -423,13 +458,18 @@ func maxRequestBodyBytes(next http.Handler, limit int64) http.Handler {
 //   - Requests that address an existing session are never counted again, and
 //     never refused for lack of a slot: the session already has one.
 type mcpSessionLimiter struct {
-	max  int
-	idle time.Duration
-	now  func() time.Time
+	max           int
+	maxPerSession int
+	idle          time.Duration
+	now           func() time.Time
 
 	mu sync.Mutex
 	// active maps a live session id to when it was last seen.
 	active map[string]time.Time
+	// inflight counts requests currently being served for each session id.
+	// Bounded per session because sessions are themselves bounded, so the
+	// product bounds the surface — see [mcpServeDefaultMaxSessionRequests].
+	inflight map[string]int
 	// pending counts reservations held by in-flight requests that may yet
 	// return a session id. Counted alongside active so that concurrent
 	// initializes cannot collectively exceed max.
@@ -438,12 +478,14 @@ type mcpSessionLimiter struct {
 
 // newMCPSessionLimiter builds one. now is injectable so a test can reach the
 // idle-expiry path without sleeping.
-func newMCPSessionLimiter(max int, idle time.Duration, now func() time.Time) *mcpSessionLimiter {
+func newMCPSessionLimiter(max, maxPerSession int, idle time.Duration, now func() time.Time) *mcpSessionLimiter {
 	return &mcpSessionLimiter{
-		max:    max,
-		idle:   idle,
-		now:    now,
-		active: make(map[string]time.Time),
+		max:           max,
+		maxPerSession: maxPerSession,
+		idle:          idle,
+		now:           now,
+		active:        make(map[string]time.Time),
+		inflight:      make(map[string]int),
 	}
 }
 
@@ -451,6 +493,18 @@ func newMCPSessionLimiter(max int, idle time.Duration, now func() time.Time) *mc
 func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id := r.Header.Get(mcpSessionHeader); id != "" {
+			// Bounded before anything is served, because this branch is the
+			// one an established session takes and --max-sessions does not
+			// reach it: one id replayed over many connections is many
+			// goroutines, each queued behind the registry guard.
+			if !l.enter(id) {
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "too many requests in flight for this session", http.StatusServiceUnavailable)
+
+				return
+			}
+			defer l.leave(id)
+
 			l.touch(id)
 
 			recorder := &mcpSessionRecorder{ResponseWriter: w}
@@ -542,6 +596,34 @@ func (l *mcpSessionLimiter) touch(id string) {
 	if _, known := l.active[id]; known {
 		l.active[id] = l.now()
 	}
+}
+
+// enter takes one of a session's in-flight request slots, reporting whether
+// one was available.
+func (l *mcpSessionLimiter) enter(id string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.inflight[id] >= l.maxPerSession {
+		return false
+	}
+	l.inflight[id]++
+
+	return true
+}
+
+// leave gives one back, and drops the entry entirely at zero so an id that is
+// finished with leaves nothing behind.
+func (l *mcpSessionLimiter) leave(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.inflight[id] <= 1 {
+		delete(l.inflight, id)
+
+		return
+	}
+	l.inflight[id]--
 }
 
 // release drops a session's slot.
@@ -833,9 +915,10 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	handler, err := mcpServeHandler(logger, mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout), verifier, protectedResource, mcpServeLimits{
-		maxRequestBytes: flags.maxRequestBytes,
-		maxSessions:     flags.maxSessions,
-		sessionIdle:     mcpServeSessionIdleTimeout,
+		maxRequestBytes:    flags.maxRequestBytes,
+		maxSessions:        flags.maxSessions,
+		maxSessionRequests: flags.maxSessionRequests,
+		sessionIdle:        mcpServeSessionIdleTimeout,
 	})
 	if err != nil {
 		return err
@@ -880,7 +963,8 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		"resource", protectedResource.Resource(),
 		"metadata_url", protectedResource.MetadataURL(),
 		"max_request_bytes", flags.maxRequestBytes,
-		"max_sessions", flags.maxSessions)
+		"max_sessions", flags.maxSessions,
+		"max_session_requests", flags.maxSessionRequests)
 
 	serveErr := make(chan error, 1)
 	go func() {

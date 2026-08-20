@@ -108,9 +108,10 @@ func newMCPServeFixtureWith(
 	guard := newMCPServeRegistryGuard()
 
 	handler, err := mcpServeHandler(logger, mcpServeTools(guard, testTimeout), verifier, protectedResource, mcpServeLimits{
-		maxRequestBytes: maxRequestBytes,
-		maxSessions:     maxSessions,
-		sessionIdle:     mcpServeSessionIdleTimeout,
+		maxRequestBytes:    maxRequestBytes,
+		maxSessions:        maxSessions,
+		maxSessionRequests: mcpServeDefaultMaxSessionRequests,
+		sessionIdle:        mcpServeSessionIdleTimeout,
 	})
 	require.NoError(t, err)
 
@@ -482,7 +483,7 @@ func TestMCPSessionLimiterExpiresIdleSessions(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	limiter := newMCPSessionLimiter(1, time.Minute, func() time.Time { return now })
+	limiter := newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, func() time.Time { return now })
 
 	require.True(t, limiter.reserve())
 	limiter.settle("session-one")
@@ -502,7 +503,7 @@ func TestMCPSessionLimiterExpiresIdleSessions(t *testing.T) {
 func TestMCPSessionLimiterReturnsAReservationThatOpenedNothing(t *testing.T) {
 	t.Parallel()
 
-	limiter := newMCPSessionLimiter(1, time.Minute, time.Now)
+	limiter := newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, time.Now)
 
 	require.True(t, limiter.reserve())
 	limiter.settle("")
@@ -516,7 +517,7 @@ func TestMCPSessionLimiterReturnsAReservationThatOpenedNothing(t *testing.T) {
 func TestMCPSessionLimiterIgnoresAnUnknownSessionID(t *testing.T) {
 	t.Parallel()
 
-	limiter := newMCPSessionLimiter(4, time.Minute, time.Now)
+	limiter := newMCPSessionLimiter(4, mcpServeDefaultMaxSessionRequests, time.Minute, time.Now)
 	limiter.touch("invented")
 
 	require.Equal(t, 0, limiter.open())
@@ -583,6 +584,7 @@ func TestCheckMCPServeFlagsFailsClosed(t *testing.T) {
 		policyPath:             "/etc/flowstate/policy.yaml",
 		maxRequestBytes:        mcpServeDefaultMaxRequestBytes,
 		maxSessions:            mcpServeDefaultMaxSessions,
+		maxSessionRequests:     mcpServeDefaultMaxSessionRequests,
 		testTimeout:            mcpServeDefaultTestTimeout,
 		protectedResourceFlags: protectedResourceFlags{resource: mcpServeTestResource},
 	}
@@ -615,7 +617,7 @@ func TestCheckMCPServeFlagsFailsClosed(t *testing.T) {
 func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 	t.Parallel()
 
-	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, sessionIdle: time.Minute}
+	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
 	_, err := mcpServeHandler(slog.Default(), mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout), nil, nil, limits)
 	require.Error(t, err, "no protected resource and no verifier must not produce a servable handler")
@@ -675,7 +677,7 @@ func TestMCPSessionLimiterReleasesASlotTheSDKDoesNotKnow(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
-	limiter := newMCPSessionLimiter(1, time.Minute, func() time.Time { return now })
+	limiter := newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, func() time.Time { return now })
 
 	// One session, opened the way a real initialize opens one: the inner
 	// handler names it in the response header.
@@ -931,4 +933,110 @@ func TestMCPServeBoundsAHangingTestCall(t *testing.T) {
 	tools, err := session.ListTools(t.Context(), nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, tools.Tools)
+}
+
+// TestMCPSessionLimiterBoundsRequestsWithinOneSession is Codex's P1 on the
+// fourth round: `--max-sessions` bounds how many sessions exist and bounds
+// nothing about what a caller does inside one.
+//
+// An established session id can be replayed over arbitrarily many parallel
+// connections or HTTP/2 streams, each getting a goroutine and each either
+// running under the registry guard or queued behind an exclusive
+// flowstate_test. So the per-session in-flight count is a third resource the
+// peer controls, and it gets its own bound.
+//
+// Crossed with a bound of one, and then checked to come back — a bound that
+// never releases is the same outage the session bound's own test guards
+// against, on a shorter timescale.
+func TestMCPSessionLimiterBoundsRequestsWithinOneSession(t *testing.T) {
+	t.Parallel()
+
+	limiter := newMCPSessionLimiter(4, 1, time.Minute, time.Now)
+
+	holding := make(chan struct{})
+	release := make(chan struct{})
+
+	handler := limiter.wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Hold") == "yes" {
+			close(holding)
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// One request in flight for the session, parked inside the handler.
+	held := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	held.Header.Set(mcpSessionHeader, "session-one")
+	held.Header.Set("X-Hold", "yes")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(httptest.NewRecorder(), held)
+	}()
+	<-holding
+
+	// A second request naming the same session must be refused rather than
+	// served alongside it.
+	second := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	second.Header.Set(mcpSessionHeader, "session-one")
+
+	refused := httptest.NewRecorder()
+	handler.ServeHTTP(refused, second)
+
+	require.Equal(t, http.StatusServiceUnavailable, refused.Code,
+		"the per-session in-flight bound must be reached, not merely configured")
+	require.NotEmpty(t, refused.Header().Get("Retry-After"))
+
+	// Another session is unaffected: the bound is per session, so one caller
+	// saturating their own cannot refuse anybody else's request.
+	other := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	other.Header.Set(mcpSessionHeader, "session-two")
+
+	unaffected := httptest.NewRecorder()
+	handler.ServeHTTP(unaffected, other)
+	require.Equal(t, http.StatusOK, unaffected.Code)
+
+	close(release)
+	<-done
+
+	// And the slot comes back.
+	after := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	after.Header.Set(mcpSessionHeader, "session-one")
+
+	allowed := httptest.NewRecorder()
+	handler.ServeHTTP(allowed, after)
+	require.Equal(t, http.StatusOK, allowed.Code, "an in-flight slot must be returned when the request ends")
+}
+
+// TestMCPServeTimedOutTestCallIsNotAPassingVerdict is Codex's P2 on the same
+// round, and it is the more interesting of the two: a serving deadline must
+// never be readable as the submitted workflow's own failure.
+//
+// flowtest compares a case's `expect.failed` against whether the run returned
+// an error, and a cancelled context produces one. So a case declaring
+// `failed: true` on a workflow that never completes would be marked *passed*,
+// every later case would run against an already expired context and pass the
+// same way, and the tool would answer success about cases that were never
+// really run.
+func TestMCPServeTimedOutTestCallIsNotAPassingVerdict(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMCPServeFixtureWithTestTimeout(t, 2*time.Second)
+	session := fixture.connect(t, fixture.goodToken("agent"))
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.TestToolName,
+		Arguments: map[string]any{
+			"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+			// The case that would otherwise be satisfied by the deadline.
+			"tests": "tests:\n  - name: expects a failure\n    expect:\n      failed: true\n",
+		},
+	})
+	require.NoError(t, err)
+
+	require.True(t, result.IsError,
+		"a call the serving deadline stopped must not be reported as a passing suite")
+	require.Contains(t, renderEveryShape(result), "did not finish",
+		"the answer has to say the tests were stopped, not report a verdict about them")
 }

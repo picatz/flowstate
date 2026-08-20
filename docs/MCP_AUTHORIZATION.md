@@ -161,11 +161,11 @@ client there and configure the client with the ID it was given, before the
 flow above can start. That registration belongs to the IdP, not to
 flowstate — nothing here reads or stores it.
 
-## Two bounds, and why they are two
+## The bounds, and why there are several
 
-An authenticated client controls two resources on this surface
-independently, so each has its own bound — bounding one does not bound the
-other:
+An authenticated client controls several resources on this surface
+independently, and bounding one bounds none of the others, so each has its
+own:
 
 - `--max-request-bytes` (default 1 MiB) caps one request body. A tool call
   here carries a Flowfile and a test document, so the default is generous by
@@ -179,6 +179,13 @@ other:
   `503` with a `Retry-After` hint. Sessions idle for five minutes are closed
   and their slots returned.
 
+- `--max-session-requests` (default 8) bounds how many requests one session
+  may have in flight at once. `--max-sessions` bounds how many sessions exist
+  and says nothing about how many connections one of them is replayed over —
+  each is a goroutine, and each queues behind the registry lock below. Per
+  session rather than global, because sessions are already bounded: the
+  product bounds the surface, and one caller saturating their own session
+  cannot refuse anybody else's request.
 - `--test-timeout` (default 2m) bounds one `flowstate_test` call. A submitted
   workflow can park forever on its own — flowtest's virtual clock advances only
   when every participant is parked, so a `wait_for_signal:` with no timeout and
@@ -186,7 +193,10 @@ other:
   Flowfile, so the refusal cannot live in validation. It matters more here than
   the two above because a `flowstate_test` call also holds the surface's
   registry lock while it runs, so an unbounded one stops the surface for
-  everyone rather than only for the caller who asked.
+  everyone rather than only for the caller who asked. A call the deadline
+  stops is reported as a stopped call, never as a verdict: `flowtest` reads a
+  cancelled run as a run that failed, so a case declaring `expect.failed: true`
+  would otherwise be marked passed on a workflow that never completed.
 
 Sessions are also pinned to the principal that opened them: the verified
 token's issuer and subject become the session's owner, and a request carrying

@@ -533,6 +533,25 @@ func testToolHandler(timeout time.Duration) mcp.ToolHandler {
 
 		report := flowtest.RunSourceContext(runCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests))
 
+		// A serving deadline must never be readable as a workflow's own
+		// failure. [flowtest] compares a case's `expect.failed` against
+		// whether the run returned an error, and a cancelled context produces
+		// one — so a case that expected failure would *pass* on a workflow
+		// that never completed, every later case would run against an already
+		// expired context and pass the same way, and the tool would answer
+		// success. The report is therefore discarded outright when the bound
+		// this handler imposed is what ended the run: an answer about cases
+		// that were never really run is worse than no answer. Reported by
+		// Codex on picatz/flowstate#807.
+		if runCtx.Err() != nil {
+			return flowmcp.ToolError(fmt.Errorf(
+				"the submitted tests did not finish within %s and were stopped, so no verdict is "+
+					"reported: a case that never completes is usually a `wait_for_signal:` with no "+
+					"`timeout:` and no stub scripting its signal, which parks the virtual clock with "+
+					"no deadline to advance to. Script the signal, give the wait a timeout, or split "+
+					"the file into smaller cases", timeout)), nil
+		}
+
 		encoded, err := renderTestResult(report)
 		if err != nil {
 			return flowmcp.ToolError(err), nil
