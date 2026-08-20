@@ -106,18 +106,70 @@ func TestNewProtectedResourceRequiresAtLeastOneAuthorizationServer(t *testing.T)
 }
 
 // TestProtectedResourceMetadataURLIsOriginDerived pins the well-known-URI
-// construction this package uses: the resource's scheme and host, plus the
-// fixed well-known path — never anything read from a request.
+// construction RFC 9728 section 3.1 specifies: the resource's scheme and
+// host, plus the well-known component, plus the resource's own path — never
+// anything read from a request. A bare-origin resource (no path) falls back
+// to the well-known component alone.
 func TestProtectedResourceMetadataURLIsOriginDerived(t *testing.T) {
 	t.Parallel()
 
-	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+	policy := trustingPolicy("https://trusted.example.com")
+
+	t.Run("resource with a path", func(t *testing.T) {
+		t.Parallel()
+
+		pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+			Resource:             "https://flowstate.example.com/mcp",
+			AuthorizationServers: []string{"https://trusted.example.com"},
+		}, policy)
+		require.NoError(t, err)
+
+		want := "https://flowstate.example.com" + auth.ProtectedResourceMetadataPath + "/mcp"
+		require.Equal(t, want, pr.MetadataURL())
+		require.Equal(t, auth.ProtectedResourceMetadataPath+"/mcp", pr.Path())
+	})
+
+	t.Run("bare-origin resource", func(t *testing.T) {
+		t.Parallel()
+
+		policy := trustingPolicy("https://trusted.example.com")
+		policy.Issuers[0].Audiences = []string{"https://flowstate.example.com"}
+
+		pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+			Resource:             "https://flowstate.example.com",
+			AuthorizationServers: []string{"https://trusted.example.com"},
+		}, policy)
+		require.NoError(t, err)
+
+		want := "https://flowstate.example.com" + auth.ProtectedResourceMetadataPath
+		require.Equal(t, want, pr.MetadataURL())
+		require.Equal(t, auth.ProtectedResourceMetadataPath, pr.Path())
+	})
+}
+
+// TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudience
+// is the other half of the fail-closed AS check, found in review: policy
+// trusting the issuer is not enough on its own — [TrustedIssuer.admits]
+// checks a token's audience against exactly [TrustedIssuer.Audiences], so an
+// entry that trusts the issuer but does not list this resource as an
+// accepted audience would still refuse every token minted for it.
+func TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudience(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:      "as",
+		Issuer:    "https://trusted.example.com",
+		Audiences: []string{"https://some-other-resource.example.com"},
+	}}}
+
+	_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
 		Resource:             "https://flowstate.example.com/mcp",
 		AuthorizationServers: []string{"https://trusted.example.com"},
-	}, trustingPolicy("https://trusted.example.com"))
-	require.NoError(t, err)
+	}, policy)
 
-	require.Equal(t, "https://flowstate.example.com"+auth.ProtectedResourceMetadataPath, pr.MetadataURL())
+	require.Error(t, err)
+	require.ErrorContains(t, err, "https://trusted.example.com")
+	require.ErrorContains(t, err, "https://flowstate.example.com/mcp")
 }
 
 // TestProtectedResourceDocumentOmitsScopesSupported pins D1's deferral
@@ -247,7 +299,7 @@ func TestWithProtectedResourceChallengeNamesTheMetadataURL(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	challenge := resp.Header.Get("WWW-Authenticate")
 	require.Contains(t, challenge, `error="invalid_token"`)
-	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+`"`)
+	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`)
 	require.NotContains(t, challenge, "scope=",
 		"D1 is deferred: this slice defines no scope vocabulary to challenge with")
 }
@@ -279,7 +331,7 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	defer resp.Body.Close()
 
 	challenge := resp.Header.Get("WWW-Authenticate")
-	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+`"`,
+	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`,
 		"a forged Host header changed the advertised metadata URL")
 	require.NotContains(t, challenge, "attacker.example.com")
 }

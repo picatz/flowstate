@@ -126,8 +126,13 @@ func serverHandler(
 
 	// Unconfigured (protectedResource nil) mounts nothing: see this function's
 	// doc, "why the protected-resource route only exists when configured".
+	// Mounted at protectedResource.Path(), not the bare
+	// [auth.ProtectedResourceMetadataPath] constant: RFC 9728 section 3.1
+	// inserts the well-known component before the resource's own path, so a
+	// deployment whose resource carries a path (the common case) is served
+	// under that path, not the origin alone — see [auth.ProtectedResource.Path].
 	if protectedResource != nil {
-		mux.Handle(auth.ProtectedResourceMetadataPath, protectedResource.Handler())
+		mux.Handle(protectedResource.Path(), protectedResource.Handler())
 	}
 
 	return mux

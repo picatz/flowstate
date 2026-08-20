@@ -370,7 +370,7 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 		nil, pr))
 	defer configured.Close()
 
-	resp, err := configured.Client().Get(configured.URL + auth.ProtectedResourceMetadataPath)
+	resp, err := configured.Client().Get(configured.URL + pr.Path())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -390,7 +390,7 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	// meets the authenticator, exactly as an unconfigured --webhook does (see
 	// TestTheWebhookRouteIsMountedOnlyWhenConfigured). What must NOT happen is
 	// the request reaching an RFC 9728 handler that serves an empty document.
-	absent, err := unconfigured.Client().Get(unconfigured.URL + auth.ProtectedResourceMetadataPath)
+	absent, err := unconfigured.Client().Get(unconfigured.URL + pr.Path())
 	require.NoError(t, err)
 	defer absent.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, absent.StatusCode,
@@ -432,8 +432,7 @@ func TestProtectedResourceChallengeMatchesServedDocument(t *testing.T) {
 	// from this same server (rewritten onto the test server's own address,
 	// since pr.MetadataURL() names the configured production host) and must
 	// answer with a document RFC 9728 accepts.
-	metadataPath := auth.ProtectedResourceMetadataPath
-	docResp, err := server.Client().Get(server.URL + metadataPath)
+	docResp, err := server.Client().Get(server.URL + pr.Path())
 	require.NoError(t, err)
 	defer docResp.Body.Close()
 	require.Equal(t, http.StatusOK, docResp.StatusCode)
@@ -477,8 +476,7 @@ func TestProtectedResourceChallengeUnaffectedByForgedHost(t *testing.T) {
 	defer resp.Body.Close()
 
 	challenge := resp.Header.Get("WWW-Authenticate")
-	require.Equal(t, `Bearer error="invalid_token", resource_metadata="https://flowstate.example.com`+
-		auth.ProtectedResourceMetadataPath+`"`, challenge)
+	require.Equal(t, `Bearer error="invalid_token", resource_metadata="`+pr.MetadataURL()+`"`, challenge)
 	require.NotContains(t, challenge, "attacker.example.com")
 }
 

@@ -76,13 +76,13 @@ func resolveProtectedResource(flags protectedResourceFlags, policy *auth.Policy)
 		return nil, nil
 	}
 
-	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+	// No flag name prefixed here: auth.NewProtectedResource's own errors
+	// already name the field at fault ("resource" or "authorization_servers"),
+	// which is --protected-resource for one and --authorization-server for
+	// the other — a blanket "--protected-resource: " prefix would misname the
+	// second.
+	return auth.NewProtectedResource(auth.ProtectedResourceConfig{
 		Resource:             flags.resource,
 		AuthorizationServers: flags.authorizationServers,
 	}, policy)
-	if err != nil {
-		return nil, fmt.Errorf("--protected-resource: %w", err)
-	}
-
-	return pr, nil
 }
