@@ -861,6 +861,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkProtectedResourceRouteCollision(protectedResource, broker); err != nil {
+		return err
+	}
 
 	// The public listener's certificate, and whether the address it is about
 	// to bind may go without one. Checked before any further I/O beyond the

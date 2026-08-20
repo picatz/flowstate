@@ -181,6 +181,52 @@ func TestProtectedResourceMetadataURLPreservesPathEscaping(t *testing.T) {
 	require.Equal(t, auth.ProtectedResourceMetadataPath+"/mcp/a%2Fb", pr.Path())
 }
 
+// TestProtectedResourceEscapedPathIsActuallyReachable is the end-to-end proof
+// that mounting at the escaped path (rather than the decoded one) is the
+// correct choice, not merely a plausible one: a request for the exact URL
+// [ProtectedResource.MetadataURL] advertises must reach the handler through
+// [ProtectedResource.Path] as the mux pattern.
+//
+// A later review comment claimed the reverse — that http.ServeMux matches
+// only a *double*-escaped request against an escaped pattern, so a client
+// requesting the advertised "%2F" URL would 404. Verified against net/http
+// directly: it does not. http.Client's own RoundTrip sends the request line
+// through u.EscapedPath() (net/http/transport.go / net/url), which is the
+// same escaped string mux.Handle was given, and net/http's router matches
+// r.URL.EscapedPath() against a registered pattern containing "%2F" exactly
+// — this test is that reproduction, through this package's own handler
+// rather than a standalone http.ServeMux, so it also proves nothing this
+// package adds around the SDK handler changes that behavior.
+func TestProtectedResourceEscapedPathIsActuallyReachable(t *testing.T) {
+	t.Parallel()
+
+	policy := trustingPolicy("https://trusted.example.com")
+	policy.Issuers[0].Audiences = []string{"https://flowstate.example.com/mcp/a%2Fb"}
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp/a%2Fb",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	mux.Handle(pr.Path(), pr.Handler())
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + pr.Path())
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"a request for the exact URL this document advertises did not reach the handler mounted "+
+			"at ProtectedResource.Path() — the escaped mount would be a real defect if this failed")
+
+	var doc map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.Equal(t, "https://flowstate.example.com/mcp/a%2Fb", doc["resource"])
+}
+
 // TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudience
 // is the other half of the fail-closed AS check, found in review: policy
 // trusting the issuer is not enough on its own — [TrustedIssuer.admits]

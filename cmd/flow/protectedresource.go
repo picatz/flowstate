@@ -86,3 +86,40 @@ func resolveProtectedResource(flags protectedResourceFlags, policy *auth.Policy)
 		AuthorizationServers: flags.authorizationServers,
 	}, policy)
 }
+
+// checkProtectedResourceRouteCollision refuses a configuration where the
+// computed protected-resource mount path (see [auth.ProtectedResource.Path])
+// is identical to another route serverHandler registers unconditionally at a
+// fixed pattern: the OIDC discovery document, or the issuer's own key-set
+// path — which, unlike the discovery path, an operator can move with
+// federation's own `jwks_path` (see [auth.FederationPolicy.JWKSPath]),
+// making the collision reachable from ordinary configuration rather than
+// only from a resource whose path happens to spell a well-known suffix.
+//
+// http.ServeMux panics on a second registration of an identical pattern
+// (verified: "pattern %q ... conflicts with pattern %q"), which without this
+// check would turn two independently valid flags into a crash at start-up
+// instead of a diagnosis. broker nil (no federation configured) skips the
+// JWKS half; there is nothing to collide with.
+func checkProtectedResourceRouteCollision(pr *auth.ProtectedResource, broker *auth.Broker) error {
+	if pr == nil {
+		return nil
+	}
+
+	if pr.Path() == auth.DiscoveryPath {
+		return fmt.Errorf("--protected-resource: the computed metadata path %q is identical to the "+
+			"OIDC discovery path this deployment already serves at a fixed location; choose a resource "+
+			"whose path does not end in %q", pr.Path(), auth.DiscoveryPath)
+	}
+
+	if broker != nil {
+		if jwksPath := broker.Issuer().JWKSPath(); pr.Path() == jwksPath {
+			return fmt.Errorf("--protected-resource: the computed metadata path %q is identical to "+
+				"this deployment's JWKS path (%q, from --auth-policy's federation.jwks_path); the "+
+				"two would register the same route and this server would panic at start-up rather "+
+				"than serve either one — change one of the two paths", pr.Path(), jwksPath)
+		}
+	}
+
+	return nil
+}

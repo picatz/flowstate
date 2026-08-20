@@ -523,6 +523,73 @@ func TestResolveProtectedResourceUnconfiguredIsNil(t *testing.T) {
 	require.Nil(t, pr)
 }
 
+// TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision pins a
+// review finding: federation's own `jwks_path` is operator-configurable, so
+// a resource whose computed metadata path lands on it is reachable from
+// ordinary configuration, not just a pathological resource URI. Left
+// unchecked, serverHandler's second mux.Handle call panics at start-up
+// (http.ServeMux refuses a duplicate pattern) instead of the two flags
+// failing with a diagnosis.
+func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing.T) {
+	t.Parallel()
+
+	_, private, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	key, err := auth.NewSigningKey("test-key", private)
+	require.NoError(t, err)
+
+	const collidingPath = auth.ProtectedResourceMetadataPath + "/mcp"
+
+	issuer, err := auth.NewIssuer("https://flowstate.test", key, auth.WithJWKSPath(collidingPath))
+	require.NoError(t, err)
+	broker, err := auth.NewBroker(issuer)
+	require.NoError(t, err)
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+	}}
+	pr, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             "https://flowstate.example.com/mcp",
+		authorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+	require.Equal(t, collidingPath, pr.Path(), "test setup: the two paths must actually collide")
+
+	err = checkProtectedResourceRouteCollision(pr, broker)
+	require.Error(t, err)
+	require.ErrorContains(t, err, collidingPath)
+
+	// And the positive control: what this check exists to prevent actually
+	// panics serverHandler if the check is skipped.
+	require.Panics(t, func() {
+		serverHandler(discardLogger(), refusingVerifier{}, nil, broker,
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), nil, pr)
+	}, "a colliding route should panic serverHandler's mux.Handle, which is exactly what the check must catch first")
+}
+
+// TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase pins the
+// negative direction: a resource path that does not collide with anything
+// passes with no error, and the same values TestTheServerTakesTheProtectedResourceFlags
+// and friends already use are unaffected by this check's addition.
+func TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase(t *testing.T) {
+	t.Parallel()
+
+	broker := testBroker(t)
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
+		{Name: "as", Issuer: "https://trusted.example.com", Audiences: []string{"https://flowstate.example.com/mcp"}},
+	}}
+	pr, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             "https://flowstate.example.com/mcp",
+		authorizationServers: []string{"https://trusted.example.com"},
+	}, policy)
+	require.NoError(t, err)
+
+	require.NoError(t, checkProtectedResourceRouteCollision(pr, broker))
+	require.NoError(t, checkProtectedResourceRouteCollision(pr, nil))
+	require.NoError(t, checkProtectedResourceRouteCollision(nil, broker))
+}
+
 // staticProvider resolves any reference to a fixed value, standing in for
 // whatever backend a deployment configured.
 type staticProvider struct{}
