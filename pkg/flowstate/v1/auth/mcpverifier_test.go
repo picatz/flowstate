@@ -383,3 +383,40 @@ func TestMCPTokenVerifierIsDeterministicOnAClock(t *testing.T) {
 	requireRefused(t, info, err)
 	require.ErrorIs(t, err, mcpauth.ErrInvalidToken)
 }
+
+// TestNewProtectedResourceRefusesAQuery is RFC 8707 section 2's other
+// component rule, enforced rather than tolerated — reported by Codex on
+// picatz/flowstate#807.
+//
+// A resource identifier's path is what a serving surface mounts itself at,
+// and [http.ServeMux] does not distinguish requests by query. So a resource
+// carrying one would be served at the bare path and at every other query
+// alike: an identifier whose distinguishing part nothing distinguishes on,
+// answering at URIs it does not name and requiring in no token's audience.
+func TestNewProtectedResourceRefusesAQuery(t *testing.T) {
+	t.Parallel()
+
+	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:      "idp",
+		Issuer:    "https://idp.example.com",
+		Audiences: []string{"https://flowstate.example.com/mcp?tenant=a"},
+	}}}
+
+	_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp?tenant=a",
+		AuthorizationServers: []string{"https://idp.example.com"},
+	}, policy)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "query",
+		"the diagnostic must name what is wrong with the identifier, not merely refuse it")
+
+	// The same identifier without the query is accepted, so the refusal is
+	// about the query and not about something else in the URI.
+	policy.Issuers[0].Audiences = []string{"https://flowstate.example.com/mcp"}
+	_, err = auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://idp.example.com"},
+	}, policy)
+	require.NoError(t, err)
+}

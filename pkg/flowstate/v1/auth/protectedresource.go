@@ -278,6 +278,25 @@ func validateResourceURI(raw string) (*url.URL, error) {
 		return nil, err
 	}
 
+	// RFC 8707 section 2's other component rule — the resource identifier
+	// SHOULD NOT include a query — enforced rather than tolerated, because
+	// this deployment cannot honour one even if it wanted to. The identifier's
+	// path is what a serving surface mounts itself at (see [ResourcePath]) and
+	// [http.ServeMux] does not distinguish requests by query, so a resource of
+	// "https://host/mcp?tenant=a" would be served at "/mcp" and at
+	// "/mcp?tenant=b" alike — neither of which is the identifier advertised in
+	// the document or required in a token's audience. Refusing is the honest
+	// answer: the alternative is a resource identifier whose distinguishing
+	// part nothing distinguishes on. Reported by Codex on
+	// picatz/flowstate#807.
+	if parsed.RawQuery != "" || strings.Contains(raw, "?") {
+		return nil, fmt.Errorf("resource %q must not include a query: RFC 8707 section 2 says a "+
+			"resource identifier should not carry one, and this deployment cannot serve one "+
+			"faithfully — the surface mounts itself at the identifier's path, and routing does "+
+			"not distinguish one query from another, so the identifier would answer at URIs it "+
+			"does not name. Use a path segment instead", raw)
+	}
+
 	if strings.HasSuffix(parsed.Path, "/") {
 		return nil, fmt.Errorf("resource %q must not end in a trailing slash: it would leave the audience "+
 			"a token names ambiguous against the same resource written without one", raw)
