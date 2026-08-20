@@ -26,8 +26,11 @@ func addProtectedResourceFlags(cmd *cobra.Command) {
 			"identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing "+
 			"slash. Given together with one or more --authorization-server, this deployment "+
 			"serves RFC 9728 protected resource metadata at "+auth.ProtectedResourceMetadataPath+
-			" and every 401 challenge names that document. Unset (the default): the route does "+
-			"not exist and every challenge reads exactly as it does today")
+			", plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI "+
+			"construction — a resource ending in /mcp serves its document at "+
+			auth.ProtectedResourceMetadataPath+"/mcp, not at the bare prefix), and every 401 "+
+			"challenge names that exact document. Unset (the default): the route does not exist "+
+			"and every challenge reads exactly as it does today")
 
 	cmd.Flags().StringArray("authorization-server", nil,
 		"an authorization server this deployment advertises as able to mint tokens for "+
