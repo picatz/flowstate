@@ -258,7 +258,7 @@ Both are in the [Reference](#reference) below.
 | **Plugins** | Out-of-process tasks and secret backends over Connect RPC: `vcs`, `git`, `github`, `sql` (sqlite and postgres), `codex` (a bounded agentic run as a durable step), and an SDK to write your own | [plugins/](plugins) · [plugin/sdk](pkg/flowstate/v1/plugin/sdk) |
 | **Embedding** | Compile a Flowfile from bytes, register your own Go functions as tasks, and run locally or durably from your own Go program | [EMBEDDING.md](docs/EMBEDDING.md) · [examples/embedding](examples/embedding) |
 | **Examples** | Fifty-five worked Flowfiles, indexed by what each one demonstrates | [examples/README.md](examples/README.md) |
-| **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) · [MCP over HTTP, authorized](docs/MCP_AUTHORIZATION.md) |
+| **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) · [MCP over HTTP, authorized — the design; the serving flags land in a follow-up PR](docs/MCP_AUTHORIZATION.md) |
 
 ## Start here
 

@@ -78,6 +78,36 @@ func TestWrongAudienceTokenLastAudienceWins(t *testing.T) {
 	assert.True(t, principal.HasAudience("https://wrong.example.com/"))
 }
 
+// TestWrongAudienceTokenWinsOverWithoutAudience is the regression for a Codex
+// finding: WithoutAudience sets a refusal flag WithAudience did not clear, so
+// WrongAudienceToken(..., WithoutAudience()) minted a token with no "aud"
+// claim at all — a missing-audience test wearing a wrong-audience test's
+// name, able to pass without ever exercising the verifier's value
+// comparison. The audience WrongAudienceToken names must win over an earlier
+// omission the same way it wins over an earlier WithAudience.
+func TestWrongAudienceTokenWinsOverWithoutAudience(t *testing.T) {
+	t.Parallel()
+
+	clock := authtest.NewClock(referenceTime)
+	issuer := newIssuer(t, authtest.WithClock(clock.Now))
+
+	token := issuer.WrongAudienceToken(
+		"https://wrong.example.com/",
+		nil,
+		authtest.WithoutAudience(),
+	)
+
+	// The token carries the named audience — provable by a verifier that
+	// trusts it: were the "aud" claim absent, this verification would fail
+	// on the missing audience rather than succeed on the matching one.
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{
+		Audiences: []string{"https://wrong.example.com/"},
+	})
+	principal, err := verifier.Verify(t.Context(), token)
+	require.NoError(t, err, "WrongAudienceToken must mint the audience it names, even after WithoutAudience")
+	assert.True(t, principal.HasAudience("https://wrong.example.com/"))
+}
+
 // TestWrongAudienceTokenRejectsEmptyAudience checks the fail-closed rule this
 // package applies everywhere an omission needs one spelling: an audience
 // argument of "" would mint the very no-audience hole this package's own doc
