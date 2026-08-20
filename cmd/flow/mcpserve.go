@@ -740,7 +740,11 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) *mcp
 			WrapHandler:         guard.wrapTool,
 			WrapResourceHandler: guard.wrapResource,
 		},
-		flowmcp.ToolRegistration{Tool: flowmcp.TestTool(), Handler: testToolHandler(testTimeout)},
+		// [flowmcp.ReducedTestTool] rather than TestTool: the stdio
+		// description tells a model to reach for flowstate_run_local
+		// afterward, and this surface does not serve it. Same schema, same
+		// handler, one paragraph that is true here.
+		flowmcp.ToolRegistration{Tool: flowmcp.ReducedTestTool(), Handler: testToolHandler(testTimeout)},
 	)
 
 	return srv

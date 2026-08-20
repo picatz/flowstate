@@ -1040,3 +1040,64 @@ func TestMCPServeTimedOutTestCallIsNotAPassingVerdict(t *testing.T) {
 	require.Contains(t, renderEveryShape(result), "did not finish",
 		"the answer has to say the tests were stopped, not report a verdict about them")
 }
+
+// TestMCPServeDescriptionsDescribeThisSurface is Codex's finding on the last
+// round, and it is this repository's "diagnostics are a feature" rule pointed
+// at a non-human reader: a tool description is what a model chooses a tool by
+// and is the only account of the surface it ever gets, so one describing
+// behavior this surface does not have sends it at something that is not there.
+//
+// Two were wrong, and both came from reusing stdio's metadata verbatim:
+// flowstate_get_catalog's note explained dispatching to a deployment named by
+// --address, a flag this command does not have; and every example resource
+// told the reader to execute it with flowstate_run_local, which this surface
+// deliberately does not serve.
+func TestMCPServeDescriptionsDescribeThisSurface(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+	session := fixture.connect(t, fixture.goodToken("agent"))
+
+	tools, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+
+	for _, tool := range tools.Tools {
+		require.NotContains(t, tool.Description, "--address",
+			"%s names a flag `flow mcp serve` does not have", tool.Name)
+		require.NotContains(t, tool.Description, flowmcp.RunLocalToolName,
+			"%s points at a tool this surface does not serve", tool.Name)
+	}
+
+	// And the same for the read-only half, where the example descriptions live.
+	resources, err := session.ListResources(t.Context(), nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, resources.Resources)
+
+	for _, resource := range resources.Resources {
+		require.NotContains(t, resource.Description, flowmcp.RunLocalToolName,
+			"%s points at a tool this surface does not serve", resource.URI)
+	}
+
+	// The two tools whose stdio text was corrected still say something in
+	// place of what was removed, so this is a correction rather than a
+	// deletion — silence would leave a model looking for an answer that is
+	// not there either.
+	for _, tool := range tools.Tools {
+		switch tool.Name {
+		case flowmcp.ToolName("GetCatalog"):
+			require.Contains(t, tool.Description, "never dispatches",
+				"the catalog tool must still say where its answer comes from")
+		case flowmcp.TestToolName:
+			require.Contains(t, tool.Description, "nothing to reach for afterward",
+				"the test tool must still answer the question its stdio text answered")
+		}
+	}
+
+	// And the reduced description is a *derivation* of the full one rather
+	// than a second copy: everything outside the paragraphs about
+	// flowstate_run_local has to be word for word the same, or the two will
+	// drift and only one of them will be corrected next time.
+	require.NotEqual(t, flowmcp.TestToolDescription, flowmcp.ReducedTestToolDescription)
+	require.Contains(t, flowmcp.ReducedTestToolDescription, "`tests` is a `*.test.yaml` document")
+	require.Contains(t, flowmcp.TestToolDescription, "`tests` is a `*.test.yaml` document")
+}

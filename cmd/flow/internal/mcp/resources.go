@@ -117,9 +117,26 @@ func addResources(srv *mcp.Server, local *server.FlowstateServer, deps Deps) {
 			MIMEType: YAMLMIME,
 			Size:     int64(len(content)),
 			Description: fmt.Sprintf("The %s example: a complete, CI-run Flowfile you can read as a "+
-				"reference or adapt. Execute it as-is with flowstate_run_local to see what it does.", name),
+				"reference or adapt. %s", name, exampleUseNote(deps)),
 		}, wrapResourceHandler(deps, ExamplePrefix+name, mcpExampleResourceHandler()))
 	}
+}
+
+// exampleUseNote says what a reader of an example can do with it *on this
+// surface*, which differs between the two.
+//
+// The full surface serves flowstate_run_local and the reduced one
+// deliberately does not (see cmd/flow/mcpserve.go), so the stdio sentence —
+// "execute it as-is with flowstate_run_local" — would send a model at a tool
+// that is not there. A description is the only account of a surface a model
+// reads, and one naming an absent tool is a diagnostic that lies. Reported by
+// Codex on picatz/flowstate#807.
+func exampleUseNote(deps Deps) string {
+	if deps.reduced {
+		return "Rehearse it with flowstate_test, which runs it against stubs and reaches nothing."
+	}
+
+	return "Execute it as-is with flowstate_run_local to see what it does."
 }
 
 // mcpDSLResourceHandler serves the language reference, whole.
