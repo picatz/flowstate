@@ -14,6 +14,7 @@ import (
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/semaphore"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -737,7 +738,7 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) *mcp
 				return redactGetResponse(response, nil, false)
 			},
 
-			WrapHandler:         guard.wrapTool,
+			WrapHandler:         guard.wrapTool(testTimeout),
 			WrapResourceHandler: guard.wrapResource,
 		},
 		// [flowmcp.ReducedTestTool] rather than TestTool: the stdio
@@ -786,23 +787,53 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) *mcp
 // that does not exist anywhere else") and is the right answer for a one-shot
 // `flow test` process. What is wrong is not that behavior but this surface
 // inheriting it, so the correction belongs to the surface.
+//
+// # Why the lock is a semaphore and not a sync.RWMutex
+//
+// A [sync.RWMutex] cannot be acquired with a deadline, and that turned the
+// guard into an amplifier: a queued flowstate_test call waited for the lock
+// *before* its own timeout began, so each queued writer started a fresh
+// budget on reaching the front. With the defaults that is 32 sessions × 8
+// in-flight requests × --test-timeout of surface unavailability from one
+// burst, refillable indefinitely — bounds that each hold individually and
+// compose into no bound at all, which is the shape CLAUDE.md names when it
+// says bounding one resource does not bound another the peer controls the
+// ratio to. Reported by Codex on picatz/flowstate#807.
+//
+// A weighted semaphore takes a context, so waiting for the lock is inside
+// the same budget as holding it: a call's whole cost is one --test-timeout,
+// whenever it arrives, and a caller that piles more on gets refusals rather
+// than a longer queue. Readers take one unit and the writer takes all of
+// them, which is an RWMutex with a deadline and nothing more.
 type mcpServeRegistryGuard struct {
-	mu sync.RWMutex
+	sem *semaphore.Weighted
 }
+
+// mcpServeRegistryReaders is the semaphore's weight: how many tools and
+// resources may read the task registry at once. Large enough not to be a
+// bound in its own right — the real request bounds are --max-sessions and
+// --max-session-requests — and it is only ever all-or-one, so its exact value
+// decides nothing except that a writer excludes every reader.
+const mcpServeRegistryReaders = 1 << 20
 
 // newMCPServeRegistryGuard builds one.
 func newMCPServeRegistryGuard() *mcpServeRegistryGuard {
-	return &mcpServeRegistryGuard{}
+	return &mcpServeRegistryGuard{sem: semaphore.NewWeighted(mcpServeRegistryReaders)}
 }
 
 // wrapTool is [flowmcp.Deps.WrapHandler]: exclusive for the tool that mutates
 // the registry, shared for every tool that reads it.
-func (g *mcpServeRegistryGuard) wrapTool(tool string, next mcp.ToolHandler) mcp.ToolHandler {
-	if tool == flowmcp.TestToolName {
-		return g.exclusive(next)
-	}
+//
+// timeout is the whole budget an exclusive call gets, waiting for the lock
+// included — see this type's doc.
+func (g *mcpServeRegistryGuard) wrapTool(timeout time.Duration) func(string, mcp.ToolHandler) mcp.ToolHandler {
+	return func(tool string, next mcp.ToolHandler) mcp.ToolHandler {
+		if tool == flowmcp.TestToolName {
+			return g.exclusive(next, timeout)
+		}
 
-	return g.shared(next)
+		return g.shared(next)
+	}
 }
 
 // wrapResource is [flowmcp.Deps.WrapResourceHandler]: the read side, for the
@@ -820,18 +851,32 @@ func (g *mcpServeRegistryGuard) wrapTool(tool string, next mcp.ToolHandler) mcp.
 // forgotten for one.
 func (g *mcpServeRegistryGuard) wrapResource(_ string, next mcp.ResourceHandler) mcp.ResourceHandler {
 	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-		g.mu.RLock()
-		defer g.mu.RUnlock()
+		if err := g.sem.Acquire(ctx, 1); err != nil {
+			return nil, fmt.Errorf("this surface was busy running another caller's tests and this "+
+				"read was cancelled before it could be served: %w", err)
+		}
+		defer g.sem.Release(1)
 
 		return next(ctx, req)
 	}
 }
 
 // exclusive runs the registry-mutating tool alone, and repairs what it left.
-func (g *mcpServeRegistryGuard) exclusive(next mcp.ToolHandler) mcp.ToolHandler {
+//
+// The deadline starts here, before the lock is waited for, so a call's whole
+// cost — queueing plus running — is one timeout rather than one per call that
+// reaches the front of the queue.
+func (g *mcpServeRegistryGuard) exclusive(next mcp.ToolHandler, timeout time.Duration) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		g.mu.Lock()
-		defer g.mu.Unlock()
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		if err := g.sem.Acquire(ctx, mcpServeRegistryReaders); err != nil {
+			return flowmcp.ToolError(fmt.Errorf(
+				"this surface was busy running another caller's tests for the whole %s this call is "+
+					"allowed, so yours never started; try again", timeout)), nil
+		}
+		defer g.sem.Release(mcpServeRegistryReaders)
 
 		registry := v1.DefaultRegistry()
 		before := make(map[string]bool)
@@ -858,8 +903,12 @@ func (g *mcpServeRegistryGuard) exclusive(next mcp.ToolHandler) mcp.ToolHandler 
 // in which the tool above has it swapped.
 func (g *mcpServeRegistryGuard) shared(next mcp.ToolHandler) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		g.mu.RLock()
-		defer g.mu.RUnlock()
+		if err := g.sem.Acquire(ctx, 1); err != nil {
+			return flowmcp.ToolError(errors.New(
+				"this surface was busy running another caller's tests and this request was " +
+					"cancelled before it could be served; try again")), nil
+		}
+		defer g.sem.Release(1)
 
 		return next(ctx, req)
 	}

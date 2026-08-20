@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -864,7 +865,7 @@ func TestMCPServeRegistryGuardCoversTheServedResources(t *testing.T) {
 
 	// Stand in for a flowstate_test call in flight, which is exactly what
 	// holds this lock in production.
-	fixture.guard.mu.Lock()
+	require.NoError(t, fixture.guard.sem.Acquire(t.Context(), mcpServeRegistryReaders))
 
 	read := make(chan struct{})
 	go func() {
@@ -874,13 +875,13 @@ func TestMCPServeRegistryGuardCoversTheServedResources(t *testing.T) {
 
 	select {
 	case <-read:
-		fixture.guard.mu.Unlock()
+		fixture.guard.sem.Release(mcpServeRegistryReaders)
 		t.Fatal("the catalog resource answered while the registry-mutating half held the lock: " +
 			"a resources/read can observe another caller's synthetic task names")
 	case <-time.After(250 * time.Millisecond):
 	}
 
-	fixture.guard.mu.Unlock()
+	fixture.guard.sem.Release(mcpServeRegistryReaders)
 
 	select {
 	case <-read:
@@ -1100,4 +1101,49 @@ func TestMCPServeDescriptionsDescribeThisSurface(t *testing.T) {
 	require.NotEqual(t, flowmcp.TestToolDescription, flowmcp.ReducedTestToolDescription)
 	require.Contains(t, flowmcp.ReducedTestToolDescription, "`tests` is a `*.test.yaml` document")
 	require.Contains(t, flowmcp.TestToolDescription, "`tests` is a `*.test.yaml` document")
+}
+
+// TestMCPServeTestCallBudgetIncludesWaitingForTheLock is Codex's P1 on the
+// last round, and it is the bounds-that-do-not-compose shape CLAUDE.md warns
+// about: `--test-timeout` bounded how long a flowstate_test call *runs*, and
+// the exclusive lock it waits for was acquired before that budget started.
+//
+// So a queued call began a fresh budget on reaching the front of the queue,
+// and the surface's unavailability was the sum rather than the maximum:
+// `--max-sessions` × `--max-session-requests` × `--test-timeout` from one
+// burst, refillable indefinitely. Three bounds that each hold on their own and
+// compose into none.
+//
+// Driven against the guard directly with the lock already held, which is what
+// a queued call sees, and on a short budget so the wait is the whole test.
+func TestMCPServeTestCallBudgetIncludesWaitingForTheLock(t *testing.T) {
+	t.Parallel()
+
+	const budget = 300 * time.Millisecond
+
+	guard := newMCPServeRegistryGuard()
+
+	// Somebody else is inside, and stays there for far longer than the budget
+	// this call is allowed.
+	require.NoError(t, guard.sem.Acquire(t.Context(), mcpServeRegistryReaders))
+	defer guard.sem.Release(mcpServeRegistryReaders)
+
+	var ran bool
+	queued := guard.wrapTool(budget)(flowmcp.TestToolName,
+		func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			ran = true
+
+			return &mcp.CallToolResult{}, nil
+		})
+
+	started := time.Now()
+	result, err := queued(t.Context(), &mcp.CallToolRequest{})
+	elapsed := time.Since(started)
+
+	require.NoError(t, err)
+	require.False(t, ran, "the handler must not run: its whole budget was spent waiting for the lock")
+	require.True(t, result.IsError, "a call that never started must say so rather than answering emptily")
+	require.Less(t, elapsed, 5*time.Second,
+		"waiting for the lock has to be inside the call's own budget, not before it")
+	require.GreaterOrEqual(t, elapsed, budget, "and the call must actually have waited its budget out")
 }
