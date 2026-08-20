@@ -166,7 +166,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
 	extra := []flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
+		// No timeout: stdio's single caller is the process that launched this
+		// one, and this surface is unchanged by the bound `flow mcp serve`
+		// applies for its own reasons. See [testToolHandler].
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
 	}
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps, extra...)
@@ -482,7 +485,7 @@ type testToolArguments struct {
 // this surface that changes what a stubbed run may do, because a stubbed run
 // never reaches anything a flag could govern in the first place. See the
 // package comment above [flowmcp.TestToolName].
-func testToolHandler() mcp.ToolHandler {
+func testToolHandler(timeout time.Duration) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args testToolArguments
 
@@ -511,7 +514,24 @@ func testToolHandler() mcp.ToolHandler {
 					"\"tests:\\n  - name: it runs\\n    expect:\\n      failed: false\"")), nil
 		}
 
-		report := flowtest.RunSource("<submitted>", []byte(args.Workflow), []byte(args.Tests))
+		// timeout <= 0 is stdio's posture, unchanged: one trusted caller, at a
+		// terminal or behind an agent host it launched, who can interrupt a
+		// case the virtual clock cannot advance past. A positive timeout is
+		// what `flow mcp serve` passes, because there the submitted workflow
+		// is untrusted input and a `wait_for_signal:` with no timeout and no
+		// scripted signal is a legal Flowfile that never completes — see
+		// [flowtest.RunSourceContext].
+		runCtx := context.Background()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			// Derived from the request's context, so a caller that
+			// disconnects also ends the run rather than leaving it to burn
+			// the whole budget with nobody left to answer.
+			runCtx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+
+		report := flowtest.RunSourceContext(runCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests))
 
 		encoded, err := renderTestResult(report)
 		if err != nil {

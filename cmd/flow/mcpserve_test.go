@@ -67,6 +67,23 @@ type mcpServeFixture struct {
 func newMCPServeFixture(t *testing.T, maxSessions int, maxRequestBytes int64) *mcpServeFixture {
 	t.Helper()
 
+	return newMCPServeFixtureWith(t, maxSessions, maxRequestBytes, mcpServeDefaultTestTimeout)
+}
+
+// newMCPServeFixtureWithTestTimeout is [newMCPServeFixture] with a short bound
+// on one flowstate_test call, for the test that has to cross it.
+func newMCPServeFixtureWithTestTimeout(t *testing.T, testTimeout time.Duration) *mcpServeFixture {
+	t.Helper()
+
+	return newMCPServeFixtureWith(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes, testTimeout)
+}
+
+// newMCPServeFixtureWith is the one that actually wires it.
+func newMCPServeFixtureWith(
+	t *testing.T, maxSessions int, maxRequestBytes int64, testTimeout time.Duration,
+) *mcpServeFixture {
+	t.Helper()
+
 	issuer := authtest.NewIssuer()
 	t.Cleanup(func() { _ = issuer.Close() })
 
@@ -90,7 +107,7 @@ func newMCPServeFixture(t *testing.T, maxSessions int, maxRequestBytes int64) *m
 
 	guard := newMCPServeRegistryGuard()
 
-	handler, err := mcpServeHandler(logger, mcpServeTools(guard), verifier, protectedResource, mcpServeLimits{
+	handler, err := mcpServeHandler(logger, mcpServeTools(guard, testTimeout), verifier, protectedResource, mcpServeLimits{
 		maxRequestBytes: maxRequestBytes,
 		maxSessions:     maxSessions,
 		sessionIdle:     mcpServeSessionIdleTimeout,
@@ -566,6 +583,7 @@ func TestCheckMCPServeFlagsFailsClosed(t *testing.T) {
 		policyPath:             "/etc/flowstate/policy.yaml",
 		maxRequestBytes:        mcpServeDefaultMaxRequestBytes,
 		maxSessions:            mcpServeDefaultMaxSessions,
+		testTimeout:            mcpServeDefaultTestTimeout,
 		protectedResourceFlags: protectedResourceFlags{resource: mcpServeTestResource},
 	}
 	require.NoError(t, checkMCPServeFlags(good), "the baseline must be accepted, or nothing below proves anything")
@@ -599,7 +617,7 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, sessionIdle: time.Minute}
 
-	_, err := mcpServeHandler(slog.Default(), mcpServeTools(newMCPServeRegistryGuard()), nil, nil, limits)
+	_, err := mcpServeHandler(slog.Default(), mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout), nil, nil, limits)
 	require.Error(t, err, "no protected resource and no verifier must not produce a servable handler")
 }
 
@@ -715,7 +733,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 		"a bare-origin resource is the shape this test exists for")
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),
-		mcpServeTools(newMCPServeRegistryGuard()), verifier, protectedResource, mcpServeLimits{
+		mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout), verifier, protectedResource, mcpServeLimits{
 			maxRequestBytes: mcpServeDefaultMaxRequestBytes,
 			maxSessions:     mcpServeDefaultMaxSessions,
 			sessionIdle:     mcpServeSessionIdleTimeout,
@@ -867,4 +885,50 @@ func TestMCPServeRegistryGuardCoversTheServedResources(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the catalog resource never answered after the lock was released")
 	}
+}
+
+// TestMCPServeBoundsAHangingTestCall is Codex's P1 on #807's third round: a
+// submitted workflow can park forever on its own, and on this surface that
+// would take the whole thing down rather than only the caller's own request.
+//
+// The mechanism is flowtest's virtual clock, which advances only when every
+// participant is parked. A `wait_for_signal:` with no timeout and no scripted
+// signal has no deadline to advance to, so the case never completes — and it
+// is a legal Flowfile, so the refusal cannot live in validation. Unbounded,
+// such a call holds this surface's exclusive registry lock and its goroutine
+// forever, and every other tool and resource blocks behind it.
+//
+// A short timeout here rather than the default, for the reason every bound in
+// this file is crossed with a small one: a bound proved by waiting two minutes
+// is a bound nobody runs.
+func TestMCPServeBoundsAHangingTestCall(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMCPServeFixtureWithTestTimeout(t, 2*time.Second)
+	session := fixture.connect(t, fixture.goodToken("agent"))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name: flowmcp.TestToolName,
+			Arguments: map[string]any{
+				"workflow": "edition: v2026.3\nname: demo\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+				"tests":    "tests:\n  - name: waits forever\n    expect:\n      failed: false\n",
+			},
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("a flowstate_test call on a workflow that parks forever never returned: " +
+			"it holds this surface's registry lock and its goroutine for good")
+	}
+
+	// And the surface is still usable afterwards, which is the property the
+	// bound is actually for: the lock came back.
+	tools, err := session.ListTools(t.Context(), nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, tools.Tools)
 }

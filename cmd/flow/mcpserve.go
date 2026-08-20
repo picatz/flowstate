@@ -102,6 +102,16 @@ const (
 	// expire on the same clock: a slot held by a session the SDK has already
 	// closed would be a leak that eventually refuses every new caller.
 	mcpServeSessionIdleTimeout = 5 * time.Minute
+
+	// mcpServeDefaultTestTimeout bounds one flowstate_test call, mirroring
+	// `flow mcp`'s own --run-local-timeout default for the same reason that
+	// flag gives: a tool call that never returns holds a model's turn open for
+	// as long as the workflow asks, and the workflow is the untrusted input.
+	// It matters more here, because a flowstate_test call also holds this
+	// surface's exclusive registry lock while it runs — so the bound is what
+	// keeps one caller from stopping the surface for everyone rather than only
+	// for themselves.
+	mcpServeDefaultTestTimeout = 2 * time.Minute
 )
 
 // mcpSessionHeader is the streamable-HTTP session header, spelled here
@@ -137,6 +147,12 @@ func addMCPServeFlags(cmd *cobra.Command) {
 		"largest request body this surface will read, in bytes. A request over the limit is "+
 			"refused with 413 rather than buffered")
 
+	cmd.Flags().Duration("test-timeout", mcpServeDefaultTestTimeout,
+		"how long one flowstate_test call may run before it is stopped and reported as timed out. "+
+			"A submitted workflow can park forever on its own — a `wait_for_signal:` with no timeout "+
+			"and no scripted signal never completes — and while one runs, every other tool and "+
+			"resource on this surface waits for it")
+
 	cmd.Flags().Int("max-sessions", mcpServeDefaultMaxSessions,
 		"how many MCP sessions may be open at once. A request that would open one past the "+
 			"limit is refused with 503; sessions idle for "+mcpServeSessionIdleTimeout.String()+
@@ -164,6 +180,7 @@ type mcpServeFlags struct {
 	revealSensitive        bool
 	maxRequestBytes        int64
 	maxSessions            int
+	testTimeout            time.Duration
 	protectedResourceFlags protectedResourceFlags
 	tls                    tlsFlags
 }
@@ -175,6 +192,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	maxRequestBytes, _ := cmd.Flags().GetInt64("max-request-bytes")
 	maxSessions, _ := cmd.Flags().GetInt("max-sessions")
+	testTimeout, _ := cmd.Flags().GetDuration("test-timeout")
 
 	return mcpServeFlags{
 		listen:                 listen,
@@ -183,6 +201,7 @@ func mcpServeFlagsOf(cmd *cobra.Command) mcpServeFlags {
 		revealSensitive:        revealSensitiveRequested(cmd),
 		maxRequestBytes:        maxRequestBytes,
 		maxSessions:            maxSessions,
+		testTimeout:            testTimeout,
 		protectedResourceFlags: protectedResourceFlagsOf(cmd),
 		tls:                    tlsFlagsOf(cmd),
 	}
@@ -237,6 +256,13 @@ func checkMCPServeFlags(flags mcpServeFlags) error {
 		return fmt.Errorf("--max-sessions must be positive; got %d. There is no \"unlimited\" "+
 			"spelling: how many sessions exist is chosen by the peer, and this surface bounds it",
 			flags.maxSessions)
+	}
+
+	if flags.testTimeout <= 0 {
+		return fmt.Errorf("--test-timeout must be positive; got %s. There is no \"unlimited\" "+
+			"spelling: a submitted workflow decides how long its own run takes, and a case the "+
+			"virtual clock cannot advance past never ends on its own",
+			flags.testTimeout)
 	}
 
 	return nil
@@ -594,11 +620,19 @@ func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
 // Every tool and every resource it registers runs behind guard, so no caller
 // ever reads the task registry while another caller's flowstate_test has it
 // swapped — see [mcpServeRegistryGuard].
+//
+// testTimeout bounds one flowstate_test call. It is not a nicety: flowtest's
+// virtual clock advances only when every participant is parked, so a
+// `wait_for_signal:` with no timeout and no scripted signal has no deadline to
+// advance to and the case never completes. That is a legal Flowfile, the
+// submitted workflow is untrusted input, and without the bound such a call
+// would hold this surface's exclusive registry lock and its goroutine
+// forever. Reported by Codex on picatz/flowstate#807.
 // guard is taken rather than made here so a test can hold its lock from the
 // outside and prove that every served handler — tools and resources alike —
 // really is behind it, which is a property of this wiring rather than of the
 // guard itself.
-func mcpServeTools(guard *mcpServeRegistryGuard) *mcp.Server {
+func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) *mcp.Server {
 	srv := flowmcp.NewServer(version)
 
 	flowmcp.AddLocalCapabilities(
@@ -624,7 +658,7 @@ func mcpServeTools(guard *mcpServeRegistryGuard) *mcp.Server {
 			WrapHandler:         guard.wrapTool,
 			WrapResourceHandler: guard.wrapResource,
 		},
-		flowmcp.ToolRegistration{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
+		flowmcp.ToolRegistration{Tool: flowmcp.TestTool(), Handler: testToolHandler(testTimeout)},
 	)
 
 	return srv
@@ -798,7 +832,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	handler, err := mcpServeHandler(logger, mcpServeTools(newMCPServeRegistryGuard()), verifier, protectedResource, mcpServeLimits{
+	handler, err := mcpServeHandler(logger, mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout), verifier, protectedResource, mcpServeLimits{
 		maxRequestBytes: flags.maxRequestBytes,
 		maxSessions:     flags.maxSessions,
 		sessionIdle:     mcpServeSessionIdleTimeout,

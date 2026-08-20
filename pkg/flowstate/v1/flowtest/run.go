@@ -74,7 +74,7 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 		// its own `workflow:`, so this is what keeps two workflows' coverage
 		// apart within one file (Finding 3).
 		identity := WorkflowPath(path, &test)
-		result, spec, transcript := runCase(&test, DeliveryPath(path, &test), func() (*v1.Workflow, error) {
+		result, spec, transcript := runCase(context.Background(), &test, DeliveryPath(path, &test), func() (*v1.Workflow, error) {
 			workflow, _, err := flowfile.ParseFile(identity)
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
@@ -107,6 +107,27 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 // with a diagnostic rather than resolved, the same restriction
 // [flowfile.Parse] documents.
 func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
+	return RunSourceContext(context.Background(), label, workflowSource, testSource)
+}
+
+// RunSourceContext is [RunSource] with a caller-supplied context, which every
+// case's run is started from.
+//
+// It exists because a run here can block forever and nothing outside it could
+// say stop. The virtual clock advances when every participant is parked, so a
+// `wait_for_signal:` with no timeout and no scripted signal has no deadline to
+// advance to: the case never completes, and neither does the call that asked
+// for it. On a developer's machine that is a hung `flow test` somebody
+// interrupts. On a server whose callers are whoever holds a token — see
+// cmd/flow/mcpserve.go — it is a request that never returns and a goroutine
+// that never exits, arranged from a legal Flowfile, which is the shape
+// CLAUDE.md's "bound anything that consumes untrusted input" names. Reported
+// by Codex on picatz/flowstate#807.
+//
+// A context that is already done makes every case fail rather than run, with
+// the reason on the case; [RunSource] and [RunFile] pass a background context
+// and are unchanged by this existing.
+func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
 	report := &v1.TestReport{File: label}
 
 	file, err := LoadSource(testSource)
@@ -127,7 +148,7 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 		// No delivery path: bytes have no directory to resolve a fixture against,
 		// which is why [checkTrigger] refuses a trigger case in this shape rather
 		// than letting one arrive here with nowhere to read from.
-		result, _, _ := runCase(&test, "", load)
+		result, _, _ := runCase(ctx, &test, "", load)
 		report.Cases = append(report.Cases, result)
 	}
 
@@ -149,7 +170,7 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // deliveryPath is where a `trigger:` case's stored delivery lives, already
 // resolved against the test file's own directory ([DeliveryPath]); empty for every
 // other case and for [RunSource], which has no directory at all.
-func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -208,7 +229,10 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 	}
 
 	clock := v1.NewVirtualClock(epoch)
-	ctx := v1.NewContextWithClock(context.Background(), clock)
+	// base rather than context.Background(): whatever bound the caller put on
+	// this run is the only thing that can end a case the virtual clock cannot
+	// advance past. See [RunSourceContext].
+	ctx := v1.NewContextWithClock(base, clock)
 	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
 
 	// The run executes against its own registry, not the process-wide one:

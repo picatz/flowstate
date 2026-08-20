@@ -179,6 +179,15 @@ other:
   `503` with a `Retry-After` hint. Sessions idle for five minutes are closed
   and their slots returned.
 
+- `--test-timeout` (default 2m) bounds one `flowstate_test` call. A submitted
+  workflow can park forever on its own — flowtest's virtual clock advances only
+  when every participant is parked, so a `wait_for_signal:` with no timeout and
+  no scripted signal has no deadline to advance to — and that is a legal
+  Flowfile, so the refusal cannot live in validation. It matters more here than
+  the two above because a `flowstate_test` call also holds the surface's
+  registry lock while it runs, so an unbounded one stops the surface for
+  everyone rather than only for the caller who asked.
+
 Sessions are also pinned to the principal that opened them: the verified
 token's issuer and subject become the session's owner, and a request carrying
 a different principal's token on that session is refused with `403` even

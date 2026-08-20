@@ -282,7 +282,7 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
 	return []flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(posture)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
 	}
 }
 
