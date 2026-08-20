@@ -3,7 +3,6 @@ package authtest_test
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,23 +98,32 @@ func TestWrongAudienceTokenRejectsEmptyAudience(t *testing.T) {
 func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
 	t.Parallel()
 
-	// Real time throughout: WrongIssuerToken's foreign issuer runs on its own
-	// clock, so pinning the trusted issuer's clock to a fixed instant here
-	// would only manufacture a spurious not-yet-valid failure between the
-	// two, unrelated to the thing this test is proving.
-	trusted := newIssuer(t)
+	// One deterministic clock shared by the trusted issuer, the verifier, and
+	// the foreign issuer. Sharing it with the foreign issuer is the point of
+	// WrongIssuerToken's issuerOptions parameter: a foreign issuer left on
+	// the wall clock would timestamp its token against a different "now" than
+	// this verifier's fixed one, giving the token a latent lifetime defect
+	// hiding behind ErrUntrustedIssuer — issuer lookup happens first — in
+	// violation of this file's exactly-one-defect contract. The verification
+	// through verifierForForeign below is what proves the clock was honored:
+	// it trusts the foreign issuer, so a lifetime defect would surface there.
+	clock := authtest.NewClock(referenceTime)
+	trusted := newIssuer(t, authtest.WithClock(clock.Now))
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{Issuers: []auth.TrustedIssuer{{
 		Name:      "trusted",
 		Issuer:    trusted.URL(),
 		Audiences: []string{"flowstate"},
-	}}})
+	}}}, auth.WithClock(clock.Now))
 	require.NoError(t, err)
 
 	token, foreign := authtest.WrongIssuerToken(
 		map[string]any{"team": "platform"},
-		authtest.WithSubject("agent"),
-		authtest.WithAudience("flowstate"),
+		[]authtest.TokenOption{
+			authtest.WithSubject("agent"),
+			authtest.WithAudience("flowstate"),
+		},
+		authtest.WithClock(clock.Now),
 	)
 	t.Cleanup(func() { _ = foreign.Close() })
 
@@ -141,8 +149,10 @@ func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
 	// And a policy that trusts the foreign issuer instead admits the very
 	// same token, which pins the refusal above to the issuer specifically,
 	// not to some other difference between the two issuers (a different key
-	// algorithm, for instance).
-	verifierForForeign := verifierFor(t, foreign, authtest.NewClock(time.Now()), auth.TrustedIssuer{})
+	// algorithm, for instance) — and, on the shared fixed clock, proves the
+	// foreign issuer actually honored WithClock: had it minted on the wall
+	// clock, this verification would fail on the token's lifetime instead.
+	verifierForForeign := verifierFor(t, foreign, clock, auth.TrustedIssuer{})
 	principal, err = verifierForForeign.Verify(t.Context(), token)
 	require.NoError(t, err)
 	assert.Equal(t, "agent", principal.Subject)

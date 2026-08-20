@@ -118,14 +118,25 @@ func (i *Issuer) WrongAudienceToken(audience string, claims map[string]any, opti
 // does not name: a policy trusting only some other issuer refuses the result
 // solely because of who signed it. The token is otherwise exactly what
 // [Issuer.MintToken] on that foreign issuer would mint: correctly signed by a
-// key it publishes, unexpired, addressed to whatever audience options name.
+// key it publishes, unexpired, addressed to whatever audience tokenOptions
+// name.
+//
+// issuerOptions configure the foreign issuer itself, and a test whose
+// verifier runs on a deterministic clock must pass that clock here
+// ([WithClock]), for this file's exactly-one-defect contract: a foreign
+// issuer left on the wall clock timestamps its token against a different
+// "now" than the verifier's, and if the two disagree by more than the
+// verifier's leeway the token carries a latent lifetime defect too. The
+// verifier reports [auth.ErrUntrustedIssuer] either way — issuer lookup
+// happens before lifetime validation — so the second defect hides behind the
+// first rather than failing the test that fed it.
 //
 // The returned issuer is not closed by this call. The caller owns it and
 // must Close it — typically with the same t.Cleanup pattern used for a
 // policy's trusted issuer — which is also what lets a test go on to prove the
 // same token would have verified had this issuer been the trusted one.
-func WrongIssuerToken(claims map[string]any, options ...TokenOption) (token string, foreign *Issuer) {
-	foreign = NewIssuer()
-	token = foreign.MintToken(claims, options...)
+func WrongIssuerToken(claims map[string]any, tokenOptions []TokenOption, issuerOptions ...IssuerOption) (token string, foreign *Issuer) {
+	foreign = NewIssuer(issuerOptions...)
+	token = foreign.MintToken(claims, tokenOptions...)
 	return token, foreign
 }
