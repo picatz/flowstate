@@ -438,6 +438,11 @@ Nothing in a tool's arguments can widen any of it. A denied request means this
 process was not configured for it, not that the workflow is wrong — which is what
 the refusal says, so an agent corrects the right thing.
 
+Everything above is the stdio posture: one trusted caller, decided once at
+start-up. Reaching `flow mcp` over HTTP instead — many callers, authenticated
+per request — is a separate surface with its own authorization story; see
+[docs/MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md).
+
 ### Configuring a client
 
 This section is for wiring an MCP client — an editor, a desktop app, a CLI
