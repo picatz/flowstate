@@ -2,6 +2,7 @@ package authtest_test
 
 import (
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -186,6 +187,36 @@ func TestWrongIssuerTokenHasExactlyOneDefect(t *testing.T) {
 	principal, err = verifierForForeign.Verify(t.Context(), token)
 	require.NoError(t, err)
 	assert.Equal(t, "agent", principal.Subject)
+}
+
+// TestWrongIssuerTokenClosesItsIssuerOnPanic is the regression for a Codex
+// finding: MintToken panics on invalid token options (no audience named, for
+// one) after the foreign issuer's HTTP server is already listening, and the
+// caller never receives the issuer on that path — so a test recovering from
+// the panic leaked the listener and its serving goroutine once per call.
+// The helper must close what it created before re-panicking.
+func TestWrongIssuerTokenClosesItsIssuerOnPanic(t *testing.T) {
+	t.Parallel()
+
+	// An IssuerOption is any func(*Issuer), so it can capture the issuer the
+	// helper creates — the only handle on it a panicking call ever exposes.
+	var captured *authtest.Issuer
+	capture := authtest.IssuerOption(func(i *authtest.Issuer) { captured = i })
+
+	// No audience named and no WithoutAudience: MintToken panics by design.
+	assert.Panics(t, func() {
+		_, _ = authtest.WrongIssuerToken(nil, nil, capture)
+	})
+
+	// The panic escaped, and the server behind the captured issuer is no
+	// longer accepting connections: proof the helper closed it on the way
+	// out rather than leaking it.
+	require.NotNil(t, captured, "the capture option never ran, so the test cannot observe the issuer")
+	resp, err := http.Get(captured.URL() + "/.well-known/openid-configuration")
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+	assert.Error(t, err, "the foreign issuer's server must be closed after a panicking mint")
 }
 
 // TestWithDelegationCarriesActAndNothingElseWrong proves the token

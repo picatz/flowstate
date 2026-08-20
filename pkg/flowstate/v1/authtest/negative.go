@@ -137,6 +137,19 @@ func (i *Issuer) WrongAudienceToken(audience string, claims map[string]any, opti
 // same token would have verified had this issuer been the trusted one.
 func WrongIssuerToken(claims map[string]any, tokenOptions []TokenOption, issuerOptions ...IssuerOption) (token string, foreign *Issuer) {
 	foreign = NewIssuer(issuerOptions...)
+	// MintToken panics on invalid options (no audience named, an empty
+	// subject, and so on), and by then the issuer's HTTP server is already
+	// listening. The caller never receives foreign on that path, so nobody
+	// else can close it: a test that recovers — assert.Panics, say — would
+	// leak the listener and its serving goroutine once per call. Close it
+	// here and re-panic, so the panic keeps its meaning and the server dies
+	// with it.
+	defer func() {
+		if r := recover(); r != nil {
+			_ = foreign.Close()
+			panic(r)
+		}
+	}()
 	token = foreign.MintToken(claims, tokenOptions...)
 	return token, foreign
 }
