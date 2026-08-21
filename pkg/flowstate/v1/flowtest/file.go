@@ -169,10 +169,22 @@ type File struct {
 // the second is a fact about the workflow that belongs written down beside it,
 // not silently tolerated.
 type CoverageStanza struct {
-	// AllowUnreached maps a step id to the reason no case reaches it. A step
-	// named here is reported as an accepted residual rather than a gap, and
-	// does not fail `--coverage-required`. The reason is required, because an
-	// entry with none is the silent gap this record exists to refuse.
+	// AllowUnreached maps a step id — or, since issue #801, a switch arm's key —
+	// to the reason no case reaches it. An entry named here is reported as an
+	// accepted residual rather than a gap, and does not fail
+	// `--coverage-required`. The reason is required, because an entry with none
+	// is the silent gap this record exists to refuse.
+	//
+	// A switch arm's key is [SwitchArm.Key]: `<step>:case[<i>]` for a case
+	// holding one literal, `<step>:case[<i>][<j>]` for member j of a case listing
+	// several, and `<step>:default`. `flow test` prints the key to record beside
+	// the diagnostic for every arm it reports, so nobody has to derive one.
+	//
+	// One map for both, rather than a second stanza: an entry here answers one
+	// question — "no case reaches this, and here is why" — and the answer does
+	// not change with what kind of thing is unreached. An entry naming neither a
+	// step nor an arm of any workflow the file targets is stale, and fails the
+	// same way an unrecorded gap does.
 	AllowUnreached map[string]string `yaml:"allow_unreached"`
 }
 

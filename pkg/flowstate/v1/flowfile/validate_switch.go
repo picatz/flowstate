@@ -80,7 +80,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	for i, c := range sw.GetCases() {
 		values := c.GetValues()
 		for j, value := range values {
-			field := switchCaseField(i, len(values), j)
+			field := SwitchCaseField(i, len(values), j)
 
 			literal, ok := value.GetKind().(*v1.Value_Literal)
 			if !ok {
@@ -96,7 +96,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 			}
 
 			lit := literal.Literal
-			text := switchLiteralText(lit)
+			text := SwitchLiteralText(lit)
 
 			if _, isNull := lit.GetKind().(*expr.Value_NullValue); isNull || lit.GetKind() == nil {
 				ds = append(ds, Diagnostic{
@@ -297,9 +297,16 @@ func switchStepNodes(sw *v1.Switch) []*v1.Node {
 	return nodes
 }
 
-// switchCaseField addresses one case literal the way its position was recorded:
+// SwitchCaseField addresses one case literal the way its position was recorded:
 // the whole `case:` key for a scalar, the element for a list entry.
-func switchCaseField(caseIndex, valueCount, valueIndex int) string {
+//
+// Exported because a second reader needs the same address for the same reason
+// this one does. `flow test`'s switch-arm coverage (issue #801) reports an arm
+// no test case took, and an arm has no identity a reader can resolve except the
+// position it was written at — so it asks [Positions.Locate] for exactly the
+// path this builds. Two spellings of one path is a drift waiting for the first
+// time the recorded shape changes.
+func SwitchCaseField(caseIndex, valueCount, valueIndex int) string {
 	field := "cases[" + strconv.Itoa(caseIndex) + "].case"
 	if valueCount > 1 {
 		field += "[" + strconv.Itoa(valueIndex) + "]"
@@ -620,9 +627,15 @@ func looksLikeRange(s string) bool {
 	return false
 }
 
-// switchLiteralText renders a case literal for a message the way an author
-// wrote it: strings quoted, everything else as its value.
-func switchLiteralText(lit *expr.Value) string {
+// SwitchLiteralText renders a case literal for a message the way an author wrote
+// it: strings quoted, everything else as its value.
+//
+// Exported alongside [SwitchCaseField], and for the same reason: `flow test`'s
+// switch-arm coverage names the arm it is reporting, and an arm is named by its
+// literal. A `case "synchronize"` in a coverage line and a `case "synchronize"`
+// in a validator diagnostic are the same sentence about the same thing, so they
+// are rendered by the same function.
+func SwitchLiteralText(lit *expr.Value) string {
 	switch kind := lit.GetKind().(type) {
 	case *expr.Value_StringValue:
 		return strconv.Quote(kind.StringValue)

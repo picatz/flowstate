@@ -208,6 +208,64 @@ message CoverageReport {
   // an unrecorded gap does. Each entry is a sentence naming the step and what
   // is wrong.
   repeated string stale = 8;
+
+  // Arms is every arm of every `switch:` step in the workflow, and whether any
+  // test case took it (issue #801).
+  //
+  // A second coverage unit beside the step one rather than more entries in it,
+  // because an arm is not a step and counting it as one would make StepsTotal a
+  // number about two different things. An arm can also be empty — `steps: []` is
+  // how a switch writes down deliberately ignoring a value — which is precisely
+  // what the step universe cannot see: an empty body contributes no step ids, so
+  // no suite could ever fail to cover it.
+  repeated SwitchArmCoverage arms = 9;
+}
+
+// SwitchArmCoverage is one arm of one `switch:` step — one `case:` literal, or
+// the `default:` — and whether any test case took it.
+//
+// Read from the transcript rather than inferred from what ran: a switch records
+// which literal matched under `case` (SwitchCaseOutput), so the harness reads the
+// arm that was taken instead of deducing it from the body steps that happened to
+// appear. That is issue #420's own stated measurement rule for switches, and it
+// is what makes an empty arm, and one member of a multi-literal `case: [a, b]`,
+// measurable at all.
+message SwitchArmCoverage {
+  // Arm is the coverage key: `<step>:case[<i>]` for a case holding one literal,
+  // `<step>:case[<i>][<j>]` for member j of a case listing several, and
+  // `<step>:default` for the default. It is what a file names under
+  // `coverage.allow_unreached` to record an arm it cannot reach.
+  string arm = 1;
+
+  // Step is the id of the `switch:` step this arm belongs to.
+  string step = 2;
+
+  // Label is the arm as an author reads it: `case "synchronize"`, `case 3`, or
+  // `default`.
+  string label = 3;
+
+  // Reached reports whether any test case took this arm.
+  bool reached = 4;
+
+  // Reason is what the file recorded for this arm under
+  // `coverage.allow_unreached`, and is empty when it recorded none. A reason is
+  // only meaningful on an arm no case reached, where it makes that arm an
+  // accepted residual rather than a gap.
+  string reason = 5;
+
+  // Line is where the arm was written, 1-based, or zero when the workflow was
+  // not parsed from a file that recorded positions — a workflow submitted as
+  // bytes has no source to point at.
+  //
+  // Carried here and not beside Unreached, which names steps: a step id is an
+  // identity every other surface already resolves, and an arm's is not. There is
+  // no way to find `on_event:case[2]` in a file except by the position that says
+  // where it is.
+  int32 line = 6;
+
+  // Column is the 1-based column the arm was written at, or zero when only the
+  // line is known or no position was recorded.
+  int32 column = 7;
 }
 
 // TestReports is what `flow test` produced, across every file it discovered,

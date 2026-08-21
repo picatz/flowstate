@@ -103,11 +103,19 @@ func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) 
 		// its own `workflow:`, so this is what keeps two workflows' coverage
 		// apart within one file (Finding 3).
 		identity := WorkflowPath(path, &test)
+		// Kept rather than discarded, which is the whole of issue #801's part B.
+		// [flowfile.ParseFile] has always handed these back and this loop has
+		// always thrown them away, which is why coverage was the one author-facing
+		// diagnostic in the repo that could not name a position. A `switch:` arm
+		// needs one more than anything else does: a step has an id every surface
+		// resolves, and `on_event:case[2]` has nothing but where it is written.
+		var positions *flowfile.Positions
 		load := func() (*v1.Workflow, error) {
-			workflow, _, err := flowfile.ParseFile(identity)
+			workflow, parsed, err := flowfile.ParseFile(identity)
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
 			}
+			positions = parsed
 			return workflow, nil
 		}
 		deliveryPath := DeliveryPath(path, &test)
@@ -117,7 +125,7 @@ func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) 
 				return runCase(ctx, &test, deliveryPath, load)
 			})
 		report.Cases = append(report.Cases, result)
-		coverage.observe(identity, spec, transcript)
+		coverage.observe(identity, spec, transcript, positions)
 	}
 
 	return report, coverage.result(), schedules.result()
