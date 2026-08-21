@@ -97,13 +97,25 @@ func runProgressPlugin() int {
 					if err != nil {
 						return nil, fmt.Errorf("looping fixture: bad count: %w", err)
 					}
-					phases := [...]flowstatev1.Phase{
-						flowstatev1.PhaseRequesting,
-						flowstatev1.PhaseReadingResponse,
-						flowstatev1.PhaseCallingPlugin,
-					}
+					// Each branch names a declared phase directly, the same
+					// discipline [reportWirePhase] (task.go) follows and
+					// TestEveryPhaseReportedIsOneOfTheDeclaredOnes
+					// (progress_test.go) requires of every ReportProgress call
+					// site in the tree: an indexed slice or a variable built
+					// from the switch reads identically to that AST walk
+					// whether it can only ever hold one of these three
+					// constants, as this one can, or whether it holds
+					// something built from a task's own inputs — which is
+					// exactly the mistake the walk exists to catch.
 					for i := 0; i < n; i++ {
-						flowstatev1.ReportProgress(ctx, phases[i%len(phases)])
+						switch i % 3 {
+						case 0:
+							flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
+						case 1:
+							flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
+						case 2:
+							flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
+						}
 					}
 					return &flowstatev1.Node_Outputs{}, nil
 				},
