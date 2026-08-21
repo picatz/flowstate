@@ -2,7 +2,6 @@ package flowfile_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,32 +52,11 @@ steps:
 	assert.Equal(t, want, string(got))
 }
 
-// TestFormatKeepsAnAliasedDigestPin covers the scalar alias path accepted by
-// compiler.text: collecting the raw AliasNode must not mistake it for no pin.
-func TestFormatKeepsAnAliasedDigestPin(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	pin := digestOf(t, simpleCalleeSource)
-	src := `edition: v2026.3
-name: caller
-description: &pin ` + pin + `
-steps:
-  - id: provision
-    call: ./callee.yaml
-    digest: *pin
-    with:
-      tenant: acme
-`
-	caller := writeFile(t, dir, "caller.yaml", src)
-
-	workflow, _, err := flowfile.ParseFile(caller)
-	require.NoError(t, err)
-	got, err := flowfile.Format([]byte(src), workflow)
-	require.NoError(t, err)
-
-	assert.Contains(t, string(got), "digest: "+pin)
-	assert.NotContains(t, string(got), "digest: *pin")
-}
+// A digest pin written through a scalar alias, and the accounting an anchor's
+// depth needed, once had tests here. The grammar is now a strict subset of YAML
+// that refuses anchors and aliases (#653), so a pin can no longer arrive through
+// either — the compiler refuses the caller before the formatter sees it. Both
+// tests were removed with the spellings they exercised.
 
 // TestFormatPinIsIdempotent is [TestFormatIsIdempotent] for a pin: formatting
 // the output of formatting a pinned caller must not move the pin, drop it, or
@@ -257,48 +235,7 @@ steps:
 	require.NoError(t, err, "the formatted file's pin no longer compiles")
 }
 
-// TestFormatAnchorIsNotALevelOfNesting pins the accounting the pin collector's
-// anchor walk uses. An anchor labels the value it wraps; it is not a level of
-// structure, and the compiler does not count it as one. Counting it here would
-// make `flow fmt` refuse an anchored document one level shallower than the
-// byte-identical unanchored one — a formatter failing on a file that compiles,
-// caused by nothing but the `&a`. Asserted as a comparison between the two
-// spellings rather than against a fixed depth, because the number that matters
-// is that they agree, not what it happens to be.
-func TestFormatAnchorIsNotALevelOfNesting(t *testing.T) {
-	deep := func(anchored bool, levels int) string {
-		var b strings.Builder
-		b.WriteString("edition: v2026.3\nname: deep\nvars:\n  blob:")
-		if anchored {
-			b.WriteString(" &a")
-		}
-		b.WriteString("\n")
-		indent := "    "
-		for range levels {
-			b.WriteString(indent + "k:\n")
-			indent += "  "
-		}
-		b.WriteString(indent + "leaf: 1\n")
-		b.WriteString("steps:\n  - id: s\n    value: 1\n")
-		return b.String()
-	}
-
-	// Walk out to where the formatter's own bound bites, and require the two
-	// spellings to reach it together at every level along the way.
-	for levels := 1; levels <= 32; levels++ {
-		dir := t.TempDir()
-		plainSrc, anchoredSrc := deep(false, levels), deep(true, levels)
-
-		plainWorkflow, _, err := flowfile.ParseFile(writeFile(t, dir, "plain.yaml", plainSrc))
-		require.NoError(t, err)
-		_, plainErr := flowfile.Format([]byte(plainSrc), plainWorkflow)
-
-		anchoredWorkflow, _, err := flowfile.ParseFile(writeFile(t, dir, "anchored.yaml", anchoredSrc))
-		require.NoError(t, err)
-		_, anchoredErr := flowfile.Format([]byte(anchoredSrc), anchoredWorkflow)
-
-		assert.Equal(t, plainErr == nil, anchoredErr == nil,
-			"at %d levels: anchoring changed whether Format succeeds (plain=%v, anchored=%v)",
-			levels, plainErr, anchoredErr)
-	}
-}
+// TestFormatAnchorIsNotALevelOfNesting was removed with the anchor it depended
+// on: the grammar no longer accepts anchors, so a document carrying one is
+// refused by the compiler rather than formatted, and there is no anchored-versus-
+// plain depth comparison left to draw. See #653.

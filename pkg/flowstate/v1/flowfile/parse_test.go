@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/go-cmp/cmp"
@@ -336,7 +335,10 @@ steps:
 			want: "must be a list of steps",
 		},
 		{
-			name: "unknown alias",
+			// An alias is refused as a construct the grammar does not include,
+			// before any question of whether it names a known anchor: the strict
+			// subset rejects the spelling itself. See #653.
+			name: "alias is refused",
 			src: `edition: v2026.3
 name: t
 steps:
@@ -344,7 +346,7 @@ steps:
     log: *base
 `,
 			line: 5, col: 10,
-			want: "unknown alias *base",
+			want: "an alias (`*base`) is not part of the Flowfile grammar",
 		},
 	}
 
@@ -674,6 +676,11 @@ steps:
 
 // TestParseAnchorsAndMerge covers the YAML features a Flowfile inherits, which
 // decoding into structs used to provide and a hand-written walk has to keep.
+// TestParseAnchorsAndMerge pins that the three YAML constructs the grammar does
+// not include are refused rather than resolved. This file once shared a retry
+// policy and a task by anchor, alias, and merge key; the grammar is now a strict
+// subset of YAML, so each construct is named and the file is rejected. See #653
+// and strict_test.go for the positive direction (the value spelled out compiles).
 func TestParseAnchorsAndMerge(t *testing.T) {
 	src := `edition: v2026.3
 name: anchors
@@ -694,21 +701,19 @@ steps:
     log:
       message: three
 `
-	wf, err := flowfile.Unmarshal([]byte(src))
-	if err != nil {
-		t.Fatalf("Unmarshal() error: %v", err)
+	_, err := flowfile.Unmarshal([]byte(src))
+	if err == nil {
+		t.Fatal("Unmarshal() succeeded, want a diagnostic refusing the anchors, aliases, and merge key")
 	}
-
-	first, second, third := wf.GetSteps()[0], wf.GetSteps()[1], wf.GetSteps()[2]
-	if !proto.Equal(first.GetPolicy().GetRetry(), second.GetPolicy().GetRetry()) {
-		t.Errorf("an aliased retry policy should compile to the same policy:\n%s",
-			cmp.Diff(first.GetPolicy().GetRetry(), second.GetPolicy().GetRetry(), protocmp.Transform()))
-	}
-	if second.GetTask().GetInputs()["message"].GetLiteral().GetStringValue() != "one" {
-		t.Errorf("an aliased task should compile to the same task: %v", second.GetTask())
-	}
-	if got := third.GetPolicy().GetRetry(); got.GetMaxAttempts() != 5 || got.GetInitialInterval().AsDuration() != time.Second {
-		t.Errorf("a merged retry policy = %v, want attempts 5 and the merged interval", got)
+	msg := err.Error()
+	for _, want := range []string{
+		"an anchor (`&policy`) is not part of the Flowfile grammar",
+		"an alias (`*policy`) is not part of the Flowfile grammar",
+		"a merge key (`<<:`) is not part of the Flowfile grammar",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("diagnostics do not mention %q; got:\n%v", want, err)
+		}
 	}
 }
 
@@ -1419,14 +1424,18 @@ steps:
 			want: "nests more than 64 levels deep",
 		},
 		{
-			name: "an alias expanded past what a Flowfile holds",
+			// The billion-laughs shape. It is refused on the presence of the alias,
+			// before any expansion, rather than after the expansion blows past the
+			// value budget — which is why the message names the construct rather than
+			// a count. See #653 and strict_test.go.
+			name: "the billion-laughs shape is refused before it expands",
 			src: taskInput(`a: &a [x, x, x, x, x, x, x, x, x, x]
       b: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]
       c: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]
       d: &d [*c, *c, *c, *c, *c, *c, *c, *c, *c, *c]
       e: &e [*d, *d, *d, *d, *d, *d, *d, *d, *d, *d]
       f: [*e, *e, *e, *e, *e, *e, *e, *e, *e, *e]`),
-			want: "holds more than 100000 values",
+			want: "not part of the Flowfile grammar",
 		},
 	}
 
