@@ -91,6 +91,11 @@ func FitResult(rungs ...func() ([]byte, error)) ([]byte, int, error) {
 // The floor keeps the status, the ids, the timing and any failure message: what
 // remains is bounded by the schema, so there is nothing further to drop that
 // would not take the answer with it.
+//
+// The rungs are cumulative and must be evaluated in order, each dropping its
+// field from what the one before it left — which is what [FitResult] does, and
+// the only way they are called. Rung 2 on its own would answer with a document
+// that still carries the transcript rung 1 was supposed to have taken.
 func getResponseLadder(response *v1.GetResponse, encode func(proto.Message) ([]byte, error)) (rungs []func() ([]byte, error), notes []string) {
 	// One clone, reduced further at each rung. Cloned rather than mutated
 	// because the response belongs to the caller of dispatch — the local
