@@ -378,10 +378,26 @@ anonymous callers.
 Then run a workflow durably, through the server:
 
 ```console
-$ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
-started flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2; come back to it with `flow watch flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2`
-COMPLETED workflow flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2 run 019fe297-35dc-743c-b8c0-2a3c65e64f8a after greet, shout
+$ go run ./cmd/flow run ./examples/computed-outputs/workflow.yaml --input release=2026.9.0
+running on localhost:9233 as an anonymous caller
+started workflow computed-outputs; come back to it with `flow watch flowstate-workflow-60ed44da-d2a7-46e4-81cd-fefc99fea7be`
+COMPLETED workflow computed-outputs after report, roll_out
+outputs
+  hosts_placed 3
+  release 2026.9.0
+  summary placed 2026.9.0 on 3 host(s)
 ```
+
+While the run is going, a live view stands where the `COMPLETED` line is: where the
+run has got to, what is being retried, which gate it is parked on. It is drawn on
+stderr and erased when the run ends, leaving that one sentence — the same sentence
+`flow run local` writes about the same file, because the two drivers are one execution
+model and a person moving between them should have nothing to relearn.
+
+The run id is deliberately not in it: no verb takes one. The workflow id, which
+`flow watch`, `flow get` and `flow cancel` all do take, is said once, inside the
+command it is for. Pipe this run and stdout carries the document instead, exactly as
+above.
 
 The same file run with `flow run local` prints the same steps and, piped, the same
 final document; the difference is that this one survives its worker being restarted.

@@ -41,7 +41,7 @@ server, `flow worker`, and `flow server` — see the main README's Quickstart):
 
 ```console
 $ flow run examples/expense-approval/workflow.yaml
-started flowstate-workflow-...; come back to it with `flow watch flowstate-workflow-...`
+started workflow expense-approval; come back to it with `flow watch flowstate-workflow-...`
 ```
 
 Then, from another terminal, addressing the id the first command printed:

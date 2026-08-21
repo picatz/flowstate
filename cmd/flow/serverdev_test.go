@@ -393,6 +393,31 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	require.NoError(t, err, "the durable run: %s", report)
 	assert.Contains(t, report, "COMPLETED")
 
+	// What a person is handed by the run they just started, asserted here rather
+	// than only against a scripted poller because this is the one test in the
+	// package that puts a real server, a real worker and the real ids in front of
+	// the renderer — and picatz/flowstate#544 is a claim about how much of that
+	// output is identifier.
+	//
+	// The workflow's own name is the subject, the same noun `flow run local` uses
+	// for the same file, and the id is said exactly once: in the `flow watch` hint,
+	// where a reader does something with it. Counted rather than searched for,
+	// because "the id appears" was true of the shape #544 rejected too.
+	// Read out of the scaffolded file rather than guessed from the directory:
+	// `flow init` derives the name from the directory and sanitizes it, so a
+	// temporary directory whose base needs sanitizing would make this test wrong
+	// about the file rather than wrong about the output.
+	scaffolded, err := loadWorkflow(workflow)
+	require.NoError(t, err, "reading back the workflow the run was started from")
+
+	name := scaffolded.GetName()
+	assert.Contains(t, report, "started workflow "+name+";",
+		"the run a person just started has to be named by the name they gave it")
+	assert.Contains(t, report, "COMPLETED workflow "+name,
+		"the two drivers have to describe a finished run the same way")
+	assert.Equal(t, 1, strings.Count(report, "flowstate-workflow-"),
+		"the workflow id belongs in the `flow watch` hint and nowhere else in the prose:\n%s", report)
+
 	// Ctrl-C, and the whole stack with it.
 	cancel()
 

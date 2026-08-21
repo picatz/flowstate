@@ -134,8 +134,38 @@ type State struct {
 
 	workflowID string
 
+	// subject is how the run is named in the prose a person reads, which is
+	// not always the id every command addresses it by. `flow run` has just
+	// parsed the file, so it can say `workflow computed-outputs` — the noun
+	// the author typed — where the id is a 45-character string they have
+	// never seen before. `flow watch` was handed the id and nothing else, so
+	// that is what it says, which is also the word the reader typed.
+	//
+	// Defaults to workflowID, so a caller that names nothing loses nothing.
+	subject string
+
 	runID  string
 	status v1.RunResponse_Status
+
+	// reportedRunID is the run id the last reported change carried, and
+	// runIDIsNews whether the next one should carry it again.
+	//
+	// An identifier is worth a line's width when it tells a reader something
+	// they did not already have. The run id is not addressable by any verb —
+	// `flow watch`, `flow get` and `flow cancel` all take the workflow id —
+	// so on the line-per-change shape it earns its place exactly twice: the
+	// first time a run is named, and again when it changes underneath the
+	// reader, which is what a continue-as-new handover looks like from here.
+	// Repeating it on every line was most of what picatz/flowstate#544 was
+	// about: four lines of one run, each spending 36 characters restating a
+	// value that had not moved.
+	//
+	// Decided in Absorb rather than in Line, so rendering stays a function of
+	// the state rather than a thing that mutates it — and because Absorb is
+	// the only place that knows whether a reader is about to be told anything
+	// at all. Line runs exactly when Absorb reported Changed.
+	reportedRunID string
+	runIDIsNews   bool
 
 	// steps are the ids of steps that have produced outputs, sorted.
 	steps []string
@@ -186,6 +216,33 @@ type State struct {
 	gaveUp bool
 }
 
+// Option adjusts how a walk describes the run it is following.
+//
+// Variadic and applied last, rather than a further string parameter on
+// [NewState] and [NewModel]: those already take a workflow id, and two
+// adjacent strings whose meanings differ is a call site that can be wrong
+// while compiling. A named option cannot be passed in the wrong position.
+type Option func(*State)
+
+// Named says what to call the run in prose, for a caller that knows the
+// workflow's own name.
+//
+// Only [State.subject] moves. The workflow id stays what every message about
+// addressing the run uses — the `flow watch` hint, [State.WorkflowID], the
+// error a failed run exits with — because a name is not something another
+// command can be pointed at.
+//
+// An empty or blank name is ignored rather than accepted, so a workflow with
+// no usable name falls back to the id instead of being narrated as
+// `workflow ` with nothing after it.
+func Named(subject string) Option {
+	return func(state *State) {
+		if strings.TrimSpace(subject) != "" {
+			state.subject = subject
+		}
+	}
+}
+
 // NewState begins a walk, optionally already knowing something about the
 // run.
 //
@@ -193,12 +250,21 @@ type State struct {
 // following, and seeding that matters: a machine-readable caller interrupted
 // before the first poll would otherwise be given nothing at all, while a
 // durable workload it can no longer name goes on running.
-func NewState(deps Deps, workflowID string, known *v1.GetResponse) *State {
-	state := &State{deps: deps, workflowID: workflowID}
+//
+// What is deliberately *not* seeded from known is [State.reportedRunID]: a
+// seeded run id has been learned, not reported, and the reader has still
+// never seen it. Seeding it would make the first line about a run the one
+// line that omits its identity.
+func NewState(deps Deps, workflowID string, known *v1.GetResponse, options ...Option) *State {
+	state := &State{deps: deps, workflowID: workflowID, subject: workflowID}
 	if known != nil {
 		state.response = known
 		state.runID = known.GetRunId()
 		state.status = known.GetStatus()
+	}
+
+	for _, option := range options {
+		option(state)
 	}
 
 	return state
@@ -278,6 +344,15 @@ func (s *State) Absorb(at time.Time, response *v1.GetResponse, err error) Progre
 		s.failure = failure.GetMessage()
 	}
 
+	// Only on a change, because only a change is rendered: a run id that
+	// arrived on a poll nobody was told about has not been reported, and
+	// marking it reported here would spend its one appearance on a line that
+	// was never written.
+	if changed {
+		s.runIDIsNews = s.runID != s.reportedRunID
+		s.reportedRunID = s.runID
+	}
+
 	return Progress{Changed: changed, Done: TerminalStatus(s.status)}
 }
 
@@ -318,14 +393,30 @@ func (s *State) stop(err error) Progress {
 
 // Line renders the state as one line of prose, for the shape that prints a
 // line per change.
+//
+// The sentence is `<status> workflow <subject>`, which is the same sentence
+// `flow run local` writes for a finished local run, so the two drivers
+// describe themselves the same way and a person moving between them has
+// nothing to relearn.
+//
+// The run id follows only when it is news, per [State.reportedRunID]. Every
+// identifier this line can carry is therefore said once and then assumed,
+// which is what leaves room for the part a reader is actually waiting for:
+// where the run has got to, what is being retried, which gate it is parked
+// on, and what it failed with.
 func (s *State) Line(theme ui.Theme) string {
 	if s.lastError != nil {
 		return fmt.Sprintf("%s %s", theme.Pill(ui.ToneWarning, "unreachable"), s.lastError)
 	}
 
-	line := fmt.Sprintf("%s workflow %s run %s%s",
-		theme.Pill(s.deps.StatusTone(s.status), s.deps.StatusLabel(s.status)), s.workflowID, s.runID,
-		s.deps.RunPosition(theme, s.response.GetProgress()))
+	line := fmt.Sprintf("%s workflow %s",
+		theme.Pill(s.deps.StatusTone(s.status), s.deps.StatusLabel(s.status)), s.subject)
+
+	if s.runIDIsNews {
+		line += fmt.Sprintf(" run %s", s.runID)
+	}
+
+	line += s.deps.RunPosition(theme, s.response.GetProgress())
 
 	for _, pending := range s.pending {
 		line += fmt.Sprintf(" (%s)", pending)
@@ -343,6 +434,21 @@ func (s *State) Line(theme ui.Theme) string {
 	}
 
 	return line
+}
+
+// IdentityDrawn records that the run's ids are already in front of the reader
+// by a route other than these lines, so the next one must not repeat them.
+//
+// The live view is that route: it draws the workflow id and the run id in its
+// header for as long as it is on screen. When bubbletea erases that frame the
+// caller writes one sentence in its place (see cmd/flow's watchEnding), and
+// whether [State.Line] would have called the run id news by then depends on
+// how many changes the view happened to absorb before the run ended — which
+// is to say the same finished run would sometimes name it and sometimes not.
+// A ledger of what a reader has seen is only as good as its account of every
+// way they saw it.
+func (s *State) IdentityDrawn() {
+	s.reportedRunID, s.runIDIsNews = s.runID, false
 }
 
 // GaveUp reports that the walk ended because the server stopped answering,

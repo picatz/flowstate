@@ -264,7 +264,7 @@ Three things about that command line:
 It prints the run's identity before it starts following it:
 
 ```
-started flowstate-workflow-8b1f… ; come back to it with `flow watch flowstate-workflow-8b1f…`
+started workflow observability; come back to it with `flow watch flowstate-workflow-8b1f…`
 ```
 
 Copy that workflow id. It is the string that joins the two worlds.
