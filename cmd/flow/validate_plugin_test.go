@@ -201,6 +201,53 @@ steps:
 		"the diagnostic does not name the input that was misspelled:\n%s", output)
 }
 
+// TestValidateChecksPluginRequirementsAgainstTheCatalog is the #835 review's
+// second finding, and it is the false green this whole branch set out to end,
+// wearing the `plugins:` block instead of the task name.
+//
+// `flow validate --plugin-dir` launches the plugins and registers their task
+// schemas, so a step naming `example.greet` type-checks. But a file also
+// declares which *version* of the plugin it needs, and both drivers resolve that
+// against the launched catalog through v1.ResolvePlugins: `flow run local`
+// refuses `plugins: {example: v99.0.0}` over a v0.1.0 binary, and so does the
+// durable submission. Before this the validator launched the catalog and threw
+// it away, so the one surface whose whole job is to say what the drivers will do
+// passed a file both of them refuse.
+//
+// The task is spelled correctly and its inputs are right, so the only thing
+// wrong is the version floor — which is exactly what isolates this from the
+// task-schema half.
+func TestValidateChecksPluginRequirementsAgainstTheCatalog(t *testing.T) {
+	bin := buildFlowBinary(t)
+	dir := buildExamplePluginDir(t)
+
+	path := filepath.Join(t.TempDir(), "too-new.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: needs-a-newer-plugin
+plugins:
+  example: v99.0.0
+steps:
+  - id: hi
+    example.greet:
+      name: world
+      greeting: Hello
+`), 0o600))
+
+	output, err := runFlowCapturing(t, bin, "validate", "--plugin-dir", dir, path)
+	require.Error(t, err,
+		"a file requiring a plugin version the deployment does not have validated clean, "+
+			"though both drivers refuse it:\n%s", output)
+	assert.Contains(t, output, "example",
+		"the diagnostic does not name the plugin whose version did not resolve:\n%s", output)
+
+	// And the machine rendering must agree: a consumer reading -o json must not
+	// get a green a person would not.
+	output, err = runFlowCapturing(t, bin, "validate", "--plugin-dir", dir, "-o", "json", path)
+	require.Error(t, err, "the JSON rendering passed a file the text rendering refused:\n%s", output)
+	assert.Contains(t, output, "example",
+		"the JSON report omits the plugin whose version did not resolve:\n%s", output)
+}
+
 // TestValidateReportsAPluginThatWillNotStart is the degraded-mode decision, and
 // it is the reason this is not simply `addPluginFlags` and a call.
 //

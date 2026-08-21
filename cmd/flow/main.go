@@ -1529,7 +1529,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// `-o json` is the same check written down for a machine, and a consumer that
 	// got a different set of diagnostics from the same flags would be reading a
 	// second implementation of this verb.
-	_, closePlugins, err := startPlugins(cmd, nil)
+	//
+	// The catalog is kept, not discarded: it is what a file's `plugins:`
+	// requirements resolve against, and checking them is what makes this verb
+	// agree with the two drivers rather than pass a file both of them refuse —
+	// see [validatePluginRequirements] (#835 review). It is nil when nothing was
+	// launched, which is the same fact said the other way.
+	catalog, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
 		return fmt.Errorf("the plugins on --plugin-dir are what these files are checked "+
 			"against, and one of them would not start, so nothing was checked: %w", err)
@@ -1537,7 +1543,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	defer closePlugins()
 
 	if format.Machine() {
-		return validateMachine(cmd, args, format)
+		return validateMachine(cmd, args, format, catalog)
 	}
 
 	// Through the surface, and with its theme, for the reason renderHelp and
@@ -1590,6 +1596,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			writeDiagnostics(out, theme.Muted.Render(path), parsed)
 			continue
 		}
+
+		// The file's `plugins:` requirements against the launched catalog, which
+		// is a no-op with no --plugin-dir. Appended to the same list so a version
+		// mismatch and an unknown-task read the same on the line and in the exit
+		// status.
+		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
+
 		if len(diagnostics) == 0 {
 			// The one word worth finding in a run over nineteen files: everything
 			// else on the line is the path, and a reader scanning for the failure
@@ -1630,7 +1643,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 //
 // A file that *parses* badly is the opposite: that is a fact about the workflow, so it
 // becomes a diagnostic like any other.
-func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) error {
+func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, catalog *v1.PluginCatalog) error {
 	surface := newSurface(cmd)
 
 	targets, err := collectValidateTargets(args, cmd.InOrStdin())
@@ -1667,6 +1680,13 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat) err
 			}
 			diagnostics = parsed
 		}
+
+		// The same `plugins:` requirement check the text path runs, so the two
+		// renderings of this verb agree — a machine consumer must not get a
+		// green a person would not (#835 review). A no-op with no catalog, and
+		// skipped for a file that did not parse (its diagnostics already say so).
+		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
+
 		reports = append(reports, diagnostics.Report(path))
 	}
 
