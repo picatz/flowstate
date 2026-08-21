@@ -120,7 +120,7 @@ func (c *compiler) switchCase(n ast.Node, path string, r ref) *v1.Switch_Case {
 			"switch case requires `case:`, the literal (or list of literals) this body handles")
 	}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		compiled.Steps = c.switchSteps(f.value, fieldPath(path, "steps"),
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "switch case steps"})
 	} else {
@@ -184,7 +184,7 @@ func (c *compiler) switchDefault(n ast.Node, path string, r ref) *v1.Switch_Defa
 	}
 
 	compiled := &v1.Switch_Default{}
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		compiled.Steps = c.switchSteps(f.value, fieldPath(path, "steps"),
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "switch default steps"})
 	} else {

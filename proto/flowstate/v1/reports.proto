@@ -58,6 +58,22 @@ message FixReport {
   // instance. Distinct from Refusals for the reason `flow fix` draws that line
   // itself: a caller must not fail a build on one of these.
   repeated Diagnostic notes = 5;
+
+  // StalePins are the `digest:` pins in this file that the run invalidated: this
+  // file calls another one the same run rewrote, and the pin it holds names the
+  // bytes that file had before. Positioned at the pin.
+  //
+  // Reported rather than re-stamped. A pin is the caller saying which bytes it
+  // read, so a rewriter that quietly wrote a new one would be authorizing bytes
+  // nobody has looked at — turning a security check off in the course of running
+  // a migration, which is the one thing `flow fix` refuses to do everywhere else.
+  // Each entry names the digest to adopt, so adopting one is a paste rather than
+  // a calculation.
+  //
+  // Distinct from Notes because a caller must fail on one: the run has left this
+  // file's call refusing to compile, and `flow fix . && git commit` must not
+  // succeed on a tree in that state.
+  repeated Diagnostic stale_pins = 6;
 }
 
 // FmtReport is what `flow fmt` (or `flow fmt --check`) did to one file.
