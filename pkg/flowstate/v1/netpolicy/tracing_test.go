@@ -177,7 +177,7 @@ func spanStub(t *testing.T, recorder *tracetest.SpanRecorder) tracetest.SpanStub
 func attributesOf(stub tracetest.SpanStub) map[string]string {
 	attrs := make(map[string]string, len(stub.Attributes))
 	for _, attr := range stub.Attributes {
-		attrs[string(attr.Key)] = attr.Value.Emit()
+		attrs[string(attr.Key)] = attr.Value.String()
 	}
 
 	return attrs
@@ -408,7 +408,7 @@ func Test_spanNameAndMethod(t *testing.T) {
 		t.Run(tc.method, func(t *testing.T) {
 			name, attr := spanNameAndMethod(tc.method)
 			require.Equal(t, tc.name, name)
-			require.Equal(t, tc.attr, attr.Value.Emit())
+			require.Equal(t, tc.attr, attr.Value.String())
 		})
 	}
 }

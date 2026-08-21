@@ -109,6 +109,22 @@
 // Every denial is a [*DenyError] wrapping [ErrDenied], and names both what was
 // denied and which rule or category denied it. Callers report a policy decision
 // distinctly from a network failure with errors.Is(err, [ErrDenied]).
+//
+// # Tracing
+//
+// The client a policy hands out opens one CLIENT span per request and injects
+// W3C trace context onto it, so a call a workflow makes is correlatable from
+// both sides: this process's trace shows the hop, and the service on the other
+// end can parent its own span under it. Nothing is configured for this — the
+// tracer comes from the globally installed provider, and with none installed
+// there is no span, no header, and no cost.
+//
+// A span says the shape of the call and never its content: the method, the
+// scheme, the host and port dialed, and the status returned. The URL is not
+// recorded in any form, because every part of one can carry a credential — a
+// token in the query, a secret path segment in a webhook URL, a password in
+// userinfo — and a span is exported to a collector that is not tenant-scoped.
+// [tracingRoundTripper] has the whole rule and the reasoning behind it.
 package netpolicy
 
 import (
