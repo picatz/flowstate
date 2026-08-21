@@ -48,7 +48,7 @@ descend from are in Part I.
 | Asking whether a field was sent at all | `x.?y.hasValue()`, or `has(x.y)` | `x.?y.orValue(false)` | a default cannot tell "absent" from "present and false", so it collapses two answers into one |
 | A fact read more than once | a `value:` step, read as `${steps.<id>.value}` | the same subexpression written out at each site | the sites drift; one of them gets edited and the file still validates |
 | A constant used across steps | workflow `vars:` | repeating the literal | one place to change, and the name says what it is |
-| Splicing a value into a string | `${...}` interpolation | `format()` | interpolation is the plain case; `format()` is for width, precision and positional reuse, and the two are not mechanically interconvertible (`%d` on a double truncates where `string()` does not) |
+| Splicing a value into a string | `${...}` interpolation | `format()` for the plain case | both spellings stay, because they are not mechanically interconvertible (`%d` on a double truncates where `string()` does not), so the split is by job: interpolation for splicing, `format()` when width, precision or positional reuse is the point |
 | An input constraint expressible as a bound | `min:`, `max:`, `min_len:`, `max_len:`, `min_items:`, `max_items:`, `unique:` | `must:` saying the same thing | `flow breaking` reads these structurally and can name a raised floor as a narrowing; a `must:` predicate is opaque text it must conservatively call a break |
 | Any other input constraint | `must:` | a retired `pattern:` | a regex is as opaque to compatibility analysis as CEL is, which is why `pattern:` died and `min:` lives |
 | Naming a computed value | a `value:` step | the retired `cel:` step | a value is not an effect, and the key named the evaluator instead of the role |
@@ -251,9 +251,10 @@ steps:
 Three things there are the rule rather than decoration. The wait's `outputs:` name
 the two facts that a later step needs, so nothing downstream reaches into a payload.
 `outcome` is a single ternary over those names rather than a nested one over raw
-fields. And the `switch:` dispatches on the named value, so the `default:` catches
-the one case the two `case:` arms do not, which is what makes it reachable and
-therefore legal.
+fields. And the `switch:` dispatches on the named value, so the `default:` carries
+what the two `case:` arms do not, the lapse included. That is what makes it reachable
+and therefore legal: put a third `case:` in for every value the expression can
+produce and the validator refuses the `default:` by name.
 
 Not this, for the same workflow, with the wait left unshaped so that every reader
 reaches into the raw payload:
@@ -362,7 +363,9 @@ is to file it.**
 ## Part III: the rules applied to what shipped
 
 A charter that only blesses the present is worthless. Everything in this section was
-measured against `c4ead7c` with the commands named beside it, not recalled.
+measured against `c4ead7c`, with the measurement named beside the claim rather than
+recalled from a draft. Two claims the draft carried did not survive that: see the
+commit history of this file.
 
 ### Condemned, and worth migrating
 
@@ -412,12 +415,15 @@ are sloppy. It is that the formatter is not yet good enough to be the canon for
 hand-written teaching files, and **that is the first thing the tier-4 slice has to
 resolve**, before R8's CI leg can exist.
 
-**Nested ternaries in the shown corpus.** R5's first threshold fires on 12
-expressions across 7 example files today, `examples/optional-dispatch/workflow.yaml`
-included, which is the example most recently rewritten *for* style. That is not an
-argument against the rule. It is the corpus the check has to be tried against before
-it is turned on, and the reason the tier-4 leg lands advisory for its first 48 hours
-the way every new check in this repository does.
+**Nested ternaries in the shown corpus.** R5's first threshold has something to fire
+on: 13 expressions across 7 example files hold two or more conditional operators
+today, counted over every `${...}` span and discounting the `?` of an optional
+traversal, which is an approximation of the real check rather than the check itself.
+`examples/optional-dispatch/workflow.yaml:52` is one of them, and it is the example
+most recently rewritten *for* style; `examples/expense-approval/workflow.yaml` holds
+five. That is not an argument against the rule. It is the corpus the check has to be
+tried against before it is turned on, and the reason the tier-4 leg lands advisory
+for its first 48 hours the way every new check in this repository does.
 
 ### Grandfathered or kept, with the reason on the record
 
