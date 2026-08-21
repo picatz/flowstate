@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/api/temporalproto"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -114,6 +115,16 @@ func TestRecordReplayCorpus(t *testing.T) {
 			// producing one file for a scenario whose entire point is the
 			// three.
 			firstRunID := run.GetRunID()
+
+			// Whatever the scenario needs from outside itself before it can
+			// finish — today, the signal that releases a `wait_for_signal:`.
+			// Run before the wait below rather than from another goroutine,
+			// because it is the only thing that will make that wait return,
+			// and a recorder that waited first would sit here until the
+			// context lapsed and write nothing.
+			if scenario.release != nil {
+				scenario.release(ctx, t, temporal, run.GetID())
+			}
 
 			// Waited on, and the error deliberately not required to be nil: a
 			// scenario whose point is a failing step is still a history worth
@@ -241,6 +252,75 @@ type replayScenario struct {
 
 	// expectRunFailure marks a scenario whose run is meant to end failed.
 	expectRunFailure bool
+
+	// release does whatever has to happen from outside the run for it to
+	// finish, after it has started and before it is waited on.
+	//
+	// A gate is the only shape that needs one: a `wait_for_signal:` that
+	// nobody signals never returns, so a scenario recording one has to say who
+	// answers it. See [signalWhenParked], which is the only implementation and
+	// exists so a scenario can declare *when* the answer arrives — a signal
+	// sent before the run reaches its gate is consumed without the run ever
+	// parking, which is a different history and a different seam.
+	release func(ctx context.Context, tb testing.TB, c client.Client, workflowID string)
+}
+
+// signalWhenParked answers a gate, once the run is actually held at it.
+//
+// The wait is the point. A signal sent the moment the run starts is buffered by
+// the server and drained by `waitForSignal`'s early-arrival path, so history
+// records a gate the run walked straight through: no timer, no selector, no
+// park. Recording *that* would leave the seam this scenario exists for —
+// scheduling a timeout timer, blocking on a selector, and cancelling the timer
+// when the signal wins (the #770 path, which is guarded by
+// [workflow.GetVersion] and so is exactly the kind of decision an old history
+// fixes forever) — uncovered while looking covered.
+//
+// Parked-ness is read through [engine.ProgressQuery], which is what the server
+// itself asks (`server.go`'s runProgress) and answers from live workflow state
+// without writing a history event, so polling it cannot alter the history being
+// recorded.
+func signalWhenParked(stepID, name string, payload *v1.Node_Outputs) func(context.Context, testing.TB, client.Client, string) {
+	return func(ctx context.Context, tb testing.TB, c client.Client, workflowID string) {
+		tb.Helper()
+
+		require.Eventually(tb, func() bool {
+			encoded, err := c.QueryWorkflow(ctx, workflowID, "", engine.ProgressQuery)
+			if err != nil {
+				return false
+			}
+
+			var progress v1.RunProgress
+			if err := encoded.Get(&progress); err != nil {
+				return false
+			}
+
+			for _, wait := range progress.GetPendingWaits() {
+				if wait.GetStepId() == stepID {
+					return true
+				}
+			}
+
+			return false
+		}, 30*time.Second, 50*time.Millisecond,
+			"run %s never parked on the gate %q", workflowID, stepID)
+
+		// A [v1.SignalDelivery] rather than the bare payload, because that is
+		// what `FlowstateServer.Signal` puts on this channel: a recorder
+		// sending something else would record a history no deployment can
+		// produce. The sender is the fixed fictional one below for the reason
+		// [recorderIdentity] exists — everything in a recorded history is
+		// published.
+		require.NoError(tb, c.SignalWorkflow(ctx, workflowID, "", name, &v1.SignalDelivery{
+			Payload: payload,
+			Sender: &v1.SignalSender{
+				Identity: &v1.WorkloadIdentity{
+					Subject: "replay-corpus",
+					Issuer:  "flowstate:test",
+				},
+			},
+		}), "signalling %s with %q", workflowID, name)
+	}
 }
 
 // replayScenarios are the runs the corpus covers.
@@ -351,6 +431,104 @@ func replayScenarios(tb testing.TB) []replayScenario {
 						},
 					}}},
 					says("join", "joined"),
+				},
+			}},
+		},
+		{
+			// A durable timer. `sleep:` is the one node kind that schedules
+			// no activity at all, so its whole footprint in history is a
+			// TimerStarted and a TimerFired between two ordinary steps —
+			// and a change to how a wait computes its deadline (the
+			// determinism input `versioning.go:18` and the package comment
+			// in replay_test.go both name, and which nothing in the corpus
+			// pinned) is a change to exactly those two events.
+			//
+			// A literal duration rather than a `${...}` one, because both
+			// spellings resolve through [v1.EvalWaitDuration] and reach the
+			// same `workflow.Sleep`: a second entry would record the same
+			// timer twice. Short, because the recorder sits through it for
+			// real — long enough that the run parks on it rather than
+			// racing past.
+			name: "wait-sleep",
+			state: &v1.RunState{Workflow: &v1.Workflow{
+				Name: "wait-sleep",
+				Steps: []*v1.Node{
+					says("before", "before the nap"),
+					{Id: "settle", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Second)},
+					}}},
+					says("after", "after the nap"),
+				},
+			}},
+		},
+		{
+			// The approval gate, answered. The run reaches the gate,
+			// schedules the timeout timer, blocks on a selector, and the
+			// recorder signals it — so history holds the sequence a
+			// bounded gate produces when the signal wins: TimerStarted,
+			// WorkflowExecutionSignaled, TimerCanceled.
+			//
+			// That last event is why this entry is worth its bytes. It is
+			// the #770 fix, and it is issued only when
+			// [workflow.GetVersion] reports the marker this history
+			// records — precisely the shape of decision a run in flight
+			// has already fixed and a later engine must not reconsider. A
+			// history without the gate's park cannot pin it.
+			name: "wait-for-signal",
+			state: &v1.RunState{Workflow: &v1.Workflow{
+				Name: "wait-for-signal",
+				Steps: []*v1.Node{
+					says("announce", "asking for approval"),
+					{Id: "approval", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+							Name: "deploy-approved",
+							Outputs: map[string]*v1.Value{
+								"approved": v1.NewExpr(`has(payload.approved) && payload.approved`),
+								"lapsed":   v1.NewExpr(`timed_out`),
+							},
+							Prompt: v1.NewLiteral("approve the corpus deploy?"),
+						}},
+						// Long enough that the timer is certainly still
+						// pending when the signal arrives: the point of
+						// this entry is the cancelling branch, and a
+						// bound that could lapse first would make which
+						// history got recorded a matter of how loaded
+						// the recording machine was.
+						Timeout: durationpb.New(time.Hour),
+					}}},
+					says("deploy", "approved, deploying"),
+				},
+			}},
+			release: signalWhenParked("approval", "deploy-approved", &v1.Node_Outputs{
+				NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)},
+			}),
+		},
+		{
+			// The same gate, unanswered. Nobody signals, the bound lapses,
+			// and the wait resolves through the timer branch instead — a
+			// different command sequence from the one above, ending in a
+			// TimerFired the run treats as a normal outcome rather than a
+			// failure. Both halves of that race are recorded because an
+			// interpreter can break one while replaying the other
+			// perfectly.
+			//
+			// Its own bound is short for the plainest reason: the recorder
+			// waits it out.
+			name: "wait-for-signal-timeout",
+			state: &v1.RunState{Workflow: &v1.Workflow{
+				Name: "wait-for-signal-timeout",
+				Steps: []*v1.Node{
+					says("announce", "asking for an approval nobody gives"),
+					{Id: "approval", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+						Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+							Name: "deploy-approved",
+							Outputs: map[string]*v1.Value{
+								"lapsed": v1.NewExpr(`timed_out`),
+							},
+						}},
+						Timeout: durationpb.New(2 * time.Second),
+					}}},
+					says("give-up", "nobody answered"),
 				},
 			}},
 		},
