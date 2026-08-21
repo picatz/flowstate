@@ -1456,7 +1456,20 @@ deliberately no spelling that means "accept anything", so an unverifiable delive
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
 and is required because webhook delivery is at-least-once by nature — without it every
-retried delivery is a second run. What the validator does *not* do is resolve
+retried delivery is a second run. A key that *cannot* read the delivery is refused
+where it is written: `${"all-events"}` names nothing about it, and
+`${[1].map(event, string(event))[0]}` names only a comprehension's own variable, so
+neither can vary and every delivery would be named alike.
+
+What is checked is that the key names the delivery, which is provable from the
+expression. Whether its *value* moves is not: `${true ? "all-events" :
+event.body.id}` mentions `event` in a branch nothing takes, and is accepted. That
+gap is deliberate rather than pending. Refusing it means proving a key constant,
+and evaluating one against sample deliveries proves nothing — the same evidence
+condemns `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`, which
+varies exactly where its author intends, and this check also runs where a live
+delivery is bound, not only in an editor. Write a key over a value the sender
+repeats on a retry and the question does not arise. What the validator does *not* do is resolve
 anything: whether the secret exists and whether this deployment has that scheme
 configured are a deployment's answers.
 

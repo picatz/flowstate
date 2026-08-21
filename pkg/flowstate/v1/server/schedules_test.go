@@ -735,7 +735,7 @@ func TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne(t *testing.T) {
 	startWorker(t, temporal)
 
 	trusted := trustedScheduledWorkflow("rotate-keys")
-	flowstate := server.New(temporal, server.WithTrustedWorkflows("", trusted))
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", trusted))
 
 	created, err := flowstate.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
 		// The caller's own copy: same name, same cadence, a step that would

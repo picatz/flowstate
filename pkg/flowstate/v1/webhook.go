@@ -224,6 +224,47 @@ func CheckWebhookVerifyScheme(name, scheme string, key *Value) error {
 // webhook delivery is at-least-once by nature, so a trigger with no key turns every
 // retried delivery into a second run. An integration that genuinely has no stable
 // key has to write that down rather than inherit it from a default nobody chose.
+//
+// # What this refuses, and the wider thing it does not
+//
+// It asks one question — does the expression *name* the delivery, a free
+// occurrence of `event` no enclosing comprehension has shadowed
+// ([celExprReferencesIdentifier])? That question is answerable from the syntax
+// and its answer is a proof: an expression with no free `event` cannot read the
+// delivery, so it cannot vary with it, on any delivery that will ever arrive.
+//
+// The wider question — does the key's *value* actually move when the delivery
+// does — is not answered here, and #733 is the record of why. Naming the delivery
+// is not the same as depending on it: `${true ? "all-events" : event.body.id}`
+// carries a real free `event` in a branch nothing takes, passes this check, and
+// still collapses every delivery onto one run.
+//
+// Two ways to close that were tried and rejected, and the second is the one worth
+// knowing about because it looks like it works:
+//
+//   - Constant folding, partially. A special case for a literal condition closes
+//     the example above and leaves `1 == 1 ? … : …`, a constant `has()`, a
+//     comparison of two literals and a macro over a literal list all passing — a
+//     check that reads complete when it is not.
+//   - Evaluating the key against synthetic deliveries and refusing one that comes
+//     out the same string every time. This was built, reviewed and backed out: a
+//     finite sample can witness that a key *varies* and can never prove that it
+//     does not. `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`
+//     is identical across any set of synthetic deliveries that happen not to carry
+//     that type, and distinct across the ones the author cares about — so the
+//     refusal lands on a working file, which is the outcome CLAUDE.md rates worse
+//     than the gap it closes. This function is also reached from [BindRunInputs],
+//     from the webhook mount and from [BindWebhookTriggerInputs], so such a
+//     refusal is not an editor's squiggle: it rejects a live delivery to a webhook
+//     that had been working.
+//
+// So the check refuses what it can prove and stays silent about the rest, and the
+// residual is documented in docs/DSL.md rather than left for somebody to discover
+// by reading this function and assuming it is complete. Closing it needs a place
+// to put a finding that is evidence rather than proof — a diagnostic severity this
+// package does not have, or a rehearsal over the author's own recorded deliveries,
+// where two distinct deliveries colliding on one key is a fact rather than a
+// sample.
 func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	if key == nil {
 		return fmt.Errorf("webhook %q declares no `idempotency_key:`; delivery is at-least-once, so without one "+

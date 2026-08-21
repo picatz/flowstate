@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -81,13 +80,7 @@ func TestWorkerRefusalIsReachedBeforeTemporalIs(t *testing.T) {
 	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs([]string{"worker", "--address", "127.0.0.1:1"})
-
-	err := root.ExecuteContext(t.Context())
+	err := runFlow(t, "worker", "--address", "127.0.0.1:1").Err
 
 	require.ErrorContains(t, err, "refusing to start an unversioned worker")
 }
@@ -564,16 +557,10 @@ func TestWorkerCapacityOptionsRefusalIsReachedBeforeTemporalIs(t *testing.T) {
 	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs([]string{
+	err := runFlow(t,
 		"worker", "--address", "127.0.0.1:1",
-		"--" + allowUnversionedFlag, "--max-concurrent-activities", "-5",
-	})
-
-	err := root.ExecuteContext(t.Context())
+		"--"+allowUnversionedFlag, "--max-concurrent-activities", "-5",
+	).Err
 
 	require.ErrorContains(t, err, "--max-concurrent-activities")
 }

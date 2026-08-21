@@ -21,7 +21,6 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // registerTestNamespace registers a Temporal namespace directly against the
@@ -212,7 +211,7 @@ func TestWorkerSecondSignalDuringADrainForcesExit(t *testing.T) {
 	}, 30*time.Second, 20*time.Millisecond,
 		"the namespace registered for this test never became usable")
 
-	flowstate := server.New(temporal)
+	flowstate := mustNewFlowstateServer(t, temporal)
 
 	// The slow endpoint the run's one step calls: it announces that a request has
 	// begun (proving the worker's activity is genuinely executing, not merely

@@ -82,7 +82,7 @@ func newPooledServer(t *testing.T, callerNamespace string, routed ...string) *se
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	return server.New(temporal,
+	return mustNew(t, temporal,
 		server.WithNamespace(callerNamespace),
 		server.WithNamespacePool(pool),
 	)

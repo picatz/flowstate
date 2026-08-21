@@ -65,6 +65,80 @@ func TestCheckWebhookIdempotencyKeyRejectsAConstantShadowedByAComprehension(t *t
 		v1.NewExpr(`event.body.id + string([1].map(event, string(event))[0])`)))
 }
 
+// TestAnIdempotencyKeyMentioningTheDeliveryIsAcceptedInEverySyntacticPosition
+// is the false-diagnostic direction of the check above, in each position a
+// reference can take: a bare identifier, a field selection, an index, and a macro
+// body. CLAUDE.md rates refusing a file that is right worse than missing one that
+// is wrong, and this check is reached from [v1.BindRunInputs], from the webhook
+// mount and from [v1.BindWebhookTriggerInputs] as well as from `flow validate` —
+// so a wrong refusal here is not a squiggle in an editor, it is a live delivery
+// rejected against a webhook that had been working.
+func TestAnIdempotencyKeyMentioningTheDeliveryIsAcceptedInEverySyntacticPosition(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`string(event)`,
+		`event.body.id`,
+		`event.body.data.id`,
+		`event.headers["stripe-signature"]`,
+		`event.headers["x-request-id"] + "-" + event.body.type`,
+		`event.body.items.map(item, item + event.body.id)[0]`,
+		`has(event.body.id) ? event.body.id : event.headers["x-request-id"]`,
+		`string(size(event.headers)) + event.body.id`,
+
+		// The discriminating shape: one key for the deliveries this workflow acts
+		// on, a fixed one for the deliveries it means to ignore. It is not a
+		// *good* key — every ignored delivery dedupes onto one run — but it is a
+		// key that genuinely varies with the delivery, and nothing here may refuse
+		// it. It is also the counterexample that took the evaluation-based check
+		// out of this function: any synthetic delivery set that happens not to
+		// carry `invoice.paid` sees one constant string and would have refused it.
+		`event.body.type == "invoice.paid" ? event.body.id : "ignored"`,
+	} {
+		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
+
+			assert.NoError(t, v1.CheckWebhookIdempotencyKey("derived", v1.NewExpr(expression)))
+		})
+	}
+}
+
+// TestAnIdempotencyKeyMayMentionTheDeliveryAndStillNameEveryDeliveryAlike is the
+// residual this check does not close, written down rather than left for the next
+// reader to assume away (#733).
+//
+// Every expression here carries a real, unshadowed `event` — so the walk answers
+// "it names the delivery" — and every one of them evaluates to one string forever.
+// They are accepted, and this test exists to say that is a known gap rather than
+// an oversight, and to fail loudly if someone closes it, because closing it
+// soundly means proving constancy rather than sampling it: a finite set of
+// synthetic deliveries can witness that a key varies and can never prove that it
+// does not, and the price of guessing is the discriminating key in the test above.
+//
+// What would close it is not a better sample. It is a venue where a finding can be
+// evidence rather than proof — a diagnostic severity this package does not have,
+// or a rehearsal over deliveries the author actually recorded, where two distinct
+// deliveries colliding on one key is a fact.
+func TestAnIdempotencyKeyMayMentionTheDeliveryAndStillNameEveryDeliveryAlike(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`true ? "all-events" : event.body.id`,
+		`1 == 1 ? "all-events" : event.body.id`,
+		`has(event.body.id) ? "all-events" : "all-events"`,
+		`size([1, 2, 3]) > 0 ? "all-events" : event.headers["stripe-signature"]`,
+		`"all-events" + string(size(event.headers) * 0)`,
+	} {
+		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
+
+			assert.NoError(t, v1.CheckWebhookIdempotencyKey("constant", v1.NewExpr(expression)),
+				"the syntactic check refuses only what it can prove; if this became an error, "+
+					"read #733 before assuming the change is safe")
+		})
+	}
+}
+
 // orderWorkflow declares the signature the trigger above is a call site of.
 func orderWorkflow() *v1.Workflow {
 	return &v1.Workflow{

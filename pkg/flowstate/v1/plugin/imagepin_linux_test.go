@@ -107,7 +107,7 @@ func TestExecImagePointsAtTheDescriptorRatherThanThePath(t *testing.T) {
 	path := filepath.Join(dir, BinaryPrefix+"pinned")
 
 	// A header this host's own ELF loader would claim, because only a natively
-	// executable image is pinned (see [isDirectlyExecutable]) and a script or
+	// executable image is pinned (see [nativeELFRefusal]) and a script or
 	// a foreign-architecture image here would be asserting the opposite of
 	// what this file is about. Nothing executes these bytes — the pin is the
 	// whole subject — so the header is all that has to be real.

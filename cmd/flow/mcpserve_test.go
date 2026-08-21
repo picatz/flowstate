@@ -108,7 +108,10 @@ func newMCPServeFixtureWith(
 
 	guard := newMCPServeRegistryGuard()
 
-	handler, err := mcpServeHandler(logger, mcpServeTools(guard, testTimeout), verifier, protectedResource, mcpServeLimits{
+	tools, err := mcpServeTools(guard, testTimeout)
+	require.NoError(t, err)
+
+	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
 		maxRequestBytes:    maxRequestBytes,
 		maxSessions:        maxSessions,
 		maxSessionRequests: mcpServeDefaultMaxSessionRequests,
@@ -620,7 +623,10 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
-	_, err := mcpServeHandler(slog.Default(), mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout), nil, nil, limits)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout)
+	require.NoError(t, err)
+
+	_, err = mcpServeHandler(slog.Default(), tools, nil, nil, limits)
 	require.Error(t, err, "no protected resource and no verifier must not produce a servable handler")
 }
 
@@ -735,8 +741,11 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.Equal(t, "/", protectedResource.ResourcePath(),
 		"a bare-origin resource is the shape this test exists for")
 
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout)
+	require.NoError(t, err)
+
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),
-		mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout), verifier, protectedResource, mcpServeLimits{
+		tools, verifier, protectedResource, mcpServeLimits{
 			maxRequestBytes: mcpServeDefaultMaxRequestBytes,
 			maxSessions:     mcpServeDefaultMaxSessions,
 			sessionIdle:     mcpServeSessionIdleTimeout,

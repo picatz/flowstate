@@ -83,7 +83,7 @@ func TestAWebhookResolvesOnlyItsOwnTenantsSigningKey(t *testing.T) {
 	// verification: a delivery that gets that far is answered 503 by the arm
 	// [TestADeliveryTheDeploymentCannotStartIsRetryable] covers, and the two
 	// deliveries below part company well before it.
-	receiver, err := server.New(unreachableTemporal(t)).NewWebhookReceiver(t.Context(), "team-a",
+	receiver, err := mustNew(t, unreachableTemporal(t)).NewWebhookReceiver(t.Context(), "team-a",
 		[]*v1.Workflow{orderWebhookWorkflow()}, storeOf(t, backend))
 	require.NoError(t, err, "a receiver could not be built for a tenant that holds the key it needs")
 
@@ -119,7 +119,7 @@ func TestAReceiverRefusesATenantThatHoldsNoKey(t *testing.T) {
 	// Only team-b has configured a signing key.
 	backend := &keyProvider{keys: map[string]string{"team-b": teamBSecret}}
 
-	_, err := server.New(nil).NewWebhookReceiver(t.Context(), "team-a",
+	_, err := mustNew(t, nil).NewWebhookReceiver(t.Context(), "team-a",
 		[]*v1.Workflow{orderWebhookWorkflow()}, storeOf(t, backend))
 	require.Error(t, err,
 		"a receiver serving a tenant with no signing key started anyway, so it found one somewhere")
@@ -152,7 +152,7 @@ func pooledWebhookServer(t *testing.T, routed ...string) (*server.FlowstateServe
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	return server.New(temporal, server.WithNamespacePool(pool)), temporal
+	return mustNew(t, temporal, server.WithNamespacePool(pool)), temporal
 }
 
 // TestADeliveryStartsARunInTheReceiversTenant is the finding itself: on a
@@ -254,7 +254,7 @@ func TestAReceiverRefusesAWorkflowThisDeploymentCannotSatisfy(t *testing.T) {
 
 	// Installed, and below the floor the file declares — the case that reads as
 	// working configuration right up until a delivery arrives.
-	_, err := server.New(nil, server.WithPluginCatalog(installed("v1.4.0"))).
+	_, err := mustNew(t, nil, server.WithPluginCatalog(installed("v1.4.0"))).
 		NewWebhookReceiver(t.Context(), "", []*v1.Workflow{needsPlugin()}, keyStore(t, webhookSecret))
 	require.Error(t, err,
 		"a receiver started serving a workflow whose plugin requirement this deployment cannot satisfy")
@@ -263,7 +263,7 @@ func TestAReceiverRefusesAWorkflowThisDeploymentCannotSatisfy(t *testing.T) {
 
 	// And the same workflow against a catalog that satisfies it, so the check
 	// refuses what it should rather than everything with a requirement.
-	_, err = server.New(nil, server.WithPluginCatalog(installed("v2.1.0"))).
+	_, err = mustNew(t, nil, server.WithPluginCatalog(installed("v2.1.0"))).
 		NewWebhookReceiver(t.Context(), "", []*v1.Workflow{needsPlugin()}, keyStore(t, webhookSecret))
 	require.NoError(t, err, "a receiver refused a workflow this deployment can serve")
 }

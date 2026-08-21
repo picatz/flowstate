@@ -23,29 +23,18 @@ import (
 // pipe cannot see are rules, and each of them was broken by the renderer this
 // replaced.
 
-// helpOf renders a command's help the way the CLI does, into a buffer.
+// helpOf renders a command's help the way the CLI does, and returns the page.
 //
-// Through the real command so that the help function wiring is part of what is
-// tested: a renderer that is never installed would pass every test written against
-// the renderer alone.
-//
-// Which is why every test below it runs serially. newRootCommand binds flags to
-// package variables, and pflag writes a flag's default into its variable the moment
-// the flag is declared — so building a CLI is a write to shared state, and two
-// parallel builders race on one word. See TestBuildingTheCLITwiceBuildsTheSameCLI,
-// which is where that was found and why it is not simply fixed here.
+// Through [runFlow] — the real tree, through [execute] — so the help function
+// wiring is part of what is tested: a renderer that is never installed would
+// pass every test written against the renderer alone.
 func helpOf(t *testing.T, args ...string) string {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append(args, "--help"))
+	res := runFlow(t, append(args, "--help")...)
+	require.NoError(t, res.Err)
 
-	require.NoError(t, execute(t.Context(), root))
-
-	return out.String()
+	return res.Stdout
 }
 
 // TestHelpWritesNoTrailingWhitespace is the rule a pipe can see and a terminal

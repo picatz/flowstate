@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update coverage coverage-plugins
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize docs docs-preview appearance appearance-update coverage coverage-plugins
 
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
@@ -118,6 +118,33 @@ test-fast:
 fmt:
 	gofmt -w ./cmd ./pkg
 
+# Report what Go's `go fix` modernizers would change, and change nothing
+# (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
+# repository's own `flow fix` rewrites Flowfiles, and the two are unrelated.
+#
+# This is a map, not a gate, on the same reasoning as `coverage` below:
+# nothing in `check` or the PR lane runs it, and no count is enforced
+# anywhere. #521's decision is that the modernizers are applied
+# opportunistically — a package at a time, inside a diff a reviewer is
+# already reading closely for another reason — and never as a sweep, because
+# a mechanical diff thousands of lines long is the shape in which a real
+# defect hides, and none of what the fixers propose fixes one. So the useful
+# invocation is the narrow one, run when you are already in the package:
+#
+#     make modernize PKGS=./pkg/flowstate/v1/engine/
+#     go run ./tools/modernize -sites ./pkg/flowstate/v1/engine/
+#
+# The weekly deep tier (.github/workflows/deep.yml) runs the wide one and
+# files a single advisory issue, so the number stays visible without a tool
+# committing on anyone's behalf.
+#
+# Scope: the root module. The plugin modules under plugins/* are separate
+# modules outside this module's build graph — exactly as they are for
+# `coverage` — and nothing here reaches them, tracked as a follow-up rather
+# than landed here.
+modernize:
+	go run ./tools/modernize $(if $(PKGS),$(PKGS),./...)
+
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
 # with `git diff --exit-code`, so this is what to run when that pin fails.
@@ -172,17 +199,27 @@ appearance-update:
 # of those lines is invisible to it: a CLI verb whose only coverage comes
 # from a subprocess test looks identical to one with no test at all.
 #
-# GOCOVERDIR exported below is read two ways at once. Go's own toolchain
-# reads it directly: `go test -cover -args -test.gocoverdir=...` makes this
-# process's own in-process test binaries write their counters there. And
-# internal/covbuild reads the same variable to decide, for every test file
-# above, whether to build its subprocess binary with -cover and to carry
-# GOCOVERDIR into the environments built from scratch that would not
-# otherwise inherit it — so an instrumented `flow` or example-plugin binary,
-# run as a real subprocess, writes its counters into the same directory.
-# `go tool covdata` then merges every process's counters, however many ran,
-# into one profile — that merge is the whole point of the mechanism; nothing
-# here computes coverage from a single process the way -coverprofile does.
+# Two variables below, naming one directory, because two mechanisms read it.
+# Go's own toolchain reads GOCOVERDIR: `go test -cover -args
+# -test.gocoverdir=...` makes this process's own in-process test binaries
+# write their counters there. internal/covbuild reads FLOWSTATE_COVERDIR —
+# deliberately *not* GOCOVERDIR, see that package's doc for the scratch
+# directory `go test -cover` points GOCOVERDIR at and then discards — to
+# decide, for every test file above, whether to build its subprocess binary
+# with -cover and to carry a real GOCOVERDIR into environments built from
+# scratch that would not otherwise inherit one. `go tool covdata` then merges
+# every process's counters, however many ran, into one profile — that merge is
+# the whole point of the mechanism; nothing here computes coverage from a
+# single process the way -coverprofile does.
+#
+# This target exported only GOCOVERDIR until #404, which is the failure #519
+# is about wearing the mechanism's own clothes: covbuild saw no
+# FLOWSTATE_COVERDIR, built every subprocess binary uninstrumented, and the
+# report came back with the subprocess tier contributing nothing — silently,
+# since a package with no counters and a package whose counters never merged
+# read identically. Measured on `-run TestExitCodeGoldenPaths` alone: two
+# files in the raw directory and 0.0% for cmd/flow with GOCOVERDIR only,
+# against six files and 11.2% with both.
 #
 # This is a map, not a gate, per #519: nothing in CI or `make check` reads
 # .coverage/, and no percentage is enforced anywhere, here or anywhere else.
@@ -198,7 +235,7 @@ appearance-update:
 coverage:
 	rm -rf .coverage
 	mkdir -p .coverage/raw
-	( GOCOVERDIR=$(CURDIR)/.coverage/raw GOMEMLIMIT=2GiB go test -cover -timeout 1800s ./... -args -test.gocoverdir=$(CURDIR)/.coverage/raw ; echo $$? > .coverage/status ) 2>&1 | tee .coverage/test.log; \
+	( GOCOVERDIR=$(COVERAGE_RAW) FLOWSTATE_COVERDIR=$(COVERAGE_RAW) GOMEMLIMIT=2GiB go test -cover -timeout 1800s ./... -args -test.gocoverdir=$(COVERAGE_RAW) ; echo $$? > .coverage/status ) 2>&1 | tee .coverage/test.log; \
 	( $(MAKE) coverage-plugins ; echo $$? > .coverage/plugin-status ) 2>&1 | tee -a .coverage/test.log; \
 	status=$$(cat .coverage/status); \
 	plugin_status=$$(cat .coverage/plugin-status); \

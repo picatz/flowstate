@@ -154,7 +154,7 @@ func deliveryBody(event string) string {
 func newReceiver(t *testing.T, opts ...server.WebhookOption) *server.WebhookReceiver {
 	t.Helper()
 
-	receiver, err := server.New(nil).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, nil).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret), opts...)
 	require.NoError(t, err)
 
@@ -203,7 +203,7 @@ func TestADeliveryStartsARun(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -253,7 +253,7 @@ func TestARedeliveryDoesNotStartASecondRun(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -293,7 +293,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -353,7 +353,7 @@ func TestAnUnverifiableDeliveryIsRefused(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -386,7 +386,7 @@ func TestADeliveryIsOneJSONDocumentAndNothingAfterIt(t *testing.T) {
 	// a run is attempted, and the whitespace cases below have to get *past* that
 	// point to prove they were not refused, which means having somewhere to fail
 	// afterwards instead.
-	receiver, err := server.New(unreachableTemporal(t)).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, unreachableTemporal(t)).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -520,7 +520,7 @@ func TestAnOversizedBodyIsRefusedBeforeItIsReadIntoMemory(t *testing.T) {
 func TestAReceiverRefusesAKeyItCannotResolve(t *testing.T) {
 	t.Parallel()
 
-	_, err := server.New(nil).NewWebhookReceiver(t.Context(),
+	_, err := mustNew(t, nil).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()},
 		storeOf(t, &keyProvider{err: fmt.Errorf("no such secret")}))
 	require.Error(t, err, "a receiver started holding a webhook whose signing key it cannot resolve")
@@ -547,7 +547,7 @@ func TestAReceiverRefusesAWorkflowItCannotServe(t *testing.T) {
 		"two workflows under one name":      {orderWebhookWorkflow(), orderWebhookWorkflow()},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := server.New(nil).NewWebhookReceiver(t.Context(), "", workflows,
+			_, err := mustNew(t, nil).NewWebhookReceiver(t.Context(), "", workflows,
 				keyStore(t, webhookSecret))
 			require.Error(t, err, "the receiver accepted a configuration it cannot serve")
 		})
@@ -614,7 +614,7 @@ func TestADeliveryTheDeploymentCannotStartIsRetryable(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	receiver, err := server.New(unreachable).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, unreachable).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -688,7 +688,7 @@ func TestAWebhookServedWorkflowIsTrustedForRun(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	_, err := flowstate.NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{webhookOnlyWorkflowWithManualDenied()}, keyStore(t, webhookSecret))
@@ -744,7 +744,7 @@ func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T)
 		"team-b": webhookSecret,
 	}})
 
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	_, err := flowstate.NewWebhookReceiver(t.Context(), "team-a",
 		[]*v1.Workflow{breakGlassWebhookWorkflowFor("team-a")}, store)
@@ -835,7 +835,7 @@ func TestAFailedWebhookReceiverGrantsNoTrust(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	valid := webhookOnlyWorkflowWithManualDenied()
 
