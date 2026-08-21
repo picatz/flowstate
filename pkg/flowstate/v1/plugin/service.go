@@ -149,7 +149,15 @@ func (s taskService) ExecuteStream(
 
 	ctx, cancel := s.plugin.callContext(ctx)
 
-	stream, err := inst.clients.task.ExecuteStream(ctx, req)
+	// taskStream, not task: this call's response is the same
+	// progress-frames-then-terminal-response shape [Plugin.executeTask]
+	// (task.go) drives, and it needs the identical reserve — see
+	// [DefaultMaxProgressFrames] and [newClients]'s own doc comment on why
+	// only the streaming client carries it. Issue #804 was found and fixed
+	// on the internal dispatch path; this exported one shares the same
+	// shape and the same bug, caught in review before it shipped
+	// (picatz/flowstate#813) rather than by a second issue.
+	stream, err := inst.clients.taskStream.ExecuteStream(ctx, req)
 	if err != nil {
 		cancel()
 		return nil, err

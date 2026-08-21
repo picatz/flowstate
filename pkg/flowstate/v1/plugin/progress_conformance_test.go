@@ -544,3 +544,55 @@ func TestUnboundedProgressFloodIsStillRefused(t *testing.T) {
 		"the refusal must come from the byte bound being reached, not from cfg.CallTimeout (3s) expiring — "+
 			"an elapsed time this close to it means the bound stopped applying and the call ran the full loop instead")
 }
+
+// TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse is Codex's
+// review finding on this PR (picatz/flowstate#813): [Plugin.executeTask]
+// (task.go) is not the only path to ExecuteStream. [Plugin.TaskService] and
+// [Host.TaskServiceForTask] (service.go) hand back the generated
+// TaskServiceClient directly — the package's own extension point for a
+// caller that wants to drive a plugin's task execution itself, proven live
+// by [TestTaskServiceExecuteStreamIsBoundedByCallTimeout] — and
+// taskService.ExecuteStream used to dial out through inst.clients.task, the
+// unreserved client, rather than inst.clients.taskStream. A caller reaching
+// ExecuteStream through this exported surface would have hit #804's exact
+// starvation, unfixed, even after task.go's own call site was corrected.
+//
+// This drives the identical "looping" fixture and small-MaxResponseBytes
+// shape [TestProgressLoopDoesNotStarveTheTerminalResponse] does, but through
+// [Plugin.TaskService] and a hand-rolled receive loop instead of a TaskDef's
+// Fn, so it exercises service.go's call site specifically rather than
+// task.go's.
+func TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, pluginDir(t, "progress"))
+	cfg.MaxResponseBytes = 8192 // Smaller than the ~9000 bytes 1000 progress frames plus the terminal response add up to — see TestProgressLoopDoesNotStarveTheTerminalResponse.
+
+	host := openHost(t, cfg)
+	p, ok := host.Lookup("progress")
+	require.True(t, ok, "plugin was not launched")
+
+	service, err := p.TaskService()
+	require.NoError(t, err, "TaskService")
+
+	const loopCount = 1000
+	stream, err := service.ExecuteStream(t.Context(), connect.NewRequest(&pluginv1.ExecuteStreamRequest{
+		Task: &flowstatev1.Task{
+			Name:   "looping",
+			Inputs: map[string]*flowstatev1.Value{"message": flowstatev1.NewLiteral(strconv.Itoa(loopCount))},
+		},
+	}))
+	require.NoError(t, err, "ExecuteStream")
+
+	var gotResponse bool
+	for stream.Receive() {
+		if stream.Msg().GetResponse() != nil {
+			gotResponse = true
+			break
+		}
+	}
+	require.NoError(t, stream.Err(), "reading the stream: a task's own progress-reporting frequency must never "+
+		"starve its terminal response, on this exported path exactly as on the internal one")
+	assert.True(t, gotResponse, "the stream ended without ever delivering the terminal ExecuteResponse")
+	require.NoError(t, stream.Close())
+}
