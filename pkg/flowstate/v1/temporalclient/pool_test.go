@@ -198,6 +198,15 @@ func TestPoolRoutingWithoutDialing(t *testing.T) {
 func TestNewPoolRefusesAnUnregisteredNamespace(t *testing.T) {
 	t.Parallel()
 
+	// This test never registers a namespace, so it never calls
+	// [newTemporalNamespace] — the one place the -short skip otherwise lives.
+	// Repeated here rather than routed through a helper: skipping late, after
+	// touching the nil devServer left by TestMain under -short, is the panic
+	// this guards, not a smaller version of it.
+	if testing.Short() {
+		t.Skip("skipping: needs the shared Temporal dev server, not started under -short; CI runs the full suite")
+	}
+
 	// Never registered on this package's dev server, and named after the test so
 	// a namespace left behind by a crash (there should be none — NewPool never
 	// registers one) says which test it came from.
