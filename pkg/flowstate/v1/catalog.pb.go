@@ -228,13 +228,16 @@ type CELFunction struct {
 	// Example is a complete expression calling this, set only where `name` is not
 	// enough to construct one, which is exactly the macros.
 	//
-	// A function's name *is* its call form: `upperAscii` is written `x.upperAscii()`
-	// or `regex.replace(a, b, c)` as the name says. A macro's is not, and cel-go's
-	// parser API is why: `Macro` exposes `Function`, `ArgCount`, `IsReceiverStyle`
-	// and `MacroKey`, and none of them names the *receiver*. So `greatest` is
-	// reported for something written `math.greatest(1, 2)` and `sortBy` for
-	// something written `[3,1,2].sortBy(v, v)`: a namespace in one case and a value
-	// in the other, indistinguishable from the outside.
+	// A macro's own parser API will not say whether its `name` is written on a
+	// namespace or on a value, and that is the gap this fills: `Macro` exposes
+	// `Function`, `ArgCount`, `IsReceiverStyle` and `MacroKey`, and none of them
+	// names the *receiver*. So `greatest` is reported for something written
+	// `math.greatest(1, 2)` and `sortBy` for something written
+	// `[3,1,2].sortBy(v, v)`: a namespace in one case and a value in the other,
+	// indistinguishable from the outside. An ordinary function does not have
+	// this problem — its overloads answer the same question, which is what
+	// `signature` below carries, along with the arity and argument order this
+	// field does not give either kind.
 	//
 	// Which means this cannot be derived, and a consumer told "do not render `name`
 	// as a call" and given nothing else has been handed a catalogue of things it
