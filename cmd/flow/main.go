@@ -1475,11 +1475,57 @@ func runLSP(cmd *cobra.Command, args []string) error {
 // Checking a workflow by running it is not an option for a workload engine: the
 // steps have side effects. This is the command that makes a Flowfile safe to
 // check.
+//
+// # Plugins
+//
+// Given --plugin-dir, the plugins on it are launched here first and registered
+// into the registry the validator reads, exactly as [runLSP] does it and through
+// the same [startPlugins] (#724, #710). It is the difference between a file that
+// names `example.greet` reading as a mistake and reading as what it is, and it
+// is what makes the landing rule CLAUDE.md states — a Flowfile expresses it,
+// `flow validate` accepts it, an example exercises it — reachable for a plugin
+// task at all.
+//
+// Three properties of doing it here rather than anywhere else, because this is
+// the verb an editor runs on a keystroke through `flow lsp` and a person runs in
+// CI:
+//
+//   - It is opt-in from the command line and from nowhere else. Without
+//     --plugin-dir this command launches nothing, which is the behaviour every
+//     invocation in the tree has today.
+//   - It is bounded by the host's own bounds, which are the ones a worker runs
+//     under: plugin.DefaultHandshakeTimeout on coming up,
+//     plugin.DefaultDescribeTimeout on the descriptors, the stderr line and
+//     rate caps, and the transport's byte cap below the RPC library. A plugin
+//     that will not come up cannot hang this command.
+//   - A plugin that fails to launch fails *this command*, saying so. The
+//     tempting alternative — carry on with the plugin-free registry — reports
+//     every one of that plugin's tasks as an unknown task, which is a false
+//     diagnostic about the file on the strength of something that went wrong
+//     with a process. False diagnostics are worse than missing ones.
+//
+// What is deliberately unchanged is the answer with no --plugin-dir: a step
+// naming a plugin task still gets the installation-question diagnostic rather
+// than a pass, because whether a plugin is installed is a deployment's decision
+// and this process has not been told. See unknownTaskMessage in the flowfile
+// package.
 func runValidate(cmd *cobra.Command, args []string) error {
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
 	}
+
+	// Before either rendering path, so that both answer from the same registry:
+	// `-o json` is the same check written down for a machine, and a consumer that
+	// got a different set of diagnostics from the same flags would be reading a
+	// second implementation of this verb.
+	_, closePlugins, err := startPlugins(cmd, nil)
+	if err != nil {
+		return fmt.Errorf("the plugins on --plugin-dir are what these files are checked "+
+			"against, and one of them would not start, so nothing was checked: %w", err)
+	}
+	defer closePlugins()
+
 	if format.Machine() {
 		return validateMachine(cmd, args, format)
 	}
@@ -2144,7 +2190,19 @@ flow server --verbose`,
 		Short: "Check workflows for problems without running them",
 		Long: "Check one or more Flowfiles for problems without executing them. " +
 			"Reports unknown tasks, duplicate or unusable step ids, and references to " +
-			"steps that do not exist or have not run yet, with the line each problem is on.",
+			"steps that do not exist or have not run yet, with the line each problem is on.\n\n" +
+			"A file naming a plugin's task is checked against that plugin given " +
+			"--plugin-dir: the plugins there are launched here, through the same " +
+			"discovery, handshake and catalog a worker uses, and their tasks and input " +
+			"schemas are then what this command checks against — so a misspelled input " +
+			"to a plugin task is a diagnostic at your terminal rather than a failure at " +
+			"the worker. It launches third-party binaries, which is why it takes this " +
+			"flag rather than looking anywhere by default, and a plugin that will not " +
+			"start fails this command outright: carrying on without it would report " +
+			"every one of its tasks as unknown, which is a false report about the file.\n\n" +
+			"Without --plugin-dir a step naming a plugin task is reported as not " +
+			"registered here, which is what it is: whether a plugin is installed is the " +
+			"deployment's decision and this process has not been told about one.",
 		Args:          cobra.MinimumNArgs(1),
 		RunE:          runValidate,
 		SilenceErrors: true,
@@ -2165,12 +2223,32 @@ flow validate examples/hello-world/workflow.yaml
 flow validate examples/*/workflow.yaml
 
 # Ask for the diagnostics as data, one line per file:
-flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | length > 0)'`,
+flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | length > 0)'
+
+# Check a file whose steps name a plugin's tasks, against that plugin:
+flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
 	// `get` and `list`: the fields are the schema's and addressable by name.
 	addOutputFlag(validateCmd)
+
+	// The same flags every other surface that reads a task name takes, doing the
+	// same thing through the same [startPlugins] (#724, #710).
+	//
+	// This was the gap the landing rule fell into: CLAUDE.md says a capability
+	// lands when a Flowfile expresses it, `flow validate` accepts it, and an
+	// example exercises it in CI — and `flow validate` was the one verb in the
+	// tree that could never say yes to a plugin task, because it was the one
+	// authoring surface with no way to be told what a plugin provides. `flow
+	// lsp`, `flow mcp`, `flow run local`, `flow task run`, the worker and the
+	// server all had it.
+	//
+	// Opt-in, exactly as it is on `flow lsp` and for the identical reason: this
+	// executes the binaries on the search path, and nothing but a command line
+	// somebody typed turns that on. See [runValidate] for what a plugin that
+	// fails to launch does here, which is the decision that matters on this verb.
+	addPluginFlags(validateCmd)
 
 	// Get command, which asks a server what a run is doing.
 	//
@@ -2294,7 +2372,12 @@ flow signal deploy-abc123 deploy-approved -o json | jq -r '.signalName, .result'
 		Short: "List the tasks workflows can use, or describe one",
 		Long: "List the tasks available to workflow steps, one line each. Name one to see " +
 			"it in full: every input with what may be written in it, what the task evaluates " +
-			"itself, what it hands back, and a step to copy.",
+			"itself, what it hands back, and a step to copy.\n\n" +
+			"What a plugin provides is listed too, given --plugin-dir: the plugins there " +
+			"are launched and their tasks join the catalog, each marked with the plugin it " +
+			"came from, so this is the whole of what a step could name on a worker " +
+			"configured the same way. Without it this is what this binary alone can run, " +
+			"and `flow plugins` is the other half.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: runTasks,
 		// Completed from the registry, which is the same place the listing comes
@@ -2315,12 +2398,26 @@ flow tasks --expressions
 flow tasks --output json
 
 # One task as a document:
-flow tasks http --output json | jq '.inputs'`,
+flow tasks http --output json | jq '.inputs'
+
+# Every task a worker with these plugins could run, built-in and provided:
+flow tasks --plugin-dir ./plugins
+
+# One plugin's task in full, the same page a built-in gets:
+flow tasks example.greet --plugin-dir ./plugins`,
 	}
 	addOutputFlag(tasksCmd)
 	tasksCmd.Flags().Bool(expressionsFlag, false,
 		"describe what every expression can say: the CEL functions, the duration "+
 			"constructors, `now` inside a wait, and where a value comes from")
+
+	// The other half of #724. This command's own doc comment has said since it was
+	// written that the catalog is the dimension "plugins already extend" — true of
+	// `flow plugins`, and not of this command, which launched nothing and so
+	// listed the built-ins and called them the catalog. Naming a plugin's task
+	// here answered that no task by that name exists in this build, which was a
+	// statement about the invocation rather than about the task.
+	addPluginFlags(tasksCmd)
 
 	// Task command, which runs one task without a workflow around it. Built in
 	// taskrun.go, beside the code it drives. See [newTaskCommand] for why the

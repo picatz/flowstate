@@ -94,6 +94,29 @@ that has not been told about one says what it does not know rather than passing 
 file silently, and the corpus checks stay strict for everything else rather than
 growing an exception.
 
+What you can do is tell it (#724, #710). `flow validate --plugin-dir` launches the
+plugins on that path first, through the same discovery and handshake a worker uses,
+and then checks the file against what they provide:
+
+```console
+$ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
+examples/plugins/greet/workflow.yaml: ok
+```
+
+That is not the diagnostic being suppressed; it is the question being answered. The
+file is checked against `example.greet`'s real input schema, reconstructed from the
+descriptors the plugin ships, so a misspelled input here fails at your terminal
+rather than at the worker. `flow tasks --plugin-dir ./plugins` is the same fact from
+the other side: the task is in the catalog, marked with the plugin it came from, and
+the version and path it was launched from are printed underneath.
+
+Two things it deliberately is not. It is opt-in, because it executes third-party
+binaries and nothing but a command line somebody typed turns that on. And a plugin
+that will not start fails the command outright, naming it, rather than checking the
+file without it — carrying on would report every one of that plugin's tasks as an
+unknown task, which is a false statement about the file drawn from something that
+went wrong with a process.
+
 It is still run in CI, and by more than a validator: `TestAFlowfileCanNameAPluginTask`
 in `pkg/flowstate/v1/plugin` builds this plugin, launches it, registers it into the
 registry the engine reads, and then validates and executes *this file* — the same

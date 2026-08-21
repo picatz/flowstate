@@ -823,9 +823,12 @@ than it is.
   `pkg/flowstate/v1/plugin` dials plugins over `AF_UNIX`
   (`internal/protocol.NetworkUnix`), with nothing conditionally compiled for
   another transport on Windows. **Windows support is for authoring, not for
-  running workers.** `flow validate`, `flow fix`, `flow lsp`, and
-  `flow run local` with no `--plugin-dir` work on Windows; a worker process,
-  or `run local` with plugins, needs a POSIX host. State that posture to
+  running workers.** `flow fix`, and `flow validate`, `flow tasks`, `flow lsp`
+  and `flow run local` with no `--plugin-dir`, work on Windows; a worker
+  process, or any of those four given `--plugin-dir`, needs a POSIX host.
+  (`flow validate` and `flow tasks` take that flag as of #724 — the authoring
+  verbs launch plugins only when told to, and that is the line the platform
+  posture falls on.) State that posture to
   anyone asking "does this run on Windows" — the honest answer is "your
   editor does, your worker fleet doesn't."
 - **`--plugin-dir` refuses a directory other users can write to**, group as
