@@ -250,7 +250,22 @@ type CELFunction struct {
 	// `transformList` is written on a value. A derivation that is wrong for one
 	// library in five is worse than a table somebody has to keep, because nothing
 	// about it says which one.
-	Example       string `protobuf:"bytes,4,opt,name=example,proto3" json:"example,omitempty"`
+	Example string `protobuf:"bytes,4,opt,name=example,proto3" json:"example,omitempty"`
+	// Signature is this function's call form, one entry per overload: argument
+	// order, arity and types, and — unlike `name` alone — whether it is written
+	// on a namespace or on a value. `string.charAt(int) -> string` for a member
+	// function, `math.abs(double) -> double` for a namespaced one. Empty for a
+	// macro, where `example` carries the call form instead.
+	//
+	// Where `example` above had to become a written table because cel-go's macro
+	// API cannot say which style a name is written in, an ordinary function's own
+	// overload does answer that exact question — `OverloadDecl.IsMemberFunction`
+	// names the receiver where `Macro.IsReceiverStyle` alone does not. So this is
+	// derived from the profile's compiled environment
+	// (`FunctionDecl.Documentation`) rather than hand-maintained, and a function
+	// added to a library brings its signature with it the same day rather than
+	// waiting for somebody to write one down (#702).
+	Signature     []string `protobuf:"bytes,5,rep,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -311,6 +326,13 @@ func (x *CELFunction) GetExample() string {
 		return x.Example
 	}
 	return ""
+}
+
+func (x *CELFunction) GetSignature() []string {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
 }
 
 // TaskDescription is one task's name and shape.
@@ -829,12 +851,13 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\vvalue_roots\x18\x05 \x03(\tR\n" +
 	"valueRoots\x12>\n" +
 	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\x122\n" +
-	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"k\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\x89\x01\n" +
 	"\vCELFunction\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
 	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
-	"\aexample\x18\x04 \x01(\tR\aexample\"\xe6\x02\n" +
+	"\aexample\x18\x04 \x01(\tR\aexample\x12\x1c\n" +
+	"\tsignature\x18\x05 \x03(\tR\tsignature\"\xe6\x02\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +

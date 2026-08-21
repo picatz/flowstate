@@ -12,6 +12,14 @@ rather than of this binary, and `flow plugins` is what asks a deployment.
 
 ## Tasks
 
+**Required** marks an input a step cannot omit. **Deferred** marks one the
+task evaluates itself, against a scope the engine does not have when it
+schedules the step — which is why a deferred input may name something an
+ordinary one cannot: `http`'s `outputs` may read `status_code` because the
+task evaluates it after the response arrives, and the engine resolves every
+other input before the step is even scheduled. **Bounds** is the rest of what
+the schema and the task already know about what may be written here.
+
 ### `http`
 
 Perform an HTTP request and return the response.
@@ -43,6 +51,17 @@ Perform an HTTP request and return the response.
 | `body` | `string` | none |
 | `json` | `any` | none |
 
+**A step that uses it:**
+
+```yaml
+edition: v2026.3
+name: example
+steps:
+  - id: http
+    http:
+      url: https://example.com/
+```
+
 ### `log`
 
 Emit a message for a person to read.
@@ -59,6 +78,17 @@ Emit a message for a person to read.
 
 None.
 
+**A step that uses it:**
+
+```yaml
+edition: v2026.3
+name: example
+steps:
+  - id: log
+    log:
+      message: example
+```
+
 ## Expressions
 
 Values are reached through these roots: `inputs`, `run`, `steps`, `trigger`, `vars`.
@@ -73,74 +103,76 @@ CEL libraries every expression reaches: `bindings`, `comprehensions`, `encoders`
 ### Functions
 
 What those libraries add. A macro is expanded by the parser rather than called by
-the evaluator, so its name is not its whole call form; the example is.
+the evaluator, so its name is not its whole call form; the example is. An
+ordinary function's own overloads carry the same information — argument order,
+arity, and whether it is written on a namespace or a value — as Signature.
 
-| Function | Library | Kind | Example |
-|---|---|---|---|
-| `bind` | `bindings` | macro | `cel.bind(x, 2, x + 1)` |
-| `existsOne` | `comprehensions` | macro | `[1, 2].existsOne(i, v, v > 1)` |
-| `transformList` | `comprehensions` | macro | `[1, 2].transformList(i, v, v * 2)` |
-| `transformMap` | `comprehensions` | macro | `{'a': 1}.transformMap(k, v, v * 10)` |
-| `transformMapEntry` | `comprehensions` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` |
-| `base64.decode` | `encoders` | function | — |
-| `base64.encode` | `encoders` | function | — |
-| `json.encode` | `encoders` | function | — |
-| `json_parse` | `json` | function | — |
-| `distinct` | `lists` | function | — |
-| `flatten` | `lists` | function | — |
-| `lists.range` | `lists` | function | — |
-| `reverse` | `lists` | function | — |
-| `slice` | `lists` | function | — |
-| `sort` | `lists` | function | — |
-| `sortBy` | `lists` | macro | `[3, 1, 2].sortBy(v, v)` |
-| `greatest` | `math` | macro | `math.greatest(1, 2)` |
-| `least` | `math` | macro | `math.least(3, 4)` |
-| `math.abs` | `math` | function | — |
-| `math.bitAnd` | `math` | function | — |
-| `math.bitNot` | `math` | function | — |
-| `math.bitOr` | `math` | function | — |
-| `math.bitShiftLeft` | `math` | function | — |
-| `math.bitShiftRight` | `math` | function | — |
-| `math.bitXor` | `math` | function | — |
-| `math.ceil` | `math` | function | — |
-| `math.floor` | `math` | function | — |
-| `math.isFinite` | `math` | function | — |
-| `math.isInf` | `math` | function | — |
-| `math.isNaN` | `math` | function | — |
-| `math.round` | `math` | function | — |
-| `math.sign` | `math` | function | — |
-| `math.sqrt` | `math` | function | — |
-| `math.trunc` | `math` | function | — |
-| `first` | `optional` | function | — |
-| `hasValue` | `optional` | function | — |
-| `last` | `optional` | function | — |
-| `optFlatMap` | `optional` | macro | `optional.of(2).optFlatMap(v, optional.of(v * 3))` |
-| `optMap` | `optional` | macro | `optional.of(2).optMap(v, v * 3)` |
-| `optional.none` | `optional` | function | — |
-| `optional.of` | `optional` | function | — |
-| `optional.ofNonZeroValue` | `optional` | function | — |
-| `optional.unwrap` | `optional` | function | — |
-| `or` | `optional` | function | — |
-| `orValue` | `optional` | function | — |
-| `unwrapOpt` | `optional` | function | — |
-| `value` | `optional` | function | — |
-| `getExt` | `protos` | macro | — |
-| `hasExt` | `protos` | macro | — |
-| `regex.extract` | `regex` | function | — |
-| `regex.extractAll` | `regex` | function | — |
-| `regex.replace` | `regex` | function | — |
-| `sets.contains` | `sets` | function | — |
-| `sets.equivalent` | `sets` | function | — |
-| `sets.intersects` | `sets` | function | — |
-| `charAt` | `strings` | function | — |
-| `format` | `strings` | function | — |
-| `indexOf` | `strings` | function | — |
-| `join` | `strings` | function | — |
-| `lastIndexOf` | `strings` | function | — |
-| `lowerAscii` | `strings` | function | — |
-| `replace` | `strings` | function | — |
-| `split` | `strings` | function | — |
-| `strings.quote` | `strings` | function | — |
-| `substring` | `strings` | function | — |
-| `trim` | `strings` | function | — |
-| `upperAscii` | `strings` | function | — |
+| Function | Library | Kind | Example | Signature |
+|---|---|---|---|---|
+| `bind` | `bindings` | macro | `cel.bind(x, 2, x + 1)` | — |
+| `existsOne` | `comprehensions` | macro | `[1, 2].existsOne(i, v, v > 1)` | — |
+| `transformList` | `comprehensions` | macro | `[1, 2].transformList(i, v, v * 2)` | — |
+| `transformMap` | `comprehensions` | macro | `{'a': 1}.transformMap(k, v, v * 10)` | — |
+| `transformMapEntry` | `comprehensions` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` | — |
+| `base64.decode` | `encoders` | function | — | `base64.decode(string) -> bytes` |
+| `base64.encode` | `encoders` | function | — | `base64.encode(bytes) -> string` |
+| `json.encode` | `encoders` | function | — | `json.encode(dyn) -> string` |
+| `json_parse` | `json` | function | — | `json_parse(bytes) -> dyn`<br>`json_parse(string) -> dyn` |
+| `distinct` | `lists` | function | — | `list(<T>).distinct() -> list(<T>)` |
+| `flatten` | `lists` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
+| `lists.range` | `lists` | function | — | `lists.range(int) -> list(int)` |
+| `reverse` | `lists` | function | — | `list(<T>).reverse() -> list(<T>)` |
+| `slice` | `lists` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
+| `sort` | `lists` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
+| `sortBy` | `lists` | macro | `[3, 1, 2].sortBy(v, v)` | — |
+| `greatest` | `math` | macro | `math.greatest(1, 2)` | — |
+| `least` | `math` | macro | `math.least(3, 4)` | — |
+| `math.abs` | `math` | function | — | `math.abs(double) -> double`<br>`math.abs(int) -> int`<br>`math.abs(uint) -> uint` |
+| `math.bitAnd` | `math` | function | — | `math.bitAnd(int, int) -> int`<br>`math.bitAnd(uint, uint) -> uint` |
+| `math.bitNot` | `math` | function | — | `math.bitNot(int) -> int`<br>`math.bitNot(uint) -> uint` |
+| `math.bitOr` | `math` | function | — | `math.bitOr(int, int) -> int`<br>`math.bitOr(uint, uint) -> uint` |
+| `math.bitShiftLeft` | `math` | function | — | `math.bitShiftLeft(int, int) -> int`<br>`math.bitShiftLeft(uint, int) -> uint` |
+| `math.bitShiftRight` | `math` | function | — | `math.bitShiftRight(int, int) -> int`<br>`math.bitShiftRight(uint, int) -> uint` |
+| `math.bitXor` | `math` | function | — | `math.bitXor(int, int) -> int`<br>`math.bitXor(uint, uint) -> uint` |
+| `math.ceil` | `math` | function | — | `math.ceil(double) -> double` |
+| `math.floor` | `math` | function | — | `math.floor(double) -> double` |
+| `math.isFinite` | `math` | function | — | `math.isFinite(double) -> bool` |
+| `math.isInf` | `math` | function | — | `math.isInf(double) -> bool` |
+| `math.isNaN` | `math` | function | — | `math.isNaN(double) -> bool` |
+| `math.round` | `math` | function | — | `math.round(double) -> double` |
+| `math.sign` | `math` | function | — | `math.sign(double) -> double`<br>`math.sign(int) -> int`<br>`math.sign(uint) -> uint` |
+| `math.sqrt` | `math` | function | — | `math.sqrt(double) -> double`<br>`math.sqrt(int) -> double`<br>`math.sqrt(uint) -> double` |
+| `math.trunc` | `math` | function | — | `math.trunc(double) -> double` |
+| `first` | `optional` | function | — | `list(<V>).first() -> optional_type(<V>)` |
+| `hasValue` | `optional` | function | — | `optional_type(<V>).hasValue() -> bool` |
+| `last` | `optional` | function | — | `list(<V>).last() -> optional_type(<V>)` |
+| `optFlatMap` | `optional` | macro | `optional.of(2).optFlatMap(v, optional.of(v * 3))` | — |
+| `optMap` | `optional` | macro | `optional.of(2).optMap(v, v * 3)` | — |
+| `optional.none` | `optional` | function | — | `optional.none() -> optional_type(<V>)` |
+| `optional.of` | `optional` | function | — | `optional.of(<V>) -> optional_type(<V>)` |
+| `optional.ofNonZeroValue` | `optional` | function | — | `optional.ofNonZeroValue(<V>) -> optional_type(<V>)` |
+| `optional.unwrap` | `optional` | function | — | `optional.unwrap(list(optional_type(<V>))) -> list(<V>)` |
+| `or` | `optional` | function | — | `optional_type(<V>).or(optional_type(<V>)) -> optional_type(<V>)` |
+| `orValue` | `optional` | function | — | `optional_type(<V>).orValue(<V>) -> <V>` |
+| `unwrapOpt` | `optional` | function | — | `list(optional_type(<V>)).unwrapOpt() -> list(<V>)` |
+| `value` | `optional` | function | — | `optional_type(<V>).value() -> <V>` |
+| `getExt` | `protos` | macro | — | — |
+| `hasExt` | `protos` | macro | — | — |
+| `regex.extract` | `regex` | function | — | `regex.extract(string, string) -> optional_type(string)` |
+| `regex.extractAll` | `regex` | function | — | `regex.extractAll(string, string) -> list(string)` |
+| `regex.replace` | `regex` | function | — | `regex.replace(string, string, string) -> string`<br>`regex.replace(string, string, string, int) -> string` |
+| `sets.contains` | `sets` | function | — | `sets.contains(list(<T>), list(<T>)) -> bool` |
+| `sets.equivalent` | `sets` | function | — | `sets.equivalent(list(<T>), list(<T>)) -> bool` |
+| `sets.intersects` | `sets` | function | — | `sets.intersects(list(<T>), list(<T>)) -> bool` |
+| `charAt` | `strings` | function | — | `string.charAt(int) -> string` |
+| `format` | `strings` | function | — | `string.format(list(dyn)) -> string` |
+| `indexOf` | `strings` | function | — | `string.indexOf(string) -> int`<br>`string.indexOf(string, int) -> int` |
+| `join` | `strings` | function | — | `list(string).join() -> string`<br>`list(string).join(string) -> string` |
+| `lastIndexOf` | `strings` | function | — | `string.lastIndexOf(string) -> int`<br>`string.lastIndexOf(string, int) -> int` |
+| `lowerAscii` | `strings` | function | — | `string.lowerAscii() -> string` |
+| `replace` | `strings` | function | — | `string.replace(string, string) -> string`<br>`string.replace(string, string, int) -> string` |
+| `split` | `strings` | function | — | `string.split(string) -> list(string)`<br>`string.split(string, int) -> list(string)` |
+| `strings.quote` | `strings` | function | — | `strings.quote(string) -> string` |
+| `substring` | `strings` | function | — | `string.substring(int) -> string`<br>`string.substring(int, int) -> string` |
+| `trim` | `strings` | function | — | `string.trim() -> string` |
+| `upperAscii` | `strings` | function | — | `string.upperAscii() -> string` |

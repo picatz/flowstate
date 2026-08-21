@@ -30,7 +30,11 @@ type LibraryFunction struct {
 
 	// Example is a complete expression calling this, set only for a macro.
 	//
-	// A function's name is its call form and a macro's is not — see [macroExamples].
+	// A macro's own API will not say whether its Name is written on a namespace or
+	// a value — see [macroExamples] — so this exists to answer that question by
+	// hand for a macro specifically. An ordinary function does not need it: its
+	// overloads answer the same question, and Signature carries what they say,
+	// including the arity and argument order Example does not give either kind.
 	Example string
 
 	// Macro says the parser expands this rather than the evaluator calling it.
@@ -47,6 +51,21 @@ type LibraryFunction struct {
 	// not say which. So a caller must not print a macro as though it were a call
 	// form; it says how one is written once, rather than guessing per entry.
 	Macro bool
+
+	// Signature is this function's call form, one entry per overload: argument
+	// order, arity and types, and — unlike Name alone — whether it is written on a
+	// namespace or a value. `string.charAt(int) -> string` for a member function,
+	// `math.abs(double) -> double` for a namespaced one. Empty for a macro, where
+	// Example carries the call form instead.
+	//
+	// Derived, not written down, which is the difference from Example. Example is
+	// a written table precisely because cel-go's `Macro` type exposes no way to
+	// tell a namespace receiver from a value one; an ordinary function's own
+	// overload does not have that gap — `OverloadDecl.IsMemberFunction` names the
+	// receiver directly — so [functionSignatures] reads it straight off the
+	// profile's compiled environment instead of a table somebody has to keep
+	// (#702).
+	Signature []string
 }
 
 // ProfileFunctions returns every name the profile's libraries add, sorted by library
@@ -86,6 +105,7 @@ func ProfileFunctions(profile string) []LibraryFunction {
 	var out []LibraryFunction
 	for _, lib := range libs {
 		declared := declaredNames(lib)
+		sigs := functionSignatures(lib)
 		for _, name := range slices.Sorted(maps.Keys(declared)) {
 			macro := declared[name]
 			if claimed[name] {
@@ -104,10 +124,11 @@ func ProfileFunctions(profile string) []LibraryFunction {
 			}
 			claimed[name] = true
 			out = append(out, LibraryFunction{
-				Library: lib,
-				Name:    name,
-				Macro:   macro,
-				Example: macroExamples[name],
+				Library:   lib,
+				Name:      name,
+				Macro:     macro,
+				Example:   macroExamples[name],
+				Signature: sigs[name],
 			})
 		}
 	}
@@ -140,6 +161,45 @@ func declaredNames(libs ...string) map[string]bool {
 		// it arrives, the macro is what the parser reaches first and so is what an
 		// author is actually writing.
 		out[macro.Function()] = true
+	}
+
+	return out
+}
+
+// functionSignatures returns, for every ordinary function an environment
+// declares, its overloads formatted as call forms: argument order, arity and
+// whether it is written on a namespace or a value.
+//
+// A macro's name never collides with a function's in this profile — cel-go
+// registers the two under disjoint namespaces, and every library here keeps
+// it that way — so a macro's entry is simply absent, which is what leaves
+// [LibraryFunction.Signature] empty for one and lets a caller tell "no
+// signature exists" from "not looked up yet" the same way [macroExamples]
+// already does for Example.
+//
+// cel-go's own [decls.FunctionDecl.Documentation] does the formatting: it
+// walks each overload and asks [decls.OverloadDecl.IsMemberFunction], which
+// is the fact a macro's API cannot give up (see [macroExamples]'s doc
+// comment) but an ordinary function's overload always carries.
+func functionSignatures(libs ...string) map[string][]string {
+	env, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil
+	}
+
+	out := map[string][]string{}
+	for name, fn := range env.Functions() {
+		doc := fn.Documentation()
+		if doc == nil {
+			continue
+		}
+		for _, overload := range doc.Children {
+			if overload.Signature == "" {
+				continue
+			}
+			out[name] = append(out[name], overload.Signature)
+		}
+		slices.Sort(out[name])
 	}
 
 	return out

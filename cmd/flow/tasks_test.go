@@ -16,7 +16,6 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // tasksCommand builds a command carrying the flags `flow tasks` declares.
@@ -634,37 +633,8 @@ func TestTasksExpressionsIsItsOwnPage(t *testing.T) {
 		"the expression reference printed the task catalog too")
 }
 
-// TestTaskExampleValidates is the mirror test the example owes.
-//
-// A step somebody is invited to copy has to compile, and the way to know that is to
-// compile it rather than to read it: `flow validate`'s own compiler, run over the
-// bytes this command prints. Asserting that an example was produced proves nothing,
-// which is the lesson `flow fix`'s two corruptions left behind.
-//
-// It runs for every registered task, so a task added with a required input this
-// cannot write a value for fails here rather than handing an author a file the
-// validator then rejects.
-func TestTaskExampleValidates(t *testing.T) {
-	t.Parallel()
-
-	for _, def := range v1.DefaultRegistry().All() {
-		t.Run(def.Name, func(t *testing.T) {
-			t.Parallel()
-
-			example, err := taskExample(def)
-			require.NoError(t, err, "no example could be built for %s", def.Name)
-
-			// Written with two spaces of indent for the terminal, which is not a
-			// document. What a reader copies is the block; what compiles is the
-			// block with that indent removed.
-			var source strings.Builder
-			for _, line := range strings.Split(example, "\n") {
-				source.WriteString(strings.TrimPrefix(line, "  ") + "\n")
-			}
-
-			diagnostics, err := flowfile.ValidateSource([]byte(source.String()))
-			require.NoError(t, err, "the example for %s does not parse:\n%s", def.Name, source.String())
-			assert.Empty(t, diagnostics, "the example for %s does not validate:\n%s", def.Name, source.String())
-		})
-	}
-}
+// The mirror test for the worked example itself — TestBuildValidates — moved
+// to cmd/flow/internal/taskexample, alongside the code it tests, when the
+// task reference generator (docs/reference/tasks.md) started needing the
+// same worked example `flow tasks <name>` already built. See that package's
+// doc comment for why the two share one source rather than two.
