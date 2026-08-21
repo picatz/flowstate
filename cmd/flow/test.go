@@ -342,11 +342,26 @@ func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedu
 		fmt.Fprintf(out, "       %s\n", line)
 	}
 
-	fmt.Fprintf(out, "\n       REPLAY THIS EXACT SCHEDULE:\n\n           flow test --seed %d %s\n\n",
-		divergence.Seed, report.GetFile())
+	fmt.Fprintf(out, "\n       REPLAY THIS EXACT SCHEDULE:\n\n           flow test --seed %d -- %s\n\n",
+		divergence.Seed, shellArg(report.GetFile()))
 	fmt.Fprintf(out, "       written order:\n%s", indentRendering(divergence.WrittenOrder))
 	fmt.Fprintf(out, "       seed %d (%d scheduling decisions):\n%s",
 		divergence.Seed, divergence.Decisions, indentRendering(divergence.Seeded))
+}
+
+// shellArg renders one path as a shell-safe argument for a command a human is
+// told to copy and run. A path with a space or a shell metacharacter would
+// otherwise split or be interpreted, and the "exact" replay command would not
+// replay the failing file — the one job that line has. Single quotes disable
+// every shell expansion, and an embedded single quote uses the standard
+// '"'"'-style splice; a path needing neither is left bare so the common case
+// stays readable. The `--` its caller prints before it handles the remaining
+// hazard, a path beginning with `-` parsing as a flag.
+func shellArg(path string) string {
+	if path != "" && !strings.ContainsAny(path, " \t'\"\\$&|;<>()*?[]#~%{}!\n") {
+		return path
+	}
+	return "'" + strings.ReplaceAll(path, "'", `'"'"'`) + "'"
 }
 
 // count renders a number with the noun that agrees with it.

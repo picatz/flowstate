@@ -231,7 +231,7 @@ func TestADivergenceIsRenderedWithItsReplayCommand(t *testing.T) {
 
 	rendered := out.String()
 	assert.Contains(t, rendered, "the schedule changed what this case observed (seed 7)")
-	assert.Contains(t, rendered, "flow test --seed 7 deploy.test.yaml")
+	assert.Contains(t, rendered, "flow test --seed 7 -- deploy.test.yaml")
 	// The narrowness of the claim is part of the diagnostic: dst and `flow test`
 	// are both local-only by design, so this must never read as a statement about
 	// Temporal's orderings.
@@ -259,4 +259,26 @@ func TestADivergenceFailsTheCommand(t *testing.T) {
 	explored := passing
 	explored.schedules = &flowtest.ScheduleReport{Schedules: 4, Decisions: 3}
 	assert.False(t, explored.failed(false), "an exploration that agreed with itself is not a failure")
+}
+
+// TestShellArgQuotesHostilePaths is the regression for a Codex finding on
+// #814: the advertised "exact" replay command interpolated the test file path
+// bare, so a path with a space or a shell metacharacter split or was
+// interpreted, and one beginning with `-` parsed as a flag — the command did
+// not replay the failing file, which is that line's one job. The caller
+// prints `--` before the argument for the leading-dash case; this covers the
+// quoting half.
+func TestShellArgQuotesHostilePaths(t *testing.T) {
+	t.Parallel()
+
+	for path, want := range map[string]string{
+		"examples/hello/workflow.test.yaml": "examples/hello/workflow.test.yaml",
+		"my tests/workflow.test.yaml":       "'my tests/workflow.test.yaml'",
+		"a$b/workflow.test.yaml":            "'a$b/workflow.test.yaml'",
+		"odd'name.test.yaml":                `'odd'"'"'name.test.yaml'`,
+	} {
+		if got := shellArg(path); got != want {
+			t.Errorf("shellArg(%q) = %s, want %s", path, got, want)
+		}
+	}
 }
