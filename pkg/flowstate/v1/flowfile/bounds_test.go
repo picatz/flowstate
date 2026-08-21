@@ -1,10 +1,7 @@
 package flowfile_test
 
 import (
-	"strconv"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,184 +17,12 @@ import (
 // attack. Depth bounds do not stop breadth explosions; a bound on the values a
 // walk descends into does not stop values produced without descending.
 
-// TestMergeExpansionIsBounded is the case that was not.
-//
-// The document bound counts values the compiler descends into. Merging produces
-// values without descending: one anchored mapping of N keys merged into D steps
-// is N×D entries from a file of size N+D, so the cost is quadratic in something
-// the file does not have to be large to say. The limit was never reached, because
-// it was counting steps.
-//
-// Measured before the bound, the document built here — 110 KiB, well inside the
-// 1 MiB ceiling — took 27 seconds, and the cost grows quadratically from there. A
-// language server runs this on whatever file an editor opens.
-func TestMergeExpansionIsBounded(t *testing.T) {
-	t.Parallel()
-
-	// Deliberately modest next to maxNodes. The point is that neither dimension
-	// looks alarming on its own: 800 keys is a large mapping and 800 steps is a
-	// large workflow, and neither is anywhere near a limit. Their product is.
-	const keys, steps = 800, 800
-
-	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: bomb\nsteps:\n")
-	for d := range steps {
-		b.WriteString("  - id: s" + strconv.Itoa(d) + "\n")
-		b.WriteString("    <<: *base\n")
-		b.WriteString("    log:\n      message: hi\n")
-	}
-	// The anchor is written last so that nothing depends on declaration order
-	// being what makes this terminate.
-	b.WriteString("anchored: &base\n")
-	for i := range keys {
-		b.WriteString("  k" + strconv.Itoa(i) + ": v" + strconv.Itoa(i) + "\n")
-	}
-
-	src := []byte(b.String())
-	require.Less(t, len(src), 1<<20, "premise: the file is inside the size limit, so size is not what stops this")
-
-	// Parsed inline, and on a deliberately empty stopwatch.
-	//
-	// This used to run in a goroutine against a 20-second wall-clock budget,
-	// which is the one thing a bound test must not do: the budget measured the
-	// machine, so the test failed on ten consecutive full-suite runs under CPU
-	// contention while passing in isolation in under two seconds. A bound test
-	// that reddens for load is worse than no bound test, because "it is just
-	// the box being busy" is the honest reading of a real regression too.
-	//
-	// Nothing is lost by dropping the timer, because the timer was never what
-	// proved anything. The bound here is a *count* — maxNodes, checked against
-	// the values the compiler produces once aliases are expanded — and the
-	// assertion below reads that count's own diagnostic. If the bound is ever
-	// removed again, this does not return at all, and the test binary's
-	// -timeout reports it with a stack sitting in the expansion, which names
-	// the defect more precisely than a 20-second stopwatch ever did.
-	_, _, err := flowfile.Parse(src)
-
-	var ds flowfile.Diagnostics
-	require.ErrorAs(t, err, &ds)
-	// Reached, not merely survived. A run that finished quickly because the
-	// document was rejected for some unrelated reason would prove nothing about
-	// the bound, so the diagnostic itself is what is asserted.
-	assert.Contains(t, ds.Error(), "once aliases are expanded",
-		"the expansion bound is what should have stopped this")
-}
-
-// TestEnumValuesAliasExpansionIsBounded covers a sequence-expansion path that
-// does not use the generic recursive value reader. Reusing one anchored enum
-// list for many declarations must still charge every expanded member.
-func TestEnumValuesAliasExpansionIsBounded(t *testing.T) {
-	t.Parallel()
-
-	const values, inputs = 200, 501
-
-	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: bomb\ninputs:\n  first:\n    type: enum\n    values: &values [")
-	for i := range values {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString("v" + strconv.Itoa(i))
-	}
-	b.WriteString("]\n")
-	for i := 1; i < inputs; i++ {
-		b.WriteString("  input" + strconv.Itoa(i) + ":\n    type: enum\n    values: *values\n")
-	}
-	b.WriteString("steps:\n  - id: done\n    log:\n      message: done\n")
-
-	src := []byte(b.String())
-	require.Less(t, len(src), 1<<20, "premise: the file is inside the size limit")
-
-	_, _, err := flowfile.Parse(src)
-	var ds flowfile.Diagnostics
-	require.ErrorAs(t, err, &ds)
-	assert.Contains(t, ds.Error(), "once aliases are expanded",
-		"the expansion bound is what should have stopped this")
-}
-
-// TestMergeExpansionWithinTheBoundStillWorks is the other half, and the reason
-// the bound is a count rather than a refusal.
-//
-// `<<:` is how step boilerplate is shared, which is a thing people should do. A
-// bound that made ordinary sharing fail would be a bound that removed a feature
-// to close a hole.
-func TestMergeExpansionWithinTheBoundStillWorks(t *testing.T) {
-	t.Parallel()
-
-	// The anchor is on a step, because a Flowfile has nowhere else to put one: a
-	// top-level key added purely to hold an anchor is an unknown key, and reported
-	// as one. So boilerplate is shared by anchoring the first step that carries it.
-	src := `edition: v2026.3
-name: shared
-steps:
-  - &policy
-    id: a
-    timeout: 30s
-    continue_on_error: true
-    log:
-      message: one
-  - id: b
-    <<: *policy
-    log:
-      message: two
-`
-	wf, _, err := flowfile.Parse([]byte(src))
-	require.NoError(t, err)
-	require.Len(t, wf.GetSteps(), 2)
-
-	for _, step := range wf.GetSteps() {
-		assert.True(t, step.GetPolicy().GetContinueOnError(), "step %q", step.GetId())
-		assert.Equal(t, 30*time.Second, step.GetPolicy().GetTimeout().AsDuration(), "step %q", step.GetId())
-	}
-
-	// The merged step keeps its own id and its own work, which is what makes the
-	// pattern usable at all: merging a whole step in would otherwise give two steps
-	// the same id, and this file would be refused rather than shared.
-	assert.Equal(t, "b", wf.GetSteps()[1].GetId())
-	assert.Equal(t, "two", wf.GetSteps()[1].GetTask().GetInputs()["message"].GetLiteral().GetStringValue())
-}
-
-// TestWrittenKeysWinOverMergedOnes pins the precedence the merge pass exists to
-// get right, which the bound above must not have disturbed.
-//
-// A merged mapping does not shadow a key the step writes for itself. That is
-// YAML's rule, and it is the whole reason `<<:` is usable for sharing
-// boilerplate: a step opts into the shared policy and then overrides the one part
-// it needs different.
-func TestWrittenKeysWinOverMergedOnes(t *testing.T) {
-	t.Parallel()
-
-	src := `edition: v2026.3
-name: shared
-steps:
-  - &policy
-    id: base
-    timeout: 30s
-    log:
-      message: base
-  - id: overrides
-    <<: *policy
-    timeout: 5s
-    log:
-      message: one
-  - id: written-first
-    timeout: 5s
-    <<: *policy
-    log:
-      message: two
-`
-	wf, _, err := flowfile.Parse([]byte(src))
-	require.NoError(t, err)
-	require.Len(t, wf.GetSteps(), 3)
-	wf.Steps = wf.GetSteps()[1:]
-
-	// Both directions, because the pass that decides this walks the keys in source
-	// order and a bug here would show in only one of them.
-	for _, step := range wf.GetSteps() {
-		assert.Equal(t, 5*time.Second, step.GetPolicy().GetTimeout().AsDuration(),
-			"step %q writes its own timeout, so the merged one must not win", step.GetId())
-	}
-}
+// The anchor, alias, and merge-key expansion bounds this file used to exercise
+// are gone with the constructs themselves: the grammar is a strict subset of
+// YAML that refuses all three, so the billion-laughs shape those tests fed is now
+// refused on the presence of the construct, before any expansion, in
+// strict_test.go's TestStrictYAMLRefusesBillionLaughsWithoutExpanding. A bound on
+// an expansion that can no longer happen is a bound nothing reaches. See #653.
 
 // The root is the one name rooting *creates* a collision for, which is worth
 // stating plainly in a change that is otherwise about deleting collision rules.

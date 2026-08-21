@@ -11,201 +11,17 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-// A `digest:` pin does not have to be written on the step it pins. A step may
-// reach `call:` and `digest:` through a `<<:` merge key, and may be written
-// whole as an `&anchor` reused elsewhere — all of which fields.go resolves
-// before the compiler sees a step. The pin collector used to read only a
-// mapping's own written keys, so a pin arriving any of those ways formatted as
-// though it had never been written: the gap #639 recorded and #640 closes.
+// A `digest:` pin merged in through a `<<:`, or reached through an `&anchor`
+// reused elsewhere, was the gap #639 recorded and #640 closed. The strict YAML
+// profile (#653) subsumes that half of #640 by a shorter route: the compiler
+// refuses a document holding a merge key, alias, or anchor, so a pin can no
+// longer arrive by any of those ways. The four tests that pinned the merged-pin
+// formatting behaviour were removed with the constructs they exercised.
 //
-// Compared as bytes throughout, for the reason formatpin_test.go's header
-// gives and CLAUDE.md legislates: a rewrite that still validates is not proof
-// it kept what the author wrote. A file whose pin was dropped validates
-// perfectly — it simply no longer checks anything.
-
-// mergedPinSource is the shape the gap was written about: one step anchored
-// with its call and its pin, a second step merging both in.
-func mergedPinSource(pin string) string {
-	return `edition: v2026.3
-name: caller
-steps:
-  - &pinned
-    id: first
-    call: ./callee.yaml
-    digest: ` + pin + `
-    with:
-      tenant: acme
-  - id: second
-    <<: *pinned
-    with:
-      tenant: beta
-`
-}
-
-// TestFormatKeepsAPinMergedThroughAMergeKey is the negative direction the gap
-// needs: a document whose pin would previously have been dropped comes through
-// with a pin on *both* steps — the one that wrote it and the one that merged
-// it — in the position every other pin is written in.
-func TestFormatKeepsAPinMergedThroughAMergeKey(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	pin := digestOf(t, simpleCalleeSource)
-	src := mergedPinSource(pin)
-	caller := writeFile(t, dir, "caller.yaml", src)
-
-	workflow, _, err := flowfile.ParseFile(caller)
-	require.NoError(t, err)
-
-	got, err := flowfile.Format([]byte(src), workflow)
-	require.NoError(t, err)
-
-	want := `edition: v2026.3
-name: caller
-steps:
-- id: first
-  call: ./callee.yaml
-  digest: ` + pin + `
-  with:
-    tenant: acme
-- id: second
-  call: ./callee.yaml
-  digest: ` + pin + `
-  with:
-    tenant: beta
-`
-	assert.Equal(t, want, string(got))
-}
-
-// TestFormatMergedPinIsIdempotent holds the other half of the byte contract:
-// the formatted document — which no longer has a merge key in it, because
-// [Marshal] renders every step whole — formats to exactly itself. Input bytes
-// out, unchanged, where nothing is warranted.
-func TestFormatMergedPinIsIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	pin := digestOf(t, simpleCalleeSource)
-	callerPath := writeFile(t, dir, "caller.yaml", mergedPinSource(pin))
-
-	workflow, _, err := flowfile.ParseFile(callerPath)
-	require.NoError(t, err)
-	once, err := flowfile.Format([]byte(mergedPinSource(pin)), workflow)
-	require.NoError(t, err)
-
-	// Compiled from the file the way `flow fmt` would run a second time,
-	// rather than from the workflow already in hand.
-	writeFile(t, dir, "caller.yaml", string(once))
-	second, _, err := flowfile.ParseFile(callerPath)
-	require.NoError(t, err, "the formatted merged pin no longer compiles")
-	twice, err := flowfile.Format(once, second)
-	require.NoError(t, err)
-
-	assert.Equal(t, string(once), string(twice),
-		"formatting a formatted merged pin changed it again")
-}
-
-// TestFormatKeepsAPinWhoseCallIsMerged covers the other arrangement of the
-// same two keys: the call arrives through the merge and the pin is written on
-// the step. It also pins the direction that would be a *forged* pin — the
-// unpinned step that owns the anchor must not come back carrying one.
-func TestFormatKeepsAPinWhoseCallIsMerged(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	pin := digestOf(t, simpleCalleeSource)
-	src := `edition: v2026.3
-name: caller
-steps:
-  - &base
-    id: first
-    call: ./callee.yaml
-    with:
-      tenant: acme
-  - id: second
-    <<: *base
-    digest: ` + pin + `
-    with:
-      tenant: beta
-`
-	caller := writeFile(t, dir, "caller.yaml", src)
-
-	workflow, _, err := flowfile.ParseFile(caller)
-	require.NoError(t, err)
-
-	got, err := flowfile.Format([]byte(src), workflow)
-	require.NoError(t, err)
-
-	want := `edition: v2026.3
-name: caller
-steps:
-- id: first
-  call: ./callee.yaml
-  with:
-    tenant: acme
-- id: second
-  call: ./callee.yaml
-  digest: ` + pin + `
-  with:
-    tenant: beta
-`
-	assert.Equal(t, want, string(got))
-}
-
-// TestFormatKeepsTheWrittenPinOverTheMergedOne is the precedence the grammar
-// defines, read the way a rewriter has to read it: a key written on a mapping
-// claims its name before anything a `<<:` merges in can. Both steps here pin,
-// and they pin *different callees*, so a collector that preferred the merged
-// value would write the digest of one file onto a call to another — a pin
-// carried across as a check of bytes nobody authorized, which is worse than
-// the dropped pin this closes.
-//
-// The document compiles only under that precedence, which is what makes the
-// fixture honest: the compiler and the formatter are being held to one rule.
-func TestFormatKeepsTheWrittenPinOverTheMergedOne(t *testing.T) {
-	dir := t.TempDir()
-	other := strings.Replace(simpleCalleeSource, "name: callee", "name: other", 1)
-	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
-	writeFile(t, dir, "other.yaml", other)
-	calleePin, otherPin := digestOf(t, simpleCalleeSource), digestOf(t, other)
-
-	src := `edition: v2026.3
-name: caller
-steps:
-  - &base
-    id: first
-    call: ./callee.yaml
-    digest: ` + calleePin + `
-    with:
-      tenant: acme
-  - id: second
-    <<: *base
-    call: ./other.yaml
-    digest: ` + otherPin + `
-    with:
-      tenant: beta
-`
-	caller := writeFile(t, dir, "caller.yaml", src)
-
-	workflow, _, err := flowfile.ParseFile(caller)
-	require.NoError(t, err)
-
-	got, err := flowfile.Format([]byte(src), workflow)
-	require.NoError(t, err)
-
-	want := `edition: v2026.3
-name: caller
-steps:
-- id: first
-  call: ./callee.yaml
-  digest: ` + calleePin + `
-  with:
-    tenant: acme
-- id: second
-  call: ./other.yaml
-  digest: ` + otherPin + `
-  with:
-    tenant: beta
-`
-	assert.Equal(t, want, string(got))
-}
+// What remains is the formatter's *own* bound on pin collection, driven through
+// [flowfile.Format] directly. That bound guards the formatter regardless of what
+// the compiler accepts, so it outlives the merge key the compiler now refuses —
+// until the follow-up that removes the formatter's merge handling too.
 
 // TestFormatBoundsPinCollectionByTotalNodes holds the bound that following a
 // merge key needs. Resolving an alias is expansion, and expansion is what a
@@ -217,9 +33,9 @@ steps:
 // because the compiler refuses this document long before a formatter would see
 // it — which is exactly why the formatter's own bound needs a test of its own.
 func TestFormatBoundsPinCollectionByTotalNodes(t *testing.T) {
-	// The shape TestMergeExpansionIsBounded uses on the compiler, for the
-	// identical reason: neither 800 keys nor 800 steps is alarming on its own,
-	// and their product is what a file of this size buys an attacker.
+	// Neither 800 keys nor 800 steps is alarming on its own, and their product is
+	// what a file of this size buys an attacker — the shape the compiler's own
+	// expansion bound was written against before the construct was refused outright.
 	const keys, steps = 800, 800
 
 	var b strings.Builder

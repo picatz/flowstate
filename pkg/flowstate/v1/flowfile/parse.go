@@ -722,6 +722,15 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		return nil
 	}
 
+	// The strict subset is enforced before anything is resolved or expanded: a
+	// document containing an anchor, alias, or merge key is refused on the
+	// presence of the construct, so a billion-laughs shape is rejected without
+	// ever following an alias. This must precede collectAnchors and every call to
+	// entries, the two places expansion happens. See strict.go.
+	if !c.refuseStrictYAML(bodies[0]) {
+		return nil
+	}
+
 	for _, doc := range file.Docs {
 		c.collectAnchors(doc.Body)
 	}

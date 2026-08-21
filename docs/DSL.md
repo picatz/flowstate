@@ -23,6 +23,7 @@ headings below, not this list.*
 - [Accepted, and why](#accepted-and-why)
 - [Changed](#changed)
   - [No deprecation window. One edition, and a rewriter.](#no-deprecation-window-one-edition-and-a-rewriter)
+  - [The grammar is a strict subset of YAML](#the-grammar-is-a-strict-subset-of-yaml)
   - [The type system is not a later phase](#the-type-system-is-not-a-later-phase)
   - [`state:` gets a byte bound now, not an open question](#state-gets-a-byte-bound-now-not-an-open-question)
 - [Refused, or held](#refused-or-held)
@@ -488,8 +489,10 @@ a formatter would move every comment and requote every string in a diff that is 
 to be about one key. It edits the lines it must, copies the rest through byte for byte —
 so a file with nothing to change comes back identical, which is what makes running it
 over a directory safe — and refuses the shapes it would have to guess at: flow style,
-which has no line structure to rewrite, and a task standing behind a YAML alias, which
-has no name to rewrite it to. A refusal exits non-zero, as does `--check` finding work,
+which has no line structure to rewrite, and — since the [strict YAML
+profile](#the-grammar-is-a-strict-subset-of-yaml) — any file carrying an anchor,
+alias, or merge key, which the grammar no longer accepts at all. A refusal exits
+non-zero, as does `--check` finding work,
 so `flow fix . && git commit` cannot succeed over a file still written in a spelling
 nothing compiles.
 
@@ -497,6 +500,55 @@ The general rule this repo should hold: **a deprecation is a decision deferred a
 everyone else's expense.** Carry compatibility for artifacts that outlive us — the
 wire format, compiled specs, running histories. Do not carry it for surface syntax
 before anyone has written it.
+
+### The grammar is a strict subset of YAML
+
+A Flowfile is written in YAML, but not all of YAML is the Flowfile grammar. The
+front end refuses a set of YAML constructs no Flowfile uses and every one of which
+costs the parser, the rewriter, the formatter, or the language server something to
+carry safely. A construct that is refused is refused at compile time, with a
+positioned diagnostic naming what it is and what to write instead — so an author
+meets the boundary as a message, not as a value that quietly meant something other
+than they wrote.
+
+Already refused before this profile was written down: **multiple documents** in one
+file (a Flowfile holds one workflow, separated `---` documents are rejected),
+**non-string keys**, **explicit keys** (`? key` on its own line), **tags**
+(`!!str`), **tabs** in indentation, and **duplicate keys**.
+
+Added here (issue #653): **anchors** (`&name`), **aliases** (`*name`), and the
+**merge key** (`<<:`). These three are one decision. They are used zero times
+across the corpus, and they cost more than anything else the front end inherited
+from YAML:
+
+- a cycle-detection pass and a bound on alias-chain depth;
+- a total-node budget that exists *only* because a billion-laughs document has
+  depth one per alias, so a depth bound cannot see the breadth explosion an alias
+  multiplies at every level;
+- edit-suppression in `flow fix`, refusal paths in the formatter, and merge-key
+  precedence logic that every rewriter has to understand to avoid corrupting a
+  file — including the formatter carve-out half of #640, where a `digest:` pin
+  reached only through `<<:` is invisible to the rewriter that must preserve it.
+
+The refusal is enforced on the *presence* of the construct, at the document tree,
+before anything is resolved or expanded — which is what makes it cheap against the
+attack it closes. A billion-laughs document is rejected in the time it takes to
+walk the nodes actually on disk, because no alias is ever followed. See
+`flowfile/strict.go`.
+
+What this profile deliberately does **not** reach is plain-scalar typing:
+`message: 0o777` still compiles to the integer 511, and a bare `2026.1` still
+arrives as a float. That is the YAML substrate no profile of *constructs* touches,
+and it stays the open question behind #546.
+
+Two follow-ups are named rather than done here. `flow fix` **refuses** a file
+holding one of the three constructs today, in the same words the compiler uses,
+rather than mechanically inlining it on the way across an edition — the inlining is
+byte-safe and requires no judgement, so it is worth doing, but it is a rewriter of
+its own. And the machinery the refusal makes redundant (the cycle pass, the
+merge branch of the node budget, the formatter's merge handling) is left in place:
+closing the door is this change; removing the corridor behind it is cleanup a
+reviewer should read on its own.
 
 ### The type system is not a later phase
 
@@ -4244,11 +4296,14 @@ recording. Three further properties follow from the pin being over bytes:
   an author's own edit to the callee would be. Pin the callees whose change should
   stop the world, and leave the rest unpinned.
 
-  A pin does not have to be written on the step to be carried across. One that reaches
-  a step through a `<<:` merge key, or that sits on a step written as an `&anchor` and
-  reused through an `*alias`, is read the way the compiler reads it — merge keys
-  resolved, written keys winning over merged ones — because a formatter that knew less
-  about the grammar than the language does would drop exactly those pins in silence.
+  A pin does not have to be written on the step to be carried across, but it does have
+  to be written in the grammar. Reaching a step through a `<<:` merge key, or sitting
+  on a step written as an `&anchor` and reused through an `*alias`, was once resolved
+  the way the compiler resolved it — but the [strict YAML
+  profile](#the-grammar-is-a-strict-subset-of-yaml) refuses those three constructs, so
+  a pin can no longer arrive by any of them: the compiler rejects the caller before a
+  formatter would see it. The formatter's own resolution of them is dead code the
+  profile leaves for a follow-up to remove.
 - **`flow fix` reports the pins its own run invalidated.** A migration run over a
   directory rewrites callees, and a pin on one of those is stale the moment the file is
   written. So a run that rewrote anything reads the pins of the files it was given,

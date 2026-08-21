@@ -185,31 +185,10 @@ steps:
       second line
 `,
 		},
-		{
-			name: "beside an anchor and the alias that reads it",
-			src: `edition: v2026.3
-name: anchored
-vars:
-  # the anchored value
-  base: &base hello
-steps:
-  # above a step that reads an alias
-  - id: greet
-    log:
-      message: *base
-`,
-			want: `edition: v2026.3
-name: anchored
-vars:
-  # the anchored value
-  base: hello
-steps:
-# above a step that reads an alias
-- id: greet
-  log:
-    message: hello
-`,
-		},
+		// A comment beside an anchor, and beside the alias that reads it, once had a
+		// case here to prove comment placement survived the resolution. The grammar
+		// now refuses anchors and aliases (#653), so a document carrying them is
+		// refused rather than formatted; the case is gone with the spelling it used.
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -352,21 +331,11 @@ func TestFormatRefusesACommentItCannotKeep(t *testing.T) {
 		src  string
 		line int
 	}{
-		{
-			name: "inside a mapping reached through a merge key",
-			src: `edition: v2026.3
-name: merged
-vars:
-  common: &common
-    message: hello
-steps:
-  - id: greet
-    log:
-      # a comment inside a mapping the compiler expands away
-      <<: *common
-`,
-			line: 9,
-		},
+		// A comment inside a mapping reached through a merge key was one case here:
+		// the merge expanded the mapping away, leaving the comment nowhere to go.
+		// The grammar now refuses merge keys (#653), so that shape is refused by the
+		// compiler before the formatter runs; the block-expression case below keeps
+		// the comment-refusal behaviour under test without it.
 		{
 			name: "inside a block written back as one expression",
 			src: `edition: v2026.3
