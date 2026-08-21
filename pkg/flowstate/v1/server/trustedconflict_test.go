@@ -140,3 +140,56 @@ func TestAnInvalidTrustedRegistrationIsNotSubstituted(t *testing.T) {
 	assert.Contains(t, err.Error(), "refuses",
 		"the refusal does not tell an operator their registration is the problem: %v", err)
 }
+
+// namelessWorkflow is otherwise exactly the narrowed specification — a real
+// `manual:` policy an embedder meant to install — with the one field the trusted
+// set is addressed by removed.
+func namelessWorkflow() *v1.Workflow {
+	nameless := narrowedWorkflow()
+	nameless.Name = ""
+	return nameless
+}
+
+// TestANamelessTrustedRegistrationRefusesConstruction is the third direction of
+// the same boundary, and the one the conflict and validity arms above cannot
+// cover.
+//
+// Both of those refuse a *key*: a name is registered twice, or registered with a
+// specification the schema rejects, and every request for that (namespace, name)
+// is then denied. A registration carrying no name has no key to refuse. Passing
+// over it — which is what this used to do — leaves an embedder holding a server
+// they believe enforces a deployment-owned `manual:` policy while the name they
+// meant to protect still accepts whatever a caller submits, which is the open
+// behaviour the trusted set exists to remove.
+//
+// The negative direction, per CLAUDE.md: what must be false is that such a
+// configuration yields a serving deployment at all.
+func TestANamelessTrustedRegistrationRefusesConstruction(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		workflow *v1.Workflow
+	}{
+		{name: "a nil entry", workflow: nil},
+		{name: "a workflow with no name", workflow: namelessWorkflow()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// A nil Temporal client on purpose: options run before the client is
+			// ever touched, so this asserts on the construction itself and needs
+			// no dev server — the same shape
+			// TestNewRefusesANamespaceOutsideTheGrammar uses.
+			s, err := server.New(nil, server.WithTrustedWorkflows("team-a", test.workflow))
+
+			require.Error(t, err, "a trusted registration naming nothing was accepted")
+			require.Nil(t, s, "a refused option must not also yield a usable server")
+
+			// Actionable at start-up, while the embedder can still fix it:
+			// which tenant, and what is missing.
+			assert.Contains(t, err.Error(), "team-a")
+			assert.Contains(t, err.Error(), "`name:`")
+		})
+	}
+}

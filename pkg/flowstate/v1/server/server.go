@@ -251,14 +251,33 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // tenant depend on argument order rather than say what it means. A
 // deployment using a non-empty default namespace passes it here the same way
 // it does everywhere else that scopes a namespace explicitly.
+//
+// A registration this option cannot honour never degrades to open submission.
+// A name registered twice with different specifications, or one whose
+// specification the schema refuses, poisons that one key — see
+// [FlowstateServer.refuseTrustedWorkflow] — and a registration carrying no name
+// at all, which no key could be refused for, refuses the construction.
 func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 	return func(s *FlowstateServer) error {
 		if s.trustedWorkflows == nil {
 			s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
 		}
 		for _, workflow := range workflows {
+			// A registration naming nothing is the one case that cannot be
+			// answered by refusing a key, because it has no key: the map is
+			// addressed by (namespace, name) and this entry supplies no name.
+			// Skipping it silently — what this used to do — leaves an embedder
+			// believing a deployment-owned policy is installed while every
+			// submission under whatever name they meant is still open, which is
+			// the fail-open direction of the very mechanism this option exists
+			// to provide. The two arms below can be scoped to one key and so
+			// are; this one cannot, so it refuses construction, which is where
+			// [Option] says a misconfigured deployment should fail.
 			if workflow == nil || workflow.GetName() == "" {
-				continue
+				return fmt.Errorf("a workflow registered as trusted for namespace %q has no `name:`, "+
+					"and the trusted set is addressed by name, so nothing would ever resolve to it "+
+					"while submissions under the name intended stay open; give it the name callers "+
+					"submit", namespace)
 			}
 			key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
 
@@ -473,8 +492,15 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 	defer s.trustedWorkflowsMu.Unlock()
 
 	for _, workflow := range workflows {
+		// Refused rather than skipped, for the reason [WithTrustedWorkflows]
+		// gives at the same check: a registration with no name occupies no key,
+		// so passing over it quietly reports success for trust that was never
+		// installed.
 		if workflow == nil || workflow.GetName() == "" {
-			continue
+			return fmt.Errorf("a workflow registered as trusted for namespace %q has no `name:`, "+
+				"and the trusted set is addressed by name, so nothing would ever resolve to it "+
+				"while submissions under the name intended stay open; give it the name callers "+
+				"submit", namespace)
 		}
 		key := trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}
 		if reason := s.trustedWorkflowRefusals[key]; reason != "" {
@@ -501,9 +527,9 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 		s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
 	}
 	for _, workflow := range workflows {
-		if workflow == nil || workflow.GetName() == "" {
-			continue
-		}
+		// Every element was named, validated and found not to conflict by the
+		// loop above, which returned before writing anything if any of that
+		// failed — so this pass only writes.
 		s.trustedWorkflows[trustedWorkflowKey{namespace: namespace, name: workflow.GetName()}] =
 			proto.Clone(workflow).(*v1.Workflow)
 	}
