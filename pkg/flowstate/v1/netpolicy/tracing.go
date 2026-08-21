@@ -26,12 +26,13 @@ const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 //
 // This is the same argument the response byte cap already makes one file over: a
 // bound — or in this case an instrumentation — that every caller has to remember
-// to apply is one the next caller will not have. Every request a workflow makes
-// leaves through a [Policy]'s client, so wrapping the policy's transport
-// instruments the http task, and equally anything else that dials through a
-// policy, exactly once. It also puts the span at the egress boundary it
-// describes: the span's lifetime is the round trip the policy governs, including
-// the denial it may answer with instead.
+// to apply is one the next caller will not have. The http task's request leaves
+// through a [Policy]'s client, and so does every other caller that egresses
+// under a policy — `plugins/git` and `plugins/vcs` each build one — so wrapping
+// the policy's transport instruments all of them once instead of instrumenting
+// the task and leaving the next caller uninstrumented. It also puts the span at
+// the egress boundary it describes: the span's lifetime is the round trip the
+// policy governs, including the denial it may answer with instead.
 //
 // It wraps *above* the policy's own [roundTripper] so a refused request still
 // produces a span. A denial that left no trace would be the one outcome an

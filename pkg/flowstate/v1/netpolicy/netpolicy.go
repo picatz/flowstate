@@ -117,7 +117,8 @@
 // both sides: this process's trace shows the hop, and the service on the other
 // end can parent its own span under it. Nothing is configured for this — the
 // tracer comes from the globally installed provider, and with none installed
-// there is no span, no header, and no cost.
+// nothing is recorded and no header is written: the no-op tracer's span context
+// is invalid, and an invalid span context injects nothing.
 //
 // A span says the shape of the call and never its content: the method, the
 // scheme, the host and port dialed, and the status returned. The URL is not
