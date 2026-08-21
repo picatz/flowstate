@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -241,6 +243,13 @@ func TestCobraFlagGroupErrorsMatchIsUsageError(t *testing.T) {
 // `make coverage` can see what this subprocess actually executes — otherwise
 // invisible to `go test -cover`, which only instruments the package it compiles
 // (#519).
+//
+// Once per test *process*, which is what the first line of this comment claimed
+// before it was true. It linked into a fresh t.TempDir on every call, which was
+// cheap enough while there was one caller and about a minute of this package's
+// wall clock once #724 added subprocess tests for `validate`, `tasks` and `fix`.
+// Nothing here needs isolating: the binary is read-only to every caller.
+// [removeBuiltTestBinaries] takes the directory away when the package finishes.
 func buildFlowBinary(t *testing.T) string {
 	t.Helper()
 
@@ -248,17 +257,62 @@ func buildFlowBinary(t *testing.T) string {
 		t.Skip("building the flow binary is slow; the classification is covered without it")
 	}
 
-	bin := filepath.Join(t.TempDir(), "flow")
+	bin, err := builtFlowBinary()
+	require.NoError(t, err, "building flow for the subprocess tests")
+
+	return bin
+}
+
+// builtFlowBinary compiles the command once and hands every caller the same path.
+var builtFlowBinary = sync.OnceValues(func() (string, error) {
+	dir, err := testBuildDir()
+	if err != nil {
+		return "", err
+	}
+
+	bin := filepath.Join(dir, "flow")
 
 	args := append([]string{"build"}, covbuild.BuildArgs()...)
 	args = append(args, "-o", bin, ".")
 
-	cmd := exec.Command("go", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building flow for the golden exit-code tests: %v\n%s", err, out)
+	if out, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("go build: %w\n%s", err, out)
 	}
 
-	return bin
+	return bin, nil
+})
+
+// testBuildDir is where this package's subprocess tests put what they compile.
+//
+// One directory for the whole process rather than one per build, so that
+// [removeBuiltTestBinaries] has a single thing to remove. Not a t.TempDir,
+// because these artifacts deliberately outlive the test that first asked for
+// one — which is the whole point of building them once.
+var testBuildDir = sync.OnceValues(func() (string, error) {
+	dir, err := os.MkdirTemp("", "flow-test-build")
+	if err == nil {
+		builtTestDir.Store(dir)
+	}
+
+	return dir, err
+})
+
+// builtTestDir holds the path once something has actually been built, so that
+// [removeBuiltTestBinaries] can tell "nothing was built" from "this is where it
+// went" — asking [testBuildDir] would create the directory in order to report
+// that it exists.
+var builtTestDir atomic.Value
+
+// removeBuiltTestBinaries takes that directory away.
+//
+// Called from [TestMain] rather than deferred, because os.Exit does not run
+// deferred functions, and a directory holding a freshly linked copy of this
+// command plus a plugin is not a small thing to leak once per test run. A no-op
+// for a run that built nothing, which is every `-short` one.
+func removeBuiltTestBinaries() {
+	if dir, ok := builtTestDir.Load().(string); ok {
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // runFlowBin builds an *exec.Cmd for the built binary with GOCOVERDIR set

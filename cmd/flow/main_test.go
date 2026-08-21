@@ -55,6 +55,13 @@ func TestMain(m *testing.M) {
 	}
 
 	code, err := runPackageTests(m)
+
+	// The binaries the subprocess tests compiled, built once for the process
+	// (see [buildFlowBinary]) and therefore owned by nothing narrower than this.
+	// Before the exit below, because os.Exit runs no deferred function — the
+	// same reason runPackageTests exists at all.
+	removeBuiltTestBinaries()
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)

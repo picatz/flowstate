@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -45,6 +48,10 @@ func TestTheMCPServerTakesThePluginFlags(t *testing.T) {
 // directory named the way pkg/flowstate/v1/plugin/discover.go requires, so
 // the wiring test below points a real host at a real plugin rather than
 // merely asserting the flag's existence.
+//
+// Once per test process, for the reason [buildFlowBinary] is one: the directory
+// is read-only to every caller, and relinking it per test was repetition the
+// package paid for in wall clock.
 func buildExamplePluginDir(t *testing.T) string {
 	t.Helper()
 
@@ -52,19 +59,40 @@ func buildExamplePluginDir(t *testing.T) string {
 		t.Skip("building the example plugin is slow; the flag wiring is covered without it")
 	}
 
-	dir := t.TempDir()
-	bin := filepath.Join(dir, plugin.BinaryPrefix+"example")
-
-	args := append([]string{"build"}, covbuild.BuildArgs()...)
-	args = append(args, "-o", bin,
-		"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example")
-
-	cmd := exec.Command("go", args...)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "building the example plugin: %s", out)
+	dir, err := builtExamplePluginDir()
+	require.NoError(t, err, "building the example plugin")
 
 	return dir
 }
+
+// builtExamplePluginDir compiles the example plugin once, into a directory of its
+// own under the package's shared build directory.
+//
+// Its own directory rather than beside the `flow` binary, because a plugin search
+// path is a directory the host scans: everything in it named
+// flowstate-plugin-<name> is something it will launch, and the tests that hand
+// this path to `--plugin-dir` mean exactly one plugin by it.
+var builtExamplePluginDir = sync.OnceValues(func() (string, error) {
+	parent, err := testBuildDir()
+	if err != nil {
+		return "", err
+	}
+
+	dir := filepath.Join(parent, "plugins")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return "", err
+	}
+
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", filepath.Join(dir, plugin.BinaryPrefix+"example"),
+		"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example")
+
+	if out, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("go build: %w\n%s", err, out)
+	}
+
+	return dir, nil
+})
 
 // mcpCatalogText asks flowstate_get_catalog over a real MCP session and
 // returns its answer as text — the same call an agent would make, so what
