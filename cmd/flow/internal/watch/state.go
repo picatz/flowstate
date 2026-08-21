@@ -52,6 +52,18 @@ import (
 // and enforced in another, the difference is where the peer gets to live.
 const OutageAllowance = 30 * time.Second
 
+// maxNarratedRunIDs is how many continue-as-new attempt ids a single narrated
+// line will name before it collapses the earlier ones into a count.
+//
+// The bound is on the live view's ledger of owed run ids, which is otherwise
+// the length of a continue-as-new chain a workload controls (see
+// [State.droppedRunIDs]). Eight is generous for a handover chain a person is
+// actually reading and small enough that the retained tail plus a count is a
+// line rather than a wall: past it, an individual intermediate attempt is not
+// something a reader picks out by eye anyway, and the count is what tells them
+// how long the chain was.
+const maxNarratedRunIDs = 8
+
 // Deps are the rendering functions this package borrows from cmd/flow rather
 // than owning a second copy of.
 //
@@ -176,6 +188,22 @@ type State struct {
 	// not the next.
 	seenRunID     string
 	pendingRunIDs []string
+
+	// droppedRunIDs is how many owed run ids fell off the front of
+	// pendingRunIDs because the chain outgrew [maxNarratedRunIDs].
+	//
+	// The live view is the only accumulator — the plain shape drains the ledger
+	// every line, so it never holds more than one — and a workload can continue
+	// as new without bound: a nested loop against a small step budget forces a
+	// handover per iteration, each with a fresh run id. Retaining the whole
+	// chain, then joining it into one string at the end, is an unbounded
+	// allocation a hostile or merely long workflow controls the size of, which
+	// is precisely the shape CLAUDE.md's bounding rule exists for
+	// (picatz/flowstate#836). So the retained tail is capped and the earlier
+	// ids are counted rather than kept: the current attempt is the actionable
+	// one, and a reader staring at a thousand-id line was never going to find
+	// an intermediate one in it anyway — the count is the honest thing to show.
+	droppedRunIDs int
 
 	// steps are the ids of steps that have produced outputs, sorted.
 	steps []string
@@ -462,6 +490,14 @@ func (s *State) noteRunID(id string) {
 
 	s.seenRunID = id
 	s.pendingRunIDs = append(s.pendingRunIDs, id)
+
+	// Bounded here rather than at render time, so the slice itself can never
+	// grow past the cap however long the walk runs: the oldest owed id falls
+	// off the front and is counted instead. See [State.droppedRunIDs].
+	if len(s.pendingRunIDs) > maxNarratedRunIDs {
+		s.droppedRunIDs += len(s.pendingRunIDs) - maxNarratedRunIDs
+		s.pendingRunIDs = append(s.pendingRunIDs[:0], s.pendingRunIDs[len(s.pendingRunIDs)-maxNarratedRunIDs:]...)
+	}
 }
 
 // runsClause is the run ids a line about to be written owes its reader, and
@@ -477,22 +513,27 @@ func (s *State) noteRunID(id string) {
 // that continued as new twice while somebody watched it owes all three ids to
 // the sentence left behind, because those attempts have no other name and
 // `flow get --run-id` is how a reader asks about one.
+//
+// A chain longer than [maxNarratedRunIDs] is reported as a count of the earlier
+// attempts followed by the retained tail — see [State.droppedRunIDs] — so the
+// clause stays bounded no matter how many times the workload handed over.
 func (s *State) runsClause() string {
-	switch len(s.pendingRunIDs) {
-	case 0:
+	dropped := s.droppedRunIDs
+	ids := s.pendingRunIDs
+	s.pendingRunIDs, s.droppedRunIDs = nil, 0
+
+	switch {
+	case len(ids) == 0 && dropped == 0:
 		return ""
 
-	case 1:
-		clause := "run " + s.pendingRunIDs[0]
-		s.pendingRunIDs = nil
+	case dropped > 0:
+		return fmt.Sprintf("runs (%d earlier attempts), %s", dropped, strings.Join(ids, ", "))
 
-		return clause
+	case len(ids) == 1:
+		return "run " + ids[0]
 
 	default:
-		clause := "runs " + strings.Join(s.pendingRunIDs, ", ")
-		s.pendingRunIDs = nil
-
-		return clause
+		return "runs " + strings.Join(ids, ", ")
 	}
 }
 

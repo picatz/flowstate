@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -36,6 +37,9 @@ import (
 //     the same way.
 //  3. None of this reaches a program. `-o json` and `-o jsonl` are byte-identical
 //     to what they were, and the prose does not appear on either stream.
+
+// runIDPattern matches a bare run id, for counting how many a narrated line names.
+var runIDPattern = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
 // ansi matches the escape sequences a styled surface writes, so a test can
 // assert what a line *says* independently of how it is painted.
@@ -412,4 +416,50 @@ func TestEveryRunIdReachesAPersistentLineExactlyOnce(t *testing.T) {
 				"attempt %s did not reach the transcript exactly once:\n%s", attempt, transcript)
 		}
 	})
+}
+
+// TestALiveViewBoundsAnUnboundedHandoverChain is picatz/flowstate#836's second
+// finding: the live view accumulates a run id per continue-as-new handover and
+// drains the ledger only at the end, so a workload that hands over without
+// bound — a nested loop against a small step budget does exactly this — made the
+// watcher retain an unbounded slice and then join it into an unbounded string.
+//
+// The bound keeps the retained tail and counts the rest, so the parting line
+// stays a line however long the chain. The current attempt is always named,
+// because it is the one `flow get --run-id` is actually reached for.
+func TestALiveViewBoundsAnUnboundedHandoverChain(t *testing.T) {
+	surface, _, errOut := plainSurface()
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second,
+		"flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2", nil, namedRun("renewal-reminder"))
+
+	// A hundred handovers, each a fresh run id, none of them ever written to a
+	// stream that stays until the terminal line below.
+	const handovers = 100
+	msgs := make([]tea.Msg, 0, handovers+1)
+	for i := 0; i < handovers; i++ {
+		running := response(v1.RunResponse_STATUS_RUNNING, "poll")
+		running.RunId = fmt.Sprintf("0198f1e2-0000-7000-8000-%012d", i)
+		msgs = append(msgs, watch.StateMsg{Response: running})
+	}
+	last := response(v1.RunResponse_STATUS_COMPLETED, "poll", "remind")
+	last.RunId = fmt.Sprintf("0198f1e2-0000-7000-8000-%012d", handovers)
+	msgs = append(msgs, watch.StateMsg{Response: last})
+
+	require.NoError(t, watchEnding(surface, renderingOf(FormatText), fold(t, model, msgs...)))
+
+	lines := splitLines(errOut.String())
+	require.Len(t, lines, 1)
+	line := lines[0]
+
+	// Bounded: the earlier attempts are a count, not a hundred ids.
+	assert.Contains(t, line, "earlier attempts),",
+		"a long handover chain has to collapse to a count rather than name every attempt:\n%s", line)
+
+	ids := runIDPattern.FindAllString(line, -1)
+	assert.LessOrEqual(t, len(ids), 8,
+		"the narrated line named %d run ids; the ledger is unbounded:\n%s", len(ids), line)
+
+	// The current attempt is always named — that is the one a reader acts on.
+	assert.Contains(t, line, fmt.Sprintf("0198f1e2-0000-7000-8000-%012d", handovers),
+		"the final attempt, which is the one flow get --run-id reaches for, was dropped:\n%s", line)
 }
