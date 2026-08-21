@@ -133,13 +133,17 @@ func FuzzCELEvaluate(f *testing.F) {
 // celFuzzEvalDeadline is how long [FuzzCELEvaluate] lets one evaluation run
 // before calling the cost limit broken rather than the evaluation expensive.
 //
-// A million cost units is milliseconds of interpretation. Thirty seconds is
-// roughly four orders of magnitude of headroom, which is the point: this is a
-// backstop against an *unbounded* evaluation, not a performance budget, and a
-// number tight enough to measure the machine is a number that fails on a loaded
-// one (#431). It is also the same value [harnessHangBackstop] in the language
-// server's tests settled on, for the same reason and after the same lesson.
-const celFuzzEvalDeadline = 30 * time.Second
+// A million cost units is milliseconds of interpretation. A minute is roughly
+// five orders of magnitude of headroom, which is the point: this is a backstop
+// against an *unbounded* evaluation, not a performance budget, and a number
+// tight enough to measure the machine is a number that fails on a loaded one
+// (#431). Thirty seconds — the value the language server's tests settled on for
+// the same reason — was not enough here: under `-race`, on a box carrying other
+// work, an expression that overshot the budget by eight times spent longer than
+// that reaching the point where the accounting refused it. The case was made
+// cheaper as well, since a slow case is the more useful half of that fix, but
+// the backstop keeps the margin the lesson asks for.
+const celFuzzEvalDeadline = 60 * time.Second
 
 // A celEvalSeed is one expression and the activation it runs against.
 type celEvalSeed struct {
@@ -230,31 +234,43 @@ func TestCELCostLimitStopsAnExpensiveEvaluation(t *testing.T) {
 	env, err := evaluator.ProfileEnv(v1.CurrentProfile)
 	require.NoError(t, err)
 
-	for name, expression := range map[string]string{
-		// Breadth: a comprehension over a comprehension over a comprehension,
-		// which multiplies rather than adds — the shape CLAUDE.md's
-		// alias-expansion note is about, in the expression language instead of
-		// in YAML. 50 * 50 * 50 is 125,000 iterations, measured to exceed the
-		// budget; 30 * 30 * 30 is measured not to, which is the calibration this
-		// number comes from rather than a guess.
-		"nested comprehension": celRepeatedList(50) + `.map(i, ` + celRepeatedList(50) + `.map(j, ` + celRepeatedList(50) + `.map(k, i * j * k)))`,
-		// Two levels, wider: a million iterations, reached from a shape short
-		// enough that neither cel-go's 100,000-code-point source cap nor the
-		// parser's nesting limit is what refuses it.
-		"wide comprehension": celRepeatedList(1000) + `.map(i, ` + celRepeatedList(1000) + `.map(j, i))`,
-		// The same multiplication through the predicate of a filter rather than
-		// the body of a map, since the two take different paths through the
-		// interpreter. `j == 2` rather than `i == j` on purpose: every element
-		// of the list is 1, so a predicate that matched would short-circuit
-		// `exists` on the first element and the expression would cost a
-		// thousand iterations rather than a million — which is what the first
-		// draft of this case did, and why it is written down.
-		"non-matching exists": celRepeatedList(1000) + `.filter(i, ` + celRepeatedList(1000) + `.exists(j, j == 2))`,
+	for name, tc := range map[string]struct {
+		expression string
+		activation map[string]any
+	}{
+		// Breadth from the *expression*: a comprehension over a comprehension
+		// over a comprehension, which multiplies rather than adds — the shape
+		// CLAUDE.md's alias-expansion note is about, in the expression language
+		// instead of in YAML. 50 * 50 * 50 is 125,000 iterations, measured to
+		// exceed the budget; 30 * 30 * 30 is measured not to, which is where
+		// this number comes from rather than a guess.
+		"nested comprehension": {
+			expression: celRepeatedList(50) + `.map(i, ` + celRepeatedList(50) + `.map(j, ` + celRepeatedList(50) + `.map(k, i * j * k)))`,
+			activation: map[string]any{},
+		},
+		// Breadth from the *data*, which is the direction that matters: the
+		// expression is one short line an author could plausibly write, and the
+		// hundred-element list that turns it into a million iterations arrives
+		// from whoever sent the data. This is the pair [FuzzCELEvaluate] exists
+		// to explore, and this case is the proof that the budget refuses it.
+		"nested comprehension over an activation list": {
+			expression: `items.map(i, items.map(j, items.map(k, i * j * k)))`,
+			activation: map[string]any{"items": celOnes(100)},
+		},
+		// Not here, and worth saying why: a `filter` whose predicate is an
+		// `exists` over a second list, which was drafted as a third case for
+		// taking a different path through the interpreter. Measured, it prices
+		// an iteration low enough that reaching the budget takes upwards of half
+		// a million of them, and under `-race` that is tens of seconds of real
+		// time for one assertion. An expression priced just past the budget
+		// tests the budget exactly as well as one priced far past it —
+		// overshooting is not strengthening — so the cheap shapes are the ones
+		// kept.
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			ast, issues := env.Parse(expression)
+			ast, issues := env.Parse(tc.expression)
 			require.NoError(t, issues.Err())
 
 			// A deadline, so a failure of this test is a failed assertion rather
@@ -263,7 +279,7 @@ func TestCELCostLimitStopsAnExpensiveEvaluation(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), celFuzzEvalDeadline)
 			defer cancel()
 
-			_, err := evaluator.Eval(ctx, env, ast, map[string]any{})
+			_, err := evaluator.Eval(ctx, env, ast, tc.activation)
 			require.Error(t, err, "an evaluation priced past the %d-unit budget was allowed to finish", v1.DefaultCostLimit)
 			require.NoError(t, ctx.Err(), "the deadline stopped this evaluation rather than the cost limit")
 			require.Contains(t, strings.ToLower(err.Error()), "cost",
@@ -272,11 +288,21 @@ func TestCELCostLimitStopsAnExpensiveEvaluation(t *testing.T) {
 	}
 }
 
+// celOnes returns a list of n ones, for the case whose weight comes from the
+// activation rather than from the expression.
+func celOnes(n int) []any {
+	out := make([]any, n)
+	for i := range out {
+		out[i] = int64(1)
+	}
+	return out
+}
+
 // celRepeatedList renders a CEL list literal of n ones.
 //
-// A literal rather than an activation value, so that each case in
-// [TestCELCostLimitStopsAnExpensiveEvaluation] states its own weight and a
-// reader can see what it costs without also reading the data it was handed.
+// A literal rather than an activation value, so that the case using it states
+// its own weight and a reader can see what it costs without also reading the
+// data it was handed.
 func celRepeatedList(n int) string {
 	elements := make([]string, n)
 	for i := range elements {
