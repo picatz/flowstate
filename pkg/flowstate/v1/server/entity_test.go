@@ -1,12 +1,15 @@
 package server_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -472,4 +475,102 @@ func TestSignalWithStartRefusesANameNothingWaitsFor(t *testing.T) {
 	_, err = fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
 	require.Error(t, err, "a refused SignalWithStart must not have created an entity")
 	require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// TestSignalWithStartDeliversTheCreatingMutationAtomicallyWithCreation is
+// #692: a caller's first mutation must be persisted with the entity's
+// creation, not as a follow-up call that a crash, a cancelled context, or a
+// closed run can leave undelivered.
+//
+// Before [FlowstateServer.SignalWithStart] carried the initiating delivery in
+// `RunState.PendingSignals` (see [FlowstateServer.SignalWithStart]'s "Claim
+// the entity key" comment), the create path was a Describe-then-
+// ExecuteWorkflow-then-SignalWorkflow sequence — Temporal's own
+// SignalWithStartWorkflow no longer covered it, and nothing else made the two
+// calls indivisible. Between the accepted create and the accepted signal sat
+// a window in which the server could crash, the context could be cancelled,
+// or the just-created run could close, leaving an entity that exists but
+// never received the mutation that was supposed to have started it.
+//
+// That shape is checkable without injecting a crash: an entity created *with*
+// its initiating delivery has no [enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED]
+// event in its history at all — the delivery travelled as part of the
+// [enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED] event's own input, consumed by
+// the engine exactly as a signal that arrived before its wait is (see
+// [drainSignals] and [executor.takePendingSignal] in package engine). A
+// version that signals after starting always writes a Signaled event — with
+// or without a crash in between — so this assertion catches the defect
+// structurally, without needing to race a real failure.
+//
+// Verified against the defect this guards: temporarily dropping
+// `PendingSignals` from the created-path `RunState` and issuing an
+// unconditional follow-up `SignalWorkflow` call (mirroring the sequence #692
+// describes) makes this test fail, because that call always appends a
+// Signaled event.
+func TestSignalWithStartDeliversTheCreatingMutationAtomicallyWithCreation(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	startWorker(t, fixture.temporal)
+
+	created, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-atomic",
+		Workflow:  entityWorkflow(nil),
+		Name:      "update",
+		Payload:   updatePayload(5, false),
+	}))
+	require.NoError(t, err)
+	require.True(t, created.Msg.GetCreated())
+
+	events, err := historyOf(t.Context(), fixture.temporal, created.Msg.GetWorkflowId())
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+
+	require.False(t,
+		slices.ContainsFunc(events, func(event *historypb.HistoryEvent) bool {
+			return event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED
+		}),
+		"the creating call's own mutation reached this run as a signal event rather than as "+
+			"part of its start input, which is exactly the window #692 was filed for: an accepted "+
+			"create that can lose the mutation that initiated it")
+
+	require.True(t,
+		slices.ContainsFunc(events, func(event *historypb.HistoryEvent) bool {
+			return event.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED
+		}),
+		"a created entity must have actually started")
+
+	// The mutation was not merely present in the start input — it was
+	// consumed. A second call under the same key delivers a second mutation,
+	// and the entity's accumulated total must reflect both: 5 from the
+	// creating call above, 7 from this one. (Mirrors
+	// TestEntityStateReportsCarriedVarsAndLoopState's read pattern.)
+	second, err := fixture.teamA.SignalWithStart(t.Context(), connect.NewRequest(&v1.SignalWithStartRequest{
+		EntityKey: "order-atomic",
+		Workflow:  entityWorkflow(nil),
+		Name:      "update",
+		Payload:   updatePayload(7, false),
+	}))
+	require.NoError(t, err)
+	require.False(t, second.Msg.GetCreated())
+
+	require.Eventually(t, func() bool {
+		got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{
+			WorkflowId: created.Msg.GetWorkflowId(),
+		}))
+		if err != nil || got.Msg.GetStatus() != v1.RunResponse_STATUS_RUNNING {
+			return false
+		}
+
+		state := got.Msg.GetEntityState()
+		if state == nil || state.GetTruncated() {
+			return false
+		}
+
+		total := state.GetLoopState()["lifecycle"]
+		return total != nil && total.GetLiteral().GetInt64Value() == 5+7
+	}, 30*time.Second, 100*time.Millisecond,
+		"the entity's accumulated total never reflected both the creating call's own "+
+			"mutation (5) and the second call's (7) — the creating call's mutation must "+
+			"have been consumed exactly once, not lost and not duplicated")
 }
