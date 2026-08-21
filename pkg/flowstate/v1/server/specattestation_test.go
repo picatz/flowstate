@@ -51,7 +51,7 @@ func TestRunAttestsThatTheSubmittedSpecificationRan(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: declaringWorkflow(false),
@@ -76,7 +76,7 @@ func TestRunRefusesToAttestASubstitutedSpecification(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal,
+	flowstate := mustNew(t, temporal,
 		server.WithTrustedWorkflows("", declaringWorkflow(true)))
 
 	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
@@ -94,7 +94,7 @@ func TestRunRefusesToAttestASubstitutedSpecification(t *testing.T) {
 	// registration: a deployment that registered the identical workflow has
 	// substituted nothing a caller could observe, so the caller's copy still
 	// describes the run and the precise view survives.
-	identical := server.New(temporal,
+	identical := mustNew(t, temporal,
 		server.WithTrustedWorkflows("", declaringWorkflow(false)))
 
 	same, err := identical.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
@@ -133,7 +133,7 @@ func TestRunRefusesToAttestASpecificationItPinnedPluginsOnto(t *testing.T) {
 			ClaimsDigest:       "sha256:claims",
 		}},
 	}
-	flowstate := server.New(temporal, server.WithPluginCatalog(catalog))
+	flowstate := mustNew(t, temporal, server.WithPluginCatalog(catalog))
 
 	requiring := declaringWorkflow(false)
 	requiring.PluginRequirements = []*v1.PluginRequirement{{
