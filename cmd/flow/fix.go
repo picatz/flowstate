@@ -254,14 +254,24 @@ type fixOutcome struct {
 	// to building a rewriter twice, once for a person and once for a program.
 	report *v1.FixReport
 
-	// before and after are the file's bytes as they were read and as this run
-	// rewrites them — what `--check` *would* write, since a rewrite it only
-	// reports invalidates exactly the pins the same rewrite applied would.
+	// beforeDigest and afterDigest name the file's bytes as they were read and
+	// as this run rewrites them — the latter being what `--check` *would* write,
+	// since a rewrite it only reports would invalidate exactly the pins the same
+	// rewrite applied does.
 	//
-	// Carried because a pin is over bytes, so the only thing that can answer
-	// "did this run invalidate a pin" is the pair: the digest a caller wrote has
-	// to have named `before` and to no longer name `after`. See fixstale.go.
-	before, after []byte
+	// Digests rather than the bytes themselves, and that is a bound rather than
+	// a tidiness: one of these is held per file for the whole invocation, and
+	// while a Flowfile is capped at a mebibyte the *number* of them in a
+	// directory is the user's tree to decide, so holding two bodies each would
+	// scale a `flow fix` over a large generated tree with the whole tree (#833).
+	// Two 71-byte strings per file is the whole of what the staleness scan needs
+	// from a callee; the pins themselves are read one file at a time in
+	// [findStalePins].
+	//
+	// Carried at all because a pin is over bytes: the only thing that can answer
+	// "did this run invalidate a pin" is the pair — the digest a caller wrote has
+	// to have named beforeDigest and to no longer name afterDigest.
+	beforeDigest, afterDigest string
 }
 
 // fixOne rewrites a single file.
@@ -292,7 +302,8 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 			writeErrDiagnostics(reports, theme, path, err)
 		}
 		report.Refusals = errDiagnosticsProto(err)
-		return fixOutcome{refused: true, report: report, before: data, after: data}, nil
+		digest := v1.ContentDigest(data)
+		return fixOutcome{refused: true, report: report, beforeDigest: digest, afterDigest: digest}, nil
 	}
 
 	for _, refusal := range result.Refusals {
@@ -317,19 +328,19 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	applied := result.Changed() && !opts.check
 
 	outcome := fixOutcome{
-		changed: result.Changed(),
-		refused: !result.Complete(),
-		report:  report,
-		before:  data,
-		// The bytes this run produces for the file, whether or not they were
-		// written: `--check` finding a rewrite that would invalidate a pin has
-		// the same thing to say about it as a run that made one, in a different
-		// tense. The document itself when nothing was produced, which is what
-		// [flowfile.Fix] hands back for a refusal too.
-		after: data,
+		changed:      result.Changed(),
+		refused:      !result.Complete(),
+		report:       report,
+		beforeDigest: v1.ContentDigest(data),
 	}
+	// The bytes this run produces for the file, whether or not they were
+	// written: `--check` finding a rewrite that would invalidate a pin has the
+	// same thing to say about it as a run that made one, in a different tense.
+	// The document itself when nothing was produced, which is what
+	// [flowfile.Fix] hands back for a refusal too.
+	outcome.afterDigest = outcome.beforeDigest
 	if outcome.changed {
-		outcome.after = result.Source
+		outcome.afterDigest = v1.ContentDigest(result.Source)
 	}
 	report.Changed = outcome.changed
 
@@ -433,15 +444,40 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 // a file that fails to parse is added anyway; [fixOne] then hands it to
 // [flowfile.Fix], whose own refusal reports the parse error with the file's
 // name attached.
+//
+// # One file, once
+//
+// Arguments overlap: `flow fix ./tree ./tree/callee.yaml` names the same file
+// twice, and so does a directory given twice under two spellings. Each occurrence
+// is dropped after the first, compared by [canonicalPath] so that `./tree/x.yaml`
+// and an absolute path to it are one file rather than two.
+//
+// Not a tidiness. The second pass over a file this run has already rewritten
+// reads the *rewritten* document, finds nothing to do, and reports `changed:
+// false` — and that answer used to overwrite the first pass's, which is what
+// [findStalePins] reads to know which callees moved. A caller pinning that
+// callee then went unreported and the command exited zero on a tree whose call
+// no longer compiles (#833). Rewriting a file twice in one invocation is also
+// simply not what "fix these paths" means, so the fix is to process it once
+// rather than to make two passes agree.
 func collectFlowfiles(paths []string) ([]string, error) {
 	var out []string
+	seen := map[string]bool{}
+	add := func(path string) {
+		key := canonicalPath(path)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, path)
+	}
 	for _, path := range paths {
 		info, err := os.Stat(path)
 		if err != nil {
 			return nil, fmt.Errorf("error reading %s: %w", path, err)
 		}
 		if !info.IsDir() {
-			out = append(out, path)
+			add(path)
 			continue
 		}
 		err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
@@ -471,7 +507,7 @@ func collectFlowfiles(paths []string) ([]string, error) {
 					return nil
 				}
 				if flowfile.LooksLikeFlowfile(data) || flowfile.IsMalformedYAML(data) {
-					out = append(out, p)
+					add(p)
 				}
 			}
 			return nil

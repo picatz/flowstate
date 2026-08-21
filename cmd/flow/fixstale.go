@@ -1,14 +1,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
+
+// errFileTooLarge says a caller was past the bound this scan reads under, which
+// is the bound a Flowfile itself is subject to. Its own error so the sentence a
+// reader gets names the size rather than an EOF from somewhere inside a reader.
+var errFileTooLarge = errors.New("it is larger than a Flowfile may be, so it was not read")
 
 // The tool that caused the staleness is the tool that should report it.
 //
@@ -103,10 +108,27 @@ func (s stalePin) diagnostic(applied bool) flowfile.Diagnostic {
 // findStalePins reports every pin among these files that this run's own rewrites
 // invalidated, in the order the files were given and by position within a file.
 //
-// outcomes is keyed by the path each file was given as, and carries the bytes
-// before and after for the ones that changed. A file that did not change is still
-// read for its pins: it is a caller like any other, and the callee it pins may be
-// one of the files that did.
+// outcomes is keyed by the path each file was given as, and carries what this
+// run made of it: whether it changed, and the digest of the bytes on each side
+// of that. A file that did not change is still read for its pins — it is a
+// caller like any other, and the callee it pins may be one of the files that
+// did.
+//
+// # What this holds while it runs
+//
+// Two digests and a path per file, and one file's bytes at a time. That bound
+// is the reason this reads each caller here rather than being handed the bytes
+// [fixOne] already had: a Flowfile is bounded at a mebibyte, but the *number* of
+// them in a directory is the user's tree to decide, so a run that kept every
+// file's before and after would scale with the whole tree and a large generated
+// one would exhaust memory — the resource an outside party controls, bounded
+// (#833). `flow fix` reads one file at a time, and so does this.
+//
+// Reading from disk is exact for the same reason the pins were readable from
+// the rewritten bytes: [flowfile.Fix] carries a `digest:` across verbatim, so a
+// file's pins are the same before and after its own rewrite. Under `--check`
+// the file on disk is the one that was never written, and its pins are the pins
+// the rewrite would have kept.
 //
 // A caller whose pins could not be read at all is reported too, rather than
 // passed over. [flowfile.CallPins] fails on a document that is not YAML or one
@@ -125,21 +147,28 @@ func findStalePins(files []string, outcomes map[string]fixOutcome) []stalePin {
 	if len(rewritten) == 0 {
 		// Nothing was rewritten, so nothing this run did could have invalidated
 		// anything. Checked before any file is read, so the overwhelmingly
-		// common `flow fix` over a current tree costs nothing at all.
+		// common `flow fix` over a current tree costs nothing at all — no second
+		// pass over the tree happens here.
 		return nil
 	}
 
 	var out []stalePin
 	for _, caller := range files {
-		outcome, ok := outcomes[caller]
-		if !ok {
+		if _, ok := outcomes[caller]; !ok {
 			continue
 		}
-		// The bytes this run produces for the file, which is where its pins are
-		// read from — [flowfile.Fix] carries a pin across verbatim, so these are
-		// the same pins the file had before, read from the document the run
-		// arrived at rather than from the one it started with.
-		pins, err := flowfile.CallPins(outcome.after)
+		data, truncated, err := readFileBounded(caller)
+		if err != nil {
+			out = append(out, stalePin{caller: caller, unreadable: err})
+			continue
+		}
+		if truncated {
+			// Past the bound a Flowfile may be, which [flowfile.CallPins] would
+			// refuse anyway; said in the words of the bound that stopped it.
+			out = append(out, stalePin{caller: caller, unreadable: errFileTooLarge})
+			continue
+		}
+		pins, err := flowfile.CallPins(data)
 		if err != nil {
 			out = append(out, stalePin{caller: caller, unreadable: err})
 			continue
@@ -160,7 +189,7 @@ func findStalePins(files []string, outcomes map[string]fixOutcome) []stalePin {
 			// no case, and a pin copied out of a tool that renders upper-case
 			// names the same bytes.
 			written := strings.ToLower(pin.Digest)
-			now := v1.ContentDigest(callee.after)
+			now := callee.afterDigest
 			if written == now {
 				// The rewrite happened to leave the pin naming the bytes it
 				// names, which cannot happen for a real content change and can
@@ -168,7 +197,7 @@ func findStalePins(files []string, outcomes map[string]fixOutcome) []stalePin {
 				// what it was.
 				continue
 			}
-			if written != v1.ContentDigest(callee.before) {
+			if written != callee.beforeDigest {
 				// Already stale before this run touched anything: somebody
 				// else's news. See this file's header.
 				continue

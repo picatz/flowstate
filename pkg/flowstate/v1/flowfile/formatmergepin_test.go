@@ -251,3 +251,102 @@ steps:
 	assert.Contains(t, err.Error(), "once aliases are expanded",
 		"the expansion bound is what should have stopped this")
 }
+
+// TestCallPinsReadsOnlyCallSteps is the finding on #833, in the direction that
+// matters: `call` and `digest` are keys of a *step*, and everywhere else in the
+// language a mapping may hold any key an author likes. `vars:` here declares two
+// ordinary variables that happen to be named that — the second even naming a
+// real file's digest — and reading them as a security pin makes `flow fix` fail
+// a run over a workflow that has no call in it at all.
+//
+// Mutation proof: dropping the isStep guard in collectMapping collects the vars
+// decoy and fails the first assertion here.
+func TestCallPinsReadsOnlyCallSteps(t *testing.T) {
+	pin := digestOf(t, simpleCalleeSource)
+	decoy := `edition: v2026.3
+name: decoy
+vars:
+  call: ./callee.yaml
+  digest: ` + pin + `
+steps:
+  - id: say
+    log:
+      message: hi
+`
+	pins, err := flowfile.CallPins([]byte(decoy))
+	require.NoError(t, err)
+	assert.Empty(t, pins,
+		"two ordinary variables named `call` and `digest` were read as a call pin")
+
+	// The other direction, in the same test because the guard is only correct if
+	// it keeps both answers: a real call step nested inside a loop body is still
+	// a step, and its pin is still found.
+	nested := `edition: v2026.3
+name: nested
+vars:
+  call: ./callee.yaml
+  digest: ` + pin + `
+steps:
+  - id: fan
+    for_each:
+      items: ${["a", "b"]}
+      as: tenant
+      steps:
+        - id: provision
+          call: ./callee.yaml
+          digest: ` + pin + `
+          with:
+            tenant: ${tenant}
+`
+	pins, err = flowfile.CallPins([]byte(nested))
+	require.NoError(t, err)
+	require.Len(t, pins, 1, "a pinned call inside a for_each body was not read as a pin")
+	assert.Equal(t, "provision", pins[0].Step)
+	assert.Equal(t, "./callee.yaml", pins[0].Call)
+	assert.Equal(t, pin, pins[0].Digest)
+	assert.Equal(t, 14, pins[0].Line, "the pin is not positioned at the `digest:` inside the loop body")
+}
+
+// TestFormatKeepsAPinBesideADecoyItMustNotInvent is the same guard seen through
+// `flow fmt`, on bytes: the decoy mapping must come back as the two variables it
+// is, and the real pin must still be carried across. A collector that read the
+// decoy as a pin would refuse to format this file at all, since the rendered
+// `vars:` mapping is not a call for a pin to sit beside.
+func TestFormatKeepsAPinBesideADecoyItMustNotInvent(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", simpleCalleeSource)
+	pin := digestOf(t, simpleCalleeSource)
+	src := `edition: v2026.3
+name: caller
+vars:
+  call: not a call
+  digest: not a digest
+steps:
+  - id: provision
+    call: ./callee.yaml
+    digest: ` + pin + `
+    with:
+      tenant: acme
+`
+	caller := writeFile(t, dir, "caller.yaml", src)
+
+	workflow, _, err := flowfile.ParseFile(caller)
+	require.NoError(t, err)
+
+	got, err := flowfile.Format([]byte(src), workflow)
+	require.NoError(t, err)
+
+	want := `edition: v2026.3
+name: caller
+vars:
+  call: not a call
+  digest: not a digest
+steps:
+- id: provision
+  call: ./callee.yaml
+  digest: ` + pin + `
+  with:
+    tenant: acme
+`
+	assert.Equal(t, want, string(got))
+}

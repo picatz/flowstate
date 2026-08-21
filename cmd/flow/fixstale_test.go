@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -179,5 +181,98 @@ func TestFixReportsAStalePinInTheMachineFormatToo(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no report was written for %s:\n%s", caller, out)
+	}
+}
+
+// TestFixReportsAStalePinWhenArgumentsOverlap is the finding on #833: naming a
+// file both directly and through a directory containing it used to process it
+// twice, and the second pass — reading the document the first pass had already
+// rewritten — recorded "nothing to do" over the first pass's answer. The
+// staleness scan reads that answer to know which callees moved, so the caller
+// went unreported and the run exited zero on a tree whose call no longer
+// compiles.
+//
+// Mutation proof: dropping the deduplication in collectFlowfiles fails this
+// test with err == nil, which is exactly the shape the finding describes.
+func TestFixReportsAStalePinWhenArgumentsOverlap(t *testing.T) {
+	dir := t.TempDir()
+	callee := writeFixture(t, dir, "callee.yaml", oldStyleGreeter)
+	writeFixture(t, dir, "caller.yaml", pinnedCaller(v1.ContentDigest([]byte(oldStyleGreeter))))
+
+	// The directory first, so the walk rewrites the callee before the explicit
+	// occurrence of it is reached — the order the finding is about.
+	out, _, err := runFixCommand(t, dir, callee)
+	if err == nil {
+		t.Fatalf("overlapping arguments hid the pin this run invalidated, and the run exited zero:\n%s", out)
+	}
+	if !strings.Contains(out, "this run rewrote ./callee.yaml") {
+		t.Errorf("the stale pin was not reported when the callee was named twice:\n%s", out)
+	}
+
+	// And the callee is rewritten once rather than read a second time and
+	// reported as needing nothing: a file named two ways is one file.
+	if strings.Contains(out, callee+": already current") {
+		t.Errorf("the callee was processed a second time, which is what hid the finding:\n%s", out)
+	}
+}
+
+// TestFixWithStdoutAcceptsTheSameFileNamedTwice is the same deduplication seen
+// from the flag that counts files: `--stdout` writes one document, and a file
+// named twice is one file, not two.
+func TestFixWithStdoutAcceptsTheSameFileNamedTwice(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFixture(t, dir, "workflow.yaml", currentGreeter)
+
+	out, _, err := runFixCommand(t, "--stdout", path, path)
+	if err != nil {
+		t.Fatalf("one file named twice was refused as two: %v", err)
+	}
+	if out != currentGreeter {
+		t.Errorf("--stdout wrote something other than the one document:\n%s", out)
+	}
+}
+
+// TestFixOutcomeHoldsNoDocumentBodies is the bound the third finding on #833
+// asked for, written where it can be checked rather than only asserted in prose.
+//
+// One fixOutcome is retained per file for the whole invocation. A Flowfile is
+// capped at a mebibyte, but the number of them in a directory is the user's tree
+// to decide — the resource an outside party controls — so an outcome that held
+// the document's bytes would make `flow fix` over a large generated tree scale
+// with the whole tree at once. It holds two digests instead, and
+// [findStalePins] reads one file at a time.
+//
+// Reflective because that is the property: not "these particular fields", but
+// that nothing retained per file grows with the size of the file.
+func TestFixOutcomeHoldsNoDocumentBodies(t *testing.T) {
+	outcome := reflect.TypeOf(fixOutcome{})
+	for i := range outcome.NumField() {
+		field := outcome.Field(i)
+		if field.Type.Kind() == reflect.Slice && field.Type.Elem().Kind() == reflect.Uint8 {
+			t.Errorf("fixOutcome.%s holds a document body; one of these is kept per file for the "+
+				"whole run, so it must hold only what does not grow with a file's size", field.Name)
+		}
+	}
+}
+
+// TestFixReportsStalePinsAcrossManyCallers is the functional half of the same
+// change: the scan now re-reads each caller rather than being handed bytes it
+// kept, so a run with several callers has to find all of them — and find them
+// from what is on disk, which under a writing run is the rewritten document.
+func TestFixReportsStalePinsAcrossManyCallers(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "callee.yaml", oldStyleGreeter)
+	pin := v1.ContentDigest([]byte(oldStyleGreeter))
+	const callers = 5
+	for i := range callers {
+		writeFixture(t, dir, "caller"+strconv.Itoa(i)+".yaml", pinnedCaller(pin))
+	}
+
+	out, _, err := runFixCommand(t, dir)
+	if err == nil {
+		t.Fatalf("a run that invalidated %d pins exited zero:\n%s", callers, out)
+	}
+	if got := strings.Count(out, "no longer names the bytes it pins"); got != callers {
+		t.Errorf("reported %d stale pins, want %d:\n%s", got, callers, out)
 	}
 }

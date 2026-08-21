@@ -146,7 +146,9 @@ func sourcePins(source []byte) (map[string]sourcePin, error) {
 		if err := collector.collectAnchors(doc.Body, 0); err != nil {
 			return nil, err
 		}
-		if err := collector.collect(doc.Body, "", 0); err != nil {
+		// The document's own body is not a step: a workflow is a mapping, and
+		// its steps are the elements of the sequence under its `steps:`.
+		if err := collector.collect(doc.Body, "", 0, false); err != nil {
 			return nil, err
 		}
 	}
@@ -344,7 +346,11 @@ func (c *pinCollector) mergedEntries(n ast.Node, depth int) ([]pinEntry, error) 
 // resolves anchors, aliases and merge keys, because a pin can arrive through
 // any of them and the rendered document [placePins] walks has them all expanded
 // already.
-func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
+//
+// isStep says the node being looked at is an element of a [stepsKey] sequence,
+// which is the whole of what makes a mapping a step — see [collectMapping] for
+// why nothing else may carry a pin.
+func (c *pinCollector) collect(n ast.Node, path string, depth int, isStep bool) error {
 	if n == nil {
 		return nil
 	}
@@ -362,15 +368,18 @@ func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
 
 	switch x := resolved.(type) {
 	case *ast.MappingNode:
-		return c.collectMapping(x, path, depth)
+		return c.collectMapping(x, path, depth, isStep)
 
 	case *ast.MappingValueNode:
-		return c.collectMapping(&ast.MappingNode{Values: []*ast.MappingValueNode{x}}, path, depth)
+		return c.collectMapping(&ast.MappingNode{Values: []*ast.MappingValueNode{x}}, path, depth, isStep)
 
 	case *ast.SequenceNode:
 		for i, value := range x.Values {
 			element := childPath(path, indexStep(i))
-			if err := c.collect(value, element, depth+1); err != nil {
+			// A sequence reached through a `steps:` key is a step list, so
+			// each of its elements is a step; a sequence anywhere else is
+			// data, and its elements are not.
+			if err := c.collect(value, element, depth+1, isStep); err != nil {
 				return err
 			}
 		}
@@ -381,7 +390,17 @@ func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
 
 // collectMapping records the pin one mapping carries, if it carries one, and
 // walks what is under it.
-func (c *pinCollector) collectMapping(mapping *ast.MappingNode, path string, depth int) error {
+//
+// isStep is the grammar context, and it is load-bearing rather than a
+// refinement. `call` and `digest` are only *keys of a step* — everywhere else
+// in the language a mapping may hold any key an author likes, so
+// `vars: {call: ./callee.yaml, digest: sha256:…}` is two ordinary variables and
+// not a pin at all. A collector reading key names alone calls that a security
+// pin, which for `flow fix`'s staleness report means failing a run over two
+// variables that happen to be named that (#833). So a pin is read only from a
+// mapping that *is* a step: an element of a [stepsKey] sequence, which is where
+// the grammar puts every step it has and nowhere else.
+func (c *pinCollector) collectMapping(mapping *ast.MappingNode, path string, depth int, isStep bool) error {
 	entries, err := c.entries(mapping, depth)
 	if err != nil {
 		return err
@@ -394,7 +413,7 @@ func (c *pinCollector) collectMapping(mapping *ast.MappingNode, path string, dep
 
 	call, hasCall := byName["call"]
 	digest, hasDigest := byName["digest"]
-	if hasCall && hasDigest {
+	if isStep && hasCall && hasDigest {
 		// The compiler resolves anchors and aliases before reading this
 		// scalar, so the formatter must do the same. If a hand-built or
 		// otherwise mismatched source cannot be resolved, refuse rather
@@ -427,7 +446,11 @@ func (c *pinCollector) collectMapping(mapping *ast.MappingNode, path string, dep
 	}
 
 	for _, e := range entries {
-		if err := c.collect(e.value, childPath(path, e.name), depth+1); err != nil {
+		// The value under `steps:` is the only thing whose elements are steps.
+		// Read from [stepsKey] rather than spelled here, so that a grammar
+		// growing a second place to write a step list has one string to change
+		// and a test (TestEveryStepListIsSpelledStepsKey) that notices.
+		if err := c.collect(e.value, childPath(path, e.name), depth+1, e.name == stepsKey); err != nil {
 			return err
 		}
 	}
