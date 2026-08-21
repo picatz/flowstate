@@ -87,13 +87,21 @@ func TestSlugifyMatchesGitHub(t *testing.T) {
 // would otherwise reintroduce: DSL.md's before/after examples open with a
 // `# before` YAML comment inside a fenced block, which is not a markdown
 // heading and must not appear in the contents list.
+//
+// The comment line inside the fence is deliberately `## ...` — level 2, the
+// same level a real heading in this test uses — rather than DSL.md's actual
+// `# before` (level 1). A level-1 line is excluded by the level filter on
+// its own, with or without fence tracking, so a test built from the real
+// text would still pass with fence tracking deleted outright. This shape
+// fails without it: comment out the fence check and "Fake heading inside a
+// fence" appears in the list.
 func TestTOCHeadingsSkipsFencedYAMLComments(t *testing.T) {
 	t.Parallel()
 
 	doc := "# Title\n\n" +
 		"## Real heading\n\n" +
 		"```yaml\n" +
-		"# before\n" +
+		"## Fake heading inside a fence\n" +
 		"steps: []\n" +
 		"```\n\n" +
 		"### Also real\n"
@@ -105,7 +113,7 @@ func TestTOCHeadingsSkipsFencedYAMLComments(t *testing.T) {
 		texts = append(texts, h.text)
 	}
 	assert.Equal(t, []string{"Real heading", "Also real"}, texts,
-		"a YAML comment inside a fence was read as a heading")
+		"a line inside a fenced code block was read as a heading")
 }
 
 // TestTOCHeadingsDedupesRepeatedTitles matches GitHub's own anchor

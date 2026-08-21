@@ -170,12 +170,15 @@ func declaredNames(libs ...string) map[string]bool {
 // declares, its overloads formatted as call forms: argument order, arity and
 // whether it is written on a namespace or a value.
 //
-// A macro's name never collides with a function's in this profile — cel-go
-// registers the two under disjoint namespaces, and every library here keeps
-// it that way — so a macro's entry is simply absent, which is what leaves
-// [LibraryFunction.Signature] empty for one and lets a caller tell "no
-// signature exists" from "not looked up yet" the same way [macroExamples]
-// already does for Example.
+// No macro in this profile is also registered as a function under the same
+// name, so a macro's entry here is simply absent — this walks
+// `env.Functions()` alone and does not consult `env.Macros()` at all. That
+// is not a case this function forbids, only one it has never seen: exactly
+// the possibility [declaredNames]' own doc comment already names ("a macro
+// and a function of the same name is not a case cel-go has, but if it
+// arrives..."). [LibraryFunction.Signature] staying empty for every macro is
+// what [TestOnlyAnOrdinaryFunctionCarriesASignature] checks, so a future
+// collision would fail there rather than pass silently.
 //
 // cel-go's own [decls.FunctionDecl.Documentation] does the formatting: it
 // walks each overload and asks [decls.OverloadDecl.IsMemberFunction], which
