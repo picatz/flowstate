@@ -52,7 +52,7 @@ import (
 //
 // # The resource the cost limit does not bound
 //
-// Measured while writing this, and reported as picatz/flowstate#841 rather than
+// Measured while writing this, and reported as picatz/flowstate#847 rather than
 // asserted here: cel-go's *runtime* cost tracker — the one [cel.CostLimit]
 // spends, as distinct from the size-aware static estimator — prices string
 // concatenation at a flat rate independent of operand size. `s + s` costs 3
