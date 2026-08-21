@@ -132,8 +132,11 @@ const (
 	// PluginName is the name of a plugin as the deployment installed it.
 	PluginName = "flowstate.plugin.name"
 
-	// PluginOperation is the host-side plugin operation: a fixed set of
-	// verbs written in this package's caller ("call", "health", "start").
+	// PluginOperation is the host-side plugin operation: a fixed set of verbs
+	// written in this package's caller — "launch", "start", "health" and
+	// "execute". TestEveryPluginOperationIsRecordedUnderItsOwnName in the
+	// plugin package drives all four and asserts the set, so this list and the
+	// recording sites cannot drift apart silently.
 	PluginOperation = "flowstate.plugin.operation"
 
 	// PluginOutcome is "success" or "error".
@@ -184,7 +187,7 @@ type Attribute struct {
 // useful on a span and a log line, where a per-event identifier is the point.
 var Table = []Attribute{
 	{Key: PluginName, Class: ClassConfiguration, Chooser: "the deployment, by which plugins it installs"},
-	{Key: PluginOperation, Class: ClassConstruction, Chooser: "this repository: start, health, execute"},
+	{Key: PluginOperation, Class: ClassConstruction, Chooser: "this repository: launch, start, health, execute"},
 	{Key: PluginOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
 	{Key: PluginHealthStatus, Class: ClassConstruction, Chooser: "this repository's plugin health enumeration"},
 	{Key: TaskName, Class: ClassConfiguration, Chooser: "the deployment, by which tasks it registers"},
