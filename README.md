@@ -271,6 +271,9 @@ Both are in the [Reference](#reference) below.
   See [flow mcp: the same surface, for an agent](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent).
 - **Deciding whether Flowstate fits?** [docs/USE_CASES.md](docs/USE_CASES.md) walks
   four worked enterprise examples end to end.
+- **Looking for a particular document?** [docs/README.md](docs/README.md) is the
+  index: every page under `docs/`, one line on what it covers, which of them are
+  generated, and which are internal process rather than product documentation.
 
 ## Quickstart
 

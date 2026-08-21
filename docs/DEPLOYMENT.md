@@ -10,11 +10,13 @@ the shape of the connection layer; this document is what to do with it.
 
 ## Read this before you share a Temporal namespace
 
-If two tenants' runs execute in the same Temporal namespace, anyone with
-Temporal UI or `tctl`/`temporal` CLI access to that namespace can read **every
-tenant's** workflow history: the full compiled specification, every step's
-inputs and outputs, the identity claims a run carries, and its memo. That
-access is Temporal's, not Flowstate's — Temporal's own visibility and
+> [!WARNING]
+> If two tenants' runs execute in the same Temporal namespace, anyone with
+> Temporal UI or `tctl`/`temporal` CLI access to that namespace can read **every
+> tenant's** workflow history: the full compiled specification, every step's
+> inputs and outputs, the identity claims a run carries, and its memo.
+
+That access is Temporal's, not Flowstate's — Temporal's own visibility and
 namespace permissions are what would have to gate it, and most self-hosted
 clusters don't gate per-workflow.
 
@@ -69,6 +71,51 @@ Each tier is a set of claims a security reviewer can check independently.
 Nothing here is aspirational — every ✅ is traced to code, and every ❌ is
 something to stop assuming once you've read it.
 
+Each tier adds exactly one boundary to the one before it, and the two claims
+people most often assume they already have arrive last:
+
+```mermaid
+flowchart LR
+  T0["Tier 0<br/>flow run local"] -->|"an --auth-policy<br/>and one ownedBy check"| T1a["Tier 1a<br/>shared worker"]
+  T1a -->|"policy rules keyed on<br/>identity.namespace"| T1b["Tier 1b<br/>shared worker,<br/>per-tenant rules"]
+  T1b -->|"a Temporal namespace and<br/>a worker fleet per tenant"| T2["Tier 2<br/>per-tenant namespace<br/>+ worker"]
+  T2 -->|"containers, microVMs,<br/>substrate credentials"| T3["Tier 3<br/>substrate isolation"]
+
+  History(["history privacy<br/>between tenants"]) -.->|"first true here"| T2
+  Blast(["worker blast radius<br/>of one tenant"]) -.->|"first true here"| T2
+
+  classDef notbuilt stroke-dasharray: 5 5;
+  class T3 notbuilt;
+```
+
+Tier 3 is dashed because it is documented and not built: it is what a substrate
+provides, not something Flowstate implements. The same claims as a grid, which is
+the form to hand a reviewer:
+
+| Claim | Tier 0 | Tier 1a | Tier 1b | Tier 2 | Tier 3 |
+| --- | --- | --- | --- | --- | --- |
+| Identity is verified rather than asserted | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Every cross-tenant API verb refused | n/a | ✅ | ✅ | ✅ | ✅ |
+| Secrets, tasks and egress scoped per tenant | rehearsal only | ❌ | ✅ | ✅ | ✅ |
+| Workflow history private between tenants | n/a | ❌ | ❌ | ✅ | ✅ |
+| Worker blast radius is one tenant | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Enforcement below the process (network, kernel) | ❌ | ❌ | ❌ | ❌ | substrate's |
+
+A cell is a summary of the tier's section below, which is where the tracing to
+code lives; read the section before relying on a tick.
+
+One definition the grid depends on, because a reviewer will otherwise find the
+counter-example immediately: **Tier 1a means `flow server --auth-policy`.**
+`--insecure-no-auth` is not a weaker Tier 1a, it is Tier 0's identity model with
+a network listener in front of it — every caller is admitted anonymously
+(`auth.InsecureAnonymousVerifier`), so every run belongs to the same empty
+namespace and there is no tenancy for the `ownedBy` check to enforce. The code
+draws the same line: `authVerifier` refuses to start a server given neither a
+policy nor that flag, and treats the flag as a thing an operator says out loud
+rather than a fallback for a policy that failed to load
+(`cmd/flow/main.go`). The Local development recipe below is labelled a Tier 0/1a
+*boundary* for this reason.
+
 ### Tier 0 — `flow run local`
 
 No server, no Temporal, no worker process boundary. A single command runs a
@@ -87,15 +134,23 @@ Flowfile to completion in the calling process.
   credential minted for a local run carries a `_local` subject component no
   server-attested run can produce, so a cloud trust policy written for
   production will not match a rehearsal's.
-- ❌ Never run this as a shared service. There is no authentication surface to
-  turn on — it doesn't have one to withhold.
+> [!WARNING]
+> Never run Tier 0 as a shared service. There is no authentication surface to
+> turn on — it doesn't have one to withhold, and every `--as-*` flag above is
+> an assertion anyone reaching it can make.
 
 ### Tier 1a — shared worker, zero configuration
 
 One Temporal namespace, one worker fleet, one Flowstate server, `flow server`
-started with an OIDC/workload-identity `--auth-policy` (or, deliberately for
-development only, `--insecure-no-auth`). This is what running `flow worker`
-and `flow server` with no per-tenant flags gets you.
+started with an OIDC/workload-identity `--auth-policy`. This is what running
+`flow worker` and `flow server` with no per-tenant flags gets you.
+
+The policy is part of the definition, not a recommendation inside it: every
+claim below rests on a caller whose identity was *attested*, and `flow server
+--insecure-no-auth` — which the server accepts only because an operator asked
+for it in as many words — admits everyone anonymously into one empty namespace,
+which is Tier 0's model reachable over a socket rather than a weaker Tier 1a.
+Read the ticks below as claims about a server started with a policy.
 
 - ✅ The Flowstate API refuses every cross-tenant verb: one `ownedBy` check
   covering `Get`/`List`/`Cancel`/`Terminate`/`Signal`/`Describe`, reported as
