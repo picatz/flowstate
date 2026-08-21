@@ -101,7 +101,8 @@ func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstate
 
 `sdk.Main` is the whole of `func main` (`sdk/sdk.go:314-327`). The manifest the
 engine sees is derived from that struct rather than written beside it, so a
-plugin cannot advertise a capability it did not implement: `Secrets` being set
+plugin built this way cannot advertise a capability it did not implement:
+`Secrets` being set
 is what advertises secret resolution, and a non-empty `Tasks` is what advertises
 tasks (`sdk/sdk.go:690-732`).
 
@@ -358,7 +359,8 @@ accepts one in tokn
 The refusal is a good one — it is deny-by-default and it names what the task
 *does* accept (`plugin/task.go:392-395`, `:410-418`) — and it arrives at
 execution, to whoever is running the workflow rather than to whoever wrote the
-plugin. `flow validate` cannot catch it: the manifest's `secret_inputs` reaches
+plugin. `flow validate` does not catch it, even told about the plugin: the
+manifest's `secret_inputs` reaches
 the registry as `TaskDef.SecretInputs` (`registry.go:155-172`), but the
 validator's secret checking consults only `NestedSecretInputs`, for structures
 that hold a reference inside them (`flowfile/secret.go:259-262`, `registry.go:378`).
