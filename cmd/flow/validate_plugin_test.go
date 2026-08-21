@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -18,8 +19,9 @@ import (
 // verb CLAUDE.md's landing rule names, and the listing that documents itself as
 // "the catalog, which plugins already extend" listed the built-ins.
 //
-// Every test here drives the built `flow` binary as a subprocess rather than
-// calling the functions in this package, and that is not incidental. Registering
+// Every test here that launches a plugin drives the built `flow` binary as a
+// subprocess rather than calling the functions in this package, and that is not
+// incidental. Registering
 // a host into [v1.DefaultRegistry] is a one-way door — there is no Unregister —
 // so an in-process test that launches the example plugin puts `example.greet`
 // into this test binary's registry for the rest of the run, where the next test
@@ -67,6 +69,71 @@ func TestTheAuthoringVerbsTakeThePluginFlags(t *testing.T) {
 				assert.NotNil(t, cmd.Flags().Lookup(name),
 					"`flow %s` does not take --%s, so it cannot be told what a plugin provides", verb, name)
 			}
+		})
+	}
+}
+
+// TestAPinnedPluginWithNowhereToLookIsRefused is the review finding on #835,
+// and it is the "silently half-configured" failure this whole path exists to
+// prevent, arriving through the one flag that promises the opposite.
+//
+// `--plugin NAME` documents itself as "a name with no binary is an error",
+// because a deployment that pinned a set expects that set. The host keeps that
+// promise and the host never ran: [pluginFlags.configured] asks only whether
+// there are directories, so `--plugin example` with no --plugin-dir and no
+// $FLOWSTATE_PLUGIN_DIR took [startPlugins]'s early return, launched nothing,
+// and said nothing. On `flow validate` and `flow tasks` that is the unknown-task
+// answer this branch set out to stop giving; on `flow fix` it is worse, because
+// the rewriter then treats that plugin's tasks as ordinary ones and its walk
+// branches on exactly the declarations it no longer has.
+//
+// Asserted per verb rather than once against [pluginFlagsOf], because what is
+// being claimed is that no command surface reaches its work first — and each
+// verb is written separately even though they share the seam. It is also
+// asserted as a *usage* error: nothing ran, the command line was wrong, and
+// docs/CLI.md's three-value exit status says so with 2.
+func TestAPinnedPluginWithNowhereToLookIsRefused(t *testing.T) {
+	t.Parallel()
+
+	// A real file, so that a verb which got as far as its work would succeed
+	// rather than fail for a second reason and look like it had refused.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: fine
+steps:
+  - id: hi
+    log:
+      message: hello
+`), 0o600))
+
+	for _, args := range [][]string{
+		{"validate", "--plugin", "example", path},
+		{"tasks", "--plugin", "example"},
+		{"fix", "--check", "--plugin", "example", path},
+		{"plugins", "--plugin", "example"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			t.Parallel()
+
+			root := newRootCommand()
+			var out, errOut strings.Builder
+			root.SetOut(&out)
+			root.SetErr(&errOut)
+			root.SetArgs(args)
+
+			err := execute(t.Context(), root)
+			require.Error(t, err,
+				"`flow %s` accepted a pinned plugin with nowhere to look for it, and so "+
+					"ran having launched nothing", strings.Join(args, " "))
+
+			assert.Contains(t, err.Error(), "example",
+				"the refusal does not name the plugin that was pinned")
+			assert.Contains(t, err.Error(), "--plugin-dir",
+				"the refusal does not say what to pass instead")
+			assert.Equal(t, exitCodeUsage, exitCodeFor(err),
+				"a command line asking for two things that do not fit was not "+
+					"reported as an invocation mistake")
 		})
 	}
 }
