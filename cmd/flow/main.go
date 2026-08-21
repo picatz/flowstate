@@ -1026,12 +1026,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	// A trust policy that maps tenants onto Temporal namespaces needs a client
-	// per namespace it can route to, dialed now so an unreachable namespace fails
-	// the start rather than the first tenant to submit. The server refuses a
-	// tenant the mapping cannot place — see FlowstateServer.clientFor — so this
-	// only has to hand it the pool.
+	// per namespace it can route to, dialed and verified to exist now so a
+	// mistyped or unregistered namespace fails the start rather than the first
+	// tenant to submit. The server refuses a tenant the mapping cannot place —
+	// see FlowstateServer.clientFor — so this only has to hand it the pool.
 	if policy != nil && policy.Tenancy != nil {
-		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy)
+		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy, logger)
 		if err != nil {
 			return fmt.Errorf("dialing the Temporal namespaces the trust policy maps tenants onto: %w", err)
 		}
