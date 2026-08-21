@@ -59,9 +59,11 @@ descend from are in Part I.
 
 The last row is the one place where the canonical spelling is not yet the only legal
 one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:128`) documents the
-fence as optional for expression-typed fields, and one shipped example takes it up
-(`examples/task-shape-policy/workflow.yaml:57` writes `if: true`). R4 condemns that
-third state and #545 decides how it goes away. Until then, write the fence.
+fence as optional for expression-typed fields, and it is: a step written
+`if: inputs.amount > 1`, with no fence anywhere, validates. Every `if:` in
+`examples/` that holds an expression writes the fence anyway, which is the corpus
+agreeing with this row before it was written down. R4 condemns the third state where
+both parse, and #545 decides how it goes away. Until then, write the fence.
 
 ## Part I: the rules
 
@@ -145,10 +147,10 @@ Exactly two exemptions, each with a test a reviewer can apply.
    `must:` can say, and they stay, because `flow breaking` reads them structurally:
    a raised floor is a narrowing it can name, while any change to a `must:`
    expression is opaque text it must conservatively treat as a break
-   (`cmd/flow/breaking.go:460`). `pattern:` failed this same test, because a regex is
+   (`constraintNarrowed`). `pattern:` failed this same test, because a regex is
    as opaque to compatibility analysis as CEL is, and that is why it died while
-   `min:` lives. The test: **name the shipped tool and the question it answers from
-   the structure.** No tool, no second spelling.
+   `min:` lives (`cmd/flow/breaking.go:475`). The test: **name the shipped tool and
+   the question it answers from the structure.** No tool, no second spelling.
 
 Enforcement: review for admission; tier 3 (`flow fix` plus an edition) for retirement.
 
@@ -253,12 +255,14 @@ fields. And the `switch:` dispatches on the named value, so the `default:` catch
 the one case the two `case:` arms do not, which is what makes it reachable and
 therefore legal.
 
-Not this, for the same workflow:
+Not this, for the same workflow, with the wait left unshaped so that every reader
+reaches into the raw payload:
 
 ```yaml
-# Not this: the presence test and the read can drift apart, the outcome is
-# recomputed at every site that needs it, and three sibling steps test one
-# value for equality where a switch would let the validator check the set.
+# Not this: the presence test and the read are two spellings of one question and
+# can drift apart, the decision is recomputed at every site that needs it, and
+# sibling steps test one value for equality where a switch would let the
+# validator check the branches against the set of values it can take.
 - id: pay
   if: ${has(steps.review.payload.decision) && steps.review.payload.decision == "approved"}
   log:
@@ -293,8 +297,8 @@ reviewer never spends a comment on layout. `gofmt`'s one transferable lesson is 
 the value is the absence of the argument, and a single option destroys it.
 
 `--check`, `--stdout` and `-o json`/`-o jsonl` are I/O plumbing rather than style,
-and they stay. As of `c4ead7c` those are the only flags the command has
-(`cmd/flow/fmtcmd.go:123`).
+and they stay. As of `c4ead7c` those are the only flags the command declares
+(`cmd/flow/fmtcmd.go:123`), which is the state to keep it in.
 
 Enforcement: review of `cmd/flow/fmtcmd.go` itself, plus the standing test that
 formatting is idempotent.
@@ -366,13 +370,23 @@ measured against `c4ead7c` with the commands named beside it, not recalled.
 where a name in scope was missing) and R2 (a bespoke match grammar beside three CEL
 policy surfaces). This is #326, and the charter's contribution is to say that the
 answer follows from the rules rather than being open: signal authorization becomes a
-CEL predicate over a scope holding the attested `sender`, `run.started_by` (landed by
-#514) and `inputs`; `distinct_from_starter: true` rewrites mechanically to
-`sender.subject != run.started_by.subject`; the migration is an edition plus `flow
-fix`. Worth changing rather than grandfathering: it is three examples and one server
-check today (`examples/approval-gate`, `examples/enterprise-fund-transfer`,
-`examples/enterprise-access-review`, and `pkg/flowstate/v1/server`), and every month
-it stands it teaches the match-list idiom to more files.
+CEL predicate over a scope holding the attested `sender`, a name for the run's
+starter, and `inputs`, after which `distinct_from_starter: true` is one clause and
+the next relationship somebody needs is another one.
+
+R1 also says what has to exist first, and a grep says it does not. The server already
+knows who started a run, because that is what the current keyword is checked against
+(`pkg/flowstate/v1/server/signalauth_internal_test.go:318`), but no `started_by` name
+is exposed anywhere an author can write one: nothing in `proto/flowstate/v1/` or the
+server declares it, and #514, which landed a run reading how it started, landed
+`trigger.kind` rather than the starter's identity. So the missing piece is a name in
+scope, exactly as R1 predicts, and the keyword was wrong the day it shipped.
+
+Worth changing rather than grandfathering: three example workflows carry the key
+today (`examples/approval-gate`, `examples/enterprise-fund-transfer`,
+`examples/enterprise-access-review`), beside the server check and the CLI and MCP
+surfaces that spell it, and every month it stands it teaches the match-list idiom to
+more files.
 
 **The fencing split.** `must:` refuses a fence, `if:` accepts either. The language has
 shipped both answers to #545, which means the status quo is not the conservative
