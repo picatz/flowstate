@@ -245,11 +245,13 @@ type Task struct {
 	// before anything objected.
 	//
 	// Declared here, carried in the manifest, and honoured by whatever registry
-	// holds the task. It is *not* yet enforced by `flow validate`, and that is
-	// worth knowing before relying on it: the validator reads the default task
-	// registry and nothing shipped registers a plugin's tasks there, so a Flowfile
-	// naming one is told the task is unknown. Declaring this is necessary and not
-	// on its own sufficient.
+	// holds the task. `flow validate` enforces it for a plugin task exactly when
+	// it has been told about the plugin: the check reads the default task registry
+	// through [github.com/picatz/flowstate/pkg/flowstate/v1.MustBeExpression], and
+	// `--plugin-dir` is what registers a launched plugin's tasks there (#724,
+	// #710). Without it the validator has not been told the task exists, so a
+	// Flowfile naming one is told the task is unknown and this declaration is
+	// never consulted — inert because nothing asked, rather than unimplemented.
 	ExpressionInputs []string
 
 	// NeedsScope reports whether the task must receive prior step outputs and
