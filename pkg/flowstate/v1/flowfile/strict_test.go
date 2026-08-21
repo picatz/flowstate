@@ -201,3 +201,129 @@ steps:
 	assert.Equal(t, src, string(result.Source), "a refused file is left byte for byte alone")
 	assert.Contains(t, result.Refusals[0].Message, "an anchor (`&shared`) is not part of the Flowfile grammar")
 }
+
+// TestFixRefusesEachStrictConstructWhereItIsWritten covers the other two
+// constructs through the fixer, and covers all three the way a diagnostic is
+// meant to be read: at a line and column an author can go to.
+//
+// The compiler's positions are asserted above; the fixer builds its own
+// [flowfile.Diagnostic] from the same collector (strict.go's
+// strictYAMLRefusalsIn), and "same collector" is a claim only a test comparing
+// the two can keep true.
+func TestFixRefusesEachStrictConstructWhereItIsWritten(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		src          string
+		line, column int
+		message      string
+	}{
+		"an alias": {
+			src: `edition: v2026.3
+name: t
+vars:
+  base: hi
+steps:
+  - id: a
+    log:
+      message: *base
+`,
+			line: 8, column: 16,
+			message: "an alias (`*base`) is not part of the Flowfile grammar",
+		},
+		"a merge key": {
+			src: `edition: v2026.3
+name: t
+defaults: &policy
+  timeout: 30s
+steps:
+  - id: a
+    <<: *policy
+    log:
+      message: hi
+`,
+			line: 7, column: 5,
+			message: "a merge key (`<<:`) is not part of the Flowfile grammar",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// The premise both halves of this rest on: the compiler refuses the
+			// file, so a rewrite of it could only ever be a file `flow validate`
+			// then rejects.
+			_, _, err := flowfile.Parse([]byte(test.src))
+			require.Error(t, err, "premise: the construct must not compile")
+
+			result, err := flowfile.Fix([]byte(test.src))
+			require.NoError(t, err)
+			require.NotEmpty(t, result.Refusals)
+			assert.False(t, result.Complete())
+			assert.Equal(t, test.src, string(result.Source), "a refused file is left byte for byte alone")
+
+			var found *flowfile.Diagnostic
+			for i := range result.Refusals {
+				if strings.Contains(result.Refusals[i].Message, test.message) {
+					found = &result.Refusals[i]
+					break
+				}
+			}
+			require.NotNil(t, found, "the construct itself must be named: %v", result.Refusals)
+			assert.Equal(t, test.line, found.Line)
+			assert.Equal(t, test.column, found.Column)
+		})
+	}
+}
+
+// TestFixRefusesBeforeItRewritesAnything is the ordering the refusal is only
+// safe because of, and the one a test can hold in place.
+//
+// The fixture is a file `flow fix` would otherwise certainly change: it declares
+// no edition, so the stamp applies (TestFixStampsAnEditionOntoAFileWithoutOne),
+// and it writes the retired `task:` block. Adding one anchor to it must turn the
+// whole rewrite off — not narrow it — because a file that came back stamped and
+// modernized *and* still holding an anchor is `flow fix . && git commit`
+// succeeding on a file `flow validate` rejects, which is the outcome the fixer's
+// refusal exists to prevent.
+//
+// It is also what keeps the fixer's own alias walks ([fixer.resolved],
+// [fixer.collectAnchors]) out of reach of hostile input: they run in the
+// expression pass, which is downstream of this refusal. Should that order ever
+// change, this fails rather than the bound quietly going live untested (#841).
+func TestFixRefusesBeforeItRewritesAnything(t *testing.T) {
+	t.Parallel()
+
+	rewritable := `name: t
+steps:
+  - id: a
+    task:
+      name: log
+      inputs:
+        message: hi
+`
+	// The premise: without the anchor this file is rewritten.
+	result, err := flowfile.Fix([]byte(rewritable))
+	require.NoError(t, err)
+	require.True(t, result.Changed(), "premise: this file is one flow fix rewrites")
+	require.Contains(t, string(result.Source), "edition: "+flowfile.CurrentEdition)
+
+	withAnchor := `name: t
+defaults: &policy
+  timeout: 30s
+steps:
+  - id: a
+    task:
+      name: log
+      inputs:
+        message: hi
+`
+	result, err = flowfile.Fix([]byte(withAnchor))
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Refusals)
+	assert.False(t, result.Changed(), "no part of the rewrite may run on a refused file")
+	assert.Equal(t, withAnchor, string(result.Source))
+	assert.NotContains(t, string(result.Source), "edition: ",
+		"the edition stamp in particular: stamping a file the compiler refuses is the worst version of this")
+}
