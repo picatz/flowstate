@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -219,33 +218,53 @@ func CheckWebhookVerifyScheme(name, scheme string, key *Value) error {
 	return nil
 }
 
-// CheckWebhookIdempotencyKey reports a webhook with no dedupe key, or with one
-// that would name every delivery alike.
+// CheckWebhookIdempotencyKey reports a webhook with no dedupe key.
 //
 // Required rather than optional, and the reason is stated where somebody meets it:
 // webhook delivery is at-least-once by nature, so a trigger with no key turns every
 // retried delivery into a second run. An integration that genuinely has no stable
 // key has to write that down rather than inherit it from a default nobody chose.
 //
-// Two questions are asked about a key that *is* written, and they are different
-// questions:
+// # What this refuses, and the wider thing it does not
 //
-//  1. Does the expression name the delivery at all — a free occurrence of `event`,
-//     one no enclosing comprehension has shadowed
-//     ([celExprReferencesIdentifier])? That is syntax, and it is what refuses
-//     `"all-events"` and `[1].map(event, string(event))[0]`.
-//  2. Does its value actually move when the delivery does
-//     ([idempotencyKeyIsConstantUnderProbe])? That is behaviour, and it is what
-//     refuses `true ? "all-events" : event.body.id` — an expression with a real
-//     free `event` sitting in a branch nothing takes, which passes the first
-//     question and still collapses every delivery onto one run (#733).
+// It asks one question — does the expression *name* the delivery, a free
+// occurrence of `event` no enclosing comprehension has shadowed
+// ([celExprReferencesIdentifier])? That question is answerable from the syntax
+// and its answer is a proof: an expression with no free `event` cannot read the
+// delivery, so it cannot vary with it, on any delivery that will ever arrive.
 //
-// The second question is answered by evaluating rather than by inspecting,
-// because the inspecting version of it is constant folding: a special case for a
-// literal condition closes `true ? … : …` and leaves `1 == 1 ? … : …`, a constant
-// `has()`, a comparison of two literals and a macro over a literal list all
-// passing — a check that reads complete when it is not. Evaluation catches every
-// one of those shapes at once and needs no folder.
+// The wider question — does the key's *value* actually move when the delivery
+// does — is not answered here, and #733 is the record of why. Naming the delivery
+// is not the same as depending on it: `${true ? "all-events" : event.body.id}`
+// carries a real free `event` in a branch nothing takes, passes this check, and
+// still collapses every delivery onto one run.
+//
+// Two ways to close that were tried and rejected, and the second is the one worth
+// knowing about because it looks like it works:
+//
+//   - Constant folding, partially. A special case for a literal condition closes
+//     the example above and leaves `1 == 1 ? … : …`, a constant `has()`, a
+//     comparison of two literals and a macro over a literal list all passing — a
+//     check that reads complete when it is not.
+//   - Evaluating the key against synthetic deliveries and refusing one that comes
+//     out the same string every time. This was built, reviewed and backed out: a
+//     finite sample can witness that a key *varies* and can never prove that it
+//     does not. `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`
+//     is identical across any set of synthetic deliveries that happen not to carry
+//     that type, and distinct across the ones the author cares about — so the
+//     refusal lands on a working file, which is the outcome CLAUDE.md rates worse
+//     than the gap it closes. This function is also reached from [BindRunInputs],
+//     from the webhook mount and from [BindWebhookTriggerInputs], so such a
+//     refusal is not an editor's squiggle: it rejects a live delivery to a webhook
+//     that had been working.
+//
+// So the check refuses what it can prove and stays silent about the rest, and the
+// residual is documented in docs/DSL.md rather than left for somebody to discover
+// by reading this function and assuming it is complete. Closing it needs a place
+// to put a finding that is evidence rather than proof — a diagnostic severity this
+// package does not have, or a rehearsal over the author's own recorded deliveries,
+// where two distinct deliveries colliding on one key is a fact rather than a
+// sample.
 func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	if key == nil {
 		return fmt.Errorf("webhook %q declares no `idempotency_key:`; delivery is at-least-once, so without one "+
@@ -266,137 +285,7 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 			name, EventRoot, EventRoot, EventHeadersField)
 	}
 
-	// Naming the delivery is not the same as depending on it. An expression can
-	// carry a free `event` in a branch that is never taken, or in an argument to a
-	// function whose answer is fixed, and evaluate to one string forever.
-	if constant, value := idempotencyKeyIsConstantUnderProbe(expression.Expr); constant {
-		return fmt.Errorf("webhook %q writes an `idempotency_key:` that mentions `%s` but evaluates to the "+
-			"same key %q for every delivery Flowstate tried it against, so every delivery would still be "+
-			"named alike and no redelivery could be recognized as one — a dead branch around `%s`, such as "+
-			"`true ? \"k\" : %s.%s.id`, reads as delivery-derived and is not. Write an expression whose value "+
-			"comes from the delivery on the path that is actually taken, such as `${%s.%s[\"stripe-signature\"]}` "+
-			"or an id from the body",
-			name, EventRoot, value, EventRoot, EventRoot, EventBodyField, EventRoot, EventHeadersField)
-	}
-
 	return nil
-}
-
-// webhookProbeDeliveries are the synthetic deliveries a key is tried against by
-// [idempotencyKeyIsConstantUnderProbe].
-//
-// Three rather than two, and they differ in every way a delivery can differ that
-// an expression could read: the value under a shared key, the *set* of keys, the
-// number of them, and the length of a list inside the body. That breadth is what
-// keeps a false refusal unlikely — a key derived from the delivery has to
-// coincide across all three before it is refused, and a key that coincides across
-// three deliveries this unalike is a key that coincides.
-//
-// The shared key names are generic on purpose. They are not an attempt to
-// enumerate what providers send: a key selecting something none of these carries
-// simply fails to evaluate, which is the undecided answer, not a refusal.
-func webhookProbeDeliveries() []WebhookDelivery {
-	deliveries := make([]WebhookDelivery, 0, 3)
-	for i := range 3 {
-		suffix := strconv.Itoa(i)
-
-		headers := map[string]string{
-			"stripe-signature": "t=" + suffix + ",v1=probe-" + suffix,
-			"x-request-id":     "request-" + suffix,
-		}
-		items := make([]any, 0, i+1)
-		for j := 0; j <= i; j++ {
-			items = append(items, "item-"+suffix+"-"+strconv.Itoa(j))
-			headers["x-probe-"+strconv.Itoa(j)] = "probe-" + suffix + "-" + strconv.Itoa(j)
-		}
-
-		deliveries = append(deliveries, WebhookDelivery{
-			Headers: headers,
-			Body: map[string]any{
-				"id":    "delivery-" + suffix,
-				"type":  "probe." + suffix,
-				"count": int64(i + 1),
-				"items": items,
-				"data":  map[string]any{"id": "nested-" + suffix},
-			},
-			Verified: true,
-		})
-	}
-
-	return deliveries
-}
-
-// idempotencyKeyIsConstantUnderProbe reports whether key evaluates to one and the
-// same string across every delivery in [webhookProbeDeliveries], returning that
-// string for the diagnostic to quote.
-//
-// Three properties make this safe to run in an author's editor, on every
-// keystroke, and each is a rule this repository already states somewhere else:
-//
-//   - It performs no I/O and can have no effect on anything. A trigger's scope
-//     binds `event` and nothing else — no steps, no vars, no inputs, no `now` —
-//     and every function in a profile's environment is a pure CEL builtin or an
-//     extension library function over its arguments. There is no secret backend,
-//     no clock and no network reachable from here, which is what keeps DNS off
-//     the keystroke path exactly as [netpolicy.Policy.CheckURL] is kept out of
-//     validation.
-//   - It is bounded by cost rather than by time, through [DefaultEvaluator] and
-//     [DefaultCostLimit] — the same budget every other evaluation in the system
-//     runs under, and the bound that matches the resource the author controls
-//     here.
-//   - It fails *undecided*, not closed. Any evaluation that errors, exhausts its
-//     budget, or answers with something other than a string leaves the key
-//     accepted, because the question this asks is whether the key is provably
-//     constant, and an expression that would not evaluate has proved nothing. A
-//     false diagnostic — refusing a file that is right, on the strength of a
-//     probe that could not read it — is the outcome CLAUDE.md rates worst, and
-//     the usual real key (`event.body.id`, a header this probe does not send)
-//     lands squarely in this arm.
-//
-// The profile is the original one, because a check reading a trigger's own
-// declaration has no workflow in hand to ask. Today that is exactly the
-// environment every expression evaluates in; the day a second profile exists and
-// an expression uses a vocabulary the original lacks, such a key fails to
-// evaluate here and is accepted — the undecided arm again, never a wrong refusal.
-func idempotencyKeyIsConstantUnderProbe(key *expr.ParsedExpr) (bool, string) {
-	ctx := context.Background()
-
-	scope := NewScope("", nil)
-	evaluator := DefaultEvaluator()
-
-	var first string
-	for i, delivery := range webhookProbeDeliveries() {
-		event := NewWebhookEvent(delivery.Headers, delivery.Body)
-		if event.Error() != nil {
-			return false, ""
-		}
-
-		activation := scope.ActivationWith(ctx, map[string]ref.Val{EventRoot: eventRefValue(event)})
-
-		out, err := evaluator.EvalParsedBase(ctx, scope.GetProfile(), key, activation)
-		if err != nil {
-			return false, ""
-		}
-
-		text, ok := out.Value().(string)
-		if !ok {
-			// A key has to be a string by the time a delivery is named
-			// ([BindWebhookTriggerInputs] says so with a delivery in hand); what a
-			// probe makes of a non-string result is nothing, because comparing two
-			// values of an arbitrary type is a different question than this one.
-			return false, ""
-		}
-
-		if i == 0 {
-			first = text
-			continue
-		}
-		if text != first {
-			return false, ""
-		}
-	}
-
-	return true, first
 }
 
 // celExprReferencesIdentifier reports whether an expression has a *free*
