@@ -12,8 +12,9 @@ If you only want to *use* a plugin somebody else wrote,
 protocol rather than the Go SDK, skip to
 [Writing one in another language](#writing-one-in-another-language).
 
-Everything below was run against `c4ead7c`, from a module outside this
-repository, and the transcripts are what the commands actually printed.
+Every transcript below is what the command actually printed, run from a module
+outside this repository against `c4ead7c`; the `file:line` references are against
+`5ab0309`, which changes nothing on this path.
 
 ## Contents
 
@@ -98,11 +99,11 @@ func greet(_ context.Context, inputs map[string]*flowstatev1.Value, _ *flowstate
 }
 ```
 
-`sdk.Main` is the whole of `func main` (`sdk/sdk.go:312-325`). The manifest the
+`sdk.Main` is the whole of `func main` (`sdk/sdk.go:314-327`). The manifest the
 engine sees is derived from that struct rather than written beside it, so a
 plugin cannot advertise a capability it did not implement: `Secrets` being set
 is what advertises secret resolution, and a non-empty `Tasks` is what advertises
-tasks (`sdk/sdk.go:688-730`).
+tasks (`sdk/sdk.go:690-732`).
 
 Resolve the dependency, build under the name discovery looks for, and ask what a
 worker would find:
@@ -131,10 +132,10 @@ the binary's suffix and ignores everything without the prefix
 `flow plugins` will tell you the directory is empty. The suffix is also the
 qualifier a Flowfile writes — `hello.greet:` — and a plugin cannot choose or
 forge it, which is why two plugins may each provide `post` without colliding
-(`sdk/sdk.go:204-212`).
+(`sdk/sdk.go:203-212`).
 
 Run the binary from a shell and it explains itself rather than speaking a binary
-protocol at your terminal (`sdk/sdk.go:333-367`):
+protocol at your terminal (`sdk/sdk.go:335-369`):
 
 ```console
 $ ./bin/flowstate-plugin-hello
@@ -156,7 +157,7 @@ task's `Input` and `Output` are zero values of protobuf messages whose
 descriptors travel to the engine in the manifest, which is what lets the engine
 validate a workflow using your task, complete its fields in an editor, and
 document it — without compiling a line of your code
-(`sdk/sdk.go:217-226`, `plugin/descriptor.go:25-29`).
+(`sdk/sdk.go:218-226`, `plugin/descriptor.go:25-29`).
 
 So: a schema of your own.
 
@@ -266,7 +267,7 @@ your build time and visible later, at a host, to somebody who cannot fix it.
 `Task.Input` and `Task.Output` may be nil (`sdk/sdk.go:225-226`), the host
 accepts a manifest that names no message for a side
 (`plugin/descriptor.go:34-36`), and `flow plugins` renders it as `inputs none`
-(`cmd/flow/tasks.go:592-597`, rendered from `cmd/flow/plugins.go:298-301`). Every
+(`cmd/flow/tasks.go:592-596`, rendered from `cmd/flow/plugins.go:298-301`). Every
 part of that is deliberate, and the sum of it is a task with no contract at all,
 described in the same word a task with genuinely no inputs uses.
 
@@ -315,11 +316,11 @@ Two things follow that are worth knowing before you build on it:
   `pkg/flowstate/v1/plugin/sdk` pulls the module: 368 packages across 126 modules
   in the graph for the chapter-one plugin, and a 24 MB binary. That is a
   consequence of `TaskFunc` speaking in `flowstatev1.Value` and
-  `flowstatev1.Scope` (`sdk/sdk.go:301`), which is also what makes a plugin task
+  `flowstatev1.Scope` (`sdk/sdk.go:303`), which is also what makes a plugin task
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade (`sdk/sdk.go:608-621`, `protocol.go:171` for the current
+  which side to upgrade (`sdk/sdk.go:610-623`, `protocol.go:171` for the current
   version). Nothing equivalent covers the Go types you compile against.
 
 The two in-tree plugin modules are not the counter-example they look like. Each
@@ -331,7 +332,7 @@ not a line to copy.
 ### 3. The manifest's string lists are claims nothing cross-checks
 
 `DeferredInputs`, `ExpressionInputs` and `SecretInputs` name inputs by string.
-The SDK copies them into the manifest as given (`sdk/sdk.go:734-762`), and the
+The SDK copies them into the manifest as given (`sdk/sdk.go:736-764`), and the
 host's `checkManifest` validates the manifest's shape, its capabilities, its
 schemes and its task-name uniqueness — and never intersects those three lists
 with the descriptors sitting beside them in the same message
@@ -360,7 +361,7 @@ execution, to whoever is running the workflow rather than to whoever wrote the
 plugin. `flow validate` cannot catch it: the manifest's `secret_inputs` reaches
 the registry as `TaskDef.SecretInputs` (`registry.go:155-172`), but the
 validator's secret checking consults only `NestedSecretInputs`, for structures
-that hold a reference inside them (`flowfile/secret.go:261`, `registry.go:378`).
+that hold a reference inside them (`flowfile/secret.go:259-262`, `registry.go:378`).
 
 All three lists are checkable against the descriptors at `sdk.Run` time, which is
 earlier than either and reaches the person who can fix it. Nothing does it today;
@@ -370,7 +371,7 @@ see [known limitations](#known-limitations).
 
 **A stray write to stdout before serving corrupts the handshake.** The SDK
 points `os.Stdout` at stderr, but only *after* announcing, because the
-announcement is the one thing stdout is for (`sdk/sdk.go:489-497`). Anything
+announcement is the one thing stdout is for (`sdk/sdk.go:488-499`). Anything
 printed before that — a debug line, a dependency's `init`, a library's banner —
 lands where the host is reading a protocol:
 
@@ -387,14 +388,14 @@ it still names your first debug line as a protocol failure. Log through
 `sdk.WithLogger` or to stderr; after `sdk.Main` is serving, `fmt.Println` is
 harmless, since stdout has been redirected — but Go code writing to file
 descriptor 1 directly, such as linked C, gets through regardless
-(`sdk/sdk.go:494-497`).
+(`sdk/sdk.go:496-499`).
 
 **`ShapesOutputs` is a claim about your executor, and three host surfaces believe
 it.** Setting it says this task reads an input named `outputs` as a mapping of
 name to expression and returns *those* names instead of its declared ones. The
 compiler, the validator and the language server all describe the step in those
 terms, so a task that sets it and returns its declared outputs anyway gets all
-three describing a step that produces something else (`sdk/sdk.go:275-292`).
+three describing a step that produces something else (`sdk/sdk.go:275-294`).
 False is the right answer for every ordinary task, including one that happens to
 have an input called `outputs`.
 
@@ -420,11 +421,11 @@ The fields not covered above, each a claim the engine acts on:
 
 | Field | What it says | Reference |
 | --- | --- | --- |
-| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `sdk/sdk.go:255-259` |
+| `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `sdk/sdk.go:257-261` |
 | `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `sdk/sdk.go:228-236` |
-| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `sdk/sdk.go:238-253` |
-| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `sdk/sdk.go:261-271` |
-| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `sdk/sdk.go:275-292` |
+| `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `sdk/sdk.go:238-255` |
+| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `sdk/sdk.go:263-273` |
+| `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `sdk/sdk.go:275-294` |
 | `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `sdk/sdk.go:138-148` |
 
 `ExpressionInputs` is enforced by `flow validate` when the validator has been
@@ -469,7 +470,7 @@ constructors rather than as a bare error (`sdk/errors.go:22-30`):
 > An error from a plugin is surfaced to users and written to workflow history,
 > which is durable and broadly readable. Never interpolate a secret, a token, or
 > a credential-bearing backend message into one. The same applies to what a
-> `Health` check returns, which the engine logs (`sdk/sdk.go:977-987`).
+> `Health` check returns, which the engine logs (`sdk/sdk.go:979-989`).
 
 ## Writing one in another language
 
