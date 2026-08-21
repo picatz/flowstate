@@ -561,6 +561,53 @@ the thing rather than from where it is written. And test by comparing bytes or b
 compiling the result: asserting the output still validates is what let all of this
 through.
 
+## `errors.AsType` in new code, and never as a sweep
+
+Go 1.26 added `errors.AsType[E error](err error) (E, bool)`, the generic form of
+`errors.As` that returns the value instead of filling in a pointer you declared a
+line earlier. **New code uses it.** That is the only unconditional part of this
+section.
+
+The existing 121 `errors.As` call sites across 65 files are deliberately left
+alone, and #499 is where that was decided rather than a gap nobody noticed. A
+mechanical rewrite of all of them is churn with real regression surface bought for
+a readability gain: the risk per site is small but not zero, and a diff that large
+is one nobody reads carefully. So an existing site converts only when its file is
+already open for another reason, so the conversion rides in a diff a reviewer is
+looking at anyway — never as a standalone sweep PR, and never as a task picked up
+on its own.
+
+When one does ride along, three shapes do not convert mechanically, and the first
+of them is a compile error rather than a silent one:
+
+- **An interface target that does not itself implement `error`.** `errors.As`
+  accepts any interface target; `AsType` constrains `E` to `error`, so
+  `cmd/flow/execute.go:207` — where the target is `commandSuggester`, an interface
+  whose only method is `nextCommands()` — cannot be converted at all. Leave it.
+- **A `switch { case errors.As(...): }` chain.** `AsType` binds by assignment, so a
+  case chain becomes an `if`/`else if` chain: a restructure to read, not a swap.
+  Five sites are this shape, and three of them sit in the two densest clusters —
+  `pkg/flowstate/v1/engine/workflow.go:165`, the file #499 names as the natural
+  first candidate, and `pkg/flowstate/v1/plugin/sdk/errors.go:191` and `:195`.
+- **A target whose value has to survive a failed match.** `errors.As` leaves the
+  target untouched when it does not match, so a variable reused across branches
+  still holds whatever the last successful call put there; `AsType` hands back a
+  fresh zero. No site in the tree relies on that today — every reused *name* is a
+  separate function's own variable — but it is the one difference that changes
+  behaviour rather than shape, so check the scope before assuming a rename is all
+  that happened.
+
+The shape that actually pays is the boolean-only test, where the declaration
+existed solely to be passed by address: `errors.As(err, new(*netpolicy.DenyError))`
+(`plugins/git/errors.go:81`, `plugins/vcs/errors.go:61`) says what it means as
+`_, ok := errors.AsType[*netpolicy.DenyError](err)`.
+
+Temporal's `serviceerror` types are detected with `errors.As` on purpose — that is
+how a `*serviceerror.NotFound` is told apart from a transport failure, and getting
+it wrong turns "the run is gone" into "the server is broken". `AsType` matches
+identically, but those sites carry a decision, not just a type assertion. Convert
+one only with its tests in front of you.
+
 ## A design sketch names the spelling it already has
 
 The most expensive mistakes in this repository have not been wrong code. They have
