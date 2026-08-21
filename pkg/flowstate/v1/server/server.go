@@ -879,6 +879,21 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	if err != nil {
 		return nil, err
 	}
+
+	// Answered here, where the two copies are both in hand, and carried to the
+	// response below rather than recomputed there — see
+	// [v1.RunResponse.specification_as_submitted] for what the caller does with
+	// it, and #734 for the leak it closes.
+	//
+	// Compared by value rather than reported as "was there a trusted entry":
+	// a deployment that registers the identical specification a caller submits
+	// has substituted nothing observable, and the caller's copy still describes
+	// the run exactly. It is also the comparison that keeps answering correctly
+	// if anything between here and ExecuteWorkflow ever starts transforming the
+	// specification — defaults, expansion, normalization — none of which the
+	// trusted-entry question would notice.
+	asSubmitted := proto.Equal(req.Msg.GetWorkflow(), workflow)
+
 	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
 		return nil, err
@@ -963,6 +978,14 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 			WorkflowId: workflowID,
 			RunId:      run.GetRunID(),
 			Status:     v1.RunResponse_STATUS_RUNNING,
+
+			// Always set, on both answers: the field's whole design rests on
+			// silence meaning "this server does not say", so a server that does
+			// say must never leave it unset for the false case and let a client
+			// read a deliberate answer as an old server's shrug — or, worse,
+			// leave it unset for the *true* case, which reads as substitution
+			// and redacts a run's outputs that nothing needed to redact.
+			SpecificationAsSubmitted: proto.Bool(asSubmitted),
 		},
 	), nil
 }
