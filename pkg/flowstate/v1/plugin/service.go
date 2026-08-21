@@ -149,7 +149,35 @@ func (s taskService) ExecuteStream(
 
 	ctx, cancel := s.plugin.callContext(ctx)
 
-	stream, err := inst.clients.task.ExecuteStream(ctx, req)
+	// taskStream, not task: this call's response is the same
+	// progress-frames-then-terminal-response shape [Plugin.executeTask]
+	// (task.go) drives, and it needs the identical reserve — see
+	// [DefaultMaxProgressFrames] and [newClients]'s own doc comment on why
+	// only the streaming client carries it. Issue #804 was found and fixed
+	// on the internal dispatch path; this exported one shares the same
+	// shape and the same bug, caught in review before it shipped
+	// (picatz/flowstate#813) rather than by a second issue.
+	//
+	// What this method does *not* do is [Plugin.executeTask]'s other half:
+	// counting progress frames and dropping any past MaxProgressFrames. That
+	// counting exists to bound how much a task's own reporting relays into
+	// the *caller's* [flowstatev1.ReportProgress] reporter — a Go callback
+	// that path installs and this one has no equivalent of, since a caller
+	// of this exported stream reads Receive/Msg itself and decides what to
+	// do with each message. There is nowhere to install a drop: the return
+	// type here is connect's own *connect.ServerStreamForClient, a concrete
+	// struct with unexported fields and no exported constructor a caller of
+	// this package could build one from, so nothing outside connect-go can
+	// wrap or filter its Receive/Msg — the compile-time proof below
+	// (`var _ pluginv1connect.TaskServiceClient = taskService{}`) is exactly
+	// the promise that this method returns what the generated client itself
+	// would, unmodified in shape. The aggregate byte ceiling above is what
+	// still bounds this path: it is the same reserved taskStream client
+	// [Plugin.executeTask] uses, so a plugin reporting within
+	// MaxProgressFrames cannot starve this call's terminal response any more
+	// than it can starve the internal one, and one reporting far beyond it
+	// still hits a finite ceiling and is refused either way.
+	stream, err := inst.clients.taskStream.ExecuteStream(ctx, req)
 	if err != nil {
 		cancel()
 		return nil, err

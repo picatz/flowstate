@@ -219,15 +219,48 @@ func (p *Plugin) executeTask(
 		Namespace: request.GetNamespace(),
 	}
 
-	stream, err := inst.clients.task.ExecuteStream(callCtx, connect.NewRequest(streamReq))
+	stream, err := inst.clients.taskStream.ExecuteStream(callCtx, connect.NewRequest(streamReq))
 	if err != nil {
 		return nil, err
 	}
+
+	// progressFrames counts every progress message this call has received,
+	// relayed or not. Once it passes p.cfg.MaxProgressFrames, further
+	// progress frames in this same call are received (so the stream keeps
+	// moving toward its terminal response) but not forwarded — see
+	// DefaultMaxProgressFrames for why dropping, not failing the call, is the
+	// answer to a task that is behaving exactly as documented, and
+	// [newClients]'s streaming transport for the separate byte headroom that
+	// makes this bound something other than cosmetic: without it, a task
+	// under the cap could still exhaust the shared response budget one
+	// legitimate tiny frame at a time before its own terminal response
+	// arrived (#804).
+	maxProgressFrames := p.cfg.MaxProgressFrames
+	var progressFrames int
 
 	for stream.Receive() {
 		msg := stream.Msg()
 
 		if progress := msg.GetProgress(); progress != nil {
+			// The reserve's arithmetic (progressReserve, transport.go) is
+			// per-frame: it holds only while no single frame exceeds
+			// maxProgressFrameWireBytes. That has to be enforced here, not
+			// assumed — a frame carrying protobuf unknown fields (a schema
+			// this build has never seen, or a hostile peer padding one) can
+			// be arbitrarily large up to the transport ceiling, and enough of
+			// them would spend the terminal response's own share, recreating
+			// the starvation the reserve exists to prevent. An oversized
+			// frame is a protocol violation, refused rather than dropped:
+			// dropping would leave its bytes already spent against the
+			// ceiling while this loop reported nothing wrong.
+			if err := checkProgressFrameSize(msg); err != nil {
+				return nil, fmt.Errorf("plugin %q: task %q: %w",
+					p.name, request.GetTask().GetName(), err)
+			}
+			progressFrames++
+			if progressFrames > maxProgressFrames {
+				continue
+			}
 			reportWirePhase(ctx, progress.GetPhase())
 			continue
 		}

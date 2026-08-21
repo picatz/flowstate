@@ -71,6 +71,36 @@ const (
 	// Task.EvalInScope with a diagnosis naming both numbers.
 	DefaultMaxResponseBytes = 4 << 20 // 4 MiB
 
+	// DefaultMaxProgressFrames bounds how many TaskProgress frames one
+	// ExecuteStream call relays to the caller's progress reporter before the
+	// rest are dropped rather than forwarded.
+	//
+	// Issue #804: MaxResponseBytes bounds the *aggregate* ExecuteStream
+	// response — every TaskProgress frame and the terminal ExecuteResponse all
+	// share one byte budget, enforced once over the whole HTTP response body
+	// (see boundedTransport in transport.go). A task that reports progress
+	// frequently, especially inside a loop, could exhaust that shared budget
+	// on its own progress before its terminal response ever arrived, failing
+	// an otherwise-successful task on the strength of its own reporting
+	// frequency rather than anything wrong with its result.
+	//
+	// The fix is a separate, additive allowance reserved for progress frames
+	// — see maxProgressFrameWireBytes in transport.go — so the terminal
+	// response keeps its own full share of MaxResponseBytes regardless of how
+	// much a task reports. That reserve is sized by a frame *count* rather
+	// than by an arbitrary byte figure because TaskPhase is a closed
+	// vocabulary (progress.go): every legitimate frame's wire size is fixed
+	// and small, which makes a count of frames — not a count of bytes — the
+	// resource actually worth bounding here. This constant is that count.
+	// Once one ExecuteStream call has relayed this many, further progress
+	// frames in the same call are dropped rather than forwarded or treated as
+	// a failure: a task's own reporting frequency must never be able to fail
+	// the call, only crowd out how much of its own progress the caller gets
+	// to see. The overall aggregate bound plugin output is still capped by
+	// MaxResponseBytes plus that same fixed reserve, so a plugin streaming
+	// unbounded garbage — progress-shaped or not — is still refused.
+	DefaultMaxProgressFrames = 4096
+
 	// DefaultMaxRestarts is how many times a plugin that exits on its own is
 	// relaunched before it is given up on. A plugin that crashes on every launch
 	// must stop being relaunched and be reported, or a broken binary becomes an
@@ -213,6 +243,21 @@ type Config struct {
 	// [DefaultMaxResponseBytes].
 	MaxResponseBytes int
 
+	// MaxProgressFrames bounds how many TaskProgress frames one ExecuteStream
+	// call relays to the caller's progress reporter before later ones in the
+	// same call are dropped. Zero selects [DefaultMaxProgressFrames].
+	//
+	// The dropping is specific to [Plugin.executeTask]'s internal dispatch,
+	// which is the one path with a reporter to drop frames *from*. A caller
+	// using the exported [Plugin.TaskService] / [Host.TaskServiceForTask]
+	// stream directly reads every frame the plugin sends — see
+	// taskService.ExecuteStream's own doc comment in service.go for why that
+	// cannot be filtered — but is still governed by the same reserved byte
+	// ceiling this value sizes, so a plugin cannot starve either path's
+	// terminal response by reporting within this bound, and reporting far
+	// beyond it is refused on both.
+	MaxProgressFrames int
+
 	// MaxRestarts caps relaunches of a plugin that exits on its own. Zero
 	// selects [DefaultMaxRestarts]; a negative value disables restarting, so a
 	// plugin that exits stays exited.
@@ -276,6 +321,7 @@ func (c Config) withDefaults() Config {
 
 	setInt(&c.HealthFailureThreshold, DefaultHealthFailureThreshold)
 	setInt(&c.MaxResponseBytes, DefaultMaxResponseBytes)
+	setInt(&c.MaxProgressFrames, DefaultMaxProgressFrames)
 	setInt(&c.MaxRestarts, DefaultMaxRestarts)
 	setInt(&c.MaxDescriptorBytes, DefaultMaxDescriptorBytes)
 	setInt(&c.MaxDescriptorFiles, DefaultMaxDescriptorFiles)
