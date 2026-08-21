@@ -231,7 +231,7 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	}
 
 	inst.protocolVersion = handshake.ProtocolVersion
-	inst.clients = newClients(socketPath, token, cfg.MaxResponseBytes, found.Name)
+	inst.clients = newClients(socketPath, token, cfg.MaxResponseBytes, cfg.MaxProgressFrames, found.Name)
 
 	return inst, nil
 }

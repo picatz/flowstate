@@ -38,9 +38,22 @@ type clients struct {
 	secret pluginv1connect.SecretServiceClient
 	task   pluginv1connect.TaskServiceClient
 
+	// taskStream is the TaskServiceClient [Plugin.executeTask] calls
+	// ExecuteStream on. It is a second client rather than a reused reference
+	// to task above so that its transport can carry a larger byte ceiling —
+	// MaxResponseBytes plus the fixed progress reserve described on
+	// [DefaultMaxProgressFrames] — without touching what Execute, Describe,
+	// or a secret resolution may return. Only ExecuteStream's aggregate
+	// response mixes progress frames in with a terminal response, so only
+	// its transport needs the extra headroom; every other call keeps exactly
+	// the ceiling an operator configured.
+	taskStream pluginv1connect.TaskServiceClient
+
 	// transport is retained only so that its idle connections can be closed
 	// when the plugin goes away. Leaving them open would keep a file descriptor
-	// per dead plugin.
+	// per dead plugin. Both http.Clients above share this one: two
+	// boundedTransports with different limits wrap the identical dialer and
+	// connection pool, so closing it once covers both.
 	transport *http.Transport
 }
 
@@ -64,7 +77,7 @@ func (c *clients) close() {
 // default transport consults HTTP_PROXY, and a worker that has one set would
 // otherwise try to reach a plugin's socket through a proxy. A transport with no
 // proxy function cannot.
-func newClients(socketPath, token string, maxResponseBytes int, plugin string) *clients {
+func newClients(socketPath, token string, maxResponseBytes, maxProgressFrames int, plugin string) *clients {
 	transport := &http.Transport{
 		// Proxy is deliberately nil; see above.
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -92,6 +105,17 @@ func newClients(socketPath, token string, maxResponseBytes int, plugin string) *
 		// shorter one and be invisible to a caller's longer one.
 	}
 
+	// streamHTTPClient is used only for the taskStream client below — see its
+	// own field doc for why ExecuteStream alone gets the extra headroom.
+	// connect.WithReadMaxBytes is unchanged between the two: it bounds one
+	// *message*, not the stream, and neither a progress frame nor a terminal
+	// response got any larger — only the whole-response aggregate this
+	// package enforces itself (boundedTransport) needs to grow, to make room
+	// for however many extra tiny frames MaxProgressFrames allows.
+	streamHTTPClient := &http.Client{
+		Transport: &boundedTransport{base: transport, max: int64(maxResponseBytes) + progressReserve(maxProgressFrames)},
+	}
+
 	opts := []connect.ClientOption{
 		// A plugin is not trusted because an operator installed it. Bounding the
 		// response before it is read is what stops one making the host allocate
@@ -101,11 +125,47 @@ func newClients(socketPath, token string, maxResponseBytes int, plugin string) *
 	}
 
 	return &clients{
-		plugin:    pluginv1connect.NewPluginServiceClient(httpClient, pluginBaseURL, opts...),
-		secret:    pluginv1connect.NewSecretServiceClient(httpClient, pluginBaseURL, opts...),
-		task:      pluginv1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
-		transport: transport,
+		plugin:     pluginv1connect.NewPluginServiceClient(httpClient, pluginBaseURL, opts...),
+		secret:     pluginv1connect.NewSecretServiceClient(httpClient, pluginBaseURL, opts...),
+		task:       pluginv1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
+		taskStream: pluginv1connect.NewTaskServiceClient(streamHTTPClient, pluginBaseURL, opts...),
+		transport:  transport,
 	}
+}
+
+// maxProgressFrameWireBytes bounds the wire size of one ExecuteStreamResponse
+// message carrying a TaskProgress frame: the envelope Connect's streaming
+// protocol prefixes every message with (1 flag byte + 4 length bytes) plus
+// the marshaled protobuf payload.
+//
+// TaskPhase is a closed vocabulary (plugin.proto, mirroring progress.go), so
+// every legitimate frame's payload is the same shape: one oneof field
+// wrapping one single-byte-tag, single-byte-value enum field. That marshals
+// to 4 bytes today — 9 with its envelope —
+// [TestProgressFrameWireSizeStaysWithinBudget] measures it directly rather
+// than trusting this comment's arithmetic. This constant is more than triple
+// that measurement, so a small, deliberate addition to TaskProgress does not
+// silently under-reserve progressReserve below; that test fails first if it
+// ever would, rather than this package quietly starving a terminal response
+// again the way issue #804 reports.
+const maxProgressFrameWireBytes = 32
+
+// progressReserve is the additive byte headroom carved out of a plugin's
+// ExecuteStream transport for progress frames, on top of MaxResponseBytes'
+// own share — see [DefaultMaxProgressFrames] for why a frame count, not a
+// byte count, is what this is sized from.
+//
+// A non-positive maxProgressFrames reserves nothing, which is the fail-closed
+// answer: [Plugin.executeTask]'s own frame counter treats the identical value
+// as "drop every progress frame" (frame 1 already exceeds a cap of zero or
+// less), so a misconfiguration that reaches this function with nothing to
+// reserve for is consistent on both sides of the call, not merely harmless on
+// this one.
+func progressReserve(maxProgressFrames int) int64 {
+	if maxProgressFrames <= 0 {
+		return 0
+	}
+	return int64(maxProgressFrames) * maxProgressFrameWireBytes
 }
 
 // boundedTransport caps every response body, including the ones Connect's own

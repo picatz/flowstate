@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -63,6 +65,46 @@ func runProgressPlugin() int {
 				Fn: func(ctx context.Context, _ map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
 					flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 					flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
+					return &flowstatev1.Node_Outputs{}, nil
+				},
+			},
+			{
+				// looping is issue #804's own fixture: a task whose only work
+				// is calling ReportProgress a caller-chosen number of times,
+				// cycling through the three real phases, before returning a
+				// trivial terminal response. The count travels in the "message"
+				// input as a decimal string, reusing Task_Log_Inputs rather
+				// than adding a schema type for one test fixture's sake.
+				//
+				// Three tests drive this task, each with the loop count and
+				// config the acceptance criterion it proves needs:
+				// [TestProgressLoopDoesNotStarveTheTerminalResponse] (a small
+				// MaxResponseBytes and a loop count whose progress frames
+				// alone would have exhausted the pre-#804-fix shared budget
+				// before this Fn ever returns), [TestProgressFramesPastTheCapAreDropped]
+				// (a small MaxProgressFrames and a loop count well past it),
+				// and [TestUnboundedProgressFloodIsStillRefused] (both turned
+				// down together, and a loop count large enough that the
+				// aggregate reserve — finite, however many frames
+				// MaxProgressFrames allows — is still exhausted before the
+				// loop is).
+				Name:    "looping",
+				Summary: "reports progress a caller-chosen number of times before returning",
+				Input:   &flowstatev1.Task_Log_Inputs{},
+				Output:  &flowstatev1.Task_Log_Outputs{},
+				Fn: func(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
+					n, err := strconv.Atoi(inputs["message"].GetLiteral().GetStringValue())
+					if err != nil {
+						return nil, fmt.Errorf("looping fixture: bad count: %w", err)
+					}
+					phases := [...]flowstatev1.Phase{
+						flowstatev1.PhaseRequesting,
+						flowstatev1.PhaseReadingResponse,
+						flowstatev1.PhaseCallingPlugin,
+					}
+					for i := 0; i < n; i++ {
+						flowstatev1.ReportProgress(ctx, phases[i%len(phases)])
+					}
 					return &flowstatev1.Node_Outputs{}, nil
 				},
 			},
@@ -352,4 +394,141 @@ func TestExecuteStreamPropagatesTelemetry(t *testing.T) {
 	assert.Equal(t, fmt.Sprintf("tracer=true traceid=%s", wantTraceID), got,
 		"the plugin process must see a non-nil Tracer and a span continuing the host's own trace — "+
 			"if this shows tracer=false or a mismatched trace ID, the streaming path is not propagating telemetry")
+}
+
+// TestProgressLoopDoesNotStarveTheTerminalResponse is issue #804's own
+// acceptance criterion: a task that reports progress many times in a loop
+// must still complete successfully under a deliberately small
+// MaxResponseBytes, rather than having its own reporting frequency exhaust
+// the budget its terminal response needs.
+//
+// The numbers are chosen from real measurements, not guesses.
+// [TestProgressFrameWireSizeStaysWithinBudget] measures one legitimate
+// TaskProgress frame at 9 bytes on the wire (envelope included), and the
+// "looping" fixture's own trivial terminal response marshals to the
+// identical 9 bytes. 1000 loop iterations therefore put roughly 9000 bytes
+// on the wire — comfortably more than the 8192-byte MaxResponseBytes this
+// test configures (still generous enough for the unrelated Describe call
+// every Open makes to succeed on its own, unaffected share), which is the
+// whole point: before #804's fix, boundedTransport (transport.go) capped the
+// *entire* ExecuteStream response at that one number, progress and terminal
+// response sharing it, so this call would have failed on a progress frame
+// around iteration 910, never reaching the terminal response at all.
+// Reverting transport.go's progressReserve and task.go's use of it
+// reproduces exactly that failure — this test is what caught it before the
+// fix landed.
+func TestProgressLoopDoesNotStarveTheTerminalResponse(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, pluginDir(t, "progress"))
+	cfg.MaxResponseBytes = 8192 // Smaller than the ~9000 bytes 1000 progress frames plus the terminal response add up to.
+
+	host := openHost(t, cfg)
+	def := findTaskDef(t, host, "progress.looping")
+
+	reporter := &recordingReporter{}
+	ctx := flowstatev1.ContextWithProgress(t.Context(), reporter.report)
+
+	const loopCount = 1000
+	_, err := def.Fn(ctx, map[string]*flowstatev1.Value{
+		"message": flowstatev1.NewLiteral(strconv.Itoa(loopCount)),
+	}, nil)
+	require.NoError(t, err, "a task's own progress-reporting frequency must never starve its terminal response")
+
+	// findTaskDef's call reports PhaseCallingPlugin itself before the RPC even
+	// leaves the worker (task.go, unchanged by #804), so the wire relayed
+	// loopCount reports on top of that one.
+	assert.Len(t, reporter.recorded(), loopCount+1,
+		"every progress report from a loop under MaxProgressFrames must reach the caller, "+
+			"not merely the call succeeding despite some going missing")
+}
+
+// TestProgressFramesPastTheCapAreDropped is CLAUDE.md's own lesson applied to
+// this issue: a bound has to be shown *reached*, not merely not exceeded. It
+// configures a MaxProgressFrames far smaller than the fixture's loop count
+// and asserts the caller's reporter saw exactly that many relayed progress
+// reports — not "at least", not "at most", exactly — proving
+// [Plugin.executeTask]'s frame counter is the thing doing the dropping,
+// rather than the call merely happening to succeed for some unrelated
+// reason.
+func TestProgressFramesPastTheCapAreDropped(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, pluginDir(t, "progress"))
+	cfg.MaxProgressFrames = 5
+
+	host := openHost(t, cfg)
+	def := findTaskDef(t, host, "progress.looping")
+
+	reporter := &recordingReporter{}
+	ctx := flowstatev1.ContextWithProgress(t.Context(), reporter.report)
+
+	const loopCount = 40 // Eight times the cap, so a bug that merely reduces relaying rather than stopping it at exactly the cap would still be caught.
+	_, err := def.Fn(ctx, map[string]*flowstatev1.Value{
+		"message": flowstatev1.NewLiteral(strconv.Itoa(loopCount)),
+	}, nil)
+	require.NoError(t, err, "dropping progress frames past the cap must never fail the call")
+
+	// PhaseCallingPlugin first (task.go's own report, unaffected by the cap),
+	// then exactly cfg.MaxProgressFrames of the fixture's own cycle —
+	// Requesting, ReadingResponse, CallingPlugin, Requesting, ReadingResponse
+	// — and nothing past it, though the fixture called ReportProgress 40
+	// times.
+	assert.Equal(t,
+		[]flowstatev1.Phase{
+			flowstatev1.PhaseCallingPlugin,
+			flowstatev1.PhaseRequesting,
+			flowstatev1.PhaseReadingResponse,
+			flowstatev1.PhaseCallingPlugin,
+			flowstatev1.PhaseRequesting,
+			flowstatev1.PhaseReadingResponse,
+		},
+		reporter.recorded(),
+		"exactly MaxProgressFrames reports must be relayed, no fewer and no more, "+
+			"regardless of how many times the fixture actually called ReportProgress",
+	)
+}
+
+// TestUnboundedProgressFloodIsStillRefused is #804's other acceptance
+// criterion: progressReserve (transport.go) is a fixed, small, deliberately
+// bounded amount of extra headroom, not a second unlimited budget — a plugin
+// whose ExecuteStream output is unbounded, not merely frequent, must still be
+// refused once even the enlarged aggregate ceiling is exhausted.
+//
+// Both MaxResponseBytes and MaxProgressFrames are turned down together here,
+// to a combined ceiling small enough that the fixture's 200,000-iteration
+// loop cannot possibly complete within it — MaxResponseBytes stays just
+// large enough for Open's own unrelated Describe call to succeed (it is
+// bounded by the same number, independently: see [newClients]), and at 9
+// measured bytes per frame (see [TestProgressFrameWireSizeStaysWithinBudget])
+// the combined ceiling below still exhausts in well under a hundred frames.
+// The elapsed-time assertion is what tells this apart from the call merely
+// running out its CallTimeout: a byte bound reached fails in milliseconds,
+// and a bound that quietly stopped applying would instead run the full loop
+// (cheaply, since the fixture's reporter silently drops every send once the
+// first one fails — see sdk.go's taskService.ExecuteStream) and eventually
+// time out, seconds later, on cfg.CallTimeout instead.
+func TestUnboundedProgressFloodIsStillRefused(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, pluginDir(t, "progress"))
+	cfg.MaxResponseBytes = 8192 // Small, but enough headroom for Open's own Describe call to succeed.
+	cfg.MaxProgressFrames = 5   // Reserve = 5 * maxProgressFrameWireBytes = 160 bytes; combined ceiling of 8352 exhausts in well under a thousand frames.
+
+	host := openHost(t, cfg)
+	def := findTaskDef(t, host, "progress.looping")
+
+	const loopCount = 200_000 // Far more than the combined ceiling could ever admit.
+
+	start := time.Now()
+	_, err := def.Fn(t.Context(), map[string]*flowstatev1.Value{
+		"message": flowstatev1.NewLiteral(strconv.Itoa(loopCount)),
+	}, nil)
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "a plugin streaming far more than the combined ceiling admits must be refused, "+
+		"not accepted on the strength of the reserve #804 adds")
+	assert.Less(t, elapsed, 2*time.Second,
+		"the refusal must come from the byte bound being reached, not from cfg.CallTimeout (3s) expiring — "+
+			"an elapsed time this close to it means the bound stopped applying and the call ran the full loop instead")
 }

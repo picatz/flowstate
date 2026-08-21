@@ -23,6 +23,10 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // bodyOfSize is a deterministic body of exactly n bytes.
@@ -156,4 +160,68 @@ func TestBoundedTransportCapsAllStatuses(t *testing.T) {
 		_, got := roundTripThroughBound(t, status, 64*1024, max)
 		assert.Lenf(t, got, max+1, "status %d: oversized body must be capped at max+1", status)
 	}
+}
+
+// TestProgressFrameWireSizeStaysWithinBudget is what
+// maxProgressFrameWireBytes's own doc comment (issue #804) points at rather
+// than trusting its arithmetic: it marshals a real ExecuteStreamResponse
+// carrying each of TaskPhase's legitimate values, plus the terminal shape the
+// "looping" fixture's own trivial response takes
+// (progress_conformance_test.go), and asserts every one of them fits inside
+// the constant with real margin.
+//
+// A change that grows TaskProgress or ExecuteStreamResponse enough to close
+// that margin fails here first — loudly, in a unit test — rather than
+// quietly under-reserving progressReserve below and reintroducing #804 for
+// whichever plugin happens to report progress fastest.
+func TestProgressFrameWireSizeStaysWithinBudget(t *testing.T) {
+	t.Parallel()
+
+	marshal := func(t *testing.T, msg *pluginv1.ExecuteStreamResponse) int {
+		t.Helper()
+		b, err := proto.Marshal(msg)
+		require.NoError(t, err)
+		return len(b) + 5 // Connect's own streaming envelope: 1 flag byte + 4 length bytes.
+	}
+
+	for _, phase := range []pluginv1.TaskPhase{
+		pluginv1.TaskPhase_TASK_PHASE_REQUESTING,
+		pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE,
+		pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN,
+	} {
+		size := marshal(t, &pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Progress{
+				Progress: &pluginv1.TaskProgress{Phase: phase},
+			},
+		})
+		assert.LessOrEqualf(t, size, maxProgressFrameWireBytes,
+			"a %s progress frame is %d bytes on the wire, want no more than maxProgressFrameWireBytes (%d)",
+			phase, size, maxProgressFrameWireBytes)
+	}
+
+	terminalSize := marshal(t, &pluginv1.ExecuteStreamResponse{
+		Message: &pluginv1.ExecuteStreamResponse_Response{
+			Response: &pluginv1.ExecuteResponse{Outputs: &flowstatev1.Node_Outputs{}},
+		},
+	})
+	assert.LessOrEqualf(t, terminalSize, maxProgressFrameWireBytes,
+		"a trivial terminal response is %d bytes on the wire, want no more than maxProgressFrameWireBytes (%d) — "+
+			"the tests that rely on it fitting inside a small MaxResponseBytes assume this",
+		terminalSize, maxProgressFrameWireBytes)
+}
+
+// TestProgressReserveIsFailClosed checks progressReserve's edges directly:
+// zero and negative inputs reserve nothing (fail-closed, matching
+// [Plugin.executeTask]'s own frame counter — see progressReserve's doc
+// comment for why the two have to agree), and a positive count reserves
+// exactly that many frames' worth, no more.
+func TestProgressReserveIsFailClosed(t *testing.T) {
+	t.Parallel()
+
+	assert.Zero(t, progressReserve(0), "a zero frame budget must reserve nothing")
+	assert.Zero(t, progressReserve(-1), "a negative frame budget must reserve nothing, not be treated as unlimited")
+
+	const n = 4096 // DefaultMaxProgressFrames.
+	assert.Equal(t, int64(n*maxProgressFrameWireBytes), progressReserve(n),
+		"the reserve must be exactly frames * one frame's wire budget, the additive amount task.go's own doc comment promises")
 }

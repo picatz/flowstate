@@ -219,15 +219,33 @@ func (p *Plugin) executeTask(
 		Namespace: request.GetNamespace(),
 	}
 
-	stream, err := inst.clients.task.ExecuteStream(callCtx, connect.NewRequest(streamReq))
+	stream, err := inst.clients.taskStream.ExecuteStream(callCtx, connect.NewRequest(streamReq))
 	if err != nil {
 		return nil, err
 	}
+
+	// progressFrames counts every progress message this call has received,
+	// relayed or not. Once it passes p.cfg.MaxProgressFrames, further
+	// progress frames in this same call are received (so the stream keeps
+	// moving toward its terminal response) but not forwarded — see
+	// DefaultMaxProgressFrames for why dropping, not failing the call, is the
+	// answer to a task that is behaving exactly as documented, and
+	// [newClients]'s streaming transport for the separate byte headroom that
+	// makes this bound something other than cosmetic: without it, a task
+	// under the cap could still exhaust the shared response budget one
+	// legitimate tiny frame at a time before its own terminal response
+	// arrived (#804).
+	maxProgressFrames := p.cfg.MaxProgressFrames
+	var progressFrames int
 
 	for stream.Receive() {
 		msg := stream.Msg()
 
 		if progress := msg.GetProgress(); progress != nil {
+			progressFrames++
+			if progressFrames > maxProgressFrames {
+				continue
+			}
 			reportWirePhase(ctx, progress.GetPhase())
 			continue
 		}
