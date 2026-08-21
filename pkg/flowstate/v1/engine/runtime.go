@@ -10,14 +10,24 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
-// TaskRuntimeConfig is the immutable set of sensitive capabilities owned by one
-// worker. It is passed to activity registration rather than stored globally, so
-// two workers embedded in one process cannot overwrite each other's tenant or
-// federation configuration.
+// TaskRuntimeConfig is the immutable configuration owned by one worker: the
+// sensitive capabilities its tasks run with, and the plugin inventory its runs
+// are admitted against. It is passed to activity registration rather than stored
+// globally, so two workers embedded in one process cannot overwrite each other's
+// tenant or federation configuration — or each other's answer to "which plugins
+// is this worker holding".
+//
+// The inventory is not a capability, and naming it here widens what this type is
+// about. That is the cost being paid, deliberately: the alternative is a second
+// per-worker vehicle beside this one, and the whole defect [WithPluginCatalog]
+// closes (#777) is that the catalog had a second vehicle — a process global —
+// which the last worker to be constructed won. One thing carrying everything one
+// worker owns cannot disagree with itself about which worker it belongs to.
 type TaskRuntimeConfig struct {
-	store  *secrets.Store
-	policy *auth.SecretPolicy
-	broker *auth.Broker
+	store   *secrets.Store
+	policy  *auth.SecretPolicy
+	broker  *auth.Broker
+	catalog *v1.PluginCatalog
 }
 
 // NewTaskRuntimeConfig validates and assembles worker task capabilities.
@@ -26,6 +36,31 @@ func NewTaskRuntimeConfig(store *secrets.Store, policy *auth.SecretPolicy, broke
 		return TaskRuntimeConfig{}, fmt.Errorf("secret store and access policy must be configured together")
 	}
 	return TaskRuntimeConfig{store: store, policy: policy, broker: broker}, nil
+}
+
+// WithPluginCatalog returns a copy carrying the plugins this worker actually has.
+//
+// Called with what the worker's plugin host launched — see cmd/flow's
+// startPlugins — and the result passed to [Register], before the worker polls.
+// A worker registered without one has no plugins, which is the truthful answer
+// for a stock worker and the fail-closed one for a worker whose operator forgot:
+// every run pinned to a plugin is refused by the admission check in plugins.go
+// rather than executed by a worker that has none of it.
+//
+// A copy rather than a mutation because the zero value has to keep meaning "no
+// plugins" for every worker that never says otherwise, and a builder that
+// mutated a shared value would be the process global again wearing a method's
+// clothes.
+//
+// It is separate from [NewTaskRuntimeConfig] rather than a fourth parameter to
+// it because the two answer to different owners: the store, policy and broker
+// are a deployment's grant of authority to this worker's tasks and are checked
+// against each other, while the catalog is an observation of what this process
+// launched and can only be wrong by being somebody else's.
+func (c TaskRuntimeConfig) WithPluginCatalog(catalog *v1.PluginCatalog) TaskRuntimeConfig {
+	c.catalog = catalog
+
+	return c
 }
 
 type taskActivities struct{ configured TaskRuntimeConfig }

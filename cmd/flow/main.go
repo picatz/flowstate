@@ -601,17 +601,19 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	// The worker's own catalog, kept rather than dropped once the tasks were
-	// registered. Registration says which tasks this worker can dispatch; this
-	// says which *build* of each it dispatches them to, which is what a run pinned
-	// at submit is admitted against before any step of it executes here. Installed
-	// before Register, and before the worker polls, so no run can arrive ahead of
-	// the answer. See engine/plugins.go.
-	engine.UsePluginCatalog(pluginCatalog)
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
 		return err
 	}
+
+	// The worker's own catalog, kept rather than dropped once the tasks were
+	// registered. Registration says which tasks this worker can dispatch; this
+	// says which *build* of each it dispatches them to, which is what a run pinned
+	// at submit is admitted against before any step of it executes here. Carried
+	// on the configuration this worker is registered with rather than installed
+	// process-wide, so the answer belongs to this worker and no other worker in
+	// this process can overwrite it. See engine/plugins.go.
+	runtime = runtime.WithPluginCatalog(pluginCatalog)
 
 	interceptors := temporalWorkerInterceptors()
 	if flags.tenantSet {
@@ -1026,12 +1028,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	// A trust policy that maps tenants onto Temporal namespaces needs a client
-	// per namespace it can route to, dialed now so an unreachable namespace fails
-	// the start rather than the first tenant to submit. The server refuses a
-	// tenant the mapping cannot place — see FlowstateServer.clientFor — so this
-	// only has to hand it the pool.
+	// per namespace it can route to, dialed and verified to exist now so a
+	// mistyped or unregistered namespace fails the start rather than the first
+	// tenant to submit. The server refuses a tenant the mapping cannot place —
+	// see FlowstateServer.clientFor — so this only has to hand it the pool.
 	if policy != nil && policy.Tenancy != nil {
-		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy)
+		pool, err := temporalclient.NewPool(cmd.Context(), cfg, policy.Tenancy, logger)
 		if err != nil {
 			return fmt.Errorf("dialing the Temporal namespaces the trust policy maps tenants onto: %w", err)
 		}

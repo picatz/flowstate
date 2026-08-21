@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/converter"
@@ -403,6 +404,86 @@ func TestWaitForSignalTimeout(t *testing.T) {
 
 	require.Nil(t, outputs.GetStepValues()["deploy"],
 		"the gated step ran even though its approval lapsed")
+}
+
+// TestWaitForSignalCancelsItsTimeoutTimer is the #770 regression: a bounded
+// wait_for_signal a signal answers must not leave its timeout timer running.
+//
+// The existing tests for this outcome (TestWaitForSignal,
+// TestWaitForSignalTimeout) stay green whether or not the timer is ever
+// cancelled — both only assert the *outputs* the wait produced, and an
+// abandoned timer changes neither. Per CLAUDE.md's "test that A cannot reach
+// B, not that A can reach A", this asks the negative question instead: does
+// anything outlive the wait that created it.
+//
+// The workflow deliberately does not end at the answered gate. A run that
+// completes immediately after would let the SDK's own end-of-execution
+// cleanup cancel every outstanding future, including a leaked one, and the
+// bug (and this test) would both disappear along with it — which is exactly
+// what the issue says makes a one-shot approval gate the case that is *not*
+// where this costs anything. So a second, never-answered gate follows,
+// keeping the run open past the first gate's own one-hour bound: the shape
+// the issue names as the one that pays, `wait_for_signal:` inside something
+// that keeps running (`examples/entity-order`'s loop is the real-world
+// instance; this is its minimal shape).
+func TestWaitForSignalCancelsItsTimeoutTimer(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+
+	type scheduledTimer struct {
+		id       string
+		duration time.Duration
+	}
+	var (
+		scheduled []scheduledTimer
+		canceled  = map[string]bool{}
+		fired     = map[string]bool{}
+	)
+
+	env.SetOnTimerScheduledListener(func(timerID string, duration time.Duration) {
+		scheduled = append(scheduled, scheduledTimer{id: timerID, duration: duration})
+	})
+	env.SetOnTimerCanceledListener(func(timerID string) { canceled[timerID] = true })
+	env.SetOnTimerFiredListener(func(timerID string) { fired[timerID] = true })
+
+	// Answered a minute in, far inside its own hour-long bound, so the signal
+	// — not the timer — is what resolves this gate.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("deploy-approved", testSignalDelivery("approver@example.com", map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}))
+	}, time.Minute)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "answered-gate-stays-open",
+		Steps: []*v1.Node{
+			signalStep("approval", "deploy-approved", time.Hour),
+			// Nothing ever signals this one, so its own two-hour bound is what
+			// carries the test environment's virtual clock past the first
+			// gate's one-hour mark — the window an abandoned timer would fire
+			// in, and the reason this step is here at all.
+			signalStep("hold", "never-arrives", 2*time.Hour),
+		},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	require.Len(t, scheduled, 2, "expected one durable timer per bounded gate")
+	approvalTimer, holdTimer := scheduled[0], scheduled[1]
+
+	assert.True(t, canceled[approvalTimer.id],
+		"the answered gate's timeout timer was never cancelled — see #770")
+	assert.False(t, fired[approvalTimer.id],
+		"the answered gate's abandoned timer fired into a run that had already moved past it — see #770")
+
+	// The path #770 says was already right, for contrast: a gate nothing
+	// answers keeps timing out on its own timer.
+	assert.True(t, fired[holdTimer.id],
+		"a lapsed gate's own timer stopped firing — that path must not change")
+	assert.False(t, canceled[holdTimer.id],
+		"a lapsed gate's timer was cancelled instead of left to fire")
 }
 
 // TestWaitTimeoutLeavesPayloadKeysAbsent is the durable half of a parity check.
