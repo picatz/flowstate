@@ -65,9 +65,13 @@ func newFixCommand() *cobra.Command {
 			"standing behind a YAML alias) are reported with their position, and the file holding " +
 			"one is not written at all: a file converts entirely or it is left exactly as it was, so " +
 			"nobody is handed half a migration.\n\n" +
+			"A run that rewrites a file another one pins with `digest:` reports every pin it " +
+			"invalidated, naming the digest to adopt, and exits non-zero. It never re-stamps one: " +
+			"a pin is the caller saying it read those bytes, and only a person can say that.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
-			"instead of scrapes: what changed or would change, and what was refused, per file. CI " +
-			"that wants structured data rather than stderr text asks for one of those.",
+			"instead of scrapes: what changed or would change, what was refused, and what pins the " +
+			"run invalidated, per file. CI that wants structured data rather than stderr text asks " +
+			"for one of those.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		// A file that needs fixing is not a command someone invoked wrongly, and
@@ -108,6 +112,12 @@ flow fix --stdout old.yaml > new.yaml`,
 // --check found work to do. It carries no message because the detail has already
 // been printed.
 var errFixIncomplete = errors.New("fix did not finish")
+
+// errFixStalePin reports that the run's own rewrite invalidated a `digest:` pin
+// somewhere else in the files it was given. Its own sentinel rather than
+// [errFixIncomplete], because the fix did finish: what is left is a check the
+// author has to re-authorize by hand, named line by line above it.
+var errFixStalePin = errors.New("fix invalidated a digest: pin, which a person has to read the callee and re-adopt")
 
 // runFix rewrites each path given.
 func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
@@ -158,6 +168,7 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 		pending    bool
 		machine    = format.Machine()
 		fixReports []*v1.FixReport
+		outcomes   = make(map[string]fixOutcome, len(files))
 	)
 	for _, path := range files {
 		result, err := fixOne(out, reports, reportTheme, path, opts, machine)
@@ -166,8 +177,29 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 		}
 		refused = refused || result.refused
 		pending = pending || (result.changed && opts.check)
+		outcomes[path] = result
 		if machine {
 			fixReports = append(fixReports, result.report)
+		}
+	}
+
+	// After every file, because this is the one question that is about the run
+	// rather than about a file: a rewrite here makes a pin over there stale, and
+	// which files were rewritten is not known until the last one is done. See
+	// fixstale.go.
+	stale := findStalePins(files, outcomes)
+	for _, pin := range stale {
+		diagnostic := pin.diagnostic(!opts.check)
+		if !machine {
+			fmt.Fprintln(reports, diagnosticLine(reportTheme.Muted.Render(pin.caller),
+				flowfile.Diagnostic{
+					Line:    diagnostic.Line,
+					Column:  diagnostic.Column,
+					Message: reportTheme.Danger.Render(diagnostic.Message),
+				}))
+		}
+		if outcome, ok := outcomes[pin.caller]; ok && outcome.report != nil {
+			outcome.report.StalePins = append(outcome.report.StalePins, diagnostic.Proto())
 		}
 	}
 
@@ -195,6 +227,13 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	if refused || pending {
 		return errFixIncomplete
 	}
+	// And non-zero for a pin this run invalidated, for the same reason and with
+	// its own sentence: the rewrite landed, so nothing was refused and nothing is
+	// pending, but a call in this tree no longer compiles until somebody reads
+	// the callee and adopts the digest the lines above name.
+	if len(stale) > 0 {
+		return errFixStalePin
+	}
 	return nil
 }
 
@@ -214,6 +253,15 @@ type fixOutcome struct {
 	// machine format asked for it — the cost of building the struct is nothing next
 	// to building a rewriter twice, once for a person and once for a program.
 	report *v1.FixReport
+
+	// before and after are the file's bytes as they were read and as this run
+	// rewrites them — what `--check` *would* write, since a rewrite it only
+	// reports invalidates exactly the pins the same rewrite applied would.
+	//
+	// Carried because a pin is over bytes, so the only thing that can answer
+	// "did this run invalidate a pin" is the pair: the digest a caller wrote has
+	// to have named `before` and to no longer name `after`. See fixstale.go.
+	before, after []byte
 }
 
 // fixOne rewrites a single file.
@@ -244,7 +292,7 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 			writeErrDiagnostics(reports, theme, path, err)
 		}
 		report.Refusals = errDiagnosticsProto(err)
-		return fixOutcome{refused: true, report: report}, nil
+		return fixOutcome{refused: true, report: report, before: data, after: data}, nil
 	}
 
 	for _, refusal := range result.Refusals {
@@ -268,7 +316,21 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 	// printed above it may pretend otherwise.
 	applied := result.Changed() && !opts.check
 
-	outcome := fixOutcome{changed: result.Changed(), refused: !result.Complete(), report: report}
+	outcome := fixOutcome{
+		changed: result.Changed(),
+		refused: !result.Complete(),
+		report:  report,
+		before:  data,
+		// The bytes this run produces for the file, whether or not they were
+		// written: `--check` finding a rewrite that would invalidate a pin has
+		// the same thing to say about it as a run that made one, in a different
+		// tense. The document itself when nothing was produced, which is what
+		// [flowfile.Fix] hands back for a refusal too.
+		after: data,
+	}
+	if outcome.changed {
+		outcome.after = result.Source
+	}
 	report.Changed = outcome.changed
 
 	if len(result.Changes) == 0 {

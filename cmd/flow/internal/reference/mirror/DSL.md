@@ -4230,6 +4230,18 @@ recording. Three further properties follow from the pin being over bytes:
   a reformat just changed; that mismatch is refused at the next compile, the same as
   an author's own edit to the callee would be. Pin the callees whose change should
   stop the world, and leave the rest unpinned.
+
+  A pin does not have to be written on the step to be carried across. One that reaches
+  a step through a `<<:` merge key, or that sits on a step written as an `&anchor` and
+  reused through an `*alias`, is read the way the compiler reads it — merge keys
+  resolved, written keys winning over merged ones — because a formatter that knew less
+  about the grammar than the language does would drop exactly those pins in silence.
+- **`flow fix` reports the pins its own run invalidated.** A migration run over a
+  directory rewrites callees, and a pin on one of those is stale the moment the file is
+  written. So a run that rewrote anything reads the pins of the files it was given,
+  names each one its own rewrite invalidated — with the digest to adopt — and exits
+  non-zero. It reports only what *that run* broke: a pin that was already stale is
+  somebody else's news. And it never re-stamps one, for the reason above.
 - **It is not a signature.** It says the bytes are the bytes, not that they came from
   anywhere in particular or that they are good ones.
 
