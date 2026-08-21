@@ -799,15 +799,27 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	plain, _ := cmd.Flags().GetBool("plain")
 
 	// Unlike `flow watch` on a later invocation, `flow run` just parsed and
-	// submitted workflow itself, so the poller redacts precisely against its
-	// own declarations instead of falling back to the fail-closed case.
+	// submitted workflow itself — but holding a specification is not the same as
+	// holding the one that ran, and this deployment may have substituted its own
+	// copy for it. The poller redacts precisely only against a specification the
+	// server attested is the executed one, and falls back to the fail-closed case
+	// otherwise; see [executedSpecification] and #734.
 	reveal := revealSensitiveRequested(cmd)
-	if reveal {
+	executed := executedSpecification(workflow, started.Msg)
+	switch {
+	case reveal:
 		noteRevealedSensitiveValues(surface)
+	case executed == nil:
+		noteUnattestedSpecification(surface)
 	}
 
+	// spec is the executed specification, not the submitted workflow: the poller
+	// redacts against what the server attested it ran (#734/#826), and only the run
+	// naming — namedRun(subject) — comes from this branch. The two are independent:
+	// what a run is *called* in prose is the workflow's own name, while what it is
+	// *redacted against* has to be the attested copy or the fail-closed case.
 	return watchRun(cmd.Context(), surface, rendering,
-		clientPoller{workflowID: workflowID, server: server, client: client, spec: workflow, reveal: reveal},
+		clientPoller{workflowID: workflowID, server: server, client: client, spec: executed, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg), namedRun(subject))
 }
 
@@ -822,6 +834,11 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 // nameless file, so this is the fallback for a document that reached the server some
 // other way rather than an expected case; naming nothing at all would be the one
 // unreadable answer.
+//
+// Read from the submitted workflow rather than the executed specification on
+// purpose: a deployment may substitute its own copy of what runs, but the name a
+// person typed is the name they have, and prose is addressed to that person. The
+// redaction spec above is the one that must be the attested copy; this one must not.
 func runSubject(workflow *v1.Workflow, workflowID string) string {
 	if name := strings.TrimSpace(workflow.GetName()); name != "" {
 		return name
@@ -1107,7 +1124,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
-	flowServer := server.New(c, serverOpts...)
+	flowServer, err := server.New(c, serverOpts...)
+	if err != nil {
+		return err
+	}
 
 	// The webhook receiver, if this deployment serves any. Built before the
 	// server starts listening, because every decision it can make in advance is

@@ -17,6 +17,8 @@ import (
 	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // One Temporal server for the package, and a Temporal namespace per test.
@@ -51,10 +53,19 @@ func TestMain(m *testing.M) {
 		// left below. Skipping the download-and-boot here as well, rather than
 		// only inside that helper, is what keeps `-short` from paying the dev
 		// server's ~2 minutes of startup cost it exists to avoid.
-		os.Exit(m.Run())
+		code := m.Run()
+		removeFlowBinary()
+		os.Exit(code)
 	}
 
 	code, err := runPackageTests(m)
+
+	// Here rather than deferred inside runPackageTests, for the reason that
+	// function's own doc gives: os.Exit below runs no deferred function. See
+	// buildFlowBinary, which compiles the binary once for the whole test binary
+	// and so has no *testing.T whose Cleanup could remove it afterwards.
+	removeFlowBinary()
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -92,6 +103,23 @@ func runPackageTests(m *testing.M) (int, error) {
 	devServer = started
 
 	return m.Run(), nil
+}
+
+// mustNewFlowstateServer is [server.New] for a test whose subject is not the
+// construction.
+//
+// [server.New] reports an error because a [server.Option] can refuse — see
+// [server.WithNamespace]. The tests in this package all build the
+// zero-configuration or nil-Temporal-client server, so nothing here can refuse;
+// the error is asserted rather than dropped so that stays a fact somebody
+// checked instead of an assumption.
+func mustNewFlowstateServer(t testing.TB, temporal client.Client, opts ...server.Option) *server.FlowstateServer {
+	t.Helper()
+
+	s, err := server.New(temporal, opts...)
+	require.NoError(t, err)
+
+	return s
 }
 
 // newTemporalNamespace registers a Temporal namespace for one test and returns a

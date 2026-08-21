@@ -20,7 +20,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
@@ -297,7 +296,7 @@ func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
 
 	srv := flowmcp.NewServer("test")
 
-	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
@@ -1091,7 +1090,7 @@ func connectRemoteMCP(t *testing.T, posture *cobra.Command, fake *fakeWorkflowSe
 	address := serveFake(t, fake)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		return newWorkflowServiceClient(serverFlags{address: address})
 	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
 
@@ -1189,7 +1188,7 @@ func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flow
 	t.Helper()
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	flowmcp.AddCapabilities(srv, server.New(nil), remote, deps, mcpExtraToolsFor(posture)...)
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), remote, deps, mcpExtraToolsFor(posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
@@ -1211,7 +1210,7 @@ func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flow
 // remoteOnlyTaskName first, so the assertion that the tool's answer does
 // contain it is not vacuously true of any non-empty catalog.
 func TestTheGetCatalogToolDispatchesToAnAddressedDeployment(t *testing.T) {
-	local := server.New(nil)
+	local := mustNewFlowstateServer(t, nil)
 	localResp, err := local.GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
 	require.NoError(t, err)
 	for _, task := range localResp.Msg.GetCatalog().GetTasks() {

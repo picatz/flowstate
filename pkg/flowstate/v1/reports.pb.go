@@ -115,7 +115,22 @@ type FixReport struct {
 	// whether the file is finished: a comment mentioning a step that has moved, for
 	// instance. Distinct from Refusals for the reason `flow fix` draws that line
 	// itself: a caller must not fail a build on one of these.
-	Notes         []*Diagnostic `protobuf:"bytes,5,rep,name=notes,proto3" json:"notes,omitempty"`
+	Notes []*Diagnostic `protobuf:"bytes,5,rep,name=notes,proto3" json:"notes,omitempty"`
+	// StalePins are the `digest:` pins in this file that the run invalidated: this
+	// file calls another one the same run rewrote, and the pin it holds names the
+	// bytes that file had before. Positioned at the pin.
+	//
+	// Reported rather than re-stamped. A pin is the caller saying which bytes it
+	// read, so a rewriter that quietly wrote a new one would be authorizing bytes
+	// nobody has looked at — turning a security check off in the course of running
+	// a migration, which is the one thing `flow fix` refuses to do everywhere else.
+	// Each entry names the digest to adopt, so adopting one is a paste rather than
+	// a calculation.
+	//
+	// Distinct from Notes because a caller must fail on one: the run has left this
+	// file's call refusing to compile, and `flow fix . && git commit` must not
+	// succeed on a tree in that state.
+	StalePins     []*Diagnostic `protobuf:"bytes,6,rep,name=stale_pins,json=stalePins,proto3" json:"stale_pins,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -181,6 +196,13 @@ func (x *FixReport) GetRefusals() []*Diagnostic {
 func (x *FixReport) GetNotes() []*Diagnostic {
 	if x != nil {
 		return x.Notes
+	}
+	return nil
+}
+
+func (x *FixReport) GetStalePins() []*Diagnostic {
+	if x != nil {
+		return x.StalePins
 	}
 	return nil
 }
@@ -866,13 +888,15 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\x1aflowstate/v1/reports.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x1egoogle/protobuf/duration.proto\"A\n" +
 	"\tFixChange\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12 \n" +
-	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\"\xda\x01\n" +
+	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\"\x93\x02\n" +
 	"\tFixReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12\x18\n" +
 	"\achanged\x18\x02 \x01(\bR\achanged\x121\n" +
 	"\achanges\x18\x03 \x03(\v2\x17.flowstate.v1.FixChangeR\achanges\x124\n" +
 	"\brefusals\x18\x04 \x03(\v2\x18.flowstate.v1.DiagnosticR\brefusals\x12.\n" +
-	"\x05notes\x18\x05 \x03(\v2\x18.flowstate.v1.DiagnosticR\x05notes\"w\n" +
+	"\x05notes\x18\x05 \x03(\v2\x18.flowstate.v1.DiagnosticR\x05notes\x127\n" +
+	"\n" +
+	"stale_pins\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\tstalePins\"w\n" +
 	"\tFmtReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12\x18\n" +
 	"\achanged\x18\x02 \x01(\bR\achanged\x124\n" +
@@ -953,21 +977,22 @@ var file_flowstate_v1_reports_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
 	11, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
 	11, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	11, // 3: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
-	1,  // 4: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
-	2,  // 5: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	11, // 6: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	12, // 7: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	5,  // 8: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	7,  // 9: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
-	10, // 10: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
-	8,  // 11: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
-	6,  // 12: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	11, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
+	11, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	1,  // 5: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
+	2,  // 6: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
+	11, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	12, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	5,  // 9: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
+	7,  // 10: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
+	10, // 11: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
+	8,  // 12: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
+	6,  // 13: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_reports_proto_init() }

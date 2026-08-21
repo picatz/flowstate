@@ -168,6 +168,17 @@ plugin's design:
   `patch` input (`CommitPushInputs.patch`) - the #162 agentic-loop contract:
   `codex.exec.patch` flows straight into a `git.commit_push` step with
   nothing in between reading or writing a shared checkout.
+- **Those `git` invocations run over a repository the task controls**, so
+  they are hardened on both sides (`githarden.go`). The environment is built
+  from an explicit allowlist rather than inherited, which is what keeps
+  `GIT_DIR`, `GIT_EXTERNAL_DIFF`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*` and a
+  `~/.gitconfig` a `DANGER_FULL_ACCESS` run just wrote out of the picture;
+  the repository's own config is judged by an allowlist, so a key that names
+  a program and is *not* recognized costs the run its patch rather than
+  running the program. The cost is stated where it is paid: an unusual but
+  harmless config key, a linked worktree, a submodule checkout, or a
+  `working_context` that is a subdirectory of a larger repository all get no
+  patch, and `files_changed` still reports what the run touched.
 - **The library's own subprocess launch (`Exec.Run`) is not what this plugin
   calls.** `process.go` builds the same argv shape but constructs the
   child's environment from an explicit allowlist rather than a copy of this

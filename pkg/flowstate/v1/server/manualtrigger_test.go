@@ -49,7 +49,7 @@ func TestRunRefusesAManualStartTheWorkflowNarrowedAway(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	for _, test := range []struct {
 		name     string
@@ -104,7 +104,7 @@ func TestRunCannotRemoveADeploymentOwnedManualPolicy(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	trusted := narrowedWorkflow()
-	flowstate := server.New(temporal, server.WithTrustedWorkflows("", trusted))
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", trusted))
 
 	modified := narrowedWorkflow()
 	modified.Triggers.Manual = nil
@@ -165,7 +165,7 @@ func TestAManualStartWithAReasonRunsAndReportsItsTrigger(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	spec := &v1.Workflow{
 		Name:     "reason-required",

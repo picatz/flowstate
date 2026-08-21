@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 )
@@ -30,10 +30,11 @@ const gitBinaryEnv = "FLOWSTATE_CODEX_GIT_BIN"
 // budget silently.
 const gitTimeout = 30 * time.Second
 
-// prepareHardenedGit resolves the git binary, confirms workDir is a
-// checkout, and computes the -c overrides the *pre-run* Git invocations
-// over it must carry - once, before the first Git command touches the
-// repository.
+// prepareHardenedGit resolves the git binary, checks that workDir is a
+// checkout this plugin is willing to touch, creates the empty directory
+// core.hooksPath will point at, and computes the `-c` overrides and the
+// scrubbed environment the *pre-run* Git invocations over it must carry -
+// once, before the first Git command touches the repository.
 //
 // Computing this before anything else matters for more than avoiding
 // duplicate work: the baseline read (`git status`, in observeWorkspace)
@@ -45,19 +46,20 @@ const gitTimeout = 30 * time.Second
 // stop. Calling this once, before the first Git command touches the
 // repository, closes that gap.
 //
-// What this return is *not* is a prefix computePatch can reuse verbatim.
-// The filter overrides in it are enumerated by name from the repository's
-// config as it stands now, and a WORKSPACE_WRITE run mutates that config
-// as freely as it mutates any other file under working_context - so
-// computePatch, which runs after the subprocess finishes, re-enumerates
-// against the mutated config rather than carrying this list across the
-// run. See computePatch's own doc comment for the attack that reuse
-// enables.
+// What this returns is *not* a prefix computePatch can reuse verbatim. The
+// swept overrides in it are enumerated by name from the repository's config
+// as it stands now, and a WORKSPACE_WRITE run mutates that config as freely
+// as it mutates any other file under working_context - so computePatch,
+// which runs after the subprocess finishes, re-enumerates against the
+// mutated config rather than carrying this list across the run. See
+// computePatch's own doc comment for the attack that reuse enables. The
+// environment and the hooks directory are fixed and do carry across: neither
+// is derived from anything the repository says.
 //
 // Fails closed on the empty return: a caller that gets ok=false must treat
 // the workspace exactly as it would treat "not a git checkout" - see
 // computePatch and observeWorkspace's own doc comments.
-func prepareHardenedGit(ctx context.Context, workDir string) (gitBin string, hardened []string, cleanup func(), ok bool) {
+func prepareHardenedGit(ctx context.Context, workDir string) (gitBin string, hardened *gitHardening, cleanup func(), ok bool) {
 	gitBin = os.Getenv(gitBinaryEnv)
 	if gitBin == "" {
 		return "", nil, nil, false
@@ -66,15 +68,28 @@ func prepareHardenedGit(ctx context.Context, workDir string) (gitBin string, har
 	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 		return "", nil, nil, false
 	}
-	if !isGitWorkTree(ctx, gitBin, workDir) {
+
+	// One directory per run, holding two things a Git invocation must not
+	// take from the machine it happens to run on: the (empty) hooks
+	// directory, and the home directory Git resolves ~/.gitconfig against.
+	home, err := os.MkdirTemp("", "codex-git-")
+	if err != nil {
+		return "", nil, nil, false
+	}
+	cleanup = func() { _ = os.RemoveAll(home) }
+	hooks := filepath.Join(home, "hooks")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		cleanup()
 		return "", nil, nil, false
 	}
 
-	hardened, cleanup, ok = hardenedGitConfig(ctx, gitBin, workDir)
+	env := gitEnv(home)
+	args, ok := hardenedGitConfig(ctx, gitBin, workDir, env, hooks)
 	if !ok {
+		cleanup()
 		return "", nil, nil, false
 	}
-	return gitBin, hardened, cleanup, true
+	return gitBin, &gitHardening{args: args, env: env, hooksDir: hooks}, cleanup, true
 }
 
 // computePatch renders a unified diff of what changed under workDir,
@@ -93,10 +108,14 @@ func prepareHardenedGit(ctx context.Context, workDir string) (gitBin string, har
 // include under working_context plus a .gitattributes entry is enough)
 // would have the `git add` and `git diff` below reload the mutated config
 // while overriding only the stale key list, executing the newly named
-// filter as this worker, outside the Codex sandbox. The static overrides
-// (fsmonitor, hooksPath, protocol.ext.allow, submodule.recurse) do not
-// have this time-of-check gap - only the enumerated-by-name sweep does -
-// but re-running hardenedGitConfig refreshes everything at once.
+// filter as this worker, outside the Codex sandbox. Re-running
+// hardenedGitConfig also re-checks that the workspace is still a plain
+// checkout whose gitdir is its own `.git` directory, which a run that
+// replaced `.git` with a `gitdir:` file or a symlink would otherwise have
+// left true only at the moment it was first asked (see
+// gitWorktreeIsPlain). The fixed overrides and the scrubbed environment
+// have no such time-of-check gap - only the parts read out of the
+// repository do - but recomputing refreshes everything at once.
 //
 // It returns filesChanged unchanged, and no patch, whenever there is
 // nothing to diff: a read-only run (mutating false) cannot have changed
@@ -106,7 +125,7 @@ func prepareHardenedGit(ctx context.Context, workDir string) (gitBin string, har
 // checkout at all are all treated as "patch not available" rather than as
 // an error, since a working_context is not required to be a git repository
 // - only diffing one requires that.
-func computePatch(ctx context.Context, gitBin string, hardened []string, workDir string, mutating bool, baseline workspaceBaseline, filesChanged []fileChange) (patch string, files []fileChange, truncated bool) {
+func computePatch(ctx context.Context, gitBin string, hardened *gitHardening, workDir string, mutating bool, baseline workspaceBaseline, filesChanged []fileChange) (patch string, files []fileChange, truncated bool) {
 	if !mutating || workDir == "" || len(filesChanged) == 0 {
 		return "", filesChanged, false
 	}
@@ -128,14 +147,14 @@ func computePatch(ctx context.Context, gitBin string, hardened []string, workDir
 	// Re-enumerate the overrides against the config as the run left it, not
 	// as it was found - see this function's doc comment. Fails closed the
 	// same way the pre-run computation does: a config that can no longer be
-	// safely swept (unreadable, over its bound, or holding a key no `-c`
-	// override can disable) means no patch rather than a patch computed with
-	// a repository-named program still live.
-	fresh, freshCleanup, ok := hardenedGitConfig(ctx, gitBin, workDir)
+	// safely swept (unreadable, over its bound, holding an unrecognized key,
+	// or holding a key no `-c` override can disable), or a workspace whose
+	// gitdir the run redirected, means no patch rather than a patch computed
+	// with a repository-named program still live.
+	fresh, ok := hardenedGitConfig(ctx, gitBin, workDir, hardened.env, hardened.hooksDir)
 	if !ok {
 		return "", filesChanged, false
 	}
-	defer freshCleanup()
 
 	// Files the run created are untracked, and `git diff` does not report an
 	// untracked file at all - so without this the patch would silently omit
@@ -143,7 +162,7 @@ func computePatch(ctx context.Context, gitBin string, hardened []string, workDir
 	// records their existence without staging content, which is what makes
 	// them appear below as additions. Best-effort like the rest of this
 	// function: if it fails, the tracked changes still diff.
-	_, _, _ = runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
+	_, _, _ = runGitBounded(ctx, gitBin, workDir, hardened.env, maxPatchBytes,
 		append(slices.Clone(fresh), "add", "--intent-to-add", "--", ".")...)
 
 	// --no-ext-diff and --no-textconv cover the two diff drivers; the content
@@ -152,111 +171,13 @@ func computePatch(ctx context.Context, gitBin string, hardened []string, workDir
 	// --ignore-submodules=all is belt-and-suspenders alongside
 	// submodule.recurse=false in hardened: this command has no business
 	// entering a nested checkout at all to render a patch of this one.
-	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
+	out, ok, truncatedOutput := runGitBounded(ctx, gitBin, workDir, hardened.env, maxPatchBytes,
 		append(slices.Clone(fresh), "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--ignore-submodules=all", "-M", "HEAD")...)
 	if !ok {
 		return "", filesChanged, false
 	}
 
 	return out, filesChanged, truncatedOutput
-}
-
-// hardenedGitConfig is the `-c` prefix every Git invocation over a
-// task-controlled workspace carries, whatever subcommand follows it, together
-// with a cleanup for the temporary directory one of the overrides points at.
-//
-// Five ways a repository names a program for Git to run, or a path for Git
-// to wander into and run its own commands against, and all of them fire from
-// `git status` and `git add` as readily as from `git diff` — which is why
-// this is a prefix applied to every one of them rather than something the
-// diff builds for itself:
-//
-//   - Content filters. `filter.<driver>.clean` and `.process` convert
-//     working-tree content on the way in, so the index update and both reads
-//     invoke them. The driver names are the repository's to choose, so they
-//     are enumerated rather than guessed, and each is overridden with an
-//     empty command, which is Git's spelling for "no filter".
-//   - core.fsmonitor. A program Git runs to ask what changed in the working
-//     tree, consulted by anything that inspects the index. It is not a
-//     content filter, so enumerating filter.* never reaches it, and it needs
-//     no gitattributes entry: setting the one key is the whole attack.
-//   - Hooks. `git add` writes the index, which fires post-index-change from
-//     wherever core.hooksPath points. Pointed at an empty directory this
-//     process makes, because there is no "no hooks" value — only a place with
-//     no hooks in it.
-//   - Partial-clone lazy fetching. A promisor remote configured with an
-//     `ext::` transport lets the repository name an arbitrary program that
-//     Git runs when it lazily fetches an object missing from a partial
-//     clone — a path that fires from inside object retrieval, not from a
-//     content filter or a hook, so none of the above touches it.
-//     protocol.ext.allow=never refuses the transport outright; the caller
-//     pairs this with GIT_NO_LAZY_FETCH=1 (see runGitBounded) so the refusal
-//     holds even if some other configured protocol would otherwise be
-//     permitted.
-//   - Submodules. `git status` and `git diff` can walk into an initialized
-//     submodule to report its dirty state, running Git against *that*
-//     checkout's own configuration — a second, differently-named set of
-//     filters and hooks this sweep never enumerated because it only lists
-//     the superproject's keys. submodule.recurse=false, paired with
-//     --ignore-submodules=all on the individual commands that take it,
-//     refuses to enter a submodule at all rather than trying to recurse
-//     hardening into every nested repository.
-//
-// Fails closed: a config listing that cannot be read, that hits its bound,
-// or that contains a key this function cannot safely disable, and a hooks
-// directory that cannot be created, all return false rather than letting a
-// command run with an unknown helper still live.
-func hardenedGitConfig(ctx context.Context, gitBin, workDir string) ([]string, func(), bool) {
-	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, maxGitConfigBytes,
-		"-c", "core.fsmonitor=false", "config", "--list", "--name-only", "--null")
-	if !ok || truncated {
-		return nil, nil, false
-	}
-
-	// Git config keys cannot contain NUL, so --name-only --null gives an
-	// unambiguous list even when a task-controlled value contains newlines.
-	var keys []string
-	for _, key := range strings.Split(strings.TrimSuffix(out, "\x00"), "\x00") {
-		if key == "" {
-			continue
-		}
-		lower := strings.ToLower(key)
-		if !strings.HasPrefix(lower, "filter.") ||
-			!(strings.HasSuffix(lower, ".clean") || strings.HasSuffix(lower, ".process")) {
-			continue
-		}
-		// `-c NAME=VALUE` is parsed by Git splitting the argument text at its
-		// first `=`, but a quoted config subsection may itself legally
-		// contain `=` - so a key such as `filter.evil=driver.clean` does not
-		// round-trip through `key + "="`. Git would read the override as
-		// setting `filter.evil` (to the value `driver.clean=`) rather than
-		// the driver's own clean command, leaving the attacker's filter
-		// enabled under its real name. There is no override spelling that is
-		// safe for a key shaped like this, so its presence fails the whole
-		// listing closed rather than silently skipping just that one filter.
-		if strings.Contains(key, "=") {
-			return nil, nil, false
-		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	hooks, err := os.MkdirTemp("", "codex-no-hooks-")
-	if err != nil {
-		return nil, nil, false
-	}
-	cleanup := func() { _ = os.RemoveAll(hooks) }
-
-	overrides := []string{
-		"-c", "core.fsmonitor=false",
-		"-c", "core.hooksPath=" + hooks,
-		"-c", "protocol.ext.allow=never",
-		"-c", "submodule.recurse=false",
-	}
-	for _, key := range keys {
-		overrides = append(overrides, "-c", key+"=")
-	}
-	return overrides, cleanup, true
 }
 
 // workspaceBaseline is what was true of working_context *before* a run
@@ -284,7 +205,7 @@ type workspaceBaseline struct {
 // before this and passed in rather than recomputed here - see that
 // function's doc comment for why the baseline read has to carry the same
 // hardening the later patch computation does, not its own.
-func observeWorkspace(ctx context.Context, gitBin string, hardened []string, workDir string, mutating bool) workspaceBaseline {
+func observeWorkspace(ctx context.Context, gitBin string, hardened *gitHardening, workDir string, mutating bool) workspaceBaseline {
 	if !mutating || workDir == "" || gitBin == "" || hardened == nil {
 		return workspaceBaseline{}
 	}
@@ -294,35 +215,13 @@ func observeWorkspace(ctx context.Context, gitBin string, hardened []string, wor
 	// already there. --ignore-submodules=all keeps this from wandering into a
 	// submodule's own configuration merely to answer that question - see
 	// hardenedGitConfig's doc comment on the submodule case.
-	out, ok, _ := runGitBounded(ctx, gitBin, workDir, maxPatchBytes,
-		append(slices.Clone(hardened), "status", "--porcelain", "--ignore-submodules=all")...)
+	out, ok, _ := runGitBounded(ctx, gitBin, workDir, hardened.env, maxPatchBytes,
+		append(slices.Clone(hardened.args), "status", "--porcelain", "--ignore-submodules=all")...)
 	if !ok {
 		return workspaceBaseline{}
 	}
 
 	return workspaceBaseline{observed: true, dirty: strings.TrimSpace(out) != ""}
-}
-
-// isGitWorkTree reports whether dir is inside a git working tree, so
-// computePatch can tell "working_context is not a repository" (not this
-// task's business) apart from "diffing it failed" (also not surfaced as an
-// error - see computePatch's own doc comment for why patch is best-effort).
-//
-// This runs before hardenedGitConfig has anything to apply, so it carries
-// its own minimal, fixed overrides rather than none at all: `rev-parse` only
-// reads repository metadata, but a task-controlled core.fsmonitor value is a
-// command Git will still invoke for that, and GIT_NO_LAZY_FETCH keeps a
-// promisor remote's transport helper from firing if metadata resolution
-// needs an object this checkout does not have locally.
-func isGitWorkTree(ctx context.Context, gitBin, dir string) bool {
-	runCtx, cancel := context.WithTimeout(ctx, gitTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(runCtx, gitBin, "-C", dir, "-c", "core.fsmonitor=false", "rev-parse", "--is-inside-work-tree")
-	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run() == nil
 }
 
 // runGitBounded runs one git command with its combined output capped at
@@ -341,13 +240,13 @@ func isGitWorkTree(ctx context.Context, gitBin, dir string) bool {
 // closed (missing-object errors surface as an ordinary command failure,
 // covered above) rather than materializing the object by running the
 // helper.
-func runGitBounded(ctx context.Context, gitBin, dir string, maxBytes int, args ...string) (string, bool, bool) {
+func runGitBounded(ctx context.Context, gitBin, dir string, env []string, maxBytes int, args ...string) (string, bool, bool) {
 	runCtx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
 	full := append([]string{"-C", dir}, args...)
 	cmd := exec.CommandContext(runCtx, gitBin, full...)
-	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	cmd.Env = env
 
 	w := &boundedWriter{max: maxBytes}
 	cmd.Stdout = w

@@ -16,7 +16,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // A run that cannot continue must fail, and these two tests are about the one
@@ -60,7 +59,7 @@ func TestRunRefusesASpecificationTooLargeToExecute(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	spec := &v1.Workflow{
 		Name:  "too-large",

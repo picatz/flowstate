@@ -116,7 +116,7 @@ func TestListStopsScanningAndSaysSo(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 10}))
 	require.NoError(t, err)
@@ -170,7 +170,7 @@ func TestListStopsOnceThePageIsFull(t *testing.T) {
 		nil,
 	)
 
-	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 5}))
+	response, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 5}))
 	require.NoError(t, err)
 
 	require.Len(t, response.Msg.GetRuns(), 5, "the page was not filled to what was asked for")
@@ -234,7 +234,7 @@ func TestListPagingReachesEveryRun(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	seen := map[string]int{}
 	token := ""
@@ -297,7 +297,7 @@ func TestListStopsWhenAPeerReturnsNothingForever(t *testing.T) {
 		nil,
 	)
 
-	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 10}))
+	response, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{PageSize: 10}))
 	require.NoError(t, err)
 
 	require.LessOrEqual(t, calls, maxListRequests,
@@ -359,7 +359,7 @@ func TestListPagingReachesEveryRunAmongOtherTenants(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	seen := map[string]int{}
 	token := ""
@@ -405,7 +405,7 @@ func TestListOnAnEmptyNamespaceIsDone(t *testing.T) {
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
 		&workflowservice.ListWorkflowExecutionsResponse{}, nil)
 
-	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
+	response, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
 	require.NoError(t, err)
 
 	require.Empty(t, response.Msg.GetRuns())
@@ -443,7 +443,7 @@ func TestListPageSizeIsDefaultedAndBounded(t *testing.T) {
 			},
 			nil,
 		)
-		return New(temporal)
+		return mustNew(t, temporal)
 	}
 
 	t.Run("unset takes the default", func(t *testing.T) {
@@ -537,7 +537,7 @@ func TestListShowsAContinuedWorkloadOnce(t *testing.T) {
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
 		&workflowservice.ListWorkflowExecutionsResponse{Executions: segments}, nil)
 
-	response, err := New(temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
+	response, err := mustNew(t, temporal).List(t.Context(), connect.NewRequest(&v1types.ListRequest{}))
 	require.NoError(t, err)
 
 	require.Len(t, response.Msg.GetRuns(), 1,
@@ -647,7 +647,7 @@ func TestListPagingSurvivesANamespaceThatGrowsUnderIt(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	seen := map[string]int{}
 	token := ""
@@ -744,7 +744,7 @@ func TestListPagingReachesEveryMatchingRun(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	seen := map[string]int{}
 	token := ""
@@ -789,7 +789,7 @@ func TestListPagingReachesEveryMatchingRun(t *testing.T) {
 // behind a moved cursor either way — see the file header on why this needs a
 // traversal test rather than a page-shaped one.
 //
-// Built with `server := New(temporal)`, no [WithSearchAttributesRegistered]
+// Built with `server := mustNew(t, temporal)`, no [WithSearchAttributesRegistered]
 // — this is the deployment shape the fix in [workflowNameOf] exists for: one
 // where search-attribute registration never happened (failed at startup, or
 // was never attempted). `name` still has to resolve correctly, because it
@@ -839,7 +839,7 @@ func TestListPagingReachesEveryRunMatchingByName(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	seen := map[string]int{}
 	token := ""
@@ -933,7 +933,7 @@ func TestAFilterOnNameCannotEscapeTenancy(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	seen := map[string]int{}
 	token := ""
@@ -1000,7 +1000,7 @@ func TestANameFilterWorksWithSearchAttributesDisabled(t *testing.T) {
 	// No [WithSearchAttributesRegistered]: the server under test never sets a
 	// search attribute on submission and was never told one is queryable —
 	// the "registration failed, or was never attempted" deployment shape.
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
 		Filter: `name == "nightly-etl"`,
@@ -1029,7 +1029,7 @@ func TestAPreMemoRunIsHonestlyExcludedFromANameFilter(t *testing.T) {
 	// Owned by the caller, but with no name at all — runOwnedByWithName skips
 	// the memo entry entirely when name is "".
 	preMemo := runOwnedByWithName(t, "run-from-before-the-memo-key-existed", "", "")
-	require.Equal(t, "", New(nil).workflowNameOf(preMemo), "a pre-memo run must report no name, not a coerced one")
+	require.Equal(t, "", mustNew(t, nil).workflowNameOf(preMemo), "a pre-memo run must report no name, not a coerced one")
 
 	temporal := &mocks.Client{}
 	temporal.On("ListWorkflow", mock.Anything, mock.Anything).Return(
@@ -1037,7 +1037,7 @@ func TestAPreMemoRunIsHonestlyExcludedFromANameFilter(t *testing.T) {
 		nil,
 	)
 
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	t.Run("does not match a real name", func(t *testing.T) {
 		response, err := server.List(t.Context(), connect.NewRequest(&v1types.ListRequest{
@@ -1070,7 +1070,7 @@ func TestAFilterTheServerCannotCompileIsRefused(t *testing.T) {
 	t.Parallel()
 
 	temporal := &mocks.Client{}
-	server := New(temporal)
+	server := mustNew(t, temporal)
 
 	for _, filter := range []string{
 		`status ==`,          // not parseable

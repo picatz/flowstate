@@ -339,9 +339,15 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	dir := t.TempDir()
 	workflow := filepath.Join(dir, scaffoldWorkflow)
 
-	_, _, err := initOutput(t, dir)
-	require.NoError(t, err, "scaffolding the workflow the two commands are about")
+	require.NoError(t, runFlow(t, "init", dir).Err,
+		"scaffolding the workflow the two commands are about")
 
+	// Not through runFlow, unlike the scaffolding step above: `flow server dev`
+	// does not return, and the gate reads its stdout *while it is still
+	// running* to learn the ports it bound. runFlow hands back both streams
+	// once the command is done, which for this one is never — so the writers
+	// have to be live, and this stays hand-rolled on purpose (#404).
+	//
 	// Port 0 on both: this suite runs beside other tests that hold Temporal
 	// ports, and a dev command that can only ever bind 9233 and 8233 would make
 	// the gate a test of what else is running. The UI is off for the same reason,
@@ -390,9 +396,9 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 
 	// Command two. Not `run local`: this submits to the server the first command
 	// started, and the step executes on the worker it started, durably.
-	report, err := runFlow(t, "run", workflow, "--address", stack.FlowstateAddress)
-	require.NoError(t, err, "the durable run: %s", report)
-	assert.Contains(t, report, "COMPLETED")
+	run := runFlow(t, "run", workflow, "--address", stack.FlowstateAddress)
+	require.NoError(t, run.Err, "the durable run: %s", run.Output())
+	assert.Contains(t, run.Output(), "COMPLETED")
 
 	// What a person is handed by the run they just started, asserted here rather
 	// than only against a scripted poller because this is the one test in the
@@ -412,6 +418,7 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	require.NoError(t, err, "reading back the workflow the run was started from")
 
 	name := scaffolded.GetName()
+	report := run.Output()
 	assert.Contains(t, report, "started workflow "+name+";",
 		"the run a person just started has to be named by the name they gave it")
 	assert.Contains(t, report, "COMPLETED workflow "+name,

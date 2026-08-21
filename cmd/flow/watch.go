@@ -149,14 +149,17 @@ type clientPoller struct {
 	// instead; see [clientPoller.Poll].
 	client flowstatev1connect.WorkflowServiceClient
 
-	// spec is the workflow specification this run was started from, when this
-	// poller's caller happens to hold one. `flow run` parsed the file and
-	// submitted it in this same process, so it passes it here and every
-	// declared-sensitive output is redacted precisely. `flow watch <id>` is a
-	// separate, later invocation that never had the file — it leaves this nil,
-	// which is the fail-closed case [redactGetResponse] documents: every
-	// declared output is withheld because nothing here can say which ones the
-	// workflow actually marked.
+	// spec is the specification this run actually executed, when this poller's
+	// caller can show that it holds it. `flow run` parsed a file and submitted
+	// it in this same process *and* the server attested that the run executes
+	// that copy unchanged, so it passes it here and every declared-sensitive
+	// output is redacted precisely — see [executedSpecification] for why the
+	// attestation is load-bearing and holding the file is not enough. `flow
+	// watch <id>` is a separate, later invocation that never had the file, and a
+	// run whose specification the deployment substituted is a file that did not
+	// run; both leave this nil, which is the fail-closed case
+	// [redactGetResponse] documents: every declared output is withheld because
+	// nothing here can say which ones the executed workflow marked.
 	spec *v1.Workflow
 
 	// reveal is --reveal-sensitive, read once by the command that built this

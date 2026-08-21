@@ -60,20 +60,21 @@ import (
 // beside the pin itself has something to attach to once the pin exists again in
 // the rendered tree.
 //
-// # A known gap: a pin reached only through `<<:`
+// # A pin reached through `<<:`, an `&anchor` or an `*alias`
 //
-// Both `call:` and `digest:` may legally arrive at a step via a YAML merge key
-// (fields.go resolves one for any step property), and [collectPins] does not
-// follow one to find them — it looks at the mapping's own written keys, the
-// same as [collectComments] does. A step whose `digest:` sits inside the
-// anchor a `<<: *shared` merges in, rather than written on the step itself, is
-// therefore invisible to this carve-out and formats as though it were never
-// pinned, with no diagnostic — silently, in that one specific and (nothing in
-// examples/ or DSL.md demonstrates it) unusual shape. No example, test, or
-// document in this repository writes a pin that way; closing this is tracked
-// rather than attempted here, because doing it partially — resolving one
-// level of alias and calling it done — is the shape of rewriter mistake
-// CLAUDE.md already has two entries for.
+// Both `call:` and `digest:` may legally arrive at a step through a YAML merge
+// key, and a step may be written whole as an anchor and reused through an
+// alias. The pin collector used to look at a mapping's own written keys, the
+// same as [collectComments] does, so a pin that arrived any of those ways was
+// invisible to this carve-out and formatted as though it had never been
+// written — the gap #639 documented and #640 closed. It is closed by knowing
+// what the grammar binds rather than by guessing: [pinCollector] resolves
+// anchors, aliases and merge keys exactly the way [compiler.entries] does,
+// under the same total-node bound the compiler expands under. See callpins.go.
+//
+// What [placePins] writes into does not change, because there is nothing to
+// resolve there: [Marshal] renders every step whole, so a step that reached its
+// `call:` through a merge key is written back with `call:` on it.
 
 // Format renders wf as the document [Marshal] writes, carrying across every
 // comment in source.
@@ -475,183 +476,6 @@ func childPath(path, step string) string {
 // because a key's step carries the key's own length in front of it.
 func indexStep(i int) string {
 	return "[" + strconv.Itoa(i) + "]"
-}
-
-// A sourcePin is a `digest:` value found beside a `call:` in source, along
-// with where it was written — for a diagnostic if it cannot be carried across.
-type sourcePin struct {
-	text         string
-	line, column int
-}
-
-// sourcePins collects every `digest:` pin in a document, keyed by the path of
-// the mapping it sits in — the same path a comment on that mapping's own
-// container gets, since a pin and a container comment are both properties of
-// the mapping rather than of one entry in it.
-//
-// Only a mapping that also has a `call:` key is recorded. The grammar refuses
-// `digest:` anywhere else (parse.go), so this is not a filter this package
-// invents; it means a hand-built AST fed to this function (which, unlike a
-// parsed Flowfile, [Format]'s exported contract does not get to assume is
-// well-formed) cannot make it write a pin that names nothing.
-func sourcePins(source []byte) (map[string]sourcePin, error) {
-	file, err := parser.ParseBytes(source, parser.ParseComments)
-	if err != nil {
-		// The caller compiled this source, so it parses. Refusing rather than
-		// carrying on is the fail-closed reading, the same one sourceComments
-		// takes: unable to see the pins is not the same as knowing there are
-		// none.
-		return nil, fmt.Errorf("the source could not be read to collect its call pins: %w", err)
-	}
-
-	out := map[string]sourcePin{}
-	for _, doc := range file.Docs {
-		collector := pinCollector{anchors: map[string]ast.Node{}, out: out}
-		if err := collector.collectAnchors(doc.Body, 0); err != nil {
-			return nil, err
-		}
-		if err := collector.collect(doc.Body, "", 0); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// pinCollector resolves scalar aliases the same way the compiler does. Anchors
-// are document-scoped in YAML, so sourcePins creates one collector per document.
-type pinCollector struct {
-	anchors map[string]ast.Node
-	out     map[string]sourcePin
-}
-
-func (c *pinCollector) collectAnchors(n ast.Node, depth int) error {
-	if depth > maxDepth {
-		return fmt.Errorf("nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
-	}
-	switch node := n.(type) {
-	case nil:
-		return nil
-	case *ast.AnchorNode:
-		if name, ok := scalarText(node.Name); ok {
-			c.anchors[name] = node.Value
-		}
-		// An anchor is a label on the value it wraps, not a level of nesting:
-		// `k: &a {…}` and `k: {…}` are the same structure to the compiler. So
-		// descend at the same depth, or this walk refuses an anchored document
-		// one level shallower than the identical unanchored one — a `flow fmt`
-		// failure on a file that compiles, caused solely by the `&a`.
-		return c.collectAnchors(node.Value, depth)
-	case *ast.MappingNode:
-		// A mapping and its entries are one level, not two — the same
-		// accounting [collectComments] uses, for the same reason (#691).
-		for _, value := range node.Values {
-			if err := c.collectAnchors(value, depth); err != nil {
-				return err
-			}
-		}
-	case *ast.MappingValueNode:
-		if err := c.collectAnchors(node.Key, depth+1); err != nil {
-			return err
-		}
-		return c.collectAnchors(node.Value, depth+1)
-	case *ast.SequenceNode:
-		for _, value := range node.Values {
-			if err := c.collectAnchors(value, depth+1); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (c *pinCollector) scalar(n ast.Node) (string, bool) {
-	for depth := 0; depth <= maxAliasDepth; depth++ {
-		switch node := n.(type) {
-		case *ast.AnchorNode:
-			n = node.Value
-		case *ast.AliasNode:
-			target, ok := c.anchors[node.Value.String()]
-			if !ok {
-				return "", false
-			}
-			n = target
-		default:
-			return scalarText(n)
-		}
-	}
-	return "", false
-}
-
-// collectPins walks a source document exactly the way [collectComments] does —
-// same node kinds, same path arithmetic — because a pin is placed by the same
-// walk finding the same path later, and a shape one of them knows about and the
-// other does not is a pin that goes missing.
-func (c *pinCollector) collect(n ast.Node, path string, depth int) error {
-	if n == nil {
-		return nil
-	}
-	if depth > maxDepth {
-		return fmt.Errorf("nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
-	}
-
-	switch x := n.(type) {
-	case *ast.MappingNode:
-		var hasCall bool
-		var digest *ast.MappingValueNode
-		for _, entry := range x.Values {
-			switch keyStep(entry) {
-			case "call":
-				hasCall = true
-			case "digest":
-				digest = entry
-			}
-		}
-		if hasCall && digest != nil {
-			// The compiler resolves anchors and aliases before reading this
-			// scalar, so the formatter must do the same. If a hand-built or
-			// otherwise mismatched source cannot be resolved, refuse rather
-			// than silently treating a security pin as absent.
-			if text, ok := c.scalar(digest.Value); ok {
-				pin := sourcePin{text: text}
-				if token := digest.Key.GetToken(); token != nil && token.Position != nil {
-					pin.line, pin.column = token.Position.Line, token.Position.Column
-				}
-				c.out[path] = pin
-			} else {
-				// Name the position, the way every other diagnostic here
-				// does: this refuses to format a file, so the author needs
-				// to be told which `digest:` it could not read.
-				where := ""
-				if token := digest.Key.GetToken(); token != nil && token.Position != nil {
-					where = fmt.Sprintf("%d:%d: ", token.Position.Line, token.Position.Column)
-				}
-				return fmt.Errorf("%sdigest: pins the call here, but its value could not be read as text; write the digest as a scalar, or as an alias of one", where)
-			}
-		}
-		// Same accounting as [collectComments]: a mapping and its entries are
-		// one level, not two (#691).
-		for _, value := range x.Values {
-			if err := c.collect(value, path, depth); err != nil {
-				return err
-			}
-		}
-
-	case *ast.MappingValueNode:
-		child := childPath(path, keyStep(x))
-		if err := c.collect(x.Value, child, depth+1); err != nil {
-			return err
-		}
-
-	case *ast.SequenceNode:
-		for i, value := range x.Values {
-			element := childPath(path, indexStep(i))
-			if err := c.collect(value, element, depth+1); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
 }
 
 // placePins walks the rendered document the same way [placeComments] does,

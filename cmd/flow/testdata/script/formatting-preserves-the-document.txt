@@ -1,0 +1,34 @@
+# #381: `flow fmt` rewrites a file, and the bytes it leaves behind are the whole
+# contract. A comment is the part a round trip through a YAML library loses
+# first, so the file is declared here in full rather than probed for a
+# substring — anything the formatter drops shows up as a diff.
+-- write untidy.yaml --
+edition: v2026.3
+name:    untidy
+# a comment above the steps
+steps:
+    - id:  hello
+      # a comment inside a step
+      log:
+          message:   hello
+$ flow fmt untidy.yaml
+-- exit --
+0
+-- stdout --
+untidy.yaml: reformatted
+-- file untidy.yaml --
+edition: v2026.3
+name: untidy
+# a comment above the steps
+steps:
+- id: hello
+  # a comment inside a step
+  log:
+    message: hello
+
+# Formatted once is formatted for good.
+$ flow fmt untidy.yaml
+-- exit --
+0
+-- stdout --
+untidy.yaml: already formatted

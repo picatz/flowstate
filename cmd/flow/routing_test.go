@@ -17,7 +17,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
-	flowstateserver "github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // TestIdentityDocumentsAreReachableWithoutCredentials is the regression guard for
@@ -279,7 +278,7 @@ func TestPublicMuxDoesNotServePprof(t *testing.T) {
 func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 	t.Parallel()
 
-	receiver, err := flowstateserver.New(nil).NewWebhookReceiver(t.Context(), "",
+	receiver, err := mustNewFlowstateServer(t, nil).NewWebhookReceiver(t.Context(), "",
 		[]*v1.Workflow{{
 			Name:    "order-webhook",
 			Profile: v1.CurrentProfile,
