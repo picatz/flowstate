@@ -368,6 +368,105 @@ steps:
   log:
     message: $${who.value} and ${steps.said.value}
 `,
+		// Alias-bearing YAML (picatz/flowstate#799): every seed above is
+		// alias-free, so byte mutation had no `&anchor`/`*alias`/`<<:` syntax to
+		// grow from and the billion-laughs total-node bound (maxNodes,
+		// parse.go) — the one CLAUDE.md names by that phrase — has never
+		// actually been fuzz-reached despite this target nominally covering the
+		// same parser. These five give the mutator that syntax in the shapes
+		// bounds_test.go's own non-fuzz tests already use to reach the bound by
+		// hand: a merge key sharing one step's properties, a scalar alias
+		// reused across positions, small breadth multiplication (an anchor
+		// merged into several siblings — modest here on purpose, so the
+		// mutator has room to grow the count toward maxNodes rather than
+		// starting there and only ever shrinking), an enum's `values:` shared
+		// by alias (the sequence-expansion path bounds_test.go notes does not
+		// use the generic recursive reader), and a chain of merges — an anchor
+		// whose own value already merged another, aliased again by a third
+		// step — which is nesting breadth-first rather than depth-first and so
+		// is a different shape from the plain `strings.Repeat` depth seed
+		// above.
+		`edition: v2026.3
+name: shared
+steps:
+  - &policy
+    id: a
+    timeout: 30s
+    continue_on_error: true
+    log:
+      message: one
+  - id: b
+    <<: *policy
+    log:
+      message: two
+`,
+		`edition: v2026.3
+name: aliasvalue
+vars:
+  base: &b https://example.com
+steps:
+- id: a
+  http:
+    url: *b
+- id: b
+  http:
+    url: *b
+`,
+		`edition: v2026.3
+name: bombsmall
+steps:
+  - &base
+    id: s0
+    timeout: 5s
+    continue_on_error: true
+    log:
+      message: hi
+  - id: s1
+    <<: *base
+    log:
+      message: hi
+  - id: s2
+    <<: *base
+    log:
+      message: hi
+  - id: s3
+    <<: *base
+    log:
+      message: hi
+`,
+		`edition: v2026.3
+name: enumalias
+inputs:
+  first:
+    type: enum
+    values: &vals [a, b, c]
+  second:
+    type: enum
+    values: *vals
+steps:
+- id: done
+  log:
+    message: done
+`,
+		`edition: v2026.3
+name: nested-alias
+steps:
+  - &inner
+    id: a
+    timeout: 5s
+    log:
+      message: inner
+  - &outer
+    id: b
+    <<: *inner
+    continue_on_error: true
+    log:
+      message: outer
+  - id: c
+    <<: *outer
+    log:
+      message: leaf
+`,
 	} {
 		f.Add(seed)
 	}

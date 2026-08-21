@@ -129,12 +129,14 @@ func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
 }
 
 // TestTheNarrowJobsFollowTheAffectedSet pins the two jobs whose trigger is a
-// package rather than a path: fuzz-smoke's targets live in three, and the
+// package rather than a path: fuzz-smoke's targets live in four, and the
 // appearance goldens record what the cmd/flow binary prints.
 func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
 	changed := []string{"pkg/flowstate/v1/engine/policy.go"}
 
-	// A diff that reaches the engine and nothing else.
+	// A diff that reaches the engine and nothing else. pkg/flowstate/v1/engine
+	// is a different package from the root pkg/flowstate/v1 v1Pkg names below,
+	// so this must still skip.
 	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/engine"}, "pull_request")
 	mustRun(t, ds, "test", "vulncheck", "staticcheck")
 	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto")
@@ -146,6 +148,18 @@ func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
 		cmdFlowPkg,
 	}, "pull_request")
 	mustRun(t, ds, "fuzz-smoke", "appearance")
+}
+
+// TestAWebhookOnlyChangeReachesFuzzSmoke is the regression for #799:
+// FuzzWebhookEventBinding lives in the root pkg/flowstate/v1 package
+// (webhook.go's own directory), not in one of the three packages fuzz-smoke's
+// affectedness check already knew about — so a diff touching only webhook.go
+// used to compute an affected set with none of flowfilePkg, cmdFlowPkg or
+// pluginPkg in it, and the plan would have skipped fuzz-smoke on the one kind
+// of change most likely to move what that target exercises.
+func TestAWebhookOnlyChangeReachesFuzzSmoke(t *testing.T) {
+	ds := decide(t, []string{"pkg/flowstate/v1/webhook.go"}, []string{v1Pkg}, "pull_request")
+	mustRun(t, ds, "fuzz-smoke")
 }
 
 // TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Three forcing conditions,

@@ -477,17 +477,26 @@ jobs:
 
   # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
   # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target
-  # because that bounds time and not memory. Five targets now: the round-trip one
+  # because that bounds time and not memory. Six targets now: the round-trip one
   # that existed first, the three the roadmap called for — CEL compile, MCP
-  # tool-argument decode, plugin descriptor parsing — and the marshal round trip
-  # added with #513's escape, each its own step so one hanging does not hide the
-  # others' output. The last is not a duplicate of the first: FuzzRoundTrip
-  # explores whole documents and asserts the workflow survives, while this one
-  # varies one scalar in a fixed document and asserts the two things that failed
-  # independently of proto equality — that the bytes written still validate,
-  # which is `flow fmt`'s whole promise, and that marshalling twice is a fixed
-  # point. Five times 30s is still comfortably under this job's five-minute
-  # budget alongside checkout and setup. Required
+  # tool-argument decode, plugin descriptor parsing — the marshal round trip added
+  # with #513's escape, and FuzzWebhookEventBinding added for #799, each its own
+  # step so one hanging does not hide the others' output. The marshal round trip is
+  # not a duplicate of the first: FuzzRoundTrip explores whole documents and
+  # asserts the workflow survives, while this one varies one scalar in a fixed
+  # document and asserts the two things that failed independently of proto
+  # equality — that the bytes written still validate, which is `flow fmt`'s whole
+  # promise, and that marshalling twice is a fixed point. FuzzWebhookEventBinding
+  # is not a duplicate of FuzzMCPToolArguments either: that one decodes untrusted
+  # JSON against a proto schema and stops; this one carries a decoded delivery all
+  # the way through NewWebhookEvent and BindWebhookTriggerInputs into a CEL
+  # activation and an evaluated idempotency key — the unauthenticated-network-input
+  # path #799 found with zero fuzz reachability, the most attacker-reachable one in
+  # the repo. Six times 30s measured at 280s total for five (docs/CI.md, PR #659,
+  # 2026-08-15) — already most of the five-minute budget the comment this replaces
+  # claimed was comfortable — so the sixth target moves this job to
+  # `timeout-minutes: 6` rather than leaving a ~20s margin against a runner having
+  # an ordinary slow day. Required
   # since 2026-08-09: its 48h advisory window (the same one staticcheck had)
   # closed on 2026-08-04 and the job has run green since, so a failure here is
   # now a finding to triage, never flake to wave through. A crasher the fuzzer
@@ -497,7 +506,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.fuzz_smoke == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -526,6 +535,9 @@ jobs:
 
       - name: Fuzz smoke (FuzzMessageDescriptor)
         run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
+
+      - name: Fuzz smoke (FuzzWebhookEventBinding)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzWebhookEventBinding -fuzztime 30s ./pkg/flowstate/v1/
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
   # real terminal and the goldens under cmd/flow/internal/appearance/testdata say
