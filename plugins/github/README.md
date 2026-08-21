@@ -373,7 +373,10 @@ calls, which a commit history (immutable once written) never does. This
 plugin's cursor packs a page number, a within-page skip count (for a resume
 that lands mid-page, not only at a page boundary - see `paginate.go`'s own
 doc comment), and a fingerprint of the filters the walk was running under,
-including `base_url` (`cursor.go`) - opaque to a workflow, and refused
+including the API base the call actually reached - which for an
+authenticated call is the operator-configured `GITHUB_API_BASE_URL`, not the
+task's own `base_url` input (`effectiveAPIBase` in `client.go`, and
+`cursor.go`) - opaque to a workflow, and refused
 outright if replayed against different filters, or a different GitHub API
 endpoint, than the call that produced it. That fingerprint check is also
 what makes a cursor's own forward progress worth keeping even across a run

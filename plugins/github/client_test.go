@@ -65,7 +65,7 @@ func TestAuthenticatedClientRefusesWorkflowSelectedBaseURL(t *testing.T) {
 	for _, configured := range []string{"", "https://github.example.com/api/v3"} {
 		t.Run(configured, func(t *testing.T) {
 			t.Setenv(envAPIBaseURL, configured)
-			if _, err := newClient("credential", "https://attacker.example/api/v3"); err == nil {
+			if _, _, err := newClient("credential", "https://attacker.example/api/v3"); err == nil {
 				t.Fatal("newClient with credential and unconfigured base URL: got no error, want one")
 			}
 		})
@@ -78,7 +78,7 @@ func TestAuthenticatedClientUsesOperatorSelectedBaseURL(t *testing.T) {
 		t.Fatalf("installEgressPolicy: %v", err)
 	}
 
-	client, err := newClient("credential", "")
+	client, _, err := newClient("credential", "")
 	if err != nil {
 		t.Fatalf("newClient: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
 		t.Fatalf("installEgressPolicy: %v", err)
 	}
 
-	authenticated, err := newClient("credential", "")
+	authenticated, _, err := newClient("credential", "")
 	if err != nil {
 		t.Fatalf("newClient with a credential: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestAuthenticatedClientKeepsTheGitHubComDefault(t *testing.T) {
 		t.Fatalf("authenticated UploadURL: got %q, want %q — go-github's upload default must survive", got, want)
 	}
 
-	unauthenticated, err := newClient("", "")
+	unauthenticated, _, err := newClient("", "")
 	if err != nil {
 		t.Fatalf("newClient without a credential: %v", err)
 	}
