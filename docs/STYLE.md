@@ -502,8 +502,9 @@ each refusal costs one link rather than one argument.
 **The skill cites this document and holds only what is specific to an agent's
 workflow.** That is the choice, stated here so nobody adds a second copy later. Two
 alternatives were considered and rejected: generating the skill from this file, which
-produces prose written for one audience and read by another, and asserting that two
-differently worded documents agree, which no test can actually check.
+produces prose written for one audience and read by another, and keeping two
+differently worded copies with a test that they agree, which can compare wordings and
+not meanings.
 
 What is checked is the part that can be. The skill carries the rule *index*, because
 routing to the right rule is the thing an agent needs and the thing that goes stale
@@ -531,7 +532,8 @@ Byte-level canonicity is deliberately *not* asserted over these snippets, for th
 reason measured in Part III: `flow fmt` currently rewrites or refuses every shown
 Flowfile in the repository, so an assertion here would force this file alone into a
 shape the rest of the corpus contradicts. When the tier-4 slice resolves that, this
-paragraph and the test beside it are the first things to change.
+paragraph is the first thing to delete, and the assertion belongs beside the
+convention it enforces, in `TestStyleGuideShowsBothKinds`.
 
 ## See also
 
