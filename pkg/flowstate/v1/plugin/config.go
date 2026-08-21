@@ -246,6 +246,16 @@ type Config struct {
 	// MaxProgressFrames bounds how many TaskProgress frames one ExecuteStream
 	// call relays to the caller's progress reporter before later ones in the
 	// same call are dropped. Zero selects [DefaultMaxProgressFrames].
+	//
+	// The dropping is specific to [Plugin.executeTask]'s internal dispatch,
+	// which is the one path with a reporter to drop frames *from*. A caller
+	// using the exported [Plugin.TaskService] / [Host.TaskServiceForTask]
+	// stream directly reads every frame the plugin sends — see
+	// taskService.ExecuteStream's own doc comment in service.go for why that
+	// cannot be filtered — but is still governed by the same reserved byte
+	// ceiling this value sizes, so a plugin cannot starve either path's
+	// terminal response by reporting within this bound, and reporting far
+	// beyond it is refused on both.
 	MaxProgressFrames int
 
 	// MaxRestarts caps relaunches of a plugin that exits on its own. Zero
