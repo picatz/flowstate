@@ -327,7 +327,7 @@ verb an operator's log line uses is the one under test. Never quiet one of those
 by changing what it asserts.
 
 The bounded fuzz smoke job graduated to required on 2026-08-09, its advisory
-window long closed, and `make fuzz-smoke` (run by `make check`) is the same four
+window long closed, and `make fuzz-smoke` (run by `make check`) is the same six
 commands CI runs, so the local gate cannot pass a commit the required job
 rejects. A crasher it finds is a real defect with a corpus entry to triage,
 never flake to re-run away.

@@ -14,6 +14,10 @@ import (
 const (
 	flowfilePkg = modulePath + "/pkg/flowstate/v1/flowfile"
 	pluginPkg   = modulePath + "/pkg/flowstate/v1/plugin"
+	// v1Pkg is the root v1 package: home of FuzzWebhookEventBinding (#799),
+	// alongside every non-fuzz test already reading webhook.go, eval.go and
+	// the rest of this package's own files.
+	v1Pkg = modulePath + "/pkg/flowstate/v1"
 )
 
 // decision is one job in .github/workflows/ci.yml and whether this diff can
@@ -117,14 +121,14 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 			Why: pick(goAffected, fmt.Sprintf("%d affected package(s)", len(affected)),
 				"no Go package is affected")},
 
-		// fuzz-smoke's five targets live in three packages. A target's
+		// fuzz-smoke's six targets live in four packages. A target's
 		// behaviour is its package's behaviour, so the affected set
 		// decides this the same way it decides the ordering leg.
 		{Job: "fuzz-smoke", Output: "fuzz_smoke",
 			Run: needsFuzz(affected),
 			Why: pick(needsFuzz(affected),
 				"a package holding a fuzz target is affected",
-				"no package holding a fuzz target (flowfile, cmd/flow, plugin) is affected")},
+				"no package holding a fuzz target (flowfile, cmd/flow, plugin, flowstate/v1) is affected")},
 
 		{Job: "appearance", Output: "appearance",
 			Run: needsAppearance(p, affected),
@@ -144,7 +148,8 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 
 // needsFuzz reports whether any package holding a fuzz target is affected.
 func needsFuzz(affected []string) bool {
-	return contains(affected, flowfilePkg) || contains(affected, cmdFlowPkg) || contains(affected, pluginPkg)
+	return contains(affected, flowfilePkg) || contains(affected, cmdFlowPkg) ||
+		contains(affected, pluginPkg) || contains(affected, v1Pkg)
 }
 
 // needsAppearance reports whether this diff can move a recorded golden.
