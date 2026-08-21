@@ -23,7 +23,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -224,4 +226,37 @@ func TestProgressReserveIsFailClosed(t *testing.T) {
 	const n = 4096 // DefaultMaxProgressFrames.
 	assert.Equal(t, int64(n*maxProgressFrameWireBytes), progressReserve(n),
 		"the reserve must be exactly frames * one frame's wire budget, the additive amount task.go's own doc comment promises")
+}
+
+// TestCheckProgressFrameSizeRefusesAPaddedFrame is the regression for a Codex
+// finding on #813: the progress reserve's arithmetic assumes every frame fits
+// maxProgressFrameWireBytes, but a frame carrying protobuf unknown fields — a
+// schema this build has never seen, or a hostile peer's padding — is bounded
+// only by the transport ceiling. Enough of those spend the terminal
+// response's own share, recreating the starvation the reserve exists to
+// prevent, so the per-frame figure has to be enforced at decode rather than
+// assumed from the closed vocabulary.
+func TestCheckProgressFrameSizeRefusesAPaddedFrame(t *testing.T) {
+	t.Parallel()
+
+	// A legitimate frame — one enum, nothing else — passes with room to spare.
+	legit := &pluginv1.ExecuteStreamResponse{
+		Message: &pluginv1.ExecuteStreamResponse_Progress{
+			Progress: &pluginv1.TaskProgress{Phase: pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN},
+		},
+	}
+	require.NoError(t, checkProgressFrameSize(legit))
+
+	// The same frame padded with an unknown field this build cannot name:
+	// what a decode of a newer or hostile peer's frame leaves behind.
+	// Field 1000, length-delimited, 4KiB of padding — proto.Size must count
+	// it, because the wire did.
+	padded := proto.Clone(legit).(*pluginv1.ExecuteStreamResponse)
+	unknown := protowire.AppendTag(nil, 1000, protowire.BytesType)
+	unknown = protowire.AppendBytes(unknown, make([]byte, 4096))
+	padded.ProtoReflect().SetUnknown(protoreflect.RawFields(unknown))
+
+	err := checkProgressFrameSize(padded)
+	require.Error(t, err, "a frame padded past the per-frame bound must be refused, or the reserve under-reserves")
+	require.Contains(t, err.Error(), "per-frame bound")
 }

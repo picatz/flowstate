@@ -242,6 +242,21 @@ func (p *Plugin) executeTask(
 		msg := stream.Msg()
 
 		if progress := msg.GetProgress(); progress != nil {
+			// The reserve's arithmetic (progressReserve, transport.go) is
+			// per-frame: it holds only while no single frame exceeds
+			// maxProgressFrameWireBytes. That has to be enforced here, not
+			// assumed — a frame carrying protobuf unknown fields (a schema
+			// this build has never seen, or a hostile peer padding one) can
+			// be arbitrarily large up to the transport ceiling, and enough of
+			// them would spend the terminal response's own share, recreating
+			// the starvation the reserve exists to prevent. An oversized
+			// frame is a protocol violation, refused rather than dropped:
+			// dropping would leave its bytes already spent against the
+			// ceiling while this loop reported nothing wrong.
+			if err := checkProgressFrameSize(msg); err != nil {
+				return nil, fmt.Errorf("plugin %q: task %q: %w",
+					p.name, request.GetTask().GetName(), err)
+			}
 			progressFrames++
 			if progressFrames > maxProgressFrames {
 				continue

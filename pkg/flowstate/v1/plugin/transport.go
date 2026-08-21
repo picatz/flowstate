@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -148,7 +151,33 @@ func newClients(socketPath, token string, maxResponseBytes, maxProgressFrames in
 // silently under-reserve progressReserve below; that test fails first if it
 // ever would, rather than this package quietly starving a terminal response
 // again the way issue #804 reports.
+//
+// The bound is enforced, not assumed: [checkProgressFrameSize] refuses any
+// received progress frame whose re-encoded size exceeds it, because a frame
+// carrying unknown fields — a schema this build has never seen, or a hostile
+// peer's padding — is not bounded by the closed vocabulary this comment
+// reasons from, and the reserve's arithmetic is only sound while every frame
+// it reserves for actually fits the per-frame figure.
 const maxProgressFrameWireBytes = 32
+
+// checkProgressFrameSize enforces [maxProgressFrameWireBytes] on one received
+// ExecuteStreamResponse carrying a progress frame. proto.Size re-encodes what
+// was decoded, unknown fields included, so a frame padded past the budget by
+// fields this build cannot name is still measured at its wire cost.
+//
+// The five bytes of Connect envelope the constant's doc accounts for are not
+// added here: leaving them as slack keeps this check about the payload the
+// peer chose, with the envelope inside the more-than-triple headroom the
+// constant already carries.
+func checkProgressFrameSize(msg *pluginv1.ExecuteStreamResponse) error {
+	if size := proto.Size(msg); size > maxProgressFrameWireBytes {
+		return fmt.Errorf(
+			"ExecuteStream progress frame is %d bytes, over the %d byte per-frame bound the progress reserve is sized from; "+
+				"a progress frame carries one TaskPhase and nothing else",
+			size, maxProgressFrameWireBytes)
+	}
+	return nil
+}
 
 // progressReserve is the additive byte headroom carved out of a plugin's
 // ExecuteStream transport for progress frames, on top of MaxResponseBytes'
