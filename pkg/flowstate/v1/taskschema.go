@@ -584,9 +584,8 @@ func DescribeTask(def TaskDef) *TaskDescription {
 func describedMessage(md protoreflect.MessageDescriptor) ([]byte, string) {
 	raw, fullName, err := MessageDescriptorBytes(md)
 	if err != nil {
-		if md == nil {
-			return nil, ""
-		}
+		// Only reachable with a descriptor in hand: a nil one is answered
+		// above it, without an error.
 		return nil, string(md.FullName())
 	}
 
