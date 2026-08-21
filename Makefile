@@ -204,7 +204,8 @@ coverage:
 	plugin_status=$$(cat .coverage/plugin-status); \
 	go tool covdata percent -i=.coverage/raw | tee .coverage/percent.txt; \
 	go tool covdata textfmt -i=.coverage/raw -o .coverage/coverage.out; \
-	go tool cover -html=.coverage/coverage.out -o .coverage/coverage.html; \
+	$(MAKE) --no-print-directory .coverage/go.work; \
+	GOWORK=$(CURDIR)/.coverage/go.work go tool cover -html=.coverage/coverage.out -o .coverage/coverage.html; \
 	echo "coverage HTML: .coverage/coverage.html"; \
 	echo "per-package summary: .coverage/percent.txt"; \
 	echo "raw counters: .coverage/raw/ (merge more processes into it with: go tool covdata merge -i=... -o=.coverage/raw)"; \
@@ -251,3 +252,33 @@ coverage-plugins:
 			go test -cover -timeout 900s ./... -args -test.gocoverdir="$(COVERAGE_RAW)" ) || \
 			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\`"; exit 1; }; \
 	done
+
+# The workspace `go tool cover -html` is pointed at, and nothing else (#761).
+#
+# The HTML report is rendered from source, so the cover tool has to turn each
+# import path in the profile back into a directory on disk — and asked from
+# the root module it cannot, because plugins/* are not in its module graph:
+# `cover: no required module provides package .../plugins/codex`, and *no*
+# report at all rather than one missing a section. A workspace naming all six
+# modules answers exactly that question.
+#
+# Generated under .coverage/ (gitignored, and rebuilt by `coverage` after its
+# `rm -rf`) rather than checked in at the repository root on purpose: a
+# committed go.work would put every plugin module into every ordinary build's
+# module graph, which is precisely the separation these modules exist to keep
+# — go-git and the rest stay out of the root module's dependencies. It is read
+# only by the one command that needs it, through GOWORK on that command.
+#
+# Absolute paths in the `use` block because they resolve relative to the
+# go.work file's own directory, not the working directory.
+.coverage/go.work:
+	@mkdir -p .coverage
+	@{ echo "go $$(go list -m -f '{{.GoVersion}}')"; \
+		echo; \
+		echo "use ("; \
+		echo "	$(CURDIR)"; \
+		for module in plugins/*/; do \
+			[ -f "$$module/go.mod" ] || continue; \
+			echo "	$(CURDIR)/$$module"; \
+		done; \
+		echo ")"; } > $@
