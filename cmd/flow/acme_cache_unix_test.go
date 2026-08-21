@@ -373,3 +373,69 @@ func TestCheckACMECacheDirRefusesDifferentOwner(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not owned by the service identity")
 }
+
+// TestCheckACMECacheDirResolvesTheWorkingDirectoryTheKernelResolvesFrom is the
+// third relative-path case, and the one neither test above can see: *which*
+// working directory a relative path is walked from, when the process was
+// launched through a symbolic link.
+//
+// [os.Getwd] on Unix answers $PWD when $PWD names the same directory, and a
+// shell's $PWD preserves every link it was cd'd through — so a service started
+// in `/srv/current`, where `current` is a link to `/srv/releases/7`, gets the
+// *logical* path back. The kernel resolves nothing through `current` when it
+// opens a relative path: it starts at the already-open cwd inode, so `..`
+// lands in `/srv/releases`, never in `/srv`.
+//
+// Both directions are asserted, because getting this wrong fails in both:
+//
+//   - Walking the logical path refuses a secure deployment at start-up. `..`
+//     from `/srv/current` is that string's lexical parent, so the walk meets
+//     `current` itself — a symbolic link no open of this path traverses — and
+//     [pathChecker.componentIsSafe] rightly refuses a link it did not resolve.
+//   - Walking the *physical* path is not a relaxation. The directory the
+//     kernel really lands on gets every check the walk applies to any other
+//     component, so a world-writable one is still refused, by name.
+func TestCheckACMECacheDirResolvesTheWorkingDirectoryTheKernelResolvesFrom(t *testing.T) {
+	root := t.TempDir()
+	release := mkdir(t, filepath.Join(root, "release"), 0o700)
+	wd := mkdir(t, filepath.Join(release, "service"), 0o700)
+	require.NoError(t, os.Symlink(release, filepath.Join(root, "current")))
+	require.DirExists(t, wd)
+
+	// The logical path a shell's $PWD would carry. t.Chdir sets $PWD, which is
+	// what makes os.Getwd answer with the link still in it — asserted rather
+	// than assumed, because without it this test poses nothing.
+	logical := filepath.Join(root, "current", "service")
+	t.Chdir(logical)
+	reported, err := os.Getwd()
+	require.NoError(t, err)
+	require.Equal(t, logical, reported,
+		"os.Getwd resolved the link itself, so this test no longer poses a logical working directory")
+
+	require.NoError(t, checkACMECacheDir("../cache"),
+		"a relative cache path was refused over the symbolic link its *logical* working directory was reached through, which no open of that path traverses")
+	info, err := os.Stat(filepath.Join(release, "cache"))
+	require.NoError(t, err)
+	require.True(t, info.IsDir(), "the cache directory was not created where the kernel resolves it")
+
+	// The same walk, with the directory the kernel actually lands on now
+	// writable by anyone: resolving physically must not have skipped it.
+	require.NoError(t, os.Chmod(release, 0o777))
+	t.Cleanup(func() { _ = os.Chmod(release, 0o700) })
+
+	err = checkACMECacheDir("../cache")
+	require.Error(t, err, "a world-writable directory the kernel resolves `..` onto was accepted")
+	require.Contains(t, err.Error(), "writable by another identity")
+	require.Contains(t, err.Error(), release)
+	require.Contains(t, err.Error(), "is relative")
+
+	// And what the walk does when it is *not* given the physical path, so the
+	// acceptance above is a decision this code makes rather than a layout that
+	// would have passed either way. Started at the logical working directory —
+	// what [os.Getwd] handed back — `..` reaches `current`, the link, and the
+	// walk refuses a component no open of `../cache` ever traverses.
+	err = newPathChecker(uint32(os.Geteuid())).descend(logical, []string{"..", "cache"})
+	require.Error(t, err, "walking from the logical working directory accepted a path; there is nothing for the physical resolution to fix")
+	require.Contains(t, err.Error(), "is a symbolic link")
+	require.Contains(t, err.Error(), filepath.Join(root, "current"))
+}
