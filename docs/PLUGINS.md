@@ -365,8 +365,13 @@ the registry as `TaskDef.SecretInputs` (`registry.go:155-172`), but the
 validator's secret checking consults only `NestedSecretInputs`, for structures
 that hold a reference inside them (`flowfile/secret.go:259-262`, `registry.go:378`).
 
+(`--secret-env` is what makes `env:GREET_TOKEN` resolvable, and `--auth-policy`
+is what authorizes reading it: a process holding a secret provider with no access
+policy is refused. [examples/plugins/greet](../examples/plugins/greet) has a
+policy file for exactly this and explains why it looks the way it does.)
+
 All three lists are checkable against the descriptors at `sdk.Run` time, which is
-earlier than either and reaches the person who can fix it. Nothing does it today;
+earlier than both and reaches the person who can fix it. Nothing does it today;
 see [known limitations](#known-limitations).
 
 ### 4. Three traps the code knows about and no authoring surface teaches
