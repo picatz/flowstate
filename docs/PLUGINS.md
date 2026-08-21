@@ -41,11 +41,11 @@ flowchart LR
   W -->|Describe| P
   P -->|manifest + descriptors| W
   W -->|Execute| P
-  classDef you fill:#2d6,stroke:#161,color:#000
-  class P you
+  classDef yours stroke-width:2px;
+  class P yours
 ```
 
-The green box is all you write. The handshake, the socket, the token check, the
+The thick box is all you write. The handshake, the socket, the token check, the
 signal handling and the shutdown are
 [`pkg/flowstate/v1/plugin/sdk`](../pkg/flowstate/v1/plugin/sdk)'s, and the host
 half is documented end to end in
@@ -144,7 +144,7 @@ To use it, put it in a directory on a worker's plugin search path — the file h
 to be named flowstate-plugin-hello — and configure the worker to look there.
 ```
 
-That is chapter one, and it took one file. It is also, as printed above, a task
+That is chapter one, and it took one file you wrote. It is also, as printed above, a task
 that documents nothing and validates nothing. Chapter two is the part that
 matters.
 
@@ -276,14 +276,15 @@ for, on purpose, so a workflow written against a newer version of a task does no
 fail against an older plugin (`sdk/values.go:42-46`). The two are individually
 right and jointly silent.
 
-Measured on the two plugins this page builds, against the same Flowfile with
-`name` misspelled as `nmae`:
+Measured on the two plugins this page builds — chapter one's kept aside as
+`./bin-nodesc`, chapter two's in `./bin` — against the same Flowfile with `name`
+misspelled as `nmae`:
 
 ```console
-$ flow validate --plugin-dir ./bin workflow.yaml     # no descriptors
+$ flow validate --plugin-dir ./bin-nodesc workflow.yaml
 workflow.yaml: ok
 
-$ flow validate --plugin-dir ./bin3 workflow.yaml    # descriptors
+$ flow validate --plugin-dir ./bin workflow.yaml
 workflow.yaml:6:13: step "hi" input "nmae": task "hello.greet" has no such
 input; did you mean "name"?
 ```
@@ -337,14 +338,15 @@ with the descriptors sitting beside them in the same message
 (`plugin/plugin.go:504-594`). A typo in one is therefore accepted at launch and
 discovered at execution.
 
-The full path, measured, with `SecretInputs: []string{"tokn"}` and a Flowfile
-writing `token: ${secret('env:GREET_TOKEN')}`:
+The full path, measured, on a build of the plugin above with
+`SecretInputs: []string{"tokn"}` added, against a Flowfile writing
+`token: ${secret('env:GREET_TOKEN')}`:
 
 ```console
-$ flow validate --plugin-dir ./bin workflow.yaml
+$ flow validate --plugin-dir ./bin-typo workflow.yaml
 workflow.yaml: ok
 
-$ flow run local workflow.yaml --plugin-dir ./bin --secret-env GREET_TOKEN \
+$ flow run local workflow.yaml --plugin-dir ./bin-typo --secret-env GREET_TOKEN \
     --auth-policy auth.yaml
 ERROR
 error running workflow locally: step "hi": task "hello.greet": input "token" is
@@ -375,7 +377,7 @@ lands where the host is reading a protocol:
 ```console
 $ flow plugins --plugin-dir ./bin
 ERROR
-plugin "hello" (/.../bin/flowstate-plugin-hello): plugin: handshake failed:
+plugin "hello" (/.../flowstate-plugin-hello): plugin: handshake failed:
 handshake line starts with "debug: starting", want "FLOWSTATE-PLUGIN" — is this
 a Flowstate plugin?
 ```
@@ -407,10 +409,10 @@ directory listing — is a plugin that works until it restarts.
 
 This page is that gap closed. The route an outside author previously had was to
 find `pkg/flowstate/v1/plugin/examples/flowstate-plugin-example` by reading the
-SDK's source, which is still the best worked example in the tree — it advertises
-both capabilities from one process, resolves secrets scoped by namespace, and
-takes a host-managed secret in a task input — and is now linked from
-[the docs index](README.md) rather than only from a doc comment.
+SDK's source. That example is still the best worked one in the tree — it
+advertises both capabilities from one process, resolves secrets scoped by
+namespace, and takes a host-managed secret in a task input — and finding it no
+longer requires reading a doc comment to know it exists.
 
 ## The rest of the manifest
 
@@ -430,7 +432,7 @@ told about your plugin. Against the chapter-two plugin declaring `greeting` as
 one, a literal is refused at the author's terminal:
 
 ```console
-$ flow validate --plugin-dir ./bin3 workflow.yaml
+$ flow validate --plugin-dir ./bin workflow.yaml
 workflow.yaml:7:17: step "hi" input "greeting": task "hello.greet" evaluates
 input "greeting" as an expression, so it has to be written as one: wrap the
 value in ${...}
