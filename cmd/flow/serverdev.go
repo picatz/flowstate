@@ -545,19 +545,24 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	// This process is both halves of the plugin contract, so the catalog is
-	// installed on both. The worker's half admits a run against what this
-	// process can actually execute, before it polls; the server's half is what
-	// makes a `plugins:` requirement resolvable at submission at all. Either one
-	// alone fails closed against the other: a dev stack with only the server's
-	// pin admits a run its own worker then refuses, and one with only the
-	// worker's refuses every submission as "not installed".
-	engine.UsePluginCatalog(pluginCatalog)
-
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
 		return err
 	}
+
+	// This process is both halves of the plugin contract, so the catalog goes to
+	// both. The worker's half admits a run against what this process can
+	// actually execute, before it polls; the server's half is what makes a
+	// `plugins:` requirement resolvable at submission at all. Either one alone
+	// fails closed against the other: a dev stack with only the server's pin
+	// admits a run its own worker then refuses, and one with only the worker's
+	// refuses every submission as "not installed".
+	//
+	// The worker's half rides its registration rather than a process value, which
+	// matters most in exactly this command: co-locating a server and a worker is
+	// what this file does, and it is one restructuring away from co-locating two
+	// workers.
+	runtime = runtime.WithPluginCatalog(pluginCatalog)
 
 	// Idempotent, once, before anything serves, and a warning rather than a
 	// refusal, exactly as in [runServer]: a dev server with no operator setup

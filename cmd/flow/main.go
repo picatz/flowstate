@@ -601,17 +601,19 @@ func runWorker(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	// The worker's own catalog, kept rather than dropped once the tasks were
-	// registered. Registration says which tasks this worker can dispatch; this
-	// says which *build* of each it dispatches them to, which is what a run pinned
-	// at submit is admitted against before any step of it executes here. Installed
-	// before Register, and before the worker polls, so no run can arrive ahead of
-	// the answer. See engine/plugins.go.
-	engine.UsePluginCatalog(pluginCatalog)
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
 		return err
 	}
+
+	// The worker's own catalog, kept rather than dropped once the tasks were
+	// registered. Registration says which tasks this worker can dispatch; this
+	// says which *build* of each it dispatches them to, which is what a run pinned
+	// at submit is admitted against before any step of it executes here. Carried
+	// on the configuration this worker is registered with rather than installed
+	// process-wide, so the answer belongs to this worker and no other worker in
+	// this process can overwrite it. See engine/plugins.go.
+	runtime = runtime.WithPluginCatalog(pluginCatalog)
 
 	interceptors := temporalWorkerInterceptors()
 	if flags.tenantSet {
