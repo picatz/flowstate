@@ -49,7 +49,7 @@ a macro, so this column is derived from it directly.
 | `lists` | `distinct` | function | — | `list(<T>).distinct() -> list(<T>)` |
 | `lists` | `flatten` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
 | `lists` | `lists.range` | function | — | `lists.range(int) -> list(int)` |
-| `lists` | `reverse` | function | — | `list(<T>).reverse() -> list(<T>)` |
+| `lists` | `reverse` | function | — | `list(<T>).reverse() -> list(<T>)`<br>`string.reverse() -> string` |
 | `lists` | `slice` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
 | `lists` | `sort` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
 | `lists` | `sortBy` | macro | `[3, 1, 2].sortBy(v, v)` | — |
@@ -119,9 +119,12 @@ costs nothing beyond the work it does per element, and is still charged per
 element: run over a response whose size this build does not bound, it
 accumulates cost across every item the chain touches, so an expression that
 works against a small fixture can still exceed the budget against production
-data. An expression that exceeds the budget fails the step it is written on,
-the same as any other evaluation error — the worker is never at risk, only
-the run.
+data. An expression that exceeds the budget fails whatever evaluation it is
+written in, the same as any other evaluation error: a step-scoped expression
+(a task input, an `if:`, a step's own `vars:`) fails that step, while a
+workflow-level `vars:` binding fails the run before any step starts, and a
+run-output expression fails it after every step has finished — there is no
+step for either of those to fail. The worker is never at risk, only the run.
 
 ## Durations and `now`
 

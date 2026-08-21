@@ -121,7 +121,7 @@ arity, and whether it is written on a namespace or a value — as Signature.
 | `distinct` | `lists` | function | — | `list(<T>).distinct() -> list(<T>)` |
 | `flatten` | `lists` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
 | `lists.range` | `lists` | function | — | `lists.range(int) -> list(int)` |
-| `reverse` | `lists` | function | — | `list(<T>).reverse() -> list(<T>)` |
+| `reverse` | `lists` | function | — | `list(<T>).reverse() -> list(<T>)`<br>`string.reverse() -> string` |
 | `slice` | `lists` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
 | `sort` | `lists` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
 | `sortBy` | `lists` | macro | `[3, 1, 2].sortBy(v, v)` | — |

@@ -102,10 +102,19 @@ func ProfileFunctions(profile string) []LibraryFunction {
 	// something an author acts on — and printing it twice reads as two functions.
 	claimed := map[string]bool{}
 
+	// Signatures come from the whole profile's environment, not from the one
+	// library a name is listed under. A name is *listed* once (see claimed,
+	// below), but its overloads can come from several libraries — `reverse`
+	// is `list().reverse()` from lists and `string.reverse()` from strings —
+	// and an author reading the row for the claiming library still calls
+	// every overload the profile actually compiles. Per-library signature
+	// maps were how the listing came to advertise only the first library's
+	// half of a shared name.
+	sigs := functionSignatures(libs...)
+
 	var out []LibraryFunction
 	for _, lib := range libs {
 		declared := declaredNames(lib)
-		sigs := functionSignatures(lib)
 		for _, name := range slices.Sorted(maps.Keys(declared)) {
 			macro := declared[name]
 			if claimed[name] {
