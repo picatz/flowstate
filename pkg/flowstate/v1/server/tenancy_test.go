@@ -23,6 +23,17 @@ import (
 // and a check that allows everything passes a test that only tries the thing that
 // should not.
 
+// The two tenants [newTenantFixture] stands up, named once so that a test
+// asserting something *derived* from a tenant — a schedule id, a firing's
+// workflow id — is given the same namespace the fixture configured the server
+// with, rather than spelling it a second time. Two spellings of one value is
+// how a test comes to pass against an encoding nobody changed and a fixture
+// somebody did.
+const (
+	teamANamespace = "team-a"
+	teamBNamespace = "team-b"
+)
+
 // tenantFixture is a dev server, a worker, and two servers standing in for two
 // tenants over the same Temporal client.
 type tenantFixture struct {
@@ -51,8 +62,8 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 	// as far as the authorization logic is concerned, and that is the logic under
 	// test.
 	return &tenantFixture{
-		teamA:    server.New(temporal, server.WithNamespace("team-a")),
-		teamB:    server.New(temporal, server.WithNamespace("team-b")),
+		teamA:    server.New(temporal, server.WithNamespace(teamANamespace)),
+		teamB:    server.New(temporal, server.WithNamespace(teamBNamespace)),
 		temporal: temporal,
 	}
 }
