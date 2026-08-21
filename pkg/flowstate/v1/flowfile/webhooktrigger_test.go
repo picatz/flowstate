@@ -240,6 +240,32 @@ func TestAConstantIdempotencyKeyIsRefused(t *testing.T) {
 	assert.Positive(t, diagnostics[0].Line)
 }
 
+// TestAnIdempotencyKeyThatOnlyMentionsTheDeliveryIsRefused is the same failure
+// one step further along (#733): the key here holds a real, unshadowed `event`,
+// so the check that asks whether the delivery is *named* is satisfied — and the
+// branch holding it is never taken, so every delivery is still named
+// `"all-events"`.
+//
+// Here rather than only in the package's own tests because a check an author
+// never meets is not a diagnostic: this asserts the sentence arrives through
+// `flow validate`, with a line to put a cursor on.
+func TestAnIdempotencyKeyThatOnlyMentionsTheDeliveryIsRefused(t *testing.T) {
+	t.Parallel()
+
+	source := strings.Replace(webhookSource,
+		`    idempotency_key: ${event.headers["stripe-signature"]}`,
+		`    idempotency_key: '${true ? "all-events" : event.body.id}'`, 1)
+
+	diagnostics, err := flowfile.ValidateSource([]byte(source))
+	require.NoError(t, err)
+	require.NotEmpty(t, diagnostics)
+
+	assert.Contains(t, diagnostics[0].Message, "evaluates to the same key")
+	assert.Contains(t, diagnostics[0].Message, "all-events")
+	assert.Contains(t, diagnostics[0].Message, "stripe-signature", "a diagnostic says what to write instead")
+	assert.Positive(t, diagnostics[0].Line, "a diagnostic names its position")
+}
+
 // TestATriggerReadsOnlyTheEvent: a trigger is evaluated before the run exists, so
 // every other name is reported — with the scope named, because an author reaching
 // for `${inputs.x}` here has a coherent model that is one step out of order.

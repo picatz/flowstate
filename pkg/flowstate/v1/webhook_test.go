@@ -65,6 +65,98 @@ func TestCheckWebhookIdempotencyKeyRejectsAConstantShadowedByAComprehension(t *t
 		v1.NewExpr(`event.body.id + string([1].map(event, string(event))[0])`)))
 }
 
+// TestAnIdempotencyKeyThatMentionsTheDeliveryMayStillBeConstant is #733: the
+// syntactic check above asks whether an expression *names* the delivery, and a
+// free `event` in a branch nothing takes answers yes while every delivery still
+// dedupes onto one run.
+//
+// Every shape here carries a genuine free `event` — none is shadowed, none is a
+// string that merely contains the word — so all of them pass the walk and are
+// refused only because they were evaluated. They are also the reason the fix is
+// evaluation rather than a special case for a literal condition: fold `true` and
+// the first line passes and the four below it do not.
+func TestAnIdempotencyKeyThatMentionsTheDeliveryMayStillBeConstant(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`true ? "all-events" : event.body.id`,
+		`1 == 1 ? "all-events" : event.body.id`,
+		`has(event.body.id) ? "all-events" : "all-events"`,
+		`size([1, 2, 3]) > 0 ? "all-events" : event.headers["stripe-signature"]`,
+		`[1, 2].map(i, "all-events" + string(i * 0))[0] + string(size(event.headers) * 0 * 0)`,
+	} {
+		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
+
+			err := v1.CheckWebhookIdempotencyKey("constant", v1.NewExpr(expression))
+			require.Error(t, err, "an effectively constant key must be refused where it is written")
+			assert.Contains(t, err.Error(), "evaluates to the same key",
+				"the diagnostic says what is wrong: the value does not move")
+			assert.Contains(t, err.Error(), "all-events",
+				"the diagnostic quotes the one key every delivery would get")
+			assert.Contains(t, err.Error(), "stripe-signature",
+				"the diagnostic says what to write instead")
+		})
+	}
+}
+
+// TestAnIdempotencyKeyDerivedFromTheDeliveryIsAccepted is the false-diagnostic
+// direction of the check above, in each syntactic position a reference can take:
+// a bare identifier, a field selection, an index, and a macro body. CLAUDE.md
+// rates refusing a file that is right worse than missing one that is wrong, and
+// the probe is a refusal an author cannot argue with — so what it accepts matters
+// more than what it rejects.
+func TestAnIdempotencyKeyDerivedFromTheDeliveryIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	for _, expression := range []string{
+		`string(event)`,
+		`event.body.id`,
+		`event.body.data.id`,
+		`event.headers["stripe-signature"]`,
+		`event.headers["x-request-id"] + "-" + event.body.type`,
+		`event.body.items.map(item, item + event.body.id)[0]`,
+		`has(event.body.id) ? event.body.id : event.headers["x-request-id"]`,
+		`string(size(event.headers)) + event.body.id`,
+	} {
+		t.Run(expression, func(t *testing.T) {
+			t.Parallel()
+
+			assert.NoError(t, v1.CheckWebhookIdempotencyKey("derived", v1.NewExpr(expression)))
+		})
+	}
+}
+
+// TestAnIdempotencyKeyProbeStaysSilentWhenItCannotDecide states the boundary of
+// the check honestly, because a boundary nobody wrote down is a boundary someone
+// later mistakes for completeness.
+//
+// The probe answers one question — does this key evaluate to the same string for
+// every delivery it was tried against — and it can only answer it for a key that
+// evaluates at all. A key selecting a field the synthetic deliveries do not carry
+// errors, which is undecided rather than constant, so it is accepted. That arm
+// covers most real keys (a provider's own header, an id under a path nothing here
+// invents) and it also covers the constant ones written *through* such a field:
+// the second case below is effectively constant and is accepted, and that is the
+// residual this check does not close.
+func TestAnIdempotencyKeyProbeStaysSilentWhenItCannotDecide(t *testing.T) {
+	t.Parallel()
+
+	// A real key over a field no probe delivery carries: accepted, as it must be.
+	assert.NoError(t, v1.CheckWebhookIdempotencyKey("provider",
+		v1.NewExpr(`event.headers["x-shopify-webhook-id"]`)))
+
+	// The same undecidability, with a constant on the other side of it. Refusing
+	// this would need the probe to know what a delivery *could* carry, which is
+	// the general problem this check deliberately does not attempt.
+	assert.NoError(t, v1.CheckWebhookIdempotencyKey("residual",
+		v1.NewExpr(`event.body.no_such_field.size() > 0 ? "all-events" : "all-events"`)))
+
+	// A key that is not a string is nothing this probe has an opinion about; the
+	// value of one is reported with a delivery in hand, by BindWebhookTriggerInputs.
+	assert.NoError(t, v1.CheckWebhookIdempotencyKey("not-a-string", v1.NewExpr(`size(event.headers) * 0`)))
+}
+
 // orderWorkflow declares the signature the trigger above is a call site of.
 func orderWorkflow() *v1.Workflow {
 	return &v1.Workflow{

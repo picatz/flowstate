@@ -1456,7 +1456,14 @@ deliberately no spelling that means "accept anything", so an unverifiable delive
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
 and is required because webhook delivery is at-least-once by nature — without it every
-retried delivery is a second run. What the validator does *not* do is resolve
+retried delivery is a second run. A key that cannot vary is refused where it is
+written, in both of the ways one can fail to vary: `${"all-events"}` names nothing
+about the delivery, and `${true ? "all-events" : event.body.id}` names it in a branch
+nothing takes. The second is caught by evaluating the key against several synthetic
+deliveries and refusing one that comes out identical every time — one-sided on
+purpose, because a key selecting something no synthetic delivery carries (a provider's
+own header) cannot be evaluated here at all, and is accepted: a refusal an author
+cannot act on is worse than a gap. What the validator does *not* do is resolve
 anything: whether the secret exists and whether this deployment has that scheme
 configured are a deployment's answers.
 
