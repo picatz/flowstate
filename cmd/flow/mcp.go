@@ -632,7 +632,13 @@ func renderTestResult(report *v1.TestReport) ([]byte, error) {
 			for _, c := range trimmed.GetCases() {
 				for _, f := range c.GetFailures() {
 					if len(f.GetMessage()) > maxTestFailureMessageBytes {
-						f.Message = f.GetMessage()[:maxTestFailureMessageBytes] +
+						// ToValidUTF8 because the cut lands wherever the byte
+						// count does, and protojson refuses to marshal a string
+						// field holding invalid UTF-8 — slicing mid-rune would
+						// turn a large answer into an encoding error, which is
+						// the failure this ladder exists to replace arriving by
+						// a different door.
+						f.Message = strings.ToValidUTF8(f.GetMessage()[:maxTestFailureMessageBytes], "") +
 							fmt.Sprintf("... (truncated, exceeded %d bytes)", maxTestFailureMessageBytes)
 					}
 				}
@@ -854,15 +860,28 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		// Then the step transcript, keeping the status, the timing, any error, and
 		// the run's declared outputs — a run reported without its transcript is
 		// still an answer; an unparsable document is not.
+		//
+		// Reduced rather than cleared. `GetResponse.kind` is a required oneof, so
+		// clearing it answers with a document protojson accepts and v1.Validate
+		// rejects; the transcript arm keeps a bounded subset of its real steps
+		// instead. See [flowmcp.ReduceTranscript], which is the same reduction
+		// flowstate_get performs, for why nothing is synthesized to stand in for
+		// what was omitted. Found by review on #853, in this ladder as well as in
+		// the one that borrowed its shape.
 		func() ([]byte, error) {
-			if trimmed.GetOutputs() != nil {
-				trimmed.Kind = nil
+			note := "the step outputs and logs were dropped"
+
+			if outputs := trimmed.GetOutputs(); outputs != nil {
+				kept, total := flowmcp.ReduceTranscript(outputs)
+				note = fmt.Sprintf(
+					"the logs were dropped and the step outputs reduced to %d of their %d steps",
+					kept, total)
 			}
 
 			return renderTrimmedRun(trimmed, fmt.Sprintf(
-				"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
+				"%s: the answer exceeded %d bytes. "+
 					"Have the workflow carry less, or read the values it needs in a step of its own",
-				flowmcp.MaxResultBytes))
+				note, flowmcp.MaxResultBytes))
 		},
 
 		// Last, what the workflow declared it answers with. This is the most
@@ -872,17 +891,41 @@ func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([
 		// cap on its own. Dropping the transcript while leaving this untouched was
 		// the hole: the cap bounded the part a workflow was least able to abuse.
 		//
-		// Deliberately returned whether or not it fits, which is [flowmcp.FitResult]'s
-		// contract for a last rung. What remains is a status, two ids, two
-		// timestamps and possibly a failure message — bounded by the schema rather
-		// than by the workflow — so there is nothing left to drop that would not
-		// take the answer with it.
 		func() ([]byte, error) {
-			trimmed.RunOutputs = nil
+			// Both places a run's declared outputs can live — see
+			// [flowmcp.DropDeclaredOutputs]. A local run carries them nested in
+			// the transcript arm, so the bare `trimmed.RunOutputs = nil` this
+			// replaced dropped nothing at all here once the rung above stopped
+			// clearing the arm outright.
+			flowmcp.DropDeclaredOutputs(trimmed)
 
 			return renderTrimmedRun(trimmed, fmt.Sprintf(
 				"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
 					"Read what the run produced with `flow get`, or have the workflow answer with less",
+				flowmcp.MaxResultBytes))
+		},
+
+		// The floor, and the rung that says "possibly a failure message" was not
+		// good enough. A run's failure message is workload-chosen and unbounded
+		// in the schema, so a local run that failed with a megabyte of error text
+		// walked every rung above as a no-op and came back over the ceiling —
+		// the same defect review found in flowstate_get's ladder (#853), in the
+		// ladder that one was modelled on.
+		//
+		// Truncated, never dropped: the reason a run failed is why anyone reads a
+		// failed run at all. What remains after this is a status, two ids, two
+		// timestamps and a bounded message — all bounded by the schema or by
+		// [flowmcp.CapErrorMessage] rather than by the workflow — so there is
+		// genuinely nothing left to drop that would not take the answer with it,
+		// and it is returned whether or not it fits, which is
+		// [flowmcp.FitResult]'s contract for a last rung.
+		func() ([]byte, error) {
+			flowmcp.CapErrorMessage(trimmed.GetError())
+
+			return renderTrimmedRun(trimmed, fmt.Sprintf(
+				"the declared outputs, step outputs and logs were dropped and this run's failure "+
+					"message truncated: the answer exceeded %d bytes. Read the run in full with "+
+					"`flow get`, or have the workflow answer with less",
 				flowmcp.MaxResultBytes))
 		},
 	)

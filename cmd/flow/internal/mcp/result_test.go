@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +16,11 @@ import (
 )
 
 // bytesOfSize is a rung that answers with a document of a chosen size.
+// encodeForTest is the encoding dispatch uses.
+func encodeForTest(message proto.Message) ([]byte, error) {
+	return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
+}
+
 func bytesOfSize(n int) func() ([]byte, error) {
 	return func() ([]byte, error) { return []byte(strings.Repeat("x", n)), nil }
 }
@@ -115,38 +122,44 @@ func TestFitResultStopsOnAnEncodingError(t *testing.T) {
 		"the ladder carried on past a rung that could not be encoded, hiding the defect behind a smaller answer")
 }
 
-// TestTheGetResponseLadderDropsInOrder walks the rungs directly, which the
+// TestTheGetResponseLadderReducesInOrder walks the rungs directly, which the
 // end-to-end tests in cmd/flow cannot do: they can see where the ladder
 // *stopped*, not that rung 2 leaves the declared outputs alone.
 //
 // The order is the claim being pinned. Dropping the declared outputs before the
 // step transcript would shed the answer to keep the commentary.
-func TestTheGetResponseLadderDropsInOrder(t *testing.T) {
+func TestTheGetResponseLadderReducesInOrder(t *testing.T) {
 	t.Parallel()
+
+	// Several steps, each big enough that they cannot all survive the
+	// transcript budget — otherwise rung 1 has nothing to reduce and the
+	// ordering this test exists to pin is never exercised.
+	steps := map[string]*v1.Node_Outputs{}
+	for i := range 32 {
+		steps[fmt.Sprintf("step_%02d", i)] = &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{
+				"body": v1.NewValue(strings.Repeat("x", 16<<10)),
+			},
+		}
+	}
 
 	response := &v1.GetResponse{
 		WorkflowId: "flowstate-workflow-3f7c",
 		Status:     v1.RunResponse_STATUS_COMPLETED,
-		Kind: &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
-			StepValues: map[string]*v1.Node_Outputs{
-				"fetch": {NamedValues: map[string]*v1.Value{"body": v1.NewValue("transcript")}},
-			},
+		Kind:       &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{StepValues: steps}},
+		EntityState: &v1.EntityState{Vars: map[string]*v1.Value{
+			"cursor": v1.NewValue("page-3"),
 		}},
-		EntityState: &v1.EntityState{},
 		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
 			"answer": v1.NewValue("42"),
 		}},
 	}
 
-	encode := func(message proto.Message) ([]byte, error) {
-		return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
-	}
-
-	rungs, notes := getResponseLadder(response, encode)
+	rungs, notes := getResponseLadder(response, encodeForTest)
 	require.Len(t, rungs, 4, "the ladder is the untouched answer plus three reductions")
-	require.Len(t, notes, len(rungs), "every rung needs a note, or a reduction cannot say what it dropped")
+	require.Len(t, notes, len(rungs), "every rung needs a note, or a reduction cannot say what it gave up")
 
-	// Rung 0 says nothing, because it dropped nothing.
+	// Rung 0 says nothing, because it gave up nothing.
 	assert.Empty(t, notes[0])
 
 	decode := func(t *testing.T, i int) *v1.GetResponse {
@@ -163,15 +176,27 @@ func TestTheGetResponseLadderDropsInOrder(t *testing.T) {
 	}
 
 	untouched := decode(t, 0)
-	require.NotNil(t, untouched.GetOutputs(), "rung 0 must be the answer as it arrived")
+	require.Len(t, untouched.GetOutputs().GetStepValues(), 32, "rung 0 must be the answer as it arrived")
 	require.NotNil(t, untouched.GetRunOutputs())
 
-	// Rung 1: the transcript goes, and nothing else.
+	// Rung 1: the transcript is reduced — not emptied, because the oneof it
+	// lives in is required — and nothing else is touched yet.
 	first := decode(t, 1)
-	assert.Nil(t, first.GetOutputs(), "rung 1 did not drop the step transcript")
+	kept := first.GetOutputs().GetStepValues()
+	assert.NotEmpty(t, kept, "rung 1 emptied the transcript arm, which the schema rejects")
+	assert.Less(t, len(kept), 32, "rung 1 did not reduce the step transcript")
 	assert.NotNil(t, first.GetEntityState(), "rung 1 dropped the carried state early")
 	assert.NotNil(t, first.GetRunOutputs(), "rung 1 dropped the declared outputs early")
 	assert.NotEmpty(t, notes[1])
+
+	// Every step it kept is real and unmodified — nothing was synthesized to
+	// stand in for the ones it left out, which a reader could not tell from a
+	// step the workflow actually ran.
+	for name, node := range kept {
+		original, ok := response.GetOutputs().GetStepValues()[name]
+		require.True(t, ok, "rung 1 invented a step named %q that the run never had", name)
+		assert.True(t, proto.Equal(original, node), "rung 1 modified the step %q it kept", name)
+	}
 
 	// Rung 2: the carried state as well, declared outputs still intact.
 	second := decode(t, 2)
@@ -192,6 +217,184 @@ func TestTheGetResponseLadderDropsInOrder(t *testing.T) {
 	}
 }
 
+// TestEveryRungOfTheLadderStaysSchemaValid is the P2 finding's regression test.
+//
+// `GetResponse.kind` is a required oneof, so a reduction that clears it answers
+// with a document protojson.Unmarshal accepts and v1.Validate rejects — a
+// malformed GetResponse handed to a schema-validating consumer by a *successful*
+// call. Parsing was the only thing the first version of these tests checked,
+// which is exactly why it did not catch it.
+//
+// Both arms, because they fail differently: a completed run's transcript must
+// not be emptied, and a failed run's error must not be blanked.
+func TestEveryRungOfTheLadderStaysSchemaValid(t *testing.T) {
+	t.Parallel()
+
+	steps := map[string]*v1.Node_Outputs{}
+	for i := range 16 {
+		steps[fmt.Sprintf("step_%02d", i)] = &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"body": v1.NewValue(strings.Repeat("x", 32<<10))},
+		}
+	}
+
+	for name, response := range map[string]*v1.GetResponse{
+		"a completed run carrying a transcript": {
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "6b1f",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind:       &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{StepValues: steps}},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{"answer": v1.NewValue("42")}},
+		},
+		"a failed run carrying an oversized reason": {
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "6b1f",
+			Status:     v1.RunResponse_STATUS_FAILED,
+			Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+				Message: strings.Repeat("E", MaxResultBytes+(64<<10)),
+			}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NoError(t, v1.Validate(response),
+				"the fixture is invalid before the ladder runs, so this proves nothing")
+
+			rungs, _ := getResponseLadder(response, encodeForTest)
+
+			for i := range rungs {
+				encoded, err := rungs[i]()
+				require.NoError(t, err)
+
+				var got v1.GetResponse
+				require.NoError(t, protojson.Unmarshal(encoded, &got),
+					"rung %d produced a document that does not parse", i)
+
+				require.NoError(t, v1.Validate(&got),
+					"rung %d produced a GetResponse the schema rejects", i)
+			}
+		})
+	}
+}
+
+// TestTheLadderBoundsAFailureOnlyResponse is the P1 finding's regression test.
+//
+// A run that failed carries no transcript to reduce, and normally no carried
+// state and no declared outputs either — so before the failure message was
+// capped, every rung was a no-op and FitResult handed back a floor far over the
+// ceiling as though it had fitted. `RunResponse.Error.message` has no max_len in
+// the schema and carries a task's or an application's own error, so that is the
+// workload-chosen resource escaping the bound.
+//
+// The reason has to survive in *some* form: an error dropped entirely is worse
+// than one shortened, because the reason is why anyone reads a failed run.
+func TestTheLadderBoundsAFailureOnlyResponse(t *testing.T) {
+	t.Parallel()
+
+	// A reason whose first bytes are recognisable, so the test can assert a
+	// usable prefix survived rather than merely that something did.
+	const opening = "step charge failed: upstream returned 503"
+
+	response := &v1.GetResponse{
+		WorkflowId: "flowstate-workflow-3f7c",
+		RunId:      "6b1f",
+		Status:     v1.RunResponse_STATUS_FAILED,
+		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+			Message: opening + " " + strings.Repeat("E", MaxResultBytes+(64<<10)),
+		}},
+	}
+
+	untouched, err := encodeForTest(response)
+	require.NoError(t, err)
+	require.Greater(t, len(untouched), MaxResultBytes,
+		"the fixture fits, so this test would pass without the cap ever running")
+
+	rungs, notes := getResponseLadder(response, encodeForTest)
+
+	encoded, rung, err := FitResult(rungs...)
+	require.NoError(t, err)
+
+	require.LessOrEqual(t, len(encoded), MaxResultBytes,
+		"a failure-only response walked every rung and came back over the ceiling")
+
+	var got v1.GetResponse
+	require.NoError(t, protojson.Unmarshal(encoded, &got))
+	require.NoError(t, v1.Validate(&got), "the bounded answer is not a valid GetResponse")
+
+	require.NotNil(t, got.GetError(), "the reason the run failed was dropped rather than shortened")
+	assert.Contains(t, got.GetError().GetMessage(), opening,
+		"the reason survived but not usably: a caller cannot tell what went wrong from it")
+	assert.Contains(t, got.GetError().GetMessage(), "truncated",
+		"a shortened reason has to say it was shortened, or it reads as the whole of it")
+
+	assert.NotEmpty(t, notes[rung], "the answer was reduced and does not say so")
+}
+
+// TestACappedErrorMessageStaysValidUTF8 covers the way a byte-counted
+// truncation breaks a protojson encoder.
+//
+// The cut lands wherever the byte count does, which is mid-rune for any
+// multi-byte character straddling it — and protojson refuses to marshal a string
+// field holding invalid UTF-8. Slicing naively would turn a large answer into an
+// encoding error, which is the failure this ladder exists to replace arriving by
+// a different door.
+func TestACappedErrorMessageStaysValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	// Three-byte runes, so the cap at 4 KiB cannot land on a boundary.
+	runError := &v1.RunResponse_Error{Message: strings.Repeat("世", maxReducedErrorBytes)}
+
+	require.True(t, CapErrorMessage(runError))
+	assert.True(t, utf8.ValidString(runError.GetMessage()),
+		"the truncated message is not valid UTF-8, which protojson refuses to marshal")
+
+	// The real proof: it still encodes.
+	_, err := encodeForTest(&v1.GetResponse{
+		WorkflowId: "flowstate-workflow-3f7c",
+		Status:     v1.RunResponse_STATUS_FAILED,
+		Kind:       &v1.GetResponse_Error{Error: runError},
+	})
+	require.NoError(t, err, "a capped failure message stopped the answer encoding at all")
+}
+
+// TestDropDeclaredOutputsReachesBothPlaces is the near-miss this fix produced.
+//
+// A run's declared outputs reach a reader either as GetResponse.run_outputs or
+// nested in the transcript arm as GetResponse.outputs.run_outputs, and a local
+// run populates the nested one. While the transcript rung cleared the whole
+// oneof, dropping the arm took the nested copy with it; reducing the arm instead
+// left it behind, and a 2 MiB declared output rode straight past the ceiling.
+func TestDropDeclaredOutputsReachesBothPlaces(t *testing.T) {
+	t.Parallel()
+
+	response := &v1.GetResponse{
+		Status: v1.RunResponse_STATUS_COMPLETED,
+		Kind: &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
+			StepValues: map[string]*v1.Node_Outputs{
+				"build": {NamedValues: map[string]*v1.Value{"body": v1.NewValue("small")}},
+			},
+			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{
+				"nested": v1.NewValue("here"),
+			}},
+		}},
+		RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{"top": v1.NewValue("here")}},
+	}
+
+	require.True(t, DropDeclaredOutputs(response))
+
+	assert.Nil(t, response.GetRunOutputs(), "the top-level declared outputs survived")
+	assert.Nil(t, response.GetOutputs().GetRunOutputs(),
+		"the declared outputs nested in the transcript arm survived, which is where a local run puts them")
+
+	// The transcript itself is not collateral: this drops the answer, not the
+	// commentary, and the rung before it already decided what happens to that.
+	assert.NotEmpty(t, response.GetOutputs().GetStepValues(), "dropping the outputs took the transcript with it")
+
+	// Nothing left to drop reports as much, so a rung can tell "I removed
+	// something" from "there was nothing here".
+	assert.False(t, DropDeclaredOutputs(response))
+}
+
 // TestTheGetResponseLadderNeverDropsTheRunsError is the rung that must not
 // fire, checked at the ladder rather than end to end.
 //
@@ -209,11 +412,7 @@ func TestTheGetResponseLadderNeverDropsTheRunsError(t *testing.T) {
 		}},
 	}
 
-	encode := func(message proto.Message) ([]byte, error) {
-		return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
-	}
-
-	rungs, _ := getResponseLadder(response, encode)
+	rungs, _ := getResponseLadder(response, encodeForTest)
 
 	// Every rung, including the floor: no reduction may take the error with it.
 	for i := range rungs {
@@ -247,11 +446,7 @@ func TestTheGetResponseLadderDoesNotMutateItsInput(t *testing.T) {
 
 	before := proto.Clone(response)
 
-	encode := func(message proto.Message) ([]byte, error) {
-		return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
-	}
-
-	rungs, _ := getResponseLadder(response, encode)
+	rungs, _ := getResponseLadder(response, encodeForTest)
 	for i := range rungs {
 		_, err := rungs[i]()
 		require.NoError(t, err)

@@ -828,6 +828,25 @@ func dispatch(
 				return ToolError(err), nil
 			}
 
+			// The bound holds even if the ladder could not reach it.
+			//
+			// [FitResult]'s contract is to return its floor whether or not it
+			// fits, which is right for a caller that wraps the document in
+			// something it can annotate — but this tool answers with the bytes
+			// themselves, so an oversized floor here would be the bound quietly
+			// not applying. Every field the ladder knows how to shrink is
+			// bounded now, so reaching this is either a response carrying a
+			// field added since, or one that arrived invalid and could not be
+			// reduced without being made more so. Both are refusals rather than
+			// answers. Reported by Codex on picatz/flowstate#853.
+			if len(encoded) > MaxResultBytes {
+				return ToolError(fmt.Errorf(
+					"%s answered with %d bytes and could not be reduced below this surface's %d byte "+
+						"limit, so nothing was returned rather than a document cut short; read the run "+
+						"with `flow get`, or have the workflow carry less",
+					ToolName(method.Name), len(encoded), MaxResultBytes)), nil
+			}
+
 			content := []mcp.Content{&mcp.TextContent{Text: string(encoded)}}
 
 			// What left, as a second content block rather than a field in the

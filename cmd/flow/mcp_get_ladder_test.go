@@ -27,14 +27,22 @@ import (
 // stands a fake deployment up through t.Setenv, so every test here is serial,
 // and serial tests in this package are the expensive ones.
 
-// hugeValue is a workflow-chosen value large enough on its own to carry a
-// GetResponse past [flowmcp.MaxResultBytes], which is the shape that matters:
-// the size comes from what the workload computed, not from how many fields the
-// schema has.
-func hugeValue(t *testing.T) *v1.Value {
-	t.Helper()
+// manyStepTranscript is a step transcript past [flowmcp.MaxResultBytes], which
+// is the shape that matters: the size comes from what the workload computed, not
+// from how many fields the schema has.
+//
+// Many steps rather than one enormous one, because that is what a reduction can
+// actually act on — the ladder keeps whole, real steps and drops the rest, so a
+// transcript of one step can only ever be kept or be too big.
+func manyStepTranscript() *v1.Workflow_StepOutputs {
+	steps := make(map[string]*v1.Node_Outputs, 64)
+	for i := range 64 {
+		steps[fmt.Sprintf("step_%02d", i)] = &v1.Node_Outputs{
+			NamedValues: map[string]*v1.Value{"body": v1.NewValue(strings.Repeat("x", 16<<10))},
+		}
+	}
 
-	return v1.NewValue(strings.Repeat("x", flowmcp.MaxResultBytes+(64<<10)))
+	return &v1.Workflow_StepOutputs{StepValues: steps}
 }
 
 // getToolBlocks calls flowstate_get against a stand-in deployment and returns
@@ -116,11 +124,7 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 			WorkflowId: "flowstate-workflow-3f7c",
 			RunId:      "6b1f",
 			Status:     v1.RunResponse_STATUS_COMPLETED,
-			Kind: &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{
-				StepValues: map[string]*v1.Node_Outputs{
-					"fetch": {NamedValues: map[string]*v1.Value{"body": hugeValue(t)}},
-				},
-			}},
+			Kind:       &v1.GetResponse_Outputs{Outputs: manyStepTranscript()},
 			RunOutputs: &v1.RunOutputs{Values: map[string]*v1.Value{"answer": v1.NewValue("42")}},
 		}
 
@@ -146,7 +150,16 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 		require.NoError(t, protojson.Unmarshal([]byte(document), &got),
 			"the reduced answer stopped being a parseable GetResponse")
 
-		assert.Nil(t, got.GetOutputs(), "the oversized step transcript was kept")
+		// Reduced, not cleared: `GetResponse.kind` is a required oneof, so an
+		// answer with the arm removed is one v1.Validate rejects. The document
+		// is checked against the schema here and not merely parsed, which is
+		// the assertion the first version of this test was missing (#853).
+		require.NoError(t, v1.Validate(&got),
+			"the reduced answer is not a GetResponse the schema accepts")
+		assert.NotEmpty(t, got.GetOutputs().GetStepValues(),
+			"the transcript arm was emptied, which the schema rejects")
+		assert.Less(t, len(got.GetOutputs().GetStepValues()), 64,
+			"the oversized step transcript was kept whole")
 
 		// What a reader most needs is what survives: the identity, the status,
 		// and the run's declared outputs — the answer, as against the transcript.
@@ -177,6 +190,57 @@ func TestTheGetToolLadderOverTheWire(t *testing.T) {
 				"the degradation note was smuggled into the document as %q", name)
 		}
 	})
+}
+
+// TestAFailedRunWithAnOversizedReasonIsStillAnswered is the P1 finding over the
+// wire.
+//
+// A failed run carries no transcript, and normally no carried state and no
+// declared outputs either, so every rung of the ladder was a no-op and the tool
+// answered with a document far over the ceiling as though it had fitted.
+// `RunResponse.Error.message` has no `max_len` in the schema and carries a task's
+// or an application's own error, so that was the workload-chosen resource
+// escaping the bound — the one thing this surface's cap exists to stop.
+//
+// It has to come back as an *answer*, not a refusal: the reason a run failed is
+// why anyone reads a failed run, and a shortened reason beats none.
+func TestAFailedRunWithAnOversizedReasonIsStillAnswered(t *testing.T) {
+	// Not parallel: connectRemoteMCP stands up a fake deployment through
+	// t.Setenv, which the testing package forbids alongside t.Parallel.
+
+	const opening = "step charge failed: upstream returned 503"
+
+	response := &v1.GetResponse{
+		WorkflowId: "flowstate-workflow-3f7c",
+		RunId:      "6b1f",
+		Status:     v1.RunResponse_STATUS_FAILED,
+		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
+			Message: opening + " " + strings.Repeat("E", flowmcp.MaxResultBytes+(64<<10)),
+		}},
+	}
+
+	untouched, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(response)
+	require.NoError(t, err)
+	require.Greater(t, len(untouched), flowmcp.MaxResultBytes,
+		"the fixture fits, so this test would pass without the cap ever running")
+
+	document, notes, result := getToolBlocks(t, response)
+
+	assert.False(t, result.IsError, "a run whose reason had to be shortened is still an answer")
+	require.LessOrEqual(t, len(document), flowmcp.MaxResultBytes,
+		"a failure-only answer escaped the surface's ceiling")
+
+	var got v1.GetResponse
+	require.NoError(t, protojson.Unmarshal([]byte(document), &got))
+	require.NoError(t, v1.Validate(&got), "the bounded answer is not a valid GetResponse")
+
+	require.NotNil(t, got.GetError(), "the reason the run failed was dropped rather than shortened")
+	assert.Contains(t, got.GetError().GetMessage(), opening,
+		"the reason survived but not usably: a caller cannot tell what went wrong from it")
+	assert.Equal(t, v1.RunResponse_STATUS_FAILED, got.GetStatus())
+
+	require.Len(t, notes, 1, "a shortened reason has to say it was shortened")
+	assert.Contains(t, notes[0], "failure message")
 }
 
 // TestAnOversizedListingIsStillRefused pins a decision, not an omission.
