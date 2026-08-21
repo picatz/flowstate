@@ -744,7 +744,13 @@ func (e *executor) runSwitch(node *v1.Node, sw *v1.Switch, depth, susp int) erro
 	}
 
 	if err := e.runNodes(body, depth+1, susp+1); err != nil {
-		return err
+		// Wrapped so the selection survives the failure: failedAt reads the
+		// account off [v1.SwitchBodyError] the way it reads an exhausted loop's,
+		// and failedStepOutputs records it under this step's id. Without it the
+		// switch's own entry holds the failure text alone and the arm that ran
+		// is absent from the record every reader of it consults. The local
+		// driver's runSwitch wraps at the identical point.
+		return nodeFailed(&v1.SwitchBodyError{Err: err, Selection: outputs})
 	}
 
 	e.scope.Outputs.StepValues[node.GetId()] = outputs

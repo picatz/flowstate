@@ -146,8 +146,13 @@ func (e *LoopExhaustedError) Error() string {
 // loop reports them through, so an iteration reads identically whether the loop
 // finished or exhausted. Both drivers store exactly this, which is what keeps
 // the failed loop's transcript entry one shape rather than two.
-func (e *LoopExhaustedError) Record() *Node_Outputs {
-	out := FailedStepOutputs(StepErrorText(e))
+//
+// text is the failure sentence the calling driver has already rendered, for the
+// same reason [FailedStepOutputs] takes one rather than an error: the two drivers
+// hold a failure in different shapes at the moment of recording, and only each of
+// them can shed its own envelope. See [StepFailureRecord].
+func (e *LoopExhaustedError) Record(text string) *Node_Outputs {
+	out := FailedStepOutputs(text)
 	if !e.Truncated {
 		out.NamedValues[LoopResultsField] = LoopOutputs(e.Attempted).NamedValues[LoopResultsField]
 	}

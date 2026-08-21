@@ -134,5 +134,67 @@ func PartialTranscriptCases() []PartialTranscriptCase {
 				"each": v1.FailedStepOutputs(`iteration 0: step "inside_boom": ` + recorded),
 			}},
 		},
+		{
+			// The account a container keeps of itself, the other half of what
+			// [v1.LoopExhaustedError] does for an exhausted loop. A switch
+			// records its selection after its body returns, so a body that
+			// failed used to leave the switch's entry holding the failure text
+			// alone — the arm that ran erased from the only record of the run.
+			// `flow test` reads that record to measure switch-arm coverage
+			// (#801), so a case whose whole point is `expect.failed: true` on an
+			// error arm was reported as never having taken it.
+			//
+			// Both drivers therefore attach the selection to the failed switch's
+			// entry ([v1.SwitchBodyError]), and this is the case that says so
+			// once for both of them.
+			Name: "a switch whose body fails keeps the arm it selected on its own entry",
+			Workflow: &v1.Workflow{
+				Name: "partial-failed-switch",
+				Steps: []*v1.Node{
+					says("before", "ran"),
+					{
+						Id: "route",
+						Kind: &v1.Node_Switch{Switch: &v1.Switch{
+							Value: v1.NewLiteral("boom"),
+							Cases: []*v1.Switch_Case{
+								{
+									Values: []*v1.Value{v1.NewLiteral("boom")},
+									Steps:  []*v1.Node{boom("inside_boom")},
+								},
+								{
+									Values: []*v1.Value{v1.NewLiteral("fine")},
+									Steps:  []*v1.Node{says("not_taken", "unreachable")},
+								},
+							},
+						}},
+					},
+					says("after", "unreachable"),
+				},
+			},
+			Expected: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"before": {},
+				// A switch body merges into the enclosing scope, so the body step
+				// that failed is on the record under its own id, exactly as a
+				// `parallel` branch step would be.
+				"inside_boom": v1.FailedStepOutputs(recorded),
+				// And the switch's own entry: the position the failure passed out
+				// through, *plus* the arm it had already selected.
+				"route": switchFailure(`step "inside_boom": `+recorded, "boom", "boom"),
+			}},
+		},
 	}
+}
+
+// switchFailure is the entry a switch records when the body it selected failed:
+// the failure text, plus the selection [v1.SelectSwitchCase] had already made.
+//
+// Spelled through [v1.FailedStepOutputs] and the same output names the drivers
+// write, rather than as a literal map, so a case here cannot claim a shape no
+// driver produces.
+func switchFailure(text, observed, took string) *v1.Node_Outputs {
+	out := v1.FailedStepOutputs(text)
+	out.NamedValues[v1.SwitchValueOutput] = v1.NewLiteral(observed)
+	out.NamedValues[v1.SwitchCaseOutput] = v1.NewLiteral(took)
+
+	return out
 }

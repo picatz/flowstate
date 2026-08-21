@@ -365,3 +365,183 @@ tests:
 		"iteration `b` took the empty arm, which lives only in the loop's results")
 	assert.False(t, armByKey(t, coverage, "route:default").Reached, "no item fell through")
 }
+
+// armsByKey is [armByKey] for a key that names more than one arm — the situation
+// two isolated bodies sharing a step id produce, and the one the measurement got
+// wrong.
+func armsByKey(coverage *flowtest.Coverage, key string) []*flowtest.SwitchArm {
+	var out []*flowtest.SwitchArm
+	for _, arm := range coverage.Arms {
+		if arm.Key == key {
+			out = append(out, arm)
+		}
+	}
+
+	return out
+}
+
+// TestTwoSwitchesSharingAStepIDAreMeasuredApart is the negative direction of the
+// identity question: exercising an arm of one switch must not report the
+// same-named arm of a *different* switch covered.
+//
+// A step id is unique within one scope, not within a workflow. Sibling loop
+// bodies are isolated from each other — the validator's nesting rule refuses an
+// id that collides with a step the body is nested *inside*, and says nothing
+// about two bodies beside each other — so `route` may legally name a switch in
+// both. Keyed by `<step>:case[<i>]` alone, the second declaration was dropped as
+// already-seen and the two switches shared one reached set, so driving `a`
+// through the first body reported the first arm of the second switch covered as
+// well. That is `--coverage-required` passing on an arm no case ever took, the
+// fail-open direction this whole unit exists to close.
+//
+// Written so the two switches cannot be confused for one another by accident:
+// their arms carry different literals, so a claim about which arm was reached is
+// also a claim about which switch it belongs to.
+func TestTwoSwitchesSharingAStepIDAreMeasuredApart(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+name: shared-ids
+steps:
+  - id: first
+    for_each:
+      items: ${['a']}
+      as: item
+      steps:
+        - id: route
+          switch:
+            value: ${item}
+            cases:
+              - case: a
+                steps: []
+              - case: b
+                steps: []
+  - id: second
+    for_each:
+      items: ${['z']}
+      as: item
+      steps:
+        - id: route
+          switch:
+            value: ${item}
+            cases:
+              - case: y
+                steps: []
+              - case: z
+                steps: []
+`)
+	path := dir + "/shared.test.yaml"
+	writeFile(t, path, `edition: v2026.3
+tests:
+  - name: both loops run one item each
+    workflow: ./workflow.yaml
+    expect:
+      failed: false
+`)
+
+	report, coverages := flowtest.RunFileWithCoverage(path)
+	require.Empty(t, report.GetRefused())
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
+	}
+	require.Len(t, coverages, 1)
+	coverage := coverages[0]
+
+	// Four arms, not two: the second switch's declarations are its own.
+	require.Len(t, coverage.Arms, 4, "each switch declares its own arms, however the steps are named")
+
+	first := armsByKey(coverage, "route:case[0]")
+	require.Len(t, first, 2, "one key, two arms — which is exactly why the key is not an identity")
+	assert.Equal(t, `case "a"`, first[0].Label)
+	assert.Equal(t, `case "y"`, first[1].Label)
+
+	// The claim: driving `a` through the first body covers the first switch's
+	// first arm and says nothing whatever about the second switch's.
+	assert.True(t, first[0].Reached, "the first body was driven with `a`")
+	assert.False(t, first[1].Reached,
+		"no item took the second switch's first arm; crediting it here is a gate passing on an untested arm")
+
+	// And the arm the second body *did* take is credited, so this is not a
+	// measurement that simply stopped crediting the second switch at all.
+	second := armsByKey(coverage, "route:case[1]")
+	require.Len(t, second, 2)
+	assert.False(t, second[0].Reached, "`b` was never driven through the first body")
+	assert.True(t, second[1].Reached, "the second body was driven with `z`")
+
+	// Two unreached arms, and an author can tell them apart only by position —
+	// they answer to the same two names.
+	gaps := coverage.ArmGaps()
+	require.Len(t, gaps, 2)
+	assert.NotEqual(t, gaps[0].Where.Start.Line, gaps[1].Where.Start.Line,
+		"two arms sharing a key are distinguishable only by where they were written")
+}
+
+// TestAnErrorArmIsCreditedWhenTheCaseExpectsTheFailure is the other half of the
+// record surviving what happened to it: a switch used to record its selection
+// only *after* its body returned, so a body step that failed left the switch's
+// entry holding the failure text alone and the arm that ran nowhere in it.
+//
+// The suite below exercises the error arm and nothing else, which is the whole
+// point of `expect.failed: true` — and `--coverage-required` rejected it, naming
+// an arm the suite had just driven. That is a false diagnostic on a correct
+// suite, the failure mode #453 fixed for steps and this fixes for arms; both
+// drivers now attach the selection to the failed switch's entry
+// ([v1.SwitchBodyError]).
+func TestAnErrorArmIsCreditedWhenTheCaseExpectsTheFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+name: error-arm
+inputs:
+  action:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.action}
+      cases:
+        - case: boom
+          steps:
+            - id: explode
+              http:
+                url: https://example.com/boom
+`)
+	path := dir + "/errorarm.test.yaml"
+	writeFile(t, path, `edition: v2026.3
+tests:
+  - name: the error arm fails, which is the point of the case
+    workflow: ./workflow.yaml
+    inputs:
+      action: boom
+    stubs:
+      - task: http
+        fails:
+          kind: Upstream
+          message: upstream said no
+    expect:
+      failed: true
+      error_contains: upstream said no
+`)
+
+	report, coverages := flowtest.RunFileWithCoverage(path)
+	require.Empty(t, report.GetRefused())
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
+	}
+	require.Len(t, coverages, 1)
+	coverage := coverages[0]
+
+	arm := armByKey(t, coverage, "route:case[0]")
+	assert.True(t, arm.Reached, "the case drove this arm; the body failing is what it asserted")
+	assert.Empty(t, coverage.ArmGaps(), "--coverage-required must not reject a suite that covered every arm")
+
+	// The step half of the same record, asserted beside it: #453 credits the
+	// step the run stopped on, and this is the arm that selected it. A fix that
+	// credited the arm while losing the step would be trading one gap for
+	// another.
+	assert.Equal(t, []string{"explode", "route"}, coverage.Reached)
+	assert.Empty(t, coverage.Gaps())
+}
