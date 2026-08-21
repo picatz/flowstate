@@ -155,7 +155,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// The local half is the server's own handlers over no Temporal client: one
 	// implementation of Validate, whoever calls it. See server/validate.go for
 	// why a nil client is safe for exactly these two methods.
-	local := server.New(nil)
+	local, err := server.New(nil)
+	if err != nil {
+		return err
+	}
 
 	deps := flowmcp.Deps{
 		Redact: func(response *v1.GetResponse) *v1.GetResponse {

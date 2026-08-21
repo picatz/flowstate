@@ -25,6 +25,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // One Temporal server for the package, and a Temporal namespace per test.
@@ -116,6 +117,25 @@ func runPackageTests(m *testing.M) (int, error) {
 	devServer = started
 
 	return m.Run(), nil
+}
+
+// mustNew is [server.New] for a test whose subject is not the construction.
+//
+// [server.New] reports an error because a [server.Option] can refuse — see
+// [server.WithNamespace], which checks the namespace grammar every
+// tenant-scoped derivation in that package assumes. A test that means "a server
+// configured like this" should stop at the construction with the option's own
+// message rather than nil-panic several lines later on something unrelated.
+//
+// A test whose subject *is* the refusal calls [server.New] directly and asserts
+// on the error; see TestNewRefusesANamespaceOutsideTheGrammar.
+func mustNew(t testing.TB, temporal client.Client, opts ...server.Option) *server.FlowstateServer {
+	t.Helper()
+
+	s, err := server.New(temporal, opts...)
+	require.NoError(t, err)
+
+	return s
 }
 
 // newTemporalNamespace registers a Temporal namespace for one test and returns a

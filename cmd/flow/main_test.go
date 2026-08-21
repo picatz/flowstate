@@ -17,6 +17,8 @@ import (
 	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
 	"google.golang.org/protobuf/types/known/durationpb"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // One Temporal server for the package, and a Temporal namespace per test.
@@ -101,6 +103,23 @@ func runPackageTests(m *testing.M) (int, error) {
 	devServer = started
 
 	return m.Run(), nil
+}
+
+// mustNewFlowstateServer is [server.New] for a test whose subject is not the
+// construction.
+//
+// [server.New] reports an error because a [server.Option] can refuse — see
+// [server.WithNamespace]. The tests in this package all build the
+// zero-configuration or nil-Temporal-client server, so nothing here can refuse;
+// the error is asserted rather than dropped so that stays a fact somebody
+// checked instead of an assumption.
+func mustNewFlowstateServer(t testing.TB, temporal client.Client, opts ...server.Option) *server.FlowstateServer {
+	t.Helper()
+
+	s, err := server.New(temporal, opts...)
+	require.NoError(t, err)
+
+	return s
 }
 
 // newTemporalNamespace registers a Temporal namespace for one test and returns a

@@ -63,7 +63,7 @@ func servedWorkflow() *v1.Workflow {
 func TestADeliveryPastTheConcurrencyBoundIsShed(t *testing.T) {
 	t.Parallel()
 
-	receiver, err := New(nil).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, nil).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{servedWorkflow()}, oneKeyStore(t), WithWebhookConcurrency(1))
 	require.NoError(t, err)
 

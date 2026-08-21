@@ -34,7 +34,7 @@ func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
 	}
 	ctx := auth.ContextWithPrincipal(context.Background(), principal)
 
-	s := New(nil,
+	s := mustNew(t, nil,
 		WithNamespace("fallback-tenant"),
 		WithDeployment("prod"),
 		WithIdentityClaims("repository", "ref"),
@@ -81,7 +81,7 @@ func TestIdentityForWithNoConfiguredClaims(t *testing.T) {
 		Claims:  map[string]any{"repository": "example/service"},
 	})
 
-	id := New(nil, WithNamespace("solo")).identityFor(ctx)
+	id := mustNew(t, nil, WithNamespace("solo")).identityFor(ctx)
 	if len(id.GetClaims()) != 0 {
 		t.Fatalf("claims = %v, want none carried by default", id.GetClaims())
 	}
