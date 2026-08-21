@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -277,9 +278,13 @@ func TestALiveViewLeavesASentenceBehind(t *testing.T) {
 
 		lines := splitLines(errOut.String())
 		require.NotEmpty(t, lines)
-		assert.Equal(t, "COMPLETED workflow computed-outputs after report, roll_out", lines[0],
+		assert.Equal(t,
+			"COMPLETED workflow computed-outputs run 0198f1e2-0000-7000-8000-000000000000 "+
+				"after report, roll_out",
+			lines[0],
 			"a live view that has erased itself has to leave the same sentence the plain "+
-				"shape writes, without the ids its own header had been carrying")
+				"shape writes — and it is the first thing this shape writes that stays, so "+
+				"the run id `flow get --run-id` takes comes due here")
 	})
 
 	t.Run("a document asked for gets no prose", func(t *testing.T) {
@@ -307,5 +312,104 @@ func TestALiveViewLeavesASentenceBehind(t *testing.T) {
 		require.ErrorContains(t, watchEnding(surface, renderingOf(FormatText), folded), "gave up")
 		assert.Empty(t, errOut.String(),
 			"a watch that lost the server stated an outcome it does not know")
+	})
+}
+
+// TestALiveViewAccountsForEveryAttemptItWatched is picatz/flowstate#836's
+// finding, in the shape that found it.
+//
+// The live view draws the run id in its header and bubbletea erases the frame
+// on the way out, so nothing it showed survives the command. A first attempt at
+// #544 read those frames as having told somebody, which left a completed
+// terminal run carrying no run id at all — and across a continue-as-new
+// handover the erased frames had been the only place the earlier attempts were
+// ever named. `flow get --run-id` and `flow watch --run-id` both take one, so
+// an attempt whose id never reached the reader is an attempt they cannot ask
+// about.
+//
+// The rule the fix states: a run id is owed until a line that *stays* has
+// carried it. Nothing the live view draws counts.
+func TestALiveViewAccountsForEveryAttemptItWatched(t *testing.T) {
+	surface, _, errOut := plainSurface()
+	model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second,
+		"flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2", nil, namedRun("renewal-reminder"))
+
+	first := response(v1.RunResponse_STATUS_RUNNING, "poll")
+
+	// The handover. Same workflow id, a new run id, and the frame that drew it is
+	// about to be thrown away.
+	second := response(v1.RunResponse_STATUS_RUNNING, "poll")
+	second.RunId = "0198f1e2-0000-7000-8000-000000000001"
+
+	third := response(v1.RunResponse_STATUS_COMPLETED, "poll", "remind")
+	third.RunId = "0198f1e2-0000-7000-8000-000000000002"
+
+	folded := fold(t, model,
+		watch.StateMsg{Response: first},
+		watch.StateMsg{Response: second},
+		watch.StateMsg{Response: third})
+
+	require.NoError(t, watchEnding(surface, renderingOf(FormatText), folded))
+
+	lines := splitLines(errOut.String())
+	require.Len(t, lines, 1)
+	assert.Equal(t,
+		"COMPLETED workflow renewal-reminder runs "+
+			"0198f1e2-0000-7000-8000-000000000000, "+
+			"0198f1e2-0000-7000-8000-000000000001, "+
+			"0198f1e2-0000-7000-8000-000000000002 after poll, remind",
+		lines[0],
+		"every attempt this walk watched has to be nameable afterwards")
+}
+
+// TestEveryRunIdReachesAPersistentLineExactlyOnce is the invariant both shapes
+// hold, stated once and checked against both.
+//
+// Counting is the point. "The transcript mentions the run id" passes against
+// the shape #544 rejected, which said it on every line; "the transcript omits
+// it" passes against the shape #836 rejected, which said it nowhere. Exactly
+// once, per attempt, is the only claim that fails both.
+func TestEveryRunIdReachesAPersistentLineExactlyOnce(t *testing.T) {
+	attempts := []string{
+		"0198f1e2-0000-7000-8000-000000000000",
+		"0198f1e2-0000-7000-8000-000000000001",
+	}
+
+	walk := func() []pollAnswer {
+		running := runningAt("poll")
+		handover := runningAt("remind")
+		handover.response.RunId = attempts[1]
+		done := finishedPoll("poll", "remind")
+		done.response.RunId = attempts[1]
+
+		return []pollAnswer{running, handover, done}
+	}
+
+	t.Run("the plain shape", func(t *testing.T) {
+		transcript := strings.Join(narrate(t, walk(), namedRun("renewal-reminder")), "\n")
+
+		for _, attempt := range attempts {
+			assert.Equal(t, 1, strings.Count(transcript, attempt),
+				"attempt %s did not reach the transcript exactly once:\n%s", attempt, transcript)
+		}
+	})
+
+	t.Run("the live shape", func(t *testing.T) {
+		surface, _, errOut := plainSurface()
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second,
+			"flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2", nil, namedRun("renewal-reminder"))
+
+		msgs := make([]tea.Msg, 0, len(walk()))
+		for _, answer := range walk() {
+			msgs = append(msgs, watch.StateMsg{Response: answer.response})
+		}
+
+		require.NoError(t, watchEnding(surface, renderingOf(FormatText), fold(t, model, msgs...)))
+
+		transcript := errOut.String()
+		for _, attempt := range attempts {
+			assert.Equal(t, 1, strings.Count(transcript, attempt),
+				"attempt %s did not reach the transcript exactly once:\n%s", attempt, transcript)
+		}
 	})
 }

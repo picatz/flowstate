@@ -380,8 +380,8 @@ Then run a workflow durably, through the server:
 ```console
 $ go run ./cmd/flow run ./examples/computed-outputs/workflow.yaml --input release=2026.9.0
 running on localhost:9233 as an anonymous caller
-started workflow computed-outputs; come back to it with `flow watch flowstate-workflow-60ed44da-d2a7-46e4-81cd-fefc99fea7be`
-COMPLETED workflow computed-outputs after report, roll_out
+started workflow computed-outputs; come back to it with `flow watch flowstate-workflow-4a57133c-32b7-408f-8ff9-77bc0e7e3e05`
+COMPLETED workflow computed-outputs run 01a025b3-d4f1-7450-9333-bfca9a969d6b after report, roll_out
 outputs
   hosts_placed 3
   release 2026.9.0
@@ -394,10 +394,12 @@ stderr and erased when the run ends, leaving that one sentence — the same sent
 `flow run local` writes about the same file, because the two drivers are one execution
 model and a person moving between them should have nothing to relearn.
 
-The run id is deliberately not in it: no verb takes one. The workflow id, which
-`flow watch`, `flow get` and `flow cancel` all do take, is said once, inside the
-command it is for. Pipe this run and stdout carries the document instead, exactly as
-above.
+Each identifier is said once, and once is not zero. The workflow id — what
+`flow watch`, `flow get` and `flow cancel` are pointed at — is in the command it is
+for and nowhere else. The run id names *this attempt* of the workload, which is what
+`flow get --run-id` asks about, so it is on the line that stays; a workload that
+continues as new names each attempt as it hands over. Pipe this run and stdout
+carries the document instead, exactly as above.
 
 The same file run with `flow run local` prints the same steps and, piped, the same
 final document; the difference is that this one survives its worker being restarted.

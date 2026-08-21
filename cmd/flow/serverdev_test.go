@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -418,6 +419,14 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(report, "flowstate-workflow-"),
 		"the workflow id belongs in the `flow watch` hint and nowhere else in the prose:\n%s", report)
 
+	// And the run id is said once — not zero times. `flow get --run-id` and
+	// `flow watch --run-id` take one, to ask about a single attempt of a workload
+	// rather than whichever is current, so a transcript that never names it leaves
+	// a reader unable to ask (picatz/flowstate#836). Counted against a real id
+	// from a real server rather than a fixture, which is what this test is for.
+	assert.Len(t, runIDInProse.FindAllString(report, -1), 1,
+		"the run id has to reach the reader exactly once:\n%s", report)
+
 	// Ctrl-C, and the whole stack with it.
 	cancel()
 
@@ -431,6 +440,12 @@ func TestServerDevReachesADurableRunInTwoCommands(t *testing.T) {
 	assertNothingAnswersAt(t, stack.TemporalAddress)
 	assertNothingAnswersAt(t, stack.FlowstateAddress)
 }
+
+// runIDInProse matches the clause a narrated line carries a run id in.
+//
+// Anchored on the word as well as the shape, so it cannot match a workflow id
+// that happens to contain a UUID — which every one of them does.
+var runIDInProse = regexp.MustCompile(`\brun [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 
 // awaitDevStack reads the resolved-endpoints document the command writes before
 // it begins serving, or reports why it never came.

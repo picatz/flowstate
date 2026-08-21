@@ -521,13 +521,13 @@ func watchEnding(surface *ui.UI, rendering runRendering, model watch.Model) erro
 	// status becomes prose. Terminal statuses only — a walk that gave up knows
 	// nothing final about the run, and finishWatch answers that with the error it
 	// stopped on rather than with a line claiming the last thing it happened to see.
+	//
+	// This is the *first* thing this shape writes that stays, so it is where every
+	// run id the walk saw comes due — including each continue-as-new handover's,
+	// which the erased frames were the only place to have shown. `flow get --run-id`
+	// and `flow watch --run-id` both take one, so an attempt whose id never reached
+	// the reader is an attempt they cannot ask about. See [watch.State.Line].
 	if rendering.format == FormatText && !state.GaveUp() && watch.TerminalStatus(state.Status()) {
-		// The view carried both ids in its header the whole time it was up, so
-		// the sentence replacing it names neither: see [watch.State.IdentityDrawn]
-		// for why that is recorded rather than left to how many changes the view
-		// happened to see.
-		state.IdentityDrawn()
-
 		fmt.Fprintln(surface.Err, state.Line(surface.ErrTheme))
 	}
 
