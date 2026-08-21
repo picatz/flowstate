@@ -258,9 +258,47 @@ type RunResponse struct {
 	//
 	//	*RunResponse_Error_
 	//	*RunResponse_Outputs
-	Kind          isRunResponse_Kind `protobuf_oneof:"kind"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Kind isRunResponse_Kind `protobuf_oneof:"kind"`
+	// SpecificationAsSubmitted is the server saying whether the run it just
+	// started executes the specification this caller sent, unchanged.
+	//
+	// A deployment may register a workflow of its own under a name a caller also
+	// submits, and the server then runs *its* copy rather than the caller's — that
+	// substitution is the point of the trusted-workflow set, because it is what
+	// makes `manual: denied` and `manual.allowed_principals` authorization policy
+	// rather than caller input. The caller cannot otherwise see it happen. That
+	// matters beyond curiosity because a client renders a run's declared outputs
+	// against the specification it holds: `sensitive: true` is a fact about the
+	// specification that *ran*, so a caller redacting against a copy that did not
+	// run prints in the clear any value only the executed copy marks.
+	//
+	// Substitution is the loudest way the two can differ and not the only one. A
+	// server also *transforms* what it runs: it writes its own selection of plugin
+	// versions onto the specification before the engine sees it, and may normalize
+	// or expand more of it later. So this is whole-message equality between the
+	// request as it arrived and the specification handed to the engine, answered
+	// after every one of those steps rather than at the substitution alone. Reading
+	// it as "the parts a client's redaction happens to consult" would be a list
+	// somebody has to extend for every transformation added afterwards, and it
+	// would answer true the first time nobody did.
+	//
+	// Three answers, not two, which is why this is `optional`. True means the
+	// executed specification is the submitted one, so a client may trust its own
+	// copy's declarations. False means it is not, so the client must not. *Unset*
+	// means this server did not say — an older server that substitutes and has no
+	// field to report it in — which is not the same claim as false and must not be
+	// read as true: a client fails closed on it exactly as it does on false. A
+	// plain `bool` could not carry that, its zero value being indistinguishable
+	// from silence.
+	//
+	// What it deliberately does not carry is the executed specification, or any
+	// part of it. The trusted copy is deployment configuration the caller did not
+	// send and is not owed; this answers only "is mine the one that ran", which a
+	// caller is owed about their own request, and leaves the disclosure question
+	// alone.
+	SpecificationAsSubmitted *bool `protobuf:"varint,6,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *RunResponse) Reset() {
@@ -337,6 +375,13 @@ func (x *RunResponse) GetOutputs() *Workflow_StepOutputs {
 		}
 	}
 	return nil
+}
+
+func (x *RunResponse) GetSpecificationAsSubmitted() bool {
+	if x != nil && x.SpecificationAsSubmitted != nil {
+		return *x.SpecificationAsSubmitted
+	}
+	return false
 }
 
 type isRunResponse_Kind interface {
@@ -2038,7 +2083,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01B\r\n" +
-	"\v_entity_key\"\x93\x04\n" +
+	"\v_entity_key\"\xf5\x04\n" +
 	"\vRunResponse\x12.\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\r\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\n" +
@@ -2047,7 +2092,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x06status\x18\x03 \x01(\x0e2 .flowstate.v1.RunResponse.StatusB\r\xbaH\n" +
 	"\xc8\x01\x01\x82\x01\x04\x10\x01 \x00R\x06status\x127\n" +
 	"\x05error\x18\x04 \x01(\v2\x1f.flowstate.v1.RunResponse.ErrorH\x00R\x05error\x12>\n" +
-	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x1a=\n" +
+	"\aoutputs\x18\x05 \x01(\v2\".flowstate.v1.Workflow.StepOutputsH\x00R\aoutputs\x12A\n" +
+	"\x1aspecification_as_submitted\x18\x06 \x01(\bH\x01R\x18specificationAsSubmitted\x88\x01\x01\x1a=\n" +
 	"\x05Error\x12 \n" +
 	"\amessage\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\"\x9f\x01\n" +
@@ -2059,7 +2105,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x0fSTATUS_CANCELED\x10\x04\x12\x15\n" +
 	"\x11STATUS_TERMINATED\x10\x05\x12\x14\n" +
 	"\x10STATUS_TIMED_OUT\x10\x06B\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"j\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01B\x1d\n" +
+	"\x1b_specification_as_submitted\"j\n" +
 	"\n" +
 	"GetRequest\x12+\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\n" +
