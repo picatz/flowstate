@@ -1,6 +1,8 @@
 package flowfile_test
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,12 +19,107 @@ import (
 // attack. Depth bounds do not stop breadth explosions; a bound on the values a
 // walk descends into does not stop values produced without descending.
 
-// The anchor, alias, and merge-key expansion bounds this file used to exercise
-// are gone with the constructs themselves: the grammar is a strict subset of
-// YAML that refuses all three, so the billion-laughs shape those tests fed is now
-// refused on the presence of the construct, before any expansion, in
-// strict_test.go's TestStrictYAMLRefusesBillionLaughsWithoutExpanding. A bound on
-// an expansion that can no longer happen is a bound nothing reaches. See #653.
+// The *compiler's* anchor, alias, and merge-key expansion bounds are no longer
+// reachable from [flowfile.Parse]: the grammar is a strict subset of YAML that
+// refuses all three at the document tree before [compiler.collectAnchors] or any
+// call to [compiler.entries] runs (parse.go, strict.go), so the billion-laughs
+// shape their tests fed is refused on the *presence* of the construct, before any
+// expansion — strict_test.go's TestStrictYAMLRefusesBillionLaughsWithoutExpanding.
+//
+// The bounds themselves did not go away with those tests, and neither did every
+// path to them. [flowfile.CallPins] and [flowfile.Format] read a document that
+// need not compile — `flow fix` reads the pins of every file in a tree to report
+// staleness it caused (cmd/flow/fixstale.go), including files its own strict
+// refusal left alone — and the walk they share resolves anchors, aliases and
+// merge keys (callpins.go's pinCollector) under exactly the two bounds the
+// compiler used to enforce: maxNodes on total expansion, maxAliasDepth on chain
+// length. That is hostile input reaching a live bound with no refusal in front of
+// it, so the two below drive each bound to the point it fires. See #653, #841.
+
+// TestCallPinsRefusesABillionLaughsAtTheNodeBudget drives [maxNodes] with the
+// document it exists for.
+//
+// Aliases multiply breadth rather than depth: nine levels of nine references
+// each is 9^9 ≈ 387 million nodes expanded, out of a few hundred bytes on disk.
+// The pin collector follows aliases — it has to, because a `digest:` may arrive
+// through one (#640) — so nothing about the strict profile saves this walk. The
+// budget is what does, and this asserts the budget is *reached*: the answer is
+// the node-count refusal naming the limit, not some other failure and not a
+// listing of pins.
+func TestCallPinsRefusesABillionLaughsAtTheNodeBudget(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: boom\n")
+	b.WriteString("l0: &l0 \"lol\"\n")
+	for i := 1; i <= 9; i++ {
+		level := strconv.Itoa(i)
+		b.WriteString("l" + level + ": &l" + level + " [")
+		for j := 0; j < 9; j++ {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString("*l" + strconv.Itoa(i-1))
+		}
+		b.WriteString("]\n")
+	}
+	// A real pin, so the walk has every reason to run to completion rather than
+	// stopping early on a document with nothing in it to find.
+	b.WriteString("steps:\n  - id: s\n    call: ./callee.yaml\n    digest: sha256:abc\n")
+
+	src := []byte(b.String())
+	require.Less(t, len(src), 4096, "premise: the bomb is tiny on disk; only expansion makes it large")
+
+	pins, err := flowfile.CallPins(src)
+	require.Error(t, err, "an alias bomb must be refused, not walked to the end")
+	assert.Contains(t, err.Error(), "holds more than 100000 values once aliases are expanded",
+		"the refusal must be the node budget, so the test fails if some other limit starts catching this first")
+	assert.Empty(t, pins)
+}
+
+// TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound drives [maxAliasDepth],
+// the other half, and asserts the bound both from below and from above: a chain
+// one link short of the limit resolves to the digest it names, and a chain past
+// it is refused. A bound only ever tested from above is also satisfied by a walk
+// that gave up immediately (CLAUDE.md: assert the bound was reached).
+//
+// Refusal here is fail-closed rather than a dropped pin, which is the property
+// worth pinning down: a `digest:` is a security check, so a collector that
+// cannot read one says so instead of reporting a file as holding no pins.
+func TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound(t *testing.T) {
+	t.Parallel()
+
+	// Each link is an anchor whose value is an alias of the link before it. YAML
+	// refuses that inline (`&a1 *a0`), so it is written in block form, which is
+	// the spelling a hostile document would have to use too.
+	chain := func(links int) []byte {
+		var b strings.Builder
+		b.WriteString("edition: v2026.3\nname: chain\na0: &a0 sha256:abc\n")
+		for i := 1; i <= links; i++ {
+			b.WriteString("a" + strconv.Itoa(i) + ": &a" + strconv.Itoa(i) + "\n  *a" + strconv.Itoa(i-1) + "\n")
+		}
+		b.WriteString("steps:\n  - id: s\n    call: ./callee.yaml\n    digest: *a" + strconv.Itoa(links) + "\n")
+		return []byte(b.String())
+	}
+
+	// One link short of the bound: followed all the way to the anchor at the end.
+	pins, err := flowfile.CallPins(chain(31))
+	require.NoError(t, err, "a chain within the bound must be followed, or the bound is untested from below")
+	require.Len(t, pins, 1)
+	assert.Equal(t, "sha256:abc", pins[0].Digest)
+
+	// One link past it: refused rather than followed, and refused out loud.
+	pins, err = flowfile.CallPins(chain(32))
+	require.Error(t, err, "a chain past the bound must be refused, not followed")
+	assert.Contains(t, err.Error(), "could not be read as text",
+		"a pin the collector cannot resolve is reported, not treated as absent")
+	assert.Empty(t, pins)
+
+	// Far past it, to show the answer is the bound firing rather than an
+	// accident of that one length.
+	_, err = flowfile.CallPins(chain(256))
+	require.Error(t, err)
+}
 
 // The root is the one name rooting *creates* a collision for, which is worth
 // stating plainly in a change that is otherwise about deleting collision rules.

@@ -37,12 +37,21 @@ import (
 // [compiler.collectAnchors] and before any call to [compiler.entries], the two
 // places resolution and merge expansion happen.
 //
-// The bounds it makes redundant (maxAliasDepth, the merge branch of maxNodes,
-// the cycle-detection pass, the formatter's merge/anchor handling) are left in
-// place for now: closing the door is this change; removing the corridor behind
-// it is follow-up cleanup that a reviewer should read on its own. `flow fix`
-// mechanically inlining an alias on the way across an edition — so an author is
-// not left to spell it out by hand — is the other named follow-up.
+// The bounds it makes redundant *on this path* (maxAliasDepth, the merge branch
+// of maxNodes, the cycle-detection pass, the formatter's merge/anchor handling)
+// are left in place for now: closing the door is this change; removing the
+// corridor behind it is follow-up cleanup that a reviewer should read on its own.
+//
+// Redundant here is not redundant everywhere, and the difference is load-bearing
+// for anyone reading those bounds as dead. [CallPins] and [Format] share
+// [pinCollector], which resolves anchors, aliases and merge keys on a document
+// that need not compile — `flow fix` reads the pins of every file in a tree to
+// report the staleness it caused, including files this refusal left alone — so
+// maxNodes and maxAliasDepth are still driven by input an outside party chooses,
+// with no refusal in front of them. bounds_test.go exercises both there.
+//
+// `flow fix` mechanically inlining an alias on the way across an edition — so an
+// author is not left to spell it out by hand — is the other named follow-up.
 
 // strictFinding is one refused construct: its position, and the message naming
 // it and what to write instead.
