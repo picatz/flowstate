@@ -3,11 +3,13 @@ package netpolicy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -162,6 +164,18 @@ func capturingServer(t *testing.T, capture *headerCapture) *httptest.Server {
 	return server
 }
 
+// drain reads a response to the end and closes it, which is what ends the span
+// covering it: the span is scoped to the whole response, not to the moment its
+// headers arrived, so an assertion made before the body is finished with would
+// be asserting about a span that has not been exported yet.
+func drain(t *testing.T, resp *http.Response) {
+	t.Helper()
+
+	_, err := io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+}
+
 // spanStub returns the single recorded span, failing if there is not exactly
 // one.
 func spanStub(t *testing.T, recorder *tracetest.SpanRecorder) tracetest.SpanStub {
@@ -205,6 +219,7 @@ func TestClientSpanNamesTheCallAndNotItsContent(t *testing.T) {
 	resp, err := get(t, policy, target)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	drain(t, resp)
 
 	stub := spanStub(t, recorder)
 
@@ -249,6 +264,7 @@ func TestClientSpanPropagatesTraceContextToThePeer(t *testing.T) {
 	resp, err := get(t, policy, server.URL)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	drain(t, resp)
 
 	received := capture.only(t)
 	require.NotEmpty(t, received.Get("traceparent"), "the peer got no trace context to hang its own span on")
@@ -299,7 +315,7 @@ func TestClientSpanDoesNotForwardBaggageToThePeer(t *testing.T) {
 
 	resp, err := policy.Client().Do(req)
 	require.NoError(t, err)
-	t.Cleanup(func() { resp.Body.Close() })
+	drain(t, resp)
 
 	received := capture.only(t)
 	require.NotEmpty(t, received.Get("traceparent"), "trace context still has to reach the peer")
@@ -358,6 +374,7 @@ func TestErrorStatusOnAFailingPeer(t *testing.T) {
 	resp, err := get(t, policy, server.URL)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	drain(t, resp)
 
 	stub := spanStub(t, recorder)
 	require.Equal(t, "Error", stub.Status.Code.String())
@@ -381,6 +398,7 @@ func TestNoSpanAndNoHeaderWithoutATracerProvider(t *testing.T) {
 	resp, err := get(t, policy, server.URL)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	drain(t, resp)
 
 	received := capture.only(t)
 	require.Empty(t, received.Get("traceparent"),
@@ -399,7 +417,12 @@ func Test_spanNameAndMethod(t *testing.T) {
 		attr   string
 	}{
 		{method: "GET", name: "GET", attr: "GET"},
-		{method: "get", name: "GET", attr: "GET"},
+		// Case-sensitive, because the conventions say so and because the wire
+		// agrees: net/http sends `get` as written, so a span saying GET would
+		// describe an operation nobody performed.
+		{method: "get", name: "HTTP", attr: "_OTHER"},
+		{method: "Get", name: "HTTP", attr: "_OTHER"},
+		// Not a conversion: net/http sends GET for an empty method.
 		{method: "", name: "GET", attr: "GET"},
 		{method: "POST", name: "POST", attr: "POST"},
 		{method: "DELETE", name: "DELETE", attr: "DELETE"},
@@ -411,4 +434,127 @@ func Test_spanNameAndMethod(t *testing.T) {
 			require.Equal(t, tc.attr, attr.Value.String())
 		})
 	}
+}
+
+// TestSpanCoversTheWholeResponseAndNotJustItsHeaders is the fix for the review
+// finding on #848: a round tripper returns when the *headers* arrive, so a span
+// ended there reports a slow download as an instant request.
+//
+// Asserted in the order it can fail: nothing has been exported while the body is
+// still arriving, and the span that is finally exported is at least as long as
+// the part of the response that came after the headers.
+func TestSpanCoversTheWholeResponseAndNotJustItsHeaders(t *testing.T) {
+	recorder := recordSpans(t)
+
+	// Released exactly once, from a cleanup registered after the server's own so
+	// that it runs before it (cleanups are LIFO). Without that, a failed
+	// assertion below would leave the handler parked on this channel and
+	// httptest.Server.Close would wait for it forever — a test that deadlocks
+	// instead of reporting is worse than the defect it is watching for.
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBody := func() { releaseOnce.Do(func() { close(release) }) }
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "2")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+
+		<-release
+
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(server.Close)
+
+	t.Cleanup(releaseBody)
+
+	policy, err := New(WithAllowLoopback())
+	require.NoError(t, err)
+
+	resp, err := get(t, policy, server.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Empty(t, recorder.Ended(),
+		"the headers arrived and the response did not; ending the span here would time the wrong thing")
+
+	const held = 50 * time.Millisecond
+	time.Sleep(held)
+	releaseBody()
+
+	drain(t, resp)
+
+	stub := spanStub(t, recorder)
+	require.GreaterOrEqual(t, stub.EndTime.Sub(stub.StartTime), held,
+		"the span ended before the body it covers")
+}
+
+// TestBodyFailureIsRecordedAsAClassification is the other half of the same
+// finding: a 200 whose body fails partway is not a success, and the http task
+// reports it as a failure, so the span must not disagree.
+//
+// The failure used is the policy's own byte cap, because it is the one this
+// package can produce deterministically — and its error names the limit, which
+// keeps the containment claim under test on this path too.
+func TestBodyFailureIsRecordedAsAClassification(t *testing.T) {
+	recorder := recordSpans(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(theQuerySecret))
+	}))
+	t.Cleanup(server.Close)
+
+	policy, err := New(WithAllowLoopback(), WithMaxResponseBytes(8))
+	require.NoError(t, err)
+
+	resp, err := get(t, policy, server.URL)
+	require.NoError(t, err, "the status arrived; only the body fails")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	_, readErr := io.Copy(io.Discard, resp.Body)
+	require.Error(t, readErr, "the body is past the policy's cap")
+	require.ErrorIs(t, readErr, ErrBodyTooLarge)
+	_ = resp.Body.Close()
+
+	stub := spanStub(t, recorder)
+	require.Equal(t, "Error", stub.Status.Code.String(),
+		"a 200 whose body failed is not a success")
+	require.Equal(t, "*netpolicy.BodyTooLargeError", attributesOf(stub)["error.type"],
+		"the classification, not the sentence")
+	require.Equal(t, "200", attributesOf(stub)["http.response.status_code"],
+		"the status that did arrive is still recorded")
+	require.Empty(t, stub.Events, "no exception event, because an exception event carries the message")
+
+	requireNoMaterialInSpans(t, recorder, theQuerySecret)
+}
+
+// TestAFailingStatusKeepsItsClassificationWhenTheBodyAlsoFails pins the
+// precedence: a 404 explains the request better than the read error that follows
+// it, so the status's classification is the one that survives.
+func TestAFailingStatusKeepsItsClassificationWhenTheBodyAlsoFails(t *testing.T) {
+	recorder := recordSpans(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(theQuerySecret))
+	}))
+	t.Cleanup(server.Close)
+
+	policy, err := New(WithAllowLoopback(), WithMaxResponseBytes(8))
+	require.NoError(t, err)
+
+	resp, err := get(t, policy, server.URL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	_, readErr := io.Copy(io.Discard, resp.Body)
+	require.Error(t, readErr)
+	_ = resp.Body.Close()
+
+	stub := spanStub(t, recorder)
+	require.Equal(t, "404", attributesOf(stub)["error.type"])
+
+	requireNoMaterialInSpans(t, recorder, theQuerySecret)
 }

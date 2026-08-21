@@ -1,11 +1,14 @@
 package netpolicy
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -95,7 +98,6 @@ func (rt *tracingRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	ctx, span := otel.GetTracerProvider().Tracer(tracerName).Start(req.Context(), name,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...))
-	defer span.End()
 
 	// A round tripper must not modify the request it is given, so the header the
 	// propagator writes goes onto a copy — the same rule the policy's own round
@@ -120,21 +122,103 @@ func (rt *tracingRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 		// [DenyError] certainly does.
 		span.SetAttributes(semconv.ErrorTypeKey.String(fmt.Sprintf("%T", err)))
 		span.SetStatus(codes.Error, "request failed")
+		span.End()
 
 		return nil, err
 	}
 
 	span.SetAttributes(semconv.HTTPResponseStatusCode(resp.StatusCode))
+
+	classified := false
 	if resp.StatusCode >= 400 {
 		// Semantic conventions make a 4xx or 5xx an error for a client span: the
 		// caller asked for something and did not get it. The description is the
-		// status and nothing else, because the reason belongs to a body this
-		// never reads.
+		// status and nothing else, because the reason belongs to a body whose
+		// text this must not repeat.
 		span.SetAttributes(semconv.ErrorTypeKey.String(strconv.Itoa(resp.StatusCode)))
 		span.SetStatus(codes.Error, "request failed")
+		classified = true
 	}
 
+	if resp.Body == nil {
+		span.End()
+
+		return resp, nil
+	}
+
+	// The span outlives RoundTrip, because RoundTrip returns when the *headers*
+	// arrive and a response is not over then. Ending here would report a
+	// four-minute streamed download as a two-millisecond request, and would call
+	// a 200 whose body dies mid-read a success — which is the outcome the http
+	// task itself reports as a failure. So the body carries the span and ends it
+	// when the response is actually over.
+	//
+	// The cost, named: a caller that never closes the body never ends the span.
+	// That caller is already leaking a connection, which is the louder failure of
+	// the two, and the alternative — ending at the headers — is wrong for every
+	// well-behaved caller rather than for the broken one.
+	resp.Body = &tracedBody{ReadCloser: resp.Body, span: span, classified: classified}
+
 	return resp, nil
+}
+
+// tracedBody ends the request's span when the response body is finished with,
+// whether that is by being read to the end, by failing, or by being closed.
+//
+// Whichever happens first wins: a body read to EOF and then closed ends its span
+// once, at the EOF.
+type tracedBody struct {
+	io.ReadCloser
+
+	span trace.Span
+
+	// classified records whether an error.type has already been written for this
+	// span, so a body that fails after a 4xx does not overwrite the status that
+	// explains it.
+	classified bool
+
+	once sync.Once
+}
+
+// Read implements [io.Reader], ending the span at the end of the body or at the
+// failure that stops it.
+func (b *tracedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+
+	switch {
+	case err == nil:
+	case errors.Is(err, io.EOF):
+		b.finish(nil)
+	default:
+		b.finish(err)
+	}
+
+	return n, err
+}
+
+// Close implements [io.Closer]. A body closed before it is exhausted — the
+// ordinary shape of a caller that has read enough — ends the span there.
+func (b *tracedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.finish(nil)
+
+	return err
+}
+
+// finish ends the span exactly once, recording a read failure as a
+// classification and never as its text: a [BodyTooLargeError] names a limit, and
+// a transport error at this point can quote the URL the body was coming from.
+func (b *tracedBody) finish(err error) {
+	b.once.Do(func() {
+		if err != nil {
+			if !b.classified {
+				b.span.SetAttributes(semconv.ErrorTypeKey.String(fmt.Sprintf("%T", err)))
+			}
+			b.span.SetStatus(codes.Error, "response body failed")
+		}
+
+		b.span.End()
+	})
 }
 
 // spanNameAndMethod returns the span's name and its http.request.method
@@ -142,15 +226,31 @@ func (rt *tracingRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 //
 // Semantic conventions name a client span after the method alone when there is
 // no low-cardinality URL template to add, and require a method the
-// instrumentation does not know to be reported as `_OTHER`. The original
-// spelling of an unknown method is not recorded, though the conventions offer
-// http.request.method_original for it: it is a string a caller chose, and this
-// file's whole posture is that a caller-chosen string does not become an
-// attribute.
+// instrumentation does not know to be reported as `_OTHER`.
+//
+// # The match is case-sensitive, which is not fussiness
+//
+// The conventions say it outright — "HTTP method names are case-sensitive and
+// `http.request.method` attribute value MUST match a known HTTP method name
+// exactly" — and this repository can actually produce the mismatch: the schema
+// accepts a method in any case (`pattern: '^(?i)(GET|POST|PUT|PATCH|DELETE)$'`,
+// task.proto) and the http task passes the author's spelling to
+// [http.NewRequestWithContext] unchanged, so a step written `method: get` puts
+// `get` on the wire. A span reading `GET` would then describe an operation
+// nobody performed, and a server that treats the token strictly answers it
+// differently.
+//
+// The conventions do allow canonicalizing — but only for instrumentations of
+// frameworks that consider methods case-insensitive, and only if
+// `http.request.method_original` is also set. Neither applies: net/http sends
+// what it is given, and the original spelling is a caller-chosen string, which
+// this file does not turn into an attribute.
+//
+// The one conversion left is the empty method, and it is not a conversion:
+// net/http sends GET for it, so GET is what happened.
 func spanNameAndMethod(method string) (string, attribute.KeyValue) {
-	switch strings.ToUpper(method) {
+	switch method {
 	case "":
-		// net/http reads an empty Method as GET.
 		return http.MethodGet, semconv.HTTPRequestMethodGet
 	case http.MethodGet:
 		return http.MethodGet, semconv.HTTPRequestMethodGet
