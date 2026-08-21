@@ -34,8 +34,9 @@ const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 // under a policy — `plugins/git` and `plugins/vcs` each build one — so wrapping
 // the policy's transport instruments all of them once instead of instrumenting
 // the task and leaving the next caller uninstrumented. It also puts the span at
-// the egress boundary it describes: the span's lifetime is the round trip the
-// policy governs, including the denial it may answer with instead.
+// the egress boundary it describes: the span's lifetime is the exchange the
+// policy governs, from the request going out to the response body being finished
+// with, including the denial it may answer with instead.
 //
 // It wraps *above* the policy's own [roundTripper] so a refused request still
 // produces a span. A denial that left no trace would be the one outcome an

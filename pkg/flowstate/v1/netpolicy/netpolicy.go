@@ -112,8 +112,10 @@
 //
 // # Tracing
 //
-// The client a policy hands out opens one CLIENT span per request and injects
-// W3C trace context onto it, so a call a workflow makes is correlatable from
+// The client a policy hands out opens one CLIENT span per request — covering
+// the whole exchange, up to the response body being read or closed, since a
+// response is not over when its headers arrive — and injects W3C trace context
+// onto the request, so a call a workflow makes is correlatable from
 // both sides: this process's trace shows the hop, and the service on the other
 // end can parent its own span under it. Nothing is configured for this — the
 // tracer comes from the globally installed provider, and with none installed
