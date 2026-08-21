@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -50,12 +51,33 @@ func RunFile(path string) *v1.TestReport {
 // (a refused file, or one whose every case failed to compile), where a "0/0
 // steps reached" line would say less than nothing. See [Coverage].
 func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
+	report, coverage, _ := RunFileUnderSchedules(context.Background(), path, dst.Budget{})
+
+	return report, coverage
+}
+
+// RunFileUnderSchedules is [RunFileWithCoverage] with two additions the command
+// line reaches and nothing else needs: a caller-supplied context, and a budget
+// of seeded schedules to run every case under (issue #800, #477 slice 2).
+//
+// The zero budget explores nothing, which is what [RunFileWithCoverage] passes
+// and what `flow test` does unless `--seeds` says otherwise: each case runs once,
+// under [v1.WrittenOrder], exactly as it always has. A budget that explores runs
+// each case once more per seed and returns a [ScheduleReport] beside the other
+// two results; the report and the coverage still describe the written-order run
+// alone, so a verdict never depends on which seeds were drawn. See
+// [scheduleAccumulator.run].
+//
+// The context is the same bound [RunSourceContext] documents, for the same
+// reason and now with a second one: a case whose virtual clock can never advance
+// has nothing to end it, and `--seeds N` multiplies whatever that costs by N.
+func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) (*v1.TestReport, []*Coverage, *ScheduleReport) {
 	report := &v1.TestReport{File: path}
 
 	file, err := Load(path)
 	if err != nil {
 		report.Refused = err.Error()
-		return report, nil
+		return report, nil, nil
 	}
 
 	var allowUnreached map[string]string
@@ -63,6 +85,7 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 		allowUnreached = file.Coverage.AllowUnreached
 	}
 	coverage := newCoverageAccumulator(allowUnreached)
+	schedules := newScheduleAccumulator(budget)
 
 	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
 	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
@@ -70,22 +93,58 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 	// [RunSource]: the loader is the only part of one case's run that differs
 	// between a file on disk and a workflow submitted as bytes.
 	for _, test := range file.Tests {
+		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			report.Cases = append(report.Cases, stopped)
+
+			continue
+		}
+
 		// The workflow's resolved path is its coverage identity: each case names
 		// its own `workflow:`, so this is what keeps two workflows' coverage
 		// apart within one file (Finding 3).
 		identity := WorkflowPath(path, &test)
-		result, spec, transcript := runCase(context.Background(), &test, DeliveryPath(path, &test), func() (*v1.Workflow, error) {
+		load := func() (*v1.Workflow, error) {
 			workflow, _, err := flowfile.ParseFile(identity)
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
 			}
 			return workflow, nil
-		})
+		}
+		deliveryPath := DeliveryPath(path, &test)
+
+		result, spec, transcript := schedules.run(ctx,
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
+				return runCase(ctx, &test, deliveryPath, load)
+			})
 		report.Cases = append(report.Cases, result)
 		coverage.observe(identity, spec, transcript)
 	}
 
-	return report, coverage.result()
+	return report, coverage.result(), schedules.result()
+}
+
+// caseStoppedBefore reports the case a caller's context ended before it could
+// start, or nil while there is still budget to run one.
+//
+// Checked before the case rather than only inside the run, because most of what
+// a case costs happens before its context is ever consulted: compiling its
+// stubs, parsing the workflow again, binding the stubs against it. A file may
+// declare [MaxTestsPerFile] cases, so a deadline that expired during an early
+// one would otherwise be followed by hundreds of expensive parses — and on a
+// serving surface those run while the caller's whole budget is already spent
+// and, worse, while it still holds whatever lock it took (see
+// cmd/flow/mcpserve.go's registry guard). The bound has to stop the *work*, not
+// only the execution. Reported by Codex on picatz/flowstate#807.
+func caseStoppedBefore(ctx context.Context, test *Test) *v1.TestCase {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+
+	return &v1.TestCase{
+		Name:  test.Name,
+		Error: fmt.Sprintf("not run: the run was stopped before this case started (%v)", err),
+	}
 }
 
 // RunSource is [RunFile] for a workflow and a `*.test.yaml` given directly as
@@ -145,22 +204,10 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 	}
 
 	for _, test := range file.Tests {
-		// Checked before the case rather than only inside the run, because
-		// most of what a case costs happens before its context is ever
-		// consulted: compiling its stubs, parsing the workflow again, binding
-		// the stubs against it. A file may declare [MaxTestsPerFile] cases,
-		// so a deadline that expired during an early one would otherwise be
-		// followed by hundreds of expensive parses — and on a serving surface
-		// those run while the caller's whole budget is already spent and,
-		// worse, while it still holds whatever lock it took (see
-		// cmd/flow/mcpserve.go's registry guard). The bound has to stop the
-		// *work*, not only the execution. Reported by Codex on
-		// picatz/flowstate#807.
-		if err := ctx.Err(); err != nil {
-			report.Cases = append(report.Cases, &v1.TestCase{
-				Name:  test.Name,
-				Error: fmt.Sprintf("not run: the run was stopped before this case started (%v)", err),
-			})
+		// See [caseStoppedBefore] for why the bound is checked here rather than
+		// only inside the run.
+		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			report.Cases = append(report.Cases, stopped)
 
 			continue
 		}
@@ -168,7 +215,7 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 		// No delivery path: bytes have no directory to resolve a fixture against,
 		// which is why [checkTrigger] refuses a trigger case in this shape rather
 		// than letting one arrive here with nowhere to read from.
-		result, _, _ := runCase(ctx, &test, "", load)
+		result, _, _, _ := runCase(ctx, &test, "", load)
 		report.Cases = append(report.Cases, result)
 	}
 
@@ -190,7 +237,23 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 // deliveryPath is where a `trigger:` case's stored delivery lives, already
 // resolved against the test file's own directory ([DeliveryPath]); empty for every
 // other case and for [RunSource], which has no directory at all.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
+// runErr is the run's own failure, distinct from the verdict: a case that
+// declares `expect.failed: true` passes while its run errored, and schedule
+// exploration compares the error text because `expect.error_contains` is read
+// out of it ([caseObservables]). Nil for a case that never reached a run.
+//
+// # The schedule this case runs under
+//
+// base decides it. Everything below builds on base with [context.WithValue], so
+// a [v1.Scheduler] a caller put there reaches [v1.RunWithInputs] and answers the
+// two questions the local driver asks — `parallel:` branch order and where an
+// `async:` step's work happens. Nothing here installs one, deliberately: a
+// scheduler is a fact about the run somebody asked for, exactly as the clock
+// this function *does* install is a fact about the harness, and inventing one
+// here would take the choice away from the only caller with a reason to make it
+// ([RunFileUnderSchedules]). With no scheduler on base the driver takes
+// [v1.WrittenOrder], which is what every `flow test` case has always run under.
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -379,7 +442,12 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
-	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	// runErr is this function's named result, assigned here rather than
+	// redeclared: it is reported to the caller beside the verdict, because a
+	// case can pass with a failed run and schedule exploration compares the
+	// failure text ([caseObservables]).
+	var outputs *v1.Workflow_StepOutputs
+	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
 
 	// The transcript coverage reads is the same one the verdict does. A failed
