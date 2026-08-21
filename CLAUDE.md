@@ -172,6 +172,15 @@ go1.26.6). And sites inside generated files are counted separately and excluded
 from every total, because a generated file is never hand-edited: a
 modernization there could only ever arrive through its generator.
 
+A third, and the only thing that can make the weekly job go red: the report is
+complete or it is not printed. When a package fails to load, `go fix -json`
+exits non-zero but *still* writes well-formed diagnostics for every package
+that did analyse — so accepting that output yields a plausible report, short by
+an unknown amount, that reads exactly like a clean tree. A non-zero exit
+therefore refuses the report and names the packages that were not analysed, and
+the job files an issue saying the report could not be produced rather than
+quietly filing a small number. Findings themselves never fail it.
+
 ## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
 
 Three tiers over one list of checks, and — this is the part worth holding on to

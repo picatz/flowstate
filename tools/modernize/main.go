@@ -74,33 +74,87 @@ func main() {
 // runGoFix runs `go fix -json` over the given patterns and returns its
 // stdout.
 //
-// The exit status needs care. `go fix -diff` exits non-zero when the diff is
-// not empty, and the analysis driver exits non-zero when any analyzer
-// reports — so a non-zero status here means "there is something to report",
-// which is the normal case for this command and not a failure. What is a
-// failure is the driver not producing parseable output at all (a package
-// that does not build, a bad pattern), and that shows up as empty stdout
-// with the reason on stderr. So: keep stdout whenever there is any, and only
-// treat the run as failed when there is none.
+// The exit status is the whole of the correctness here, so it is worth
+// stating what `go fix -json` actually does rather than what the family of
+// `go` subcommands suggests. Measured on go1.26.6:
 //
-// Downloads and build progress also land on stderr, which is why stderr
-// being non-empty is not by itself an error.
+//   - Findings only: exit **0**, empty stderr, diagnostics on stdout. The
+//     `-diff` mode's "non-zero when the diff is not empty" convention does
+//     not apply to `-json`, so a finding never looks like a failure.
+//   - A package that does not load or type-check: exit **non-zero**, with
+//     `# import/path` headers and the compiler's message on **stderr** —
+//     and stdout *still* carries well-formed JSON for every package that did
+//     analyse.
+//
+// That second shape is the trap. Accepting stdout because it is non-empty
+// yields a plausible, well-formed, *incomplete* report: the packages that
+// failed to load are silently absent, so an advisory whose whole job is to
+// say how much is available under-counts and reads exactly like a clean
+// tree. That is this repository's "green by not running" failure wearing a
+// report's clothes.
+//
+// So a non-zero exit refuses the report outright and names the packages that
+// did not analyse. The report is complete or it is not rendered.
+//
+// Downloads and build progress also land on stderr, which is why the exit
+// code decides this and stderr's emptiness does not.
 func runGoFix(patterns []string) (string, error) {
 	args := append([]string{"fix", "-json"}, patterns...)
 	cmd := exec.Command("go", args...)
-	cmd.Stderr = os.Stderr
+	// Tee'd rather than swallowed: the compiler's message is what a person
+	// needs to fix the tree, and it is also what CI's log should carry.
+	var stderr strings.Builder
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	out, err := cmd.Output()
-	if len(out) > 0 {
-		return string(out), nil
-	}
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return "", fmt.Errorf("`go %s` produced no output and exited %d (see stderr above)", strings.Join(args, " "), exit.ExitCode())
+			return "", incompleteAnalysisError(exit.ExitCode(), stderr.String(), len(out))
 		}
 		return "", fmt.Errorf("running `go %s`: %w", strings.Join(args, " "), err)
 	}
-	return "", nil
+	return string(out), nil
+}
+
+// incompleteAnalysisError explains a non-zero `go fix -json` exit in the
+// terms that matter: which packages were not analysed, and why no report is
+// being printed even though there may be diagnostics for the rest.
+func incompleteAnalysisError(code int, stderr string, stdoutBytes int) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "`go fix -json` exited %d: at least one package could not be analysed", code)
+	if failed := failedPackages(stderr); len(failed) > 0 {
+		fmt.Fprintf(&b, " (%s)", strings.Join(failed, ", "))
+	}
+	b.WriteString(".\nNo report is printed: with a package missing, a report would be well-formed, plausible and short by an unknown amount")
+	if stdoutBytes > 0 {
+		fmt.Fprintf(&b, " — %d bytes of diagnostics for the packages that did analyse were discarded for that reason", stdoutBytes)
+	}
+	b.WriteString(".\nFix the build (see the messages above) and run again.")
+	return errors.New(b.String())
+}
+
+// failedPackages pulls the import paths out of the `# import/path` headers
+// the go command writes above each package's load or type-check errors. The
+// JSON stream itself carries none of this — a package that failed to load
+// simply does not appear in it, which is precisely why it cannot be detected
+// by reading the stream.
+func failedPackages(stderr string) []string {
+	var paths []string
+	seen := map[string]bool{}
+	for line := range strings.SplitSeq(stderr, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "# ")
+		if !ok {
+			continue
+		}
+		// A header can carry a trailing note, e.g. `# path [path.test]`.
+		path := strings.TrimSpace(rest)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 // diagnostic is the part of the analysis driver's JSON this command reads.

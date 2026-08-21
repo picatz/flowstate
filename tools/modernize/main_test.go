@@ -189,6 +189,151 @@ func TestWriteReportOnACleanTree(t *testing.T) {
 	}
 }
 
+// The failure this guards is the one that looks like success. When a package
+// fails to load, `go fix -json` exits non-zero and writes the compiler's
+// message to stderr — but stdout still carries well-formed JSON for every
+// package that *did* analyse, and nothing in that stream says anyone is
+// missing. Rendering it produces a plausible report that is short by an
+// unknown amount, which for an advisory whose entire content is a count is
+// indistinguishable from a clean tree.
+//
+// The fixture is the real thing: stdout and stderr captured from `go fix
+// -json ./...` over a two-package module whose second package does not
+// parse.
+func TestALoadFailureRefusesTheReportAndNamesThePackages(t *testing.T) {
+	// Verbatim stderr from the observed run.
+	const stderr = "# example.com/broken/bad\n" +
+		"fix: bad/bad.go:3:17: expected ';', found is\n"
+	// Verbatim stdout from the same run: the good package's diagnostics,
+	// complete and well-formed, with no trace of the package that failed.
+	const stdout = `{"example.com/broken/good": {"reflecttypefor": [
+		{"posn": "/repo/good/good.go:5:37", "message": "reflect.TypeOf call can be simplified using TypeFor"}
+	]}}`
+
+	// Read on its own, the partial stream parses perfectly and reports one
+	// site. That is exactly why the stream cannot be the thing that decides.
+	rep, err := parseReport(strings.NewReader(stdout))
+	if err != nil {
+		t.Fatalf("parseReport: %v", err)
+	}
+	if rep.total != 1 {
+		t.Fatalf("partial stream total = %d, want 1 (fixture no longer represents a partial report)", rep.total)
+	}
+
+	err = incompleteAnalysisError(1, stderr, len(stdout))
+	if err == nil {
+		t.Fatal("a non-zero exit must refuse the report")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"example.com/broken/bad",
+		"No report is printed",
+		"discarded",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error is missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestFailedPackages(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		want   []string
+	}{
+		{
+			name:   "one package",
+			stderr: "# example.com/broken/bad\nfix: bad/bad.go:3:17: expected ';', found is\n",
+			want:   []string{"example.com/broken/bad"},
+		},
+		{
+			name:   "several, including a test variant, deduplicated and in order",
+			stderr: "# a/b\nerr\n# a/c [a/c.test]\nerr\n# a/b\nerr\n",
+			want:   []string{"a/b", "a/c [a/c.test]"},
+		},
+		{
+			// Progress output carries no headers, so nothing is named — and
+			// the caller still refuses the report, because the exit code is
+			// what decides, not this.
+			name:   "download progress only",
+			stderr: "go: downloading example.com/m v1.2.3\n",
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := failedPackages(tc.stderr)
+			if len(got) != len(tc.want) {
+				t.Fatalf("failedPackages = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("failedPackages = %q, want %q", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// Findings are not failures: `go fix -json` exits 0 with diagnostics on
+// stdout, unlike `go fix -diff`, whose "non-zero means non-empty" convention
+// this command must not inherit. This exercises the real binary over a
+// module written for the purpose, so a toolchain that changed that
+// convention is caught here rather than by a weekly report that has quietly
+// become an error.
+func TestRunGoFixOnAWorkingModule(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go command")
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/works\n\ngo 1.26\n")
+	writeFile(t, filepath.Join(dir, "works.go"), "package works\n\nimport \"reflect\"\n\nfunc F(x int) reflect.Type { return reflect.TypeOf(x) }\n")
+
+	t.Chdir(dir)
+	out, err := runGoFix([]string{"./..."})
+	if err != nil {
+		t.Fatalf("runGoFix over a module that builds: %v", err)
+	}
+	rep, err := parseReport(strings.NewReader(out))
+	if err != nil {
+		t.Fatalf("parseReport: %v", err)
+	}
+	if rep.total != 1 {
+		t.Errorf("total = %d, want 1 (the reflect.TypeOf site)", rep.total)
+	}
+}
+
+// And the other side of it, end to end: a module with a package that does
+// not parse produces an error rather than a report, even though the go
+// command writes usable JSON for the package that did analyse.
+func TestRunGoFixRefusesAModuleThatDoesNotLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go command")
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/broken\n\ngo 1.26\n")
+	for _, sub := range []string{"good", "bad"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(dir, "good", "good.go"), "package good\n\nimport \"reflect\"\n\nfunc F(x int) reflect.Type { return reflect.TypeOf(x) }\n")
+	writeFile(t, filepath.Join(dir, "bad", "bad.go"), "package bad\n\nfunc G() { this is not go }\n")
+
+	t.Chdir(dir)
+	out, err := runGoFix([]string{"./..."})
+	if err == nil {
+		t.Fatalf("runGoFix returned a report for a module that does not load:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "example.com/broken/bad") {
+		t.Errorf("error does not name the package that failed to analyse:\n%s", err)
+	}
+	if out != "" {
+		t.Errorf("a refused run must return no output, got %d bytes", len(out))
+	}
+}
+
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
