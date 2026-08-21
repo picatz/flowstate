@@ -345,6 +345,9 @@ func parseTranscript(source string) ([]transcriptStep, error) {
 			closeSection()
 
 			fields := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(line, "-- "), " --"))
+			if len(fields) == 0 {
+				return nil, fmt.Errorf("line %d: an empty `--  --` marker names no section", n+1)
+			}
 			next := transcriptSection{kind: fields[0]}
 			switch next.kind {
 			case "stdout", "stderr", "exit":
@@ -500,6 +503,7 @@ func TestTranscriptParserRefusesWhatItCannotRun(t *testing.T) {
 		{"an invented section", "$ flow validate x\n-- shout --\nx\n", `no section is spelled "shout"`},
 		{"a named stream", "$ flow validate x\n-- stdout x --\n", "takes no name"},
 		{"an unnamed file", "$ flow validate x\n-- file --\n", "needs a path"},
+		{"an empty marker", "$ flow validate x\n--  --\n", "names no section"},
 		{"loose text", "$ flow validate x\nnot a section\n", "neither a command"},
 		{"an empty transcript", "", "runs no commands"},
 	} {
