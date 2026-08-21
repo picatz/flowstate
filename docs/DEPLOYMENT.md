@@ -76,7 +76,7 @@ people most often assume they already have arrive last:
 
 ```mermaid
 flowchart LR
-  T0["Tier 0<br/>flow run local"] -->|"authenticated API<br/>one ownedBy check"| T1a["Tier 1a<br/>shared worker"]
+  T0["Tier 0<br/>flow run local"] -->|"an --auth-policy<br/>and one ownedBy check"| T1a["Tier 1a<br/>shared worker"]
   T1a -->|"policy rules keyed on<br/>identity.namespace"| T1b["Tier 1b<br/>shared worker,<br/>per-tenant rules"]
   T1b -->|"a Temporal namespace and<br/>a worker fleet per tenant"| T2["Tier 2<br/>per-tenant namespace<br/>+ worker"]
   T2 -->|"containers, microVMs,<br/>substrate credentials"| T3["Tier 3<br/>substrate isolation"]
@@ -104,6 +104,18 @@ the form to hand a reviewer:
 A cell is a summary of the tier's section below, which is where the tracing to
 code lives; read the section before relying on a tick.
 
+One definition the grid depends on, because a reviewer will otherwise find the
+counter-example immediately: **Tier 1a means `flow server --auth-policy`.**
+`--insecure-no-auth` is not a weaker Tier 1a, it is Tier 0's identity model with
+a network listener in front of it — every caller is admitted anonymously
+(`auth.InsecureAnonymousVerifier`), so every run belongs to the same empty
+namespace and there is no tenancy for the `ownedBy` check to enforce. The code
+draws the same line: `authVerifier` refuses to start a server given neither a
+policy nor that flag, and treats the flag as a thing an operator says out loud
+rather than a fallback for a policy that failed to load
+(`cmd/flow/main.go`). The Local development recipe below is labelled a Tier 0/1a
+*boundary* for this reason.
+
 ### Tier 0 — `flow run local`
 
 No server, no Temporal, no worker process boundary. A single command runs a
@@ -130,9 +142,15 @@ Flowfile to completion in the calling process.
 ### Tier 1a — shared worker, zero configuration
 
 One Temporal namespace, one worker fleet, one Flowstate server, `flow server`
-started with an OIDC/workload-identity `--auth-policy` (or, deliberately for
-development only, `--insecure-no-auth`). This is what running `flow worker`
-and `flow server` with no per-tenant flags gets you.
+started with an OIDC/workload-identity `--auth-policy`. This is what running
+`flow worker` and `flow server` with no per-tenant flags gets you.
+
+The policy is part of the definition, not a recommendation inside it: every
+claim below rests on a caller whose identity was *attested*, and `flow server
+--insecure-no-auth` — which the server accepts only because an operator asked
+for it in as many words — admits everyone anonymously into one empty namespace,
+which is Tier 0's model reachable over a socket rather than a weaker Tier 1a.
+Read the ticks below as claims about a server started with a policy.
 
 - ✅ The Flowstate API refuses every cross-tenant verb: one `ownedBy` check
   covering `Get`/`List`/`Cancel`/`Terminate`/`Signal`/`Describe`, reported as

@@ -66,6 +66,7 @@ type analysis struct {
 	plan            plan
 	affected        []string
 	exampleDataDeps []string
+	repoDataDeps    []string
 	base            string
 	changed         []string
 }
@@ -124,7 +125,7 @@ func analyse() (analysis, error) {
 	unresolvedGoDir := hasUnresolvedGoDir(p.goFiles, byDir)
 
 	var affected []string
-	var exampleDataDeps []string
+	var exampleDataDeps, repoDataDeps []string
 	if p.moduleWide || unresolvedGoDir {
 		for _, m := range pkgs {
 			affected = append(affected, m.ImportPath)
@@ -141,9 +142,32 @@ func analyse() (analysis, error) {
 		// Seed the changed set with whichever packages' test files
 		// actually reach into examples/, so affectedPackages' existing
 		// test-import expansion carries them the rest of the way.
+		//
+		// The same is true of the repository-level data p.repoTestData
+		// names — Markdown under docs/, README.md, AGENTS.md — and it
+		// bites harder there, because such a diff usually moves no .go
+		// file at all: docs/README.md alone resolves to no package, so
+		// without this seeding the local gate ran no test leg and the
+		// author heard about an incomplete index from CI instead
+		// (#708). Read the test sources at most once for both.
+		var testSrc map[string][]byte
+		sources := func() map[string][]byte {
+			if testSrc == nil {
+				testSrc = readTestSources(pkgs)
+			}
+			return testSrc
+		}
+
 		if p.examples {
-			exampleDataDeps = exampleDataDepPackages(readTestSources(pkgs))
+			exampleDataDeps = exampleDataDepPackages(sources())
 			for _, ip := range exampleDataDeps {
+				changedSet[ip] = true
+			}
+		}
+
+		if p.repoTestData {
+			repoDataDeps = repoDataDepPackages(sources())
+			for _, ip := range repoDataDeps {
 				changedSet[ip] = true
 			}
 		}
@@ -151,7 +175,14 @@ func analyse() (analysis, error) {
 		affected = affectedPackages(pkgs, changedSet)
 	}
 
-	return analysis{plan: p, affected: affected, exampleDataDeps: exampleDataDeps, base: base, changed: changed}, nil
+	return analysis{
+		plan:            p,
+		affected:        affected,
+		exampleDataDeps: exampleDataDeps,
+		repoDataDeps:    repoDataDeps,
+		base:            base,
+		changed:         changed,
+	}, nil
 }
 
 // runCI is the plan job's whole body: analyse the diff, decide which of
@@ -173,7 +204,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	p, affected, exampleDataDeps := a.plan, a.affected, a.exampleDataDeps
+	p, affected := a.plan, a.affected
+	exampleDataDeps, repoDataDeps := a.exampleDataDeps, a.repoDataDeps
 	fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(a.changed), a.base[:12])
 
 	g := &gate{}
@@ -202,6 +234,10 @@ func run() error {
 		if len(exampleDataDeps) > 0 {
 			why += fmt.Sprintf(" (%d via examples/ data dependency, not the import graph: %s)",
 				len(exampleDataDeps), strings.Join(trimModulePrefix(exampleDataDeps), ", "))
+		}
+		if len(repoDataDeps) > 0 {
+			why += fmt.Sprintf(" (%d via docs/README/AGENTS data dependency, not the import graph: %s)",
+				len(repoDataDeps), strings.Join(trimModulePrefix(repoDataDeps), ", "))
 		}
 		g.leg("vet", why, command("go", append([]string{"vet"}, affected...)...))
 		g.leg("test", why,

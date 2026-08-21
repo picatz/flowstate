@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,35 +69,121 @@ func indexLinkTargets(t *testing.T) map[string]bool {
 // TestTheDocsIndexListsEveryDocument fails when a document is added, renamed or
 // removed without docs/README.md moving with it.
 //
-// docs/plans/ is deliberately indexed as a directory rather than file by file:
-// it is internal process, its contents turn over per wave, and a reader's whole
-// business with it is knowing it is not for them.
+// It walks docs/ rather than globbing its top level, because a glob only knows
+// about the directory layout that exists on the day it is written: the first
+// docs/guides/ or docs/adr/ anyone adds would be invisible to it, which is the
+// original finding — a document nobody can discover — reproduced underneath a
+// test that says it cannot happen (a Codex review of #820 caught exactly this).
+//
+// Two exclusions, both deliberate rather than incidental:
+//
+//   - docs/README.md is the index; it does not index itself.
+//   - docs/plans/ is indexed as a *directory*. It is internal process, its
+//     contents turn over every wave, and a reader's whole business with it is
+//     knowing it is not for them — so what the index owes them is one line
+//     saying that, not a listing that churns. The banner on each file is what
+//     TestInternalDocumentsSayTheyAreInternal holds; the link to the directory
+//     is asserted below.
+//
+// Any other directory added under docs/ is product documentation until someone
+// decides otherwise, and is listed file by file, path and all.
 func TestTheDocsIndexListsEveryDocument(t *testing.T) {
 	targets := indexLinkTargets(t)
 
-	documents, err := filepath.Glob(filepath.Join(docsDir, "*.md"))
-	require.NoError(t, err)
+	internal := relativeTo(t, docsDir, internalDocsDir)
 
-	generated, err := filepath.Glob(filepath.Join(referenceDir, "*.md"))
-	require.NoError(t, err)
-
-	for _, document := range append(documents, generated...) {
-		relative, err := filepath.Rel(docsDir, document)
-		require.NoError(t, err)
-
-		relative = filepath.ToSlash(relative)
-		if relative == "README.md" {
-			// The index does not index itself.
-			continue
-		}
-
-		assert.True(t, targets[relative],
+	for _, document := range documentPaths(t, docsDir, internal) {
+		assert.True(t, targets[document],
 			"docs/%s is not listed in docs/README.md; add it there (with one line saying what it covers) so a reader can discover it without listing the directory",
-			relative)
+			document)
 	}
 
-	assert.True(t, targets["plans"],
+	assert.True(t, targets[internal],
 		"docs/README.md no longer points at docs/plans/; it is internal process sitting at the same depth as the product documentation, and the index is what says so")
+}
+
+// relativeTo is filepath.Rel with the slash normalization every path in this
+// file wants, since an index target is written with forward slashes whatever
+// the host does.
+func relativeTo(t *testing.T, base, target string) string {
+	t.Helper()
+
+	relative, err := filepath.Rel(base, target)
+	require.NoError(t, err)
+
+	return filepath.ToSlash(relative)
+}
+
+// documentPaths walks root and returns every Markdown file under it as a
+// slash-separated path relative to root, skipping root's own README.md (the
+// index does not index itself) and everything under skipDir.
+//
+// Split out from the test above so the walk itself is testable against a tree
+// this file controls — see TestTheWalkReachesADocumentInASubdirectory. A
+// recursive walk that quietly stopped recursing would otherwise look exactly
+// like a complete index.
+func documentPaths(t *testing.T, root, skipDir string) []string {
+	t.Helper()
+
+	var documents []string
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relative := relativeTo(t, root, path)
+
+		if entry.IsDir() {
+			if relative == skipDir {
+				return fs.SkipDir
+			}
+
+			return nil
+		}
+
+		if filepath.Ext(path) != ".md" || relative == "README.md" {
+			return nil
+		}
+
+		documents = append(documents, relative)
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	return documents
+}
+
+// TestTheWalkReachesADocumentInASubdirectory is the property the walk exists
+// for, asserted somewhere it can fail: over a tree with a nested document, a
+// nested index-named file, and a skipped directory. The tree under docs/ is
+// flat today apart from reference/ and plans/, so nothing in the repository
+// would notice a walk that stopped at the top level — which is how the glob
+// this replaced looked correct for as long as nobody added a directory.
+func TestTheWalkReachesADocumentInASubdirectory(t *testing.T) {
+	root := t.TempDir()
+
+	for _, path := range []string{
+		"README.md",
+		"TOP.md",
+		"guides/nested.md",
+		"guides/deeper/still.md",
+		"guides/README.md",
+		"guides/notes.txt",
+		"plans/internal.md",
+	} {
+		full := filepath.Join(root, filepath.FromSlash(path))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte("# heading\n"), 0o644))
+	}
+
+	assert.Equal(t, []string{
+		"TOP.md",
+		"guides/README.md",
+		"guides/deeper/still.md",
+		"guides/nested.md",
+	}, documentPaths(t, root, "plans"))
 }
 
 // TestTheDocsIndexPointsAtDocumentsThatExist is the same property from the other
@@ -120,13 +207,17 @@ func TestTheDocsIndexPointsAtDocumentsThatExist(t *testing.T) {
 // read it — so every file there carries a banner naming itself internal. A new
 // plan added without one is the whole failure this guards.
 func TestInternalDocumentsSayTheyAreInternal(t *testing.T) {
-	plans, err := filepath.Glob(filepath.Join(internalDocsDir, "*.md"))
-	require.NoError(t, err)
+	// Walked, not globbed, for the reason above: a plan filed under
+	// docs/plans/2026-09/ is still internal, and a check that cannot see it
+	// is the same gap in a smaller directory. Nothing is skipped except the
+	// README.md documentPaths always exempts, which here would be the
+	// directory's own index rather than a plan.
+	plans := documentPaths(t, internalDocsDir, "")
 	require.NotEmpty(t, plans, "docs/plans/ moved and this test did not")
 
 	for _, plan := range plans {
-		t.Run(filepath.Base(plan), func(t *testing.T) {
-			body, err := os.ReadFile(plan)
+		t.Run(plan, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(internalDocsDir, filepath.FromSlash(plan)))
 			require.NoError(t, err)
 
 			head := string(body)
@@ -135,9 +226,9 @@ func TestInternalDocumentsSayTheyAreInternal(t *testing.T) {
 			}
 
 			assert.Contains(t, head, "> [!NOTE]",
-				"%s carries no internal-only banner in its first 1KB; copy the one the other files under docs/plans/ open with", plan)
+				"docs/plans/%s carries no internal-only banner in its first 1KB; copy the one the other files under docs/plans/ open with", plan)
 			assert.Contains(t, head, "Internal",
-				"%s's banner does not say it is internal", plan)
+				"docs/plans/%s's banner does not say it is internal", plan)
 		})
 	}
 }

@@ -447,9 +447,47 @@ var exampleDataDepPattern = regexp.MustCompile(`"(\.\./)*examples(/|")`)
 // diff, so it cannot turn an unrelated change into "everything affected" —
 // see TestExampleDataDepPackagesIsNotEveryPackage.
 func exampleDataDepPackages(testSrc map[string][]byte) []string {
+	return dataDepPackages(testSrc, exampleDataDepPattern)
+}
+
+// repoDataDepPattern is the same idea aimed at the repository-level data
+// p.repoTestData names: any Markdown under docs/, README.md, and AGENTS.md.
+// Same anchoring rule as exampleDataDepPattern, and for the same reason — a
+// literal that *opens* onto one of these roots (allowing only "../" segments
+// climbing back to the repository root) is a test reading it, while the same
+// word in the middle of another path, or in a doc comment, is not.
+//
+// The literal shapes it has to cover are the ones in the tree today:
+// cmd/flow/docsindex_test.go's `const docsDir = "../../docs"`,
+// cmd/flow/docs_test.go's `"../../docs/reference"`, and the README.md and
+// AGENTS.md paths cmd/flow/commands_test.go,
+// pkg/flowstate/v1/flowfile/readme_test.go and
+// pkg/flowstate/v1/agentsmd_test.go open.
+//
+// This is the seeding half of what p.repoTestData already did for CI. Before
+// #708's docs index there was nothing under docs/ whose *content* a test
+// asserted about beyond docs/reference/, so widening CI's test job was
+// enough. TestTheDocsIndexListsEveryDocument changed that: a diff adding
+// docs/guides/thing.md and not listing it in docs/README.md fails that test,
+// maps to no Go package at all, and so — without this — reached no local gate
+// leg, leaving the author to find out from CI what the pre-push gate exists
+// to tell them.
+var repoDataDepPattern = regexp.MustCompile(`"(\.\./)*(docs(/|")|README\.md"|AGENTS\.md")`)
+
+// repoDataDepPackages reports which of testSrc's packages read the
+// repository-level data p.repoTestData covers. Like exampleDataDepPackages it
+// only ever runs on a diff the plan already flagged, so it cannot widen an
+// unrelated change — see TestRepoDataDepPackagesIsNotEveryPackage.
+func repoDataDepPackages(testSrc map[string][]byte) []string {
+	return dataDepPackages(testSrc, repoDataDepPattern)
+}
+
+// dataDepPackages is the shared loop: every package in testSrc whose test
+// sources match pat, sorted so the notice a gate prints is stable.
+func dataDepPackages(testSrc map[string][]byte, pat *regexp.Regexp) []string {
 	var out []string
 	for ip, src := range testSrc {
-		if exampleDataDepPattern.Match(src) {
+		if pat.Match(src) {
 			out = append(out, ip)
 		}
 	}

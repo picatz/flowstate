@@ -587,6 +587,111 @@ func TestExampleDataDepPackagesIsNotEveryPackage(t *testing.T) {
 	}
 }
 
+// TestDocsOnlyDiffReachesTheDocumentationReaders is the #708 shape of the same
+// defect, found in review of #820: docs/README.md maps to no Go package, so
+// resolveDirs yields nothing and the local gate — which scopes its vet and test
+// legs to the affected set — ran neither, while the tests that would have
+// caught the diff (TestTheDocsIndexListsEveryDocument and
+// TestInternalDocumentsSayTheyAreInternal, both in cmd/flow) sat there unrun.
+// An index whose completeness check only ever runs in CI is exactly the round
+// trip the pre-push tier exists to remove.
+//
+// The literal below is the real one: cmd/flow/docsindex_test.go's docsDir.
+func TestDocsOnlyDiffReachesTheDocumentationReaders(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	cmdFlow := m + "/cmd/flow"
+
+	p := buildPlan([]string{"docs/README.md"})
+	if !p.repoTestData {
+		t.Fatal("a change to a Markdown file under docs/ must set p.repoTestData")
+	}
+
+	changedSet := map[string]bool{}
+	for _, ip := range resolveDirs(p.fileDirs, map[string]string{}) {
+		changedSet[ip] = true
+	}
+	if len(changedSet) != 0 {
+		t.Fatalf("docs/ has no Go package ancestor; changedSet = %v", changedSet)
+	}
+
+	testSrc := map[string][]byte{
+		cmdFlow:                        []byte(`const docsDir = "../../docs"`),
+		m + "/pkg/flowstate/v1/engine": []byte(`func TestPolicy(t *testing.T) {}`),
+	}
+	for _, ip := range repoDataDepPackages(testSrc) {
+		changedSet[ip] = true
+	}
+
+	pkgs := []pkgMeta{
+		{ImportPath: cmdFlow},
+		{ImportPath: m + "/pkg/flowstate/v1/engine"},
+	}
+	affected := affectedPackages(pkgs, changedSet)
+	if !contains(affected, cmdFlow) {
+		t.Errorf("a docs/README.md-only diff must reach cmd/flow, which holds the index tests; affected = %v", affected)
+	}
+	if contains(affected, m+"/pkg/flowstate/v1/engine") {
+		t.Errorf("an unrelated package must not be swept in; affected = %v", affected)
+	}
+}
+
+// TestRepoDataDepPackages is a direct test of the pattern, over the literal
+// shapes actually in the tree, plus the two ways it must not match: the word
+// in the middle of another path, and a package that merely mentions a document
+// in prose.
+func TestRepoDataDepPackages(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		// cmd/flow/docsindex_test.go and cmd/flow/docs_test.go.
+		m + "/cmd/flow": []byte("const docsDir = \"../../docs\"\nconst referenceDir = \"../../docs/reference\""),
+		// pkg/flowstate/v1/flowfile/readme_test.go.
+		m + "/pkg/flowstate/v1/flowfile": []byte(`os.ReadFile(filepath.Join(root, "docs", "ARCHITECTURE.md"))`),
+		// pkg/flowstate/v1/agentsmd_test.go.
+		m + "/pkg/flowstate/v1": []byte(`os.ReadFile("../../../AGENTS.md")`),
+		// A doc comment naming a document, with no test reading one:
+		// prose is not a data dependency.
+		m + "/pkg/flowstate/v1/engine": []byte(`// The retry defaults docs/DSL.md describes.`),
+		// "docs" as a segment in the middle of an unrelated path, the
+		// shape that made exampleDataDepPattern anchor to the quote.
+		m + "/pkg/flowstate/v1/netpolicy": []byte(`golden := "testdata/docs/fixture.json"`),
+	}
+
+	got := repoDataDepPackages(testSrc)
+	want := []string{
+		m + "/cmd/flow",
+		m + "/pkg/flowstate/v1",
+		m + "/pkg/flowstate/v1/flowfile",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("repoDataDepPackages = %v, want %v", got, want)
+	}
+}
+
+// TestRepoDataDepPackagesIsNotEveryPackage is the negative direction, the same
+// property TestExampleDataDepPackagesIsNotEveryPackage pins for examples/: a
+// documentation change must not turn the diff-scoped gate into a full run.
+func TestRepoDataDepPackagesIsNotEveryPackage(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/cmd/flow":                   []byte(`const docsDir = "../../docs"`),
+		m + "/pkg/flowstate/v1/secrets":   []byte(`func TestSecrets(t *testing.T) {}`),
+		m + "/pkg/flowstate/v1/engine":    []byte(`func TestPolicy(t *testing.T) {}`),
+		m + "/pkg/flowstate/v1/auth":      []byte(`func TestAuth(t *testing.T) {}`),
+		m + "/pkg/flowstate/v1/netpolicy": []byte(`func TestNet(t *testing.T) {}`),
+	}
+
+	deps := repoDataDepPackages(testSrc)
+	if len(deps) != 1 || deps[0] != m+"/cmd/flow" {
+		t.Fatalf("repoDataDepPackages = %v, want exactly cmd/flow", deps)
+	}
+}
+
 // TestPluginSkipNotices covers the second #589 shape: a plugin module's own
 // tests read its shipped example under examples/plugins/<name>/, one Go
 // module further out than this gate's `go list` walk reaches, so the notice
