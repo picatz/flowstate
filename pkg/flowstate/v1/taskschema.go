@@ -525,11 +525,24 @@ func Catalog() *TaskCatalog {
 // that is meant to be indistinguishable from a built-in. There is one way a task
 // is described, and this is it.
 func DescribeTask(def TaskDef) *TaskDescription {
+	inputDescriptor, inputMessage := describedMessage(def.Inputs)
+	outputDescriptor, outputMessage := describedMessage(def.Outputs)
+
 	return &TaskDescription{
 		Name:    def.Name,
 		Summary: def.Summary,
 		Inputs:  taskFields(Inputs(def)),
 		Outputs: taskFields(Outputs(def)),
+
+		// The descriptors the rendered field lists above were read from, so a
+		// reader that cannot launch this build can rebuild the same TaskDef
+		// and validate against the same shape (#710). See the fields' own doc
+		// comments in catalog.proto for why a rendering is not enough, and
+		// for why these stay out of task_schema_digest.
+		InputDescriptor:  inputDescriptor,
+		InputMessage:     inputMessage,
+		OutputDescriptor: outputDescriptor,
+		OutputMessage:    outputMessage,
 
 		// The five claims with security weight (#712): invisible here before,
 		// which meant invisible in the catalog and outside ClaimsDigest (see
@@ -555,6 +568,29 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		DeferredInputs:   canonicalStrings(def.DeferredInputs),
 		ExpressionInputs: canonicalStrings(def.ExpressionInputs),
 	}
+}
+
+// describedMessage renders one side of a task's schema into the pair
+// [TaskDescription] carries it as: bytes for the files a reader is not known to
+// have, and the message's full name.
+//
+// [DescribeTask] returns no error and gains none here. A marshaling failure on
+// a descriptor this process already linked is not a condition a caller can act
+// on, and swallowing it is safe in the one direction that matters: what comes
+// back is a message *name* with no bytes, which the reconstruction side refuses
+// unless it genuinely knows that name ("names message %q with no descriptor,
+// and this engine does not know that message"). The loss is loud where it would
+// do harm rather than quiet everywhere.
+func describedMessage(md protoreflect.MessageDescriptor) ([]byte, string) {
+	raw, fullName, err := MessageDescriptorBytes(md)
+	if err != nil {
+		if md == nil {
+			return nil, ""
+		}
+		return nil, string(md.FullName())
+	}
+
+	return raw, fullName
 }
 
 // canonicalStrings sorts and deduplicates a membership set before it enters a

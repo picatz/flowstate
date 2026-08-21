@@ -84,9 +84,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -764,99 +761,33 @@ func (t Task) manifest() (*pluginv1.TaskManifest, error) {
 // describeMessage serializes a message's file descriptor and everything it
 // imports that the engine does not already have.
 //
-// Dependencies the engine is known to have are left out deliberately, and the
-// set of those is derived rather than listed: it is the transitive imports of
-// flowstate's own schema files, which any engine that can talk to a plugin has
-// compiled in. That keeps a descriptor small — a task whose input references a
-// flowstate type would otherwise carry protobuf's, protovalidate's, and CEL's
-// descriptors along with it — without hardcoding an assumption about the engine
-// that could quietly stop being true.
+// The serialization itself is [flowstatev1.MessageDescriptorBytes], which is the
+// one implementation of it. A host now ships a task's descriptors to a reader
+// that cannot launch a plugin exactly as a plugin ships them to a host — see
+// TaskDescription.input_descriptor in catalog.proto (#710) — and two
+// serializations of one fact is how the two would come to disagree about a task
+// that is meant to be indistinguishable from a built-in.
+//
+// What is local to this side is the one extra file named below. Dependencies the
+// engine is known to have are left out deliberately, and the set of those is
+// derived rather than listed: it is the transitive imports of flowstate's own
+// schema files, which MessageDescriptorBytes leaves out for every caller — plus
+// plugin.proto, which an engine that can talk to a plugin necessarily has and a
+// reader of a catalog does not, so it is named here rather than there. That
+// keeps a descriptor small — a task whose input references a flowstate type
+// would otherwise carry protobuf's, protovalidate's, and CEL's descriptors along
+// with it — without hardcoding an assumption about the engine that could quietly
+// stop being true.
 func describeMessage(msg proto.Message) ([]byte, string, error) {
 	if msg == nil {
 		return nil, "", nil
 	}
 
-	descriptor := msg.ProtoReflect().Descriptor()
-	fullName := string(descriptor.FullName())
-
-	set := &descriptorpb.FileDescriptorSet{}
-	seen := make(map[string]struct{})
-	provided := hostProvidedFiles()
-
-	var collect func(file protoreflect.FileDescriptor)
-	collect = func(file protoreflect.FileDescriptor) {
-		path := file.Path()
-		if _, done := seen[path]; done {
-			return
-		}
-		seen[path] = struct{}{}
-
-		if _, known := provided[path]; known {
-			return
-		}
-
-		imports := file.Imports()
-		for i := range imports.Len() {
-			collect(imports.Get(i).FileDescriptor)
-		}
-
-		set.File = append(set.File, protodesc.ToFileDescriptorProto(file))
-	}
-
-	collect(descriptor.ParentFile())
-
-	if len(set.File) == 0 {
-		// Every file this message needs is one the engine already has, so there
-		// is nothing to send but the name.
-		return nil, fullName, nil
-	}
-
-	raw, err := proto.Marshal(set)
-	if err != nil {
-		return nil, "", fmt.Errorf("serializing the descriptor of %s: %w", fullName, err)
-	}
-
-	return raw, fullName, nil
+	return flowstatev1.MessageDescriptorBytes(
+		msg.ProtoReflect().Descriptor(),
+		pluginv1.File_flowstate_plugin_v1_plugin_proto,
+	)
 }
-
-// hostProvidedFiles returns the descriptor paths any Flowstate engine has,
-// computed as the transitive imports of flowstate's own schema.
-var hostProvidedFiles = sync.OnceValue(func() map[string]struct{} {
-	provided := make(map[string]struct{})
-
-	var walk func(file protoreflect.FileDescriptor)
-	walk = func(file protoreflect.FileDescriptor) {
-		if _, done := provided[file.Path()]; done {
-			return
-		}
-		provided[file.Path()] = struct{}{}
-
-		imports := file.Imports()
-		for i := range imports.Len() {
-			walk(imports.Get(i).FileDescriptor)
-		}
-	}
-
-	// Every file of flowstate's schema, not merely the ones plugin.proto
-	// imports: the engine links the whole generated package, so the set it has
-	// is the whole schema. This list is the twelve files flowstate/v1 is
-	// spelled in; a thirteenth belongs here the day it exists.
-	walk(flowstatev1.File_flowstate_v1_catalog_proto)
-	walk(flowstatev1.File_flowstate_v1_diagnostics_proto)
-	walk(flowstatev1.File_flowstate_v1_identity_proto)
-	walk(flowstatev1.File_flowstate_v1_reports_proto)
-	walk(flowstatev1.File_flowstate_v1_run_proto)
-	walk(flowstatev1.File_flowstate_v1_schedule_proto)
-	walk(flowstatev1.File_flowstate_v1_service_proto)
-	walk(flowstatev1.File_flowstate_v1_signal_proto)
-	walk(flowstatev1.File_flowstate_v1_task_proto)
-	walk(flowstatev1.File_flowstate_v1_trigger_proto)
-	walk(flowstatev1.File_flowstate_v1_value_proto)
-	walk(flowstatev1.File_flowstate_v1_workflow_proto)
-	walk(pluginv1.File_flowstate_plugin_v1_plugin_proto)
-
-	return provided
-})
 
 // handler builds the HTTP handler serving this plugin's services.
 func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, cfg options) (http.Handler, error) {

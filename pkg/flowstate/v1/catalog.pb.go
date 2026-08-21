@@ -390,6 +390,52 @@ type TaskDescription struct {
 	//
 	// Sorted and deduplicated, for the same reason secret_inputs above is.
 	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
+	// InputDescriptor and InputMessage — and OutputDescriptor and
+	// OutputMessage below them — carry the task's input and output messages
+	// the way a descriptor crosses a process: serialized FileDescriptorProtos,
+	// or a FileDescriptorSet holding a file and its dependencies, plus the
+	// full name of the message within them.
+	//
+	// Spelled exactly as flowstate.plugin.v1.TaskManifest spells the same four
+	// facts, because they are the same four facts. That message is how a
+	// plugin's descriptors reach a host; these are how a host's reach a reader
+	// that cannot launch one — a checked-in catalog document, a browser
+	// authoring surface, a server-side validator (#710).
+	//
+	// The `inputs` and `outputs` fields above are a *rendering* of these: field
+	// names, a type spelled as an author would write it, and constraint
+	// phrases, which is what a reader displaying a task wants and is not what a
+	// reader *validating* against one can use. Validation is descriptor-driven
+	// throughout — flowfile's validateTaskInputs asks the message descriptor
+	// for a field before it will report an unknown input, and stands down
+	// entirely when there is none — so a catalog carrying only the rendering
+	// reconstructs a task definition that accepts a misspelled input the
+	// launching validator refuses. A validator that is quietly weaker than the
+	// one it stands in for is the failure this exists to prevent.
+	//
+	// Empty bytes beside a set message name is the ordinary case rather than an
+	// omission: a message the reader's own build already has needs no bytes,
+	// only its name, and every built-in task's messages are in this schema.
+	// Bytes are carried for exactly the files the engine does not already
+	// provide, which for a plugin task is its own schema. Both empty means the
+	// task declares no message for that side, which TaskDef permits.
+	//
+	// Deliberately outside PluginDescription.task_schema_digest, which hashes
+	// the projection TaskDescriptionSansClaims builds and so cannot see these:
+	// that digest is embedded in every in-flight run's ResolvedPlugin and
+	// compared exactly at each segment boundary, and re-serialized descriptor
+	// bytes are not guaranteed identical across two builds of one unchanged
+	// plugin. The shape they describe is already covered there through
+	// `inputs` and `outputs`, which are derived from these and are stable.
+	//
+	// Deliberately not a claim field either, so ClaimsSchemaVersion does not
+	// bump for them: a bump is compared exactly by the same replay guard, and
+	// these say what a task's messages *are* rather than what a task asks to
+	// be trusted with.
+	InputDescriptor  []byte `protobuf:"bytes,10,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
+	InputMessage     string `protobuf:"bytes,11,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
+	OutputDescriptor []byte `protobuf:"bytes,12,opt,name=output_descriptor,json=outputDescriptor,proto3" json:"output_descriptor,omitempty"`
+	OutputMessage    string `protobuf:"bytes,13,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -485,6 +531,34 @@ func (x *TaskDescription) GetExpressionInputs() []string {
 		return x.ExpressionInputs
 	}
 	return nil
+}
+
+func (x *TaskDescription) GetInputDescriptor() []byte {
+	if x != nil {
+		return x.InputDescriptor
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetInputMessage() string {
+	if x != nil {
+		return x.InputMessage
+	}
+	return ""
+}
+
+func (x *TaskDescription) GetOutputDescriptor() []byte {
+	if x != nil {
+		return x.OutputDescriptor
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetOutputMessage() string {
+	if x != nil {
+		return x.OutputMessage
+	}
+	return ""
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
@@ -860,7 +934,7 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
 	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
 	"\aexample\x18\x04 \x01(\tR\aexample\x12\x1c\n" +
-	"\tsignature\x18\x05 \x03(\tR\tsignature\"\xe6\x02\n" +
+	"\tsignature\x18\x05 \x03(\tR\tsignature\"\x8a\x04\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +
@@ -871,7 +945,12 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\rsecret_inputs\x18\x06 \x03(\tR\fsecretInputs\x12%\n" +
 	"\x0eshapes_outputs\x18\a \x01(\bR\rshapesOutputs\x12'\n" +
 	"\x0fdeferred_inputs\x18\b \x03(\tR\x0edeferredInputs\x12+\n" +
-	"\x11expression_inputs\x18\t \x03(\tR\x10expressionInputs\"\x9f\x01\n" +
+	"\x11expression_inputs\x18\t \x03(\tR\x10expressionInputs\x12)\n" +
+	"\x10input_descriptor\x18\n" +
+	" \x01(\fR\x0finputDescriptor\x12#\n" +
+	"\rinput_message\x18\v \x01(\tR\finputMessage\x12+\n" +
+	"\x11output_descriptor\x18\f \x01(\fR\x10outputDescriptor\x12%\n" +
+	"\x0eoutput_message\x18\r \x01(\tR\routputMessage\"\x9f\x01\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
