@@ -66,9 +66,10 @@ func TestBuildPlan(t *testing.T) {
 			name:    "DSL.md fires the docs leg",
 			changed: []string{"docs/DSL.md"},
 			want: plan{
-				fileDirs:     []string{"docs"},
-				docs:         true,
-				repoTestData: true,
+				fileDirs:      []string{"docs"},
+				docs:          true,
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
 				reasons: map[string]string{
 					"docs": "docs/DSL.md",
 					"test": "docs/DSL.md",
@@ -84,18 +85,20 @@ func TestBuildPlan(t *testing.T) {
 			name:    "a documentation page fires the test job and nothing else",
 			changed: []string{"docs/DEPLOYMENT.md"},
 			want: plan{
-				fileDirs:     []string{"docs"},
-				repoTestData: true,
-				reasons:      map[string]string{"test": "docs/DEPLOYMENT.md"},
+				fileDirs:      []string{"docs"},
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
+				reasons:       map[string]string{"test": "docs/DEPLOYMENT.md"},
 			},
 		},
 		{
 			name:    "an internal plan is test data too, for its banner",
 			changed: []string{"docs/plans/factory.md"},
 			want: plan{
-				fileDirs:     []string{"docs/plans"},
-				repoTestData: true,
-				reasons:      map[string]string{"test": "docs/plans/factory.md"},
+				fileDirs:      []string{"docs/plans"},
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
+				reasons:       map[string]string{"test": "docs/plans/factory.md"},
 			},
 		},
 		{
@@ -264,10 +267,11 @@ func TestBuildPlan(t *testing.T) {
 					"pkg/flowstate/v1/engine",
 					"proto/flowstate/v1",
 				},
-				proto:        true,
-				docs:         true,
-				examples:     true,
-				repoTestData: true,
+				proto:         true,
+				docs:          true,
+				examples:      true,
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
 				reasons: map[string]string{
 					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
@@ -620,7 +624,7 @@ func TestDocsOnlyDiffReachesTheDocumentationReaders(t *testing.T) {
 		cmdFlow:                        []byte(`const docsDir = "../../docs"`),
 		m + "/pkg/flowstate/v1/engine": []byte(`func TestPolicy(t *testing.T) {}`),
 	}
-	for _, ip := range repoDataDepPackages(testSrc) {
+	for _, ip := range repoDataDepPackages(testSrc, p.repoDataRoots) {
 		changedSet[ip] = true
 	}
 
@@ -660,7 +664,7 @@ func TestRepoDataDepPackages(t *testing.T) {
 		m + "/pkg/flowstate/v1/netpolicy": []byte(`golden := "testdata/docs/fixture.json"`),
 	}
 
-	got := repoDataDepPackages(testSrc)
+	got := repoDataDepPackages(testSrc, []string{"AGENTS.md", "README.md", "docs"})
 	want := []string{
 		m + "/cmd/flow",
 		m + "/pkg/flowstate/v1",
@@ -686,9 +690,45 @@ func TestRepoDataDepPackagesIsNotEveryPackage(t *testing.T) {
 		m + "/pkg/flowstate/v1/netpolicy": []byte(`func TestNet(t *testing.T) {}`),
 	}
 
-	deps := repoDataDepPackages(testSrc)
+	deps := repoDataDepPackages(testSrc, []string{"docs"})
 	if len(deps) != 1 || deps[0] != m+"/cmd/flow" {
 		t.Fatalf("repoDataDepPackages = %v, want exactly cmd/flow", deps)
+	}
+}
+
+// TestRepoDataRootsScopeTheSeed is why the roots are recorded per diff rather
+// than folded into one fixed pattern. pkg/flowstate/v1's tests read AGENTS.md,
+// and most of this module imports that package — so seeding AGENTS.md's readers
+// on a documentation change would expand a docs edit into a near-full run for a
+// dependency it does not have. Each root reaches its own readers and no others.
+func TestRepoDataRootsScopeTheSeed(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/cmd/flow":         []byte(`const docsDir = "../../docs"`),
+		m + "/pkg/flowstate/v1": []byte(`os.ReadFile("../../../AGENTS.md")`),
+	}
+
+	for _, tc := range []struct {
+		changed string
+		root    string
+		want    string
+	}{
+		{changed: "docs/DEPLOYMENT.md", root: "docs", want: m + "/cmd/flow"},
+		{changed: "AGENTS.md", root: "AGENTS.md", want: m + "/pkg/flowstate/v1"},
+	} {
+		t.Run(tc.changed, func(t *testing.T) {
+			p := buildPlan([]string{tc.changed})
+			if !reflect.DeepEqual(p.repoDataRoots, []string{tc.root}) {
+				t.Fatalf("buildPlan(%q).repoDataRoots = %v, want [%q]", tc.changed, p.repoDataRoots, tc.root)
+			}
+
+			deps := repoDataDepPackages(testSrc, p.repoDataRoots)
+			if !reflect.DeepEqual(deps, []string{tc.want}) {
+				t.Errorf("repoDataDepPackages = %v, want [%q]", deps, tc.want)
+			}
+		})
 	}
 }
 

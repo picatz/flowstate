@@ -166,7 +166,7 @@ func analyse() (analysis, error) {
 		}
 
 		if p.repoTestData {
-			repoDataDeps = repoDataDepPackages(sources())
+			repoDataDeps = repoDataDepPackages(sources(), p.repoDataRoots)
 			for _, ip := range repoDataDeps {
 				changedSet[ip] = true
 			}
@@ -236,8 +236,8 @@ func run() error {
 				len(exampleDataDeps), strings.Join(trimModulePrefix(exampleDataDeps), ", "))
 		}
 		if len(repoDataDeps) > 0 {
-			why += fmt.Sprintf(" (%d via docs/README/AGENTS data dependency, not the import graph: %s)",
-				len(repoDataDeps), strings.Join(trimModulePrefix(repoDataDeps), ", "))
+			why += fmt.Sprintf(" (%d via %s data dependency, not the import graph: %s)",
+				len(repoDataDeps), strings.Join(p.repoDataRoots, "/"), strings.Join(trimModulePrefix(repoDataDeps), ", "))
 		}
 		g.leg("vet", why, command("go", append([]string{"vet"}, affected...)...))
 		g.leg("test", why,

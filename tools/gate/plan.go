@@ -75,10 +75,22 @@ type plan struct {
 	// added, renamed or removed without docs/README.md moving with it
 	// (#708). Every Markdown file in that tree is therefore test data, and
 	// enumerating the ones that happen to be read today is how this rule
-	// would go stale the next time a page is added. It only widens ciDecisions' testRun — the CI job wide enough
-	// to run all of these — not a local gate leg of its own, since there is
-	// no package for the local tier's affected-package scoping to add.
+	// would go stale the next time a page is added.
+	//
+	// It widens ciDecisions' testRun — the CI job wide enough to run all of
+	// these — and, since #820's review, seeds the local tier's affected set
+	// as well, through the packages repoDataRoots names. It has no leg of
+	// its own in either tier.
 	repoTestData bool
+
+	// repoDataRoots names which of those roots this diff actually touched
+	// ("docs", "README.md", "AGENTS.md"), so the local tier can seed the
+	// packages that read *those* rather than every package that reads any
+	// of them. Without it a docs/DEPLOYMENT.md edit would pull in
+	// pkg/flowstate/v1 because its tests read AGENTS.md — true, unrelated,
+	// and expensive, since most of the module imports it. Sorted and
+	// deduplicated; empty exactly when repoTestData is false.
+	repoDataRoots []string
 
 	// appearance means the diff could move a recorded golden: styled
 	// output and help text live in cmd/flow, and the goldens embed a
@@ -116,6 +128,7 @@ func buildPlan(changed []string) plan {
 	p := plan{reasons: map[string]string{}}
 	dirSeen := map[string]bool{}
 	pluginSeen := map[string]bool{}
+	rootSeen := map[string]bool{}
 
 	reason := func(leg, path string) {
 		if _, ok := p.reasons[leg]; !ok {
@@ -218,10 +231,13 @@ func buildPlan(changed []string) plan {
 		// Repository-level files read directly by tests rather than
 		// imported, the same #589 shape examples/ has — see
 		// p.repoTestData's doc.
-		if f == "README.md" || f == "AGENTS.md" ||
-			strings.HasPrefix(f, "docs/") && strings.HasSuffix(f, ".md") {
+		if root := repoDataRoot(f); root != "" {
 			p.repoTestData = true
 			reason("test", f)
+			if !rootSeen[root] {
+				rootSeen[root] = true
+				p.repoDataRoots = append(p.repoDataRoots, root)
+			}
 		}
 
 		if strings.HasPrefix(f, "examples/") {
@@ -254,6 +270,7 @@ func buildPlan(changed []string) plan {
 	sort.Strings(p.fileDirs)
 	sort.Strings(p.examplePluginNames)
 	sort.Strings(p.plugins)
+	sort.Strings(p.repoDataRoots)
 	return p
 }
 
@@ -450,10 +467,24 @@ func exampleDataDepPackages(testSrc map[string][]byte) []string {
 	return dataDepPackages(testSrc, exampleDataDepPattern)
 }
 
-// repoDataDepPattern is the same idea aimed at the repository-level data
-// p.repoTestData names: any Markdown under docs/, README.md, and AGENTS.md.
-// Same anchoring rule as exampleDataDepPattern, and for the same reason — a
-// literal that *opens* onto one of these roots (allowing only "../" segments
+// repoDataRoot reports which repository-level data root a changed path belongs
+// to, or "" for a path that is not test data of this kind. The three roots are
+// the ones p.repoTestData's doc lists; docs/ is a tree, the other two are
+// single files.
+func repoDataRoot(f string) string {
+	switch {
+	case f == "README.md", f == "AGENTS.md":
+		return f
+	case strings.HasPrefix(f, "docs/") && strings.HasSuffix(f, ".md"):
+		return "docs"
+	default:
+		return ""
+	}
+}
+
+// repoDataDepPattern builds the literal matcher for the roots a diff actually
+// touched. Same anchoring rule as exampleDataDepPattern, and for the same
+// reason — a literal that *opens* onto a root (allowing only "../" segments
 // climbing back to the repository root) is a test reading it, while the same
 // word in the middle of another path, or in a doc comment, is not.
 //
@@ -464,6 +495,12 @@ func exampleDataDepPackages(testSrc map[string][]byte) []string {
 // pkg/flowstate/v1/flowfile/readme_test.go and
 // pkg/flowstate/v1/agentsmd_test.go open.
 //
+// It is per-root rather than one fixed pattern because the roots have very
+// different blast radii: pkg/flowstate/v1's tests read AGENTS.md, and most of
+// this module imports that package, so folding AGENTS.md's readers into a
+// docs-only diff would turn a documentation edit into a near-full run for a
+// dependency it does not have.
+//
 // This is the seeding half of what p.repoTestData already did for CI. Before
 // #708's docs index there was nothing under docs/ whose *content* a test
 // asserted about beyond docs/reference/, so widening CI's test job was
@@ -472,14 +509,32 @@ func exampleDataDepPackages(testSrc map[string][]byte) []string {
 // maps to no Go package at all, and so — without this — reached no local gate
 // leg, leaving the author to find out from CI what the pre-push gate exists
 // to tell them.
-var repoDataDepPattern = regexp.MustCompile(`"(\.\./)*(docs(/|")|README\.md"|AGENTS\.md")`)
+func repoDataDepPattern(roots []string) *regexp.Regexp {
+	alternatives := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "docs" {
+			// A tree: "docs" itself (the bare segment handed to
+			// filepath.Join) or anything under it.
+			alternatives = append(alternatives, `docs(/|")`)
+			continue
+		}
+
+		alternatives = append(alternatives, regexp.QuoteMeta(root)+`"`)
+	}
+
+	return regexp.MustCompile(`"(\.\./)*(` + strings.Join(alternatives, "|") + `)`)
+}
 
 // repoDataDepPackages reports which of testSrc's packages read the
-// repository-level data p.repoTestData covers. Like exampleDataDepPackages it
+// repository-level data roots this diff touched. Like exampleDataDepPackages it
 // only ever runs on a diff the plan already flagged, so it cannot widen an
 // unrelated change — see TestRepoDataDepPackagesIsNotEveryPackage.
-func repoDataDepPackages(testSrc map[string][]byte) []string {
-	return dataDepPackages(testSrc, repoDataDepPattern)
+func repoDataDepPackages(testSrc map[string][]byte, roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+
+	return dataDepPackages(testSrc, repoDataDepPattern(roots))
 }
 
 // dataDepPackages is the shared loop: every package in testSrc whose test
