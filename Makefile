@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update coverage
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update coverage coverage-plugins
 
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
@@ -190,25 +190,95 @@ appearance-update:
 # reached — that reading is the deliverable, not the number.
 #
 # Scope: this covers everything `go test ./...` reaches, including every
-# subprocess-driven test file named above. It does NOT cover plugins/* — git,
-# github, sql, vcs and codex are separate Go modules (make test-plugins builds
-# and tests them one module at a time) outside this module's build graph, so
-# there is nothing from them for covdata to merge here. Extending this
-# mechanism to the plugin modules, and wiring a merged report into the weekly
-# deep tier per #519's own suggestion, are tracked as follow-ups rather than
-# landed in this target.
+# subprocess-driven test file named above, plus the plugin modules under
+# plugins/* by way of `coverage-plugins` below (#761). What it still does not
+# cover is CI: nothing in ci.yml or deep.yml runs this target, so the report
+# is a local, on-demand read rather than an automated one — tracked as a
+# follow-up on #761 rather than landed here.
 coverage:
 	rm -rf .coverage
 	mkdir -p .coverage/raw
 	( GOCOVERDIR=$(CURDIR)/.coverage/raw GOMEMLIMIT=2GiB go test -cover -timeout 1800s ./... -args -test.gocoverdir=$(CURDIR)/.coverage/raw ; echo $$? > .coverage/status ) 2>&1 | tee .coverage/test.log; \
+	( $(MAKE) coverage-plugins ; echo $$? > .coverage/plugin-status ) 2>&1 | tee -a .coverage/test.log; \
 	status=$$(cat .coverage/status); \
+	plugin_status=$$(cat .coverage/plugin-status); \
 	go tool covdata percent -i=.coverage/raw | tee .coverage/percent.txt; \
 	go tool covdata textfmt -i=.coverage/raw -o .coverage/coverage.out; \
-	go tool cover -html=.coverage/coverage.out -o .coverage/coverage.html; \
+	$(MAKE) --no-print-directory .coverage/go.work; \
+	GOWORK=$(CURDIR)/.coverage/go.work go tool cover -html=.coverage/coverage.out -o .coverage/coverage.html; \
 	echo "coverage HTML: .coverage/coverage.html"; \
 	echo "per-package summary: .coverage/percent.txt"; \
 	echo "raw counters: .coverage/raw/ (merge more processes into it with: go tool covdata merge -i=... -o=.coverage/raw)"; \
 	if [ $$status -ne 0 ]; then \
 		echo "go test exited non-zero; see .coverage/test.log. The merge above still ran — a failing run's coverage is still worth reading, since it shows what the failure itself reached."; \
 	fi; \
+	if [ $$plugin_status -ne 0 ]; then \
+		echo "make coverage-plugins exited non-zero; see .coverage/test.log. The merge above still ran, and it still holds whatever the plugin modules reached before the failure."; \
+		if [ $$status -eq 0 ]; then status=$$plugin_status; fi; \
+	fi; \
 	exit $$status
+
+# The plugin half of `coverage`, and the reason that target now names it (#761).
+#
+# plugins/{git,github,sql,vcs,codex} are separate Go modules, which is the
+# point of them: `go test ./...` in the root module does not reach them, so
+# until this target existed there was simply nothing from them for `go tool
+# covdata` to merge — the boundary #519 called the worst blind spot of the
+# lot, since a plugin is exactly the kind of code whose only end-to-end test
+# runs it as a subprocess.
+#
+# There is no second mechanism here. Each module's own test binaries write
+# their counters into the same COVERAGE_RAW directory the root run used, via
+# the same `-cover ... -args -test.gocoverdir=` shape, and covdata unions the
+# lot: the counters are keyed by package import path, so one directory holding
+# several modules' meta files merges exactly as one module's do. And
+# FLOWSTATE_COVERDIR is exported for the same reason `coverage` exports it —
+# plugins/*/reachable builds this plugin's real binary and launches it through
+# a plugin.Host, and internal/covbuild is what makes that subprocess
+# instrumented and points its GOCOVERDIR at a directory the merge reads back.
+#
+# COVERAGE_RAW is absolute because the loop below cds into each module: a
+# relative -test.gocoverdir would scatter counters into five directories
+# nothing merges. Sequential for the same reason `test-plugins` is: a failure
+# should name the module it came from.
+COVERAGE_RAW ?= $(CURDIR)/.coverage/raw
+
+coverage-plugins:
+	@mkdir -p "$(COVERAGE_RAW)"
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		echo "==> $$module"; \
+		( cd "$$module" && FLOWSTATE_COVERDIR="$(COVERAGE_RAW)" GOMEMLIMIT=2GiB \
+			go test -cover -timeout 900s ./... -args -test.gocoverdir="$(COVERAGE_RAW)" ) || \
+			{ echo "==> $$module failed; if it says \"updates to go.mod needed\", run \`make tidy-plugins\`"; exit 1; }; \
+	done
+
+# The workspace `go tool cover -html` is pointed at, and nothing else (#761).
+#
+# The HTML report is rendered from source, so the cover tool has to turn each
+# import path in the profile back into a directory on disk — and asked from
+# the root module it cannot, because plugins/* are not in its module graph:
+# `cover: no required module provides package .../plugins/codex`, and *no*
+# report at all rather than one missing a section. A workspace naming all six
+# modules answers exactly that question.
+#
+# Generated under .coverage/ (gitignored, and rebuilt by `coverage` after its
+# `rm -rf`) rather than checked in at the repository root on purpose: a
+# committed go.work would put every plugin module into every ordinary build's
+# module graph, which is precisely the separation these modules exist to keep
+# — go-git and the rest stay out of the root module's dependencies. It is read
+# only by the one command that needs it, through GOWORK on that command.
+#
+# Absolute paths in the `use` block because they resolve relative to the
+# go.work file's own directory, not the working directory.
+.coverage/go.work:
+	@mkdir -p .coverage
+	@{ echo "go $$(go list -m -f '{{.GoVersion}}')"; \
+		echo; \
+		echo "use ("; \
+		echo "	$(CURDIR)"; \
+		for module in plugins/*/; do \
+			[ -f "$$module/go.mod" ] || continue; \
+			echo "	$(CURDIR)/$$module"; \
+		done; \
+		echo ")"; } > $@
