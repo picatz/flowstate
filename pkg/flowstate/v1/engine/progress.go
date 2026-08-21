@@ -75,9 +75,9 @@ type progress struct {
 
 	// loopState is, for every `loop:` currently active in this segment, the
 	// value its `state:` binding is carrying into the next iteration — keyed by
-	// the loop step's own id. Bounded by [entityStateMaxLoopEntries], whose own
-	// comment is where the question of how many loops can be in here at once is
-	// answered — it is not the "one at a time" it reads like.
+	// the loop step's own id. Bounded by [entityStateMaxLoopEntries]; how many
+	// loops can be here at once — one, for any submittable spec — is that
+	// constant's comment.
 	loopState map[string]*v1.Value
 
 	// loopStateTruncated is set once loopState has refused an entry for being
@@ -97,48 +97,56 @@ type progress struct {
 // rule applies: ask which resource an author's own spec controls, then bound
 // that resource separately from the one the size check already bounds.
 //
-// # What actually reaches this map, which is not what this comment used to say
+// # How many loops actually reach this map: one, and why the bound cannot fire
 //
-// The reason recorded here was a `parallel:` block full of loops. That is
-// wrong, and it is wrong in the direction that matters: concurrent work does
-// not write here at all. A concurrent `for_each` worker ([executor.runForEach])
-// and a `parallel:` branch ([executor.runParallel]) each build their executor
-// with `progress: nil` — deliberately, with the reason in those field comments:
-// no one branch is *the* run's position — so a `loop:` inside either records
-// nothing.
+// This is the substance of #289, which observed that no live path records more
+// than one concurrently active loop — so the bound guards a state the system
+// cannot currently produce. That observation is correct. The reachable maximum
+// is one, held down by two independent facts, each covered in
+// loop_state_reach_internal_test.go:
 //
-// What does reach it is nesting. [executor.runCall] builds the callee's
-// executor carrying `progress: e.progress`, because a call is transparent to
-// suspension and to the position; so a `loop:` whose body calls a workflow
-// that itself loops has both loops live at once, each under its own step id.
-// That shape is not exotic — the compiler refuses a `loop:` directly inside a
-// `loop:` and its diagnostic's own remedy is to hoist the inner one into a
-// called workflow. Stacking that to [v1.MaxCallDepth] calls gives
-// v1.MaxCallDepth + 1 concurrent entries, which is the architectural ceiling:
-// one more call is a failed run, not a bigger map.
+//   - Concurrent constructs record nothing. A concurrent `for_each` worker
+//     ([executor.runForEach]) and a `parallel:` branch ([executor.runParallel])
+//     each build their executor with `progress: nil` — deliberately, no one
+//     branch being *the* run's position — so a `loop:` inside either never
+//     calls [progress.setLoopState]. Two loops in two parallel branches are
+//     genuinely live at once and this map stays empty.
 //
-// So this bound sits roughly seven times above anything the engine can
-// currently produce. It cannot fire, and a bound nothing reaches is a bound
-// nothing tests — the objection #289 exists to record. The reachable maximum
-// is driven end to end in loop_state_reach_internal_test.go, which asserts the
-// ceiling is met and stops there; the struct-level tests in
-// progress_internal_test.go remain the only thing that reaches 64.
+//   - A second loop can only be live beside a first by running inside the
+//     first's body, and that shape — a loop reached from within a loop body,
+//     directly or laundered through a `call:`, a `switch:`, or a `for_each:` —
+//     is refused before it runs. [v1.CheckLoopNesting] is the refusal on the
+//     RPC boundary and `flowfile.bodyHasNestedLoop` is its twin in the
+//     compiler; both descend through `call:` (#727/#680), because the engine
+//     does not suspend inside a loop body, so an inner loop would run
+//     atomically inside each outer iteration with no Continue-As-New between
+//     them. So a `loop:` whose body calls a workflow that itself loops does not
+//     run and stack two entries — it is rejected at submission.
 //
-// The value is left at 64 here on purpose. Whether to keep it documented,
-// remove it, or lower it to something reachable is the open decision on #289,
-// and it is not one to take as a side effect of correcting the reasoning: the
-// three options trade differently (a bound that can never fire, a removed
-// guard to re-add when fan-out starts carrying progress, or a bound coupled to
-// [v1.MaxCallDepth], which would be one meaning written down twice).
+// [executor.runCall] does carry `progress: e.progress` into a callee (a call is
+// transparent to suspension), which is why a callee's loop records under its
+// own step id at all — but the caller cannot *also* be looping around that
+// call, which is the only way the two would coexist, so the carry never
+// produces a second concurrent entry through any accepted spec.
 //
-// One known wrong answer in the meantime, recorded rather than fixed for the
-// same reason: keys here are step ids alone, and a callee's step ids are its
-// own namespace. A caller and a callee that both name a loop step `loop` share
-// one key while both are live, and the callee's [progress.clearLoopState] on
-// the way out deletes the still-live caller's entry with it. It is confined to
-// this read-only query — a loop's real carried state travels per-depth in its
-// frame ([executor.setLoopStateFrame]) — but the query answers with one loop
-// where there are two. See TestLoopStateKeysCollideAcrossACallBoundary.
+// So this bound sits sixty-four times above a reachable maximum of one. It
+// cannot fire, and a bound nothing reaches is a bound nothing tests — the
+// objection #289 exists to record. The value is left at 64 here on purpose:
+// whether to keep it documented, remove it, or lower it is the open decision on
+// #289, and correcting the reasoning behind the bound is not the same act as
+// taking that decision. (If a future change makes concurrent fan-out carry
+// progress, #272, or lifts the loop-nesting refusal, this stops being dead
+// weight and the count becomes reachable — that is the future the "keep it
+// documented" option is for.)
+//
+// One latent wrong answer, live only in that future: keys here are step ids
+// alone, and a callee's step ids are its own namespace, so two loops that both
+// name a step `loop` would collide on one key if they were ever concurrently
+// live. Today they cannot be — the nesting refusal above rejects exactly that
+// shape — so it is recorded here and asserted unreachable
+// ([TestTheSubmissionPathRefusesEveryShapeThatWouldStackLoopState]'s same-id
+// case) rather than fixed. A fix would re-key the map, which changes what
+// [v1.EntityState]'s keys mean to every client and belongs with #289's decision.
 const entityStateMaxLoopEntries = 64
 
 // entityStateMaxBytes bounds the serialized size of one [v1.EntityState]
