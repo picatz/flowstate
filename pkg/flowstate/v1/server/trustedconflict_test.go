@@ -34,7 +34,7 @@ func TestALaterTrustedRegistrationCannotWeakenAnEarlierOne(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal,
+	flowstate := mustNew(t, temporal,
 		server.WithTrustedWorkflows("", narrowedWorkflow()),
 		server.WithTrustedWorkflows("", openWorkflow()),
 	)
@@ -65,7 +65,7 @@ func TestAnIdenticalTrustedRegistrationIsNotAConflict(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal,
+	flowstate := mustNew(t, temporal,
 		server.WithTrustedWorkflows("", narrowedWorkflow()),
 		server.WithTrustedWorkflows("", narrowedWorkflow()),
 	)
@@ -89,7 +89,7 @@ func TestAConflictIsScopedToItsOwnTenant(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal,
+	flowstate := mustNew(t, temporal,
 		server.WithNamespace("team-b"),
 		server.WithTrustedWorkflows("team-a", narrowedWorkflow()),
 		server.WithTrustedWorkflows("team-a", openWorkflow()),
@@ -128,7 +128,7 @@ func TestAnInvalidTrustedRegistrationIsNotSubstituted(t *testing.T) {
 	require.Error(t, v1.Validate(malformed), "the fixture is valid, so this test proves nothing")
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal, server.WithTrustedWorkflows("", malformed))
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", malformed))
 
 	_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: narrowedWorkflow(),

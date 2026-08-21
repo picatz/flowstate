@@ -133,6 +133,54 @@ local, on-demand read, not an automated one, on the same "leave CI wiring as
 a named follow-up" reasoning that keeps `make check` itself the full local
 rehearsal rather than something CI second-guesses.
 
+## Go modernizers (`go fix`): weekly awareness, per-package adoption, never a sweep
+
+Go 1.26 made `go fix` the home of the modernizers — `strings.SplitSeq`,
+`maps.*`, `slices.Contains`, `min`/`max`, `new(expr)` and the rest — and this
+repository's toolchain is pinned past that, so they are available today.
+
+Say which `fix` you mean, every time. Go's `go fix` rewrites **Go source**.
+This repository's own `flow fix` rewrites **Flowfiles**. A commit message, job
+name or comment that says "fix" near this work and does not disambiguate
+teaches the next reader that `flow fix` grew modernizers.
+
+    make modernize                                    # the whole module
+    make modernize PKGS=./pkg/flowstate/v1/engine/    # one package
+    go run ./tools/modernize -sites ./pkg/...         # every site's position
+
+That command reports and changes nothing; it has no apply mode, deliberately.
+The weekly deep tier's `modernize` job runs the wide one and files a single
+advisory issue (deduplicated by title like every other job in `deep.yml`), so
+the number stays visible without a tool committing on our behalf. It is a map,
+not a gate: nothing in `make check` or the PR lane runs it, and no count is
+enforced anywhere.
+
+**Apply them a package at a time, when that package is already open for another
+reason** — so the conversion rides in a diff a reviewer is reading closely — and
+**never as a standalone sweep**. Measured on `main`, one sweep is roughly 11,000
+mechanical lines across 91 files, none of it fixing a defect. That is precisely
+the shape in which a real defect hides from review, and this repository has paid
+for it twice already (two `flow fix` corruptions landed inside changes that
+looked mechanical; #513's review found four textual-search bugs in a change
+everyone would have called routine). #521 has the decision and the numbers.
+
+Two properties of the report worth knowing. The fixer list is not written down
+anywhere here — it comes from the diagnostics the pinned toolchain actually
+produces, so a toolchain bump that adds a modernizer shows up without anyone
+editing a list (the fifteen analyzers #521 measured were twenty-three by
+go1.26.6). And sites inside generated files are counted separately and excluded
+from every total, because a generated file is never hand-edited: a
+modernization there could only ever arrive through its generator.
+
+A third, and the only thing that can make the weekly job go red: the report is
+complete or it is not printed. When a package fails to load, `go fix -json`
+exits non-zero but *still* writes well-formed diagnostics for every package
+that did analyse — so accepting that output yields a plausible report, short by
+an unknown amount, that reads exactly like a clean tree. A non-zero exit
+therefore refuses the report and names the packages that were not analysed, and
+the job files an issue saying the report could not be produced rather than
+quietly filing a small number. Findings themselves never fail it.
+
 ## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
 
 Three tiers over one list of checks, and — this is the part worth holding on to
@@ -512,6 +560,53 @@ So when the rewriter needs to know a scope, take it from where the engine evalua
 the thing rather than from where it is written. And test by comparing bytes or by
 compiling the result: asserting the output still validates is what let all of this
 through.
+
+## `errors.AsType` in new code, and never as a sweep
+
+Go 1.26 added `errors.AsType[E error](err error) (E, bool)`, the generic form of
+`errors.As` that returns the value instead of filling in a pointer you declared a
+line earlier. **New code uses it.** That is the only unconditional part of this
+section.
+
+The existing 121 `errors.As` call sites across 65 files are deliberately left
+alone, and #499 is where that was decided rather than a gap nobody noticed. A
+mechanical rewrite of all of them is churn with real regression surface bought for
+a readability gain: the risk per site is small but not zero, and a diff that large
+is one nobody reads carefully. So an existing site converts only when its file is
+already open for another reason, so the conversion rides in a diff a reviewer is
+looking at anyway — never as a standalone sweep PR, and never as a task picked up
+on its own.
+
+When one does ride along, three shapes do not convert mechanically, and the first
+of them is a compile error rather than a silent one:
+
+- **An interface target that does not itself implement `error`.** `errors.As`
+  accepts any interface target; `AsType` constrains `E` to `error`, so
+  `cmd/flow/execute.go:207` — where the target is `commandSuggester`, an interface
+  whose only method is `nextCommands()` — cannot be converted at all. Leave it.
+- **A `switch { case errors.As(...): }` chain.** `AsType` binds by assignment, so a
+  case chain becomes an `if`/`else if` chain: a restructure to read, not a swap.
+  Five sites are this shape, and three of them sit in the two densest clusters —
+  `pkg/flowstate/v1/engine/workflow.go:165`, the file #499 names as the natural
+  first candidate, and `pkg/flowstate/v1/plugin/sdk/errors.go:191` and `:195`.
+- **A target whose value has to survive a failed match.** `errors.As` leaves the
+  target untouched when it does not match, so a variable reused across branches
+  still holds whatever the last successful call put there; `AsType` hands back a
+  fresh zero. No site in the tree relies on that today — every reused *name* is a
+  separate function's own variable — but it is the one difference that changes
+  behaviour rather than shape, so check the scope before assuming a rename is all
+  that happened.
+
+The shape that actually pays is the boolean-only test, where the declaration
+existed solely to be passed by address: `errors.As(err, new(*netpolicy.DenyError))`
+(`plugins/git/errors.go:81`, `plugins/vcs/errors.go:61`) says what it means as
+`_, ok := errors.AsType[*netpolicy.DenyError](err)`.
+
+Temporal's `serviceerror` types are detected with `errors.As` on purpose — that is
+how a `*serviceerror.NotFound` is told apart from a transport failure, and getting
+it wrong turns "the run is gone" into "the server is broken". `AsType` matches
+identically, but those sites carry a decision, not just a type assertion. Convert
+one only with its tests in front of you.
 
 ## A design sketch names the spelling it already has
 

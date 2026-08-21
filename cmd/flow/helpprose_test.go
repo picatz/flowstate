@@ -128,10 +128,7 @@ func TestCodeSpansNeverReachAStyledScreen(t *testing.T) {
 // carry a span, and the marks are the only thing left saying where one starts and
 // ends. So they stay, exactly where a style would otherwise have been.
 func TestCodeSpansSurviveAPlainScreen(t *testing.T) {
-	schedule, _, err := newRootCommand().Find([]string{"schedule"})
-	require.NoError(t, err)
-
-	rendered := renderedHelp(schedule, colorprofile.NoTTY)
+	rendered := renderedHelp(flowCommand(t, "schedule"), colorprofile.NoTTY)
 
 	assert.NotContains(t, rendered, "\x1b[", "a plain surface received styling")
 	assert.Contains(t, rendered, "`flow schedule create`",

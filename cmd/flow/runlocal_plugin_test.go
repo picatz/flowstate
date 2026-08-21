@@ -53,15 +53,9 @@ func localSecretPolicy(t *testing.T) string {
 func runLocalFile(t *testing.T, path string, extra ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"run", "local", path}, extra...))
+	res := runFlow(t, append([]string{"run", "local", path}, extra...)...)
 
-	err = execute(t.Context(), root)
-
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // TestRunLocalTakesThePluginFlags is the flag half, mirroring
@@ -72,8 +66,7 @@ func runLocalFile(t *testing.T, path string, extra ...string) (stdout, stderr st
 func TestRunLocalTakesThePluginFlags(t *testing.T) {
 	t.Parallel()
 
-	local, _, err := newRootCommand().Find([]string{"run", "local"})
-	require.NoError(t, err)
+	local := flowCommand(t, "run", "local")
 	require.Equal(t, "local", local.Name())
 
 	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {

@@ -10,7 +10,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // payloadOfSize builds a payload whose encoded size is exactly the given number
@@ -61,7 +60,7 @@ func TestSignalPayloadBoundIsReached(t *testing.T) {
 func TestSignalRefusesAnOversizedPayloadAtTheDoor(t *testing.T) {
 	t.Parallel()
 
-	s := server.New(nil)
+	s := mustNew(t, nil)
 	over := payloadOfSize(t, v1.MaxSignalPayloadBytes+1)
 
 	_, err := s.Signal(t.Context(), connect.NewRequest(&v1.SignalRequest{

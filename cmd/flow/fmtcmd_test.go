@@ -25,14 +25,9 @@ import (
 func runFmtCommand(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	var out, errOut bytes.Buffer
-	cmd := newFmtCommand()
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs(args)
+	res := runCommand(t, newFmtCommand(), args...)
 
-	err = cmd.Execute()
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // TestFmtIsIdempotentAcrossExamples is the property a formatter has to have to

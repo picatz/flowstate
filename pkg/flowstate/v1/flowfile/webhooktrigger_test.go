@@ -240,6 +240,37 @@ func TestAConstantIdempotencyKeyIsRefused(t *testing.T) {
 	assert.Positive(t, diagnostics[0].Line)
 }
 
+// TestAnIdempotencyKeyThatOnlyMentionsTheDeliveryIsAccepted is the author-facing
+// half of the residual recorded in #733: a key holding a real, unshadowed `event`
+// in a branch nothing takes satisfies the check that asks whether the delivery is
+// *named*, and every delivery is still named `"all-events"`.
+//
+// Asserted rather than merely known, because the alternative — refusing it on the
+// evidence of a few synthetic deliveries — was built and backed out: the same
+// evidence refuses `${event.body.type == "invoice.paid" ? event.body.id :
+// "ignored"}`, which is a working file, and `flow validate` shares this check with
+// the path that binds a live delivery.
+func TestAnIdempotencyKeyThatOnlyMentionsTheDeliveryIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{
+		`${true ? "all-events" : event.body.id}`,
+		`${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`,
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+
+			source := strings.Replace(webhookSource,
+				`    idempotency_key: ${event.headers["stripe-signature"]}`,
+				"    idempotency_key: '"+key+"'", 1)
+
+			diagnostics, err := flowfile.ValidateSource([]byte(source))
+			require.NoError(t, err)
+			assert.Empty(t, diagnostics)
+		})
+	}
+}
+
 // TestATriggerReadsOnlyTheEvent: a trigger is evaluated before the run exists, so
 // every other name is reported — with the scope named, because an author reaching
 // for `${inputs.x}` here has a coherent model that is one step out of order.

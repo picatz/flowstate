@@ -15,7 +15,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // The join nothing else covers: a real run, a real query, the real server, the real
@@ -70,7 +69,7 @@ func TestWatchFollowsARealRunningExecution(t *testing.T) {
 	require.NoError(t, w.Start())
 	t.Cleanup(w.Stop)
 
-	flowstate := server.New(temporal)
+	flowstate := mustNewFlowstateServer(t, temporal)
 
 	mux := http.NewServeMux()
 	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(flowstate))

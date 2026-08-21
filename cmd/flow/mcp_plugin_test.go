@@ -65,23 +65,22 @@ func buildExamplePluginDir(t *testing.T) string {
 	return dir
 }
 
-// builtExamplePluginDir compiles the example plugin once, into a directory of its
-// own under the package's shared build directory.
+// builtExamplePluginDir compiles the example plugin once for the test binary,
+// into a directory of its own, mirroring [buildFlowBinary]'s once-per-process
+// shape (#832): five subprocess tests want this plugin and the artifact is
+// identical every time.
 //
-// Its own directory rather than beside the `flow` binary, because a plugin search
-// path is a directory the host scans: everything in it named
-// flowstate-plugin-<name> is something it will launch, and the tests that hand
-// this path to `--plugin-dir` mean exactly one plugin by it.
+// Its own directory, not beside the `flow` binary, because a plugin search path
+// is a directory the host scans: everything in it named flowstate-plugin-<name>
+// is something it will launch, and the tests that hand this path to
+// `--plugin-dir` mean exactly one plugin by it. [removeExamplePluginDir] takes
+// it away from [TestMain], the only scope that outlives every test's Cleanup.
 var builtExamplePluginDir = sync.OnceValues(func() (string, error) {
-	parent, err := testBuildDir()
+	dir, err := os.MkdirTemp("", "flow-example-plugin")
 	if err != nil {
 		return "", err
 	}
-
-	dir := filepath.Join(parent, "plugins")
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		return "", err
-	}
+	examplePluginDir = dir
 
 	args := append([]string{"build"}, covbuild.BuildArgs()...)
 	args = append(args, "-o", filepath.Join(dir, plugin.BinaryPrefix+"example"),
@@ -93,6 +92,19 @@ var builtExamplePluginDir = sync.OnceValues(func() (string, error) {
 
 	return dir, nil
 })
+
+// examplePluginDir is where [builtExamplePluginDir] compiled, held so
+// [removeExamplePluginDir] can clean it up without asking the OnceValues to run.
+var examplePluginDir string
+
+// removeExamplePluginDir deletes what [builtExamplePluginDir] compiled, called
+// from [TestMain] beside [removeFlowBinary] and for the identical reason: a
+// directory shared by every test in the run outlives all their Cleanups.
+func removeExamplePluginDir() {
+	if examplePluginDir != "" {
+		_ = os.RemoveAll(examplePluginDir)
+	}
+}
 
 // mcpCatalogText asks flowstate_get_catalog over a real MCP session and
 // returns its answer as text — the same call an agent would make, so what

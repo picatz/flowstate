@@ -50,6 +50,20 @@ const (
 	maxBytes = 1 << 20
 )
 
+// stepsKey is the one key a step list is ever written under.
+//
+// Every place the grammar takes a list of steps spells it the same way — the
+// workflow's own `steps:`, a `for_each:`'s, a `loop:`'s, a `parallel:` branch's,
+// and a `switch:` case's or default's — which is what makes "an element of a
+// `steps:` sequence" a complete definition of *a step* rather than a guess at
+// one. Named rather than spelled out at each site so that anything reasoning
+// about where steps live reads it from here: [pinCollector] does exactly that,
+// because a `digest:` is only a pin when the mapping holding it is a call step
+// (#833), and a collector that decided by key names alone would read
+// `vars: {call: …, digest: …}` — two ordinary variables — as a security pin.
+// TestEveryStepListIsSpelledStepsKey holds the claim this constant makes.
+const stepsKey = "steps"
+
 // The keys each part of a Flowfile accepts. Anything else is reported: a
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
@@ -796,7 +810,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.Vars = c.vars(f.value, "vars", ref{path: "vars", label: "vars"})
 	}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		workflow.Steps = c.steps(f.value, "steps", ref{path: "steps", label: "steps"})
 	}
 
@@ -1865,7 +1879,7 @@ func (c *compiler) forEach(n ast.Node, path string, r ref) *v1.ForEach {
 		loop.MaxParallel = maxParallel
 	}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		loop.Body = c.steps(f.value, fieldPath(path, "steps"),
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "for_each steps"})
 	} else {
@@ -1892,7 +1906,7 @@ func (c *compiler) loop(n ast.Node, path string, r ref) *v1.Loop {
 
 	loop := &v1.Loop{}
 
-	if f, found := fields.get("steps"); found {
+	if f, found := fields.get(stepsKey); found {
 		loop.Body = c.steps(f.value, fieldPath(path, "steps"),
 			ref{step: r.step, path: fieldPath(path, "steps"), label: "loop steps"})
 	} else {
@@ -1959,7 +1973,7 @@ func (c *compiler) parallel(n ast.Node, path string, r ref) *v1.Parallel {
 		branch := &v1.Parallel_Branch{}
 		fields, ok := c.fields(value, branchPath, ref{step: r.step, path: branchPath}, branchKeys)
 		if ok {
-			if f, found := fields.get("steps"); found {
+			if f, found := fields.get(stepsKey); found {
 				branch.Steps = c.steps(f.value, fieldPath(branchPath, "steps"),
 					ref{step: r.step, path: fieldPath(branchPath, "steps"), label: fmt.Sprintf("parallel branch %d steps", i+1)})
 			} else {

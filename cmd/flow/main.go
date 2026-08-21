@@ -786,15 +786,22 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	plain, _ := cmd.Flags().GetBool("plain")
 
 	// Unlike `flow watch` on a later invocation, `flow run` just parsed and
-	// submitted workflow itself, so the poller redacts precisely against its
-	// own declarations instead of falling back to the fail-closed case.
+	// submitted workflow itself — but holding a specification is not the same as
+	// holding the one that ran, and this deployment may have substituted its own
+	// copy for it. The poller redacts precisely only against a specification the
+	// server attested is the executed one, and falls back to the fail-closed case
+	// otherwise; see [executedSpecification] and #734.
 	reveal := revealSensitiveRequested(cmd)
-	if reveal {
+	executed := executedSpecification(workflow, started.Msg)
+	switch {
+	case reveal:
 		noteRevealedSensitiveValues(surface)
+	case executed == nil:
+		noteUnattestedSpecification(surface)
 	}
 
 	return watchRun(cmd.Context(), surface, rendering,
-		clientPoller{workflowID: workflowID, server: server, client: client, spec: workflow, reveal: reveal},
+		clientPoller{workflowID: workflowID, server: server, client: client, spec: executed, reveal: reveal},
 		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
 }
 
@@ -1075,7 +1082,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
-	flowServer := server.New(c, serverOpts...)
+	flowServer, err := server.New(c, serverOpts...)
+	if err != nil {
+		return err
+	}
 
 	// The webhook receiver, if this deployment serves any. Built before the
 	// server starts listening, because every decision it can make in advance is

@@ -731,10 +731,15 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 		return nil, nil, fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
+	flowServer, err := server.New(temporal, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(
 		flowstatev1connect.NewWorkflowServiceHandler(
-			server.New(temporal, opts...),
+			flowServer,
 			connect.WithInterceptors(validate.NewInterceptor(), otelInterceptor),
 			// The same bound `flow server` sets: connect-go defaults to
 			// unlimited, and an anonymous caller must not choose how much this

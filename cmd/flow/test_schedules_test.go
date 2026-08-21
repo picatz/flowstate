@@ -74,14 +74,9 @@ func writeScheduleFixture(t *testing.T, workflow string) string {
 func runFlowTestStreams(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"test"}, args...))
-	err := root.Execute()
+	res := runFlow(t, append([]string{"test"}, args...)...)
 
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // TestSeedsReportsWhatItExplored is the ordinary happy path: a workflow with a

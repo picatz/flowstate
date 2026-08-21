@@ -1456,7 +1456,20 @@ deliberately no spelling that means "accept anything", so an unverifiable delive
 refused rather than allowed on the grounds that it could not be checked, and a webhook
 with no scheme is inert rather than permissive. `idempotency_key:` names one delivery,
 and is required because webhook delivery is at-least-once by nature — without it every
-retried delivery is a second run. What the validator does *not* do is resolve
+retried delivery is a second run. A key that *cannot* read the delivery is refused
+where it is written: `${"all-events"}` names nothing about it, and
+`${[1].map(event, string(event))[0]}` names only a comprehension's own variable, so
+neither can vary and every delivery would be named alike.
+
+What is checked is that the key names the delivery, which is provable from the
+expression. Whether its *value* moves is not: `${true ? "all-events" :
+event.body.id}` mentions `event` in a branch nothing takes, and is accepted. That
+gap is deliberate rather than pending. Refusing it means proving a key constant,
+and evaluating one against sample deliveries proves nothing — the same evidence
+condemns `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`, which
+varies exactly where its author intends, and this check also runs where a live
+delivery is bound, not only in an editor. Write a key over a value the sender
+repeats on a retry and the question does not arise. What the validator does *not* do is resolve
 anything: whether the secret exists and whether this deployment has that scheme
 configured are a deployment's answers.
 
@@ -4230,6 +4243,18 @@ recording. Three further properties follow from the pin being over bytes:
   a reformat just changed; that mismatch is refused at the next compile, the same as
   an author's own edit to the callee would be. Pin the callees whose change should
   stop the world, and leave the rest unpinned.
+
+  A pin does not have to be written on the step to be carried across. One that reaches
+  a step through a `<<:` merge key, or that sits on a step written as an `&anchor` and
+  reused through an `*alias`, is read the way the compiler reads it — merge keys
+  resolved, written keys winning over merged ones — because a formatter that knew less
+  about the grammar than the language does would drop exactly those pins in silence.
+- **`flow fix` reports the pins its own run invalidated.** A migration run over a
+  directory rewrites callees, and a pin on one of those is stale the moment the file is
+  written. So a run that rewrote anything reads the pins of the files it was given,
+  names each one its own rewrite invalidated — with the digest to adopt — and exits
+  non-zero. It reports only what *that run* broke: a pin that was already stale is
+  somebody else's news. And it never re-stamps one, for the reason above.
 - **It is not a signature.** It says the bytes are the bytes, not that they came from
   anywhere in particular or that they are good ones.
 

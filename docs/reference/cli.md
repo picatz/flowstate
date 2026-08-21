@@ -194,7 +194,9 @@ Rewrite Flowfiles written in an older edition of the language into the current o
 
 Shapes that cannot be rewritten without guessing (a task written in flow style, or one standing behind a YAML alias) are reported with their position, and the file holding one is not written at all: a file converts entirely or it is left exactly as it was, so nobody is handed half a migration.
 
-`--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, and what was refused, per file. CI that wants structured data rather than stderr text asks for one of those.
+A run that rewrites a file another one pins with `digest:` reports every pin it invalidated, naming the digest to adopt, and exits non-zero. It never re-stamps one: a pin is the caller saying it read those bytes, and only a person can say that.
+
+`--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, what was refused, and what pins the run invalidated, per file. CI that wants structured data rather than stderr text asks for one of those.
 
 --plugin-dir launches the plugins there first, and a file whose steps name a plugin's tasks wants it: what this rewriter may do to a step depends on what the task declares — which of its inputs it evaluates itself, and whether it shapes its own outputs — and for a plugin's task those facts arrive with the plugin. Without it a plugin task is rewritten as an ordinary one, which is right for most of them and a guess for the rest. A plugin that will not start fails the command before any file is touched.
 

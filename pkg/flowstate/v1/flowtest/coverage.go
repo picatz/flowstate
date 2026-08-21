@@ -38,7 +38,9 @@ import (
 //   - A step inside a `for_each` or `loop` body counts as reached if any
 //     iteration ran it. The body's per-iteration outputs travel in the loop
 //     node's `results` output ([v1.LoopResultsField]), so the walk descends
-//     into that list and unions the step ids it finds across iterations.
+//     into that list and unions the steps it finds across iterations — across
+//     the *iterations* of one body, and never across two bodies that happen to
+//     name a step the same (issue #821); see [workflowCoverage.steps].
 type Coverage struct {
 	// Workflow is the workflow this coverage accounts for, the path a case's
 	// `workflow:` resolved to ([WorkflowPath]). It is the identity coverage is
@@ -47,17 +49,42 @@ type Coverage struct {
 	// (issue #420, Finding 3).
 	Workflow string
 
-	// Reached is every step id that ran in at least one case, sorted.
+	// Reached is every step id whose every declaration ran in at least one case,
+	// sorted.
+	//
+	// A name, not an identity, which is why this says *every* declaration (issue
+	// #821). A step id is unique within one scope and not within a workflow:
+	// sibling `for_each`/`loop` bodies and sibling `parallel` branches may each
+	// hold a step called `notify`, which the validator allows deliberately — the
+	// rule it enforces is that a nested id may not collide with a step it is
+	// nested *inside* (flowfile/validate.go). Measurement is therefore keyed by
+	// declaration ([workflowCoverage.steps]), and a name answering to several
+	// declarations reports the fail-closed answer: Reached only when all of them
+	// ran, Unreached when any of them did not. The other reading — reached when
+	// *any* declaration ran — is the defect #821 reports, a gate passing on a
+	// step no case ever ran.
 	Reached []string
 
-	// Unreached is the complement: every step id in the workflow that no case
-	// ran, sorted. This is the line #420 exists to report.
+	// Unreached is the complement: every step id in the workflow that some
+	// declaration of leaves unrun, sorted. This is the line #420 exists to
+	// report.
+	//
+	// Reached and Unreached stay disjoint and together name every step id in the
+	// workflow exactly once, so [Coverage.Total] still counts the steps an author
+	// can name.
 	Unreached []string
 
 	// Accepted maps an unreached step id to the reason the file recorded for it
 	// (`coverage.allow_unreached`). Every key here is also in Unreached: it is
 	// genuinely not reached, and Accepted is why that is a decision rather than
 	// a gap. A step in Accepted does not fail `--coverage-required`.
+	//
+	// An entry names a step *id*, so where an id answers to several declarations
+	// the entry speaks for all of them — the same reading [SwitchArm.Key] takes
+	// for an ambiguous arm key, and the only one available when the name cannot
+	// tell them apart (issue #821). Since such an id is Unreached as soon as any
+	// one of its declarations is, accepting it accepts every declaration that
+	// answers to it.
 	Accepted map[string]string
 
 	// Stale is every `coverage.allow_unreached` entry that does not describe a
@@ -252,8 +279,20 @@ type coverageAccumulator struct {
 
 // workflowCoverage is one workflow's accumulated universe and reached set.
 type workflowCoverage struct {
-	universe map[string]bool
-	reached  map[string]bool
+	// steps is every step *declaration* the workflow has: the structural path of
+	// the node ([childPath]) to the id written there. reached is the union across
+	// every case of the declarations that ran, keyed the same way.
+	//
+	// Keyed by path rather than by id for the reason [SwitchArm.decl] spells out
+	// one level down, and against the same fail-open failure (issue #821): an id
+	// is unique per scope, not per workflow, so two isolated bodies may each hold
+	// a step called `notify`. Keyed by id, the two shared one entry and running
+	// either credited both — `--coverage-required` passing on a step no case ran.
+	// The path is derived from the walk that is already descending, so it costs an
+	// argument and nothing else, and it is stable across cases because every case
+	// compiles the same specification.
+	steps   map[string]string
+	reached map[string]bool
 
 	// arms is every switch arm the workflow declares, in written order, and
 	// armIndex is where each *declaration* ([SwitchArm.decl]) sits in it. A slice
@@ -268,6 +307,36 @@ type workflowCoverage struct {
 	// rather than on them because arms are collected once, from the first case
 	// that compiled the workflow, and reached is accumulated over all of them.
 	armsReached map[string]bool
+}
+
+// declaresStep reports whether the workflow declares a step a file could name by
+// this id.
+//
+// By id rather than by declaration, for the same reason [workflowCoverage.declaresArm]
+// works by key: an id is what a `coverage.allow_unreached` entry is written as,
+// and two isolated bodies may legally declare steps sharing one.
+func (w *workflowCoverage) declaresStep(id string) bool {
+	for _, step := range w.steps {
+		if step == id {
+			return true
+		}
+	}
+
+	return false
+}
+
+// leavesStepUnreached reports whether some step this id names was run by no case
+// — what makes a `coverage.allow_unreached` entry a real residual rather than a
+// stale one, and what puts the id in [Coverage.Unreached] rather than
+// [Coverage.Reached].
+func (w *workflowCoverage) leavesStepUnreached(id string) bool {
+	for path, step := range w.steps {
+		if step == id && !w.reached[path] {
+			return true
+		}
+	}
+
+	return false
 }
 
 // declaresArm reports whether the workflow declares an arm a file could name by
@@ -325,7 +394,7 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 	wc := a.workflows[identity]
 	if wc == nil {
 		wc = &workflowCoverage{
-			universe:    map[string]bool{},
+			steps:       map[string]string{},
 			reached:     map[string]bool{},
 			armIndex:    map[string]int{},
 			armsReached: map[string]bool{},
@@ -333,13 +402,13 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 		a.workflows[identity] = wc
 	}
 	if spec != nil {
-		collectStepUniverse(spec.GetSteps(), wc.universe)
+		collectStepUniverse(spec.GetSteps(), "", wc.steps)
 		collectSwitchArms(spec.GetSteps(), "", positions, wc)
 	}
 	if spec == nil || outputs == nil {
 		return
 	}
-	markReached(spec.GetSteps(), outputs.GetStepValues(), wc.reached)
+	markReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.reached)
 	markArmsReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.armsReached)
 }
 
@@ -354,7 +423,7 @@ func (a *coverageAccumulator) result() []*Coverage {
 	// whose every case failed to compile has an empty universe and is dropped.
 	identities := make([]string, 0, len(a.workflows))
 	for id, wc := range a.workflows {
-		if len(wc.universe) == 0 {
+		if len(wc.steps) == 0 {
 			continue
 		}
 		identities = append(identities, id)
@@ -373,7 +442,7 @@ func (a *coverageAccumulator) result() []*Coverage {
 	for entry := range a.allowUnreached {
 		for _, id := range identities {
 			wc := a.workflows[id]
-			if wc.universe[entry] && !wc.reached[entry] {
+			if wc.leavesStepUnreached(entry) {
 				residual[entry] = true
 				break
 			}
@@ -388,12 +457,28 @@ func (a *coverageAccumulator) result() []*Coverage {
 	for _, id := range identities {
 		wc := a.workflows[id]
 		cov := &Coverage{Workflow: id}
-		for step := range wc.universe {
-			if wc.reached[step] {
-				cov.Reached = append(cov.Reached, step)
+
+		// Partitioned by name over declarations, fail-closed: an id lands in
+		// Unreached as soon as one declaration answering to it went unrun, even
+		// when another did run (issue #821). The two sets stay disjoint, so an
+		// author reads one line per step id and [Coverage.Total] counts the ids
+		// the workflow has.
+		unreached := map[string]bool{}
+		reached := map[string]bool{}
+		for path, step := range wc.steps {
+			if wc.reached[path] {
+				reached[step] = true
 			} else {
-				cov.Unreached = append(cov.Unreached, step)
+				unreached[step] = true
 			}
+		}
+		for step := range reached {
+			if !unreached[step] {
+				cov.Reached = append(cov.Reached, step)
+			}
+		}
+		for step := range unreached {
+			cov.Unreached = append(cov.Unreached, step)
 		}
 		sort.Strings(cov.Reached)
 		sort.Strings(cov.Unreached)
@@ -403,7 +488,7 @@ func (a *coverageAccumulator) result() []*Coverage {
 		// each workflow it is a residual of; that is not double-counting, it is
 		// the record doing its job for every branch it names.
 		for step, reason := range a.allowUnreached {
-			if wc.universe[step] && !wc.reached[step] {
+			if unreached[step] {
 				if cov.Accepted == nil {
 					cov.Accepted = map[string]string{}
 				}
@@ -443,7 +528,7 @@ func (a *coverageAccumulator) result() []*Coverage {
 		}
 		home := ""
 		for _, id := range identities {
-			if a.workflows[id].universe[entry] || a.workflows[id].declaresArm(entry) {
+			if a.workflows[id].declaresStep(entry) || a.workflows[id].declaresArm(entry) {
 				home = id
 				break
 			}
@@ -469,8 +554,17 @@ func (a *coverageAccumulator) result() []*Coverage {
 	return out
 }
 
-// collectStepUniverse walks a workflow's node tree, adding every step id
-// coverage accounts for to universe.
+// collectStepUniverse walks a workflow's node tree, adding every step
+// declaration coverage accounts for to universe: the structural path of the node
+// ([childPath], threaded exactly as [collectSwitchArms] threads it) to the id
+// written there.
+//
+// By declaration rather than by id because an id is unique per scope and not per
+// workflow — see [workflowCoverage.steps] for the fail-open measurement that
+// keying by id alone produced (issue #821). [markReached] threads the identical
+// path, and the two must stay in step: a step is credited under the path this
+// walk filed it under, so a divergence in how one of them spells a path is a step
+// that can never be reached.
 //
 // It descends into the bodies of `for_each` and `loop` and into the branches
 // of `parallel`, because those hold steps an author wrote and a test can leave
@@ -482,82 +576,93 @@ func (a *coverageAccumulator) result() []*Coverage {
 // container's id), so counting it would report a step that no transcript can
 // ever show as reached. Its branch steps are counted, and they are what
 // `parallel:` coverage is about.
-func collectStepUniverse(nodes []*v1.Node, universe map[string]bool) {
-	for _, node := range nodes {
+func collectStepUniverse(nodes []*v1.Node, path string, universe map[string]string) {
+	for i, node := range nodes {
+		here := childPath(path, i)
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				collectStepUniverse(branch.GetSteps(), universe)
+			for b, branch := range kind.Parallel.GetBranches() {
+				collectStepUniverse(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), universe)
 			}
 		case *v1.Node_ForEach:
-			universe[node.GetId()] = true
-			collectStepUniverse(kind.ForEach.GetBody(), universe)
+			universe[here] = node.GetId()
+			collectStepUniverse(kind.ForEach.GetBody(), here+"/"+pathBody, universe)
 		case *v1.Node_Loop:
-			universe[node.GetId()] = true
-			collectStepUniverse(kind.Loop.GetBody(), universe)
+			universe[here] = node.GetId()
+			collectStepUniverse(kind.Loop.GetBody(), here+"/"+pathBody, universe)
 		case *v1.Node_Switch:
 			// The switch itself records outputs (the observed value and the case
 			// that took it), so it is a countable step; its body steps merge into
 			// the enclosing scope the way parallel branch steps do, so they count
 			// in the same universe — which is what makes `flow test`'s coverage
 			// report the case body no test reaches.
-			universe[node.GetId()] = true
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				collectStepUniverse(body, universe)
+			universe[here] = node.GetId()
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				collectStepUniverse(body, here+"/"+pathSwitchBody+strconv.Itoa(s), universe)
 			}
 		default:
 			// Task, Wait, Call: a leaf for coverage. A call's own steps are the
 			// callee file's to account for, so the call node is counted but not
 			// descended into.
-			universe[node.GetId()] = true
+			universe[here] = node.GetId()
 		}
 	}
 }
 
 // markReached walks a workflow's node tree against a transcript, marking every
-// step the transcript shows as having run.
+// step declaration the transcript shows as having run.
 //
 // present is a map from step id to the outputs recorded for it. A top-level
 // step and a `parallel` branch step both appear here directly (the engine
 // merges a parallel's branch outputs into the enclosing scope). A `for_each` or
 // `loop` body step does not: its outputs travel inside the loop node's own
 // `results` output, so reaching it means descending into that list.
-func markReached(nodes []*v1.Node, present map[string]*v1.Node_Outputs, reached map[string]bool) {
-	for _, node := range nodes {
+//
+// reached is keyed by the *declaration* — the structural path threaded exactly
+// as [collectStepUniverse] threads it — and not by the id the transcript is keyed
+// by. That is the whole of issue #821: two isolated bodies may each hold a step
+// called `notify`, and the transcript of the body that ran cannot credit the one
+// that did not, because a body's record is read under the path of the body it
+// belongs to.
+func markReached(nodes []*v1.Node, path string, present map[string]*v1.Node_Outputs, reached map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Parallel:
 			// The container records nothing; its branch steps are merged into
 			// present directly, so recurse with the same map.
-			for _, branch := range kind.Parallel.GetBranches() {
-				markReached(branch.GetSteps(), present, reached)
+			for b, branch := range kind.Parallel.GetBranches() {
+				markReached(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), present, reached)
 			}
 		case *v1.Node_ForEach:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.ForEach.GetBody(), resultsList(out.GetNamedValues()), reached)
+			reached[here] = true
+			markReachedInResults(kind.ForEach.GetBody(), here+"/"+pathBody,
+				resultsList(out.GetNamedValues()), reached)
 		case *v1.Node_Loop:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.Loop.GetBody(), resultsList(out.GetNamedValues()), reached)
+			reached[here] = true
+			markReachedInResults(kind.Loop.GetBody(), here+"/"+pathBody,
+				resultsList(out.GetNamedValues()), reached)
 		case *v1.Node_Switch:
 			// The switch records its own outputs, and the taken body's steps
 			// merge into the enclosing scope, so both are read from present
 			// directly, exactly as a parallel branch's are.
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				markReached(body, present, reached)
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				markReached(body, here+"/"+pathSwitchBody+strconv.Itoa(s), present, reached)
 			}
 		default:
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
 		}
 	}
@@ -571,13 +676,13 @@ func markReached(nodes []*v1.Node, present map[string]*v1.Node_Outputs, reached 
 // carries its own `results` field inside its entry, which is why this recurses
 // through [markReachedInLiteral] rather than only unioning the top-level keys:
 // a loop two levels down is still a step some case either reached or did not.
-func markReachedInResults(body []*v1.Node, iterations []*expr.Value, reached map[string]bool) {
+func markReachedInResults(body []*v1.Node, path string, iterations []*expr.Value, reached map[string]bool) {
 	for _, iteration := range iterations {
 		lit := mapEntries(iteration)
 		if lit == nil {
 			continue
 		}
-		markReachedInLiteral(body, lit, reached)
+		markReachedInLiteral(body, path, lit, reached)
 	}
 }
 
@@ -585,37 +690,38 @@ func markReachedInResults(body []*v1.Node, iterations []*expr.Value, reached map
 // [v1.Node_Outputs] one: inside a loop's `results`, a step's outputs are a CEL
 // map literal, not a [v1.Node_Outputs]. The two walks are the same shape over
 // two encodings of the same fact.
-func markReachedInLiteral(nodes []*v1.Node, present map[string]*expr.Value, reached map[string]bool) {
-	for _, node := range nodes {
+func markReachedInLiteral(nodes []*v1.Node, path string, present map[string]*expr.Value, reached map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				markReachedInLiteral(branch.GetSteps(), present, reached)
+			for b, branch := range kind.Parallel.GetBranches() {
+				markReachedInLiteral(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), present, reached)
 			}
 		case *v1.Node_ForEach:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.ForEach.GetBody(), resultsListLiteral(out), reached)
+			reached[here] = true
+			markReachedInResults(kind.ForEach.GetBody(), here+"/"+pathBody, resultsListLiteral(out), reached)
 		case *v1.Node_Loop:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.Loop.GetBody(), resultsListLiteral(out), reached)
+			reached[here] = true
+			markReachedInResults(kind.Loop.GetBody(), here+"/"+pathBody, resultsListLiteral(out), reached)
 		case *v1.Node_Switch:
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				markReachedInLiteral(body, present, reached)
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				markReachedInLiteral(body, here+"/"+pathSwitchBody+strconv.Itoa(s), present, reached)
 			}
 		default:
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
 		}
 	}
@@ -671,13 +777,13 @@ func mapEntries(v *expr.Value) map[string]*expr.Value {
 // The structural path of a node: where it sits in the workflow's node tree,
 // rather than what it is called.
 //
-// It is what gives a switch an identity a step id cannot supply. Ids are unique
-// per scope and not per workflow — two sibling loop bodies may each hold a step
-// called `route` — so keying a declaration by id alone folds two switches into
-// one, and the fold is fail-open: exercising an arm of either credits both. The
-// path is derived from the walk that is already descending, so it costs an
-// argument and nothing else, and it is stable across cases because every case
-// compiles the same specification.
+// It is what gives a switch — and, since issue #821, a step — an identity a step
+// id cannot supply. Ids are unique per scope and not per workflow — two sibling
+// loop bodies may each hold a step called `route` — so keying a declaration by id
+// alone folds two switches, or two steps, into one, and the fold is fail-open:
+// exercising either credits both. The path is derived from the walk that is
+// already descending, so it costs an argument and nothing else, and it is stable
+// across cases because every case compiles the same specification.
 //
 // The segments name the *slot* a child list occupies as well as the index within
 // it, because a node's position among its siblings is not enough on its own: two

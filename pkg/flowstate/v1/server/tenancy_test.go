@@ -62,8 +62,8 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 	// as far as the authorization logic is concerned, and that is the logic under
 	// test.
 	return &tenantFixture{
-		teamA:    server.New(temporal, server.WithNamespace(teamANamespace)),
-		teamB:    server.New(temporal, server.WithNamespace(teamBNamespace)),
+		teamA:    mustNew(t, temporal, server.WithNamespace(teamANamespace)),
+		teamB:    mustNew(t, temporal, server.WithNamespace(teamBNamespace)),
 		temporal: temporal,
 	}
 }

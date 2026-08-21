@@ -29,15 +29,21 @@ import (
 // is also the only way to observe the thing being asserted: the exit status and
 // the bytes a person or a CI job actually reads.
 
-// runFlowCapturing runs the built binary's validate verb and returns what it
-// wrote and whether it succeeded.
+// runFlowCapturing runs the compiled binary and returns both streams together
+// with the error, which is the shape every assertion below reads.
+//
+// Over [runFlowBinary] — the subprocess tier #832 unified — rather than a bare
+// exec, so these tests get the same GOCOVERDIR threading and the same
+// [flowResult] every other subprocess test in the package does. Both streams
+// merged through [flowResult.Output], because a plugin's launch failure and a
+// diagnostic land on different streams and each assertion here wants whichever
+// one carried its evidence.
 func runFlowCapturing(t *testing.T, bin string, args ...string) (output string, err error) {
 	t.Helper()
 
-	cmd := runFlowBin(bin, args...)
-	out, err := cmd.CombinedOutput()
+	res := runFlowBinary(t, bin, args...)
 
-	return string(out), err
+	return res.Output(), res.Err
 }
 
 // TestTheAuthoringVerbsTakeThePluginFlags is the flag half, mirroring
@@ -116,22 +122,21 @@ steps:
 		t.Run(args[0], func(t *testing.T) {
 			t.Parallel()
 
-			root := newRootCommand()
-			var out, errOut strings.Builder
-			root.SetOut(&out)
-			root.SetErr(&errOut)
-			root.SetArgs(args)
-
-			err := execute(t.Context(), root)
-			require.Error(t, err,
+			// In process through [runFlow], not the subprocess tier: this
+			// refusal happens before any plugin is launched, so there is no
+			// registry to poison and nothing a fresh process would show that
+			// this does not. The rendered report is on Stderr, exactly as a
+			// person would see it.
+			res := runFlow(t, args...)
+			require.Error(t, res.Err,
 				"`flow %s` accepted a pinned plugin with nowhere to look for it, and so "+
 					"ran having launched nothing", strings.Join(args, " "))
 
-			assert.Contains(t, err.Error(), "example",
-				"the refusal does not name the plugin that was pinned")
-			assert.Contains(t, err.Error(), "--plugin-dir",
-				"the refusal does not say what to pass instead")
-			assert.Equal(t, exitCodeUsage, exitCodeFor(err),
+			assert.Contains(t, res.Output(), "example",
+				"the refusal does not name the plugin that was pinned:\n%s", res.Output())
+			assert.Contains(t, res.Output(), "--plugin-dir",
+				"the refusal does not say what to pass instead:\n%s", res.Output())
+			assert.Equal(t, exitCodeUsage, res.ExitCode,
 				"a command line asking for two things that do not fit was not "+
 					"reported as an invocation mistake")
 		})
