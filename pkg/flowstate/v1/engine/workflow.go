@@ -41,19 +41,20 @@ type ErrRunFailed struct {
 	// without re-deriving it from a chain it has already flattened.
 	recordedFromTask bool
 
-	// recordedLoop is the outputs an exhausted loop's own step records in place
-	// of the bare `error` text: [v1.LoopExhaustedError.Record], the failure
-	// sentence plus the `results` that ran before the budget was spent.
+	// recordedOwn is the outputs a step that owns an account of its own records
+	// in place of the bare `error` text ([v1.StepFailureRecord]): an exhausted
+	// loop's failure sentence plus the `results` that ran before the budget was
+	// spent, or a failed switch's sentence plus the arm it had selected.
 	//
-	// Set by [failedAt] only when the error it is handed *is* the exhaustion,
-	// raised bare at the loop — never read back out of an inner [ErrRunFailed]
-	// the way Recorded is. That asymmetry is the containment: the account
-	// belongs to the loop's own transcript entry, and an exhaustion propagating
-	// out of a call or an enclosing for_each must record as a plain failure at
-	// that level rather than filing the inner loop's iterations under a step
-	// that did not run them. The local driver draws the identical line with a
+	// Set by [failedAt] only when the error it is handed *is* that failure,
+	// raised bare at the step that owns it — never read back out of an inner
+	// [ErrRunFailed] the way Recorded is. That asymmetry is the containment: the
+	// account belongs to that step's own transcript entry, and a failure
+	// propagating out of a call or an enclosing for_each must record as a plain
+	// failure at that level rather than filing the inner step's account under a
+	// step that did not run it. The local driver draws the identical line with a
 	// direct type assertion in its failureRecord.
-	recordedLoop *v1.Node_Outputs
+	recordedOwn *v1.Node_Outputs
 
 	// Kind classifies the failure the same way [v1.ClassifyError] would,
 	// carried alongside Message and Recorded for the same reason both of those
@@ -191,20 +192,23 @@ func failedAt(err error, position string) error {
 		}
 	}
 
-	// The exhausted loop's account, read off the raw error at the one site it
-	// is raised (the loop's own nodeFailed). A propagating re-wrap hands this
-	// function an [ErrRunFailed], which has no Unwrap on purpose, so the
-	// assertion fails there and the record stays with the loop's own entry.
-	var recordedLoop *v1.Node_Outputs
-	if exhausted, ok := err.(*v1.LoopExhaustedError); ok {
-		recordedLoop = exhausted.Record()
+	// The step's own account — an exhausted loop's iterations, a failed switch's
+	// selection — read off the raw error at the one site it is raised (that
+	// step's own nodeFailed). A propagating re-wrap hands this function an
+	// [ErrRunFailed], which has no Unwrap on purpose, so the assertion fails
+	// there and the record stays with the entry it belongs to.
+	var recordedOwn *v1.Node_Outputs
+	if account, ok := err.(v1.StepFailureRecord); ok {
+		// The envelope-free text this driver already extracted, never the
+		// error's own words: see [v1.StepFailureRecord].
+		recordedOwn = account.Record(recorded)
 	}
 
 	return &ErrRunFailed{
 		Message:          message,
 		Recorded:         recorded,
 		recordedFromTask: fromTask,
-		recordedLoop:     recordedLoop,
+		recordedOwn:      recordedOwn,
 		Kind:             recordedStepKind(err),
 	}
 }
@@ -855,17 +859,19 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 // err.Error(): what reaches here is wrapped in this driver's transport, and the
 // local driver records the same failure without any of it.
 func failedStepOutputs(err error) *v1.Node_Outputs {
-	// An exhausted loop's entry is richer than the text: `error` plus the
-	// `results` that ran, so the transcript distinguishes an iteration that ran
-	// and failed from one the spent budget never let start. The record was
-	// extracted by failedAt at the one site the exhaustion is raised, and is
-	// deliberately not propagated into the wrappers built above it — see the
-	// recordedLoop field — so only the loop's own entry ever carries it, which
-	// is the same containment the local driver's failureRecord gets from its
-	// direct type assertion.
+	// Some steps' entries are richer than the text ([v1.StepFailureRecord]): an
+	// exhausted loop's is `error` plus the `results` that ran, so the transcript
+	// distinguishes an iteration that ran and failed from one the spent budget
+	// never let start, and a failed switch's is `error` plus the arm it selected,
+	// so the branch that ran is still on the record. Each was extracted by
+	// failedAt at the one site that failure is raised, and is deliberately not
+	// propagated into the wrappers built above it — see the recordedOwn field —
+	// so only that step's own entry ever carries it, which is the same
+	// containment the local driver's failureRecord gets from its direct type
+	// assertion.
 	var run *ErrRunFailed
-	if errors.As(err, &run) && run.recordedLoop != nil {
-		return run.recordedLoop
+	if errors.As(err, &run) && run.recordedOwn != nil {
+		return run.recordedOwn
 	}
 
 	recorded, _ := recordedStepError(err)

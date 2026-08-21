@@ -50,6 +50,12 @@ func newTestCommand() *cobra.Command {
 			"one case ran, and the complement no case ever reached. Coverage is reported, not failed, " +
 			"unless `--coverage-required` is set, which makes an unreached step a failure for any file " +
 			"whose `coverage.allow_unreached` does not record a reason for it.\n\n" +
+			"A `switch:` is measured a second way, per arm rather than per step, because an arm's " +
+			"body may hold no steps at all: `steps: []` is how a switch writes down deliberately " +
+			"ignoring a value, and `case: [closed, merged]` is one body two literals share. Which " +
+			"arm a case took is read from the step's own `case` record, so an arm no case reached is " +
+			"reported by the position it was written at — the only name an arm has. Record one under " +
+			"`coverage.allow_unreached` by the key the diagnostic prints.\n\n" +
 			"`--output json` or `--output jsonl` reports what ran as a schema message instead of " +
 			"text, and carries the coverage sets under a `coverage` key so CI annotates rather than " +
 			"parses prose.\n\n" +
@@ -85,8 +91,8 @@ flow test -o jsonl examples/`,
 	// a branch it cannot reach by recording it under `coverage.allow_unreached`
 	// with a reason (see flowtest.CoverageStanza).
 	cmd.Flags().Bool("coverage-required", false,
-		"fail when a workflow has a step no test case reached and no coverage.allow_unreached "+
-			"entry records why")
+		"fail when a workflow has a step, or a `switch:` arm, no test case reached and no "+
+			"coverage.allow_unreached entry records why")
 
 	// Off by default, and the default is the whole of the compatibility promise:
 	// at zero seeds every case runs exactly once, under v1.WrittenOrder, which is
@@ -270,7 +276,7 @@ func (r testFileResult) failed(coverageRequired bool) bool {
 	// (Finding 3).
 	if coverageRequired {
 		for _, c := range r.coverage {
-			if len(c.Gaps()) > 0 || len(c.Stale) > 0 {
+			if len(c.Gaps()) > 0 || len(c.ArmGaps()) > 0 || len(c.Stale) > 0 {
 				return true
 			}
 		}
@@ -439,6 +445,11 @@ func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverag
 	file := theme.Muted.Render(report.GetFile())
 	for _, cov := range coverage {
 		summary := fmt.Sprintf("%d/%d steps reached", len(cov.Reached), cov.Total())
+		// Only where the workflow has a switch, so a file without one prints the
+		// exact line it always did rather than a second number reading "0/0".
+		if len(cov.Arms) > 0 {
+			summary += fmt.Sprintf(", %d/%d switch arms taken", cov.ArmsReached(), len(cov.Arms))
+		}
 
 		gaps := cov.Gaps()
 		tail := ""
@@ -464,9 +475,54 @@ func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverag
 
 		fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
 
+		printArmGaps(out, theme, cov, required)
+
 		for _, stale := range cov.Stale {
 			fmt.Fprintf(out, "       %s\n", theme.Danger.Render(stale))
 		}
+	}
+}
+
+// printArmGaps names each switch arm no case took, one positioned line each.
+//
+// A line of its own rather than a name on the summary line, because an arm has
+// no name to put there. A step has an id an author can search for; `case
+// "synchronize"` is one of possibly several in one step and is findable only by
+// where it is written — which is the whole reason issue #801 threads positions
+// through at all. So these follow the `flowfile/validate.go` diagnostic
+// standard: the file, the line and column, what is wrong, and what to do.
+//
+// An arm the file recorded a reason for is not printed here. It is an accepted
+// residual, already named on the line below as a decision rather than a hole,
+// exactly as an accepted step is.
+func printArmGaps(out io.Writer, theme ui.Theme, cov *flowtest.Coverage, required bool) {
+	for _, arm := range cov.ArmGaps() {
+		where := cov.Workflow
+		if arm.Where.IsValid() {
+			where += ":" + arm.Where.Start.String()
+		}
+
+		message := fmt.Sprintf("%s: %s of switch %q was taken by no test case; add a case whose "+
+			"inputs reach it, or record why under coverage.allow_unreached: %s",
+			where, arm.Label, arm.Step, arm.Key)
+		if required {
+			message = theme.Danger.Render(message)
+		} else {
+			message = theme.Warning.Render(message)
+		}
+
+		fmt.Fprintf(out, "       %s\n", message)
+	}
+
+	accepted := make([]string, 0, len(cov.Arms))
+	for _, arm := range cov.Arms {
+		if !arm.Reached && arm.Reason != "" {
+			accepted = append(accepted, arm.Key)
+		}
+	}
+	if len(accepted) > 0 {
+		fmt.Fprintf(out, "       %s\n",
+			theme.Muted.Render("accepted-unreached arms: "+strings.Join(accepted, ", ")))
 	}
 }
 

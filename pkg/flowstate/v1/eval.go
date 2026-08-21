@@ -1457,23 +1457,24 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 
 // failureRecord shapes a step failure into the outputs recorded under that
 // step's id: [FailedStepOutputs] for an ordinary failure, and the richer
-// [LoopExhaustedError.Record] — `error` plus the `results` that ran — when the
-// step is a loop that spent its whole budget.
+// [StepFailureRecord.Record] when the failing step owns an account of its own —
+// an exhausted loop's `results` ([LoopExhaustedError]), a failed switch's
+// selection ([SwitchBodyError]).
 //
-// The exhaustion is recognised by direct type assertion, never through an
-// unwrap chain, and that is the point rather than a shortcut: only the loop's
-// own step raises the error bare, so only the loop's own entry carries the
-// account. The same exhaustion propagating out of a call or an enclosing
-// for_each arrives here wrapped in a position (`workflow %q: …`,
-// `iteration %d: …`) and records as the plain failure it is at that level —
-// which is also exactly what the durable driver's failedAt does, reading the
-// raw error at the one site it is raised and never copying the record into the
-// wrappers it builds above it.
+// The account is recognised by direct type assertion, never through an unwrap
+// chain, and that is the point rather than a shortcut: only the step that owns
+// it raises the error bare, so only that step's own entry carries it. The same
+// failure propagating out of a call or an enclosing for_each arrives here
+// wrapped in a position (`workflow %q: …`, `iteration %d: …`) and records as the
+// plain failure it is at that level — which is also exactly what the durable
+// driver's failedAt does, reading the raw error at the one site it is raised and
+// never copying the record into the wrappers it builds above it.
 func failureRecord(err error) *Node_Outputs {
-	if exhausted, ok := err.(*LoopExhaustedError); ok {
-		return exhausted.Record()
+	text := StepErrorText(err)
+	if account, ok := err.(StepFailureRecord); ok {
+		return account.Record(text)
 	}
-	return FailedStepOutputs(StepErrorText(err))
+	return FailedStepOutputs(text)
 }
 
 // runNodeWithVars executes a node with its own `vars:` block bound.
@@ -1768,7 +1769,13 @@ func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, pla
 	// written in a switch arm runs atomically there and is weighed here too
 	// ([CheckAtomicBlockActivities]).
 	if err := runNodes(enterAtomicBlock(ctx), body, scope, undo, placement, depth, tolerated); err != nil {
-		return nil, err
+		// Wrapped so the selection survives the failure: recordStepOutcome
+		// records this step through failureRecord, which reads the account off
+		// [SwitchBodyError] the same way it reads an exhausted loop's. Without
+		// it the switch's own entry holds the failure text alone, and the arm
+		// that ran is absent from the record every reader of it consults. The
+		// durable driver's runSwitch wraps at the identical point.
+		return nil, &SwitchBodyError{Err: err, Selection: outputs}
 	}
 
 	return outputs, nil
