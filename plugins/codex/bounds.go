@@ -62,8 +62,8 @@ const (
 	maxPatchBytes = 1 << 20 // 1 MiB
 	maxDiffFiles  = 500
 
-	// maxGitConfigBytes bounds the key listing safeDiffArgs reads to discover
-	// the content filters it must disable. Its own bound rather than
+	// maxGitConfigBytes bounds the key listing hardenedGitConfig reads to
+	// decide which config keys it recognizes and which it must disable. Its own bound rather than
 	// maxPatchBytes, because the two answer different questions and sharing
 	// one couples them the wrong way round: a repository with a great many
 	// config keys would truncate the listing, and a truncated listing is

@@ -143,7 +143,7 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	// can install new filter keys this list has never heard of - see
 	// computePatch's doc comment.
 	var gitBin string
-	var hardened []string
+	var hardened *gitHardening
 	if mutating {
 		var cleanup func()
 		gitBin, hardened, cleanup, _ = prepareHardenedGit(runCtx, workDir)
