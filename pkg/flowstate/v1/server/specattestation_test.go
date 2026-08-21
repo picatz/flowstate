@@ -104,3 +104,59 @@ func TestRunRefusesToAttestASubstitutedSpecification(t *testing.T) {
 	assert.True(t, same.Msg.RanSubmittedSpecification(),
 		"a trusted copy equal to the submitted one was reported as a substitution")
 }
+
+// TestRunRefusesToAttestASpecificationItPinnedPluginsOnto is the second way the
+// executed specification stops being the submitted one, found by Codex on #826.
+//
+// Nothing is substituted here: the deployment registered no trusted copy, and the
+// caller's own workflow is what runs. But the server writes its own selection of
+// plugin versions onto that specification before the engine sees it — the
+// `resolved_plugins` the caller never sent and cannot predict — so what executes is
+// not what arrived. An attestation answered at the trusted lookup said "unchanged"
+// about a message that had not finished being assembled; answered against the
+// specification actually handed to the engine, it says what is true.
+//
+// The client's consequence is the one this field exists for: a caller told true
+// redacts against its own copy, and a pin is the deployment reaching into the
+// specification, which is exactly the class of edit a caller cannot vouch for.
+func TestRunRefusesToAttestASpecificationItPinnedPluginsOnto(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+
+	catalog := &v1.PluginCatalog{
+		ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion,
+		Plugins: []*v1.PluginDescription{{
+			Name: "storefront", Version: "v2.1.0", ProtocolVersion: 2,
+			TaskSchemaDigest:   "sha256:schema",
+			DistributionDigest: "sha256:binary",
+			ClaimsDigest:       "sha256:claims",
+		}},
+	}
+	flowstate := server.New(temporal, server.WithPluginCatalog(catalog))
+
+	requiring := declaringWorkflow(false)
+	requiring.PluginRequirements = []*v1.PluginRequirement{{
+		Name: "storefront", MinimumVersion: "v2.0.0",
+	}}
+
+	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: requiring,
+	}))
+	require.NoError(t, err)
+
+	require.NotNil(t, started.Msg.SpecificationAsSubmitted)
+	assert.False(t, started.Msg.RanSubmittedSpecification(),
+		"a specification the deployment pinned plugin versions onto was attested as the submitted one")
+
+	// And the other direction, on the same server, so false is a property of the
+	// pin rather than of a deployment that has a catalog at all: a workflow
+	// requiring no plugins is pinned to nothing, which changes nothing, and keeps
+	// its caller the precise view.
+	plain, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: declaringWorkflow(false),
+	}))
+	require.NoError(t, err)
+	assert.True(t, plain.Msg.RanSubmittedSpecification(),
+		"a workflow with no plugin requirements lost its precise view to an empty pin")
+}

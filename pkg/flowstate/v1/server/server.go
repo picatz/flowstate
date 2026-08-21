@@ -875,24 +875,23 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 	// name flat enough for one tenant to reach another's trusted entry.
 	identity := s.identityFor(ctx)
 
+	// The caller's copy, kept as it arrived, so the attestation below has
+	// something to compare the executed specification against.
+	//
+	// A clone, and taken here, before the first thing that can change a
+	// specification: [FlowstateServer.trustedWorkflow] returns the request's own
+	// pointer when this deployment registered nothing under that name, and
+	// [FlowstateServer.validateSpecification] then writes the deployment's
+	// resolved plugin pin *onto that pointer* (see [FlowstateServer.pinPlugins]).
+	// Holding a reference rather than a copy would therefore leave both sides of
+	// the comparison pointing at one message that mutates together, which is
+	// equality that can only ever answer true.
+	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
+
 	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
-
-	// Answered here, where the two copies are both in hand, and carried to the
-	// response below rather than recomputed there — see
-	// [v1.RunResponse.specification_as_submitted] for what the caller does with
-	// it, and #734 for the leak it closes.
-	//
-	// Compared by value rather than reported as "was there a trusted entry":
-	// a deployment that registers the identical specification a caller submits
-	// has substituted nothing observable, and the caller's copy still describes
-	// the run exactly. It is also the comparison that keeps answering correctly
-	// if anything between here and ExecuteWorkflow ever starts transforming the
-	// specification — defaults, expansion, normalization — none of which the
-	// trusted-entry question would notice.
-	asSubmitted := proto.Equal(req.Msg.GetWorkflow(), workflow)
 
 	inputs, err := s.validateSubmission(workflow, req.Msg.GetInputs())
 	if err != nil {
@@ -952,6 +951,30 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		memo[reasonMemoKey] = reason
 	}
 	options.Memo = memo
+
+	// Answered last, against the specification that is about to be executed
+	// rather than against the one the trusted lookup returned, and carried to the
+	// response below — see [v1.RunResponse.specification_as_submitted] for what
+	// the caller does with it, and #734 for the leak it closes.
+	//
+	// Last, because everything between the lookup and here may have changed the
+	// specification and one thing already does: [FlowstateServer.pinPlugins]
+	// writes the deployment's selection of plugin versions onto it, so a
+	// plugin-bearing workflow reaches the engine carrying a `resolved_plugins`
+	// the caller never sent. Asking the question earlier answered it about a
+	// value that had not finished being assembled — true for a specification the
+	// engine would then run in a different form, which is precisely the claim the
+	// field promises not to make.
+	//
+	// Compared by value, whole, rather than reported as "was there a trusted
+	// entry" or narrowed to the fields a client's redaction happens to read
+	// today. A deployment that registers the identical specification a caller
+	// submits has substituted nothing observable and keeps the caller's precise
+	// view; anything else — a substitution, a pin, a normalization added next
+	// year — answers false without needing to be enumerated here. That is the
+	// fail-closed direction: a transformation nobody thought to list still costs
+	// a caller a precise view rather than costing them a secret.
+	asSubmitted := proto.Equal(submitted, workflow)
 
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    workflow,

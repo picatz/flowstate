@@ -272,6 +272,16 @@ type RunResponse struct {
 	// specification that *ran*, so a caller redacting against a copy that did not
 	// run prints in the clear any value only the executed copy marks.
 	//
+	// Substitution is the loudest way the two can differ and not the only one. A
+	// server also *transforms* what it runs: it writes its own selection of plugin
+	// versions onto the specification before the engine sees it, and may normalize
+	// or expand more of it later. So this is whole-message equality between the
+	// request as it arrived and the specification handed to the engine, answered
+	// after every one of those steps rather than at the substitution alone. Reading
+	// it as "the parts a client's redaction happens to consult" would be a list
+	// somebody has to extend for every transformation added afterwards, and it
+	// would answer true the first time nobody did.
+	//
 	// Three answers, not two, which is why this is `optional`. True means the
 	// executed specification is the submitted one, so a client may trust its own
 	// copy's declarations. False means it is not, so the client must not. *Unset*
