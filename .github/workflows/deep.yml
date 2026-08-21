@@ -669,3 +669,90 @@ jobs:
         run: |
           echo "::error::govulncheck reported reachable vulnerabilities; see the deep-tier issue filed by this run"
           exit 1
+
+  # What Go's `go fix` modernizers would change, reported weekly and applied
+  # never — by this job, at least. #521's decision, in full: the wins are real
+  # and small (the SplitSeq conversions avoid materializing a slice; the rest
+  # is readability) and none of them fixes a defect, while the diff that
+  # applies them all at once is eleven thousand mechanical lines, which is the
+  # exact shape in which a real defect hides from review. This repository has
+  # the local evidence for that — two `flow fix` corruptions landed inside
+  # changes that looked mechanical, and #513's review found four
+  # textual-search bugs in a change everyone would have called routine.
+  #
+  # So the modernizers are adopted a package at a time, when that package is
+  # already open for another reason and the conversion rides in a diff someone
+  # is reading closely. This job exists to keep us *aware* of what is
+  # available without letting a tool commit on our behalf: it reports, files
+  # one issue, rewrites nothing, and never fails.
+  #
+  # Which `fix` this is, since the repository has two: Go's `go fix` rewrites
+  # Go source. This repository's own `flow fix` rewrites Flowfiles. Nothing
+  # here goes near a Flowfile.
+  #
+  # Unlike govulncheck this needs no version pin of its own — the modernizers
+  # ship inside the toolchain, so the pin is go.mod's, which setup-go reads.
+  modernize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # persist-credentials: false — see the fuzz-deep job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The same target a person runs locally, so the weekly number and the
+      # one somebody reproduces cannot drift apart. -s suppresses make's echo
+      # of the command, because this output is filed verbatim into an issue.
+      # The report is Markdown by construction; the tool exits non-zero only
+      # when it could not produce a report at all.
+      - name: Report available modernizations
+        id: report
+        run: |
+          set -o pipefail
+          make -s modernize | tee modernize.md
+
+      # One issue, deduplicated by whole-line title against the open deep-tier
+      # issues exactly as every other job here does — so a second week's run
+      # adds nothing while the first week's issue is still open, and the
+      # numbers are re-read from the tree rather than from a stale body
+      # whenever somebody closes it.
+      - name: File the advisory issue
+        if: steps.report.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if grep -q 'Nothing to report' modernize.md; then
+            echo "the modernizers find no sites; not filing an issue"
+            exit 0
+          fi
+          gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
+          title="deep-tier: Go modernizers (\`go fix\`) available — advisory, apply per package"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already carries the modernizer report; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "Nothing failed. This is the weekly advisory from the deep tier's \`modernize\` job (#521): what Go's \`go fix\` modernizers would change in this repository, kept visible without letting a tool commit on anyone's behalf."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            cat modernize.md
+            echo
+            echo "Reproduce locally:"
+            echo
+            echo '```'
+            echo "make modernize                                    # the whole module"
+            echo "make modernize PKGS=./pkg/flowstate/v1/engine/    # one package"
+            echo '```'
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"

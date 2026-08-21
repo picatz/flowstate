@@ -1,4 +1,4 @@
-.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt docs docs-preview appearance appearance-update coverage coverage-plugins
+.PHONY: check gate test test-plugins test-ordering test-fast fuzz-smoke fmt modernize docs docs-preview appearance appearance-update coverage coverage-plugins
 
 # Diff-scoped local gate (#482): build, gofmt on changed files, vet and
 # bounded -race tests for the packages the diff touches plus their reverse
@@ -117,6 +117,33 @@ test-fast:
 
 fmt:
 	gofmt -w ./cmd ./pkg
+
+# Report what Go's `go fix` modernizers would change, and change nothing
+# (#521). Note which `fix` this is: Go's `go fix` rewrites Go source, this
+# repository's own `flow fix` rewrites Flowfiles, and the two are unrelated.
+#
+# This is a map, not a gate, on the same reasoning as `coverage` below:
+# nothing in `check` or the PR lane runs it, and no count is enforced
+# anywhere. #521's decision is that the modernizers are applied
+# opportunistically — a package at a time, inside a diff a reviewer is
+# already reading closely for another reason — and never as a sweep, because
+# a mechanical diff thousands of lines long is the shape in which a real
+# defect hides, and none of what the fixers propose fixes one. So the useful
+# invocation is the narrow one, run when you are already in the package:
+#
+#     make modernize PKGS=./pkg/flowstate/v1/engine/
+#     go run ./tools/modernize -sites ./pkg/flowstate/v1/engine/
+#
+# The weekly deep tier (.github/workflows/deep.yml) runs the wide one and
+# files a single advisory issue, so the number stays visible without a tool
+# committing on anyone's behalf.
+#
+# Scope: the root module. The plugin modules under plugins/* are separate
+# modules outside this module's build graph — exactly as they are for
+# `coverage` — and nothing here reaches them, tracked as a follow-up rather
+# than landed here.
+modernize:
+	go run ./tools/modernize $(if $(PKGS),$(PKGS),./...)
 
 # Regenerate the reference documentation under docs/reference/ from the registry,
 # the cobra tree, the MCP tool table and the env-var table. CI pins the result
