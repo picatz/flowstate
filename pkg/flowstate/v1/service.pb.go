@@ -795,11 +795,19 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 }
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
-// does not yet exist, atomically, through the SDK's SignalWithStartWorkflow,
-// which closes the race an ordinary create-then-signal has: a caller who checks
-// "does it exist" and then either Runs or Signals can always be beaten between the
-// two calls, either by another creator or by the signal arriving before the run
-// does.
+// does not yet exist, which closes the race an ordinary create-then-signal has: a
+// caller who checks "does it exist" and then either Runs or Signals can always be
+// beaten between the two calls, either by another creator or by the signal
+// arriving before the run does.
+//
+// The delivery that creates the entity travels as part of that entity's own
+// starting state rather than as a signal that follows its creation, so an
+// accepted create can never leave an entity missing the mutation that initiated
+// it — even if this handler disappears immediately afterward. Only a delivery to
+// an entity that *already existed* before this call — the not-created branch — is
+// sent as a signal after the fact, and by then the entity's existence was
+// somebody else's atomic creation, not this call's, so there is nothing left for
+// this call itself to make atomic.
 //
 // # Two authorization questions, decided separately, both fail-closed
 //
@@ -922,8 +930,9 @@ type SignalWithStartResponse struct {
 	// False means a signal was delivered to an entity that was already running.
 	// A caller that needs to tell "I just created this" from "this already
 	// existed" (to decide whether to wait for a different handler, say) has
-	// no other way to learn it, since Temporal's own SignalWithStartWorkflow
-	// answers the same shape (a run and a workflow execution) either way.
+	// no other way to learn it: [workflow_id] and [run_id] are populated
+	// identically either way, a run and a workflow execution, so this field is
+	// the only place the distinction is reported.
 	Created       bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
