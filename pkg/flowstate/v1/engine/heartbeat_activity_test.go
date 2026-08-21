@@ -102,13 +102,15 @@ func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
 // running to completion, because the task it evaluates is the one thing in
 // this call graph that decides whether to honor ctx.Done() at all.
 //
-// Temporal's TestWorkflowEnvironment has no supported way to make a running
-// activity's own context observe a cancellation delivered through a heartbeat
-// response — env.CancelWorkflow resolves the workflow-side activity future
-// immediately without touching the goroutine actually executing the task
-// (confirmed by reading go.temporal.io/sdk/internal's mock
-// RecordActivityTaskHeartbeat, which always answers CancelRequested: false).
-// What TestActivityEnvironment does support, and what SetWorkerOptions'
+// go.temporal.io/sdk v1.47.0's TestWorkflowEnvironment has no way to make a
+// running activity's own context observe a cancellation delivered through a
+// heartbeat response — env.CancelWorkflow resolves the workflow-side
+// activity future immediately without touching the goroutine actually
+// executing the task: its mocked RecordActivityTaskHeartbeat always answers
+// CancelRequested: false (internal/internal_workflow_testsuite.go:404-413),
+// so the same cancelHandler that a real heartbeat response would invoke
+// (internal/internal_task_handlers.go:2277-2280) is never reached. What
+// TestActivityEnvironment does support, and what SetWorkerOptions'
 // BackgroundActivityContext field exists for, is standing the activity's
 // context up as a child of one this test owns: canceling it delivers a real
 // ctx.Done() to withHeartbeat's ctx — the same context object a production

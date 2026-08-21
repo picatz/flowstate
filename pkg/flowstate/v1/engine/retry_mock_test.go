@@ -120,6 +120,46 @@ func TestMockedRetryableFailureDrivesTheRealRetryPolicy(t *testing.T) {
 			"engine/policy.go's defaults produce")
 }
 
+// TestMockedPersistentRetryableFailureStopsAtMaxAttempts mocks [engine.Task]
+// to fail every time with a retryable error, asserting the scheduler reaches
+// v1.DefaultMaxAttempts and stops rather than merely staying at or under it.
+// TestMockedRetryableFailureDrivesTheRealRetryPolicy above never drives the
+// count that high (3 failures, 4 attempts, under the default cap of 5), so
+// on its own it cannot distinguish a real cap from one that is never
+// reached — the same gap CLAUDE.md's "Test the traversal, not just the
+// step" names for a scan bound: "scanned <= maxListScan is also satisfied
+// by a listing that gave up after one batch".
+//
+// Verified to fail: with defaultMaximumAttempts wired to a literal other
+// than v1.DefaultMaxAttempts, attempts.Load() no longer equals
+// v1.DefaultMaxAttempts.
+func TestMockedPersistentRetryableFailureStopsAtMaxAttempts(t *testing.T) {
+	state := &v1.RunState{Workflow: flakyStepWorkflow("mocked-retry-exhausted")}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+
+	var attempts atomic.Int32
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
+			attempts.Add(1)
+			return nil, temporal.NewApplicationErrorWithOptions(
+				"mocked upstream failure", v1.ErrorKindUpstream.String(),
+				temporal.ApplicationErrorOptions{},
+			)
+		})
+
+	env.ExecuteWorkflow(engine.Run, state)
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.Error(t, env.GetWorkflowError(),
+		"a step whose every attempt fails must not report success once attempts are exhausted")
+	require.EqualValues(t, v1.DefaultMaxAttempts, attempts.Load(),
+		"a persistently retryable failure should reach v1.DefaultMaxAttempts and stop there, "+
+			"neither short of it nor past it")
+}
+
 // TestMockedNonRetryableFailureStopsAfterOneAttempt mocks [engine.Task] to
 // always fail with an [v1.ErrorKindInvalidInput]-classified application
 // error — one of nonRetryableErrorTypes()'s [v1.PermanentErrorKinds] — and
