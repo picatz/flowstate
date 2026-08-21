@@ -26,6 +26,12 @@ go.work
 # The compiled CLI, when built in place with `go build ./cmd/flow`.
 /flow
 
+# The compiled gate, for the same reason: `go build ./tools/gate` writes it
+# here, and `git add -A` after a gate run then commits five megabytes of
+# machine-specific binary. Which is exactly what happened on the branch that
+# added this line.
+/gate
+
 # Plugin binaries, when built in place per a plugin's own README
 # (`go build -o .../flowstate-plugin-<name> ./plugins/<name>`) rather than
 # into a directory already outside the tree.
