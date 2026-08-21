@@ -51,10 +51,19 @@ func TestMain(m *testing.M) {
 		// left below. Skipping the download-and-boot here as well, rather than
 		// only inside that helper, is what keeps `-short` from paying the dev
 		// server's ~2 minutes of startup cost it exists to avoid.
-		os.Exit(m.Run())
+		code := m.Run()
+		removeFlowBinary()
+		os.Exit(code)
 	}
 
 	code, err := runPackageTests(m)
+
+	// Here rather than deferred inside runPackageTests, for the reason that
+	// function's own doc gives: os.Exit below runs no deferred function. See
+	// buildFlowBinary, which compiles the binary once for the whole test binary
+	// and so has no *testing.T whose Cleanup could remove it afterwards.
+	removeFlowBinary()
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)

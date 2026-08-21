@@ -245,16 +245,7 @@ func TestTheWayOutSurvivesBeingWrapped(t *testing.T) {
 func runVerbAgainst(t *testing.T, address string, args []string) error {
 	t.Helper()
 
-	root := newRootCommand()
-	root.SilenceUsage = true
-	root.SilenceErrors = true
-
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append(append([]string{}, args...), "--address", address))
-
-	err := root.Execute()
+	err := runFlow(t, append(append([]string{}, args...), "--address", address)...).Err
 	require.Error(t, err, "%v somehow succeeded against an address with nothing on it", args)
 
 	return err

@@ -44,15 +44,9 @@ func taskRun(t *testing.T, args ...string) (stdout, stderr string, err error) {
 func taskRunUnder(t *testing.T, ctx context.Context, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"task", "run"}, args...))
+	res := runFlowUnder(t, ctx, append([]string{"task", "run"}, args...)...)
 
-	err = execute(ctx, root)
-
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // TestRunningOneTaskWritesItsOutputsToStdout is the property a pipe depends on.
