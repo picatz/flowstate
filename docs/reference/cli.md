@@ -198,6 +198,8 @@ A run that rewrites a file another one pins with `digest:` reports every pin it 
 
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, what was refused, and what pins the run invalidated, per file. CI that wants structured data rather than stderr text asks for one of those.
 
+--plugin-dir launches the plugins there first, and a file whose steps name a plugin's tasks wants it: what this rewriter may do to a step depends on what the task declares — which of its inputs it evaluates itself, and whether it shapes its own outputs — and for a plugin's task those facts arrive with the plugin. Without it a plugin task is rewritten as an ordinary one, which is right for most of them and a guess for the rest. A plugin that will not start fails the command before any file is touched.
+
 Examples:
 
 ```sh
@@ -219,8 +221,12 @@ flow fix --stdout old.yaml > new.yaml
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--check` | `bool` | `false` | — | report what would change and exit non-zero if anything would, without writing |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow fmt`
@@ -1448,6 +1454,8 @@ flow tasks [name] [flags]
 
 List the tasks available to workflow steps, one line each. Name one to see it in full: every input with what may be written in it, what the task evaluates itself, what it hands back, and a step to copy.
 
+What a plugin provides is listed too, given --plugin-dir: the plugins there are launched and their tasks join the catalog, each marked with the plugin it came from, so this is the whole of what a step could name on a worker configured the same way. Without it this is what this binary alone can run, and `flow plugins` is the other half.
+
 Examples:
 
 ```sh
@@ -1465,12 +1473,22 @@ flow tasks --output json
 
 # One task as a document:
 flow tasks http --output json | jq '.inputs'
+
+# Every task a worker with these plugins could run, built-in and provided:
+flow tasks --plugin-dir ./plugins
+
+# One plugin's task in full, the same page a built-in gets:
+flow tasks example.greet --plugin-dir ./plugins
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--expressions` | `bool` | `false` | — | describe what every expression can say: the CEL functions, the duration constructors, `now` inside a wait, and where a value comes from |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow terminate`
 
@@ -1560,6 +1578,10 @@ flow validate [workflow-file...] [flags]
 
 Check one or more Flowfiles for problems without executing them. Reports unknown tasks, duplicate or unusable step ids, and references to steps that do not exist or have not run yet, with the line each problem is on.
 
+A file naming a plugin's task is checked against that plugin given --plugin-dir: the plugins there are launched here, through the same discovery, handshake and catalog a worker uses, and their tasks and input schemas are then what this command checks against — so a misspelled input to a plugin task is a diagnostic at your terminal rather than a failure at the worker. It launches third-party binaries, which is why it takes this flag rather than looking anywhere by default, and a plugin that will not start fails this command outright: carrying on without it would report every one of its tasks as unknown, which is a false report about the file.
+
+Without --plugin-dir a step naming a plugin task is reported as not registered here, which is what it is: whether a plugin is installed is the deployment's decision and this process has not been told about one.
+
 Examples:
 
 ```sh
@@ -1571,11 +1593,18 @@ flow validate examples/*/workflow.yaml
 
 # Ask for the diagnostics as data, one line per file:
 flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | length > 0)'
+
+# Check a file whose steps name a plugin's tasks, against that plugin:
+flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow version`
 

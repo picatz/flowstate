@@ -55,6 +55,7 @@ func TestMain(m *testing.M) {
 		// server's ~2 minutes of startup cost it exists to avoid.
 		code := m.Run()
 		removeFlowBinary()
+		removeExamplePluginDir()
 		os.Exit(code)
 	}
 
@@ -65,6 +66,7 @@ func TestMain(m *testing.M) {
 	// buildFlowBinary, which compiles the binary once for the whole test binary
 	// and so has no *testing.T whose Cleanup could remove it afterwards.
 	removeFlowBinary()
+	removeExamplePluginDir()
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

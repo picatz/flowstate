@@ -48,6 +48,19 @@ const expressionsFlag = "expressions"
 
 // runTasks implements the tasks command: the index, one task, or the expression
 // reference.
+//
+// Given --plugin-dir it launches those plugins first, so that what this prints is
+// the catalog a worker configured the same way would run rather than this
+// binary's built-ins (#724). Everything below is unchanged by it: the listing,
+// the detail page and the JSON document are all read off [v1.DefaultRegistry],
+// which is exactly the registry the host registers into, so a plugin's task is
+// described here by the same code that describes `http` — down to the example
+// step, built from descriptors the plugin shipped.
+//
+// A plugin that fails to launch fails this command rather than being quietly
+// left out of the listing, which is the same decision [runValidate] makes for
+// the same reason: a catalog missing what somebody asked to see, printed as
+// though it were the whole of it, is a wrong answer rather than a smaller one.
 func runTasks(cmd *cobra.Command, args []string) error {
 	surface := newSurface(cmd)
 
@@ -55,6 +68,13 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	catalog, closePlugins, err := startPlugins(cmd, nil)
+	if err != nil {
+		return fmt.Errorf("--plugin-dir names what this listing is supposed to include, "+
+			"and one of those plugins would not start: %w", err)
+	}
+	defer closePlugins()
 
 	expressions, _ := cmd.Flags().GetBool(expressionsFlag)
 	if expressions && len(args) > 0 {
@@ -90,15 +110,79 @@ func runTasks(cmd *cobra.Command, args []string) error {
 	case expressions:
 		return writeExpressionReference(surface)
 	case len(args) == 0:
-		return writeTaskIndex(surface)
+		return writeTaskIndex(surface, catalog)
 	default:
 		def, err := lookupTaskArg(args[0])
 		if err != nil {
 			return err
 		}
 
-		return writeTask(surface, def)
+		return writeTask(surface, def, catalog)
 	}
+}
+
+// pluginNameOf is the plugin a task name belongs to, and whether it belongs to
+// one at all.
+//
+// The dot is the whole of the rule, and it is the language's rule rather than
+// this command's: `example.greet` is the `greet` task of the plugin discovered as
+// `flowstate-plugin-example`, no built-in name carries a dot, and that is what
+// keeps installing a plugin from ever changing what an existing `http:` step
+// does (see the flowfile package's unknownTaskMessage, which reads a task name
+// the same way to decide whether a missing task is a spelling question or an
+// installation one).
+//
+// Asked of the *name* rather than of the catalog because the catalog is nil
+// whenever nothing was launched, and a task can be in this registry with no
+// catalog beside it: `flow task run --plugin-dir` and the LSP both register into
+// it, and a test registers into it directly.
+func pluginNameOf(task string) (string, bool) {
+	name, _, dotted := strings.Cut(task, ".")
+	if !dotted || name == "" {
+		return "", false
+	}
+
+	return name, true
+}
+
+// writePluginProvenance names the plugins whose tasks are in this listing, and
+// where each came from.
+//
+// Provenance rather than decoration. Every other line this command prints is
+// about what a task does, and none of it answers the question a reviewer asks
+// first about a step naming `example.greet`: whose code is that, and which file
+// on this machine is it. The per-task marker says a task came from a plugin; this
+// says which build of which plugin, from which path, which is the fact that
+// changes when somebody drops a different binary into the directory.
+//
+// Nothing at all when no plugins were launched, which is the overwhelmingly
+// common invocation: a footer explaining the absence of plugins to somebody who
+// did not ask about plugins is noise on every other run of this command.
+func writePluginProvenance(b *strings.Builder, theme ui.Theme, width int, catalog *v1.PluginCatalog) {
+	if len(catalog.GetPlugins()) == 0 {
+		return
+	}
+
+	fmt.Fprintln(b)
+	section(b, theme, "provided by plugins")
+
+	entries := make([]column, 0, len(catalog.GetPlugins()))
+	for _, p := range catalog.GetPlugins() {
+		names := make([]string, 0, len(p.GetTasks()))
+		for _, task := range p.GetTasks() {
+			names = append(names, task.GetName())
+		}
+
+		// The version and the path on the same line as the tasks, because the
+		// three are one fact: this build of this plugin, from this file, added
+		// these names to the catalog above.
+		entries = append(entries, column{
+			name: p.GetName(),
+			text: strings.Join(names, ", ") + " — " + p.GetVersion() + ", " + p.GetPath(),
+		})
+	}
+
+	writeColumns(b, theme, entries, columnWidth(nil, entries), width)
 }
 
 // lookupTaskArg resolves a task name, naming the nearest one when it does not.
@@ -137,7 +221,7 @@ func lookupTaskArg(name string) (v1.TaskDef, error) {
 // Laid out by the help page's own [writeColumns], which wraps a description under
 // itself and gives it its own line where the terminal is too narrow to hold both.
 // A narrow terminal is somebody's real terminal.
-func writeTaskIndex(surface *ui.UI) error {
+func writeTaskIndex(surface *ui.UI, catalog *v1.PluginCatalog) error {
 	var (
 		theme = surface.Theme
 		width = surface.Caps.Width
@@ -158,6 +242,10 @@ func writeTaskIndex(surface *ui.UI) error {
 
 	section(&b, theme, "tasks")
 	writeColumns(&b, theme, entries, columnWidth(nil, entries), width)
+
+	// Which of the names above are not this binary's, said once and in full,
+	// rather than left to be inferred from the dots in them.
+	writePluginProvenance(&b, theme, width, catalog)
 
 	// The footer is where the rest of the page went, so it names both halves. A
 	// reference nobody can find is a reference that has been deleted, and the
@@ -193,11 +281,49 @@ func taskMarkers(def v1.TaskDef) []string {
 	}
 	if !v1.IsBuiltinTask(def.Name) {
 		// Provenance, which is the one thing a reviewer needs to know about a step
-		// before anything else: this one leaves the engine's own code.
-		markers = append(markers, "from a plugin")
+		// before anything else: this one leaves the engine's own code. Named
+		// rather than only flagged, now that a listing can hold several plugins'
+		// tasks at once (#724): "from a plugin" in a list where four of them are
+		// tells a reader that the ones with dots have dots.
+		if plugin, ok := pluginNameOf(def.Name); ok {
+			markers = append(markers, "from the "+plugin+" plugin")
+		} else {
+			markers = append(markers, "from a plugin")
+		}
 	}
 
 	return markers
+}
+
+// taskProvenance is the sentence naming where a task came from, or empty for a
+// built-in.
+//
+// Empty for a built-in deliberately: "provided by this build of flow" on every
+// `flow tasks http` is a line that says nothing, and the absence of the line is
+// itself the answer once the line exists for the tasks that need it.
+//
+// The catalog narrows what can be said rather than deciding whether anything is.
+// A plugin task can be in the registry with no catalog beside it — the LSP
+// registers one, `flow task run` registers one, and a test registers one
+// directly — and in that case the honest sentence names the plugin and stops,
+// rather than omitting the provenance entirely because the version and path
+// happen to be unavailable.
+func taskProvenance(def v1.TaskDef, catalog *v1.PluginCatalog) string {
+	name, ok := pluginNameOf(def.Name)
+	if !ok || v1.IsBuiltinTask(def.Name) {
+		return ""
+	}
+
+	for _, p := range catalog.GetPlugins() {
+		if p.GetName() != name {
+			continue
+		}
+
+		return fmt.Sprintf("Provided by the %s plugin, %s, launched from %s.",
+			name, p.GetVersion(), p.GetPath())
+	}
+
+	return fmt.Sprintf("Provided by the %s plugin, not by this build of flow.", name)
 }
 
 // writeTask describes one task completely.
@@ -205,7 +331,7 @@ func taskMarkers(def v1.TaskDef) []string {
 // The whole story, because the argument asking for it is somebody who already knows
 // which task they want: every input with what may be written in it, what the task
 // evaluates itself and why that matters, what it hands back, and a step to copy.
-func writeTask(surface *ui.UI, def v1.TaskDef) error {
+func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error {
 	var (
 		out   = surface.Out
 		theme = surface.Theme
@@ -218,6 +344,17 @@ func writeTask(surface *ui.UI, def v1.TaskDef) error {
 	if _, err := fmt.Fprintf(out, "%s\n  %s\n\n", theme.Accent.Render(def.Name),
 		wrap(sentence(def.Summary), width-2)); err != nil {
 		return err
+	}
+
+	// Whose code this is, before what it takes. The detail page is what somebody
+	// reads while deciding to write this step, and for a task that is not this
+	// binary's the first thing worth knowing is which plugin, which build, and
+	// which file — the same three facts the index's provenance section carries,
+	// narrowed to the one task that was asked about.
+	if line := taskProvenance(def, catalog); line != "" {
+		if _, err := fmt.Fprintf(out, "%s\n\n", theme.Muted.Render(wrap(line, width))); err != nil {
+			return err
+		}
 	}
 
 	if err := writeFields(out, theme, width, []fieldGroup{

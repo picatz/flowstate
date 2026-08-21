@@ -418,7 +418,7 @@ func TestTasksIndexFitsANarrowTerminal(t *testing.T) {
 		name string
 		draw func(*ui.UI) error
 	}{
-		{"index", writeTaskIndex},
+		{"index", func(surface *ui.UI) error { return writeTaskIndex(surface, nil) }},
 		{"expressions", writeExpressionReference},
 	} {
 		t.Run(surface.name, func(t *testing.T) {
@@ -437,7 +437,7 @@ func TestTasksIndexFitsANarrowTerminal(t *testing.T) {
 			t.Parallel()
 
 			rendered := renderTasksAt(t, width, func(surface *ui.UI) error {
-				return writeTask(surface, def)
+				return writeTask(surface, def, nil)
 			})
 			widest, worst := widestLine(rendered)
 
@@ -473,7 +473,7 @@ func TestTaskViewCarriesEveryDeclaredInputAndItsBounds(t *testing.T) {
 			t.Parallel()
 
 			rendered := collapse(stripANSI(renderTasksAt(t, width, func(surface *ui.UI) error {
-				return writeTask(surface, def)
+				return writeTask(surface, def, nil)
 			})))
 
 			for _, field := range v1.Inputs(def) {
@@ -517,7 +517,7 @@ func TestHTTPBoundsReachTheView(t *testing.T) {
 	require.True(t, found, "this build has no http task")
 
 	rendered := collapse(stripANSI(renderTasksAt(t, 200, func(surface *ui.UI) error {
-		return writeTask(surface, def)
+		return writeTask(surface, def, nil)
 	})))
 
 	assert.Contains(t, rendered, "3 to 6 characters", "the method input's length bounds are not shown")
@@ -532,7 +532,7 @@ func TestHTTPBoundsReachTheView(t *testing.T) {
 func TestTasksIndexIsOneLinePerTask(t *testing.T) {
 	t.Parallel()
 
-	rendered := stripANSI(renderTasksAt(t, 100, writeTaskIndex))
+	rendered := stripANSI(renderTasksAt(t, 100, func(surface *ui.UI) error { return writeTaskIndex(surface, nil) }))
 
 	for _, def := range v1.DefaultRegistry().All() {
 		var found int

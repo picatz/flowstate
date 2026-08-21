@@ -91,6 +91,34 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 		absolute = append(absolute, abs)
 	}
 
+	// A pin with nowhere to look is refused here, not silently ignored.
+	//
+	// --plugin is the one plugin flag that makes a *promise*: its own help says a
+	// name with no binary behind it is an error rather than a silent omission,
+	// because a deployment that pinned a set expects that set. That promise is
+	// kept inside the host — which never runs when there is no search path, since
+	// [pluginFlags.configured] is a question about directories and
+	// [startPlugins] returns early on it. So `--plugin example` with no
+	// --plugin-dir and no $FLOWSTATE_PLUGIN_DIR launched nothing and said nothing:
+	// the exact "silently half-configured" state every other refusal on this path
+	// exists to prevent, and on `flow fix` a rewrite of a plugin's steps as though
+	// they were ordinary ones (#835 review).
+	//
+	// A usage error, because it is one: nothing ran, and the command line asked
+	// for two things that do not fit together.
+	//
+	// Deliberately only --plugin. --plugin-scheme and --allow-insecure-plugin-dir
+	// narrow or widen what a search path may do, so with no search path they
+	// restrict an empty set, which is vacuous rather than unmet. --plugin names
+	// something that must come up.
+	if len(absolute) == 0 && len(only) > 0 {
+		return pluginFlags{}, newUsageError(fmt.Errorf(
+			"--plugin %s names a plugin that must launch, and there is nowhere to look for it: "+
+				"pass --plugin-dir <directory> as well, or set $%s. A pinned plugin is never "+
+				"quietly skipped",
+			strings.Join(only, ", "), pluginSearchPathEnv))
+	}
+
 	return pluginFlags{
 		dirs:              absolute,
 		only:              only,
@@ -121,6 +149,12 @@ func splitSearchPath(value string) []string {
 // Worth a method rather than a length check at each call site: no search path is
 // the overwhelmingly common case, and it must cost nothing — a host opened over
 // no directories would launch nothing and still be a lifecycle to get wrong.
+//
+// It is a question about directories only, and that is safe *because*
+// [pluginFlagsOf] refuses a --plugin pin with no search path before ever
+// building one of these. Without that refusal this method answers "nothing was
+// asked for" to a command line that named a plugin, which is how a pin came to
+// be silently skipped.
 func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
 // host builds a host for these flags. The caller owns closing it.
