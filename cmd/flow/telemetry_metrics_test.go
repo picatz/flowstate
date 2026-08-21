@@ -302,8 +302,12 @@ func TestZeroConfigExportsNoMetrics(t *testing.T) {
 	require.Nil(t, handler, "a nil handler is what leaves the Temporal SDK on its no-op default")
 
 	// Recorded through the global, which is where anything else in the process
-	// that wants a meter looks.
-	otel.GetMeterProvider().Meter("test").Int64Counter("flowstate.test.counter")
+	// that wants a meter looks. Recorded rather than merely created: an
+	// instrument nobody adds to would export nothing from a working pipeline
+	// either, and this test would then be asserting nothing at all.
+	counter, err := otel.GetMeterProvider().Meter("test").Int64Counter("flowstate.test.counter")
+	require.NoError(t, err)
+	counter.Add(t.Context(), 1)
 
 	require.IsType(t, noopMetric.MeterProvider{}, otel.GetMeterProvider(),
 		"an exporter was built for a binary nobody configured")
