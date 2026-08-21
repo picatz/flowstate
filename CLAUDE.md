@@ -110,12 +110,27 @@ which is coverage that silently vanishes rather than coverage that is
 visibly missing. `covbuild.Env()` threads the real destination through every
 subprocess's `Cmd.Env` explicitly instead.
 
-Known gaps, tracked as follow-ups rather than landed here: `plugins/*`
-(`git`, `github`, `sql`, `vcs`, `codex`) are separate Go modules outside this
-module's build graph, so nothing from them merges into `.coverage/`; and
-`make coverage` is not wired into CI (`ci.yml` or `deep.yml`) — running it is
-a local, on-demand read, not an automated one, on the same "leave CI wiring
-as a named follow-up" reasoning that keeps `make check` itself the full local
+The plugin modules are in that report too, by way of `make coverage-plugins`,
+which `make coverage` invokes (#761). `plugins/*` (`git`, `github`, `sql`,
+`vcs`, `codex`) are separate Go modules outside this module's build graph, so
+`go test ./...` never reaches them and there used to be nothing from them to
+merge — the worst of the blind spots, since a plugin's end-to-end test runs it
+as a real subprocess. It is not a second mechanism: each module's tests run
+with the same `-cover ... -args -test.gocoverdir=` shape into the same
+`.coverage/raw` the root run used, and `covdata` unions counters keyed by
+import path, so several modules' meta files in one directory merge exactly as
+one module's do. `FLOWSTATE_COVERDIR` is exported into each module as well,
+which is what makes `plugins/*/reachable` build the plugin binary it launches
+with `-cover` and name a `GOCOVERDIR` the merge reads back. Run `make
+coverage-plugins` on its own to refresh just that half; `COVERAGE_RAW` names
+the destination, and it has to be absolute because the target `cd`s into each
+module — a relative one would scatter counters into five directories nothing
+merges.
+
+The remaining gap, tracked as a follow-up rather than landed here: `make
+coverage` is not wired into CI (`ci.yml` or `deep.yml`) — running it is a
+local, on-demand read, not an automated one, on the same "leave CI wiring as
+a named follow-up" reasoning that keeps `make check` itself the full local
 rehearsal rather than something CI second-guesses.
 
 ## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
