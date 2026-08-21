@@ -68,9 +68,9 @@ func sumOf(t *testing.T, m metricdata.Metrics) metricdata.DataPoint[int64] {
 // the plugin's own attempt count reads three.
 //
 // The plugin name on the data point is the other half. This counter carried no
-// attributes at all until this test's commit, which made a restart rate summed
-// over every plugin a deployment runs: a number that says something is flapping
-// and refuses to say what.
+// attributes at all until the commit before this one, which made it a restart
+// rate summed over every plugin a deployment runs: a number that says something
+// is flapping and refuses to say what.
 func TestRestartsAreCountedPerPluginUpToTheBudgetAndNoFurther(t *testing.T) {
 	// Deliberately not parallel. This is the only test in the package that
 	// holds a plugin in a relaunch loop, so it spends several seconds
