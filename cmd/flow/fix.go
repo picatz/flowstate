@@ -67,7 +67,14 @@ func newFixCommand() *cobra.Command {
 			"nobody is handed half a migration.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
 			"instead of scrapes: what changed or would change, and what was refused, per file. CI " +
-			"that wants structured data rather than stderr text asks for one of those.",
+			"that wants structured data rather than stderr text asks for one of those.\n\n" +
+			"--plugin-dir launches the plugins there first, and a file whose steps name a " +
+			"plugin's tasks wants it: what this rewriter may do to a step depends on what the " +
+			"task declares — which of its inputs it evaluates itself, and whether it shapes its " +
+			"own outputs — and for a plugin's task those facts arrive with the plugin. Without " +
+			"it a plugin task is rewritten as an ordinary one, which is right for most of them " +
+			"and a guess for the rest. A plugin that will not start fails the command before " +
+			"any file is touched.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		// A file that needs fixing is not a command someone invoked wrongly, and
@@ -101,6 +108,20 @@ flow fix --stdout old.yaml > new.yaml`,
 	// mean on `validate`: the fields are the schema's and addressable by name.
 	addOutputFlag(cmd)
 
+	// And the same plugin flags `validate` takes (#710), for a reason particular
+	// to a rewriter rather than for symmetry. CLAUDE.md's own account of the two
+	// times `flow fix` corrupted a valid file is that "the rewriter knew less
+	// about scope than the language does" — and the walk in
+	// flowfile/fix.go:StepTaskKeys and its caller branch on [v1.LookupTask]: a
+	// task that shapes its own outputs has its `outputs:` kept as a map, and a
+	// task's deferred inputs are left for the task to evaluate rather than being
+	// treated as ordinary references. For a plugin's task those two facts arrive
+	// with the plugin and are unavailable without it.
+	//
+	// Opt-in, as everywhere else, and the default is unchanged: with no
+	// --plugin-dir a plugin task is rewritten the way it is today.
+	addPluginFlags(cmd)
+
 	return cmd
 }
 
@@ -128,6 +149,16 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 		// report — and only one document belongs on a stream a pipe reads.
 		return newUsageError(fmt.Errorf("--stdout and --output %s both want stdout: one is the rewritten document, the other the report", format))
 	}
+
+	// Before a single file is read, let alone written: a rewriter that had
+	// already changed half a directory when its plugin failed to come up would
+	// have rewritten those files against a task set the author did not ask for.
+	_, closePlugins, err := startPlugins(cmd, nil)
+	if err != nil {
+		return fmt.Errorf("--plugin-dir names what these files are rewritten against, "+
+			"and one of those plugins would not start, so nothing was written: %w", err)
+	}
+	defer closePlugins()
 
 	files, err := collectFlowfiles(paths)
 	if err != nil {

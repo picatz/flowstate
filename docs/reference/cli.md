@@ -196,6 +196,8 @@ Shapes that cannot be rewritten without guessing (a task written in flow style, 
 
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, and what was refused, per file. CI that wants structured data rather than stderr text asks for one of those.
 
+--plugin-dir launches the plugins there first, and a file whose steps name a plugin's tasks wants it: what this rewriter may do to a step depends on what the task declares — which of its inputs it evaluates itself, and whether it shapes its own outputs — and for a plugin's task those facts arrive with the plugin. Without it a plugin task is rewritten as an ordinary one, which is right for most of them and a guess for the rest. A plugin that will not start fails the command before any file is touched.
+
 Examples:
 
 ```sh
@@ -217,8 +219,12 @@ flow fix --stdout old.yaml > new.yaml
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--check` | `bool` | `false` | — | report what would change and exit non-zero if anything would, without writing |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow fmt`

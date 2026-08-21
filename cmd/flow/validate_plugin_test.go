@@ -38,14 +38,18 @@ func runFlowCapturing(t *testing.T, bin string, args ...string) (output string, 
 	return string(out), err
 }
 
-// TestValidateAndTasksTakeThePluginFlags is the flag half, mirroring
+// TestTheAuthoringVerbsTakeThePluginFlags is the flag half, mirroring
 // [TestTheMCPServerTakesThePluginFlags] and [TestRunLocalTakesThePluginFlags]:
-// these were the last two commands in the tree that read a task name without
+// these were the last commands in the tree that read a task definition without
 // them.
-func TestValidateAndTasksTakeThePluginFlags(t *testing.T) {
+//
+// `fix` is in the list for a reason of its own rather than for symmetry — see
+// [newFixCommand], where the walk's own branches on a task's declared
+// capabilities are what a plugin's task cannot answer unless the plugin is up.
+func TestTheAuthoringVerbsTakeThePluginFlags(t *testing.T) {
 	t.Parallel()
 
-	for _, verb := range []string{"validate", "tasks"} {
+	for _, verb := range []string{"validate", "tasks", "fix"} {
 		t.Run(verb, func(t *testing.T) {
 			t.Parallel()
 
@@ -156,6 +160,37 @@ func TestValidateReportsAPluginThatWillNotStart(t *testing.T) {
 		"the failure does not name the plugin that would not start:\n%s", output)
 	assert.NotContains(t, output, "no plugin task",
 		"a plugin that failed to launch was reported as the file's tasks being unknown:\n%s", output)
+}
+
+// TestFixWritesNothingWhenAPluginWillNotStart is the same decision on the one
+// verb that changes files, where getting it wrong costs more than a wrong
+// message: a rewriter that had already converted half a directory when its
+// plugin failed to come up would have rewritten those files against a task set
+// the author did not ask for. So the launch happens before a file is read, and
+// the bytes on disk are what this asserts — the standard every other `flow fix`
+// test in this package holds it to.
+func TestFixWritesNothingWhenAPluginWillNotStart(t *testing.T) {
+	bin := buildFlowBinary(t)
+
+	plugins := t.TempDir()
+	broken := filepath.Join(plugins, plugin.BinaryPrefix+"broken")
+	require.NoError(t, os.WriteFile(broken, []byte("#!/bin/sh\nexit 1\n"), 0o700))
+
+	// A file `flow fix` has real work to do on, so "unchanged" is a claim about
+	// the rewriter having been stopped rather than about there being nothing to
+	// write.
+	path := filepath.Join(t.TempDir(), "old.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(oldStyleGreeter), 0o600))
+
+	output, err := runFlowCapturing(t, bin, "fix", "--plugin-dir", plugins, path)
+	require.Error(t, err, "a plugin that would not start did not stop the rewrite:\n%s", output)
+	assert.Contains(t, output, "broken",
+		"the failure does not name the plugin that would not start:\n%s", output)
+
+	after, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	assert.Equal(t, oldStyleGreeter, string(after),
+		"a file was rewritten by a run that could not bring its plugins up")
 }
 
 // TestTasksListsWhatAPluginProvidesWithProvenance is #724's other half. The
