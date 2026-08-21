@@ -423,10 +423,19 @@ func TestCheckACMECacheDirResolvesTheWorkingDirectoryTheKernelResolvesFrom(t *te
 	require.NoError(t, os.Chmod(release, 0o777))
 	t.Cleanup(func() { _ = os.Chmod(release, 0o700) })
 
+	// Named as the walk itself would name it. The refusal quotes the component
+	// it reached by resolving physically, and `release` is built from
+	// [testing.T.TempDir], which on macOS sits under `/var` — itself a link to
+	// `/private/var`. Comparing the two strings directly asserts that this
+	// walk did *not* resolve the path, on exactly the platform the resolution
+	// matters most on.
+	physicalRelease, err := filepath.EvalSymlinks(release)
+	require.NoError(t, err)
+
 	err = checkACMECacheDir("../cache")
 	require.Error(t, err, "a world-writable directory the kernel resolves `..` onto was accepted")
 	require.Contains(t, err.Error(), "writable by another identity")
-	require.Contains(t, err.Error(), release)
+	require.Contains(t, err.Error(), physicalRelease)
 	require.Contains(t, err.Error(), "is relative")
 
 	// And what the walk does when it is *not* given the physical path, so the
