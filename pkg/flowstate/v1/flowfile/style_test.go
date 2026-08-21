@@ -47,6 +47,16 @@ var skillRuleMention = regexp.MustCompile(`\bR([0-9]+)\.`)
 // negativeExample is how the charter marks an example that must not be copied.
 const negativeExample = "# Not this"
 
+// fencedYAML matches the contents of every ```yaml block, which is where an
+// example lives and prose about examples does not.
+//
+// Looking for the marker anywhere in the document instead is the failure this
+// test exists to catch, wearing the test's own clothes: the conventions section
+// names `# Not this:` in a sentence, so a search over the whole file stays green
+// after every negative example has been deleted. Codex found that on #849, and it
+// is the "green by not running" shape CLAUDE.md legislates against.
+var fencedYAML = regexp.MustCompile("(?s)```yaml\n(.*?)```")
+
 // TestStyleGuideShowsBothKinds holds up the convention the compile harness
 // depends on: positive examples are whole Flowfiles, negative ones are fragments.
 //
@@ -71,9 +81,17 @@ func TestStyleGuideShowsBothKinds(t *testing.T) {
 				"or the compile harness will present it as something to copy", i+1, negativeExample)
 	}
 
-	assert.Contains(t, source, negativeExample,
-		"docs/STYLE.md shows nothing marked %q; the charter teaches by \"do not write this, write that\", "+
-			"and half of that is missing", negativeExample)
+	var negatives int
+	for _, block := range fencedYAML.FindAllStringSubmatch(source, -1) {
+		if strings.Contains(block[1], negativeExample) {
+			negatives++
+		}
+	}
+	assert.NotZero(t, negatives,
+		"no fenced yaml block in docs/STYLE.md is marked %q; the charter teaches by \"do not write this, "+
+			"write that\", and half of that is missing. Prose naming the marker does not count: the "+
+			"conventions section names it, so a search over the whole document would pass with every "+
+			"negative example deleted", negativeExample)
 }
 
 // TestStyleSkillIndexMatchesTheCharter is the pin between the two artifacts.

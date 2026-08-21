@@ -526,7 +526,10 @@ can drift.
   outright, and a checker that could not tell the halves apart would either reject
   this document or teach nothing.
 - `TestStyleGuideShowsBothKinds` guards both halves, so a document that lost its
-  examples cannot pass by having nothing to check.
+  examples cannot pass by having nothing to check. It looks for the marker inside a
+  fenced block rather than anywhere in the file, because this very paragraph names
+  the marker in prose, and a search over the whole document would stay green with
+  every negative example deleted.
 
 Byte-level canonicity is deliberately *not* asserted over these snippets, for the
 reason measured in Part III: `flow fmt` currently rewrites or refuses every shown
