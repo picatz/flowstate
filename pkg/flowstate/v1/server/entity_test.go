@@ -340,14 +340,15 @@ func entityWorkflowCarryingVar(name string, value *v1.Value) *v1.Workflow {
 //
 // Of the two documented state bounds, only [engine.entityStateMaxBytes]
 // (256 KiB) is reachable end-to-end. [engine.entityStateMaxLoopEntries] (64)
-// counts *concurrently active* loops, and the only shape that runs more than
-// one loop at once is a `parallel:` block — whose branches the engine runs with
-// a nil `progress` (execute.go's runParallel: "no one branch is the run's
-// position"), so a loop inside a branch records no loop state at all. A
-// sequential top-level loop that parks at a `wait_for_signal:` blocks every
-// later step, so at most one top-level loop is ever active. The count bound is
-// therefore real and unit-tested but has no end-to-end path today; the byte
-// bound does, so it is the one driven here.
+// counts *concurrently active* loops, and a run can have several of those —
+// a `loop:` whose body calls a workflow that itself loops, stacked to
+// [v1.MaxCallDepth] — but not sixty-four of them: that nesting is the whole
+// of what carries progress, so the ceiling is v1.MaxCallDepth + 1. The
+// engine's own loop_state_reach_internal_test.go drives that ceiling; the
+// count bound sits well above it and has no end-to-end path, while the byte
+// bound does, so the byte bound is the one driven here. (This paragraph used
+// to say at most one loop is ever active at a time, on reasoning that missed
+// `call:` — see [engine.entityStateMaxLoopEntries]'s comment and #289.)
 //
 // # How the bound is driven, and to both sides
 //
