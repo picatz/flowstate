@@ -15,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -86,14 +89,24 @@ type instance struct {
 // yields a usable instance or leaves nothing behind, because the failure paths
 // here are the ones that leak child processes.
 func launch(procCtx context.Context, cfg Config, found Found, image *execImage) (inst *instance, err error) {
-	procCtx, _, finish := newTelemetry(cfg).start(procCtx, "launch", found.Name, "")
+	tel := newTelemetry(cfg)
+	procCtx, _, finish := tel.start(procCtx, "launch", found.Name, "")
 	defer func() {
 		finish(err)
-		if err != nil {
-			newTelemetry(cfg).launchFailures.Add(procCtx, 1)
+		if err == nil {
+			return
 		}
+		// Named, like every other instrument in this package. A deployment runs
+		// several plugins, so "something failed to launch" with no plugin name
+		// is a number an operator cannot act on: it says a launch failed and
+		// refuses to say whose. The name is [metricschema.ClassConfiguration]
+		// — bounded by which plugins the deployment installs — and is already
+		// the label on the calls counter and the health counter beside this
+		// one, so this is the schema's existing key rather than a new one.
+		named := metricschema.WithAttributes(attribute.String(metricschema.PluginName, found.Name))
+		tel.launchFailures.Add(procCtx, 1, named)
 		if errors.Is(err, ErrHandshake) || errors.Is(err, ErrHandshakeTimeout) {
-			newTelemetry(cfg).protocolErrors.Add(procCtx, 1)
+			tel.protocolErrors.Add(procCtx, 1, named)
 		}
 	}()
 	log := cfg.logger().With("plugin", found.Name)

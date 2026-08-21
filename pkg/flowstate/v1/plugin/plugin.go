@@ -736,7 +736,14 @@ func (p *Plugin) restart() bool {
 	// Counted here, after the budget said yes and the backoff was not cancelled
 	// by shutdown, so the metric reports relaunches actually attempted rather
 	// than intentions: a plugin with MaxRestarts zero records none.
-	p.telemetry.restarts.Add(p.procCtx, 1)
+	//
+	// Labelled with the plugin's name for the same reason the calls and health
+	// counters are: a restart rate summed over every plugin a deployment runs
+	// cannot answer the only question anyone asks of it, which is *which* one
+	// is flapping.
+	p.telemetry.restarts.Add(p.procCtx, 1, metricschema.WithAttributes(
+		attribute.String(metricschema.PluginName, p.name),
+	))
 
 	inst, manifest, distribution, err := p.start()
 	if err != nil {
