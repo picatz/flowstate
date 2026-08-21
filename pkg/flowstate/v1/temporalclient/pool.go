@@ -2,11 +2,28 @@ package temporalclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 )
+
+// describeNamespaceTimeout bounds NewPool's per-namespace existence check.
+//
+// The mapping names namespaces, not machines this process controls, so a check
+// against one of them shares the fate of any other network call to a peer it does
+// not run: it has to be bounded, or a slow or wedged cluster hangs `flow server`
+// startup indefinitely waiting on an answer that may never come. Ten seconds is
+// generous for a single unary RPC and small next to the minutes a dev server
+// itself can take to boot in these tests.
+const describeNamespaceTimeout = 10 * time.Second
 
 // NamespaceMapper reports which Temporal namespace a Flowstate namespace's runs
 // execute in.
@@ -26,6 +43,14 @@ type NamespaceMapper interface {
 
 	// TemporalNamespaces returns every Temporal namespace the mapping can select.
 	TemporalNamespaces() []string
+
+	// FlowstateNamespaces returns the Flowstate namespaces this mapping routes to
+	// the given Temporal namespace, so a diagnostic about a broken Temporal
+	// namespace can also name who it affects. The empty string denotes the
+	// default tenant. Order is unspecified and may be empty even when the
+	// Temporal namespace is one [TemporalNamespaces] returned, if the mapper
+	// cannot answer the reverse question.
+	FlowstateNamespaces(temporalNamespace string) []string
 }
 
 // Pool holds one Temporal client per namespace a deployment can route to.
@@ -38,7 +63,11 @@ type NamespaceMapper interface {
 // every run. Every namespace a deployment can reach is therefore dialed once at
 // startup, which also means a namespace that is unreachable or misconfigured is
 // discovered when the server starts rather than by whichever tenant happens to
-// submit first.
+// submit first. "Misconfigured" includes a namespace nobody registered: dialing
+// only proves the cluster answers — the SDK's eager check is a cluster-scoped RPC
+// with no namespace argument — so NewPool additionally asks the cluster to
+// describe each mapped namespace and fails construction on one it does not have,
+// rather than leaving that discovery for a tenant's first submit.
 //
 // # The zero-configuration path
 //
@@ -62,11 +91,20 @@ type Pool struct {
 }
 
 // NewPool dials a client for every namespace the mapper can select, plus the one the
-// process was configured with.
+// process was configured with, and verifies each mapped namespace actually exists.
 //
 // A nil mapper, or one that maps nothing, yields a pool holding only the configured
-// client — the zero-configuration path.
-func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper) (*Pool, error) {
+// client — the zero-configuration path, which issues no existence check either.
+//
+// logger receives one warning per mapped namespace NewPool could dial but not
+// describe (a locked-down client identity, a transient error) — see the existence
+// check below for why that warns rather than fails. A nil logger uses
+// [slog.Default].
+func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper, logger *slog.Logger) (*Pool, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	fallback, err := Dial(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -82,6 +120,9 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper) (*Pool, er
 		return pool, nil
 	}
 
+	// TemporalNamespaces is already the deduplicated set a connection layer dials
+	// (see its doc), so this loop already checks each distinct namespace once
+	// however many tenants share it.
 	for _, namespace := range mapper.TemporalNamespaces() {
 		// Same configuration, different namespace: address and credentials come
 		// from the environment exactly as they do for the fallback, so a mapping
@@ -97,9 +138,70 @@ func NewPool(ctx context.Context, cfg Config, mapper NamespaceMapper) (*Pool, er
 			return nil, fmt.Errorf("dialing Temporal namespace %q for tenancy mapping: %w", namespace, err)
 		}
 		pool.byNamespace[namespace] = cl
+
+		if err := verifyNamespaceExists(ctx, cl, namespace); err != nil {
+			var notFound *serviceerror.NamespaceNotFound
+			if errors.As(err, &notFound) {
+				pool.Close()
+				return nil, fmt.Errorf(
+					"the tenancy mapping routes tenant(s) %s to Temporal namespace %q, which this cluster "+
+						"does not have; register the namespace or fix the mapping: %w",
+					formatTenants(mapper.FlowstateNamespaces(namespace)), namespace, err)
+			}
+
+			// Reachable but not describable — a client identity locked down below
+			// operator privileges, or a transient error. The
+			// EnsureSearchAttributesRegistered posture: degrade to a loud warning
+			// and keep the client, rather than bricking a deployment whose identity
+			// may legitimately describe nothing. A typo would still be caught here
+			// on any deployment where the identity can read namespace metadata,
+			// which is the common case; this is the fallback for the one that can't.
+			logger.Warn("could not verify a mapped Temporal namespace exists; continuing, but a "+
+				"nonexistent namespace here will only be discovered at the first tenant to submit",
+				"namespace", namespace, "error", err)
+		}
 	}
 
 	return pool, nil
+}
+
+// verifyNamespaceExists asks the cluster cl is dialed to whether namespace is
+// registered.
+//
+// A cluster-scoped RPC succeeding (which is all [Dial] proves) says nothing about
+// any particular namespace: [client.Client.WorkflowService]'s DescribeNamespace is
+// the namespace-scoped ask, bounded by [describeNamespaceTimeout] so a slow or
+// wedged cluster cannot hang pool construction.
+func verifyNamespaceExists(ctx context.Context, cl client.Client, namespace string) error {
+	ctx, cancel := context.WithTimeout(ctx, describeNamespaceTimeout)
+	defer cancel()
+
+	_, err := cl.WorkflowService().DescribeNamespace(ctx, &workflowservice.DescribeNamespaceRequest{
+		Namespace: namespace,
+	})
+	return err
+}
+
+// formatTenants renders the Flowstate namespaces a broken Temporal namespace
+// affects, for an error message an operator reads once and has to act on.
+//
+// Empty means the mapper could not answer which tenants route there — reported
+// rather than silently omitted, because a diagnostic that goes quiet on one input
+// is a diagnostic nobody can trust on the others.
+func formatTenants(tenants []string) string {
+	if len(tenants) == 0 {
+		return "(unknown; the mapper could not report which tenant this namespace belongs to)"
+	}
+
+	parts := make([]string, len(tenants))
+	for i, tenant := range tenants {
+		if tenant == "" {
+			parts[i] = "(default)"
+			continue
+		}
+		parts[i] = strconv.Quote(tenant)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // For returns the client a run belonging to the given Flowstate namespace should use.

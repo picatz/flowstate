@@ -148,7 +148,7 @@ func pooledWebhookServer(t *testing.T, routed ...string) (*server.FlowstateServe
 	pool, err := temporalclient.NewPool(t.Context(), temporalclient.Config{
 		Address:   devServer.FrontendHostPort(),
 		Namespace: namespace,
-	}, mapper{mapping: mapping})
+	}, mapper{mapping: mapping}, nil)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
