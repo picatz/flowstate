@@ -55,6 +55,19 @@ var ErrCatalogOnly = errors.New("plugin: task was loaded from a catalog and cann
 // is safe to guess at.
 var ErrCatalogClaims = errors.New("plugin: catalog claims schema version is not this build's")
 
+// ErrCatalogTooLarge reports that a catalog is over one of the bounds on the
+// document as a whole — how many plugins it names, how many tasks across all of
+// them, or how many descriptor bytes it carries in total.
+//
+// Distinct from the per-descriptor refusal ([ErrDescriptor]) because it is a
+// different attack and a different answer: that one means "this descriptor is
+// too big to parse", and this one means "each of these is small enough and
+// there are far too many of them". An operator whose honest catalog hits one of
+// these raises the matching Config bound; an operator seeing it on a document
+// they did not produce has been handed a decompression bomb's cousin. Both need
+// to know which bound, so every message names the field (#854 review).
+var ErrCatalogTooLarge = errors.New("plugin: catalog is over a bound on the whole document")
+
 // TaskDefsFromCatalog rebuilds every task in a plugin catalog, with no plugin
 // process launched.
 //
@@ -64,9 +77,14 @@ var ErrCatalogClaims = errors.New("plugin: catalog claims schema version is not 
 // catalog would report an unknown task for a name the catalog was carrying, and
 // a diagnostic drawn from a document this failed to read is a false one.
 //
-// cfg bounds the descriptors exactly as launching a plugin does — the document
-// is untrusted input, and a catalog naming a hundred-megabyte descriptor is the
-// same attack as a plugin sending one. A zero Config takes the defaults.
+// cfg bounds the document, and bounds two different resources with it. Each
+// descriptor is bounded exactly as launching a plugin bounds one, by
+// MaxDescriptorBytes and MaxDescriptorFiles — a catalog naming a
+// hundred-megabyte descriptor is the same attack as a plugin sending one. The
+// catalog as a whole is bounded by MaxCatalogPlugins, MaxCatalogTasks and
+// MaxCatalogDescriptorBytes, because a bound on the size of one item is not a
+// bound on how many items arrive, and the peer chooses how many (#854 review).
+// A zero Config takes the defaults.
 func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flowstatev1.TaskDef, error) {
 	if catalog.GetClaimsSchemaVersion() != flowstatev1.CurrentClaimsSchemaVersion {
 		return nil, fmt.Errorf(
@@ -77,7 +95,12 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 
 	cfg = cfg.withDefaults()
 
-	var defs []flowstatev1.TaskDef
+	total, err := boundCatalog(catalog, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	defs := make([]flowstatev1.TaskDef, 0, total)
 	for _, described := range catalog.GetPlugins() {
 		for _, task := range described.GetTasks() {
 			def, err := TaskDefFromDescription(task, cfg)
@@ -89,6 +112,56 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 	}
 
 	return defs, nil
+}
+
+// boundCatalog refuses a catalog that is over one of the whole-document bounds,
+// and returns how many tasks it holds so the caller can size its result once.
+//
+// A pre-pass rather than a running total inside the rebuild loop, because the
+// point is to refuse *before* doing the expensive thing: counting walks a
+// message that is already decoded, while rebuilding parses, links and retains a
+// type registry per task. A bound that only stops the work halfway through has
+// already paid for half of it.
+//
+// Three bounds because the peer controls three resources independently, and any
+// two of them leave the third open: ten plugins declaring a hundred thousand
+// tasks between them, a hundred thousand plugins declaring one task each, and a
+// thousand tasks whose descriptors are each comfortably inside
+// MaxDescriptorBytes and sum to gigabytes. This is CLAUDE.md's "ask which
+// resource the attacker controls, then bound that resource", applied to a
+// document whose author is not this process (#854 review).
+func boundCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) (int, error) {
+	plugins := catalog.GetPlugins()
+	if len(plugins) > cfg.MaxCatalogPlugins {
+		return 0, fmt.Errorf(
+			"%w: the catalog names %d plugins, over the %d this reader will rebuild "+
+				"(Config.MaxCatalogPlugins)",
+			ErrCatalogTooLarge, len(plugins), cfg.MaxCatalogPlugins)
+	}
+
+	var tasks, descriptorBytes int
+	for _, described := range plugins {
+		tasks += len(described.GetTasks())
+		if tasks > cfg.MaxCatalogTasks {
+			return 0, fmt.Errorf(
+				"%w: the catalog names more than %d tasks across its plugins, which is all "+
+					"this reader will rebuild (Config.MaxCatalogTasks)",
+				ErrCatalogTooLarge, cfg.MaxCatalogTasks)
+		}
+
+		for _, task := range described.GetTasks() {
+			descriptorBytes += len(task.GetInputDescriptor()) + len(task.GetOutputDescriptor())
+			if descriptorBytes > cfg.MaxCatalogDescriptorBytes {
+				return 0, fmt.Errorf(
+					"%w: the catalog carries more than %d bytes of task descriptors in total, "+
+						"which is all this reader will parse (Config.MaxCatalogDescriptorBytes); "+
+						"each descriptor is inside Config.MaxDescriptorBytes and there are too many of them",
+					ErrCatalogTooLarge, cfg.MaxCatalogDescriptorBytes)
+			}
+		}
+	}
+
+	return tasks, nil
 }
 
 // TaskDefFromDescription rebuilds one task from its catalog description.

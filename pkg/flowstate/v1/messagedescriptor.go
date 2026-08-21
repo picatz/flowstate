@@ -96,7 +96,29 @@ func MessageDescriptorBytes(md protoreflect.MessageDescriptor, alsoProvided ...p
 		return nil, fullName, nil
 	}
 
-	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(set)
+	// One file goes back as a bare FileDescriptorProto rather than as a
+	// FileDescriptorSet holding one, which is the second of the two shapes the
+	// reconstruction side accepts and the shape a plugin shipping a single file
+	// sends.
+	//
+	// Not a preference about spelling: the set's field tag and length prefix
+	// make the same descriptor two bytes larger, and those bytes are measured
+	// against the same MaxDescriptorBytes on both sides. A plugin whose raw
+	// FileDescriptorProto was accepted at launch with the bound set to exactly
+	// its encoded length would then have its own descriptor refused as a
+	// catalog entry — a round trip the framing broke rather than the descriptor
+	// (#854 review). Re-serializing a linked file is otherwise byte-stable, so
+	// dropping the wrapper is what makes the bound mean the same thing in both
+	// directions.
+	var (
+		raw []byte
+		err error
+	)
+	if len(set.File) == 1 {
+		raw, err = (proto.MarshalOptions{Deterministic: true}).Marshal(set.File[0])
+	} else {
+		raw, err = (proto.MarshalOptions{Deterministic: true}).Marshal(set)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("serializing the descriptor of %s: %w", fullName, err)
 	}

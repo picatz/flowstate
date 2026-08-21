@@ -384,6 +384,143 @@ func TestARealHostsCatalogRebuildsEveryTaskItRegistered(t *testing.T) {
 	}
 }
 
+// TestASingleFileDescriptorRoundTripsAtExactlyTheBound is the boundary the
+// framing used to move.
+//
+// A plugin may ship the raw FileDescriptorProto form, and the host accepts it
+// when its encoded length is within MaxDescriptorBytes — including when the
+// bound is exactly that length. Describing the launched task used to wrap the
+// same file in a FileDescriptorSet, whose tag and length prefix made the
+// catalog's copy two bytes longer than the descriptor the host had just
+// accepted, so rebuilding it under the identical Config refused a task that
+// launched fine. The bound was refusing its own output (#854 review).
+//
+// At exactly the limit, because that is the only place the two bytes are
+// visible: with any slack at all the old behaviour passes.
+func TestASingleFileDescriptorRoundTripsAtExactlyTheBound(t *testing.T) {
+	t.Parallel()
+
+	// The bare form, which is what the manifest carries and what the bound is
+	// measured against on the way in.
+	bare := mustMarshal(t, widgetFile())
+
+	exact := Config{}.withDefaults()
+	exact.MaxDescriptorBytes = len(bare)
+
+	manifest := &pluginv1.TaskManifest{
+		Name:             "widget",
+		Summary:          "a task shipping one file, exactly at the bound",
+		InputDescriptor:  bare,
+		InputMessage:     "plugintest.v1.Widget",
+		OutputDescriptor: bare,
+		OutputMessage:    "plugintest.v1.Widget",
+	}
+
+	launched, err := (&Plugin{name: "example"}).taskDef(manifest, exact)
+	require.NoError(t, err, "the host refused a descriptor exactly at its own bound, so the round trip below proves nothing")
+
+	described := flowstatev1.DescribeTask(launched)
+	require.NotEmpty(t, described.GetInputDescriptor())
+	assert.LessOrEqual(t, len(described.GetInputDescriptor()), exact.MaxDescriptorBytes,
+		"describing the task produced more descriptor bytes than the bound that admitted it")
+
+	defs, err := TaskDefsFromCatalog(catalogOf(t, "example", launched), exact)
+	require.NoError(t, err,
+		"a catalog built from a task this very Config launched was refused by that same Config")
+	require.NotNil(t, defs[0].Inputs)
+	assert.Equal(t, launched.Inputs.FullName(), defs[0].Inputs.FullName())
+
+	// And the bound is a real one rather than a formality: one byte less and
+	// the same descriptor is refused, on the way in and out alike.
+	tooTight := exact
+	tooTight.MaxDescriptorBytes = len(bare) - 1
+
+	_, err = (&Plugin{name: "example"}).taskDef(manifest, tooTight)
+	require.ErrorIs(t, err, ErrDescriptor,
+		"a descriptor one byte over the bound was accepted, so the bound above was not the deciding number")
+}
+
+// TestTaskDefsFromCatalogBoundsTheWholeDocument is the breadth half of the
+// bound, and the finding CLAUDE.md's own doctrine caught pointed back at us:
+// MaxDescriptorBytes and MaxDescriptorFiles bound *one* descriptor, and a
+// catalog's author chooses how many descriptors arrive.
+//
+// Each bound is asserted to be *reached* as well as not exceeded — a catalog
+// exactly at the bound rebuilds, one past it refuses — because "refuses when
+// over" is also satisfied by a reader that refuses everything, and a bound
+// nothing reaches is a bound nothing tests.
+func TestTaskDefsFromCatalogBoundsTheWholeDocument(t *testing.T) {
+	t.Parallel()
+
+	// One described task, reused: these bounds are about how many arrive, not
+	// about what any one of them says.
+	launched, err := (&Plugin{name: "example"}).taskDef(widgetManifest(t), Config{}.withDefaults())
+	require.NoError(t, err)
+	described := flowstatev1.DescribeTask(launched)
+
+	catalogWith := func(plugins, tasksPerPlugin int) *flowstatev1.PluginCatalog {
+		catalog := &flowstatev1.PluginCatalog{
+			ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
+		}
+		for range plugins {
+			one := &flowstatev1.PluginDescription{Name: "example"}
+			for range tasksPerPlugin {
+				one.Tasks = append(one.Tasks, described)
+			}
+			catalog.Plugins = append(catalog.Plugins, one)
+		}
+		return catalog
+	}
+
+	descriptorBytes := len(described.GetInputDescriptor()) + len(described.GetOutputDescriptor())
+	require.NotZero(t, descriptorBytes, "this task carries no descriptors, so the byte bound below is untested")
+
+	for _, bound := range []struct {
+		name    string
+		cfg     Config
+		atBound *flowstatev1.PluginCatalog
+		past    *flowstatev1.PluginCatalog
+	}{
+		{
+			name:    "plugins",
+			cfg:     Config{MaxCatalogPlugins: 3},
+			atBound: catalogWith(3, 1),
+			past:    catalogWith(4, 1),
+		},
+		{
+			name: "tasks across every plugin",
+			// Two plugins of three tasks is six, which is over a bound of five
+			// while neither plugin is near it on its own — the aggregate is the
+			// resource, not any one plugin's share of it.
+			cfg:     Config{MaxCatalogTasks: 5},
+			atBound: catalogWith(1, 5),
+			past:    catalogWith(2, 3),
+		},
+		{
+			name:    "descriptor bytes in total",
+			cfg:     Config{MaxCatalogDescriptorBytes: descriptorBytes * 3},
+			atBound: catalogWith(3, 1),
+			past:    catalogWith(2, 2),
+		},
+	} {
+		t.Run(bound.name, func(t *testing.T) {
+			t.Parallel()
+
+			defs, err := TaskDefsFromCatalog(bound.atBound, bound.cfg)
+			require.NoError(t, err,
+				"a catalog exactly at the %s bound was refused, so the bound is not reachable and "+
+					"the refusal below says nothing", bound.name)
+			require.NotEmpty(t, defs)
+
+			_, err = TaskDefsFromCatalog(bound.past, bound.cfg)
+			require.ErrorIs(t, err, ErrCatalogTooLarge,
+				"a catalog past the %s bound was rebuilt anyway", bound.name)
+			assert.Contains(t, err.Error(), "Config.MaxCatalog",
+				"the refusal does not name the bound an operator would raise")
+		})
+	}
+}
+
 // widgetSource is one file naming a task, with an input the task does not
 // declare. `nam` is a misspelling of `name`, which is what #710's second
 // acceptance clause is about.
