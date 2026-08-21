@@ -34,12 +34,14 @@
 //
 // # Bounds
 //
-// Two, because two resources run away, and they are not the same resource. The
-// number of schedules explored bounds this package's own wall-clock time and is
-// [Budget.Schedules], reported on every run so a search that explored nothing is
-// visible rather than green. The number of decisions inside one schedule bounds
-// what a single pathological workflow can spend, and is
-// [v1.MaxScheduleDecisions], reported here as [Observation.Truncated].
+// Three, because three resources run away and they are not the same resource.
+// The number of schedules explored bounds this package's own wall-clock time and
+// is [Budget.Schedules], reported on every run so a search that explored nothing
+// is visible rather than green. The number of decisions inside one schedule
+// bounds what a single pathological workflow can spend, and is
+// [v1.MaxScheduleDecisions], reported here as [Observation.Truncated]. And the
+// caller's context bounds how much of a search survives being cancelled, which
+// is a bound the caller cannot apply from outside — see [Explore].
 //
 // # Which driver
 //
@@ -313,6 +315,28 @@ func (r *Report) Truncated() bool {
 // found — which is the only way to know the property is capable of failing at
 // all. [dsttest.CheckScheduleEquivalence] is the ordinary caller.
 //
+// # The search stops when ctx is done
+//
+// The third bound, and the one a caller cannot supply for itself. Schedules and
+// decisions bound what a search may spend; this bounds how long it goes on
+// spending after somebody said stop. A caller checking cancellation between its
+// own units does not help, because each of those units is a whole search: the
+// loop below would still start every remaining schedule, and starting one is not
+// cheap — `flow test`'s run recompiles a case's stubs and reparses its workflow
+// before execution ever consults a context, so an interrupted `--seeds 10000`
+// would spend thousands of parses on its way to stopping. Reported by Codex on
+// picatz/flowstate#814.
+//
+// The baseline is deliberately not gated. It is the run a caller *reports* —
+// `flow test` takes its verdict and its coverage from it — so refusing to run it
+// would hand back no result at all, which is a nil where a report expects one
+// rather than a bound doing its job. Refusing to start a whole unit is the
+// caller's own check; this one stops the search around it.
+//
+// A stopped search reports the schedules it managed rather than the ones it was
+// asked for, and records no divergence for the ones it never ran: an observation
+// that does not exist cannot disagree with the baseline.
+//
 // [dsttest.CheckScheduleEquivalence]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/dst/dsttest#CheckScheduleEquivalence
 func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 	report := &Report{}
@@ -321,6 +345,10 @@ func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 	report.Observations = append(report.Observations, baseline)
 
 	for _, seed := range budget.seeds() {
+		if ctx.Err() != nil {
+			break
+		}
+
 		scheduler := v1.NewSeededScheduler(seed)
 		observation := observe(ctx, scheduler, run)
 		report.Observations = append(report.Observations, observation)

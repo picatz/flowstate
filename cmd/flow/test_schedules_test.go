@@ -172,6 +172,11 @@ func TestSeedFlagsRefuseCombinationsThatWouldDoNothing(t *testing.T) {
 			says: "pass --seeds N",
 		},
 		{
+			name: "a starting seed alongside a pinned one",
+			args: []string{"--seed", "7", "--seed0", "3"},
+			says: "no search for --seed0 to start",
+		},
+		{
 			name: "more schedules than this command will run",
 			args: []string{"--seeds", "10001"},
 			says: "the cost is linear in this number",

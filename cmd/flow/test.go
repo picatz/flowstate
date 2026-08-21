@@ -107,15 +107,19 @@ flow test -o jsonl examples/`,
 // scheduleBudget reads the three seed flags into the budget
 // [flowtest.RunFileUnderSchedules] spends, or refuses the combination.
 //
-// Refuses rather than resolves, in all three shapes, because every one of them
-// is a person asking for exploration and not getting what they asked for. A flag
+// Refuses rather than resolves, in all four shapes, because every one of them is
+// a person asking for exploration and not getting what they asked for. A flag
 // that silently does nothing is the same failure as a check that silently does
 // not run: `--seed0 7` with no `--seeds` explores nothing while reading like it
-// explores from 7, and `--seeds 24 --seed 7` explores one schedule while reading
-// like it explores 24. The bound on `--seeds` is [dst.MaxSchedules] and is the
-// same number, for the same reason, as the one the Go tier enforces on
-// FLOWSTATE_DST_SCHEDULES: a schedule is a whole run of every case in the file,
-// so the cost is linear in it.
+// explores from 7; `--seeds 24 --seed 7` explores one schedule while reading like
+// it explores 24; and `--seed 7 --seed0 3` reads like it does something with 3,
+// while [dst.Budget] ignores Seed0 outright whenever Pinned is set. Reported by
+// Codex on picatz/flowstate#814.
+//
+// The bound on `--seeds` is [dst.MaxSchedules] and is the same number, for the
+// same reason, as the one the Go tier enforces on FLOWSTATE_DST_SCHEDULES: a
+// schedule is a whole run of every case in the file, so the cost is linear in
+// it.
 func scheduleBudget(cmd *cobra.Command) (dst.Budget, error) {
 	seeds, _ := cmd.Flags().GetInt("seeds")
 	seed0, _ := cmd.Flags().GetUint64("seed0")
@@ -133,7 +137,11 @@ func scheduleBudget(cmd *cobra.Command) (dst.Budget, error) {
 	case pinned && seeds > 0:
 		return dst.Budget{}, errors.New(
 			"--seed replays one schedule and --seeds searches many; pass one or the other")
-	case cmd.Flags().Changed("seed0") && !pinned && seeds == 0:
+	case pinned && cmd.Flags().Changed("seed0"):
+		return dst.Budget{}, errors.New(
+			"--seed replays the one schedule it names, so there is no search for --seed0 to start; " +
+				"drop --seed0, or replace --seed with --seeds N")
+	case cmd.Flags().Changed("seed0") && seeds == 0:
 		return dst.Budget{}, errors.New(
 			"--seed0 names where --seeds starts walking, and no --seeds was given, so nothing " +
 				"would be explored; pass --seeds N")

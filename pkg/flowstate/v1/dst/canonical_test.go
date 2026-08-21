@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
@@ -21,9 +22,11 @@ import (
 // that answered zero scheduling questions: identical content, identical byte
 // count, entries listed in a different order (issue #800).
 //
-// The two tests below are the two halves of the fix, and the second is the one
-// that keeps it honest: a map's entry order stops being a difference, and a
-// list's order does not.
+// The first three tests below are the halves of that fix, and the third is the
+// one that keeps it honest: a map's entry order stops being a difference, and a
+// list's order does not. The last two are a second bound this package needed for
+// the same reason it needed the first — a caller driving it from `flow test`
+// (#800) reaches paths a `go test` caller never did.
 
 // mapEntries builds a CEL map literal with its entries in the order given, which
 // is how a run whose Go map iterated differently would have recorded it.
@@ -126,4 +129,58 @@ func TestAListsOrderIsStillADivergence(t *testing.T) {
 
 	require.NotNil(t, report.Divergence,
 		"a list is ordered, so a schedule that reordered one has changed something an author can see")
+}
+
+// TestExploreStopsWhenTheContextIsDone is the third bound, and the one a caller
+// cannot supply for itself: each of a caller's units is a whole search, so
+// checking cancellation between them still leaves every remaining schedule of
+// the current one to start — and starting one is not cheap. `flow test`'s run
+// recompiles a case's stubs and reparses its workflow before execution ever
+// consults a context, so an interrupted `--seeds 10000` would spend thousands of
+// parses on its way to stopping. Reported by Codex on picatz/flowstate#814.
+//
+// Mutation-proven: removing the ctx check from Explore's seed loop takes this
+// from 3 runs to 51.
+func TestExploreStopsWhenTheContextIsDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	runs := 0
+	report := dst.Explore(ctx, dst.Budget{Schedules: 50, Seed0: 1}, func(context.Context) dst.Result {
+		runs++
+		if runs == 3 {
+			cancel()
+		}
+
+		return dst.Result{}
+	})
+
+	assert.Equal(t, 3, runs, "the baseline, two schedules, and then nothing after the cancellation")
+	assert.Equal(t, 2, report.Schedules(),
+		"a stopped search reports the schedules it managed, not the ones it was asked for")
+	assert.Nil(t, report.Divergence,
+		"schedules that never ran are not observations to disagree with the baseline")
+}
+
+// TestTheBaselineRunsEvenWhenTheContextIsAlreadyDone pins the deliberate
+// exception. The baseline is the run a caller *reports* — `flow test` takes its
+// verdict and its coverage from it — so gating it would hand back no case at
+// all, which is a nil where a report expects a result rather than a bound doing
+// its job. The caller's own pre-case check is what refuses to start a case at
+// all; this one only stops the search around it.
+func TestTheBaselineRunsEvenWhenTheContextIsAlreadyDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	runs := 0
+	report := dst.Explore(ctx, dst.Budget{Schedules: 4, Seed0: 1}, func(context.Context) dst.Result {
+		runs++
+
+		return dst.Result{}
+	})
+
+	assert.Equal(t, 1, runs, "the baseline, and no schedule after it")
+	require.Len(t, report.Observations, 1)
+	assert.True(t, report.Observations[0].Baseline)
+	assert.Zero(t, report.Schedules())
 }
