@@ -439,8 +439,8 @@ func classifyConfigKey(key string) configKeyClass {
 // checkout whose gitdir is the plain `.git` directory sitting inside it.
 //
 // It replaces an earlier check that asked only whether workDir was inside
-// *some* working tree, which two task-controlled arrangements answered yes
-// to while meaning something quite different:
+// *some* working tree, which several task-controlled arrangements answered
+// yes to while meaning something quite different:
 //
 //   - A `.git` that is a file or a symlink. `gitdir: /somewhere/else` in a
 //     `.git` file, or a symlinked `.git`, points Git at a repository outside
@@ -448,26 +448,36 @@ func classifyConfigKey(key string) configKeyClass {
 //     commands read and write. A run that writes such a file redirects the
 //     post-run diff at a repository on the worker that the run itself never
 //     had access to, and the diff's contents are returned to the caller.
+//   - A real `.git` directory holding a `commondir` file. This is the subtle
+//     one: the gitdir is genuinely the workspace's own `.git`, so a check on
+//     --absolute-git-dir alone passes - but Git reads `.git/commondir` to set
+//     GIT_COMMON_DIR, the location refs and objects are actually resolved
+//     from, and a `commondir` naming a second repository makes the add and
+//     diff read *that* repository. Confirmed on git 2.43: a clean workspace
+//     produced a patch carrying a deleted secret file from the pointed-to
+//     repo. So --git-common-dir is required to stay inside the workspace too.
 //   - A workspace that is a subdirectory of a larger repository. `git diff`
 //     with no pathspec reports the whole repository, so the patch would
 //     carry changes from outside the jailed working_context.
 //
-// Both refuse here, which costs a linked worktree, a submodule checkout and
+// All refuse here, which costs a linked worktree, a submodule checkout and
 // a subdirectory workspace their patch output - stated rather than hidden,
 // and the same fail-closed trade the rest of this file makes.
 func gitWorktreeIsPlain(ctx context.Context, gitBin, workDir string, env []string) bool {
 	out, ok, truncated := runGitBounded(ctx, gitBin, workDir, env, maxGitConfigBytes,
-		append(bootstrapGitOverrides(workDir), "rev-parse", "--show-toplevel", "--absolute-git-dir")...)
+		append(bootstrapGitOverrides(workDir), "rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")...)
 	if !ok || truncated {
 		return false
 	}
 
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 2 {
+	if len(lines) != 3 {
 		return false
 	}
-	toplevel, gitDir := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
-	if toplevel == "" || gitDir == "" {
+	toplevel := strings.TrimSpace(lines[0])
+	gitDir := strings.TrimSpace(lines[1])
+	commonDir := strings.TrimSpace(lines[2])
+	if toplevel == "" || gitDir == "" || commonDir == "" {
 		return false
 	}
 
@@ -481,7 +491,39 @@ func gitWorktreeIsPlain(ctx context.Context, gitBin, workDir string, env []strin
 	if filepath.Clean(toplevel) != filepath.Clean(resolved) {
 		return false
 	}
-	if filepath.Clean(gitDir) != filepath.Join(filepath.Clean(resolved), ".git") {
+	ownGitDir := filepath.Join(filepath.Clean(resolved), ".git")
+	if filepath.Clean(gitDir) != ownGitDir {
+		return false
+	}
+
+	// The gitdir being the workspace's own `.git` is not enough: a real `.git`
+	// directory may contain a `commondir` file, and Git reads it to set
+	// GIT_COMMON_DIR - the location refs and objects are actually read from.
+	// --absolute-git-dir stays inside the workspace while --git-common-dir
+	// points wherever `commondir` says, so a workspace whose `.git/commondir`
+	// names a second repository has the add and diff below read *that*
+	// repository's refs and objects: a clean workspace then produces a patch
+	// carrying the pointed-to repository's content (a deleted secret file, in
+	// the confirmed repro), which is exactly the cross-checkout exfiltration
+	// this function exists to refuse. For an ordinary checkout --git-common-dir
+	// reports a path relative to the command's working directory (literally
+	// `.git`), while a `commondir` escape reports an absolute path elsewhere -
+	// so it is resolved against workDir before comparison and, for a plain
+	// repository, resolves to the workspace's own `.git`; anything else fails
+	// closed. Compared against a symlink-resolved form because Git may report
+	// either dir with symlinks resolved.
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(resolved, commonDir)
+	}
+	resolvedCommon, err := filepath.EvalSymlinks(commonDir)
+	if err != nil {
+		return false
+	}
+	resolvedOwn, err := filepath.EvalSymlinks(ownGitDir)
+	if err != nil {
+		return false
+	}
+	if filepath.Clean(resolvedCommon) != filepath.Clean(resolvedOwn) {
 		return false
 	}
 

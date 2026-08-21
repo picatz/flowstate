@@ -533,6 +533,59 @@ func TestHardenedGitRefusesARedirectedGitDir(t *testing.T) {
 			t.Fatal("hardening accepted a workspace that is a subdirectory of a larger repository, want fail-closed")
 		}
 	})
+
+	// The commondir case is the one --absolute-git-dir cannot see: the
+	// workspace's gitdir genuinely *is* its own .git, so every check that
+	// only compares the gitdir passes - but Git reads .git/commondir to set
+	// GIT_COMMON_DIR, from which refs and objects are actually resolved, so a
+	// commondir pointing at a second repository makes the add and diff read
+	// that repository. Confirmed on git 2.43: a clean workspace produced a
+	// patch carrying a deleted secret file from the pointed-to repo.
+	t.Run("commondir pointing at another repository", func(t *testing.T) {
+		// The pointed-to repository: a committed secret, then removed from the
+		// working tree, so `git diff HEAD` renders it as a deletion carrying
+		// its content - which is what would leak.
+		const secret = "TOPSECRET_FROM_COMMON_DIR"
+		other := t.TempDir()
+		initRepoWithCommit(t, gitBin, other)
+		if err := os.WriteFile(filepath.Join(other, "secret.txt"), []byte(secret+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile secret: %v", err)
+		}
+		add := exec.Command(gitBin, "-C", other, "add", "secret.txt")
+		if out, err := add.CombinedOutput(); err != nil {
+			t.Fatalf("git add secret: %v: %s", err, out)
+		}
+		commit := exec.Command(gitBin, "-C", other, "commit", "-q", "-m", "add secret")
+		commit.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := commit.CombinedOutput(); err != nil {
+			t.Fatalf("git commit secret: %v: %s", err, out)
+		}
+
+		workspace := t.TempDir()
+		initRepoWithCommit(t, gitBin, workspace)
+		if err := os.WriteFile(filepath.Join(workspace, ".git", "commondir"),
+			[]byte(filepath.Join(other, ".git")+"\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile commondir: %v", err)
+		}
+
+		preparedBin, hardened := prepareForTest(t, workspace)
+		if hardened != nil {
+			t.Fatal("hardening accepted a workspace whose .git/commondir points at another repository, want fail-closed")
+		}
+
+		// Belt-and-suspenders on the exfiltration itself: even handed the
+		// refused hardening, computePatch must produce no patch, and certainly
+		// not one carrying the other repository's secret.
+		patch, _, _ := computePatch(context.Background(), preparedBin, hardened, workspace, true,
+			workspaceBaseline{observed: true}, []fileChange{{Path: "a.txt", ChangeType: "update"}})
+		if patch != "" {
+			t.Fatalf("computePatch returned a patch for a commondir-redirected workspace: %q", patch)
+		}
+		if strings.Contains(patch, secret) {
+			t.Fatalf("patch carries the secret from the repository commondir pointed at: %q", patch)
+		}
+	})
 }
 
 // TestClassifyConfigKey pins the three answers by name, including the
