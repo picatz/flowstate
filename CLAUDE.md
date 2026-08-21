@@ -133,6 +133,54 @@ local, on-demand read, not an automated one, on the same "leave CI wiring as
 a named follow-up" reasoning that keeps `make check` itself the full local
 rehearsal rather than something CI second-guesses.
 
+## Go modernizers (`go fix`): weekly awareness, per-package adoption, never a sweep
+
+Go 1.26 made `go fix` the home of the modernizers — `strings.SplitSeq`,
+`maps.*`, `slices.Contains`, `min`/`max`, `new(expr)` and the rest — and this
+repository's toolchain is pinned past that, so they are available today.
+
+Say which `fix` you mean, every time. Go's `go fix` rewrites **Go source**.
+This repository's own `flow fix` rewrites **Flowfiles**. A commit message, job
+name or comment that says "fix" near this work and does not disambiguate
+teaches the next reader that `flow fix` grew modernizers.
+
+    make modernize                                    # the whole module
+    make modernize PKGS=./pkg/flowstate/v1/engine/    # one package
+    go run ./tools/modernize -sites ./pkg/...         # every site's position
+
+That command reports and changes nothing; it has no apply mode, deliberately.
+The weekly deep tier's `modernize` job runs the wide one and files a single
+advisory issue (deduplicated by title like every other job in `deep.yml`), so
+the number stays visible without a tool committing on our behalf. It is a map,
+not a gate: nothing in `make check` or the PR lane runs it, and no count is
+enforced anywhere.
+
+**Apply them a package at a time, when that package is already open for another
+reason** — so the conversion rides in a diff a reviewer is reading closely — and
+**never as a standalone sweep**. Measured on `main`, one sweep is roughly 11,000
+mechanical lines across 91 files, none of it fixing a defect. That is precisely
+the shape in which a real defect hides from review, and this repository has paid
+for it twice already (two `flow fix` corruptions landed inside changes that
+looked mechanical; #513's review found four textual-search bugs in a change
+everyone would have called routine). #521 has the decision and the numbers.
+
+Two properties of the report worth knowing. The fixer list is not written down
+anywhere here — it comes from the diagnostics the pinned toolchain actually
+produces, so a toolchain bump that adds a modernizer shows up without anyone
+editing a list (the fifteen analyzers #521 measured were twenty-three by
+go1.26.6). And sites inside generated files are counted separately and excluded
+from every total, because a generated file is never hand-edited: a
+modernization there could only ever arrive through its generator.
+
+A third, and the only thing that can make the weekly job go red: the report is
+complete or it is not printed. When a package fails to load, `go fix -json`
+exits non-zero but *still* writes well-formed diagnostics for every package
+that did analyse — so accepting that output yields a plausible report, short by
+an unknown amount, that reads exactly like a clean tree. A non-zero exit
+therefore refuses the report and names the packages that were not analysed, and
+the job files an issue saying the report could not be produced rather than
+quietly filing a small number. Findings themselves never fail it.
+
 ## The gate: diff-scoped before a push, diff-scoped on PR CI, full in the queue
 
 Three tiers over one list of checks, and — this is the part worth holding on to
