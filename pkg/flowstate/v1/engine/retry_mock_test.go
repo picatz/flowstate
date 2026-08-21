@@ -120,6 +120,73 @@ func TestMockedRetryableFailureDrivesTheRealRetryPolicy(t *testing.T) {
 			"engine/policy.go's defaults produce")
 }
 
+// TestMockedRetriesReachTheMaximumRetryInterval drives enough failures that
+// the exponential schedule crosses v1.DefaultRetryMaxInterval, so the elapsed
+// simulated time only matches [wantRetryBackoffSum] if the durable driver's
+// policy actually carries a MaximumInterval and Temporal actually clamps to
+// it. TestMockedRetryableFailureDrivesTheRealRetryPolicy above stops at three
+// failures — 1s, 2s, 4s, all under the 30s cap — so it passes identically
+// whether activityOptionsFor sets MaximumInterval, mis-sets it, or omits it
+// entirely; this is the missing half of the "no maximum retry interval"
+// disagreement CLAUDE.md records the local driver once shipping.
+//
+// The default policy caps attempts at v1.DefaultMaxAttempts (5), whose
+// deepest wait is 8s, so no nil-policy workflow can reach the cap at all;
+// the step declares a Retry raising only max_attempts, leaving every
+// interval field zero so the intervals under test remain the defaults.
+//
+// Verified to fail: with wantRetryBackoffSum's cap clause removed (so the
+// expectation is the uncapped exponential sum), elapsed comes up short by
+// exactly the clamped amount — proving Temporal applied a cap and this test
+// is the one comparing against it.
+func TestMockedRetriesReachTheMaximumRetryInterval(t *testing.T) {
+	// Seven failures: waits of 1, 2, 4, 8, 16, then 32→30 and 64→30. The last
+	// two only equal the expectation because both sides clamp.
+	const wantFailures = 7
+
+	// Self-check that the schedule reaches the cap rather than merely staying
+	// under it — the "assert the bound was reached" habit. If the defaults
+	// move so that seven failures no longer cross DefaultRetryMaxInterval,
+	// this fails loudly instead of the test silently degrading into a second
+	// copy of the uncapped one.
+	uncappedDeepest := time.Duration(float64(v1.DefaultRetryInitialInterval) *
+		math.Pow(v1.DefaultRetryBackoff, float64(wantFailures-1)))
+	require.Greater(t, uncappedDeepest, v1.DefaultRetryMaxInterval,
+		"wantFailures no longer drives the schedule past DefaultRetryMaxInterval; "+
+			"raise it so this test still exercises the cap")
+
+	wf := flakyStepWorkflow("mocked-retry-max-interval")
+	wf.Steps[0].Policy = &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: wantFailures + 1}}
+	state := &v1.RunState{Workflow: wf}
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+
+	var attempts atomic.Int32
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
+			if attempts.Add(1) <= wantFailures {
+				return nil, temporal.NewApplicationErrorWithOptions(
+					"mocked upstream failure", v1.ErrorKindUpstream.String(),
+					temporal.ApplicationErrorOptions{},
+				)
+			}
+			return &v1.Node_Outputs{}, nil
+		})
+
+	start := env.Now()
+	env.ExecuteWorkflow(engine.Run, state)
+	elapsed := env.Now().Sub(start)
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.EqualValues(t, wantFailures+1, attempts.Load())
+	require.Equal(t, wantRetryBackoffSum(wantFailures), elapsed,
+		"elapsed simulated time should equal the capped backoff schedule; a "+
+			"mismatch here means MaximumInterval is not reaching Temporal's scheduler")
+}
+
 // TestMockedPersistentRetryableFailureStopsAtMaxAttempts mocks [engine.Task]
 // to fail every time with a retryable error, asserting the scheduler reaches
 // v1.DefaultMaxAttempts and stops rather than merely staying at or under it.

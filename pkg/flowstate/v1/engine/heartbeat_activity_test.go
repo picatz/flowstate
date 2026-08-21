@@ -53,6 +53,7 @@ func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
 
 	unblock := make(chan struct{})
 	var heartbeats atomic.Int32
+	var firstBeatAfter atomic.Int64 // nanoseconds since started, set once
 
 	registry := v1.DefaultRegistry()
 	require.NoError(t, registry.Register(v1.TaskDef{
@@ -75,13 +76,15 @@ func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
 	// margin beyond it is for a slow CI runner, not for the ticker itself.
 	env.SetTestTimeout(heartbeatInterval + 30*time.Second)
 	env.RegisterActivity(Task)
+	var started time.Time
 	env.SetOnActivityHeartbeatListener(func(_ *activity.Info, _ converter.EncodedValues) {
 		if heartbeats.Add(1) == 1 {
+			firstBeatAfter.Store(int64(time.Since(started)))
 			close(unblock)
 		}
 	})
 
-	started := time.Now()
+	started = time.Now()
 	_, err := env.ExecuteActivity(Task, &v1.Task{Name: taskName}, (*v1.WorkloadIdentity)(nil), false)
 	require.NoError(t, err)
 
@@ -95,6 +98,18 @@ func TestTaskActivityRecordsHeartbeatWhileRunning(t *testing.T) {
 	// immediately on activity start.
 	require.GreaterOrEqual(t, time.Since(started), heartbeatInterval,
 		"the heartbeat fired before withHeartbeat's own interval elapsed")
+
+	// And bounded from above by the timeout the interval exists to stay under:
+	// a first heartbeat at or past heartbeatTimeout is exactly the defect this
+	// test guards against, because Temporal would have timed the activity out
+	// before hearing it. The lower bound alone would keep passing with the
+	// ticker widened to 35 seconds; this is the assertion that fails then. The
+	// bound is the production timeout itself rather than interval-plus-margin,
+	// because the margin between the two (heartbeatTimeout is 3× the interval)
+	// is precisely the slack a slow CI runner is entitled to.
+	require.Less(t, time.Duration(firstBeatAfter.Load()), heartbeatTimeout,
+		"the first heartbeat arrived at or past heartbeatTimeout; Temporal would "+
+			"have declared the activity dead before hearing it")
 }
 
 // TestTaskActivityStopsPromptlyWhenContextIsCancelled proves the second half:
