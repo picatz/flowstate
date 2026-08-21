@@ -13,6 +13,7 @@ it.
 | Document | What it covers |
 | --- | --- |
 | [DSL.md](DSL.md) | The Flowfile language, as a record of decisions: what each construct is, what was refused, and why. Long; it opens with a contents list. |
+| [STYLE.md](STYLE.md) | The style charter: one obvious spelling per construct, the rule that decides each argument, and the tier that enforces it. What is *good*, where DSL.md is what is *legal*. |
 | [reference/tasks.md](reference/tasks.md) | *Generated.* Every task this build can execute, with typed inputs, outputs and a step to copy. |
 | [reference/cel.md](reference/cel.md) | *Generated.* Every CEL function and macro an expression may call, with call forms and the cost limit they spend against. |
 | [reference/diagnostics.md](reference/diagnostics.md) | *Generated.* Every stable diagnostic `code` `flow validate` can report, so a program can branch on a failure without parsing prose. |

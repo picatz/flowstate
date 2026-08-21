@@ -49,7 +49,17 @@ var completeWorkflow = regexp.MustCompile("(?s)```yaml\n(edition:.*?)```")
 func TestREADMEWorkflowsCompile(t *testing.T) {
 	t.Parallel()
 
-	for _, doc := range []string{"README.md", filepath.Join("docs", "DSL.md"), filepath.Join("docs", "ARCHITECTURE.md")} {
+	for _, doc := range []string{
+		"README.md",
+		filepath.Join("docs", "DSL.md"),
+		filepath.Join("docs", "ARCHITECTURE.md"),
+		// The style guide teaches by showing, so its positive examples are
+		// Flowfiles a reader will copy, and a style document whose own examples
+		// do not compile fails its first rule on the day it lands. Its negative
+		// examples are fragments by convention and so are not matched here; see
+		// TestStyleGuideShowsBothKinds, which holds that convention up.
+		filepath.Join("docs", "STYLE.md"),
+	} {
 		t.Run(doc, func(t *testing.T) {
 			t.Parallel()
 
