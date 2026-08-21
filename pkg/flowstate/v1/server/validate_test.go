@@ -18,7 +18,7 @@ import (
 func validateServer(t *testing.T) *server.FlowstateServer {
 	t.Helper()
 
-	return server.New(nil)
+	return mustNew(t, nil)
 }
 
 const aValidFile = `edition: v2026.3
@@ -222,7 +222,7 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 }
 
 func TestCompileRejectsUnknownDeploymentCredentialTarget(t *testing.T) {
-	s := server.New(nil, server.WithCredentialTargets("partner-api"))
+	s := mustNew(t, nil, server.WithCredentialTargets("partner-api"))
 	source := []byte(`edition: v2026.3
 name: federated
 steps:

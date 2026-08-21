@@ -1075,7 +1075,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
-	flowServer := server.New(c, serverOpts...)
+	flowServer, err := server.New(c, serverOpts...)
+	if err != nil {
+		return err
+	}
 
 	// The webhook receiver, if this deployment serves any. Built before the
 	// server starts listening, because every decision it can make in advance is

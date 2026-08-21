@@ -717,15 +717,22 @@ func (r *mcpSessionRecorder) Unwrap() http.ResponseWriter {
 // outside and prove that every served handler — tools and resources alike —
 // really is behind it, which is a property of this wiring rather than of the
 // guard itself.
-func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) *mcp.Server {
+func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
+
+	// The same nil-Temporal-client server `flow mcp` answers Validate,
+	// Compile and GetCatalog from — see server/validate.go for why a nil
+	// client is safe for exactly those. No option is passed, so nothing here
+	// can be misconfigured; the error is returned rather than dropped so that
+	// stays true of whatever options this surface grows.
+	local, err := server.New(nil)
+	if err != nil {
+		return nil, err
+	}
 
 	flowmcp.AddLocalCapabilities(
 		srv,
-		// The same nil-Temporal-client server `flow mcp` answers Validate,
-		// Compile and GetCatalog from — see server/validate.go for why a nil
-		// client is safe for exactly those.
-		server.New(nil),
+		local,
 		flowmcp.Deps{
 
 			// Nothing on this surface answers with a GetResponse — the tool
@@ -750,7 +757,7 @@ func mcpServeTools(guard *mcpServeRegistryGuard, testTimeout time.Duration) *mcp
 		flowmcp.ToolRegistration{Tool: flowmcp.ReducedTestTool(), Handler: testToolHandler(testTimeout)},
 	)
 
-	return srv
+	return srv, nil
 }
 
 // mcpServeRegistryGuard serializes this surface's tools against the one piece
@@ -969,7 +976,12 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	handler, err := mcpServeHandler(logger, mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout), verifier, protectedResource, mcpServeLimits{
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout)
+	if err != nil {
+		return err
+	}
+
+	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
 		maxRequestBytes:    flags.maxRequestBytes,
 		maxSessions:        flags.maxSessions,
 		maxSessionRequests: flags.maxSessionRequests,

@@ -62,7 +62,7 @@ func TestRehearsalSignalCasesDurably(t *testing.T) {
 			identity = &v1types.WorkloadIdentity{}
 		}
 
-		return New(nil).authorizeSignal(
+		return mustNew(t, nil).authorizeSignal(
 			runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName,
 			&v1types.SignalSender{Identity: identity})
 	})
@@ -84,7 +84,7 @@ func TestRehearsalSenderIsNeverAuthorizedDurably(t *testing.T) {
 
 	conformance.AssertRehearsalSenderIsNeverAuthorizedDurably(t,
 		func(t testing.TB, c conformance.RehearsalSignalCase, sender *v1types.SignalSender) error {
-			return New(nil).authorizeSignal(
+			return mustNew(t, nil).authorizeSignal(
 				runWithPolicyAndStarter(t.(*testing.T), c), c.SignalName, sender)
 		})
 }
@@ -97,7 +97,7 @@ func TestRehearsalSenderIsNeverAuthorizedDurably(t *testing.T) {
 func TestRehearsalSenderIsRefusedEvenWithNoPolicyDeclared(t *testing.T) {
 	t.Parallel()
 
-	err := New(nil).authorizeSignal(memoWithNoSignalPolicy(), "deploy-approved",
+	err := mustNew(t, nil).authorizeSignal(memoWithNoSignalPolicy(), "deploy-approved",
 		v1types.RehearsalSignalSender(&v1types.WorkloadIdentity{
 			Subject: "sre-lead@example.com",
 			Issuer:  "https://issuer.example.com",

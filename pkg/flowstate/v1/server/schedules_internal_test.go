@@ -216,7 +216,7 @@ func TestDescribeScheduleReportsMissedAndSkippedCounts(t *testing.T) {
 		},
 	}
 
-	s := New(temporal)
+	s := mustNew(t, temporal)
 
 	described, err := s.describeSchedule(t.Context(), temporal, "", "nightly")
 	require.NoError(t, err)

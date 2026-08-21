@@ -30,7 +30,14 @@ import (
 )
 
 // New creates a new FlowstateServer instance with the provided Temporal client.
-func New(temporalClient client.Client, opts ...Option) *FlowstateServer {
+//
+// It reports an error rather than returning a server an option could not
+// configure, which is what makes a misconfiguration a startup failure someone
+// reads instead of a value the rest of this package then assumes something
+// about — see [WithNamespace] for the assumption that made this necessary.
+// `netpolicy.New` and `secrets/vault.NewProvider` are the same shape, for the
+// same reason.
+func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error) {
 	s := &FlowstateServer{
 		temporalClient: temporalClient,
 		maxStepsPerRun: maxStepsPerRunFromEnv(),
@@ -43,13 +50,17 @@ func New(temporalClient client.Client, opts ...Option) *FlowstateServer {
 		dataConverter: converter.GetDefaultDataConverter(),
 	}
 	for _, opt := range opts {
-		opt(s)
+		if err := opt(s); err != nil {
+			return nil, fmt.Errorf("configuring the Flowstate server: %w", err)
+		}
 	}
-	return s
+	return s, nil
 }
 
-// Option configures a [FlowstateServer].
-type Option func(*FlowstateServer)
+// Option configures a [FlowstateServer]. An option that cannot be satisfied
+// reports an error, so a misconfigured deployment fails at startup rather than
+// on the first request that depends on the value.
+type Option func(*FlowstateServer) error
 
 // WithNamespace sets the Flowstate tenant a caller is treated as belonging to
 // when their own identity names none.
@@ -66,8 +77,52 @@ type Option func(*FlowstateServer)
 // The distinction matters because this value ends up in
 // [flowstatev1.WorkloadIdentity.Namespace], which every authorization decision
 // about a run compares against.
+//
+// # The namespace is checked here, once, for everything that derives from it
+//
+// This is the one place a deployment-configured namespace enters the server, so
+// it is where [auth.ValidateNamespace] is applied — the same fail-closed check
+// [v1.EntityWorkflowID] makes at derivation time, moved to the moment the value
+// is chosen rather than repeated at each of the places that consume it. Those
+// places all assume the grammar and cannot state it themselves:
+//
+//   - [scheduleIDFor] composes `flowstate-schedule-<namespace>_<name>` and
+//     [scheduleNameFrom] splits at the first underscore. That is unambiguous
+//     only because the grammar admits `[a-z0-9-]` and therefore no underscore:
+//     a namespace of `team_a` with a schedule named `x` derives the same id as
+//     namespace `team` with a schedule named `a_x`.
+//   - [runStaticSummary] delimits with backticks on the strength of the same
+//     grammar.
+//   - [FlowstateServer.taskQueueFor] and the secret providers re-check it and
+//     refuse, so an ungrammatical value configured here would surface as a
+//     per-request refusal on a routed deployment rather than as a
+//     misconfiguration at startup.
+//
+// The empty namespace stays legal and is the single-tenant default:
+// [auth.ValidateNamespace] admits it deliberately, and the derivations above
+// handle it — an untenanted deployment's schedule ids carry a leading separator
+// no non-empty namespace can produce, and the `_default` task queue and secret
+// segments are unforgeable precisely because the grammar forbids the underscore
+// they begin with. A deployment that names no tenant must keep working exactly
+// as it did, so refusing "" here would break the zero-configuration path this
+// option exists to serve.
+//
+// A namespace carried by a *caller's* identity is not covered by this check and
+// does not need to be: it is validated at admission, where it is chosen
+// (`auth.TrustedIssuer.namespaceFrom`, `auth/policy.go`). What was uncovered
+// until this option validated was the deployment's own fallback, which nothing
+// upstream of the process sees.
 func WithNamespace(name string) Option {
-	return func(s *FlowstateServer) { s.namespace = name }
+	return func(s *FlowstateServer) error {
+		if err := auth.ValidateNamespace(name); err != nil {
+			return fmt.Errorf(
+				"WithNamespace: %w (the namespace grammar is auth.ValidateNamespace, "+
+					"pkg/flowstate/v1/auth/namespace.go; ids derived from a tenant, such as a "+
+					"schedule's, are unambiguous only for namespaces it admits)", err)
+		}
+		s.namespace = name
+		return nil
+	}
 }
 
 // WithDeployment records which Flowstate installation is running a workload.
@@ -75,7 +130,7 @@ func WithNamespace(name string) Option {
 // It appears in the identity a run acts as, so an assertion presented to an
 // external system distinguishes a staging deployment from a production one.
 func WithDeployment(name string) Option {
-	return func(s *FlowstateServer) { s.deployment = name }
+	return func(s *FlowstateServer) error { s.deployment = name; return nil }
 }
 
 // WithNamespacePool routes each tenant's runs to the Temporal namespace its
@@ -93,7 +148,7 @@ func WithDeployment(name string) Option {
 // deployment that maps several Flowstate namespaces onto one Temporal namespace
 // has tenants sharing a namespace again, and that check is what separates them.
 func WithNamespacePool(pool *temporalclient.Pool) Option {
-	return func(s *FlowstateServer) { s.pool = pool }
+	return func(s *FlowstateServer) error { s.pool = pool; return nil }
 }
 
 // WithTaskQueues routes each tenant's runs to a task queue of its own, so a
@@ -119,7 +174,7 @@ func WithNamespacePool(pool *temporalclient.Pool) Option {
 // belonging to anyone else, which is what turns a routing mistake into a failure
 // instead of a cross-tenant execution. See [engine.TenantInterceptor].
 func WithTaskQueues(queues engine.TaskQueues) Option {
-	return func(s *FlowstateServer) { s.taskQueues = queues }
+	return func(s *FlowstateServer) error { s.taskQueues = queues; return nil }
 }
 
 // WithExecutionTimeout bounds how long a whole workload may take, including
@@ -131,7 +186,7 @@ func WithTaskQueues(queues engine.TaskQueues) Option {
 // deployment that wants a ceiling sets one; a step that should not take forever
 // gets its own `timeout:`.
 func WithExecutionTimeout(d time.Duration) Option {
-	return func(s *FlowstateServer) { s.executionTimeout = d }
+	return func(s *FlowstateServer) error { s.executionTimeout = d; return nil }
 }
 
 // WithMaxStepsPerRun sets how many steps a run executes before continuing as new.
@@ -140,7 +195,7 @@ func WithExecutionTimeout(d time.Duration) Option {
 // building a server has no way to influence, and a test has no way to set without
 // mutating the environment every other test shares.
 func WithMaxStepsPerRun(steps int) Option {
-	return func(s *FlowstateServer) { s.maxStepsPerRun = steps }
+	return func(s *FlowstateServer) error { s.maxStepsPerRun = steps; return nil }
 }
 
 // WithIdentityClaims names the caller token claims to carry into a run's
@@ -150,25 +205,27 @@ func WithMaxStepsPerRun(steps int) Option {
 // decisions actually need — a repository, an environment, a team — rather than
 // becoming a copy of whole tokens in workflow history.
 func WithIdentityClaims(claims ...string) Option {
-	return func(s *FlowstateServer) { s.identityClaims = claims }
+	return func(s *FlowstateServer) error { s.identityClaims = claims; return nil }
 }
 
 // WithCredentialTargets makes validation deployment-aware: a Flowfile naming a
 // JIT target this server's workers do not configure is refused before submission.
 func WithCredentialTargets(targets ...string) Option {
-	return func(s *FlowstateServer) {
+	return func(s *FlowstateServer) error {
 		s.credentialTargetsConfigured = true
 		s.credentialTargets = append([]string(nil), targets...)
+		return nil
 	}
 }
 
 // WithPluginCatalog supplies the server/worker capability snapshot used to pin
 // plugin requirements before a durable run is accepted.
 func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
-	return func(s *FlowstateServer) {
+	return func(s *FlowstateServer) error {
 		if catalog != nil {
 			s.pluginCatalog = proto.Clone(catalog).(*v1.PluginCatalog)
 		}
+		return nil
 	}
 }
 
@@ -195,7 +252,7 @@ func WithPluginCatalog(catalog *v1.PluginCatalog) Option {
 // deployment using a non-empty default namespace passes it here the same way
 // it does everywhere else that scopes a namespace explicitly.
 func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
-	return func(s *FlowstateServer) {
+	return func(s *FlowstateServer) error {
 		if s.trustedWorkflows == nil {
 			s.trustedWorkflows = make(map[trustedWorkflowKey]*v1.Workflow)
 		}
@@ -226,9 +283,15 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 				// replace `manual: denied` or a narrower
 				// `allowed_principals` — silently, and decided by option
 				// order rather than by anything an operator wrote down.
-				// An [Option] cannot report an error, so the conflict is
-				// recorded and every request for this key is refused; see
-				// [FlowstateServer.noteTrustedWorkflowConflict].
+				// An [Option] can report an error, and this deliberately
+				// does not: a conflict is scoped to one tenant's one
+				// workflow, and failing construction would take a whole
+				// deployment's other tenants down with it. So the conflict is
+				// recorded and every request for this key — and only this key
+				// — is refused; see
+				// [FlowstateServer.noteTrustedWorkflowConflict]. The malformed
+				// specification arm above refuses the same way for the same
+				// reason.
 				s.refuseTrustedWorkflow(key, fmt.Sprintf(
 					"workflow %q is registered twice for this namespace with different specifications, "+
 						"so this deployment has no single policy to enforce for it; an operator must "+
@@ -237,6 +300,7 @@ func WithTrustedWorkflows(namespace string, workflows ...*v1.Workflow) Option {
 			}
 			s.trustedWorkflows[key] = proto.Clone(workflow).(*v1.Workflow)
 		}
+		return nil
 	}
 }
 
@@ -476,14 +540,18 @@ func (s *FlowstateServer) registerTrustedWorkflows(namespace string, workflows [
 // them. That asymmetry is why nothing payload-derived may ever be projected into
 // one.
 func WithDataConverter(dc converter.DataConverter) Option {
-	return func(s *FlowstateServer) {
+	return func(s *FlowstateServer) error {
 		if dc == nil {
 			// A nil converter would be a silent outage of exactly the shape
 			// this option exists to prevent, so it is refused by being ignored:
-			// the server keeps the default [New] gave it.
-			return
+			// the server keeps the default [New] gave it, which is a working
+			// converter. Reporting an error instead is now possible and is a
+			// behavior change to make on its own evidence, not as a side effect
+			// of [Option] growing an error.
+			return nil
 		}
 		s.dataConverter = dc
+		return nil
 	}
 }
 
@@ -517,7 +585,7 @@ func WithDataConverter(dc converter.DataConverter) Option {
 // registration failed, which is indistinguishable from a filter with a typo
 // in it — the exact dishonesty CLAUDE.md's List section exists to prevent.
 func WithSearchAttributesRegistered() Option {
-	return func(s *FlowstateServer) { s.searchAttributesRegistered = true }
+	return func(s *FlowstateServer) error { s.searchAttributesRegistered = true; return nil }
 }
 
 // namespaceMemoKey is the memo field recording which tenant a run belongs to.
