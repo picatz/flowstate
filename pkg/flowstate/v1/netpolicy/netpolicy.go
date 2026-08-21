@@ -254,7 +254,13 @@ func (p *Policy) newClient() *http.Client {
 	}
 
 	return &http.Client{
-		Transport:     &roundTripper{policy: p, next: transport},
+		// Tracing wraps the policy rather than the other way around, so the span
+		// covers the policy's answer as well as the peer's — a denial is an
+		// outcome of the request, and a refused request that produced no span at
+		// all would be the one an operator most wants to find. See
+		// [tracingRoundTripper] for what a span may say, which is much less than
+		// it knows.
+		Transport:     &tracingRoundTripper{next: &roundTripper{policy: p, next: transport}},
 		CheckRedirect: p.checkRedirect,
 		Timeout:       p.cfg.timeout,
 	}
