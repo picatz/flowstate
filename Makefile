@@ -199,17 +199,27 @@ appearance-update:
 # of those lines is invisible to it: a CLI verb whose only coverage comes
 # from a subprocess test looks identical to one with no test at all.
 #
-# GOCOVERDIR exported below is read two ways at once. Go's own toolchain
-# reads it directly: `go test -cover -args -test.gocoverdir=...` makes this
-# process's own in-process test binaries write their counters there. And
-# internal/covbuild reads the same variable to decide, for every test file
-# above, whether to build its subprocess binary with -cover and to carry
-# GOCOVERDIR into the environments built from scratch that would not
-# otherwise inherit it — so an instrumented `flow` or example-plugin binary,
-# run as a real subprocess, writes its counters into the same directory.
-# `go tool covdata` then merges every process's counters, however many ran,
-# into one profile — that merge is the whole point of the mechanism; nothing
-# here computes coverage from a single process the way -coverprofile does.
+# Two variables below, naming one directory, because two mechanisms read it.
+# Go's own toolchain reads GOCOVERDIR: `go test -cover -args
+# -test.gocoverdir=...` makes this process's own in-process test binaries
+# write their counters there. internal/covbuild reads FLOWSTATE_COVERDIR —
+# deliberately *not* GOCOVERDIR, see that package's doc for the scratch
+# directory `go test -cover` points GOCOVERDIR at and then discards — to
+# decide, for every test file above, whether to build its subprocess binary
+# with -cover and to carry a real GOCOVERDIR into environments built from
+# scratch that would not otherwise inherit one. `go tool covdata` then merges
+# every process's counters, however many ran, into one profile — that merge is
+# the whole point of the mechanism; nothing here computes coverage from a
+# single process the way -coverprofile does.
+#
+# This target exported only GOCOVERDIR until #404, which is the failure #519
+# is about wearing the mechanism's own clothes: covbuild saw no
+# FLOWSTATE_COVERDIR, built every subprocess binary uninstrumented, and the
+# report came back with the subprocess tier contributing nothing — silently,
+# since a package with no counters and a package whose counters never merged
+# read identically. Measured on `-run TestExitCodeGoldenPaths` alone: two
+# files in the raw directory and 0.0% for cmd/flow with GOCOVERDIR only,
+# against six files and 11.2% with both.
 #
 # This is a map, not a gate, per #519: nothing in CI or `make check` reads
 # .coverage/, and no percentage is enforced anywhere, here or anywhere else.
@@ -225,7 +235,7 @@ appearance-update:
 coverage:
 	rm -rf .coverage
 	mkdir -p .coverage/raw
-	( GOCOVERDIR=$(CURDIR)/.coverage/raw GOMEMLIMIT=2GiB go test -cover -timeout 1800s ./... -args -test.gocoverdir=$(CURDIR)/.coverage/raw ; echo $$? > .coverage/status ) 2>&1 | tee .coverage/test.log; \
+	( GOCOVERDIR=$(COVERAGE_RAW) FLOWSTATE_COVERDIR=$(COVERAGE_RAW) GOMEMLIMIT=2GiB go test -cover -timeout 1800s ./... -args -test.gocoverdir=$(COVERAGE_RAW) ; echo $$? > .coverage/status ) 2>&1 | tee .coverage/test.log; \
 	( $(MAKE) coverage-plugins ; echo $$? > .coverage/plugin-status ) 2>&1 | tee -a .coverage/test.log; \
 	status=$$(cat .coverage/status); \
 	plugin_status=$$(cat .coverage/plugin-status); \
