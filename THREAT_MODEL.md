@@ -260,11 +260,20 @@ the interpreter's, which nothing here hashes. `#!` is the familiar case and not
 the only one: a `binfmt_misc` registration without the open-binary (`O`) flag
 behaves identically for whatever format it claims, and the format it most often
 claims is *foreign-architecture ELF*, which is how a multi-arch image runs
-anything at all. Which images may be pinned is therefore an allowlist — an ELF
-whose class, byte order and machine are the ones this host's own loader claims,
-and nothing else — rather than a list of known-bad markers a host can add to at
-any time, or a magic-bytes test that a qemu-user target passes. Every case launches, and
-every case says which guarantee it is giving in a log line at every launch
+anything at all. Which images may be pinned is therefore an allowlist rather than
+a list of known-bad markers a host can add to at any time, and it asks the two
+questions the kernel asks: *would `binfmt_elf` claim this image* — every header
+field whose failure returns `-ENOEXEC` and hands the file on to the next
+registered format, not merely a class/byte-order/machine triple that a malformed
+image also carries (#732, #741) — and *is `binfmt_elf` the format that is asked*,
+which is read from the `binfmt_misc` registry, because a registration is offered
+every image before the native loader is
+(`pkg/flowstate/v1/plugin/execformat_linux.go`, `binfmtmisc_linux.go`). Anything
+unproven, unparseable or unreadable takes the by-path fallback. The residual case
+is a registry that cannot be seen: a container that does not mount
+`binfmt_misc` is still subject to the host's registrations, and an absent registry
+is not proof of an empty one. Every case launches, and
+every case says which guarantee it is giving, and why, in a log line at every launch
 (`pkg/flowstate/v1/plugin/image.go`, `image_linux.go`, `image_other.go`). An
 operator who needs the strong guarantee ships a native binary. A launched
 plugin is trusted code with the worker's authority. The output

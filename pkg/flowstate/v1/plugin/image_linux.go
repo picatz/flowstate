@@ -44,7 +44,7 @@ const execFDFloor = 16
 func pinToDescriptor(f *os.File, info fs.FileInfo) (*os.File, string, error) {
 	// The format gate comes first, because naming a descriptor only works for an
 	// image the kernel executes *directly*. See [refuseUnlessExecutedDirectly].
-	if err := refuseUnlessExecutedDirectly(f, info); err != nil {
+	if err := refuseUnlessExecutedDirectly(f, info, binfmtMiscRegistry); err != nil {
 		// f is untouched and still usable by the caller.
 		return f, "", err
 	}

@@ -51,13 +51,50 @@ func execPrefix(f *os.File) ([]byte, error) {
 // pin and keeps the launch, so the answer for anything unproven is a refusal
 // with a reason an operator can read. The refusal is the diagnostic — see
 // [openExecImage], which logs it beside the weaker guarantee it is taking.
-func refuseUnlessExecutedDirectly(f *os.File, info fs.FileInfo) error {
+//
+// registry is where the `binfmt_misc` registrations are read from. It is an
+// argument rather than a constant reached from inside so that a test can hand
+// it a directory it wrote: registering a real format needs privilege and is
+// host-global, which would make the interesting half of this untestable.
+func refuseUnlessExecutedDirectly(f *os.File, info fs.FileInfo, registry string) error {
 	prefix, err := execPrefix(f)
 	if err != nil {
 		return err
 	}
 
-	return nativeELFRefusal(prefix, info.Size())
+	if err := nativeELFRefusal(prefix, info.Size()); err != nil {
+		return err
+	}
+
+	// Being an image binfmt_elf would claim is not the same as being one it is
+	// *asked* about: binfmt_misc is consulted first. See [binfmtMiscClaim].
+	claim, err := binfmtMiscClaim(registry, kernelExecBuffer(prefix), f.Name())
+	if err != nil {
+		return err
+	}
+	if claim != "" {
+		return fmt.Errorf("the image is a native ELF, and %s, so the descriptor naming it is closed before "+
+			"the interpreter can reopen it", claim)
+	}
+
+	return nil
+}
+
+// kernelExecBuffer is the prefix as the kernel presents it to a format handler:
+// [binprmBufSize] bytes, zero-filled past the end of a shorter file.
+//
+// The padding is not a detail. `binfmt_misc` matches a registration's magic
+// against this buffer, so a magic reaching past the end of a short image is
+// matched against zeroes rather than skipped, and a check that skipped it would
+// miss exactly the registration that claims the file.
+func kernelExecBuffer(prefix []byte) []byte {
+	if len(prefix) >= binprmBufSize {
+		return prefix
+	}
+
+	buffer := make([]byte, binprmBufSize)
+	copy(buffer, prefix)
+	return buffer
 }
 
 // errImageIsRunThroughAnInterpreter is why an image the kernel does not execute
