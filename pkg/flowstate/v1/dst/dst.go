@@ -65,8 +65,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"testing"
 
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -311,7 +311,9 @@ func (r *Report) Truncated() bool {
 //
 // It returns rather than fails, so that a test can assert a divergence *is*
 // found — which is the only way to know the property is capable of failing at
-// all. [CheckScheduleEquivalence] is the ordinary caller.
+// all. [dsttest.CheckScheduleEquivalence] is the ordinary caller.
+//
+// [dsttest.CheckScheduleEquivalence]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/dst/dsttest#CheckScheduleEquivalence
 func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 	report := &Report{}
 
@@ -360,10 +362,19 @@ func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) Ob
 // that are the encoder's and miss none of its own. The bytes are hex so the
 // rendering a failure prints is the same thing the comparison used, rather than
 // a second rendering that could disagree with it.
+//
+// [canonicalTranscript] closes the same hole one layer down, and the layer is
+// the whole of why it is needed: `Deterministic: true` sorts a *proto* map's
+// keys, and a CEL map inside a transcript is not one — it is
+// [expr.MapValue]'s repeated Entries, whose order is whatever order the engine
+// ranged a Go map in when it built the value. Two runs of one workflow under one
+// schedule therefore encode to different bytes with no ordering claim
+// distinguishing them, which this harness would report as a divergence produced
+// by a schedule that made no decisions at all.
 func render(result Result) string {
 	var b strings.Builder
 
-	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(result.Transcript)
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(canonicalTranscript(result.Transcript))
 	if err != nil {
 		// A transcript that will not encode is not a divergence to report; it is
 		// the same failure on every schedule, so it renders identically and the
@@ -388,35 +399,124 @@ func render(result Result) string {
 	return b.String()
 }
 
-// CheckScheduleEquivalence explores one workflow's schedule space and fails tb
-// on the first schedule whose observables differ from written order's.
+// canonicalTranscript returns transcript with every CEL map's entries in a fixed
+// order, so that one workflow run twice under one schedule encodes to one string.
 //
-// The failure names the seed and prints the command that replays it, because a
-// seed nobody can act on is a random number.
-func CheckScheduleEquivalence(tb testing.TB, run RunFunc) *Report {
-	tb.Helper()
+// A CEL map is [expr.MapValue], a *repeated* field of key/value entries, and a
+// map has no order — so the engine builds one by ranging a Go map and the entry
+// order that comes out is Go's randomized one. It is not a claim about anything.
+// Comparing it is how this harness reported, on the examples corpus, six
+// "divergences" produced by schedules that made zero scheduling decisions:
+// identical content, identical length, entries in a different order, on a run
+// where the seeded scheduler was never asked a single question.
+//
+// Sorting the entries rather than ignoring them keeps the comparison exact in
+// the direction that matters. A schedule that changed a key, a value, or how
+// many entries there are still changes these bytes; only the order they happen
+// to be listed in stops being a difference, which is the one thing the type
+// itself says is not one.
+//
+// Lists are left exactly as they are, deliberately: [expr.ListValue] *is*
+// ordered, a loop's `results` travel in one, and reordering those would hide
+// precisely the class of defect this package exists to find.
+func canonicalTranscript(transcript *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
+	if transcript == nil {
+		return nil
+	}
 
-	budget, err := DefaultBudget()
+	canonical := &v1.Workflow_StepOutputs{
+		StepValues: make(map[string]*v1.Node_Outputs, len(transcript.GetStepValues())),
+	}
+	for id, outputs := range transcript.GetStepValues() {
+		canonical.StepValues[id] = canonicalOutputs(outputs)
+	}
+
+	// The run's declared outputs, which is the answer the run was asked for and
+	// therefore the half of the transcript an author reads most directly.
+	if run := transcript.GetRunOutputs(); run != nil {
+		canonical.RunOutputs = &v1.RunOutputs{Values: make(map[string]*v1.Value, len(run.GetValues()))}
+		for name, value := range run.GetValues() {
+			canonical.RunOutputs.Values[name] = canonicalNamedValue(value)
+		}
+	}
+
+	return canonical
+}
+
+// canonicalOutputs is [canonicalTranscript] for one step's recorded outputs.
+func canonicalOutputs(outputs *v1.Node_Outputs) *v1.Node_Outputs {
+	if outputs == nil {
+		return nil
+	}
+
+	canonical := &v1.Node_Outputs{
+		NamedValues: make(map[string]*v1.Value, len(outputs.GetNamedValues())),
+	}
+	for name, value := range outputs.GetNamedValues() {
+		canonical.NamedValues[name] = canonicalNamedValue(value)
+	}
+
+	return canonical
+}
+
+// canonicalNamedValue rewrites one recorded value's literal, leaving every other
+// shape a [v1.Value] can take (an error, an unresolved reference) untouched.
+func canonicalNamedValue(value *v1.Value) *v1.Value {
+	literal := value.GetLiteral()
+	if literal == nil {
+		return value
+	}
+
+	clone := proto.Clone(value).(*v1.Value)
+	clone.Kind = &v1.Value_Literal{Literal: canonicalLiteral(literal)}
+
+	return clone
+}
+
+// canonicalLiteral sorts every map's entries, at every depth.
+func canonicalLiteral(value *expr.Value) *expr.Value {
+	switch kind := value.GetKind().(type) {
+	case *expr.Value_MapValue:
+		entries := make([]*expr.MapValue_Entry, 0, len(kind.MapValue.GetEntries()))
+		for _, entry := range kind.MapValue.GetEntries() {
+			entries = append(entries, &expr.MapValue_Entry{
+				Key:   canonicalLiteral(entry.GetKey()),
+				Value: canonicalLiteral(entry.GetValue()),
+			})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entrySortKey(entries[i].GetKey()) < entrySortKey(entries[j].GetKey())
+		})
+
+		return &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}}}
+	case *expr.Value_ListValue:
+		values := make([]*expr.Value, 0, len(kind.ListValue.GetValues()))
+		for _, item := range kind.ListValue.GetValues() {
+			values = append(values, canonicalLiteral(item))
+		}
+
+		return &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: values}}}
+	default:
+		return value
+	}
+}
+
+// entrySortKey is a total order over CEL map keys.
+//
+// The key's own deterministic encoding rather than its string form, because a
+// CEL map's keys are values and need not be strings: an int key and the string
+// spelling of the same number are different keys, and a sort that rendered both
+// as "1" would order them by nothing. An encoding that fails sorts as empty,
+// which is stable and is the only property this needs — two keys that encode to
+// nothing are two keys nothing can tell apart, and the comparison one layer up
+// still sees them.
+func entrySortKey(key *expr.Value) string {
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(key)
 	if err != nil {
-		tb.Fatalf("the schedule budget is not usable: %v", err)
+		return ""
 	}
 
-	report := Explore(tb.Context(), budget, run)
-
-	// Printed on every run, pass or fail: a search that explored no junctions is
-	// a search that proved nothing, and a bound that was reached changes what a
-	// green means. Both are facts about the *check*, so neither is allowed to be
-	// silent.
-	tb.Logf("schedule equivalence: %d schedules explored, up to %d scheduling decisions each, truncated=%t",
-		report.Schedules(), report.Decisions(), report.Truncated())
-
-	if report.Divergence == nil {
-		return report
-	}
-
-	tb.Fatalf("%s", FailureText(tb.Name(), report.Divergence))
-
-	return report
+	return string(encoded)
 }
 
 // FailureText is what a divergence says for itself: which seed, what differed,

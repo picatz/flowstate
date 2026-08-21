@@ -8,6 +8,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst/dsttest"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
@@ -44,7 +45,7 @@ func TestScheduleEquivalenceOverAsyncCases(t *testing.T) {
 	explored := 0
 	for _, test := range conformance.AsyncCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
-			report := dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			report := dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				outputs, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
 
 				return dst.Result{Transcript: outputs, Err: err}
@@ -67,7 +68,7 @@ func TestScheduleEquivalenceOverControlFlowCases(t *testing.T) {
 	explored := 0
 	for _, test := range conformance.ControlFlowCases(baseURL) {
 		t.Run(test.Name, func(t *testing.T) {
-			report := dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			report := dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				outputs, err := v1.RunWithInputs(ctx, test.Workflow, test.Inputs)
 
 				return dst.Result{Transcript: outputs, Err: err}
@@ -102,7 +103,7 @@ func TestScheduleEquivalenceOverUndoCases(t *testing.T) {
 			base, recorded := conformance.NewUndoServer(t)
 			test := conformance.UndoCases(base)[index]
 
-			report := dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			report := dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				before := len(recorded())
 				_, err := v1.Run(ctx, test.Workflow)
 
@@ -131,7 +132,7 @@ func TestScheduleEquivalenceOverUndoCallCases(t *testing.T) {
 			base, recorded := conformance.NewUndoServer(t)
 			test := conformance.UndoCallCases(base)[index]
 
-			dst.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
+			dsttest.CheckScheduleEquivalence(t, func(ctx context.Context) dst.Result {
 				before := len(recorded())
 				_, err := v1.Run(ctx, test.Workflow)
 
