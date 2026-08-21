@@ -95,6 +95,10 @@ type watchProgress = watch.Progress
 // [watch.TransientError].
 type transientError = watch.TransientError
 
+// watchOption adjusts how a walk describes the run it is following. See
+// [watch.Option].
+type watchOption = watch.Option
+
 // outageAllowance is how long the server may be unable to answer before a watch
 // gives up on it. See [watch.OutageAllowance].
 const outageAllowance = watch.OutageAllowance
@@ -118,9 +122,13 @@ func watchDeps() watch.Deps {
 
 // newWatchState begins a walk, optionally already knowing something about the run,
 // supplying this package's [watch.Deps]. See [watch.NewState].
-func newWatchState(workflowID string, known *v1.GetResponse) *watchState {
-	return watch.NewState(watchDeps(), workflowID, known)
+func newWatchState(workflowID string, known *v1.GetResponse, options ...watch.Option) *watchState {
+	return watch.NewState(watchDeps(), workflowID, known, options...)
 }
+
+// namedRun says what to call a run in prose, for the verb that knows the workflow's
+// own name. See [watch.Named].
+var namedRun = watch.Named
 
 // clientPoller polls the real service.
 type clientPoller struct {
@@ -384,16 +392,17 @@ func watchRun(
 	plain bool,
 	workflowID string,
 	known *v1.GetResponse,
+	options ...watch.Option,
 ) error {
 	// Both flags decide before the terminal does. A document was asked for
 	// explicitly and a terminal was not, so drawing a view over somebody's requested
 	// JSON would be this command guessing against a flag — which is the mistake
 	// --output exists to prevent, and --plain is the same rule said out loud.
 	if plain || rendering.WantsDocument() || !surface.ErrCaps.TTY {
-		return followPlainly(ctx, surface, rendering, poller, interval, workflowID, known)
+		return followPlainly(ctx, surface, rendering, poller, interval, workflowID, known, options...)
 	}
 
-	return followLive(ctx, surface, rendering, poller, interval, workflowID, known)
+	return followLive(ctx, surface, rendering, poller, interval, workflowID, known, options...)
 }
 
 // followPlainly is the shape a script, a CI job, and a program each receive.
@@ -409,8 +418,9 @@ func followPlainly(
 	interval time.Duration,
 	workflowID string,
 	known *v1.GetResponse,
+	options ...watch.Option,
 ) error {
-	state := newWatchState(workflowID, known)
+	state := newWatchState(workflowID, known, options...)
 
 	// A ticker rather than a sleep so the interval is the period between requests
 	// rather than the period plus however long the server took to answer — which is
@@ -463,8 +473,9 @@ func newWatchModel(
 	interval time.Duration,
 	workflowID string,
 	known *v1.GetResponse,
+	options ...watch.Option,
 ) watch.Model {
-	return watch.NewModel(ctx, surface, watchDeps(), poller, interval, workflowID, known)
+	return watch.NewModel(ctx, surface, watchDeps(), poller, interval, workflowID, known, options...)
 }
 
 // followLive draws a run until it finishes, through [watch.Run], and then writes
@@ -477,8 +488,9 @@ func followLive(
 	interval time.Duration,
 	workflowID string,
 	known *v1.GetResponse,
+	options ...watch.Option,
 ) error {
-	model, err := watch.Run(ctx, surface, watchDeps(), poller, interval, workflowID, known)
+	model, err := watch.Run(ctx, surface, watchDeps(), poller, interval, workflowID, known, options...)
 	if err != nil {
 		return err
 	}
@@ -498,10 +510,34 @@ func watchEnding(surface *ui.UI, rendering runRendering, model watch.Model) erro
 		return nil
 	}
 
+	state := model.State()
+
+	// What the live view drew is transient: bubbletea erases its last frame on the
+	// way out, so a durable run watched on a terminal used to end having said
+	// nothing that stayed on screen about how it ended. `flow run local` says
+	// `COMPLETED workflow <name>` and stops, and a person moving between the two
+	// drivers should not find that the durable one is the one that goes quiet
+	// (picatz/flowstate#544).
+	//
+	// The same sentence the plain shape writes, from the same state, rather than a
+	// second rendering of the outcome: [watch.State.Line] is the one place a run's
+	// status becomes prose. Terminal statuses only — a walk that gave up knows
+	// nothing final about the run, and finishWatch answers that with the error it
+	// stopped on rather than with a line claiming the last thing it happened to see.
+	//
+	// This is the *first* thing this shape writes that stays, so it is where every
+	// run id the walk saw comes due — including each continue-as-new handover's,
+	// which the erased frames were the only place to have shown. `flow get --run-id`
+	// and `flow watch --run-id` both take one, so an attempt whose id never reached
+	// the reader is an attempt they cannot ask about. See [watch.State.Line].
+	if rendering.format == FormatText && !state.GaveUp() && watch.TerminalStatus(state.Status()) {
+		fmt.Fprintln(surface.Err, state.Line(surface.ErrTheme))
+	}
+
 	// Otherwise the same ending the plain shape reaches, from the same state, so the
 	// outputs on stdout and the exit code are identical whichever shape drew the
 	// progress. A TUI that reports differently from a pipe is two commands.
-	return finishWatch(surface, rendering, model.State())
+	return finishWatch(surface, rendering, state)
 }
 
 // interrupted ends a follow that stopped before the run did.

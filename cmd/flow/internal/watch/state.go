@@ -52,6 +52,18 @@ import (
 // and enforced in another, the difference is where the peer gets to live.
 const OutageAllowance = 30 * time.Second
 
+// maxNarratedRunIDs is how many continue-as-new attempt ids a single narrated
+// line will name before it collapses the earlier ones into a count.
+//
+// The bound is on the live view's ledger of owed run ids, which is otherwise
+// the length of a continue-as-new chain a workload controls (see
+// [State.droppedRunIDs]). Eight is generous for a handover chain a person is
+// actually reading and small enough that the retained tail plus a count is a
+// line rather than a wall: past it, an individual intermediate attempt is not
+// something a reader picks out by eye anyway, and the count is what tells them
+// how long the chain was.
+const maxNarratedRunIDs = 8
+
 // Deps are the rendering functions this package borrows from cmd/flow rather
 // than owning a second copy of.
 //
@@ -134,8 +146,64 @@ type State struct {
 
 	workflowID string
 
+	// subject is how the run is named in the prose a person reads, which is
+	// not always the id every command addresses it by. `flow run` has just
+	// parsed the file, so it can say `workflow computed-outputs` — the noun
+	// the author typed — where the id is a 45-character string they have
+	// never seen before. `flow watch` was handed the id and nothing else, so
+	// that is what it says, which is also the word the reader typed.
+	//
+	// Defaults to workflowID, so a caller that names nothing loses nothing.
+	subject string
+
 	runID  string
 	status v1.RunResponse_Status
+
+	// seenRunID is the last run id folded in, and pendingRunIDs the run ids
+	// this walk has observed and not yet written down anywhere that stays.
+	//
+	// An identifier is worth a line's width when it tells a reader something
+	// they did not already have, and the run id is not the word any verb takes
+	// to name a *workload* — `flow watch`, `flow get` and `flow cancel` all
+	// take the workflow id. Repeating it on every line was most of what
+	// picatz/flowstate#544 was about: four lines of one run, each spending 36
+	// characters restating a value that had not moved.
+	//
+	// It is emphatically not noise, though, and that is the correction the
+	// first attempt at this needed. `flow get --run-id` and
+	// `flow watch --run-id` both take a run id, to ask about one attempt of a
+	// workload rather than whichever is current, and across a continue-as-new
+	// handover the earlier attempts have no other name at all. So every run id
+	// this walk sees has to reach the reader exactly once — not zero times.
+	//
+	// The ledger is therefore of what *stayed on screen*, which is why it is
+	// drained by [State.Line] rather than by [State.Absorb]. Absorb knows a
+	// change happened; only the line being written knows a reader was told.
+	// The live view is the case that separates them: it draws the run id in
+	// its header on every frame and bubbletea erases the whole frame on exit,
+	// so nothing it showed persists, and a ledger updated at absorb time
+	// counted those frames as having told somebody. It also made the answer
+	// depend on how many changes the view happened to absorb before the run
+	// ended — the same finished run naming the run id on one invocation and
+	// not the next.
+	seenRunID     string
+	pendingRunIDs []string
+
+	// droppedRunIDs is how many owed run ids fell off the front of
+	// pendingRunIDs because the chain outgrew [maxNarratedRunIDs].
+	//
+	// The live view is the only accumulator — the plain shape drains the ledger
+	// every line, so it never holds more than one — and a workload can continue
+	// as new without bound: a nested loop against a small step budget forces a
+	// handover per iteration, each with a fresh run id. Retaining the whole
+	// chain, then joining it into one string at the end, is an unbounded
+	// allocation a hostile or merely long workflow controls the size of, which
+	// is precisely the shape CLAUDE.md's bounding rule exists for
+	// (picatz/flowstate#836). So the retained tail is capped and the earlier
+	// ids are counted rather than kept: the current attempt is the actionable
+	// one, and a reader staring at a thousand-id line was never going to find
+	// an intermediate one in it anyway — the count is the honest thing to show.
+	droppedRunIDs int
 
 	// steps are the ids of steps that have produced outputs, sorted.
 	steps []string
@@ -186,6 +254,33 @@ type State struct {
 	gaveUp bool
 }
 
+// Option adjusts how a walk describes the run it is following.
+//
+// Variadic and applied last, rather than a further string parameter on
+// [NewState] and [NewModel]: those already take a workflow id, and two
+// adjacent strings whose meanings differ is a call site that can be wrong
+// while compiling. A named option cannot be passed in the wrong position.
+type Option func(*State)
+
+// Named says what to call the run in prose, for a caller that knows the
+// workflow's own name.
+//
+// Only [State.subject] moves. The workflow id stays what every message about
+// addressing the run uses — the `flow watch` hint, [State.WorkflowID], the
+// error a failed run exits with — because a name is not something another
+// command can be pointed at.
+//
+// An empty or blank name is ignored rather than accepted, so a workflow with
+// no usable name falls back to the id instead of being narrated as
+// `workflow ` with nothing after it.
+func Named(subject string) Option {
+	return func(state *State) {
+		if strings.TrimSpace(subject) != "" {
+			state.subject = subject
+		}
+	}
+}
+
 // NewState begins a walk, optionally already knowing something about the
 // run.
 //
@@ -193,12 +288,22 @@ type State struct {
 // following, and seeding that matters: a machine-readable caller interrupted
 // before the first poll would otherwise be given nothing at all, while a
 // durable workload it can no longer name goes on running.
-func NewState(deps Deps, workflowID string, known *v1.GetResponse) *State {
-	state := &State{deps: deps, workflowID: workflowID}
+//
+// A seeded run id is queued as owed to the reader rather than treated as
+// already told: it has been learned, not reported, and nothing has been
+// written yet. Marking it reported here would make the first line about a run
+// the one line that omits its identity.
+func NewState(deps Deps, workflowID string, known *v1.GetResponse, options ...Option) *State {
+	state := &State{deps: deps, workflowID: workflowID, subject: workflowID}
 	if known != nil {
 		state.response = known
 		state.runID = known.GetRunId()
 		state.status = known.GetStatus()
+		state.noteRunID(state.runID)
+	}
+
+	for _, option := range options {
+		option(state)
 	}
 
 	return state
@@ -278,6 +383,10 @@ func (s *State) Absorb(at time.Time, response *v1.GetResponse, err error) Progre
 		s.failure = failure.GetMessage()
 	}
 
+	// Queued, not spent: whether a reader is ever told is decided by whether a
+	// line gets written, which is [State.Line]'s business and not this one's.
+	s.noteRunID(s.runID)
+
 	return Progress{Changed: changed, Done: TerminalStatus(s.status)}
 }
 
@@ -318,14 +427,37 @@ func (s *State) stop(err error) Progress {
 
 // Line renders the state as one line of prose, for the shape that prints a
 // line per change.
+//
+// The sentence is `<status> workflow <subject>`, which is the same sentence
+// `flow run local` writes for a finished local run, so the two drivers
+// describe themselves the same way and a person moving between them has
+// nothing to relearn.
+//
+// The run ids this walk has seen and not yet written down follow, per
+// [State.runsClause]. Every identifier is therefore said once and then
+// assumed, which is what leaves room for the part a reader is actually
+// waiting for: where the run has got to, what is being retried, which gate it
+// is parked on, and what it failed with.
+//
+// This writes to the state, which a renderer normally should not: it drains
+// the ledger of run ids owed. That is deliberate and is the correction
+// picatz/flowstate#836 found — a ledger of what a reader has been told can
+// only be kept where the telling happens, and every caller of this function
+// is writing the result to a stream that keeps it. Calling it twice for one
+// line would spend the ids on the copy that is thrown away.
 func (s *State) Line(theme ui.Theme) string {
 	if s.lastError != nil {
 		return fmt.Sprintf("%s %s", theme.Pill(ui.ToneWarning, "unreachable"), s.lastError)
 	}
 
-	line := fmt.Sprintf("%s workflow %s run %s%s",
-		theme.Pill(s.deps.StatusTone(s.status), s.deps.StatusLabel(s.status)), s.workflowID, s.runID,
-		s.deps.RunPosition(theme, s.response.GetProgress()))
+	line := fmt.Sprintf("%s workflow %s",
+		theme.Pill(s.deps.StatusTone(s.status), s.deps.StatusLabel(s.status)), s.subject)
+
+	if clause := s.runsClause(); clause != "" {
+		line += " " + clause
+	}
+
+	line += s.deps.RunPosition(theme, s.response.GetProgress())
 
 	for _, pending := range s.pending {
 		line += fmt.Sprintf(" (%s)", pending)
@@ -343,6 +475,66 @@ func (s *State) Line(theme ui.Theme) string {
 	}
 
 	return line
+}
+
+// noteRunID queues a run id as owed to the reader, once.
+//
+// Called from every place a run id is learned — the seed and each poll — and
+// silent about one it has already queued or already written, so a walk that
+// hands over twice owes exactly two ids and a walk that never hands over owes
+// one.
+func (s *State) noteRunID(id string) {
+	if id == "" || id == s.seenRunID {
+		return
+	}
+
+	s.seenRunID = id
+	s.pendingRunIDs = append(s.pendingRunIDs, id)
+
+	// Bounded here rather than at render time, so the slice itself can never
+	// grow past the cap however long the walk runs: the oldest owed id falls
+	// off the front and is counted instead. See [State.droppedRunIDs].
+	if len(s.pendingRunIDs) > maxNarratedRunIDs {
+		s.droppedRunIDs += len(s.pendingRunIDs) - maxNarratedRunIDs
+		s.pendingRunIDs = append(s.pendingRunIDs[:0], s.pendingRunIDs[len(s.pendingRunIDs)-maxNarratedRunIDs:]...)
+	}
+}
+
+// runsClause is the run ids a line about to be written owes its reader, and
+// drains them.
+//
+// Draining here rather than at absorb time is the whole of the fix for
+// picatz/flowstate#836's finding: this function is called exactly when a line
+// is being written to a stream that keeps it.
+//
+// Usually one id, and on the plain shape always one — that shape writes a line
+// per change, so nothing can accumulate between them. More than one is the
+// live view, which writes nothing that stays until the run ends: a workload
+// that continued as new twice while somebody watched it owes all three ids to
+// the sentence left behind, because those attempts have no other name and
+// `flow get --run-id` is how a reader asks about one.
+//
+// A chain longer than [maxNarratedRunIDs] is reported as a count of the earlier
+// attempts followed by the retained tail — see [State.droppedRunIDs] — so the
+// clause stays bounded no matter how many times the workload handed over.
+func (s *State) runsClause() string {
+	dropped := s.droppedRunIDs
+	ids := s.pendingRunIDs
+	s.pendingRunIDs, s.droppedRunIDs = nil, 0
+
+	switch {
+	case len(ids) == 0 && dropped == 0:
+		return ""
+
+	case dropped > 0:
+		return fmt.Sprintf("runs (%d earlier attempts), %s", dropped, strings.Join(ids, ", "))
+
+	case len(ids) == 1:
+		return "run " + ids[0]
+
+	default:
+		return "runs " + strings.Join(ids, ", ")
+	}
 }
 
 // GaveUp reports that the walk ended because the server stopped answering,

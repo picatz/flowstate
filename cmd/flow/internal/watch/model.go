@@ -94,13 +94,14 @@ func NewModel(
 	interval time.Duration,
 	workflowID string,
 	known *v1.GetResponse,
+	options ...Option,
 ) Model {
 	return Model{
 		surface: surface,
 		deps:    deps,
 
 		poller:   poller,
-		state:    NewState(deps, workflowID, known),
+		state:    NewState(deps, workflowID, known, options...),
 		ctx:      ctx,
 		interval: interval,
 		width:    surface.ErrCaps.Width,
@@ -125,8 +126,9 @@ func Run(
 	interval time.Duration,
 	workflowID string,
 	known *v1.GetResponse,
+	options ...Option,
 ) (Model, error) {
-	model := NewModel(ctx, surface, deps, poller, interval, workflowID, known)
+	model := NewModel(ctx, surface, deps, poller, interval, workflowID, known, options...)
 
 	// Drawn to stderr, so stdout carries the outputs and nothing else — which
 	// is what lets one invocation show a live view and pipe its answer. The

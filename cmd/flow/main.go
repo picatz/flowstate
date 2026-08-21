@@ -764,14 +764,27 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	workflowID := started.Msg.GetWorkflowId()
 
+	// What this run is called, for the prose. The file has just been parsed here,
+	// so the workflow's own name is available and is the noun the author already
+	// has for it; the id is a string they have never seen before and cannot have
+	// an opinion about. See [watch.Named].
+	subject := runSubject(workflow, workflowID)
+
 	// Said before the following begins, because it is the one fact somebody needs in
 	// order to come back to this run later, and following is where they might stop
 	// paying attention. Only to a person: the machine formats carry the id in every
 	// document they emit, so saying it again in prose would be something a reader has
 	// to parse past.
+	//
+	// The id appears exactly once, inside the command it is for. It used to appear
+	// twice on this line and then again on every line of the follow, which is most
+	// of what made a finished run something to decipher (picatz/flowstate#544): the
+	// signal is that a run started and can be returned to, and every other character
+	// was identifier. Once, in the `flow watch` hint, is where it earns its width —
+	// that is the one place a reader does something with it rather than reads it.
 	if format == FormatText {
-		fmt.Fprintf(surface.Err, "started %s; come back to it with `flow watch %s`\n",
-			workflowID, workflowID)
+		fmt.Fprintf(surface.Err, "started workflow %s; come back to it with `flow watch %s`\n",
+			subject, workflowID)
 	}
 
 	// Deliberately not pinned to the run just started. A workload that continues as
@@ -800,9 +813,38 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		noteUnattestedSpecification(surface)
 	}
 
+	// spec is the executed specification, not the submitted workflow: the poller
+	// redacts against what the server attested it ran (#734/#826), and only the run
+	// naming — namedRun(subject) — comes from this branch. The two are independent:
+	// what a run is *called* in prose is the workflow's own name, while what it is
+	// *redacted against* has to be the attested copy or the fail-closed case.
 	return watchRun(cmd.Context(), surface, rendering,
 		clientPoller{workflowID: workflowID, server: server, client: client, spec: executed, reveal: reveal},
-		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg))
+		clampWatchInterval(interval), plain, workflowID, startedRun(started.Msg), namedRun(subject))
+}
+
+// runSubject is how a run this command started is named in prose.
+//
+// The workflow's own name, which is what the author typed and what `flow run local`
+// already says for the same run — the two drivers describing themselves the same
+// way is the requirement, not an incidental nicety, because a rehearsal exists to
+// tell an author what production will do.
+//
+// Falls back to the id when a workflow has no usable name. `flow validate` refuses a
+// nameless file, so this is the fallback for a document that reached the server some
+// other way rather than an expected case; naming nothing at all would be the one
+// unreadable answer.
+//
+// Read from the submitted workflow rather than the executed specification on
+// purpose: a deployment may substitute its own copy of what runs, but the name a
+// person typed is the name they have, and prose is addressed to that person. The
+// redaction spec above is the one that must be the attested copy; this one must not.
+func runSubject(workflow *v1.Workflow, workflowID string) string {
+	if name := strings.TrimSpace(workflow.GetName()); name != "" {
+		return name
+	}
+
+	return workflowID
 }
 
 // startedRun is what `Run` answered, in the shape a follow reports.

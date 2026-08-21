@@ -378,10 +378,28 @@ anonymous callers.
 Then run a workflow durably, through the server:
 
 ```console
-$ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
-started flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2; come back to it with `flow watch flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2`
-COMPLETED workflow flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2 run 019fe297-35dc-743c-b8c0-2a3c65e64f8a after greet, shout
+$ go run ./cmd/flow run ./examples/computed-outputs/workflow.yaml --input release=2026.9.0
+running on localhost:9233 as an anonymous caller
+started workflow computed-outputs; come back to it with `flow watch flowstate-workflow-4a57133c-32b7-408f-8ff9-77bc0e7e3e05`
+COMPLETED workflow computed-outputs run 01a025b3-d4f1-7450-9333-bfca9a969d6b after report, roll_out
+outputs
+  hosts_placed 3
+  release 2026.9.0
+  summary placed 2026.9.0 on 3 host(s)
 ```
+
+While the run is going, a live view stands where the `COMPLETED` line is: where the
+run has got to, what is being retried, which gate it is parked on. It is drawn on
+stderr and erased when the run ends, leaving that one sentence — the same sentence
+`flow run local` writes about the same file, because the two drivers are one execution
+model and a person moving between them should have nothing to relearn.
+
+Each identifier is said once, and once is not zero. The workflow id — what
+`flow watch`, `flow get` and `flow cancel` are pointed at — is in the command it is
+for and nowhere else. The run id names *this attempt* of the workload, which is what
+`flow get --run-id` asks about, so it is on the line that stays; a workload that
+continues as new names each attempt as it hands over. Pipe this run and stdout
+carries the document instead, exactly as above.
 
 The same file run with `flow run local` prints the same steps and, piped, the same
 final document; the difference is that this one survives its worker being restarted.
