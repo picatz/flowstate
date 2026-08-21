@@ -55,19 +55,27 @@ type plan struct {
 	examples bool // flow fix --check, flow test, flow breaking
 
 	// repoTestData means a repository-level file some test reads with
-	// os.ReadFile, rather than imports, changed: README.md,
-	// docs/ARCHITECTURE.md, AGENTS.md, or anything under docs/reference/.
-	// None is a Go source file and none is under examples/, so nothing above
-	// puts any of them in front of the import graph or the #589
-	// data-dependency seeding — but cmd/flow/commands_test.go reads
-	// README.md's command table, pkg/flowstate/v1/flowfile/readme_test.go
-	// compiles the Flowfiles embedded in README.md and docs/ARCHITECTURE.md,
+	// os.ReadFile, rather than imports, changed: README.md, AGENTS.md, or
+	// any Markdown under docs/. None is a Go source file and none is under
+	// examples/, so nothing above puts any of them in front of the import
+	// graph or the #589 data-dependency seeding — but
+	// cmd/flow/commands_test.go reads README.md's command table,
+	// pkg/flowstate/v1/flowfile/readme_test.go compiles the Flowfiles
+	// embedded in README.md and docs/ARCHITECTURE.md,
 	// pkg/flowstate/v1/agentsmd_test.go reads AGENTS.md, and
 	// cmd/flow/docs_test.go reads and validates every file under
 	// docs/reference/. A change to any of them can make the test that reads
 	// it fail or go stale without moving a single Go file, the same shape
 	// #589 already named for examples/, one file further out than that fix
-	// reached. It only widens ciDecisions' testRun — the CI job wide enough
+	// reached.
+	//
+	// It covers docs/ as a whole rather than the two pages named above
+	// because the documentation set now has a test about the *set*:
+	// cmd/flow/docsindex_test.go fails when a document under docs/ is
+	// added, renamed or removed without docs/README.md moving with it
+	// (#708). Every Markdown file in that tree is therefore test data, and
+	// enumerating the ones that happen to be read today is how this rule
+	// would go stale the next time a page is added. It only widens ciDecisions' testRun — the CI job wide enough
 	// to run all of these — not a local gate leg of its own, since there is
 	// no package for the local tier's affected-package scoping to add.
 	repoTestData bool
@@ -210,7 +218,8 @@ func buildPlan(changed []string) plan {
 		// Repository-level files read directly by tests rather than
 		// imported, the same #589 shape examples/ has — see
 		// p.repoTestData's doc.
-		if f == "README.md" || f == "docs/ARCHITECTURE.md" || f == "AGENTS.md" || strings.HasPrefix(f, "docs/reference/") {
+		if f == "README.md" || f == "AGENTS.md" ||
+			strings.HasPrefix(f, "docs/") && strings.HasSuffix(f, ".md") {
 			p.repoTestData = true
 			reason("test", f)
 		}

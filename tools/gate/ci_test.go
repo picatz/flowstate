@@ -118,8 +118,24 @@ func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 // PR). A PR could introduce stale command documentation, an invalid embedded
 // Flowfile, an AGENTS.md that drifted from CLAUDE.md, or a stale generated
 // doc while verdict accepted the skip.
+//
+// Widened again by #708, which gave the documentation set a test about the
+// *set*: cmd/flow/docsindex_test.go fails when a page under docs/ is added,
+// renamed or removed without docs/README.md moving with it, and when a page
+// under docs/plans/ loses its internal-only banner. Every Markdown file in that
+// tree is test data now, so the rule covers docs/ rather than enumerating the
+// pages that happen to be read today — the enumeration is what would go stale
+// the next time a page is added.
 func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
-	for _, f := range []string{"README.md", "docs/ARCHITECTURE.md", "AGENTS.md", "docs/reference/tasks.md"} {
+	for _, f := range []string{
+		"README.md",
+		"docs/ARCHITECTURE.md",
+		"AGENTS.md",
+		"docs/reference/tasks.md",
+		"docs/README.md",
+		"docs/DEPLOYMENT.md",
+		"docs/plans/factory.md",
+	} {
 		t.Run(f, func(t *testing.T) {
 			ds := decide(t, []string{f}, nil, "pull_request")
 			mustRun(t, ds, "test")

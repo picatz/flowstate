@@ -1,5 +1,11 @@
 # Flowstate — One-Week Plan (2026-08-03 → 2026-08-09): bugs, features, examples, tests, docs
 
+> [!NOTE]
+> **Internal process, not product documentation.** This file is part of
+> `docs/plans/`: how agent work is dispatched here, and what past waves
+> measured. Nothing in it describes Flowstate to someone using it — the map of
+> the documentation that does is [docs/README.md](../README.md).
+
 ## Status: executed, then continued (2026-08-03)
 
 The week's plan shipped as PR #123 — thirty-one commits, each a green stopping

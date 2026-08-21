@@ -73,6 +73,33 @@ Flowstate is six layers, each with one responsibility and a narrow contract to t
 | **5. Control plane** | Submit, observe, schedule, and govern runs | Connect RPC service, authn (OIDC/WIF), authorization, schedules and triggers |
 | **6. Governance** | Constrain what runs may do | Egress policy, CEL cost limits, secrets, audit trail |
 
+```mermaid
+flowchart TB
+  Authoring["1. Authoring<br/>Flowfile (YAML + CEL) · LSP · validate/fix"]
+  Spec[["2. Specification<br/>Workflow protobuf · protovalidate"]]
+  Capability["3. Capability<br/>task registry: TaskDef descriptors"]
+  Execution["4. Execution<br/>one StepExecutor · local and Temporal drivers"]
+  Control["5. Control plane<br/>Connect RPC · authn · schedules"]
+  Governance["6. Governance<br/>egress policy · cost limits · secrets · audit"]
+
+  Authoring -->|"flow compile"| Spec
+  Spec --> Execution
+  Control -->|"submit, observe, cancel"| Execution
+  Governance -->|"constrains"| Execution
+  Capability -. "completion" .-> Authoring
+  Capability -. "typed inputs" .-> Spec
+  Capability -. "dispatch" .-> Execution
+
+  classDef ir stroke-width:2px;
+  class Spec ir;
+```
+
+The two solid arrows down the middle are the whole pipeline: an author's file becomes
+a specification, and the specification is what runs. Layers 5 and 6 join at execution
+rather than before it — a control plane starts and observes runs, and governance
+constrains what a running step may do; neither rewrites what the author wrote. The
+dashed arrows all leave the same box, which is the property below.
+
 The important structural property is that **layer 3 is the single source of truth for
 capability**. Execution dispatch, spec validation, LSP completion, and the documented task
 table all derive from the same `TaskDef` descriptors. When they are derived from one place

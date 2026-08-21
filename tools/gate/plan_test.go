@@ -66,9 +66,36 @@ func TestBuildPlan(t *testing.T) {
 			name:    "DSL.md fires the docs leg",
 			changed: []string{"docs/DSL.md"},
 			want: plan{
-				fileDirs: []string{"docs"},
-				docs:     true,
-				reasons:  map[string]string{"docs": "docs/DSL.md"},
+				fileDirs:     []string{"docs"},
+				docs:         true,
+				repoTestData: true,
+				reasons: map[string]string{
+					"docs": "docs/DSL.md",
+					"test": "docs/DSL.md",
+				},
+			},
+		},
+		{
+			// Every Markdown file under docs/ is test data, because
+			// cmd/flow/docsindex_test.go is about the *set* of them:
+			// a page added, renamed or removed without docs/README.md
+			// moving with it fails there, and nothing else would run
+			// (#708). This one reaches no other leg at all.
+			name:    "a documentation page fires the test job and nothing else",
+			changed: []string{"docs/DEPLOYMENT.md"},
+			want: plan{
+				fileDirs:     []string{"docs"},
+				repoTestData: true,
+				reasons:      map[string]string{"test": "docs/DEPLOYMENT.md"},
+			},
+		},
+		{
+			name:    "an internal plan is test data too, for its banner",
+			changed: []string{"docs/plans/factory.md"},
+			want: plan{
+				fileDirs:     []string{"docs/plans"},
+				repoTestData: true,
+				reasons:      map[string]string{"test": "docs/plans/factory.md"},
 			},
 		},
 		{
@@ -237,9 +264,10 @@ func TestBuildPlan(t *testing.T) {
 					"pkg/flowstate/v1/engine",
 					"proto/flowstate/v1",
 				},
-				proto:    true,
-				docs:     true,
-				examples: true,
+				proto:        true,
+				docs:         true,
+				examples:     true,
+				repoTestData: true,
 				reasons: map[string]string{
 					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
@@ -247,6 +275,7 @@ func TestBuildPlan(t *testing.T) {
 					// trigger recorded rather than DSL.md.
 					"docs":     "proto/flowstate/v1/workflow.proto",
 					"examples": "examples/hello/workflow.yaml",
+					"test":     "docs/DSL.md",
 				},
 			},
 		},
