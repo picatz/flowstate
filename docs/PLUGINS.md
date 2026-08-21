@@ -160,7 +160,9 @@ validate a workflow using your task, complete its fields in an editor, and
 document it — without compiling a line of your code
 (`sdk/sdk.go:218-226`, `plugin/descriptor.go:25-29`).
 
-So: a schema of your own.
+So: a schema of your own. Three files beside the `main.go` you already have.
+
+`proto/hello/v1/hello.proto`:
 
 ```proto
 syntax = "proto3";
@@ -179,18 +181,40 @@ message GreetOutputs {
 }
 ```
 
-Generated the way the in-tree example generates its own — `buf.gen.yaml` at the
-module root, `buf.yaml` beside the protos, and `protoc-gen-go` from the version
-your `go.mod` already pins, so regenerating needs no network beyond the module
-cache (see
+The `go_package` matters: it is where the generated code lands and therefore what
+`main.go` imports. Change the module path and this line changes with it.
+
+`proto/buf.yaml`, which is what marks that directory as the module `buf` compiles:
+
+```yaml
+version: v1
+```
+
+`buf.gen.yaml`, at the module root beside `go.mod`:
+
+```yaml
+version: v1
+plugins:
+  - plugin: go
+    out: ./gen
+    opt:
+      - paths=source_relative
+```
+
+Generated the way the in-tree example generates its own, with `protoc-gen-go`
+built from the version your `go.mod` already pins rather than a remote plugin, so
+regenerating needs no network beyond the module cache (see
 [`examples/flowstate-plugin-example/buf.gen.yaml`](../pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/buf.gen.yaml)):
 
 ```console
 $ GOBIN=$PWD/tools go install google.golang.org/protobuf/cmd/protoc-gen-go
 $ PATH=$PWD/tools:$PATH go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate proto
+$ ls gen/hello/v1
+hello.pb.go
 ```
 
-Then name the messages on the task and decode through them:
+Then name the messages on the task and decode through them. `main.go` gains one
+import, `hellov1 "example.com/flowstate-plugin-hello/gen/hello/v1"`:
 
 ```go
 Tasks: []sdk.Task{{
@@ -237,9 +261,19 @@ $ flow plugins --plugin-dir ./bin
   outputs  message   string
 ```
 
-Output field names are the names a later step reads —
-`${hi.message}` — because `EncodeOutputs` turns one message field into one named
-output (`sdk/values.go:269-298`). A task whose output shape is not fixed declares
+Output field names are the names a later step reads — a step with `id: hi` gives
+a later step `${steps.hi.message}` — because `EncodeOutputs` turns one message
+field into one named output (`sdk/values.go:269-298`). The `steps.` prefix is not
+optional — a bare `${hi.message}` is refused, and the diagnostic says so:
+
+```console
+workflow.yaml:9:16: step "shout" input "message": `hi` is a step, and a step is
+named `steps.hi` now; run `flow fix` to rewrite this file
+```
+
+That is the rooted-name rule the whole language follows, and it applies to a
+plugin's outputs exactly as it does to a built-in's
+([DSL.md](DSL.md#scope-and-the-id-namespace)). A task whose output shape is not fixed declares
 the field as `google.api.expr.v1alpha1.Value` and builds it with `sdk.Literal`
 (`sdk/values.go:430-450`); any other message type is refused rather than
 converted approximately (`sdk/values.go:399-412`).
