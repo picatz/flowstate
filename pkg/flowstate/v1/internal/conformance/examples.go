@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	celpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -317,22 +318,57 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 
-	// federation-flow-to-flow: the peer deployment's RPC surface. This is the one
-	// handler here that refuses an unauthenticated request, and it refuses on
-	// purpose: the whole claim of that example is that the step reaches a peer
-	// carrying an assertion the worker minted and applied, so a stand-in that
-	// answered 200 to anything would let the example pass with `credential:`
-	// removed. It cannot verify the assertion — it holds none of this
-	// deployment's keys, and pkg/flowstate/v1/auth's own
-	// TestFlowstateToFlowstateFederation is where verification is proven — but
-	// requiring that *something* was presented is the half a fixture can hold.
-	mux.HandleFunc("/flowstate.v1.WorkflowService/Run", func(w http.ResponseWriter, r *http.Request) {
+	// federation-flow-to-flow: the peer deployment's Get RPC. Two things this
+	// handler does that a bare echo would not, because the example claims both.
+	//
+	// It refuses an unauthenticated request — the whole point of that example is
+	// that the step reaches the peer carrying an assertion the worker minted and
+	// applied, so a stand-in that answered 200 to anything would let it pass with
+	// `credential:` removed. It cannot *verify* the assertion (it holds none of
+	// this deployment's keys — pkg/flowstate/v1/auth's own
+	// TestFlowstateToFlowstateFederation is where verification is proven), but
+	// requiring that a bearer was presented at all is the half a fixture holds.
+	//
+	// And it decodes the body as a real [v1.GetRequest] and rejects one that is
+	// not shaped like one, exactly as a Connect handler would — so the example
+	// cannot get away with a body a real peer would answer 400 to. It answers a
+	// [v1.GetResponse] in canonical proto-JSON, which is why the workflow reads
+	// the status back under the camelCase field name the wire carries.
+	mux.HandleFunc("/flowstate.v1.WorkflowService/Get", func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			w.WriteHeader(http.StatusUnauthorized)
 
 			return
 		}
-		write(w, map[string]any{"run_id": "run-7"})
+
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+		var request v1.GetRequest
+		if err := protojson.Unmarshal(raw, &request); err != nil || request.GetWorkflowId() == "" {
+			// A real Connect handler rejects a body that is not a GetRequest, so
+			// this one must too, or the example would pass on a shape that 400s.
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		response, err := protojson.Marshal(&v1.GetResponse{
+			WorkflowId: request.GetWorkflowId(),
+			RunId:      "1a1e5a9e-2b6c-4a4d-8f0e-3b9c2d7e5f01",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind:       &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{}},
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(response)
 	})
 
 	// enterprise-fund-transfer: a debit or a credit, with which account in the

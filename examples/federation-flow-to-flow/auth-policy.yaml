@@ -7,6 +7,14 @@ issuers:
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]
+    # A GitHub Actions issuer admits every workload on the platform unless it is
+    # pinned: the audience is chosen by whoever requests the token, so it does
+    # not narrow anything. This entry names the one repository whose runs this
+    # deployment trusts, and reads the tenant off a verified claim.
+    require:
+      - claim: repository_owner
+        any_of: [picatz]
+    namespace_claim: repository_owner
 
 federation:
   issuer: https://flowstate.example.com

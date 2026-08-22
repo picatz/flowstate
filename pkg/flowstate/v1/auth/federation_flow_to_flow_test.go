@@ -111,6 +111,7 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + deploymentA.URL + `
 assertion_lifetime: 2m
+declared_claims: [repository]
 allow:
   - 'target == "peer-flowstate" && workload.namespace == "acme"'
 targets:
@@ -182,6 +183,7 @@ targets:
 		// partner from being replayed here is the "aud" claim, and nothing else.
 		elsewhere, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + deploymentA.URL + `
+declared_claims: [repository]
 targets:
   - name: somewhere-else
     assertion:

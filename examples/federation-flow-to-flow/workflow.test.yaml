@@ -5,11 +5,14 @@
 # name into an embedded token — or that reached the peer with a hand-written
 # `Authorization` header — fails here rather than passing quietly.
 #
-# The exchange itself is the deployment's, not the file's: which target a
-# workload may assume, what audience the assertion carries, and how long it
-# lives are all in `auth-policy.yaml`, and the auth package's own
-# `TestFlowstateToFlowstateFederation` stands up both deployments and proves the
-# peer admits what this step would send.
+# The body is a real GetRequest (`workflowId`), not a shape a peer would reject.
+# When this workflow runs for real — under `flow test` against the examples
+# stand-in, and under both driver harnesses — that stand-in refuses the call
+# without a bearer and decodes the body as a `v1.GetRequest`, so the example
+# proves both that the assertion was applied and that the request is well
+# formed. The exchange itself, and which target a workload may assume, are the
+# deployment's; the auth package's own `TestFlowstateToFlowstateFederation`
+# stands up both deployments and proves the peer admits what this step sends.
 edition: v2026.3
 tests:
   - name: the step names the assertion target and carries no credential material of its own
@@ -17,14 +20,15 @@ tests:
     stubs:
       - task: http
         where: >-
-          inputs.url == 'https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Run' &&
+          inputs.url == 'https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Get' &&
           inputs.credential == 'peer-flowstate' &&
+          inputs.json.workflowId == 'flowstate-workflow-reindex-search' &&
           !('bearer' in inputs) && !('headers' in inputs)
         returns:
           status_code: 200
-          body: '{"run_id": "run-7"}'
+          body: '{"workflowId": "flowstate-workflow-reindex-search", "runId": "1a1e5a9e-2b6c-4a4d-8f0e-3b9c2d7e5f01", "status": "STATUS_COMPLETED"}'
       - task: log
-        where: inputs.fields.peer_run == 'run-7'
+        where: inputs.fields.peer_status == 'STATUS_COMPLETED'
         returns: {}
     expect:
-      ran: [start_on_peer, record]
+      ran: [check_on_peer, record]

@@ -21,7 +21,10 @@ func mintedAssertion(t *testing.T, clock *authtest.Clock, audience string) (*aut
 	key, err := auth.GenerateSigningKey("k1", jwa.ES256)
 	require.NoError(t, err)
 
-	issuer, err := auth.NewIssuer("https://flowstate.example.com", key, auth.WithIssuerClock(clock.Now))
+	// testIdentity carries a repository claim, which the issuer must declare
+	// before it will sign it (#560's allowlist).
+	issuer, err := auth.NewIssuer("https://flowstate.example.com", key,
+		auth.WithIssuerClock(clock.Now), auth.WithDeclaredClaims("repository"))
 	require.NoError(t, err)
 
 	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), audience)
@@ -222,6 +225,7 @@ func TestAssertionCredentialLifetimeIsTheIssuers(t *testing.T) {
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
 assertion_lifetime: 90s
+declared_claims: [repository]
 targets:
   - name: peer-flowstate
     assertion:

@@ -21,9 +21,20 @@ the same properties the assertion already had. This directory is that case:
 
 `assertion` is a target kind that performs no exchange. What the step presents
 is the assertion this deployment signed for itself, bound to that one audience,
-expiring when the assertion expires. The peer fetches this deployment's key set
-from the discovery document its issuer publishes, verifies the signature, and
-reads the run's identity off the claims.
+expiring when the assertion expires. The peer's server fetches this deployment's
+key set from the discovery document its issuer publishes, verifies the
+signature, and reads the run's identity off the claims — the same path B's
+authenticator follows for any caller, which is why nothing here is specific to
+one RPC.
+
+The step calls one: `WorkflowService/Get`, whose request is a single
+`workflowId` string, so the body is a real `GetRequest` a peer would accept
+rather than a shape it would answer 400 to. Get is chosen only because it has
+the lightest request to write out; the point on show is the identity B's
+authenticator admits, which runs before any handler and is the same for every
+RPC. A production call would more often be `Run`, whose request carries a whole
+compiled workflow — out of scope for an example about the identity, not the run
+API.
 
 ## Two files, because federation is two configurations
 
@@ -61,8 +72,23 @@ does not, and where the alternative is a long-lived token in a secret store.
 
 ## Running it
 
-The hosts are `example.com`, so this is a file to read and adapt. Against real
-ones, deployment A's worker needs the policy and a key to sign with:
+The hosts are `example.com`, so this is a file to read and adapt. It takes three
+processes, because A has to *publish* its identity as well as *present* it.
+
+Deployment A's **server** is what mounts the discovery document and JWKS at A's
+issuer URL — the worker mints but exposes no HTTP, so without this server B has
+nowhere to fetch A's keys from (`cmd/flow/routing.go` mounts the identity
+handlers only when a broker is configured, which needs the federation policy and
+the key):
+
+```console
+$ flow server --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
+    --identity-key /etc/flowstate/identity.pem
+```
+
+Deployment A's **worker** runs the workflow and mints the assertion, with the
+same policy and the same key so the assertion it signs verifies against the keys
+the server publishes:
 
 ```console
 $ flow worker --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
@@ -70,14 +96,26 @@ $ flow worker --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
     --deployment-name prod --build-id "$(git rev-parse --short HEAD)"
 ```
 
-and deployment B's server needs its half:
+Deployment B's **server** authenticates callers against `trust.yaml`, which
+names A's issuer, and fetches A's keys from A's server above:
 
 ```console
 $ flow server --auth-policy examples/federation-flow-to-flow/trust.yaml
 ```
 
-`flow run local` takes the same two flags as `flow worker`, so a rehearsal
-presents the same assertion production would.
+`--deployment-name prod` on A's worker is what makes the assertion carry
+`deployment: prod`, which B's `trust.yaml` requires. A rehearsal has to supply
+the same identity by hand, because `flow run local` defaults `--as-namespace` to
+empty and `--as-deployment` to `local` — and A's own allow rule requires
+namespace `acme` (a mismatch is `ErrAssumeDenied`, before anything is minted)
+while B requires deployment `prod`:
+
+```console
+$ flow run local examples/federation-flow-to-flow/workflow.yaml \
+    --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
+    --identity-key /etc/flowstate/identity.pem \
+    --as-namespace acme --as-deployment prod
+```
 
 ## What the test here proves, and what it does not
 
@@ -86,15 +124,19 @@ step names a target and holds no credential material — no bearer, no
 `Authorization` header, nothing resolved. An edit that embedded a token fails
 it.
 
-`TestEveryNetworkedExampleRuns` then *runs* this file against a stand-in with a
-broker holding a real `assertion` target, and that stand-in refuses a request
-with no bearer token — so the example only passes if the worker really minted an
-assertion and applied it. Deleting the `credential:` line fails it.
+`TestEveryNetworkedExampleRuns`, and its durable twin `TestEveryExampleRunsDurably`,
+then *run* this file on both drivers against a stand-in with a broker holding a
+real `assertion` target. That stand-in does two things a bare echo would not: it
+refuses a request with no bearer token, so the example only passes if the worker
+really minted an assertion and applied it (deleting `credential:` fails it); and
+it decodes the body as a real `GetRequest` and rejects one that is not shaped
+like one, so the example cannot pass on a request a real peer would answer 400
+to. It answers a canonical proto-JSON `GetResponse`, which is why the workflow
+reads the status back under the wire field name.
 
-Neither can stand up two deployments, so neither proves the peer admits what
-this step sends. That is
-`TestFlowstateToFlowstateFederation` in `pkg/flowstate/v1/auth`, which runs both
-halves in one process: A's issuer serves its real discovery document and key
-set over HTTP, B's authenticator verifies against them, and the assertion is
-admitted, named, and landed in a namespace — and refused when its audience names
-somebody else.
+What no example harness can do is stand up two deployments, so none proves the
+peer admits what this step sends. That is `TestFlowstateToFlowstateFederation`
+in `pkg/flowstate/v1/auth`, which runs both halves in one process: A's issuer
+serves its real discovery document and key set over HTTP, B's authenticator
+verifies against them, and the assertion is admitted, named, and landed in a
+namespace — and refused when its audience names somebody else.
