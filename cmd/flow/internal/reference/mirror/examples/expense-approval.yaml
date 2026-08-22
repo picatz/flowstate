@@ -41,13 +41,14 @@ description: >-
 # answer before either wait starts.
 #
 # Notice neither `--signal` above says who is answering. That is deliberate: who
-# approved a gate is `steps.<gate>.sender`, attested by the server from the
-# authenticated caller that sent the signal — never something the payload gets to
-# claim. This is also what makes separation of duties expressible, the property
+# approved a gate is `sender`, attested by the server from the authenticated
+# caller that sent the signal — never something the payload gets to claim. Each
+# gate below shapes that into an `approved_by` output where `sender` is in
+# scope. This is also what makes separation of duties expressible, the property
 # an expense policy actually needs: a rule like
-# `steps.manager_review.sender.identity.subject != inputs.employee` would refuse
-# letting someone approve their own report, and it is unwritable from a
-# self-asserted payload field.
+# `sender.identity.subject != inputs.employee` would refuse letting someone
+# approve their own report, and it is unwritable from a self-asserted payload
+# field.
 
 inputs:
   # No default: there is no sensible absent value for "who is asking", only a
@@ -90,27 +91,37 @@ steps:
         # written five times below - in `reimburse`'s `if:` and its log line,
         # in `outcome`, in `approved_by`, and hand-negated in `deny`'s `if:` -
         # and nothing kept those copies in agreement except review. Every
-        # reader now compares this recorded name.
+        # reader now compares the names recorded here.
         #
-        # Four states, because "answered" is not one thing: a payload can carry
-        # `approved: true`, `approved: false`, or neither, and a gate can lapse.
-        # `no_decision` (answered without an `approved` field, not a timeout) is
-        # kept distinct so it takes no branch, exactly as the raw predicates did.
+        # Three states, because "answered" is not one thing: a payload can carry
+        # `approved: true`, `approved: false`, or neither. `no_decision`
+        # (answered without an `approved` field) is kept distinct so it takes no
+        # branch, exactly as the raw predicates did.
+        #
+        # The fourth ending, the lapse, is deliberately *not* folded in here.
+        # It is not something a payload can say, it is `timed_out` below, and
+        # combining the two in this one expression would be a conditional inside
+        # a conditional — the shape `flow lint` reports (docs/STYLE.md R5). Each
+        # reader that cares about both names both.
         #
         # `payload.?approved` is an optional select, read the way approval-gate's
         # own gate is: present-and-true or present-and-false when the manager
         # actually sent the field, absent when they answered with something
         # else entirely. `.optMap` only ever sees an actual boolean; `.orValue`
         # supplies the case nothing was sent to decide.
-        outcome: >-
-          ${timed_out
-            ? "expired"
-            : payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
+        decision: >-
+          ${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
+        # Who the *server* attested sent the approval, named on the step that
+        # received it and empty on every path where nobody approved anything.
+        # `sender` is in scope exactly here, which is why the shaping happens
+        # here: a later step reading `steps.manager_review.sender` would have to
+        # re-derive "did they actually say yes" to know whether the name means
+        # anything.
+        approved_by: >-
+          ${payload.?approved.optMap(approved, approved ? sender.identity.subject : "").orValue("")}
         # Re-exposed because `outputs:` replaces what the wait produced:
-        # `escalate` and `finance_review` still branch on `timed_out`, and
-        # `reimburse`'s log line and `approved_by` still name the sender.
+        # `escalate`, `finance_review` and `outcome` all branch on it.
         timed_out: ${timed_out}
-        sender: ${sender}
 
   # The escalation is a real step, not a comment saying one should exist —
   # this is the difference between "escalates" and "eventually times out
@@ -135,15 +146,14 @@ steps:
         # The finance gate, shaped the same way as the manager gate above and
         # for the same reason: "finance approved" was re-derived in `reimburse`,
         # `outcome`, and hand-negated in `deny`. Only ever read on the path
-        # where the manager gate lapsed, so a reader always guards it with
-        # `steps.manager_review.outcome == "expired"` first, the same short
-        # circuit the raw predicates used.
-        outcome: >-
-          ${timed_out
-            ? "expired"
-            : payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
-        # Re-exposed for `reimburse`'s log line and `approved_by`.
-        sender: ${sender}
+        # where the manager gate lapsed, so every reader below is guarded by
+        # `steps.manager_review.timed_out`, the same short circuit the raw
+        # predicates used.
+        decision: >-
+          ${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
+        approved_by: >-
+          ${payload.?approved.optMap(approved, approved ? sender.identity.subject : "").orValue("")}
+        timed_out: ${timed_out}
 
   # The two gates named once, the same lesson approval-gate's own `decision`
   # applies: "which of the four endings this report reached" was computed
@@ -151,31 +161,49 @@ steps:
   # and re-derived a third time in each of the two `outputs:`. Every reader
   # now reads this one recorded value instead.
   #
-  # Split into two `value:` steps rather than one three-deep ternary, per the
-  # style charter's nesting-depth rule - and, since #674, without losing what
-  # a decomposed discriminant used to cost silently: `switch:` below dispatches
-  # on `steps.outcome.value`, and the exhaustiveness and impossible-case
-  # diagnostics that gives it read straight through the `steps.escalation_outcome.value`
-  # leaf to the step that produced it, so a misspelled case in `settle` is
-  # still fatal even though the value it dispatches on is two steps away from
-  # the ternary that computes it.
+  # Split across `value:` steps rather than written as one nested ternary, per
+  # the style charter's R5 - and, since #674, without losing what a decomposed
+  # discriminant used to cost silently: `switch:` below dispatches on
+  # `steps.outcome.value`, and the exhaustiveness and impossible-case
+  # diagnostics that gives it read straight through the
+  # `steps.escalation_outcome.value` leaf to the step that produced it, so a
+  # misspelled case in `settle` is still fatal even though the value it
+  # dispatches on is several steps away from the ternaries that compute it.
   #
-  # `escalation_outcome` only runs, and is only read, on the path where the
-  # manager gate expired - the same short circuit `finance_review` itself
-  # uses, now stated once as an `if:` instead of folded into every read of
-  # `steps.finance_review.outcome`.
+  # Each step below is one question with one answer, and each `if:` states the
+  # path it belongs to once instead of every reader re-testing it:
+  #
+  #   direct_outcome        the manager answered      -> approved_by_manager | denied
+  #   escalation_decision   finance answered          -> approved_after_escalation | denied
+  #   escalation_outcome    the escalation, lapse included
+  #   outcome               which of the two paths this run took
+  #
+  # A three-way answer written as one expression is a conditional inside a
+  # conditional, which is the shape `flow lint` reports; two steps naming two
+  # facts is what the rule asks for instead, and it is also what makes each
+  # line readable on its own.
+  - id: direct_outcome
+    if: ${!steps.manager_review.timed_out}
+    value: >-
+      ${steps.manager_review.decision == "approved" ? "approved_by_manager" : "denied"}
+
+  # `escalation_decision` and `escalation_outcome` only run, and are only read,
+  # on the path where the manager gate expired - the same short circuit
+  # `finance_review` itself uses, stated once as an `if:` rather than folded
+  # into every read of the finance gate.
+  - id: escalation_decision
+    if: ${steps.manager_review.timed_out}
+    value: >-
+      ${steps.finance_review.decision == "approved" ? "approved_after_escalation" : "denied"}
+
   - id: escalation_outcome
     if: ${steps.manager_review.timed_out}
     value: >-
-      ${steps.finance_review.outcome == "approved"  ? "approved_after_escalation"
-        : steps.finance_review.outcome == "expired" ? "denied_no_response"
-        : "denied"}
+      ${steps.finance_review.timed_out ? "denied_no_response" : steps.escalation_decision.value}
 
   - id: outcome
     value: >-
-      ${steps.manager_review.outcome == "approved"  ? "approved_by_manager"
-        : steps.manager_review.outcome == "expired" ? steps.escalation_outcome.value
-        : "denied"}
+      ${steps.manager_review.timed_out ? steps.escalation_outcome.value : steps.direct_outcome.value}
 
   # One switch over the named outcome, rather than two `if:`-guarded steps
   # each re-testing the manager and finance gates by hand. Two explicit cases
@@ -193,14 +221,14 @@ steps:
               log:
                 message: >-
                   ${"reimbursing %s $%.2f, approved by %s".format(
-                      [inputs.employee, inputs.amount, steps.manager_review.sender.identity.subject])}
+                      [inputs.employee, inputs.amount, steps.manager_review.approved_by])}
         - case: approved_after_escalation
           steps:
             - id: reimburse_escalated
               log:
                 message: >-
                   ${"reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format(
-                      [inputs.employee, inputs.amount, steps.finance_review.sender.identity.subject])}
+                      [inputs.employee, inputs.amount, steps.finance_review.approved_by])}
       default:
         steps:
           - id: deny
@@ -224,13 +252,12 @@ outputs:
   amount:
     value: ${inputs.amount}
     description: the amount this run decided about
+  # One ternary over the two gates, because each gate already named its own
+  # approver: `approved_by` on a gate is empty unless that gate was answered
+  # with `approved: true`, so this only has to pick the gate this run reached.
   approved_by:
     value: >-
-      ${steps.outcome.value == "approved_by_manager"
-        ? steps.manager_review.sender.identity.subject
-        : steps.outcome.value == "approved_after_escalation"
-          ? steps.finance_review.sender.identity.subject
-          : ""}
+      ${steps.manager_review.timed_out ? steps.finance_review.approved_by : steps.manager_review.approved_by}
     description: >-
       who the server attested approved this, empty when nobody did — never a
       payload field, which is a claim rather than an attestation
