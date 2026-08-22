@@ -4924,7 +4924,7 @@ through `SignalPolicyCheck`, the function the server itself calls. That is a rul
 
 Task-shape policy needs the precise version of that, because the convenient one is
 false. The `flow test` **command** installs no policy: `--task-policy` is declared on
-`flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, and
+`flow worker`, `flow run local`, `flow mcp`, `flow server dev` and `flow task run`, and
 deliberately not on `flow test`, so under that command nothing is configured and every
 task dispatches. But the policy is a *process-wide* installation
 (`SetDefaultTaskPolicy`), a case never clears it, and the same machinery runs in other
@@ -4936,9 +4936,19 @@ Which is its own trap, and the reason the identity clause is not a footnote ther
 rule reading `identity.namespace` or `identity.subject` is matched against the *empty*
 identity, not against `starter:`, however the case names one. A policy admitting only
 a named namespace therefore refuses every stubbed dispatch in that host, and no
-`starter:` an author can write changes the answer. The denial says so — it names the
-`--task-policy` passed to this local invocation — but the case file it fails is not
-where the cause lives.
+`starter:` an author can write changes the answer.
+
+The denial says so, and saying so takes two parts. It **names the identity the rule
+was evaluated against**, and where that identity is empty it says that too, along with
+where a rehearsal's identity comes from at all — `flow run local --as-subject` and its
+siblings, and nowhere under `flow test`, whose `starter:` reaches the workflow's own
+`signals:` policy and not this one. That is the difference between *the rule matched
+me* and *the rule had nothing to match*, and without it the two denials read
+identically. And it points at the task-shape policy **this process installed** rather
+than at a `--task-policy` flag, because half the commands the message speaks for —
+`flow test` among them — do not have that flag; naming it would send an author hunting
+for something their command does not accept. The case file the denial fails is still
+not where the cause lives.
 
 The line all four surfaces sit on is the one that decides diagnostics: report what is
 a property of the file, and stay silent about what a deployment decides. `signals:` is

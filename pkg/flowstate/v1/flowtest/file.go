@@ -96,8 +96,16 @@
 //     against `starter:`, however the case names one. So a policy admitting
 //     only a named namespace refuses every stubbed dispatch in that host, and
 //     an author reading the denial has no `starter:` to change that would
-//     make any difference. ([v1.TaskPolicyDeniedError] says as much in its
-//     message, naming the `--task-policy` passed to this local invocation.)
+//     make any difference. [v1.TaskPolicyDeniedError] says exactly that in
+//     its own message (#652 item 3): a denial from this venue names the
+//     identity the rule was evaluated against, and where that identity is
+//     empty it says so and says why — that a rehearsal has one only where
+//     `flow run local --as-*` named one, and never under `flow test`. Which
+//     is the difference between "the rule matched me" and "the rule had
+//     nothing to match", and it is not one an author can otherwise derive
+//     from a denial. The remedy it names is the policy *this process*
+//     installed rather than a `--task-policy` flag, precisely because this
+//     command does not have one.
 //
 //   - **Egress policy** (`netpolicy`). Never consulted, because no request is
 //     made: a step that would reach the network is answered by its stub, so
@@ -127,6 +135,16 @@
 // at all - which is the same answer [secretRuntime]'s own doc has been giving
 // for secrets since it was written. See #652 item 2, where this was decided
 // and deliberately not built.
+//
+// That decision is now enforced rather than only recorded. `cmd/flow`'s
+// TestFlowTestTakesNoDeploymentPolicyFlags asserts `flow test` declares
+// neither `--task-policy` nor `--egress-policy` — while every verb that runs a
+// real dispatch still declares the first, so the assertion means "deliberately
+// absent here" rather than "absent everywhere" — and
+// [TestACaseCannotDeclareADeploymentPolicy] asserts a case file cannot smuggle
+// one in through a key of its own. A paragraph of prose beside a one-line flag
+// registration is the same value written down twice, and only one of the two
+// is what the program does.
 //
 // # Why this runs the local driver only
 //

@@ -218,6 +218,22 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 					"the failure must be a *v1.TaskPolicyDeniedError, got: %v", err)
 				require.Equal(t, tc.DeniedTask, denied.Task)
 				require.Equal(t, tc.DeniedReason, denied.Reason)
+
+				// #652 item 3: the denial names the identity it evaluated,
+				// in the same words the durable driver's own copy of this
+				// loop asserts. Asserted on the message rather than on
+				// [v1.TaskPolicyDeniedError.Identity] because the message is
+				// what an author reads, and because it is the only form the
+				// durable side can compare — the struct does not survive
+				// Temporal's failure conversion.
+				require.Contains(t, denied.Error(), tc.DeniedIdentity,
+					"the denial must name the identity the rule was evaluated against")
+
+				// A local run *is* a rehearsal, so the message must say so
+				// here and must not say so durably. This is the one clause
+				// the two drivers are meant to differ on.
+				require.True(t, denied.Local,
+					"a dispatch denied under the local driver is a rehearsal denial")
 				return
 			}
 
