@@ -48,6 +48,16 @@ type execImage struct {
 	// operator installed it at.
 	execPath string
 
+	// sum is the digest of this image once something has asked for it.
+	//
+	// It is remembered rather than recomputed because two readers now ask: the
+	// launch records it on [flowstatev1.ResolvedPlugin], and [admit] compares it
+	// against what the deployment pinned. Hashing twice would make those two
+	// answers about one image separately derived — and this package's whole
+	// argument is that a digest and the bytes it describes must not be able to
+	// come apart. One value, read twice, cannot disagree with itself.
+	sum string
+
 	// pinned reports whether execPath names the descriptor rather than the path.
 	//
 	// When it is false the digest is still the digest of a file that was at that
@@ -110,12 +120,26 @@ func openExecImage(path string, log *slog.Logger) (*execImage, error) {
 //
 // It rewinds first, so that the digest is of the whole file however this
 // descriptor has been read before.
+//
+// The first call computes it and every later one returns that same answer; see
+// [execImage.sum] for why the second reader must not hash again.
 func (im *execImage) digest() (string, error) {
+	if im.sum != "" {
+		return im.sum, nil
+	}
+
 	if _, err := im.file.Seek(0, io.SeekStart); err != nil {
 		return "", fmt.Errorf("rewinding %s: %w", im.file.Name(), err)
 	}
 
-	return flowstatev1.ContentDigestOf(im.file)
+	sum, err := flowstatev1.ContentDigestOf(im.file)
+	if err != nil {
+		return "", err
+	}
+
+	im.sum = sum
+
+	return sum, nil
 }
 
 // close releases the handle.

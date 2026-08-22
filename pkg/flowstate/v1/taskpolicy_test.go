@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,13 @@ func TestTaskPolicyDenyRuleDenies(t *testing.T) {
 	require.Equal(t, v1.TaskPolicyReasonDenyRule, denied.Reason)
 	require.Contains(t, denied.Detail, `identity.namespace != "platform"`,
 		"the denial must name the rule that fired, so an operator can find it")
-	require.Contains(t, err.Error(), "codex.exec")
+	// Which task was refused is read from the structure, not from this
+	// sentence: [v1.CheckTaskPolicy] is what renders the name, by classifying
+	// the denial as a [v1.TaskError] over it, and this bare Check is a level
+	// below that. Asserting it on the string here passed either way — the rule
+	// text above quotes "codex.exec" — which is precisely why the naming was
+	// free to be duplicated for as long as it was (#184, see
+	// [TestDenialNamesTheTaskExactlyOnce]).
 	require.Contains(t, err.Error(), "task-shape policy",
 		"the message must read as a deployment refusal, not a task failure")
 	require.Contains(t, err.Error(), "contact the operator",
@@ -425,4 +432,102 @@ func TestDenialNeverRendersAClaimValue(t *testing.T) {
 		require.NotContains(t, rendered, claimValue,
 			"a claim value must never reach a denial message, which travels into workflow history")
 	}
+}
+
+// TestDenialNamesTheTaskExactlyOnce is #184's garbling rule applied to the one
+// error in this package that only ever travels wrapped by another.
+//
+// Every denial reaches a surface through [v1.CheckTaskPolicy], which classifies
+// it as a [v1.TaskError] naming the same task — so a denial that also named the
+// task, prefixed by a sentinel that also named the policy, rendered one failure
+// three times over one hop:
+//
+//	step "fetch": task "http": denied by task-shape policy: task "http"
+//	refused by deployment task-shape policy …
+//
+// The assertion is a count rather than a `Contains`, because `Contains` is
+// satisfied by any number of copies including the wrong one — which is how this
+// stood while three tests in this file asserted the message names the task.
+func TestDenialNamesTheTaskExactlyOnce(t *testing.T) {
+	cfg := v1.TaskPolicyConfig{Deny: []string{`identity.subject != "platform"`}}
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+
+	ctx := v1.NewContextWithTaskPolicy(context.Background(), policy)
+	err = v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Subject: "someone"}, true)
+	require.Error(t, err)
+
+	rendered := err.Error()
+
+	// The wrapper is what names the task, and it must still do so: dropping the
+	// name from both halves would satisfy a count of one by saying nothing.
+	require.Contains(t, rendered, `task "codex.exec"`,
+		"the classified failure must still name the task it refused")
+
+	// The rule this case denies with deliberately does not mention the task, so
+	// the only namings counted here are renderings rather than an operator's own
+	// rule text quoted back to them.
+	require.Equal(t, 1, strings.Count(rendered, "codex.exec"),
+		"one failure, one hop, one naming of the task:\n%s", rendered)
+
+	// The sentinel leaves the message and stays matchable, which is where a
+	// caller branching on it reads it from.
+	require.True(t, errors.Is(err, v1.ErrTaskPolicyDenied),
+		"the sentinel must stay matchable after leaving the message")
+}
+
+// TestDenialNamesTheTaskOnEverySurfaceExactlyOnce is #899's correction to
+// [TestDenialNamesTheTaskExactlyOnce]: the exactly-once count has to hold on the
+// *direct* [v1.TaskPolicy.Check] surface too, not only the wrapped one.
+//
+// #184's first cut moved the name out of [v1.TaskPolicyDeniedError.Error] and
+// onto [v1.CheckTaskPolicy]'s [v1.TaskError] wrapper. That names it once for
+// every dispatch the drivers make — and zero times for a direct caller of
+// [v1.TaskPolicy.Check], which docs/DSL.md recommends for exercising denials and
+// which receives the bare denial with no wrapper. So the name belongs on the
+// denial itself, and the wrappers defer; this checks all three renderings — the
+// bare denial, the classified [v1.TaskError], and [v1.StepErrorText] (the
+// recorded/durable text) — name the task once and only once.
+//
+// The rule denies on identity alone, so the only "codex.exec" any surface
+// contains is a rendering of the name rather than the operator's rule text
+// quoted back — the same care [TestDenialNamesTheTaskExactlyOnce] takes.
+func TestDenialNamesTheTaskOnEverySurfaceExactlyOnce(t *testing.T) {
+	cfg := v1.TaskPolicyConfig{Deny: []string{`identity.subject != "platform"`}}
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+
+	// The direct surface: a bare denial from Check, no wrapper. This is the one
+	// #184's first cut left naming no task at all.
+	direct := policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{Subject: "someone"})
+	require.Error(t, direct)
+	require.Contains(t, direct.Error(), `task "codex.exec"`,
+		"a direct TaskPolicy.Check caller must be told which task was refused")
+	require.Equal(t, 1, strings.Count(direct.Error(), "codex.exec"),
+		"the bare denial names its task exactly once:\n%s", direct.Error())
+
+	// The wrapped surface, and the recorded/durable surface, over the same
+	// dispatch — each must still name the task once, now by deferring to the
+	// denial rather than adding a second naming of their own.
+	ctx := v1.NewContextWithTaskPolicy(context.Background(), policy)
+	wrapped := v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Subject: "someone"}, false)
+	require.Error(t, wrapped)
+
+	for name, rendered := range map[string]string{
+		"TaskError.Error": wrapped.Error(),
+		"StepErrorText":   v1.StepErrorText(wrapped),
+	} {
+		require.Containsf(t, rendered, `task "codex.exec"`,
+			"%s must name the refused task", name)
+		require.Equalf(t, 1, strings.Count(rendered, "codex.exec"),
+			"%s names the task exactly once:\n%s", name, rendered)
+	}
+
+	// The sentinel and the structured task name survive on every surface, so a
+	// caller reading structure rather than text is unaffected by where the name
+	// is rendered.
+	require.True(t, errors.Is(direct, v1.ErrTaskPolicyDenied))
+	var denied *v1.TaskPolicyDeniedError
+	require.True(t, errors.As(direct, &denied))
+	require.Equal(t, "codex.exec", denied.Task)
 }

@@ -139,6 +139,19 @@ func runFakePlugin() int {
 		}
 		fakeAnnounce()
 		return 0
+
+	case "record-run":
+		// Touches the file its env names the instant it runs, then exits
+		// without handshaking. It is the ELF — and so, on Linux, the
+		// descriptor-pinnable — analogue of markerPlugin's shell script: a
+		// launch that reaches exec leaves the marker, and admission that
+		// refuses before exec does not. It never serves, so a launch that does
+		// get here still fails, at the handshake, which is a different failure
+		// from a pin refusal. See TestPinnedDigestMismatchIsRefusedBeforeAnythingRuns.
+		if p := os.Getenv("FLOWSTATE_TEST_MARKER"); p != "" {
+			_ = os.WriteFile(p, nil, 0o600)
+		}
+		return 0
 	}
 
 	// Everything else serves.
@@ -423,6 +436,25 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
+	case "identity-stream":
+		// Tasks *and* progress streaming, which is what routes
+		// [Plugin.executeTask] (task.go) down its ExecuteStream branch rather
+		// than unary Execute. Its task echoes back the namespace and subject
+		// the *stream* request carried, so
+		// TestExecuteStreamCarriesTheCallersOwnIdentity can compare the two
+		// paths' tenancy against each other.
+		base.Capabilities = []pluginv1.Capability{
+			pluginv1.Capability_CAPABILITY_TASKS,
+			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
+		}
+		base.Tasks = []*pluginv1.TaskManifest{{
+			Name:          "identity_task",
+			Summary:       "echoes the identity its ExecuteStream request carried",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
+		}}
+		return base, nil
+
 	case "secret-task", "secret-task-error":
 		// Declares one input, "message", as accepting a host secret reference —
 		// the manifest field TestResolvePluginSecretInputs* and
@@ -646,11 +678,44 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 // Config.CallTimeout the way unary Execute's "slow" case above proves for
 // Execute.
 func (s *fakeTaskService) ExecuteStream(ctx context.Context, req *connect.Request[pluginv1.ExecuteStreamRequest], stream *connect.ServerStream[pluginv1.ExecuteStreamResponse]) error {
-	if s.mode != "hang-stream" {
-		return connect.NewError(connect.CodeUnimplemented, errors.New("this fake does not stream"))
+	switch s.mode {
+	case "hang-stream":
+		<-ctx.Done()
+		return ctx.Err()
+
+	case "identity-stream":
+		// One progress frame first, so this is a real stream and not a unary
+		// call wearing a stream's clothes, and then the terminal response
+		// echoing what the *streaming* request said about the workload. A host
+		// that dropped or mixed up either field on the way from ExecuteRequest
+		// to ExecuteStreamRequest shows up here as a pair that does not match
+		// the caller's own.
+		if err := stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Progress{
+				Progress: &pluginv1.TaskProgress{Phase: pluginv1.TaskPhase_TASK_PHASE_REQUESTING},
+			},
+		}); err != nil {
+			return err
+		}
+
+		return stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Response{
+				Response: &pluginv1.ExecuteResponse{
+					Outputs: &flowstatev1.Node_Outputs{
+						NamedValues: map[string]*flowstatev1.Value{
+							"result":    flowstatev1.NewLiteral(req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()),
+							"namespace": flowstatev1.NewLiteral(req.Msg.GetNamespace()),
+							"subject":   flowstatev1.NewLiteral(req.Msg.GetIdentity().GetSubject()),
+							"identity_namespace": flowstatev1.NewLiteral(
+								req.Msg.GetIdentity().GetNamespace()),
+						},
+					},
+				},
+			},
+		})
 	}
-	<-ctx.Done()
-	return ctx.Err()
+
+	return connect.NewError(connect.CodeUnimplemented, errors.New("this fake does not stream"))
 }
 
 // --- test-side helpers ---

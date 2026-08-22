@@ -89,6 +89,42 @@ const (
 	// string a caller can filter for explicitly (`name == ""`) rather than
 	// one silently coerced into "unknown".
 	filterName = "name"
+
+	// filterLabels is the workflow's own declared labels — see
+	// [Workflow.Labels] and [RunSummary.Labels]. A map, so a filter indexes it:
+	// `labels["team"] == "payments"`. Recorded in the memo unconditionally on
+	// every deployment, exactly as filterName is, so it filters correctly
+	// whether or not search attributes are registered anywhere.
+	//
+	// Bound to an empty map, never to null, for a run carrying no labels. That
+	// makes `"team" in labels` false rather than an error, so an operator can
+	// ask the negative question — `!("team" in labels)`, "which runs nobody
+	// labelled" — which is a real 3am question and would otherwise fail on
+	// exactly the runs it is asking about. Indexing a key that is absent is
+	// still an error, which is CEL's own answer for a map and the honest one:
+	// `labels["team"] == "payments"` on an unlabelled run is a question that
+	// has no answer, and `"team" in labels && labels["team"] == "payments"` is
+	// how it is asked safely — the same guard `close_time` already needs.
+	filterLabels = "labels"
+
+	// filterStarter is who submitted the run, as the qualified
+	// `issuer#subject` string — see [RunSummary.Starter], which is the same
+	// value from the same memo. Empty for a run whose starter was never
+	// recorded or could not be read, which a caller can filter for explicitly
+	// rather than have coerced into a placeholder that compares equal to
+	// nothing real.
+	filterStarter = "starter"
+
+	// filterWorkerVersion is the Worker Deployment version the run is pinned
+	// to, `deployment-name.build-id` — see [RunSummary.WorkerVersion]. This is
+	// the one name in this vocabulary not sourced from the memo, and the one
+	// that answers "a bad build shipped; which runs are on it".
+	//
+	// Empty when the deployment does not use Worker Deployment Versioning,
+	// which is the unconfigured default — so `worker_version == ""` selects
+	// the unpinned runs rather than erroring, and a deployment that has never
+	// turned versioning on sees every run answer that way.
+	filterWorkerVersion = "worker_version"
 )
 
 // A RunFilter is a compiled predicate over the runs in a listing.
@@ -221,6 +257,14 @@ func (f *RunFilter) activation(run *RunSummary) map[string]any {
 		filterCloseTime:  closeTime,
 		filterFinished:   run.GetCloseTime() != nil,
 		filterName:       run.GetName(),
+
+		// Never nil: GetLabels answers an unlabelled run with an empty map, and
+		// that is the binding a filter needs — see [filterLabels] for why `in`
+		// has to work on a run that carries none.
+		filterLabels: run.GetLabels(),
+
+		filterStarter:       run.GetStarter(),
+		filterWorkerVersion: run.GetWorkerVersion(),
 	}
 }
 
@@ -250,6 +294,17 @@ func runFilterEnv() (*cel.Env, error) {
 		cel.Variable(filterCloseTime, cel.TimestampType),
 		cel.Variable(filterFinished, cel.BoolType),
 		cel.Variable(filterName, cel.StringType),
+
+		// A map rather than a list of pairs or a flattened `label_team` naming
+		// scheme: a map is what the schema holds ([Workflow.Labels]), and it is
+		// the shape CEL already indexes and tests membership on. Flattening
+		// would invent a second spelling of a key an author wrote, and any
+		// separator it chose would be a character legal inside a key — the
+		// ambiguity the secret-provider namespacing lesson was paid for.
+		cel.Variable(filterLabels, cel.MapType(cel.StringType, cel.StringType)),
+
+		cel.Variable(filterStarter, cel.StringType),
+		cel.Variable(filterWorkerVersion, cel.StringType),
 	)
 }
 

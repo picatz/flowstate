@@ -1,10 +1,6 @@
 edition: v2026.3
 name: feature-flags
-description: >-
-  Reads a map of feature flags safely — a key that might not be there
-  defaulted where it is read, and the whole map summarized by iterating its
-  keys — rather than a task built to answer one question about one map.
-
+description: Reads a map of feature flags safely — a key that might not be there defaulted where it is read, and the whole map summarized by iterating its keys — rather than a task built to answer one question about one map.
 # A map comprehension's iteration variable ranges over the map's *keys* — the
 # same `filter`, `map`, `all` and `exists` a list uses, over a different
 # domain. `flags.filter(k, flags[k])` reads as "every key whose value is
@@ -18,16 +14,14 @@ description: >-
 #
 #   flow run local examples/feature-flags/workflow.yaml \
 #     --input 'flags={"beta_search": true, "dark_mode": false}'
-
 inputs:
   flags:
     type: struct
     required: true
+    description: a mapping of flag name to whether it is on, an open set a caller owns
     example:
       beta_search: true
       dark_mode: false
-    description: a mapping of flag name to whether it is on, an open set a caller owns
-
 steps:
   # Iterating the map's keys, keeping the ones whose value is true. Sorted so
   # the report reads the same way twice regardless of the order a JSON
@@ -40,13 +34,9 @@ steps:
   # and `.?` is what keeps that visible up to the point `orValue` defaults it.
   - id: search_enabled
     value: ${inputs.flags.?beta_search.orValue(false)}
-
   - id: report
     log:
-      message: >-
-        ${"enabled: [%s], beta search: %s".format([
-            steps.enabled.value.join(", "), string(steps.search_enabled.value)])}
-
+      message: '${"enabled: [%s], beta search: %s".format([steps.enabled.value.join(", "), string(steps.search_enabled.value)])}'
 outputs:
   enabled_flags:
     value: ${steps.enabled.value}

@@ -114,6 +114,16 @@
 // everyone. Rules match exactly, never by prefix or pattern, so a policy cannot
 // accidentally trust more than it names.
 //
+// For the public multi-tenant issuers this package knows by name — GitHub
+// Actions, GitLab.com, HCP Terraform — that is enforced rather than advised: an
+// entry naming one of them is refused when the policy loads unless it carries a
+// require rule or a namespace_claim. An audience does not substitute for either,
+// because on those platforms the audience is a value the workload requesting the
+// token names. The list of such issuers is a floor and not a ceiling — it says
+// nothing about an issuer it has not heard of, since an audience is a real
+// restriction for a single-tenant issuer whose tokens only its own operator can
+// obtain.
+//
 // Several entries may share an issuer, which is how one platform grants
 // different roles to different workloads. The first entry whose audience and
 // rules a token satisfies wins, and [Principal.IssuerName] records which one it

@@ -98,14 +98,17 @@ type temporalFlags struct {
 
 // temporalFlagsOf reads them off the command being run.
 func temporalFlagsOf(cmd *cobra.Command) temporalFlags {
-	// "address" rather than "temporal-address": on `worker` and `server` that flag
-	// means Temporal's address, while on the verbs that talk to Flowstate it means
-	// the Flowstate server's. Two meanings for one spelling, split by which command
-	// declares it — pre-existing, and renaming either would break a command line
-	// somebody has written down.
-	address, _ := cmd.Flags().GetString("address")
-	namespace, _ := cmd.Flags().GetString("namespace")
-	profile, _ := cmd.Flags().GetString("profile")
+	// A flag names the noun it belongs to (picatz/flowstate#580): these are
+	// Temporal's settings, so they carry Temporal's prefix. They used to be
+	// spelled --address, --namespace and --profile, which meant `flow server
+	// --address` named Temporal's frontend while `flow get --address` named the
+	// Flowstate server — one spelling, two meanings, decided by which command
+	// declared it. The old spellings are still registered on these two commands
+	// so that a command line written against them fails saying so; see
+	// cmd/flow/renamedflags.go.
+	address, _ := cmd.Flags().GetString("temporal-address")
+	namespace, _ := cmd.Flags().GetString("temporal-namespace")
+	profile, _ := cmd.Flags().GetString("temporal-profile")
 	taskQueue, _ := cmd.Flags().GetString("task-queue")
 	taskQueuePrefix, _ := cmd.Flags().GetString("task-queue-prefix")
 	tenant, _ := cmd.Flags().GetString("tenant")
@@ -2087,10 +2090,10 @@ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD
 flow worker --allow-unversioned-interpreter
 
 # Start a worker with custom Temporal server:
-flow worker --address localhost:7233 --deployment-name flowstate --build-id dev-1
+flow worker --temporal-address localhost:7233 --deployment-name flowstate --build-id dev-1
 
 # Start a worker with custom namespace:
-flow worker --namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
+flow worker --temporal-namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"`,
 	}
 
 	// These override Temporal's environment configuration when set; unset means
@@ -2114,10 +2117,18 @@ flow server --verbose`,
 	}
 
 	// use whatever TEMPORAL_* variables or the temporal.toml profile resolve to.
+	//
+	// Prefixed because they are Temporal's settings and this process has
+	// settings of its own that answer the same questions: --listen is the
+	// socket `flow server` binds, --tenant is a Flowstate tenant. Unprefixed,
+	// `--address` named Temporal's frontend here and the Flowstate server on
+	// every client verb (picatz/flowstate#580). addRenamedTemporalFlags keeps
+	// the old spellings registered, hidden, and refusing.
 	for _, c := range []*cobra.Command{workerCmd, serverCmd} {
-		c.Flags().String("address", "", "Temporal server address (overrides environment configuration)")
-		c.Flags().String("namespace", "", "Temporal namespace (overrides environment configuration)")
-		c.Flags().String("profile", "", "Temporal configuration profile to use")
+		c.Flags().String("temporal-address", "", "Temporal frontend address to dial (overrides environment configuration)")
+		c.Flags().String("temporal-namespace", "", "Temporal namespace (overrides environment configuration)")
+		c.Flags().String("temporal-profile", "", "Temporal configuration profile to use")
+		addRenamedTemporalFlags(c)
 	}
 	workerCmd.Flags().String("task-queue", cmp.Or(os.Getenv("TEMPORAL_TASK_QUEUE"), engine.RunTaskQueueName),
 		"task queue for Temporal workflows and activities")
@@ -2268,10 +2279,10 @@ flow server --verbose`,
 	// FLOWSTATE_ADDRESS remains the default, so nothing that works today stops
 	// working, but `flow server --help` now says how to change it instead of
 	// sending an operator to the deployment docs. Named --listen rather than
-	// --address for the same reason `flow server dev` is: --address on this
-	// command already means Temporal's address (the loop two hundred lines up),
-	// and a bare host:port for net.Listen is not the client's --address either,
-	// which takes a URL and may carry a scheme.
+	// --address for the same reason `flow server dev` is: a bare host:port for
+	// net.Listen is not the client's --address, which takes a URL and may carry
+	// a scheme. It is also what `--address` on this command is now refused in
+	// favour of, alongside --temporal-address (picatz/flowstate#580).
 	serverCmd.Flags().String("listen", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
 		"address this server listens on, as a bare host:port for net.Listen (default "+
 			"$FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, "+

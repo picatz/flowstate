@@ -159,13 +159,16 @@ flow server dev
 flow server dev -o json`,
 	}
 
-	// Deliberately not spelled --address. On `flow server` and `flow worker`
-	// that flag means *Temporal's* address, while on every verb that talks to
-	// Flowstate it means the Flowstate server's. Two meanings for one spelling,
-	// split by which command declares it. This command holds both halves at
-	// once, so it may not inherit the ambiguity: --listen is where Flowstate
-	// listens, and there is no flag for Temporal's address because this command
-	// is what starts Temporal.
+	// Deliberately not spelled --address, and the first flag in the tree to say
+	// so: on every verb that talks to Flowstate, --address names the Flowstate
+	// server a client dials, which a socket to bind is not. `flow server` and
+	// `flow worker` used to spell Temporal's own address the same way — two
+	// meanings for one spelling, split by which command declared it — and this
+	// command, which holds both halves at once, refused to inherit the
+	// ambiguity. picatz/flowstate#580 settled it the same way everywhere else:
+	// --listen is where Flowstate listens, --temporal-address is Temporal's
+	// frontend, and this command needs no flag for the latter because it is
+	// what starts Temporal.
 	cmd.Flags().String("listen", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
 		"address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); "+
 			"loopback only, and a port of 0 takes a free one")
@@ -629,7 +632,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		uiURL:          devUIURL(flags.uiPort),
 		database:       flags.db,
 		otlp:           devOTLPEndpoint(),
-		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == "true",
+		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == v1.AllowLoopbackEgressValue,
 	}
 	stack.egressPolicy, _ = cmd.Flags().GetString("egress-policy")
 	stack.taskPolicy, _ = cmd.Flags().GetString("task-policy")
@@ -842,7 +845,7 @@ func writeDevBanner(surface *ui.UI, stack devStack) {
 	posture("--"+allowUnversionedFlag, devPostureUnversioned, warn)
 
 	if stack.loopbackEgress {
-		posture(v1.AllowLoopbackEgressEnv+"=true",
+		posture(v1.AllowLoopbackEgressEnv+"="+v1.AllowLoopbackEgressValue,
 			"the http task may reach this machine, including services this stack does not own", warn)
 	} else {
 		posture(v1.AllowLoopbackEgressEnv+" unset",
