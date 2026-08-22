@@ -44,6 +44,37 @@ func TestRunWorkflowRecordsNoMetricsWithoutAMeterProvider(t *testing.T) {
 	conformance.AssertNoMetrics(t, reader)
 }
 
+// TestADurableTaskPanicIsRecordedAsAFailure is the durable half of the defect
+// Codex found on #888.
+//
+// The substrate's half of the claim is what this side can assert that the local
+// one cannot: Temporal's activity executor recovers the panic into a failed
+// activity, and the workflow fails with it. The observation must have recorded
+// the same event as a failure — before the fix it recorded outcome=success,
+// which is the disagreement in its most visible form, since the same execution
+// was simultaneously a success in the metric and a failure in the substrate.
+//
+// A single attempt: [conformance.PanicWorkflow] pins MaxAttempts to 1, so the
+// activity is not retried and the count is about the crash rather than about
+// the retry policy.
+func TestADurableTaskPanicIsRecordedAsAFailure(t *testing.T) {
+	conformance.RegisterPanickingTask(t)
+
+	reader := conformance.RecordMetrics(t)
+
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.PanicWorkflow()})
+	require.True(t, env.IsWorkflowCompleted())
+	require.Error(t, env.GetWorkflowError(),
+		"the substrate must still see the panic as a failed activity")
+
+	conformance.AssertPanicRecordedAsFailure(t, reader, metricschema.DriverDurable)
+}
+
 // runTaskMetricWorkflow drives [conformance.TaskMetricWorkflow] through the
 // durable driver's test environment, the same way the span case's own durable
 // half does.
