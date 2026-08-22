@@ -361,12 +361,15 @@ func FuzzFixIdempotent(f *testing.F) {
 // The first thing it found is committed beside it as the corpus entry
 // `comment_folded_into_key`: `name: #` with the scalar continuing on the next
 // line, which the emitter wrote back as `name #: A0` — the comment folded into
-// the key, a document that no longer parses (#860). The named regression tests
-// for it are TestFormatRefusesACommentThatWouldFoldIntoItsKey and
-// TestFormatKeepsTheCommentPositionsAroundTheFoldingOne in format_test.go, which
-// state the refusal's position and hold the neighbouring comment positions to
-// bytes, since a fix that refused one comment too widely would look identical
-// here.
+// the key, a document that no longer parses (#860). It ran through this target
+// as a refusal for as long as #862's answer stood; it now runs through all three
+// properties, because the comment is written after the value instead
+// (`name: A0 #`). The named regression tests are, in format_test.go,
+// TestFormatWritesAKeyLineCommentAfterTheValueWhereTheKeyHasNoRoom for that
+// rendering, TestFormatRefusesTwoCommentsThatWouldShareOneSlot for the position
+// still refused, and TestFormatKeepsTheCommentPositionsAroundTheFoldingOne for
+// the neighbours — all byte-exact, since a placement that moved one comment too
+// far would look identical here.
 //
 // An error from Format is an ordinary answer and not asserted against: a workflow
 // this build compiled but cannot write back — a literal holding `${`, an
