@@ -601,6 +601,14 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	})
 	engine.Register(w, runtime)
 
+	// Before the listener below exists, and that order is load-bearing rather
+	// than tidy. Start is what registers this worker with the client's eager
+	// dispatcher, and it does so before returning, so by the time anything can
+	// connect to this stack there is a worker for [server.WithEagerWorkflowStart]
+	// to hand a first workflow task to. Starting the worker after serving would
+	// leave the earliest runs quietly falling back to ordinary dispatch — a race
+	// whose only symptom is the optimization not happening. Keep this above the
+	// listener.
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("starting the worker: %w", err)
 	}
