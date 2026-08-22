@@ -246,6 +246,16 @@ type TrustedIssuer struct {
 	//
 	// An issuer with no rules trusts every workload that platform will ever
 	// issue a token for, which is usually far too broad.
+	//
+	// For a small built-in set of public multi-tenant issuers — GitHub
+	// Actions, GitLab.com, HCP Terraform — "usually far too broad" is
+	// "always", because anyone may run a workload there and the audience is
+	// named by whoever requests the token. Such an entry is refused when the
+	// policy loads unless it carries at least one rule here, or a
+	// NamespaceClaim that puts each account in its own tenant instead. That
+	// set is a floor and not a ceiling: an issuer it has not heard of is
+	// still admitted with no rules, because a single-tenant corporate IdP
+	// restricted by audience alone is a legitimate configuration.
 	Require []ClaimRule `json:"require,omitempty" yaml:"require,omitempty"`
 
 	// Role is the Flowstate role granted to callers admitted by this entry,
@@ -701,6 +711,10 @@ func (t TrustedIssuer) validateOIDC() error {
 		return err
 	}
 
+	if err := t.validateMultiTenantPinning(); err != nil {
+		return err
+	}
+
 	if t.MaxTokenAge < 0 {
 		return fmt.Errorf("max_token_age must not be negative")
 	}
@@ -834,6 +848,137 @@ func (t TrustedIssuer) validateNamespaceFields() error {
 	}
 
 	return nil
+}
+
+// multiTenantIssuer describes a public workload-identity issuer that mints
+// tokens for anybody: its human name, and the claim an operator almost
+// certainly meant to pin, used to write the diagnostic in that platform's own
+// vocabulary rather than in GitHub's.
+type multiTenantIssuer struct {
+	// platform is how the diagnostic names the issuer, such as "GitHub
+	// Actions".
+	platform string
+
+	// claim is a claim every token from that platform carries which names the
+	// account the workload belongs to, and example is a value of it. Both
+	// appear in the diagnostic's example YAML, so the remedy an operator is
+	// shown is one they can paste.
+	claim   string
+	example string
+}
+
+// multiTenantIssuerHosts are the hosts of issuers where *anyone* may run a
+// workload and ask for a token, keyed by the host of the issuer URL each
+// platform documents.
+//
+// Trusting one of these with no claim rule and no namespace claim admits every
+// workload on that platform as one caller, because the only other thing the
+// entry checks — the audience — is a value the *token requester* names rather
+// than one the platform assigns per customer. The package doc has always said
+// so; per CLAUDE.md's fail-closed rule, documentation is the wrong enforcement
+// layer for it, so [TrustedIssuer.validateMultiTenantPinning] refuses such an
+// entry when the policy loads.
+//
+// This list is a floor, not a ceiling. It cannot be complete — a public issuer
+// this table has never heard of is admitted unpinned, and so is a self-hosted
+// GitLab or a vendor whose host is not written here — and it deliberately does
+// not try to be, because the alternative (refusing every issuer that carries no
+// require rule) would refuse the legitimate single-tenant case a corporate IdP
+// with one audience is. What it buys is that the three platforms whose OIDC
+// providers this repository's own docs, examples and tests reach for cannot be
+// trusted wide open by accident.
+//
+// Matching is on the issuer URL's host, exactly and case-insensitively: a
+// deployment's own GitLab at gitlab.example.com is a different, single-tenant
+// issuer and is not caught, which is the intent. Nothing here is derived from a
+// token — this reads operator configuration at load time.
+var multiTenantIssuerHosts = map[string]multiTenantIssuer{
+	// GitHub Actions: issuer https://token.actions.githubusercontent.com,
+	// carrying "repository" ("<owner>/<name>") and "repository_owner", per
+	// https://docs.github.com/en/actions/concepts/security/openid-connect.
+	// A workflow names its own audience when it requests the token, so an
+	// audience alone restricts nothing about who minted it.
+	"token.actions.githubusercontent.com": {
+		platform: "GitHub Actions",
+		claim:    "repository_owner",
+		example:  "picatz",
+	},
+
+	// GitLab.com CI/CD ID tokens: the "iss" claim is the GitLab instance's own
+	// domain, so https://gitlab.com for the hosted service, carrying
+	// "namespace_path" and "project_path" among others, per
+	// https://docs.gitlab.com/ci/secrets/id_token_authentication/. The
+	// audience is written in the job's `id_tokens:` block, by the job.
+	"gitlab.com": {
+		platform: "GitLab.com CI/CD",
+		claim:    "namespace_path",
+		example:  "my-group",
+	},
+
+	// HCP Terraform workload identity tokens: issuer https://app.terraform.io,
+	// carrying "terraform_organization_name", "terraform_workspace_name" and
+	// the rest, per
+	// https://developer.hashicorp.com/terraform/cloud-docs/workspaces/dynamic-provider-credentials/workload-identity-tokens.
+	// The audience is a workspace variable the workspace's own operator sets.
+	"app.terraform.io": {
+		platform: "HCP Terraform",
+		claim:    "terraform_organization_name",
+		example:  "my-org",
+	},
+}
+
+// multiTenantIssuerFor reports whether an issuer URL names a known public
+// multi-tenant issuer.
+func multiTenantIssuerFor(issuer string) (multiTenantIssuer, bool) {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		// An unparseable issuer is refused by validateIssuerURL, which runs
+		// first; there is nothing to say about it here.
+		return multiTenantIssuer{}, false
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	known, ok := multiTenantIssuerHosts[host]
+	return known, ok
+}
+
+// validateMultiTenantPinning refuses an entry that trusts a known public
+// multi-tenant issuer without narrowing who it admits.
+//
+// Either spelling counts as narrowing, and they answer different questions.
+// A Require rule decides *who is admitted at all*, and is what an operator
+// running one organization's workloads means. A NamespaceClaim instead admits
+// everyone but lands each account in its own tenant, read off a claim the
+// issuer signed — a deliberate multi-tenant posture, and the shape
+// examples/operations/tenant-routing/trust.yaml demonstrates.
+//
+// A fixed Namespace is deliberately *not* enough. It says which tenant the
+// callers this entry admits belong to; it says nothing about which callers
+// those are, so with it alone every workload on the platform lands in one
+// tenant together.
+func (t TrustedIssuer) validateMultiTenantPinning() error {
+	if len(t.Require) > 0 || t.NamespaceClaim != "" {
+		return nil
+	}
+
+	known, ok := multiTenantIssuerFor(t.Issuer)
+	if !ok {
+		return nil
+	}
+
+	return fmt.Errorf("issuer %q belongs to %s, where anyone may run a workload and request a token, "+
+		"and this entry names no require rules and no namespace_claim — so it admits every workload on that "+
+		"platform as the same caller. The audience does not narrow it: the audience is chosen by whoever "+
+		"requests the token, not assigned by %s. Pin this entry one of two ways. "+
+		"Narrow who is admitted at all:\n\n"+
+		"    require:\n"+
+		"      - claim: %s\n"+
+		"        any_of: [%s]\n\n"+
+		"or, to admit several accounts and keep each in its own tenant, read the tenant off a signed claim:\n\n"+
+		"    namespace_claim: %s\n\n"+
+		"(a fixed namespace: is not enough on its own: it names the tenant admitted callers land in, "+
+		"not which callers are admitted)",
+		t.Issuer, known.platform, known.platform, known.claim, known.example, known.claim)
 }
 
 // validateIssuerURL checks that an issuer identifier is the kind of URL
