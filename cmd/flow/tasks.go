@@ -71,10 +71,28 @@ func runTasks(cmd *cobra.Command, args []string) error {
 
 	catalog, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
+		// See [runValidate]: a refusal made before anything launched is a wrong
+		// command line, not a plugin that would not start.
+		if isUsageError(err) {
+			return err
+		}
+
 		return fmt.Errorf("--plugin-dir names what this listing is supposed to include, "+
 			"and one of those plugins would not start: %w", err)
 	}
 	defer closePlugins()
+
+	// Or the same listing from a document, with nothing launched (#710). A
+	// catalog that will not load fails this command for the reason a plugin
+	// that will not start does: a listing missing what somebody asked to see,
+	// printed as though it were the whole of it, is a wrong answer rather than
+	// a smaller one.
+	if fromFile, err := loadPluginCatalog(cmd); err != nil {
+		return fmt.Errorf("--%s names what this listing is supposed to include, and it "+
+			"could not be read: %w", pluginCatalogFlag, err)
+	} else if fromFile != nil {
+		catalog = fromFile
+	}
 
 	expressions, _ := cmd.Flags().GetBool(expressionsFlag)
 	if expressions && len(args) > 0 {

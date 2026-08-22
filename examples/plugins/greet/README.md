@@ -117,6 +117,32 @@ file without it — carrying on would report every one of that plugin's tasks as
 unknown task, which is a false statement about the file drawn from something that
 went wrong with a process.
 
+### Or without launching anything: `--plugin-catalog`
+
+`--plugin-dir` answers the question by executing the plugins, which needs the
+binaries on this machine and a machine that can execute them. The same facts
+also travel as a document (#710):
+
+```console
+$ flow plugins --plugin-dir ./plugins --output json > plugins.lock.json
+$ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml
+examples/plugins/greet/workflow.yaml: ok
+```
+
+`flow plugins --output json` is the writer and the only one; it emits the catalog
+every task's descriptors travel in, so the file checked above is checked against
+`example.greet`'s real input schema, with no process started. That is what a CI
+job with no plugin binaries in the runner needs, what an editor pointed at the
+catalog of the worker it submits to needs, and what a browser authoring surface
+(#102, #242) needs, since none of them can exec. `flow tasks --plugin-catalog`
+and `flow fix --plugin-catalog` read the same document.
+
+The two flags are refused together: they are two sources of one fact, and
+nothing in the command could decide what to do when the document and the
+binaries disagree about a task's schema. A catalog that fails to *load* fails
+the command naming the file, for the same reason a plugin that fails to launch
+does — nothing is checked against a half-read catalog.
+
 It is still run in CI, and by more than a validator: `TestAFlowfileCanNameAPluginTask`
 in `pkg/flowstate/v1/plugin` builds this plugin, launches it, registers it into the
 registry the engine reads, and then validates and executes *this file* — the same

@@ -126,6 +126,26 @@ flow fix --stdout old.yaml > new.yaml`,
 	// --plugin-dir a plugin task is rewritten the way it is today.
 	addPluginFlags(cmd)
 
+	// And the offline form (#710), on the same reasoning rather than on
+	// symmetry with `validate`. The argument for giving a *rewriter* a second
+	// source of task facts is that the alternative is not "fewer facts", it is
+	// the wrong ones: with nothing to consult, this walk treats a plugin's
+	// steps as ordinary ones and branches on declarations it does not have —
+	// the failure #835's review found arriving through `--plugin` with no
+	// search path. A catalog carries exactly the two declarations the walk
+	// reads (`shapes_outputs` and `deferred_inputs`), #854's round-trip test is
+	// the proof that it carries them unchanged, and a catalog that will not
+	// load stops the command before a file is read.
+	//
+	// The cost, stated: a catalog is a document, and a document can be stale in
+	// a way a directory of binaries is less likely to be. A rewrite against a
+	// stale catalog is a rewrite against a task set the plugin no longer has.
+	// That risk is the author's own toolchain either way — nothing here reads a
+	// catalog it was not pointed at — and it is why `flow plugins --output
+	// json` is a command rather than a checked-in artifact this repository
+	// maintains by hand.
+	addPluginCatalogFlag(cmd)
+
 	return cmd
 }
 
@@ -165,10 +185,24 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	// have rewritten those files against a task set the author did not ask for.
 	_, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
+		// See [runValidate]: a refusal made before anything launched is a wrong
+		// command line, not a plugin that would not start. Nothing has been
+		// written either way — this is still ahead of the first file read.
+		if isUsageError(err) {
+			return err
+		}
+
 		return fmt.Errorf("--plugin-dir names what these files are rewritten against, "+
 			"and one of those plugins would not start, so nothing was written: %w", err)
 	}
 	defer closePlugins()
+
+	// Same place in the sequence, for the same reason: before a single file is
+	// read. A catalog that will not load leaves every file exactly as it was.
+	if _, err := loadPluginCatalog(cmd); err != nil {
+		return fmt.Errorf("--%s names what these files are rewritten against, and it "+
+			"could not be read, so nothing was written: %w", pluginCatalogFlag, err)
+	}
 
 	files, err := collectFlowfiles(paths)
 	if err != nil {

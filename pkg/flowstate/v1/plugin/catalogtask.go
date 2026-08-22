@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -55,6 +57,36 @@ var ErrCatalogOnly = errors.New("plugin: task was loaded from a catalog and cann
 // is safe to guess at.
 var ErrCatalogClaims = errors.New("plugin: catalog claims schema version is not this build's")
 
+// ErrCatalogTaskName reports that a catalog names a task its plugin could not
+// have provided.
+//
+// A launched plugin never chooses the name a task is registered under: the host
+// qualifies every manifest's bare name with the plugin's own
+// (`p.name + "." + name`, task.go:36), so `example.greet` is the only shape a
+// launch can produce and a bare `http` is not reachable that way at all. A
+// catalog is a *document*, and a document says whatever its author typed — so a
+// catalog naming a task `http` would, once rebuilt and registered, replace the
+// built-in of that name ([flowstatev1.Registry.Register] replaces rather than
+// refuses) with a definition that carries the document's descriptors and cannot
+// execute.
+//
+// That is a reader stronger than the thing it stands in for, in the one
+// direction that matters: a catalog could change what `flow validate` checks a
+// built-in step against. So the qualification the launcher applies is checked
+// here rather than assumed, and a catalog no host could have written is refused
+// whole (#710).
+var ErrCatalogTaskName = errors.New("plugin: catalog names a task its plugin could not have provided")
+
+// ErrCatalogDuplicateTask reports that a catalog gives one task name two
+// definitions.
+//
+// Its own sentinel rather than [ErrCatalogTaskName] because the two are
+// different mistakes with different fixes: that one is a name no plugin could
+// have declared, and this one is two declarations of a name that is perfectly
+// well formed. See [checkOneDefinitionPer] for why a live host cannot be in
+// this state and a document can.
+var ErrCatalogDuplicateTask = errors.New("plugin: catalog defines one task twice")
+
 // ErrCatalogTooLarge reports that a catalog is over one of the bounds on the
 // document as a whole — how many plugins it names, how many tasks across all of
 // them, or how many descriptor bytes it carries in total.
@@ -100,9 +132,22 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 		return nil, err
 	}
 
+	// Before a single definition is built, for the same reason the bounds are
+	// checked in a pre-pass: a refusal that arrives halfway has already paid for
+	// half the work, and a caller that registered the first half of a catalog
+	// this then refused is exactly the partial state the all-or-nothing rule
+	// above exists to prevent.
+	if err := checkOneDefinitionPer(catalog); err != nil {
+		return nil, err
+	}
+
 	defs := make([]flowstatev1.TaskDef, 0, total)
 	for _, described := range catalog.GetPlugins() {
 		for _, task := range described.GetTasks() {
+			if err := checkQualified(described.GetName(), task.GetName()); err != nil {
+				return nil, err
+			}
+
 			def, err := TaskDefFromDescription(task, cfg)
 			if err != nil {
 				return nil, fmt.Errorf("plugin %q: %w", truncate(described.GetName(), 64), err)
@@ -112,6 +157,102 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 	}
 
 	return defs, nil
+}
+
+// checkQualified refuses a task name the plugin it is listed under could not
+// have produced. See [ErrCatalogTaskName] for why a document gets asked this
+// and a launched plugin does not.
+//
+// The prefix is this function's own business — it is the *host* that joins the
+// two segments, and nothing in the schema describes the joined form. Both
+// segments, though, are already spelled out exactly once, as the protovalidate
+// rules on PluginManifest.name (`^[a-z0-9][a-z0-9-]*$`, 1–64) and
+// TaskManifest.name (`^[a-z][a-z0-9_]*$`, 1–64), which
+// [Plugin.checkManifest] applies through [flowstatev1.Validate] at launch. So
+// the segments are checked by handing those rules the manifest a plugin would
+// have had to describe itself with to produce this name, rather than by
+// transcribing the two patterns into a second regex here (#863 review). A
+// pattern that changes in the schema changes here on the same day, by
+// construction.
+//
+// The capability is set because the manifest has to be a *valid* one for the
+// rules on its name fields to be the thing that fails; nothing about this call
+// launches, dispatches or trusts anything.
+func checkQualified(plugin, task string) error {
+	if plugin == "" {
+		return fmt.Errorf("%w: a plugin in the catalog has no name, so nothing it lists can be attributed to it",
+			ErrCatalogTaskName)
+	}
+
+	prefix := plugin + "."
+
+	bare, qualified := strings.CutPrefix(task, prefix)
+	if !qualified || bare == "" {
+		return fmt.Errorf(
+			"%w: plugin %q lists a task named %q, and a host names every one of a plugin's tasks "+
+				"%s<task>; a catalog naming a task any other way would register that name over "+
+				"whatever already holds it",
+			ErrCatalogTaskName, truncate(plugin, 64), truncate(task, 64), prefix)
+	}
+
+	if err := flowstatev1.Validate(&pluginv1.PluginManifest{
+		Name:         plugin,
+		Capabilities: []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS},
+		Tasks:        []*pluginv1.TaskManifest{{Name: bare}},
+	}); err != nil {
+		return fmt.Errorf(
+			"%w: plugin %q lists a task named %q, and no plugin could have declared that — the "+
+				"host builds a task's name from a manifest whose own rules refuse it: %w",
+			ErrCatalogTaskName, truncate(plugin, 64), truncate(task, 64), err)
+	}
+
+	return nil
+}
+
+// checkOneDefinitionPer refuses a catalog that gives one task name two
+// definitions.
+//
+// A live host cannot be in this state. Within a plugin, [Plugin.checkManifest]
+// refuses a manifest that "provides task %q twice"; across plugins, the host
+// keys by the binary's name and qualifies every task with it, so two plugins
+// cannot reach the same qualified name at all. A document can do both — two
+// entries under one plugin name, or one plugin listing a task twice — and
+// [flowstatev1.Registry.Register] *replaces*, so whichever definition came last
+// in the file would silently win. That makes what a validator says a property
+// of the order lines appear in, which is not a property a file should have
+// (#863 review).
+//
+// Refused for the whole catalog before anything is rebuilt or registered, on
+// the all-or-nothing rule [TaskDefsFromCatalog] already states: a caller left
+// holding half a catalog reports an unknown task for a name the document was
+// carrying. Both plugin entries are named, because with duplicate plugin names
+// in a document the task name alone does not say where to look.
+func checkOneDefinitionPer(catalog *flowstatev1.PluginCatalog) error {
+	// Index rather than name alone: a document may list two plugin entries with
+	// the same name, and "declared by example and by example" is not an answer
+	// somebody can act on.
+	type source struct {
+		plugin string
+		index  int
+	}
+
+	seen := make(map[string]source)
+	for i, described := range catalog.GetPlugins() {
+		for _, task := range described.GetTasks() {
+			name := task.GetName()
+			if first, dup := seen[name]; dup {
+				return fmt.Errorf(
+					"%w: task %q is defined twice — by plugin entry %d (%q) and again by entry %d (%q); "+
+						"a registry keeps one definition per name, so which of them a file were checked "+
+						"against would depend on the order they appear in",
+					ErrCatalogDuplicateTask, truncate(name, 64),
+					first.index, truncate(first.plugin, 64), i, truncate(described.GetName(), 64))
+			}
+			seen[name] = source{plugin: described.GetName(), index: i}
+		}
+	}
+
+	return nil
 }
 
 // boundCatalog refuses a catalog that is over one of the whole-document bounds,

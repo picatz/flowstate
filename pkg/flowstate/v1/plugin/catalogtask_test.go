@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -288,6 +289,176 @@ func TestTaskDefsFromCatalogRefusesAnUnreadableClaimsSchemaVersion(t *testing.T)
 	}
 }
 
+// TestACatalogCannotNameATaskItsPluginCouldNotProvide is the direction a
+// document has and a launch does not (#710).
+//
+// A host chooses the name a task is registered under: it qualifies every
+// manifest's bare name with the plugin's own, so `example.widget` is the only
+// shape a launch produces and `http` is unreachable that way. A catalog is a
+// document and says whatever its author typed — and
+// [flowstatev1.Registry.Register] replaces rather than refuses, so a catalog
+// naming a task `http` would put a definition carrying the document's own
+// descriptors, unable to execute, where the built-in was.
+//
+// Both directions, because the refusal is only meaningful against the
+// acceptance: the qualified name this same host produced still rebuilds.
+func TestACatalogCannotNameATaskItsPluginCouldNotProvide(t *testing.T) {
+	t.Parallel()
+
+	launched, err := (&Plugin{name: "example"}).taskDef(widgetManifest(t), Config{}.withDefaults())
+	require.NoError(t, err)
+	require.Equal(t, "example.widget", launched.Name,
+		"the host no longer qualifies a task with its plugin's name, which is what this test checks a document against")
+
+	_, err = TaskDefsFromCatalog(catalogOf(t, "example", launched), Config{})
+	require.NoError(t, err, "a catalog this host's own naming produced was refused")
+
+	// The same tasks, listed under names no manifest could have produced. The
+	// first three are the shapes a prefix-only check let through (#863 review):
+	// each is well-formed as a string and refused by the protovalidate rules
+	// the host applies to the two segments at launch.
+	for _, tc := range []struct {
+		name    string
+		catalog *flowstatev1.PluginCatalog
+	}{
+		{
+			// The task is qualified — by a plugin name that is not one. The
+			// schema's manifest name is lowercase.
+			name:    "an uppercase plugin segment",
+			catalog: namedTaskCatalog("Example", "Example.foo"),
+		},
+		{
+			name:    "an uppercase task segment",
+			catalog: namedTaskCatalog("example", "example.Bad"),
+		},
+		{
+			// A dot in the task segment is what the manifest's own pattern is
+			// there to stop: a plugin cannot smuggle a qualifier of its own.
+			name:    "a second qualifier inside the task segment",
+			catalog: namedTaskCatalog("example", "example.foo.bar"),
+		},
+		{
+			name:    "a task qualified by a different plugin",
+			catalog: catalogOf(t, "somebody-else", launched),
+		},
+		{
+			name:    "an unqualified name that would shadow a built-in",
+			catalog: namedTaskCatalog("example", "http"),
+		},
+		{
+			name:    "a plugin entry with no name at all",
+			catalog: namedTaskCatalog("", "example.widget"),
+		},
+		{
+			name:    "a plugin segment and nothing after it",
+			catalog: namedTaskCatalog("example", "example."),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := TaskDefsFromCatalog(tc.catalog, Config{})
+			require.ErrorIs(t, err, ErrCatalogTaskName,
+				"a catalog naming a task its plugin could not have provided was rebuilt anyway, so a "+
+					"document can register a definition over whatever already holds that name")
+		})
+	}
+
+	// And the boundary the refusals above are only meaningful against: the
+	// valid form, every character of it legal in its own segment.
+	t.Run("the valid form", func(t *testing.T) {
+		t.Parallel()
+
+		defs, err := TaskDefsFromCatalog(namedTaskCatalog("ex-ample9", "ex-ample9.foo_bar9"), Config{})
+		require.NoError(t, err,
+			"a task name a manifest could have produced was refused, so the check is stricter than the launcher")
+		require.Len(t, defs, 1)
+		assert.Equal(t, "ex-ample9.foo_bar9", defs[0].Name)
+	})
+}
+
+// namedTaskCatalog is one plugin entry listing one task, both named exactly as
+// given — the shape a hand-edited document has and no host writes.
+func namedTaskCatalog(plugin, task string) *flowstatev1.PluginCatalog {
+	return &flowstatev1.PluginCatalog{
+		ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
+		Plugins: []*flowstatev1.PluginDescription{{
+			Name:  plugin,
+			Tasks: []*flowstatev1.TaskDescription{{Name: task, Summary: "a task from a document"}},
+		}},
+	}
+}
+
+// TestACatalogCannotDefineOneTaskTwice is the other thing a document can be
+// that a live host cannot (#863 review).
+//
+// [Plugin.checkManifest] refuses a manifest that provides one task twice, and
+// across plugins the host's qualification makes a collision unreachable. A
+// catalog can do both, and [flowstatev1.Registry.Register] replaces rather than
+// refuses — so without this the definition a file is checked against is
+// whichever one appears last in the document.
+//
+// Both shapes, and the refusal names both sources: with two entries under one
+// plugin name, the task name alone does not say where to look.
+func TestACatalogCannotDefineOneTaskTwice(t *testing.T) {
+	t.Parallel()
+
+	launched, err := (&Plugin{name: "example"}).taskDef(widgetManifest(t), Config{}.withDefaults())
+	require.NoError(t, err)
+	described := flowstatev1.DescribeTask(launched)
+
+	other, err := (&Plugin{name: "example"}).taskDef(&pluginv1.TaskManifest{
+		Name:          "widget",
+		Summary:       "the same name, a different task",
+		InputMessage:  "flowstate.v1.Task.Log.Inputs",
+		OutputMessage: "flowstate.v1.Task.Log.Outputs",
+	}, Config{})
+	require.NoError(t, err)
+	require.Equal(t, described.GetName(), flowstatev1.DescribeTask(other).GetName(),
+		"the two definitions do not share a name, so nothing below is a duplicate")
+
+	for _, tc := range []struct {
+		name    string
+		catalog *flowstatev1.PluginCatalog
+	}{
+		{
+			name: "one plugin listing it twice",
+			catalog: &flowstatev1.PluginCatalog{
+				ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
+				Plugins: []*flowstatev1.PluginDescription{{
+					Name:  "example",
+					Tasks: []*flowstatev1.TaskDescription{described, flowstatev1.DescribeTask(other)},
+				}},
+			},
+		},
+		{
+			name: "two plugin entries under one name",
+			catalog: &flowstatev1.PluginCatalog{
+				ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
+				Plugins: []*flowstatev1.PluginDescription{
+					{Name: "example", Tasks: []*flowstatev1.TaskDescription{described}},
+					{Name: "example", Tasks: []*flowstatev1.TaskDescription{flowstatev1.DescribeTask(other)}},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			defs, err := TaskDefsFromCatalog(tc.catalog, Config{})
+			require.ErrorIs(t, err, ErrCatalogDuplicateTask,
+				"a catalog defining one task twice rebuilt anyway, so which definition a file is "+
+					"checked against is decided by the order the document lists them in")
+			assert.Empty(t, defs,
+				"a refused catalog handed back definitions, which a caller would register")
+			assert.Contains(t, err.Error(), "example.widget",
+				"the refusal does not name the duplicated task: %v", err)
+			assert.Equal(t, 2, strings.Count(err.Error(), `"example"`),
+				"the refusal does not name both plugin entries that defined it: %v", err)
+		})
+	}
+}
+
 // TestACatalogTaskRefusesToExecute is the boundary the rebuild does not cross.
 //
 // A catalog describes a task; it carries no way to run one, and the plugin
@@ -452,8 +623,11 @@ func TestASingleFileDescriptorRoundTripsAtExactlyTheBound(t *testing.T) {
 func TestTaskDefsFromCatalogBoundsTheWholeDocument(t *testing.T) {
 	t.Parallel()
 
-	// One described task, reused: these bounds are about how many arrive, not
-	// about what any one of them says.
+	// One described task, repeated under names of its own: these bounds are
+	// about how many arrive, not about what any one of them says. The names
+	// have to differ because a catalog defining one task twice is refused
+	// before any bound is reached ([checkOneDefinitionPer]), and a bounds test
+	// that tripped over that refusal would be asserting the wrong sentence.
 	launched, err := (&Plugin{name: "example"}).taskDef(widgetManifest(t), Config{}.withDefaults())
 	require.NoError(t, err)
 	described := flowstatev1.DescribeTask(launched)
@@ -462,10 +636,13 @@ func TestTaskDefsFromCatalogBoundsTheWholeDocument(t *testing.T) {
 		catalog := &flowstatev1.PluginCatalog{
 			ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
 		}
-		for range plugins {
-			one := &flowstatev1.PluginDescription{Name: "example"}
-			for range tasksPerPlugin {
-				one.Tasks = append(one.Tasks, described)
+		for p := range plugins {
+			name := fmt.Sprintf("example%d", p)
+			one := &flowstatev1.PluginDescription{Name: name}
+			for task := range tasksPerPlugin {
+				renamed := proto.Clone(described).(*flowstatev1.TaskDescription)
+				renamed.Name = fmt.Sprintf("%s.widget%d", name, task)
+				one.Tasks = append(one.Tasks, renamed)
 			}
 			catalog.Plugins = append(catalog.Plugins, one)
 		}
