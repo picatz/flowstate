@@ -122,36 +122,106 @@ func TestTheGateAndCIRunTheSameStaticcheck(t *testing.T) {
 	}
 }
 
+// staticcheckCase is one diff, the packages it reaches, and whether the leg
+// must widen to the whole module because the harness itself moved.
+type staticcheckCase struct {
+	name     string
+	changed  []string
+	affected []string
+	wide     bool // the leg must analyse ./..., as the required job does
+}
+
+// staticcheckCases are the diff shapes where the two tiers could disagree.
+//
+// The last three are the ones the first version of this leg got wrong, and
+// they are here because a reviewer found them rather than a test: a change to
+// a workflow, the Makefile, or this gate's own source sets p.ciWide
+// (plan.go), ciForceReason turns that into a force (ci.go), and the force sets
+// every decision's Run — so CI's staticcheck job runs over ./... on a diff
+// that may affect no Go package whatsoever.
+var staticcheckCases = []staticcheckCase{
+	{"a markdown-only diff reaches no package", []string{"CLAUDE.md"}, nil, false},
+	{"an ordinary Go change", []string{"pkg/flowstate/v1/engine/policy.go"}, []string{modulePath + "/pkg/flowstate/v1/engine"}, false},
+	{"a diff whose only Go reach is through the import graph", []string{"proto/flowstate/v1/signal.proto"}, []string{modulePath + "/pkg/flowstate/v1"}, false},
+	{"an examples-only change that still seeds a package", []string{"examples/http/flow.yaml"}, []string{modulePath + "/pkg/flowstate/v1/flowfile"}, false},
+	{"an examples-only change reaching no package at all", []string{"examples/README.md"}, nil, false},
+
+	// The module graph moved, so every package is affected on both tiers.
+	{"a go.mod change", []string{"go.mod"}, []string{modulePath + "/pkg/flowstate/v1"}, true},
+
+	// The harness moved. Note the affected sets: a workflow and the Makefile
+	// are not Go files and reach nothing, which is precisely why a leg
+	// reading only `affected` skipped them.
+	{"a workflow-only change, e.g. bumping STATICCHECK_VERSION", []string{".github/workflows/ci.yml"}, nil, true},
+	{"a Makefile-only change", []string{"Makefile"}, nil, true},
+	{"a change to the gate itself", []string{"tools/gate/plan.go"}, []string{modulePath + "/tools/gate"}, true},
+	{"a change to the fuzz target list", []string{"tools/fuzztargets/targets.txt"}, nil, true},
+}
+
 // TestTheStaticcheckLegAndJobShareATrigger is the drift pin on the trigger.
 //
 // A tool pinned to CI's is still no use if the two tiers disagree about *when*
 // to run it: a leg that skips where the job runs is the same hole #879
 // reported, moved one level down. The leg's condition is therefore a named
-// function, and this asserts it answers what ciDecisions answers for the job,
-// over the diffs that make the answer interesting — including the one the
-// whole mechanism exists for, a markdown-only change reaching no Go package.
+// function, and this asserts it answers what ciDecisions answers for the job
+// across every shape above — including the two forcing conditions, which is
+// the direction that fails badly, since a diff affecting no Go package still
+// runs the required job over ./....
 func TestTheStaticcheckLegAndJobShareATrigger(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		changed  []string
-		affected []string
-	}{
-		{"a markdown-only diff reaches no package", []string{"CLAUDE.md"}, nil},
-		{"an ordinary Go change", []string{"pkg/flowstate/v1/engine/policy.go"}, []string{modulePath + "/pkg/flowstate/v1/engine"}},
-		{"a diff whose only Go reach is through the import graph", []string{"proto/flowstate/v1/signal.proto"}, []string{modulePath + "/pkg/flowstate/v1"}},
-		{"an examples-only change that still seeds a package", []string{"examples/http/flow.yaml"}, []string{modulePath + "/pkg/flowstate/v1/flowfile"}},
-		{"an examples-only change reaching no package at all", []string{"examples/README.md"}, nil},
-	} {
+	for _, tc := range staticcheckCases {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := decide(t, tc.changed, tc.affected, "pull_request")
 			job, ok := ds["staticcheck"]
 			if !ok {
 				t.Fatal("no CI decision for the staticcheck job")
 			}
-			if leg := staticcheckRuns(tc.affected); leg != job.Run {
+			if leg := staticcheckRuns(buildPlan(tc.changed), tc.affected); leg != job.Run {
 				t.Errorf("the local leg %s but the CI job %s (%s);\n"+
 					"a leg that skips where the job runs is the gap #879 reported, one level down",
 					ranOrSkipped(leg), ranOrSkipped(job.Run), job.Why)
+			}
+		})
+	}
+}
+
+// TestAForcedStaticcheckLegAnalysesTheWholeModule is the drift pin on scope,
+// which is the half a trigger test cannot see.
+//
+// Agreeing that the leg *runs* is not parity if it then analyses four packages
+// while the job analyses the module: a finding in any package outside the
+// affected set is one the gate passed and the required job will reject. So
+// where the harness or the module graph forces CI wide, the leg's argv must
+// end in ./... — and where nothing forces, it must not, because analysing the
+// module on every ordinary diff is the cost this tier exists to avoid.
+func TestAForcedStaticcheckLegAnalysesTheWholeModule(t *testing.T) {
+	for _, tc := range staticcheckCases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := buildPlan(tc.changed)
+			if !staticcheckRuns(p, tc.affected) {
+				return // asserted by the trigger test above
+			}
+
+			why := staticcheckForce(p)
+			if tc.wide && why == "" {
+				t.Fatalf("nothing forces this diff wide, but CI analyses ./... for it;\n"+
+					"the leg would analyse only %v, and a finding anywhere else passes here and fails there", tc.affected)
+			}
+			if !tc.wide && why != "" {
+				t.Fatalf("this diff is forced wide (%s), which makes every ordinary run analyse the module", why)
+			}
+
+			var got cmdSpec
+			if why != "" {
+				got = staticcheck("./...")
+			} else {
+				got = staticcheck(tc.affected...)
+			}
+			last := got.argv[len(got.argv)-1]
+			if tc.wide && last != "./..." {
+				t.Errorf("forced wide, but the leg analyses %q; the required job analyses ./...", last)
+			}
+			if !tc.wide && last == "./..." {
+				t.Errorf("not forced, but the leg analyses ./...; this tier is diff-scoped by design")
 			}
 		})
 	}

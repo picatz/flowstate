@@ -9,7 +9,9 @@
 // can see a changed one, and runs the always tier: build, vet, staticcheck
 // and bounded -race tests for the affected set, plus gofmt on the changed
 // files. staticcheck is the same analyser, release and GOTOOLCHAIN pin the
-// required CI job runs, narrowed to that set (#879). A change under
+// required CI job runs, narrowed to that set — except where a change to the
+// harness or the module graph forces that job wide, when this analyses ./...
+// as the job does (#879). A change under
 // examples/ additionally seeds the affected set with whichever
 // packages' test files actually read example workflows off disk at runtime
 // (see exampleDataDepPackages) — a data dependency the import graph alone
@@ -284,16 +286,27 @@ func run() error {
 	// A changed package's callers are in the set by construction, so a
 	// declaration that is used is seen to be used.
 	//
+	// The affected set is not always what decides it, and that is the part
+	// worth reading. ciForceReason widens the *job* set on a change to the
+	// harness — a workflow, the Makefile, this gate's own source, the fuzz
+	// target list — and CI's staticcheck job then analyses ./... regardless
+	// of which Go packages the diff reached. Two shapes fall through a leg
+	// that consults only `affected`, and the first is the bad direction:
+	// a workflow-only diff (bumping STATICCHECK_VERSION, say) affects no Go
+	// package at all, so the leg would *skip* where the required job runs;
+	// and a change to this package would analyse only this package where the
+	// job analyses the module. So the leg takes ciForceReason's answer, and
+	// the scope follows the trigger.
+	//
 	// This is the slowest leg on a wide diff, because staticcheck type-checks
 	// everything it is given. That cost is deliberate and unconditional: an
 	// opt-out is a second opinion about whether the required job matters, and
 	// a diff wide enough to make this expensive is one already paying for a
 	// full CI run.
-	if !staticcheckRuns(affected) {
+	if !staticcheckRuns(p, affected) {
 		g.skip("staticcheck", "no Go packages affected by this diff")
-	} else if p.moduleWide {
-		g.leg("staticcheck", fmt.Sprintf("%s changed, every package is affected", p.reasons["module"]),
-			staticcheck("./..."))
+	} else if why := staticcheckForce(p); why != "" {
+		g.leg("staticcheck", why, staticcheck("./..."))
 	} else {
 		g.leg("staticcheck", fmt.Sprintf("%d affected package(s)", len(affected)),
 			staticcheck(affected...))
@@ -609,14 +622,32 @@ func buf(args ...string) cmdSpec {
 	return command("go", append([]string{"run", "github.com/bufbuild/buf/cmd/buf@" + bufVersion}, args...)...)
 }
 
-// staticcheckRuns is the staticcheck leg's trigger: any affected Go package.
+// staticcheckForce is why this leg must analyse the whole module rather than
+// the affected set, or "" when the diff decides.
 //
-// It is a named function rather than an inline `len(affected) > 0` so a test
-// can assert it answers what ciDecisions answers for the staticcheck *job* —
-// the two tiers gating one check on two different conditions is how a local
-// pass over a commit CI rejects comes back in a new shape.
-func staticcheckRuns(affected []string) bool {
-	return len(affected) > 0
+// It is ciForceReason with an empty event on purpose. The event-driven arms of
+// that function — a push to main, a merge group — describe runs that are not
+// this one: the local tier is always a pull request being prepared, so an
+// empty event is the honest input, and what is left is exactly the harness
+// forcing (ciWide) and the build-graph forcing (moduleWide) that also widen
+// the required job.
+func staticcheckForce(p plan) string {
+	return ciForceReason("", p)
+}
+
+// staticcheckRuns is the staticcheck leg's trigger, and deliberately the same
+// expression ciDecisions arrives at for the staticcheck *job*: forced, or any
+// affected Go package. ciDecisions spells the forcing as a post-pass that sets
+// every decision's Run (see the `if force != ""` loop in ci.go), which comes
+// to the same thing for one job.
+//
+// It is a named function rather than an inline condition so a test can assert
+// that equality holds. Two tiers gating one check on two different conditions
+// is how a local pass over a commit CI rejects comes back in a new shape —
+// which is what happened here: the first version of this leg read `affected`
+// alone, and a workflow-only diff skipped it while the required job ran.
+func staticcheckRuns(p plan, affected []string) bool {
+	return staticcheckForce(p) != "" || len(affected) > 0
 }
 
 // staticcheck runs the pinned analyser over the named packages, under the
