@@ -218,7 +218,11 @@ func buildPlan(changed []string) plan {
 		// rides the proto leg rather than gaining one of its own —
 		// there is one answer to "a schema in this repository changed",
 		// and two legs would be two places to keep it.
-		if strings.HasPrefix(f, examplePluginProtoDir) {
+		// The artifact itself is a trigger as well as its source, because a
+		// diff-only pin over a file nothing in this run rebuilt proves nothing:
+		// the leg has to re-derive it from the .proto to have an opinion about
+		// whether what is committed is what that .proto produces.
+		if strings.HasPrefix(f, examplePluginProtoDir) || f == examplePluginProse {
 			p.proto = true
 			reason("proto", f)
 		}

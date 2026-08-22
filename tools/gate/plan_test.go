@@ -81,6 +81,19 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
+			// The artifact as well as its source: a pin over a file
+			// nothing rebuilt is not a pin.
+			name:    "the example plugin's descriptor set fires the proto leg",
+			changed: []string{examplePluginProse},
+			want: plan{
+				fileDirs: []string{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example"},
+				proto:    true,
+				reasons: map[string]string{
+					"proto": examplePluginProse,
+				},
+			},
+		},
+		{
 			name:    "DSL.md fires the docs leg",
 			changed: []string{"docs/DSL.md"},
 			want: plan{
