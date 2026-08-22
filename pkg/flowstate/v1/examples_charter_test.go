@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -180,6 +181,19 @@ func TestEveryLanguageConstructHasAnExample(t *testing.T) {
 		required["wait."+string(field.Name())] = "a wait of that kind"
 	}
 	for _, task := range v1.DefaultRegistry().Names() {
+		// A dotted name in the *default* registry is not a built-in an author
+		// writes. Built-in tasks are undotted (`http`, `log`); the dot is the
+		// mark of a plugin task, and a plugin task is either demonstrated in
+		// examples/plugins/ (which this corpus excludes, since those files name
+		// tasks a stock `flow` cannot resolve) or — as here — a conformance test
+		// fixture some sibling test registered into the shared registry
+		// (`test.plugin_inputs`, from plugintaskinputs_local_test.go). Requiring a
+		// portfolio example for either would be requiring what this corpus is
+		// defined not to contain, so a dotted registry entry is skipped for the
+		// same reason the whole examples/plugins/ tree is.
+		if strings.Contains(task, ".") {
+			continue
+		}
 		required["task."+task] = "a step naming that task"
 	}
 	writableRequired(required, (&v1.Node{}).ProtoReflect().Descriptor())
