@@ -58,6 +58,15 @@ is refused with a link rather than an argument.
    rather than only in your head. This is Part II's closing line and it is the one
    most often skipped.
 
+   Tier 4 is `flow lint` now, so the first move is to run it rather than to reason
+   about it:
+
+       go run ./cmd/flow lint <file-or-directory>
+
+   It exits 0 on every finding — the findings are advice, not refusals — and
+   `--strict` is what makes one a failure. If it is silent on something you were
+   about to comment on, that is the missing check to file.
+
 4. **Proposing a spelling the repository already has.** Grep before sketching, and
    cite `file:line`. Two spellings of one concept arriving as a *new feature* is the
    expensive failure this repository has paid for repeatedly; CLAUDE.md's design
@@ -73,10 +82,12 @@ is refused with a link rather than an argument.
 In order, because the cheap checks eliminate most findings:
 
 1. Does it validate? Run it, do not read it.
-2. Walk the decided-spellings table. Each row is a yes or no about this file.
-3. For anything left, name the rule that condemns it. If no rule does, it is taste
+2. Does it lint? `flow lint` makes R5's three mechanical findings for you, with a
+   position and a remedy, which is the cheapest half of step 3 already done.
+3. Walk the decided-spellings table. Each row is a yes or no about this file.
+4. For anything left, name the rule that condemns it. If no rule does, it is taste
    and belongs in the comment thread only if you can say what to write instead.
-4. If the file is one an author will copy (`examples/`, `README.md`, `docs/`), R8
+5. If the file is one an author will copy (`examples/`, `README.md`, `docs/`), R8
    applies: one thing demonstrated, runnable, nothing pushed past what it is good at.
 
 ## Editing the charter itself
