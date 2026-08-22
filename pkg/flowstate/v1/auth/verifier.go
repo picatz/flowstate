@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -552,6 +551,26 @@ const (
 	// maxVerifiedClaimBytes bounds their total size, which the count does not.
 	maxVerifiedClaimBytes = 32 << 10
 
+	// claimNodeCost is what every value inside a claim costs against that
+	// budget before any of its bytes are counted.
+	//
+	// Without it the bound prices only textual payload, and breadth is free: a
+	// structured claim holding ten thousand empty strings, or ten thousand
+	// empty objects, contributes *zero*. The raw token stays under
+	// [maxTokenBytes] — `"",` is three bytes on the wire — while the
+	// [Principal] it decodes into retains ten thousand allocations for as long
+	// as the request it authorizes. That is the resource the peer controls the
+	// ratio to, which is exactly the thing this repository bounds: the
+	// attacker picks how much memory each wire byte buys.
+	//
+	// 16 bytes because that is the size of an empty interface value on a
+	// 64-bit platform, and every decoded node is retained as one — the least a
+	// claim node can cost us however few bytes it occupied in transit. It is
+	// deliberately an under-estimate of the true retained cost (the allocator
+	// header, the string header, the map bucket are all extra), so the budget
+	// stays generous for real tokens while breadth stops being free.
+	claimNodeCost = 16
+
 	// maxVerifiedClaimDepth bounds how deeply a structured claim value nests.
 	// A claim value is arbitrary JSON the issuer chose, so measuring its size
 	// means walking it, and an unbounded walk over an attacker-influenced
@@ -592,29 +611,26 @@ func verifiedClaims(claims jwt.ClaimsSet) (map[string]any, error) {
 	return copied, nil
 }
 
-// claimSize approximates a decoded claim value's encoded size, so that the byte
+// claimSize prices a decoded claim value against the byte budget, so that the
 // bound above can be applied to a value that is not a string.
 //
 // It is deliberately an approximation: the point is to bound a resource, not to
-// reproduce an encoder. Every scalar counts as its rendered length or a small
-// fixed cost, and a container costs its members plus their keys. Depth is
-// bounded because nesting is the peer's choice.
+// reproduce an encoder. Two things are charged, and the second is the one that
+// makes it a bound rather than a byte count. Every node costs [claimNodeCost]
+// whatever it holds, so a container's members are priced even when they are
+// empty; on top of that a string costs its bytes and a map entry its key's.
+// Depth is bounded because nesting is the peer's choice, and breadth is
+// charged for the same reason.
 func claimSize(value any, depth int) (int, error) {
 	if depth > maxVerifiedClaimDepth {
 		return 0, fmt.Errorf("value nests deeper than %d levels", maxVerifiedClaimDepth)
 	}
 
 	switch typed := value.(type) {
-	case nil:
-		return 4, nil
 	case string:
-		return len(typed), nil
-	case bool:
-		return 5, nil
-	case float64, int64, int, json.Number:
-		return 20, nil
+		return claimNodeCost + len(typed), nil
 	case []any:
-		total := 0
+		total := claimNodeCost
 		for _, element := range typed {
 			size, err := claimSize(element, depth+1)
 			if err != nil {
@@ -627,7 +643,7 @@ func claimSize(value any, depth int) (int, error) {
 		}
 		return total, nil
 	case map[string]any:
-		total := 0
+		total := claimNodeCost
 		for name, member := range typed {
 			size, err := claimSize(member, depth+1)
 			if err != nil {
@@ -640,11 +656,11 @@ func claimSize(value any, depth int) (int, error) {
 		}
 		return total, nil
 	default:
-		// Anything the JSON decoder did not produce. Counted rather than
-		// refused, because refusing here would reject a token on the strength
-		// of a type this function has not been taught, which is a rejection an
-		// operator cannot act on.
-		return 20, nil
+		// Every scalar, and anything the JSON decoder did not produce.
+		// Counted rather than refused, because refusing here would reject a
+		// token on the strength of a type this function has not been taught,
+		// which is a rejection an operator cannot act on.
+		return claimNodeCost, nil
 	}
 }
 

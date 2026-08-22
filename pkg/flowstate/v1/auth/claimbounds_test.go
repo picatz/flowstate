@@ -181,6 +181,42 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 		require.Contains(t, err.Error(), "nests deeper")
 	})
 
+	t.Run("breadth with no payload is charged for", func(t *testing.T) {
+		// The byte bound priced only textual payload, so a structured claim of
+		// empty strings cost nothing: `"",` is three bytes on the wire, the
+		// raw token stays well under maxTokenBytes, and the Principal it
+		// decodes into retains thousands of allocations for the life of the
+		// request. Breadth is the peer's choice, so breadth is charged.
+		empty := make([]any, 4096)
+		for i := range empty {
+			empty[i] = ""
+		}
+
+		token := issuer.MintToken(claims(map[string]any{"groups": empty}))
+		require.Less(t, len(token), 64<<10,
+			"the token must be small enough that the whole-token bound is not what refuses it")
+
+		_, err := verifier.Verify(t.Context(), token)
+		require.ErrorIs(t, err, auth.ErrMalformedToken)
+		require.Contains(t, err.Error(), "bytes of claims",
+			"the refusal must be the claim-set bound, not some other size limit")
+	})
+
+	t.Run("a real group list is still admitted", func(t *testing.T) {
+		// The other direction, so the per-node charge cannot be satisfied by
+		// simply refusing more: a directory group list of GUID-shaped entries
+		// is what an Entra or Okta token legitimately carries, and it has to
+		// keep working.
+		groups := make([]any, 300)
+		for i := range groups {
+			groups[i] = fmt.Sprintf("11111111-2222-3333-4444-%012d", i)
+		}
+
+		principal, err := verifier.Verify(t.Context(), issuer.MintToken(claims(map[string]any{"groups": groups})))
+		require.NoError(t, err)
+		require.Len(t, principal.Claims["groups"], 300)
+	})
+
 	t.Run("an ordinary provider token is admitted", func(t *testing.T) {
 		// The bound has to leave room for what real identity providers mint: a
 		// GitHub Actions token carries about twenty claims, and an Entra one
