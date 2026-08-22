@@ -479,6 +479,24 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		write(w, map[string]any{"url": "https://tracker.internal.example.com/patches/1"})
 	})
 
+	// deployment-reconciler: the two halves of a control plane, read then
+	// written. The status answers with fewer replicas than that example's own
+	// default `desired_replicas`, deliberately — a reconciler observing a
+	// converged workload skips its `converge` step, so a stand-in that answered
+	// with the desired count would leave the one step that *writes* unrun on
+	// both drivers, and the comparison between them would be a comparison of two
+	// runs that did nothing. What it cannot do is answer differently on a later
+	// pass, so this run corrects the drift and then observes it uncorrected; the
+	// convergence sequence is the subject of that example's own
+	// `workflow.test.yaml`, where a stub keyed on the loop's carried state can
+	// say what a fixed handler cannot.
+	mux.HandleFunc("/workloads/status", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"replicas": 2})
+	})
+	mux.HandleFunc("/workloads/scale", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"accepted": true})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		missing = append(missing, r.URL.Path)
