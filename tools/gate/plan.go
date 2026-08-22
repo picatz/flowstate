@@ -405,6 +405,20 @@ func needsOrdering(affected []string) bool {
 	return contains(affected, flowtestPkg)
 }
 
+// needsStyle reports whether the affected set reaches the cmd/flow package,
+// which is what decides the style lint over examples/ as well.
+//
+// The same package question needsDocs asks, and it is a separate function
+// because the two legs answer different questions that happen to share a
+// trigger today: `flow lint` runs the binary, so its real source set is that
+// binary's dependency closure — a check added under
+// pkg/flowstate/v1/flowfile moves what the leg reports without touching a
+// single file under examples/, and a path rule naming examples/ alone would
+// skip the leg on precisely the diff that changed the rules.
+func needsStyle(affected []string) bool {
+	return contains(affected, cmdFlowPkg)
+}
+
 // needsDocs reports whether the affected set reaches the cmd/flow package.
 //
 // This is the authoritative docs trigger, and it is a package question

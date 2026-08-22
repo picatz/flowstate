@@ -310,6 +310,32 @@ func run() error {
 		g.skip("examples", "no changes under examples/")
 	}
 
+	// Conditional: the tier-4 style lint over the shown corpus, which is CI's
+	// advisory `flow lint examples/` step run locally for the same reason it
+	// runs there — to be read, not to gate. It is a leg of its own rather than
+	// a fourth command on the examples leg because its trigger is wider than
+	// that leg's: the rules live in pkg/flowstate/v1/flowfile, so a diff that
+	// changes what the lint says need not touch examples/ at all.
+	//
+	// No --strict, matching CI exactly. The corpus has findings today
+	// (docs/STYLE.md, Part III), and a leg that failed on them would make every
+	// unrelated diff red for a reason the charter has already staged as its own
+	// slice.
+	styleWhy := ""
+	switch {
+	case p.examples:
+		styleWhy = p.reasons["examples"] + " changed"
+	case needsStyle(affected):
+		styleWhy = "cmd/flow is affected, so the style rules the lint applies may have moved"
+	}
+	if styleWhy != "" {
+		g.leg("style", styleWhy,
+			command("go", "run", "./cmd/flow", "lint", "examples/"),
+		)
+	} else {
+		g.skip("style", "no changes under examples/, and cmd/flow is unaffected")
+	}
+
 	// Conditional: the recorded appearance goldens. This leg never fails
 	// the gate and never claims a pass, because the test it would run
 	// skips when vhs, ttyd or ffmpeg is absent, and a leg reporting green
