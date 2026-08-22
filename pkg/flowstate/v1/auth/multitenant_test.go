@@ -125,6 +125,138 @@ func TestMultiTenantIssuerAcceptedWhenPinned(t *testing.T) {
 	})
 }
 
+// TestMultiTenantPinningIgnoresRequesterChosenClaims covers the bypass Codex
+// found on #893: the first version of this check counted *any* non-empty
+// require list, so a rule on a claim the token's requester names satisfied it
+// while narrowing nothing — the cross-tenant exposure survived, now with the
+// check's blessing, which is worse than no check because an operator reads the
+// entry as pinned.
+//
+// The audience is the whole of that set on these platforms, and a rule on it is
+// doubly empty: `admits` checks the token's audience against the entry's own
+// `audiences:` before any rule runs, so the rule is a second copy of a check
+// that already happened.
+func TestMultiTenantPinningIgnoresRequesterChosenClaims(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "https://token.actions.githubusercontent.com"
+
+	t.Run("an audience rule is not pinning", func(t *testing.T) {
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:      "github-actions",
+			Issuer:    issuer,
+			Audiences: []string{"flowstate"},
+			Require:   []auth.ClaimRule{auth.RequireClaim("aud", "flowstate")},
+		}}}
+
+		err := policy.Validate()
+		require.Error(t, err, "a rule on a requester-chosen claim must not satisfy the pinning check")
+		assert.ErrorIs(t, err, auth.ErrInvalidPolicy)
+
+		// The operator has already been told "add a require rule" once. This
+		// refusal has to say why the rule they added does not count, or it
+		// reads as the check malfunctioning.
+		message := err.Error()
+		for _, want := range []string{
+			"aud",
+			"chooses",
+			"audiences:",
+			"repository_owner",
+		} {
+			assert.Containsf(t, message, want, "diagnostic should mention %q: %s", want, message)
+		}
+		assert.NotContains(t, message, "names no require rules",
+			"this entry does name a require rule; saying otherwise sends the operator looking for a typo")
+	})
+
+	t.Run("a requester-chosen rule alongside a real one is fine", func(t *testing.T) {
+		// Not forbidden, just not sufficient. An operator may legitimately
+		// layer an audience rule, and a check that refused the combination
+		// would be punishing defence in depth.
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:      "github-actions",
+			Issuer:    issuer,
+			Audiences: []string{"flowstate"},
+			Require: []auth.ClaimRule{
+				auth.RequireClaim("aud", "flowstate"),
+				auth.RequireClaim("repository_owner", "picatz"),
+			},
+		}}}
+
+		require.NoError(t, policy.Validate())
+	})
+
+	t.Run("an audience rule is still allowed on an issuer this does not police", func(t *testing.T) {
+		// The narrowing rule is scoped to the known multi-tenant hosts. On a
+		// single-tenant IdP an audience rule is an ordinary thing to write and
+		// nothing here should have an opinion about it.
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:      "idp",
+			Issuer:    "https://login.corp.example.com/oauth2/default",
+			Audiences: []string{"flowstate"},
+			Require:   []auth.ClaimRule{auth.RequireClaim("aud", "flowstate")},
+		}}}
+
+		require.NoError(t, policy.Validate())
+	})
+}
+
+// TestMultiTenantNamespaceClaimRefusesRequesterChosenClaims is the same defect
+// on the other branch of the check, found by looking immediately behind the
+// first one. A namespace_claim naming a requester-chosen claim is worse than a
+// require rule that narrows nothing: it makes the *tenant* a value the workload
+// writes for itself, so any workflow on the platform could ask for another
+// tenant's namespace — the exact thing "a workload's namespace comes from the
+// authenticated caller, never from the workload" forbids.
+//
+// This one is refused outright rather than merely not counted, because no
+// require rule redeems it: the entry could name whose workloads are admitted
+// and still hand each of them a tenant of their choosing.
+func TestMultiTenantNamespaceClaimRefusesRequesterChosenClaims(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "https://token.actions.githubusercontent.com"
+
+	t.Run("alone", func(t *testing.T) {
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:           "github-actions",
+			Issuer:         issuer,
+			Audiences:      []string{"flowstate"},
+			NamespaceClaim: "aud",
+		}}}
+
+		err := policy.Validate()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, auth.ErrInvalidPolicy)
+		assert.Contains(t, err.Error(), "name its own tenant")
+	})
+
+	t.Run("even beside a require rule that does narrow who", func(t *testing.T) {
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:           "github-actions",
+			Issuer:         issuer,
+			Audiences:      []string{"flowstate"},
+			Require:        []auth.ClaimRule{auth.RequireClaim("repository_owner", "picatz")},
+			NamespaceClaim: "aud",
+		}}}
+
+		err := policy.Validate()
+		require.Error(t, err, "a pinned entry may still not read its tenant from a claim the workload names")
+		assert.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	})
+
+	t.Run("a claim the platform assigns is what it asks for", func(t *testing.T) {
+		policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+			Name:           "github-actions",
+			Issuer:         issuer,
+			Audiences:      []string{"flowstate"},
+			NamespaceClaim: "repository_owner",
+		}}}
+
+		require.NoError(t, policy.Validate())
+	})
+}
+
 func TestMultiTenantCheckLeavesOtherIssuersAlone(t *testing.T) {
 	t.Parallel()
 

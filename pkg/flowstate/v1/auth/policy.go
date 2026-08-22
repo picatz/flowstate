@@ -957,27 +957,63 @@ func multiTenantIssuerFor(issuer string) (multiTenantIssuer, bool) {
 // those are, so with it alone every workload on the platform lands in one
 // tenant together.
 //
-// What this cannot do is judge whether a rule narrows anything *useful* — an
-// operator who writes a rule pinning a claim every token from that platform
-// carries identically has admitted the world again. That is deliberately left
-// alone: it is a sentence in a reviewed file saying what was meant, which is
-// the thing a policy is for, where the case this refuses is a file that says
-// nothing at all.
+// A rule only counts when it narrows *who* is admitted, per
+// [ClaimRule.narrowsWho]. A rule on a claim the token's requester chooses does
+// not: `require: [{claim: aud, any_of: [flowstate]}]` re-states the audience
+// check [TrustedIssuer.admits] has already run and says nothing about whose
+// workload presented the token, so counting it would have let the exposure this
+// whole check exists to refuse through wearing the check's blessing.
+//
+// What this still cannot do is judge whether a rule that does narrow who
+// narrows anything *useful* — a rule pinning a claim every token from the
+// platform carries identically admits the world again. That is deliberately
+// left alone: it is a sentence in a reviewed file saying what was meant, which
+// is the thing a policy is for, where the cases refused above are a file that
+// says nothing at all and a file that says only what the platform's own
+// requester wrote.
 func (t TrustedIssuer) validateMultiTenantPinning() error {
-	if len(t.Require) > 0 || t.NamespaceClaim != "" {
-		return nil
-	}
-
 	known, ok := multiTenantIssuerFor(t.Issuer)
 	if !ok {
 		return nil
 	}
 
-	return fmt.Errorf("issuer %q belongs to %s, where anyone may run a workload and request a token, "+
-		"and this entry names no require rules and no namespace_claim — so it admits every workload on that "+
-		"platform as the same caller. The audience does not narrow it: the audience is chosen by whoever "+
-		"requests the token, not assigned by %s. Pin this entry one of two ways. "+
-		"Narrow who is admitted at all:\n\n"+
+	// A namespace_claim naming a requester-chosen claim is a worse failure
+	// than one that narrows nothing, and it is checked first because no
+	// require rule redeems it: it makes the *tenant* a value the workload
+	// writes down for itself, which is the one thing the tenancy rule in this
+	// package's doc forbids ("a workload's namespace comes from the
+	// authenticated caller, never from the workload"). Two workflows on the
+	// same platform could then land in each other's namespace by asking to.
+	if slices.Contains(requesterChosenClaims, t.NamespaceClaim) {
+		return fmt.Errorf("issuer %q belongs to %s, where the %q claim is chosen by whoever requests the "+
+			"token — so namespace_claim: %s would let a workload name its own tenant, and any workload on "+
+			"that platform could ask for another tenant's. Read the tenant off a claim %s assigns from the "+
+			"account the workload belongs to instead:\n\n"+
+			"    namespace_claim: %s",
+			t.Issuer, known.platform, t.NamespaceClaim, t.NamespaceClaim, known.platform, known.claim)
+	}
+
+	if t.NamespaceClaim != "" || slices.ContainsFunc(t.Require, ClaimRule.narrowsWho) {
+		return nil
+	}
+
+	// Both shapes get the same remedy; only the sentence naming what is wrong
+	// with the entry as written differs, because an operator who wrote an
+	// aud-only rule has been told "add a require rule" once already and needs
+	// to hear why the one they wrote does not count.
+	wrong := fmt.Sprintf("this entry names no require rules and no namespace_claim — so it admits every "+
+		"workload on that platform as the same caller. The audience does not narrow it: the audience is "+
+		"chosen by whoever requests the token, not assigned by %s.", known.platform)
+	if len(t.Require) > 0 {
+		wrong = fmt.Sprintf("every require rule on this entry is on a claim whoever requests the token "+
+			"chooses (%s), which audiences: already checks against this entry's own list — so none of them "+
+			"says whose workloads are admitted, and every workload on that platform is still admitted as "+
+			"the same caller. Such a rule is allowed, it just cannot be the only one.",
+			strings.Join(requesterChosenClaims, ", "))
+	}
+
+	return fmt.Errorf("issuer %q belongs to %s, where anyone may run a workload and request a token, and "+
+		"%s Pin this entry one of two ways. Narrow who is admitted at all:\n\n"+
 		"    require:\n"+
 		"      - claim: %s\n"+
 		"        any_of: [%s]\n\n"+
@@ -985,7 +1021,39 @@ func (t TrustedIssuer) validateMultiTenantPinning() error {
 		"    namespace_claim: %s\n\n"+
 		"(a fixed namespace: is not enough on its own: it names the tenant admitted callers land in, "+
 		"not which callers are admitted)",
-		t.Issuer, known.platform, known.platform, known.claim, known.example, known.claim)
+		t.Issuer, known.platform, wrong, known.claim, known.example, known.claim)
+}
+
+// requesterChosenClaims name claims whose value the party asking for the token
+// writes down, rather than the platform assigning it from the account the
+// workload belongs to. On the issuers in [multiTenantIssuerHosts] that makes
+// such a claim useless as a statement about *who* a caller is: anyone with an
+// account can ask for a token carrying the value the policy wants.
+//
+// "aud" is the whole list. A require rule on it is not merely weak, it is
+// already redundant — [TrustedIssuer.admits] checks the token's audience
+// against this entry's own Audiences before it reaches the rules at all — so a
+// rule on "aud" adds a second copy of a check that has already run, and nothing
+// about identity.
+//
+// Note what is deliberately *not* here. [TrustedIssuer.validateRequire] already
+// refuses a rule on "iss" (the entry matches the issuer exactly already) and on
+// "exp", "nbf" and "iat" (timestamps the verifier validates) for an OIDC entry,
+// so naming them here would be a second copy of a rule fifty lines away rather
+// than a second rule. And a claim the platform assigns per account —
+// "repository", "namespace_path", "terraform_organization_name" — is precisely
+// what does count.
+var requesterChosenClaims = []string{"aud"}
+
+// narrowsWho reports whether this rule says something about which party's
+// workload a token belongs to, which is what [TrustedIssuer.validateMultiTenantPinning]
+// requires an entry trusting a public multi-tenant issuer to say.
+//
+// A rule that does not narrow who is still perfectly legal — an operator may
+// layer one for defence in depth, or to accept one of several audiences — it
+// simply cannot be the only thing an entry says.
+func (r ClaimRule) narrowsWho() bool {
+	return !slices.Contains(requesterChosenClaims, r.Claim)
 }
 
 // validateIssuerURL checks that an issuer identifier is the kind of URL
