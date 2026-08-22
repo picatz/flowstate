@@ -282,13 +282,23 @@ func TestFailedPackages(t *testing.T) {
 // module written for the purpose, so a toolchain that changed that
 // convention is caught here rather than by a weekly report that has quietly
 // become an error.
+//
+// The fixture is a three-clause loop over an int, reported by `rangeint`,
+// chosen because what is asserted is the exit convention rather than any
+// particular fixer's judgement. It used to be a reflect.TypeOf call reported
+// by `reflecttypefor`, which go1.27 stopped reporting for an ordinary
+// variable operand — leaving this test failing with "total = 0" for a reason
+// that had nothing to do with what it exists to check. A fixture standing in
+// for "some site, any site" should be the least clever construct that
+// qualifies.
 func TestRunGoFixOnAWorkingModule(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the go command")
 	}
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/works\n\ngo 1.26\n")
-	writeFile(t, filepath.Join(dir, "works.go"), "package works\n\nimport \"reflect\"\n\nfunc F(x int) reflect.Type { return reflect.TypeOf(x) }\n")
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/works\n\ngo 1.27\n")
+	writeFile(t, filepath.Join(dir, "works.go"),
+		"package works\n\nfunc F(n int) int {\n\ttotal := 0\n\tfor i := 0; i < n; i++ {\n\t\ttotal += i\n\t}\n\treturn total\n}\n")
 
 	t.Chdir(dir)
 	out, err := runGoFix([]string{"./..."})
@@ -300,7 +310,7 @@ func TestRunGoFixOnAWorkingModule(t *testing.T) {
 		t.Fatalf("parseReport: %v", err)
 	}
 	if rep.total != 1 {
-		t.Errorf("total = %d, want 1 (the reflect.TypeOf site)", rep.total)
+		t.Errorf("total = %d, want 1 (the rangeint site)", rep.total)
 	}
 }
 
@@ -312,7 +322,7 @@ func TestRunGoFixRefusesAModuleThatDoesNotLoad(t *testing.T) {
 		t.Skip("runs the go command")
 	}
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/broken\n\ngo 1.26\n")
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/broken\n\ngo 1.27\n")
 	for _, sub := range []string{"good", "bad"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o750); err != nil {
 			t.Fatal(err)

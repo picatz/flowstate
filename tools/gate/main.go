@@ -57,11 +57,18 @@ const bufVersion = "v1.72.0"
 // vendored into the newer toolchain's module cache — the same failure
 // CLAUDE.md records for govulncheck, for the same reason.
 //
+// The two are also coupled to each other, which is why they sit in one block:
+// staticcheck type-checks with its own go/types, so it can only read export
+// data at or below the format version its release understands. A release older
+// than the toolchain fails per standard-library package with "export data
+// version N is greater than maximum supported version M" rather than reporting
+// findings — so a toolchain bump moves the release with it. See CLAUDE.md.
+//
 // staticcheck_test.go reads both values back out of the workflow, so this
 // tier cannot drift into a second opinion about the tool.
 const (
-	staticcheckVersion   = "2026.1"
-	staticcheckToolchain = "go1.26.6"
+	staticcheckVersion   = "2026.2.1"
+	staticcheckToolchain = "go1.27.0"
 )
 
 func main() {
