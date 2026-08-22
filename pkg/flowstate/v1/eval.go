@@ -980,28 +980,27 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 	// invisible, which is the argument `netpolicy`'s round tripper already makes
 	// about a denied request.
 	//
+	// Through [observeRun] rather than a `defer span.End()` here, because a task
+	// that panics never returns through the assignment that would record the
+	// outcome: the span would end UNSET, and a crashed run would be
+	// indistinguishable from a successful one at the run level. [observeRun]
+	// handles that path the way [ObserveTask] handles it one level down, without
+	// recovering the panic.
+	//
 	// This is the local driver's alone. See [StartRunSpan] for why the durable
 	// driver opens no counterpart and why that is agreement rather than
 	// divergence.
-	ctx, span := StartRunSpan(ctx, w)
-	defer span.End()
+	return observeRun(ctx, w, func(ctx context.Context) (*Workflow_StepOutputs, error) {
+		bound, err := BindRunInputs(w, inputs)
+		if err != nil {
+			return nil, err
+		}
+		if err := CheckSubmissionSize(w, bound); err != nil {
+			return nil, err
+		}
 
-	bound, err := BindRunInputs(w, inputs)
-	if err != nil {
-		RecordRunOutcome(span, err)
-
-		return nil, err
-	}
-	if err := CheckSubmissionSize(w, bound); err != nil {
-		RecordRunOutcome(span, err)
-
-		return nil, err
-	}
-
-	outputs, err := eval(ctx, w, bound)
-	RecordRunOutcome(span, err)
-
-	return outputs, err
+		return eval(ctx, w, bound)
+	})
 }
 
 func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {

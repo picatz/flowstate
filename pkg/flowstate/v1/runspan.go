@@ -5,6 +5,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -163,4 +164,71 @@ func StartRunSpan(ctx context.Context, w *Workflow) (context.Context, trace.Span
 // error can quote what it was given.
 func RecordRunOutcome(span trace.Span, err error) {
 	RecordTaskOutcome(span, err)
+}
+
+// observeRun opens the run span around one local run and ends it whichever way
+// the run leaves — including the way that is not a return.
+//
+// # The defect this exists to prevent
+//
+// Ending the span with a plain `defer span.End()` and recording the outcome
+// after the call looks complete and is not: when a task panics, the assignment
+// that would have produced the error never happens, so the recording line is
+// never reached and the deferred End closes the span with an UNSET status. The
+// run span then says nothing at all about a run that crashed, while the task
+// span underneath it — through [ObserveTask], which already handles this —
+// correctly says the execution failed. A crashed run and a successful one would
+// be indistinguishable at the level an operator looks first, and
+// indistinguishable in the direction that reads as health.
+//
+// That is #888's defect one level up, found by the same review, and it is fixed
+// the same way, deliberately: `completed` is set only on the normal path, so a
+// false value in the deferred function means one thing — the goroutine is
+// unwinding through a panic nobody has recovered.
+//
+// # No recover, and a fixed sentence
+//
+// The panic is not recovered and therefore not re-panicked: it continues with
+// the value and the stack it started with, and whatever handles it — nothing at
+// all, for a local run — sees exactly what it saw before this observation
+// existed. Observing a crash must not change what the crash does.
+//
+// The status is a fixed sentence for the reason every other status in this
+// repository is: a panic value is `panic(fmt.Sprintf("bad token %s", tok))` as
+// often as not, which puts it in the same class as an error message and out of
+// the collector's reach.
+//
+// # Why this is not exported, when [ObserveTask] is
+//
+// [ObserveTask] is exported because both drivers call it. This one has exactly
+// one caller and must keep having one: the durable driver's run span is
+// Temporal's own `RunWorkflow:Run` (see this file's doc), and the only durable
+// seam that covers a whole run is workflow code, where a span may not be minted
+// at all. An exported wrapper here would be an invitation to do the thing the
+// design decided against.
+func observeRun(ctx context.Context, w *Workflow, run func(context.Context) (*Workflow_StepOutputs, error)) (*Workflow_StepOutputs, error) {
+	ctx, span := StartRunSpan(ctx, w)
+
+	// Set on the normal path, immediately after run returns. False when the
+	// deferred function below runs means the run did not return.
+	completed := false
+
+	defer func() {
+		if completed {
+			return
+		}
+
+		if span.IsRecording() {
+			span.SetStatus(codes.Error, "run panicked")
+		}
+		span.End()
+	}()
+
+	outputs, err := run(ctx)
+	completed = true
+
+	RecordRunOutcome(span, err)
+	span.End()
+
+	return outputs, err
 }

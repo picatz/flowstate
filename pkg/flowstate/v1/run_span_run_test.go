@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -147,6 +148,69 @@ func renderedSpanShapes(recorder *tracetest.SpanRecorder) []string {
 	}
 
 	return rendered
+}
+
+// TestLocalRunSpanRecordsAPanicAsAFailure is the run-level half of #888's
+// defect, found by the same review on #903.
+//
+// A task that panics never returns through the assignment that records the
+// outcome, so a run span ended by a plain `defer span.End()` closes UNSET: the
+// task span underneath correctly says the execution failed (through
+// [v1.ObserveTask], which already handles this) while the span an operator looks
+// at *first* says nothing at all. A crashed run would be indistinguishable from
+// a successful one, in the direction that reads as health.
+//
+// Three claims, because two of them are the ways a fix for the third goes wrong:
+// the run span is failed, the task span is still failed, and the panic still
+// reaches the caller with its own value — an observation that swallowed a crash
+// would be worse than the defect it fixed.
+//
+// Local-only, deliberately: durably the run span is Temporal's own and the panic
+// is recovered by its activity executor, which is
+// `engine.TestTaskPanicIsRecordedAsAFailure`'s subject rather than this one's.
+func TestLocalRunSpanRecordsAPanicAsAFailure(t *testing.T) {
+	recorder := conformance.RecordSpans(t)
+	conformance.RegisterPanickingTask(t)
+
+	workflow := conformance.PanicWorkflow()
+
+	// The panic reaches the caller, unchanged. [conformance.RegisterPanickingTask]
+	// panics with a string containing the secret, and the local driver propagates
+	// it rather than recovering — so this asserts the observation is transparent.
+	require.PanicsWithValue(t,
+		"the task panicked with "+conformance.TaskPanicSecret,
+		func() { _, _ = v1.Run(t.Context(), workflow) },
+		"the panic did not reach the caller with its own value, so observing the run changed what a crash does")
+
+	var runSpan, taskSpan tracetest.SpanStub
+	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
+		switch stub.Name {
+		case v1.RunSpanName(workflow.GetName()):
+			runSpan = stub
+		case v1.TaskSpanName(conformance.PanicTaskName):
+			taskSpan = stub
+		}
+	}
+
+	require.Equal(t, v1.RunSpanName(workflow.GetName()), runSpan.Name,
+		"a run that panicked opened no run span, or never ended one — an unended span is never exported")
+	require.Equal(t, codes.Error, runSpan.Status.Code,
+		"the run span of a crashed run is %s, so a crash is indistinguishable from a success at the run level",
+		runSpan.Status.Code)
+
+	// The level below still says what it said, so this fix did not move the
+	// failure from one span to the other.
+	require.Equal(t, codes.Error, taskSpan.Status.Code,
+		"the task span of a panicking task is %s", taskSpan.Status.Code)
+
+	// And the panic's own words stay out of the collector, the rule an error
+	// message is held to — checked over the rendered shapes, not the attribute
+	// this code happens to write.
+	for _, rendered := range renderedSpanShapes(recorder) {
+		if strings.Contains(rendered, conformance.TaskPanicSecret) {
+			t.Fatal("a panic value reached a span, which is exported to a collector")
+		}
+	}
 }
 
 // TestLocalRunSpanRecordsARefusal is the reason the span is opened at the submit

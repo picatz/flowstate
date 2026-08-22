@@ -358,13 +358,15 @@ the Temporal UI. It is no longer the only one.
 
 One span covers a run end to end, and which span that is depends on how the run
 was started and which driver ran it — the *shape* is the same either way, the
-name is not.
+name is not. It is not always the root of the trace, and on two of the three
+paths below it is not: read the second column for "how long did the run take"
+and the third for "where does this trace begin".
 
-| How the run started | The span covering the run |
-| --- | --- |
-| `flow run local` | `flowstate.run/<workflow>`, opened by the local driver |
-| through the server, onto a worker | `RunWorkflow:Run`, opened by Temporal's tracing interceptor |
-| a webhook delivery | `flowstate.webhook/<workflow>/<trigger>`, with `RunWorkflow:Run` beneath it |
+| How the run started | The span covering the run | The root of its trace |
+| --- | --- | --- |
+| `flow run local` | `flowstate.run/<workflow>`, opened by the local driver | the same span |
+| through the server, onto a worker | `RunWorkflow:Run`, opened by Temporal's tracing interceptor | the caller's RPC span |
+| a webhook delivery | `RunWorkflow:Run`, beneath the delivery span | `flowstate.webhook/<workflow>/<trigger>` |
 
 The durable driver opens no `flowstate.run/*` span of its own, deliberately: the
 substrate already opens one at exactly that seam, and workflow code may not open
@@ -380,6 +382,16 @@ trace are the ones with nothing trusted above them: a local run, which no RPC
 precedes, and a webhook delivery, whose span is a deliberate new root so an
 unauthenticated sender cannot choose the run's trace id (the link below is how
 the sender is recorded instead).
+
+**Never read a run's duration off the webhook span.** `flowstate.webhook/*`
+covers *acceptance* — verifying the signature, mapping the payload, starting the
+run — and `ServeHTTP` ends it as soon as the sender gets its `202`, typically in
+milliseconds. The run it started carries on for as long as the run takes, which
+may be days and may cross Continue-As-New. The delivery span is the trace's root
+and the run's *cause*; `RunWorkflow:Run` beneath it is what covers the run, and
+that is the span a latency question is asking about. The same distinction is why
+a webhook-started trace looks lopsided in Tempo — a very short root over a very
+long child — and that shape is correct.
 
 A delivery that arrived carrying a `traceparent` gets a **link** on that webhook
 span, never a parent. In Tempo the link is a "caused by" edge you can follow to
