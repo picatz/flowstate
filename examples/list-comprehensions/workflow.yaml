@@ -38,11 +38,20 @@ steps:
   # every check passing is healthy, no check passing is down, anything
   # between is degraded. Named once, so `report` below dispatches on a
   # value instead of repeating both comprehensions in a condition.
+  #
+  # Two steps and not one, because three answers written as one expression is
+  # a conditional inside a conditional — the shape `flow lint` reports
+  # (docs/STYLE.md R5). One question each: `partial_status` asks the second
+  # comprehension, `status` asks the first and reads that answer back. Both
+  # comprehensions stay where they were, which is the thing this example is
+  # here to show; what moved is only the nesting.
+  - id: partial_status
+    value: >-
+      ${inputs.checks.exists(c, c.healthy) ? "degraded" : "down"}
+
   - id: status
     value: >-
-      ${inputs.checks.all(c, c.healthy)
-          ? "healthy"
-          : (inputs.checks.exists(c, c.healthy) ? "degraded" : "down")}
+      ${inputs.checks.all(c, c.healthy) ? "healthy" : steps.partial_status.value}
 
   - id: report
     switch:
