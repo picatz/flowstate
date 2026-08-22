@@ -460,13 +460,13 @@ func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
 	if state := loop.GetState(); state != "" {
 		out = append(out, yaml.MapItem{Key: "as", Value: textToYAML(state)})
 
-		initial, err := inputValueToYAML(loop.GetInitial())
+		initial, err := loopStateToYAML(loop.GetInitial())
 		if err != nil {
 			return nil, fmt.Errorf("init: %w", err)
 		}
 		out = append(out, yaml.MapItem{Key: "init", Value: initial})
 
-		update, err := inputValueToYAML(loop.GetUpdate())
+		update, err := loopStateToYAML(loop.GetUpdate())
 		if err != nil {
 			return nil, fmt.Errorf("update: %w", err)
 		}
@@ -488,6 +488,65 @@ func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
 		return nil, err
 	}
 	return append(out, yaml.MapItem{Key: "steps", Value: steps}), nil
+}
+
+// loopStateToYAML writes a loop's `init:` or `update:` — the mapping form where
+// the value is a map literal whose keys are written down, and the fenced
+// expression otherwise.
+//
+// This is the one place the two rewriters in this repository had opposite
+// opinions, and the reformat in #850 is what made them collide. The compiler
+// folds `update:` written as a mapping of expressions into a single map
+// expression (nothing in the schema keeps the mapping's shape once every entry
+// is computed), so Marshal wrote it back fenced — and `flow fix` then promoted
+// it straight back to the mapping form, because `fixshaping.go` declares that
+// form canonical for exactly these keys. `flow fmt` and `flow fix --check` can
+// therefore never both be satisfied by one file, which is a formatter that is
+// canon for nothing.
+//
+// So the decision is not made twice: [mapLiteralEntries] is the function
+// `flow fix` asks, and this asks the same function about the same source text.
+// Where it declines — a dynamic key, an optional entry, a key needing quotes,
+// an expression cel-go cannot write back — both rewriters decline together and
+// the fenced form is what stands, which is the property that makes them agree
+// in both directions rather than in one.
+//
+// The cost, stated: `update:` comes back as several lines where the workflow
+// holds one expression, so the document is no longer a transcription of the
+// compiled value — it is the spelling an author writes, which is the spelling
+// the corpus and `flow fix` already chose.
+func loopStateToYAML(value *v1.Value) (any, error) {
+	written, err := inputValueToYAML(value)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed := value.GetExpr()
+	if parsed == nil {
+		// A literal or a structure already carries its own shape, and
+		// [structureToYAML] writes it as a mapping without any of this.
+		return written, nil
+	}
+
+	source, err := exprToText(parsed)
+	if err != nil {
+		return nil, err
+	}
+	entries, ok := mapLiteralEntries(source)
+	if !ok {
+		return written, nil
+	}
+
+	// The entry values are already rendered as the YAML scalars they will be
+	// written as — [fencedScalar] decided the quoting, and a constant is
+	// written as the constant — so they are placed as those bytes rather than
+	// handed back to the emitter to re-analyse. That is the same reason
+	// [styledScalar] exists at all.
+	out := make(yaml.MapSlice, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, yaml.MapItem{Key: entry.name, Value: styledScalar(entry.value)})
+	}
+	return out, nil
 }
 
 // switchToYAML writes a `switch:` node in reading order: the value it

@@ -328,12 +328,14 @@ steps:
 // makes it usable there: a --check that mutates is a --check nobody can put in
 // a pipeline.
 func TestFmtCheckReportsWithoutWriting(t *testing.T) {
+	// Flush against `steps:`, which is not the shape Marshal writes (#850), so
+	// there is work for --check to find and report.
 	const src = `edition: v2026.3
 name: greeter
 steps:
-  - id: greet
-    log:
-      message: hello world
+- id: greet
+  log:
+    message: hello world
 `
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", src)
@@ -491,12 +493,13 @@ func TestFmtStdoutAndCheckAreRefused(t *testing.T) {
 // TestFmtDoesNotPrintUsageWhenAFileNeedsWork keeps the report readable: a file
 // needing formatting is not a command someone typed wrong.
 func TestFmtDoesNotPrintUsageWhenAFileNeedsWork(t *testing.T) {
+	// Flush against `steps:`, so the file genuinely needs formatting (#850).
 	const src = `edition: v2026.3
 name: greeter
 steps:
-  - id: greet
-    log:
-      message: hello world
+- id: greet
+  log:
+    message: hello world
 `
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", src)
@@ -512,16 +515,17 @@ steps:
 	}
 }
 
-// currentStyleSingle is a small current-edition Flowfile with a comment and an
-// indented list, so a directory walk over it has something to reformat and
-// something to carry through.
+// currentStyleSingle is a small current-edition Flowfile with a comment and a
+// list written flush against the key that holds it, so a directory walk over it
+// has something to reformat — Marshal indents a block sequence under its key
+// (#850) — and something to carry through.
 const currentStyleSingle = `edition: v2026.3
 name: single
 steps:
-  # a comment flow fmt carries through
-  - id: greet
-    log:
-      message: hello
+# a comment flow fmt carries through
+- id: greet
+  log:
+    message: hello
 `
 
 // TestFmtWalksADirectoryForFlowfiles checks which files a directory hands over,
@@ -542,9 +546,10 @@ func TestFmtWalksADirectoryForFlowfiles(t *testing.T) {
 
 	for _, path := range []string{yamlPath, ymlPath, deepPath} {
 		got := string(readFixture(t, path))
-		// The list comes back unindented, which is the reformatting; the comment
-		// comes back with it, which is what the reformatting may not cost.
-		if !strings.Contains(got, "\n- id: greet") {
+		// The list comes back indented under its key, which is the reformatting;
+		// the comment comes back with it, which is what the reformatting may not
+		// cost.
+		if !strings.Contains(got, "\n  - id: greet") {
 			t.Errorf("%s was not reformatted, so it was not picked up by the walk:\n%s", path, got)
 		}
 		if !strings.Contains(got, "# a comment flow fmt carries through") {

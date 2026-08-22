@@ -10,7 +10,7 @@
 edition: v2026.3
 name: fan-out-and-parallel
 vars:
-  targets: ${['alpha', 'beta', 'gamma']}
+  targets: ${["alpha", "beta", "gamma"]}
 steps:
   # Produce the list to work through. In a real workload this would come from an
   # API call or a query.
