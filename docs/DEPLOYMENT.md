@@ -328,7 +328,7 @@ $ flow server --auth-policy /etc/flowstate/trust.yaml \
 # which is the whole point: a compromise of this process reaches one tenant's
 # material, which is the claim Tier 1 structurally cannot make.
 $ flow worker --tenant team-a --task-queue-prefix flowstate-run \
-    --namespace temporal-team-a \
+    --temporal-namespace temporal-team-a \
     --egress-policy /etc/flowstate/team-a/egress.yaml \
     --secret-dir /etc/flowstate/team-a/secrets \
     --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
@@ -731,10 +731,10 @@ These need attention before they're a good fit, not because they can't work:
 - Neither `flow server` nor `flow worker` honors `$PORT` — Cloud Run and
   fly.io both expect a service to bind the port they inject via that
   variable, and neither reads it (verified: no `os.Getenv("PORT")` anywhere in
-  `cmd/flow`). `FLOWSTATE_ADDRESS` is the only way to set the listen address
-  today, and it's env-only — there's no `--listen` flag. An entrypoint script
-  translating `$PORT` into `FLOWSTATE_ADDRESS=0.0.0.0:$PORT` is the practical
-  workaround until this lands upstream.
+  `cmd/flow`). `flow server --listen 0.0.0.0:$PORT` says it on the command
+  line (`FLOWSTATE_ADDRESS` is still the default it falls back to), so a
+  container command referencing `$PORT` is the whole workaround — no
+  entrypoint script translating one variable into another.
 - That `0.0.0.0` bind needs `--tls-terminated-upstream` (or
   `FLOWSTATE_TLS_TERMINATED_UPSTREAM=1`) alongside it, on both platforms, for
   the same reason the Kubernetes recipe above needs it: `flow server` reads a
@@ -747,9 +747,14 @@ These need attention before they're a good fit, not because they can't work:
   its own, that stops being true, and `FLOWSTATE_TLS_CERT_FILE`/
   `FLOWSTATE_TLS_KEY_FILE` (a certificate the container loads itself) is the
   flag you want instead.
-- `--address` on `flow worker`/`flow server` means the **Temporal** address,
-  not the HTTP listen address — a real foot-gun on a platform that hands you
-  a `--address`-shaped port variable and expects it to mean "listen here."
+- Temporal's address is `--temporal-address` on `flow worker`/`flow server`,
+  and the socket the server binds is `--listen`. It used to be that both
+  commands spelled Temporal's `--address` — the spelling every client verb
+  uses for the *Flowstate* server — which was a real foot-gun on a platform
+  that hands you an `--address`-shaped port variable and expects it to mean
+  "listen here." `--address` on those two commands is now refused outright,
+  naming both replacements, rather than quietly dialing Temporal at your
+  listen address (picatz/flowstate#580).
 - Once the port is sorted: `fly.io` works with a `dev-server`
   (`temporal server start-dev` in a sidecar/separate machine, Tier 0/1a-only,
   fine for a demo), a self-hosted Temporal cluster reached over Fly's private

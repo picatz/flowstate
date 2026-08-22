@@ -166,7 +166,7 @@ you will rebuild this image constantly. It would be dishonest anywhere else. The
 alternative is two flags, and the lab works exactly as well with them:
 
 ```yaml
-    command: ["worker", "--address=temporal:7233", "--deployment-name=flowstate", "--build-id=lab-1", "--verbose"]
+    command: ["worker", "--temporal-address=temporal:7233", "--deployment-name=flowstate", "--build-id=lab-1", "--verbose"]
 ```
 
 Bump `--build-id` whenever you rebuild, and watch runs stay pinned to the version
