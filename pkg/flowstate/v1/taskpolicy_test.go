@@ -411,7 +411,10 @@ func TestDenialNeverRendersAClaimValue(t *testing.T) {
 		fmt.Sprintf("%v", denied),
 		fmt.Sprintf("%+v", denied),
 		fmt.Sprintf("%#v", denied),
-		//lint:ignore S1025 the %s verb is what an operator's log line uses; calling Error() instead would test something else
+		// Spelled as the %s verb rather than a call to Error(), because %s
+		// is what an operator's own log line writes and is therefore the
+		// thing under test; calling Error() here would assert something the
+		// two lines above already assert.
 		fmt.Sprintf("%s", denied),
 		fmt.Sprintf("%v", holder),
 		fmt.Sprintf("%+v", holder),
