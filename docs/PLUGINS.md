@@ -291,6 +291,63 @@ task as one it has not been told about, which is correct rather than unhelpful:
 whether a plugin is installed is a deployment's decision and not a property of
 the file.
 
+### Your field comments, in somebody else's editor
+
+Everything above travels: names, types, required-ness, protovalidate bounds. The
+sentences you wrote over each field in the `.proto` do not, unless you ask for
+them — and the reason is protoc's rather than this SDK's. `protoc-gen-go` strips
+`SourceCodeInfo` from what a `.pb.go` embeds, so the descriptor your plugin holds
+at run time has the shape of your schema and none of its prose. There is nothing
+for the SDK to forward.
+
+`buf build` is the command that keeps the comments. Build a descriptor set beside
+the generated code, from the same `.proto`, and hand it to the SDK:
+
+```console
+$ go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o schema.descriptorset.binpb proto
+```
+
+```go
+//go:embed schema.descriptorset.binpb
+var schemaProse []byte
+
+func main() {
+	sdk.Main(sdk.Plugin{
+		Name:        "hello",
+		Version:     "0.1.0",
+		SchemaProse: schemaProse,
+		Tasks:       []sdk.Task{{ /* ... */ }},
+	})
+}
+```
+
+`--exclude-imports` for the reason the engine's own artifact uses it: the
+comments worth carrying are the ones you wrote, and carrying protobuf's and
+protovalidate's as well would multiply the bytes to document files nobody asks
+about.
+
+Hovering `greeting:` in a Flowfile then shows what you wrote over that field,
+the same way hovering a built-in task's input shows what the engine's schema
+says about it. Nothing new crosses the boundary to make that work: the prose is
+attached to the descriptors your manifest already shipped
+(`pkg/flowstate/v1/messagedescriptor.go`), and the language server's existing
+"prefer the descriptor's own source info" branch is what reads it.
+
+Three properties worth knowing, all of them the fail-closed direction:
+
+- **It is opt-in, and omitting it costs only the paragraph.** A plugin that sets
+  no `SchemaProse` behaves exactly as every plugin did before the field existed.
+  Hover renders one paragraph fewer; nothing errors.
+- **A descriptor set built from a `.proto` that has since changed is ignored.**
+  A comment's location addresses a declaration by index, so stale prose does not
+  fail to apply — it applies to whichever field now sits at that index. The SDK
+  compares the declarations it is describing against the ones this binary
+  compiled in and drops the prose when they disagree, because a sentence attached
+  to the wrong field is worse than no sentence. Rebuild the artifact whenever you
+  regenerate, and pin it in CI the way this repository pins its own.
+- **Bytes that are not a descriptor set fail at startup**, where you see them,
+  rather than silently.
+
 ## Five places the contract is implicit
 
 Everything above works. What follows is what an outside author learns by walking
