@@ -858,6 +858,18 @@ func TestLogRecordCarriesTheTraceOfItsSpan(t *testing.T) {
 // Through a real run rather than a hand-built span context, because what is
 // being checked is that the driver puts the span where the task will find it —
 // a synthetic context would pass whether or not it did.
+//
+// # What this cannot see, said here because it already fooled one review round
+//
+// It calls [initTelemetry] itself. That makes it a test of the *plumbing* — the
+// span reaches the record, the record reaches the collector — and not of the
+// command, which reached [startTelemetry] from nowhere at the time this was
+// written and therefore ran every one of these spans into the global no-op
+// provider. This test passed throughout. The gap was found in review, not here.
+//
+// [TestALocalRunExportsItsTaskSpans] is the tier that can see it: the compiled
+// binary, a real process, and no provider anybody but `flow run local` itself
+// installed.
 func TestLocalRunLogLineCarriesTheTraceOfItsTaskSpan(t *testing.T) {
 	collector := logCollectorTo(t)
 	isolateTelemetry(t)

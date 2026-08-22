@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"log/slog"
 	"maps"
 	"os"
@@ -63,6 +64,17 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 	}
 
 	format := rendering.format
+
+	// And telemetry, for the same reason and in the same position `flow run local`
+	// starts it — see [runLocalWorkflow], which carries the argument. This verb
+	// had the identical hole, and the comment further down claiming a task's log
+	// lines "reach a configured collector the same way" was describing something
+	// that could not happen: nothing on this path ever started the providers, so
+	// the same way was no way at all.
+	if _, err := startTelemetry(cmd.Context()); err != nil {
+		log.Printf("WARNING: telemetry is configured but could not be started, "+
+			"so this task invocation emits no trace: %v", err)
+	}
 
 	// The same three policy surfaces `flow run local` applies, in the same order
 	// and through the same functions. A task invocation is a real execution, so it
