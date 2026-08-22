@@ -44,7 +44,7 @@ Notes, per CLAUDE.md:
   advisory window, to absorb flake rather than to excuse ignoring a real
   crasher.
 - The `GOTOOLCHAIN=go1.27.0` pin matches CI's toolchain; without it, a machine
-  honouring a newer `toolchain` directive in `go.mod` can fail with a spurious
+  honouring a newer `go` directive in `go.mod` can fail with a spurious
   "file requires newer Go version" error from files in the module cache. This
   applies to both govulncheck and staticcheck — each resolves its own
   toolchain via its own `go.mod` otherwise.

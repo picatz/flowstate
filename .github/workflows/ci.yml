@@ -481,6 +481,11 @@ jobs:
       # downgrades underneath itself and then fails type-checking the standard
       # library vendored into the newer toolchain's module cache — not a finding
       # about this tree at all.
+      #
+      # STATICCHECK_VERSION above moves with this pin rather than independently:
+      # a release older than the toolchain cannot decode its export data, and
+      # says so per standard-library package instead of reporting findings. See
+      # CLAUDE.md.
       - name: Static analysis
         run: GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 

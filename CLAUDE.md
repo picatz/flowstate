@@ -169,9 +169,9 @@ anywhere here — it comes from the diagnostics the pinned toolchain actually
 produces, so a toolchain bump that adds a modernizer shows up without anyone
 editing a list (the fifteen analyzers #521 measured were twenty-three by
 go1.26.6, and twenty-six by go1.27.0). And sites inside generated files are
-counted separately and excluded
-from every total, because a generated file is never hand-edited: a
-modernization there could only ever arrive through its generator.
+counted separately and excluded from every total, because a generated file is
+never hand-edited: a modernization there could only ever arrive through its
+generator.
 
 A third, and the only thing that can make the weekly job go red: the report is
 complete or it is not printed. When a package fails to load, `go fix -json`
@@ -380,8 +380,8 @@ your file makes it look like yours.
 
 It also has a failure that is not a finding at all. `go run …/govulncheck@v1.6.0`
 builds govulncheck using *its* `go` directive, then type-checks your tree against
-whatever toolchain `go.mod` selected — so on a machine honouring `toolchain
-go1.27.0` it reports `file requires newer Go version go1.27 (application built with
+whatever toolchain `go.mod` selected — so on a machine honouring this module's
+`go 1.27.0` it reports `file requires newer Go version go1.27 (application built with
 go1.25)` on files in the module cache and exits 1. CI does not see this, because
 `go-version-file: go.mod` installs the one version it then uses for everything.
 Pin the run to match and it scans clean:
