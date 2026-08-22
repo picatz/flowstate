@@ -13,6 +13,15 @@
 #   * the budget is written down once, as the gate's own `if:`, and every later
 #     step asks whether the gate happened rather than re-deriving why;
 #   * a gate nobody answers denies. The deadline lapsing is not approval.
+#
+# Answer that gate from a durable run with:
+#
+#   flow signal <workflow-id> turn-approved --data '{"approved": true}'
+#
+# and from a local rehearsal with:
+#
+#   flow run local examples/agentic-loop/workflow.yaml \
+#     --signal turn-approved='{"approved": true}'
 edition: v2026.3
 name: agentic-loop
 description: >-
@@ -26,12 +35,6 @@ vars:
   # summing it and comparing it is something the language already does, and a
   # keyword would be a second way to say a thing that is already sayable.
   token_budget: 20000
-
-  # Stand-ins. Neither host resolves, which is what the test file beside this
-  # one is for: every effectful step here is stubbed, so the branches, the
-  # ceiling and the gate are all checked with no network and no gateway.
-  gateway: https://models.internal.example.com/v1/turns
-  tracker: https://tracker.internal.example.com
 
 steps:
 
@@ -47,7 +50,11 @@ steps:
       max_interval: 10s
     http:
       method: GET
-      url: ${vars.tracker}/issues/241
+      # A literal, not composed from a var: neither host below resolves, which
+      # is what the test file beside this one is for — every effectful step here
+      # is stubbed, so the branches, the ceiling and the gate are all checked
+      # with no network and no gateway.
+      url: https://tracker.internal.example.com/issues/241
       parse_json: true
       outputs:
         title: ${response.json.title}
@@ -68,9 +75,14 @@ steps:
     timeout: 5m
     retry:
       attempts: 1
+      # Nothing to space out when there is only ever one attempt. It is written
+      # anyway because the compiled specification's schema requires a
+      # coefficient of at least 1, and a file that compiles but the schema
+      # refuses is a file `flow run` fails on.
+      backoff: 1.0
     http:
       method: POST
-      url: ${vars.gateway}
+      url: https://models.internal.example.com/v1/turns
       parse_json: true
       json:
         instructions: ${brief_prompt}
@@ -114,7 +126,8 @@ steps:
     if: ${!has(steps.review) || steps.review.approved}
     http:
       method: POST
-      url: ${vars.tracker}/issues/241/patches
+      url: https://tracker.internal.example.com/issues/241/patches
+      parse_json: true
       json:
         summary: ${steps.turn.summary}
         patch: ${steps.turn.patch}

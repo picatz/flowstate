@@ -153,6 +153,20 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// agentic-loop's `review` gate is reached only when the turn spent more than
+	// `vars.token_budget`, and neither host this example names resolves, so no
+	// run here gets far enough to ask. The entry exists for the reason
+	// enterprise-fund-transfer's does: the gate is structural
+	// (`WaitsForASignal` sees the node regardless of `if:`), and every waiting
+	// example must answer in one of these two tables. The payload is the one
+	// this example's own `--signal` line documents, and the key its gate's
+	// `outputs:` shaping reads.
+	"agentic-loop": {
+		"turn-approved": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
 	// enterprise-access-review's `attestation` gate checks the attested sender
 	// against `inputs.expected_reviewer` — this harness's fixed simulated
 	// identity ("examples"/"flowstate:test") never matches the

@@ -48,12 +48,12 @@ loop that can be hammered unattended. A draft with `wait_for_signals:` in it:
 
 ```json
 {"report": {"files": [{"file": "workflow.yaml", "diagnostics": [
-  {"line": 101, "column": 5,
+  {"line": 113, "column": 5,
    "message": "unknown key \"wait_for_signals\"; did you mean \"wait_for_signal\"?",
    "step": "review", "code": "general",
    "edits": [{"title": "rename to `wait_for_signal`",
-              "changes": [{"range": {"startLine": 101, "startColumn": 5,
-                                     "endLine": 101, "endColumn": 21},
+              "changes": [{"range": {"startLine": 113, "startColumn": 5,
+                                     "endLine": 113, "endColumn": 21},
                            "newText": "wait_for_signal"}]}]}]}]}}
 ```
 
@@ -72,13 +72,13 @@ runs on two files:
 
 ```json
 {"file": "<submitted>", "cases": [
-  {"name": "a turn inside its budget lands with nobody asked", "passed": true, "failures": [], "duration": "0.011284407s"},
-  {"name": "a turn over its budget lands only once a person answers", "passed": true, "failures": [], "duration": "0.007015978s"},
-  {"name": "the same turn does not land when the gate goes unanswered", "passed": true, "failures": [], "duration": "0.007019423s"}],
+  {"name": "a turn inside its budget lands with nobody asked", "passed": true, "failures": [], "duration": "0.007508600s"},
+  {"name": "a turn over its budget lands only once a person answers", "passed": true, "failures": [], "duration": "0.009292557s"},
+  {"name": "the same turn does not land when the gate goes unanswered", "passed": true, "failures": [], "duration": "0.005760094s"}],
  "refused": ""}
 ```
 
-Seven milliseconds for a case whose gate waits twenty-four hours: time is virtual, and
+A few milliseconds for a case whose gate waits twenty-four hours: time is virtual, and
 `at: 2h` in the second case is a signal arriving two hours in. Note also that every
 effectful step is stubbed, which is what makes the whole of this reachable with no
 network, no gateway, no credential, and no operator opt-in — a stubbed run never

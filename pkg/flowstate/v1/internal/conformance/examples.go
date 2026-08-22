@@ -453,6 +453,32 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		write(w, map[string]any{})
 	})
 
+	// agentic-loop: the brief a turn is given, the model gateway that answers
+	// one, and the tracker the patch is written back to. The keys are the ones
+	// that example's `outputs:` shaping names — a response missing `usage` would
+	// leave its cost ceiling with nothing to compare — and `total_tokens` is
+	// deliberately under that file's `token_budget`, so the comparison run below
+	// takes the unattended branch: over budget, its `review` gate would wait a
+	// day for a signal this harness's default run has no reason to send. The
+	// over-budget branch is the one that file's own workflow.test.yaml walks,
+	// twice, through the local driver's virtual clock.
+	mux.HandleFunc("/issues/241", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{
+			"title": "bound the agentic loop",
+			"body":  "the rehearsal has to be reachable from the MCP surface",
+		})
+	})
+	mux.HandleFunc("/v1/turns", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{
+			"summary": "added a bound and a test",
+			"patch":   "--- a/main.go\n+++ b/main.go\n",
+			"usage":   map[string]any{"total_tokens": 1200},
+		})
+	})
+	mux.HandleFunc("/issues/241/patches", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"url": "https://tracker.internal.example.com/patches/1"})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		missing = append(missing, r.URL.Path)
