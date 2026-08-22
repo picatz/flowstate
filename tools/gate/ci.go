@@ -6,27 +6,48 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/picatz/flowstate/tools/fuzztargets"
 )
 
 // The packages whose affectedness decides a CI job that is narrower than "the
 // Go code changed". cmdFlowPkg and flowtestPkg live in plan.go beside the legs
 // they already decide.
+//
+// The packages holding fuzz targets are not among them any more: fuzzPkgs below
+// derives them from tools/fuzztargets/targets.txt, because that file is where
+// the targets themselves are written and "which packages hold one" is a fact
+// about that list rather than a second thing to remember (#857). They used to be
+// hand-kept here — flowfilePkg, pluginPkg, v1Pkg, lspPkg, each with a comment
+// naming the target it existed for — while the same list was hand-kept in three
+// other places, which is how the weekly deep tier came to run four of the ten
+// targets the smoke tier ran.
 const (
-	flowfilePkg = modulePath + "/pkg/flowstate/v1/flowfile"
-	pluginPkg   = modulePath + "/pkg/flowstate/v1/plugin"
 	// v1Pkg is the root v1 package: home of FuzzWebhookEventBinding (#799)
 	// and FuzzCELEvaluate (#403), alongside every non-fuzz test already
 	// reading webhook.go, eval.go and the rest of this package's own files.
+	// It keeps a name here because tests name it directly; the fuzz decision
+	// no longer reads it from here.
 	v1Pkg = modulePath + "/pkg/flowstate/v1"
-	// lspPkg holds FuzzLSPDocumentEdits (#403). Named separately from
-	// flowfilePkg even though it sits underneath it, because the affected
-	// set is computed over the import graph and not over the directory
-	// tree: lsp imports flowfile, so a flowfile change reaches this
-	// package, and a change to *this* package reaches nothing above it. A
-	// diff touching only the language server would otherwise skip the job
-	// that now fuzzes it.
-	lspPkg = modulePath + "/pkg/flowstate/v1/flowfile/lsp"
 )
+
+// fuzzPkgs is the set of packages holding a fuzz target, as import paths, read
+// from the one written source of the target list.
+//
+// The subtlety the hand-kept list had to state and this one gets for free is why
+// the language server is an entry of its own despite sitting underneath
+// flowfile: the affected set is computed over the import graph and not over the
+// directory tree. lsp imports flowfile, so a flowfile change reaches lsp, and a
+// change to lsp reaches nothing above it — a diff touching only the language
+// server would skip the job that fuzzes it if this were a prefix match.
+func fuzzPkgs() []string {
+	dirs := fuzztargets.Dirs()
+	pkgs := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		pkgs = append(pkgs, modulePath+"/"+dir)
+	}
+	return pkgs
+}
 
 // decision is one job in .github/workflows/ci.yml and whether this diff can
 // reach it. Why is carried for both answers, because a skip nobody can read is
@@ -129,14 +150,17 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 			Why: pick(goAffected, fmt.Sprintf("%d affected package(s)", len(affected)),
 				"no Go package is affected")},
 
-		// fuzz-smoke's ten targets live in five packages. A target's
-		// behaviour is its package's behaviour, so the affected set
-		// decides this the same way it decides the ordering leg.
+		// A target's behaviour is its package's behaviour, so the
+		// affected set decides this the same way it decides the ordering
+		// leg. Which packages those are comes from the target list, so
+		// the reason printed for a skip names the packages holding a
+		// target today rather than the ones that held one when this line
+		// was written.
 		{Job: "fuzz-smoke", Output: "fuzz_smoke",
 			Run: needsFuzz(affected),
 			Why: pick(needsFuzz(affected),
 				"a package holding a fuzz target is affected",
-				"no package holding a fuzz target (flowfile, flowfile/lsp, cmd/flow, plugin, flowstate/v1) is affected")},
+				"no package holding a fuzz target ("+strings.Join(fuzztargets.Dirs(), ", ")+") is affected")},
 
 		{Job: "appearance", Output: "appearance",
 			Run: needsAppearance(p, affected),
@@ -156,9 +180,12 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 
 // needsFuzz reports whether any package holding a fuzz target is affected.
 func needsFuzz(affected []string) bool {
-	return contains(affected, flowfilePkg) || contains(affected, lspPkg) ||
-		contains(affected, cmdFlowPkg) || contains(affected, pluginPkg) ||
-		contains(affected, v1Pkg)
+	for _, pkg := range fuzzPkgs() {
+		if contains(affected, pkg) {
+			return true
+		}
+	}
+	return false
 }
 
 // needsAppearance reports whether this diff can move a recorded golden.

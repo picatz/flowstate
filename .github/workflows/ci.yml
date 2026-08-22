@@ -501,8 +501,7 @@ jobs:
   # because that bounds time and not memory. Six targets now: the round-trip one
   # that existed first, the three the roadmap called for — CEL compile, MCP
   # tool-argument decode, plugin descriptor parsing — the marshal round trip added
-  # with #513's escape, and FuzzWebhookEventBinding added for #799, each its own
-  # step so one hanging does not hide the others' output. The marshal round trip is
+  # with #513's escape, and FuzzWebhookEventBinding added for #799. The marshal round trip is
   # not a duplicate of the first: FuzzRoundTrip explores whole documents and
   # asserts the workflow survives, while this one varies one scalar in a fixed
   # document and asserts the two things that failed independently of proto
@@ -558,35 +557,19 @@ jobs:
       # source plus whatever it generates this run; a runner-local checkout means
       # generated corpus entries never persist between runs and never pollute a
       # commit.
-      - name: Fuzz smoke (FuzzRoundTrip)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzCELCompile)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzMarshalRoundTrip)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMarshalRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzMCPToolArguments)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
-
-      - name: Fuzz smoke (FuzzMessageDescriptor)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
-
-      - name: Fuzz smoke (FuzzWebhookEventBinding)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzWebhookEventBinding -fuzztime 30s ./pkg/flowstate/v1/
-
-      - name: Fuzz smoke (FuzzFixIdempotent)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzFixIdempotent -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzFormatIdempotent)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzFormatIdempotent -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzCELEvaluate)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELEvaluate -fuzztime 30s ./pkg/flowstate/v1/
-
-      - name: Fuzz smoke (FuzzLSPDocumentEdits)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzLSPDocumentEdits -fuzztime 30s ./pkg/flowstate/v1/flowfile/lsp/
+      #
+      # One step running `make fuzz-smoke` rather than one step per target, and
+      # the target list read from tools/fuzztargets/targets.txt rather than
+      # spelled here (#857). The same trade the `test` job already makes: a job
+      # holding its own copy of a command list is a copy that drifts, and this
+      # one had — the weekly deep tier ran four of the ten targets this job ran,
+      # because each of the four places holding the list was kept by hand. The
+      # per-step boundary that is lost was there so a hanging target did not hide
+      # the others' output; the Makefile's loop prints `==> <target>` before each
+      # one and every target's output still streams into this step's log, so the
+      # hanging one is still the last one named.
+      - name: Fuzz smoke (every target in the smoke tier)
+        run: make fuzz-smoke
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
   # real terminal and the goldens under cmd/flow/internal/appearance/testdata say
