@@ -323,11 +323,18 @@ federation:
 	})
 
 	t.Run("a policy with no federation section still works", func(t *testing.T) {
+		// The require rule is not incidental to this case: a policy naming a
+		// public multi-tenant issuer with no rule at all no longer loads at
+		// all, so a fixture without one would be testing the refusal rather
+		// than the absent federation section. See multitenant_test.go.
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
+    require:
+      - claim: repository
+        any_of: [picatz/flowstate]
 `))
 		require.NoError(t, err)
 		require.Nil(t, policy.Federation)
