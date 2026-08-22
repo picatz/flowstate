@@ -133,11 +133,52 @@ message Workflow {
   reserved 4;
   reserved "inputs";
 
-  // Labels are key-value pairs that can be used to organize and categorize workflows.
+  // Labels are the author's own key-value facts about this workflow — the team
+  // that owns it, the cost centre it bills to, the pipeline it belongs to — and
+  // they exist to be *selected on* rather than read: every run records them at
+  // submit, [RunSummary.labels] carries them back, and `flow list --filter`
+  // exposes them as `labels`, so "which runs are payments' runs" is a question
+  // the listing can answer.
+  //
+  // Written by an author, in the Flowfile, as `labels:` directly under `name:`.
+  // Deliberately not a per-run argument: an input is what one run was asked to
+  // do, and a label is what every run of this workflow *is*. A caller who wants
+  // to distinguish two runs of the same workflow has `inputs:` and the run id
+  // already; a caller who wants to select the whole class has this.
+  //
+  // Recorded into the run's memo at submit, never read back out of a search
+  // attribute — see [RunSummary.labels] for the whole of that reasoning, which
+  // is [RunSummary.name]'s unchanged: a field a filter can read only on a
+  // deployment where attribute registration happened to succeed is worse than
+  // one it cannot read at all, because "sometimes" is indistinguishable from
+  // "nothing matched".
+  //
+  // Bounded because a label travels: into the run's memo, into Temporal's
+  // history, and into a CEL activation the server builds per execution during a
+  // listing's scan. The bounds are the ones every other author-written map in
+  // this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason
+  // stated there — a spec is a thing an outside party writes.
+  //
+  // `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the
+  // difference is not an oversight. That field is written in bytes because a
+  // second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts
+  // bytes — refuses the same sizes at mint, and one limit written down twice in
+  // two units is two limits that disagree about a value of 700 two-byte runes.
+  // Nothing enforces this map a second time: protovalidate is the only reader of
+  // the bound, so the unit that matters is the one its neighbours already use,
+  // and matching them is what keeps every author-written map in this file
+  // answering the same way.
   map<string, string> labels = 5 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
-      keys: {string: {min_len: 1}}
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+      values: {string: {max_len: 256}}
+      max_pairs: 64
     }
   ];
 

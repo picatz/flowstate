@@ -263,13 +263,18 @@ func TestWrongIssuerTokenClosesItsIssuerOnPanic(t *testing.T) {
 }
 
 // TestWithDelegationCarriesActAndNothingElseWrong proves the token
-// WithDelegation produces otherwise verifies cleanly — correct signature,
-// trusted issuer, accepted audience, unexpired — and carries exactly the
-// "act" claim asked for. A resource server's own refusal of a
-// delegation-bearing token (S7a's decision, per #567) is a policy this
-// repository does not yet write; what this package owes is a token whose
-// only distinguishing feature is the claim, so that whichever rule PR-2
-// writes to refuse it is provably what caught it and not some other defect.
+// WithDelegation produces has exactly one distinguishing feature — the "act"
+// claim — and is correct in every other way: signature, trusted issuer,
+// accepted audience, unexpired.
+//
+// It used to prove that by verifying the token and reading the claim off the
+// resulting principal. [auth.OIDCVerifier] now refuses a delegated token
+// outright (#567's S7a, moved out of the MCP adapter so both bearer surfaces
+// perform it), so there is no principal to read — and the refusal itself is
+// the stronger form of the same claim: it names [auth.ErrDelegatedToken] and
+// nothing else, where a fixture broken some other way would surface a
+// different sentinel first. The claim's contents are then read from the
+// signed token rather than from the options that built it.
 func TestWithDelegationCarriesActAndNothingElseWrong(t *testing.T) {
 	t.Parallel()
 
@@ -285,16 +290,22 @@ func TestWithDelegationCarriesActAndNothingElseWrong(t *testing.T) {
 	)
 
 	principal, err := verifier.Verify(t.Context(), token)
-	require.NoError(t, err, "a delegation-bearing token must otherwise verify cleanly")
-	assert.Equal(t, "agent:deploy-bot", principal.Subject)
+	require.ErrorIs(t, err, auth.ErrDelegatedToken,
+		"the delegation claim must be the only thing wrong with this token")
+	assert.True(t, principal.IsZero(), "a refused token vouches for nobody")
 
-	act, ok := principal.Claim("act")
-	require.True(t, ok, "the \"act\" claim must be present on the verified principal")
-	actMap, ok := act.(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "alice@example.com", actMap["sub"])
+	var delegation *auth.DelegationClaimError
+	require.ErrorAs(t, err, &delegation)
+	assert.Equal(t, auth.ClaimActor, delegation.Claim)
 
-	_, hasMayAct := principal.Claim("may_act")
+	claims := decodeClaims(t, token)
+	assert.Equal(t, "agent:deploy-bot", claims["sub"])
+
+	act, ok := claims["act"].(map[string]any)
+	require.True(t, ok, "the \"act\" claim must be present in the minted token")
+	assert.Equal(t, "alice@example.com", act["sub"])
+
+	_, hasMayAct := claims["may_act"]
 	assert.False(t, hasMayAct, "WithDelegation must not also set \"may_act\"")
 }
 
@@ -318,16 +329,23 @@ func TestWithMayActCarriesMayActAndNothingElseWrong(t *testing.T) {
 	)
 
 	principal, err := verifier.Verify(t.Context(), token)
-	require.NoError(t, err, "a may_act-bearing token must otherwise verify cleanly")
-	assert.Equal(t, "alice@example.com", principal.Subject)
+	require.ErrorIs(t, err, auth.ErrDelegatedToken,
+		"the may_act claim must be the only thing wrong with this token")
+	assert.True(t, principal.IsZero(), "a refused token vouches for nobody")
 
-	mayAct, ok := principal.Claim("may_act")
-	require.True(t, ok)
-	mayActMap, ok := mayAct.(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "agent:deploy-bot", mayActMap["sub"])
+	var delegation *auth.DelegationClaimError
+	require.ErrorAs(t, err, &delegation)
+	assert.Equal(t, auth.ClaimMayAct, delegation.Claim,
+		"a token carrying only \"may_act\" must be refused by that claim, not by \"act\"")
 
-	_, hasAct := principal.Claim("act")
+	claims := decodeClaims(t, token)
+	assert.Equal(t, "alice@example.com", claims["sub"])
+
+	mayAct, ok := claims["may_act"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "agent:deploy-bot", mayAct["sub"])
+
+	_, hasAct := claims["act"]
 	assert.False(t, hasAct, "WithMayAct must not also set \"act\"")
 }
 

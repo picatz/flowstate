@@ -1017,6 +1017,10 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		ReadTimeout:    1 * time.Minute,
 		IdleTimeout:    2 * time.Minute,
 		MaxHeaderBytes: 1 << 20,
+
+		// The same header-count bound `flow server` sets; see
+		// [maxHeaderValueCount] for why the byte bound above does not imply it.
+		MaxHeaderValueCount: maxHeaderValueCount,
 	}
 
 	listener, err := net.Listen("tcp", httpServer.Addr)

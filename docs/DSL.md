@@ -125,6 +125,11 @@ headings below, not this list.*
   - [Rehearsing the gate, and who a rehearsal stands in for](#rehearsing-the-gate-and-who-a-rehearsal-stands-in-for)
   - [The same two parties, in a `*.test.yaml`](#the-same-two-parties-in-a-testyaml)
   - [What a green case proves about that identity, and what it does not](#what-a-green-case-proves-about-that-identity-and-what-it-does-not)
+- [The eleventh round: `labels:`, and naming a set of runs](#the-eleventh-round-labels-and-naming-a-set-of-runs)
+  - [The spelling](#the-spelling-2)
+  - [Why a label is not an input](#why-a-label-is-not-an-input)
+  - [What it is for: the filter](#what-it-is-for-the-filter)
+  - [The memo, not a search attribute](#the-memo-not-a-search-attribute)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -2613,7 +2618,8 @@ no sink can tell the retry from a real second event. A projected point can
 always be deduplicated, because history gives it a key; an emitted increment can
 never be, because nothing does. That asymmetry, not a preference, is the
 refusal.
-Business dimensions ride the planned label/search-attribute surface and Phase 2's
+Business dimensions ride the label surface — `labels:`, landed in the eleventh round
+below, with the search-attribute half of it still ahead — and Phase 2's
 typed outputs — any metric someone wants is then a query over visibility and
 history, not a side effect an author remembered to fire.
 
@@ -3092,7 +3098,8 @@ of run — which is why it lives in the failure message.
 
 If it later turns out that operators want to filter on it, the honest shape is a label
 projected into visibility, which is the search-attributes row of ARCHITECTURE.md's
-table and costs no reader anything.
+table and costs no reader anything. `labels:` itself landed in the eleventh round
+below; the projection into visibility is the half still ahead.
 
 ### Cancelling compensates; terminating does not
 
@@ -4965,6 +4972,91 @@ functions of a thing and an identity, tested that way today, and need no run, no
 scope, and no workflow at all — the same answer this repository already gives for
 secret-policy denials, and a faster one than threading an identity through a case
 file and hoping.
+
+## The eleventh round: `labels:`, and naming a set of runs
+
+Every incident starts with *which runs*. #657 worked the 3am actions backwards from
+the operator and ranked them, and the thing at the top was not a verb at all: it was
+selection. You cannot bulk-stop, postmortem, or even count a set you have no way to
+name. This round is that vocabulary.
+
+### The spelling
+
+```yaml
+edition: v2026.3
+name: nightly-etl
+labels:
+  team: payments
+  cost-center: cc-1234
+steps:
+  - id: gather
+    log:
+      message: gathering yesterday's numbers
+```
+
+`labels:` is a mapping of strings, written directly under `name:`, and it is the one
+top-level key that says what this workflow *is* rather than what it does or what it
+takes. It compiles to `Workflow.labels` — a schema field that has existed since the
+beginning and which, until this round, **nothing could set and nothing read**. There
+was no Flowfile spelling for it, no memo entry, no filter variable, and this document
+twice deferred to "the planned label surface". That is exactly the shape this
+repository calls scaffolding: a capability is not done until a Flowfile can express
+it.
+
+### Why a label is not an input
+
+An input is what *one run* was asked to do. A label is what *every run* of this
+workflow is. The distinction decides where the value is written and who writes it:
+inputs come from the caller, per submission, and vary run to run by design; labels
+come from the author, in the file, and are the same on every run — which is precisely
+what makes them worth selecting on. A caller who wants to tell two runs of one
+workflow apart already has the run id and the arguments.
+
+### What it is for: the filter
+
+Recorded on every run at submit, carried back in `RunSummary`, and bound in
+`flow list --filter`:
+
+```
+$ flow list --all --filter '"team" in labels && labels["team"] == "payments"'
+$ flow list --all --filter '!("team" in labels)'
+```
+
+The guard in the first is not decoration and the second is why. `labels` binds to an
+empty map rather than to null for a run carrying none, so *membership* is always
+answerable — an operator has to be able to ask which runs nobody labelled, and a
+binding that errored on exactly those runs would refuse the question. Indexing an
+absent key is still an error, which is CEL's own answer and the honest one: what
+`labels["team"]` is on a run with no team is a question with no answer, and the same
+`&&` guard `close_time` already needs is how it is asked.
+
+Two more names land with it, for the same reason and from the same listing: `starter`,
+the qualified `issuer#subject` the server already records and `flow get` already
+reports, and `worker_version`, the Worker Deployment version a run is pinned to. That
+last one answers the question a bad deploy actually raises — *which runs are on the
+build I just rolled back* — and it was, until now, only answerable by leaving
+Flowstate for the `temporal` CLI, outside the tenancy boundary this service enforces.
+
+### The memo, not a search attribute
+
+Labels are recorded in the run's **memo**, exactly as the tenant and the workflow's
+declared name already are, and the filter reads them from there. A search attribute
+would need registering in the Temporal cluster before it worked, and a filter whose
+only source of data was that registration would answer "nothing matched" on a
+deployment where registration failed — indistinguishable, from the operator's side,
+from a filter with a typo in it. So this works against `temporal server start-dev`
+with nothing configured, which is the same promise the tenant memo keeps.
+
+The cost that buys: the filter is still evaluated per execution inside `List`'s scan,
+so selecting by label is O(namespace) and not an index lookup. Pushing labels into
+visibility so the store can answer part of a filter is a real and separate change
+(#657's slice 1b), and its acceptance criterion is that it changes *cost only* — the
+same filter must return the same runs whether or not any deployment registered
+anything, because a visibility query is an optimization hint and never a boundary.
+`worker_version` is the exception that proves the rule: it is read from Temporal's own
+`versioning_info` rather than a memo, because it is a fact about where the run is
+*executing* — one that legitimately changes at Continue-As-New — and a memo written at
+submit would freeze a value the run itself does not honour.
 
 ## The standing rule
 

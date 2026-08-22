@@ -805,6 +805,37 @@ func workflowNameMemoEntry(name string) map[string]any {
 	return map[string]any{workflowNameMemoKey: name}
 }
 
+// labelsMemoKey is the memo field recording a workflow's own declared labels —
+// [v1.Workflow.Labels], the author's key-value facts about what this workload is.
+//
+// A memo rather than a search attribute, for [workflowNameMemoKey]'s reason
+// stated there at length and unchanged here: `flow list --filter
+// 'labels["team"] == "payments"'` composes with the tenant memo check on every
+// deployment, registered or not, and a field readable only where registration
+// happened to succeed answers "nothing matched" to a filter with nothing wrong
+// with it. See [v1.RunSummary.Labels].
+const labelsMemoKey = "flowstate.labels"
+
+// labelsMemoEntry encodes a workflow's declared labels into the one memo entry
+// both [FlowstateServer.Run] and [FlowstateServer.CreateSchedule] write —
+// [workflowNameMemoEntry]'s "one function, two callers" discipline, and here the
+// drift it prevents is a scheduled run failing to match a `labels` filter that a
+// direct run of the identical workflow matches.
+//
+// Returns nil — add nothing — for a workflow that declared no labels, which is
+// [signalPolicyMemoEntry]'s zero case rather than [workflowNameMemoEntry]'s:
+// labels are optional, so "declared none" is ordinary and has an honest
+// encoding, which is absence. [FlowstateServer.labelsOf] reads an absent key and
+// a run predating this key identically, and so does the filter: both are a run
+// carrying no labels, which is what a `labels` comparison then sees.
+func labelsMemoEntry(labels map[string]string) map[string]any {
+	if len(labels) == 0 {
+		return nil
+	}
+
+	return map[string]any{labelsMemoKey: labels}
+}
+
 // namespaceSearchAttribute and workflowNameSearchAttribute are the two
 // Temporal search attributes a run may carry, alongside the memo that always
 // carries the tenant.
@@ -1380,6 +1411,13 @@ func (s *FlowstateServer) prepareCreate(
 	// [workflowNameMemoEntry] for why `flow list --filter 'name == ...'` must
 	// not depend on whether registration succeeded.
 	for k, v := range workflowNameMemoEntry(wf.GetName()) {
+		memo[k] = v
+	}
+
+	// The author's labels, on the same terms and through the same one function
+	// [FlowstateServer.CreateSchedule] uses — see [labelsMemoEntry]. Nothing is
+	// added when the workflow declared none.
+	for k, v := range labelsMemoEntry(wf.GetLabels()) {
 		memo[k] = v
 	}
 
