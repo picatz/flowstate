@@ -31,6 +31,22 @@ FuzzFixIdempotent            pkg/flowstate/v1/flowfile      smoke,deep
 FuzzFormatIdempotent         pkg/flowstate/v1/flowfile      smoke,deep
 FuzzCELEvaluate              pkg/flowstate/v1               smoke,deep
 FuzzLSPDocumentEdits         pkg/flowstate/v1/flowfile/lsp  smoke,deep
+FuzzLSPFrames                pkg/flowstate/v1/flowfile/lsp  smoke,deep
+
+# The signal payload decoder is deep-only, and the reason is the budget this
+# file's `smoke` note names rather than anything about the target. Its package
+# is the engine, whose test binary links the Temporal SDK and is the slowest in
+# the module to compile — a smoke tier that already spends most of ten minutes
+# would be paying that link for 30 seconds of fuzzing, and every other smoke
+# target shares a binary with one that is already built. Nothing else argues
+# for the exclusion: the bytes it decodes are a peer's, which is the strongest
+# case for a tier there is, and it is why the target exists.
+#
+# The engine package does not boot its Temporal dev server for a fuzzing
+# process — see `fuzzing` in engine/main_test.go — because the tiers run one
+# command per target with no per-target flags and there would otherwise be
+# nowhere to put the `-short` that boot needs.
+FuzzSignalDeliveryDecode     pkg/flowstate/v1/engine        deep
 
 # The two interpolation-scanner targets have never been in either tier: they
 # were written as internal tests beside the code they scan and no list picked

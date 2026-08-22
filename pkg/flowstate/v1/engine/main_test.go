@@ -46,7 +46,7 @@ func TestMain(m *testing.M) {
 	// done that parsing itself, so it has to be done here first.
 	flag.Parse()
 
-	if testing.Short() {
+	if withoutDevServer() {
 		// Every test in this package that needs the server reaches it through
 		// newTemporalNamespace, which skips before touching the nil devServer
 		// left below. Skipping the download-and-boot here as well, rather than
@@ -62,6 +62,55 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// withoutDevServer reports that this process will not start the package's
+// Temporal dev server, and so that every test needing one must skip.
+//
+// One predicate, read by [TestMain] to decide whether to boot and by
+// [newTemporalNamespaceWithIdentity] to decide whether to skip. Two spellings
+// of "no server here" is the shape CLAUDE.md's "one constant cannot disagree
+// with itself" names: the half that skips and the half that boots would
+// eventually answer differently, and the way that fails is a nil devServer
+// dereference in whichever test the disagreement reaches first.
+func withoutDevServer() bool { return testing.Short() || fuzzing() }
+
+// fuzzing reports whether this process was started to fuzz — the coordinator
+// `go test -fuzz` starts, or a worker it forks.
+//
+// The dev server is skipped for a fuzzing process for the reason `-short`
+// skips it: nothing being fuzzed here needs one. [FuzzSignalDeliveryDecode]
+// decodes bytes. What makes it worth detecting rather than leaving to whoever
+// writes the command is that a fuzz run is *several* processes — the
+// coordinator, plus a worker it may restart — and every one of them would pay
+// the boot. The fuzz tiers run one command per target from
+// tools/fuzztargets/targets.txt with no per-target flags (#857), by design, so
+// there is nowhere to put a `-short` for this package alone; and the deep
+// tier's 10m of fuzzing under a 900s test timeout leaves no room to spend two
+// minutes per process on a server nothing asks a question of.
+//
+// The flags are read rather than declared: the testing package registers
+// `test.fuzz` and `test.fuzzworker` itself, and [flag.Parse] above has already
+// run, so this is the value the run was actually given. Lookup is guarded
+// because a binary built without the testing flags registered would otherwise
+// panic here rather than answer.
+//
+// The cost, stated: `go test -fuzz FuzzX ./engine/` with no `-run` filter now
+// skips every server-backed test in this package rather than running the suite
+// and then fuzzing. That is what `-short` already means here, and both fuzz
+// tiers pass `-run=XXX`, so the case this changes is a developer fuzzing this
+// package by hand — who gets the fuzzing they asked for, and skips saying so.
+func fuzzing() bool {
+	for _, name := range []string{"test.fuzz", "test.fuzzworker"} {
+		f := flag.Lookup(name)
+		if f == nil {
+			continue
+		}
+		if value := f.Value.String(); value != "" && value != "false" {
+			return true
+		}
+	}
+	return false
 }
 
 // runPackageTests starts the server, runs the package's tests, and stops it.
@@ -106,8 +155,8 @@ func newTemporalNamespace(t *testing.T) client.Client {
 func newTemporalNamespaceWithIdentity(t *testing.T, identity string) client.Client {
 	t.Helper()
 
-	if testing.Short() {
-		t.Skip("skipping: needs the shared Temporal dev server, not started under -short; CI runs the full suite")
+	if withoutDevServer() {
+		t.Skip("skipping: needs the shared Temporal dev server, which this process did not start (-short, or a fuzzing run); CI runs the full suite")
 	}
 
 	namespace := namespaceNameFor(t)

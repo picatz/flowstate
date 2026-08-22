@@ -145,25 +145,54 @@ func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
 }
 
 // TestTheNarrowJobsFollowTheAffectedSet pins the two jobs whose trigger is a
-// package rather than a path: fuzz-smoke's targets live in four, and the
-// appearance goldens record what the cmd/flow binary prints.
+// package rather than a path: fuzz-smoke's targets live in the packages
+// tools/fuzztargets/targets.txt names, and the appearance goldens record what
+// the cmd/flow binary prints.
+//
+// The diff is netpolicy's rather than the engine's, and the swap is the whole
+// point of the case: this asserts what happens where *no* target lives, so it
+// has to name a package that holds none. It used to name the engine, which held
+// none until #403's item 4 put FuzzSignalDeliveryDecode there — at which point
+// the assertion was still true of the gate and false of the tree, which is the
+// stale-expectation shape rather than a defect. A package's arrival in
+// targets.txt is supposed to move this decision.
 func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
-	changed := []string{"pkg/flowstate/v1/engine/policy.go"}
+	changed := []string{"pkg/flowstate/v1/netpolicy/body.go"}
 
-	// A diff that reaches the engine and nothing else. pkg/flowstate/v1/engine
-	// is a different package from the root pkg/flowstate/v1 v1Pkg names below,
-	// so this must still skip.
-	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/engine"}, "pull_request")
+	// A diff that reaches netpolicy and nothing else. It holds no fuzz target
+	// and prints nothing the appearance goldens record, so both narrow jobs
+	// skip.
+	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/netpolicy"}, "pull_request")
 	mustRun(t, ds, "test", "vulncheck", "staticcheck")
 	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto")
 
-	// The same diff, in a tree where the engine is on cmd/flow's import path —
+	// The same diff, in a tree where netpolicy is on cmd/flow's import path —
 	// which is what affectedPackages actually computes.
 	ds = decide(t, changed, []string{
-		modulePath + "/pkg/flowstate/v1/engine",
+		modulePath + "/pkg/flowstate/v1/netpolicy",
 		cmdFlowPkg,
 	}, "pull_request")
 	mustRun(t, ds, "fuzz-smoke", "appearance")
+}
+
+// TestADeepOnlyTargetsPackageStillReachesFuzzSmoke pins the choice
+// [fuzztargets.Dirs] makes and states in its own doc comment: the package set
+// the gate reads is every tier's, not the smoke tier's.
+//
+// pkg/flowstate/v1/engine holds FuzzSignalDeliveryDecode, which is deep-only —
+// so a diff touching only the engine runs a smoke tier that has no target in
+// that package. That reads like over-triggering and is not: a change to the
+// package a target lives in moves what that target explores, and the tier a
+// target is listed in is a budget decision that can be edited in one word. The
+// alternative — reading only the smoke tier's directories here — makes
+// promoting a target to smoke a change that silently alters which diffs reach
+// the job, without touching any Go package.
+func TestADeepOnlyTargetsPackageStillReachesFuzzSmoke(t *testing.T) {
+	ds := decide(t,
+		[]string{"pkg/flowstate/v1/engine/signal_compat.go"},
+		[]string{modulePath + "/pkg/flowstate/v1/engine"},
+		"pull_request")
+	mustRun(t, ds, "fuzz-smoke")
 }
 
 // TestAWebhookOnlyChangeReachesFuzzSmoke is the regression for #799:
