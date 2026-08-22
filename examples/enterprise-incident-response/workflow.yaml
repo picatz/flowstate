@@ -116,6 +116,14 @@ steps:
   # this file leaves to its caller rather than hardcoding - see `severity`
   # above, which a real deployment would read here to pick the timeout, left
   # as a single fixed window in this example for clarity.
+  # The three evidence lookups below ask the observability stack about one
+  # service, and the query saying so was written three times. Stated once here
+  # instead: an http task's `query:` takes a whole map, so the repetition has a
+  # name rather than three copies a fourth lookup would make four
+  # (docs/STYLE.md R5, `flow lint`).
+  - id: observability_query
+    value: '${ {"service": inputs.service} }'
+
   - id: page_and_gather_evidence
     parallel:
       - steps:
@@ -130,8 +138,7 @@ steps:
             http:
               method: GET
               url: https://observability.internal.example.com/logs
-              query:
-                service: ${inputs.service}
+              query: ${steps.observability_query.value}
               parse_json: true
               outputs:
                 summary: ${response.json.summary}
@@ -142,8 +149,7 @@ steps:
             http:
               method: GET
               url: https://observability.internal.example.com/metrics
-              query:
-                service: ${inputs.service}
+              query: ${steps.observability_query.value}
               parse_json: true
               outputs:
                 error_rate: ${response.json.error_rate}
@@ -154,8 +160,7 @@ steps:
             http:
               method: GET
               url: https://observability.internal.example.com/deploys
-              query:
-                service: ${inputs.service}
+              query: ${steps.observability_query.value}
               parse_json: true
               outputs:
                 deployed_version: ${response.json.deployed_version}
@@ -234,24 +239,42 @@ steps:
         # collapsing presence-and-truth into one defaulted read costs nothing
         # `has(payload.authorized) && payload.authorized` had - both are false
         # exactly when the field was absent or explicitly false.
-        outcome: >-
-          ${timed_out
-            ? "unremediated"
-            : ((payload.?authorized.orValue(false) &&
-                !sender.local && !run.local &&
-                sender.identity.subject != "" &&
-                !(sender.identity.subject == run.identity.subject &&
-                  sender.identity.issuer == run.identity.issuer))
-               ? "authorized"
-               : "refused")}
+        # The lapse is not part of this question and is not folded in: a
+        # conditional inside a conditional is what `flow lint` reports
+        # (docs/STYLE.md R5), and `timed_out` below is its own name. The two
+        # `value:` steps after this gate are where they are joined.
+        authorized: >-
+          ${payload.?authorized.orValue(false) &&
+            !sender.local && !run.local &&
+            sender.identity.subject != "" &&
+            !(sender.identity.subject == run.identity.subject &&
+              sender.identity.issuer == run.identity.issuer)}
+        timed_out: ${timed_out}
         # Re-exposed because `outputs:` replaces what the wait produced:
         # `authorized`'s log line and the `authorized_by` output still name the
         # attested signer.
         sender: ${sender}
 
+  # What a signer who actually answered decided, and then the whole ending
+  # including the lapse - two steps rather than one three-way expression, per
+  # R5. Both are named in the vocabulary `outputs.outcome` reports rather than
+  # the gate's own, so the output reads one of them instead of translating.
+  #
+  # Guarded exactly as the gate above is: an incident nobody claimed never
+  # opened it, so there is nothing here to name.
+  - id: remediation_answer
+    if: ${steps.claimed_on_either_page.value}
+    value: >-
+      ${steps.remediation_ack.authorized ? "remediated" : "refused"}
+
+  - id: remediation_outcome
+    if: ${steps.claimed_on_either_page.value}
+    value: >-
+      ${steps.remediation_ack.timed_out ? "claimed_unremediated" : steps.remediation_answer.value}
+
   - id: authorized
     if: >-
-      ${steps.claimed_on_either_page.value && steps.remediation_ack.outcome == "authorized"}
+      ${steps.claimed_on_either_page.value && steps.remediation_outcome.value == "remediated"}
     log:
       message: >-
         ${"remediation for %s authorized by %s".format(
@@ -265,7 +288,7 @@ steps:
   # the identical shape - see docs/USE_CASES.md for that honest gap.
   - id: refused
     if: >-
-      ${steps.claimed_on_either_page.value && steps.remediation_ack.outcome == "refused"}
+      ${steps.claimed_on_either_page.value && steps.remediation_outcome.value == "refused"}
     log:
       level: warn
       message: >-
@@ -274,19 +297,12 @@ steps:
 outputs:
   outcome:
     value: >-
-      ${!steps.claimed_on_either_page.value
-        ? "unclaimed"
-        : (steps.remediation_ack.outcome == "authorized"
-            ? "remediated"
-            : (steps.remediation_ack.outcome == "unremediated"
-                ? "claimed_unremediated"
-                : "refused"))}
+      ${steps.claimed_on_either_page.value ? steps.remediation_outcome.value : "unclaimed"}
     description: how this incident's runbook ended
 
   authorized_by:
     value: >-
-      ${(steps.claimed_on_either_page.value &&
-          steps.remediation_ack.outcome == "authorized")
+      ${(steps.claimed_on_either_page.value && steps.remediation_ack.authorized)
         ? steps.remediation_ack.sender.identity.subject
         : ""}
     description: >-
