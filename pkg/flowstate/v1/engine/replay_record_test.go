@@ -70,8 +70,8 @@ const recorderIdentity = "flowstate-replay-recorder"
 
 // TestRecordReplayCorpus records the histories [TestReplayCorpus] replays.
 func TestRecordReplayCorpus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping: needs the shared Temporal dev server")
+	if withoutDevServer() {
+		t.Skip("skipping: needs the shared Temporal dev server, which this process did not start")
 	}
 	if os.Getenv(replayRecordEnv) == "" {
 		t.Skipf("skipping: set %s=1 to record the replay corpus (see testdata/replay/README.md)", replayRecordEnv)

@@ -532,7 +532,16 @@ jobs:
   # backwards completion-edit range on its own seed corpus the first time it ran.
   # Four more targets at 30s each puts the same linear estimate near 470s, so the
   # job moves to `timeout-minutes: 10` on the identical reasoning: leave a real
-  # margin rather than a slow runner's worth. Required
+  # margin rather than a slow runner's worth.
+  #
+  # Eleven since #403's item 3 landed the other half of the LSP surface:
+  # FuzzLSPFrames takes the frame decoder and the read-loop dispatch upstream of
+  # the recover that FuzzLSPDocumentEdits documents itself as looking through. It
+  # costs 30s and no compile — it shares the lsp test binary with the target
+  # already here — which puts the estimate near 500s, still inside this budget.
+  # #403's item 4, FuzzSignalDeliveryDecode, is deliberately deep-only: its
+  # package links the Temporal SDK, and this tier is where a link that long is
+  # the thing being paid for rather than the fuzzing. Required
   # since 2026-08-09: its 48h advisory window (the same one staticcheck had)
   # closed on 2026-08-04 and the job has run green since, so a failure here is
   # now a finding to triage, never flake to wave through. A crasher the fuzzer

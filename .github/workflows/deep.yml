@@ -52,10 +52,13 @@ jobs:
   # reaches this tier by existing, and tools/fuzztargets' test fails if a target
   # in the tree is missing from the file.
   #
-  # timeout-minutes follows from the list: twelve targets at 10m each is 120
-  # minutes of fuzzing, plus checkout, module download and compiling five
-  # packages (~4m) and the collect/report steps (~1m), so ~125m with 140 leaving
-  # a real margin rather than a slow runner's worth. It costs nothing in wall
+  # timeout-minutes follows from the list, and has to be re-derived whenever the
+  # list grows: fourteen targets at 10m each is 140 minutes of fuzzing, plus
+  # checkout, module download and compiling six packages (~5m, the engine's test
+  # binary being the slowest in the module to link) and the collect/report steps
+  # (~1m), so ~146m with 165 leaving a real margin rather than a slow runner's
+  # worth. #403's last two targets are what took it past the old 140, which was
+  # exactly 14 x 10m of fuzzing and no margin at all. It costs nothing in wall
   # clock for the workflow, which runs its jobs in parallel and whose long pole
   # is the soak job's 250.
   #
@@ -67,7 +70,7 @@ jobs:
   # an untracked file there — which is what the collect and report steps key on.
   fuzz-deep:
     runs-on: ubuntu-latest
-    timeout-minutes: 140
+    timeout-minutes: 165
     permissions:
       contents: read
       issues: write
