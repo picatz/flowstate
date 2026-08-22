@@ -188,6 +188,12 @@ steps:
       # No token: a public repository's pull requests are readable
       # unauthenticated, at a much lower rate limit - see workflow.yaml.
 
+  # The pull request this file goes on to name three times - here, in the log
+  # line, and in an output. Bound once, so the "whatever is actually open right
+  # now" choice is made in one place (docs/STYLE.md R5, `flow lint`).
+  - id: newest_pr
+    value: ${steps.open_prs.pull_requests[0]}
+
   - id: pr_files
     github.pull_request_files:
       owner: ${vars.owner}
@@ -197,7 +203,7 @@ steps:
       # own default sort, GitHub's "created", descending - rather than a
       # number this file hard-codes, so the audit chain is "whatever is
       # actually open right now," not one pull request frozen in time.
-      number: ${steps.open_prs.pull_requests[0].number}
+      number: ${steps.newest_pr.value.number}
       max_results: 100
 
   - id: open_issues
@@ -236,11 +242,11 @@ steps:
 
   - id: announce
     log:
-      message: "${'%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")'.format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.open_prs.pull_requests[0].number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}"
+      message: "${'%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")'.format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.newest_pr.value.number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}"
 
 outputs:
   most_recent_open_pull_request:
-    value: ${steps.open_prs.pull_requests[0].number}
+    value: ${steps.newest_pr.value.number}
     description: the most recently created open pull request github.pull_request_list found (see PullRequestListOutputs.truncated for whether more than max_results are actually open)
 
   touches_a_sensitive_path:
