@@ -305,6 +305,11 @@ func TestAWorkerVersionSelectionReachesOnlyTheRunsOnThatBuild(t *testing.T) {
 		// A server too old to send the structured form sends the same
 		// `name.build-id` spelling as a bare string, and a run on the bad build
 		// has to be found whichever way it is reported.
+		//
+		//lint:ignore SA1019 The deprecated field is what this case exists to cover: an
+		// older server reports a pinned version only in this bare-string form, and
+		// selection has to find that run. Reaching for the replacement here would
+		// delete the compatibility path rather than test it.
 		pinned("bad-2", &workflow.WorkflowExecutionVersioningInfo{Version: "flowstate.417"}),
 
 		// Half a version names nothing that can be selected on, so it reads as

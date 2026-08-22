@@ -792,6 +792,10 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
+
+		// And the same header-count bound `flow server` sets, so a dev stack
+		// does not answer a request the real server would refuse.
+		MaxHeaderValueCount: maxHeaderValueCount,
 	}
 
 	return httpServer, listener, nil

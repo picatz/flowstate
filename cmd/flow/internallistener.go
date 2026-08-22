@@ -122,6 +122,11 @@ func startInternalListener(logger *slog.Logger, addr string) (*http.Server, net.
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
+
+		// And the same header-count bound, for the same reason: loopback is
+		// not a trust boundary this listener gets to assume, since anything
+		// that can reach it can read this process's memory through pprof.
+		MaxHeaderValueCount: maxHeaderValueCount,
 	}
 
 	return server, listener, nil
