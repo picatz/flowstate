@@ -55,10 +55,10 @@ import (
 // as a diagnostic rather than refusing it, which is a better answer for an
 // author who opened a generated file — and JSON escaping is worst-case six
 // bytes out per byte in, a control byte written as a `\uXXXX` escape. Sixteen
-// mebibytes therefore leaves room for
-// a maximal document, its escaping, and the envelope around it, while being two
-// orders of magnitude below what an unbounded header line was measured to cost.
-// It bounds the pathological case without being reachable by an honest editor.
+// mebibytes therefore leaves room for a maximal document, its escaping, and the
+// envelope around it, while sitting far below what an unbounded header line was
+// measured to cost. It bounds the pathological case without being reachable by
+// an honest editor.
 const MaxFrameBytes = 16 << 20
 
 // ErrFrameTooLarge is returned when one frame exceeds [MaxFrameBytes].
