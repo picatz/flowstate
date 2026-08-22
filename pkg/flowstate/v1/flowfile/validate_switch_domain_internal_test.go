@@ -875,8 +875,8 @@ func TestExpenseApprovalDomainIsInferable(t *testing.T) {
 		"examples/expense-approval's discriminant no longer has an inferable domain\n"+
 			"  `outcome` must stay conditionals over string literals, or over a leaf naming\n"+
 			"  another value: step's output, all the way down")
-	assert.Equal(t, []string{"approved_by_manager", "approved_after_escalation", "denied_no_response", "denied"}, domain,
-		"the domain in the order outcome's own ternary reads, following the escalation_outcome hop")
+	assert.Equal(t, []string{"denied_no_response", "approved_after_escalation", "denied", "approved_by_manager"}, domain,
+		"the domain in the order outcome's own ternary reads, following the escalation_outcome and direct_outcome hops")
 }
 
 // TestExpenseApprovalRefusesACaseItCannotProduce is the cost of the domain
