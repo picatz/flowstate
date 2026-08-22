@@ -35,6 +35,16 @@ import (
 // compiler used to enforce: maxNodes on total expansion, maxAliasDepth on chain
 // length. That is hostile input reaching a live bound with no refusal in front of
 // it, so the two below drive each bound to the point it fires. See #653, #841.
+//
+// One more correction to that first paragraph, because reading it as "the
+// compiler's node budget is dead" is how a live bound loses its last test. What
+// #840 made unreachable is the *alias-driven* half — the merge branch in
+// fields.go and [compiler.resolve]. The budget on the walk itself
+// ([compiler.enter], parse.go) is untouched by the strict profile, because a
+// document needs no anchor, alias or merge key to hold more values than the
+// budget allows: two bytes per value in flow style puts 120,000 of them well
+// inside the byte limit. TestCompilingRefusesADocumentPastTheValueBudget drives
+// that one, on the surface every compile goes through.
 
 // TestCallPinsRefusesABillionLaughsAtTheNodeBudget drives [maxNodes] with the
 // document it exists for.
@@ -119,6 +129,77 @@ func TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound(t *testing.T) {
 	// accident of that one length.
 	_, err = flowfile.CallPins(chain(256))
 	require.Error(t, err)
+}
+
+// valueBudgetDocument is a Flowfile whose one `value:` step holds a flow
+// sequence of n values, and nothing else out of the ordinary.
+//
+// Flow style rather than block, because the interesting property is the ratio
+// between what is on disk and what is walked: `1,` is two bytes per value, so a
+// document past the 100,000-value budget still fits well inside the byte limit
+// that would otherwise catch it first. The same document written as a block
+// sequence is over 2 MiB and never reaches the budget at all — [maxBytes]
+// refuses it on sight, which is a different bound answering a different question.
+func valueBudgetDocument(n int) []byte {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: budget\nsteps:\n  - id: a\n    value: [")
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('1')
+	}
+	b.WriteString("]\n")
+	return []byte(b.String())
+}
+
+// TestCompilingRefusesADocumentPastTheValueBudget drives the *compiler's* copy
+// of [maxNodes] — parse.go's [compiler.enter], the one every compile walks
+// through — with the input that still reaches it.
+//
+// The bound's alias-driven tests went with #840, and the merge branch beside it
+// (fields.go) is genuinely unreachable now: the strict profile refuses an alias
+// or a merge key at the document tree before anything resolves or expands. The
+// budget on the *walk* is not, and never was, about aliases alone. A document
+// with no anchor, alias or merge key in it can hold as many values as its bytes
+// allow, and the language server compiles whatever an editor opens — so this is
+// hostile input reaching a live bound with no refusal in front of it, which
+// after #840 had no test at all. See #841.
+//
+// The assertion is on the message naming the value limit, not merely on some
+// error, so the test fails rather than passes if [maxBytes] or [maxDepth] starts
+// catching this shape first — three bounds guarding three different resources,
+// and a test that cannot tell them apart proves none of them.
+func TestCompilingRefusesADocumentPastTheValueBudget(t *testing.T) {
+	t.Parallel()
+
+	src := valueBudgetDocument(120_000)
+	require.Less(t, len(src), 1<<20,
+		"premise: the document is inside the byte limit, so the value budget is what answers")
+
+	ds, err := flowfile.ValidateSource(src)
+	require.Error(t, err, "a document past the value budget must be refused")
+	assert.Contains(t, err.Error(), "holds more than 100000 values",
+		"the refusal must be the value budget, named, rather than any other limit")
+	assert.NotContains(t, err.Error(), "larger than the",
+		"the byte limit answering instead would make this test prove nothing about the value budget")
+	assert.Empty(t, ds, "the refusal is reported as the compile error, not as a diagnostic list")
+}
+
+// TestCompilingAcceptsADocumentInsideTheValueBudget is the other side of it.
+//
+// A bound only ever tested from above is also satisfied by a compiler that
+// refuses everything: `nodes <= maxNodes` holds trivially for a walk that gave
+// up on the first value. This document is the same shape, one order of magnitude
+// under the budget, and it has to compile clean — which is also what makes the
+// test above evidence that the budget is what fired rather than the document
+// being malformed in some way the size hid.
+func TestCompilingAcceptsADocumentInsideTheValueBudget(t *testing.T) {
+	t.Parallel()
+
+	ds, err := flowfile.ValidateSource(valueBudgetDocument(10_000))
+	require.NoError(t, err, "a document well inside the budget must compile")
+	assert.Empty(t, ds, "and hold no diagnostics: the shape is legitimate, only large")
 }
 
 // The root is the one name rooting *creates* a collision for, which is worth
