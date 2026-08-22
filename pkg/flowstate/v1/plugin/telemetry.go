@@ -40,12 +40,16 @@ func newTelemetry(cfg Config) telemetry {
 		mp = otel.GetMeterProvider()
 	}
 	m := mp.Meter(instrumentationName)
-	d, _ := m.Float64Histogram("flowstate.plugin.operation.duration", metric.WithUnit("s"))
-	c, _ := m.Int64Counter("flowstate.plugin.calls")
-	h, _ := m.Int64Counter("flowstate.plugin.health.checks")
-	r, _ := m.Int64Counter("flowstate.plugin.restarts")
-	lf, _ := m.Int64Counter("flowstate.plugin.launch.failures")
-	pe, _ := m.Int64Counter("flowstate.plugin.protocol.errors")
+	// The names come from [metricschema], which declares every instrument this
+	// repository creates alongside the attribute keys each may carry. They were
+	// string literals here until #526's first slice, which is one file listing
+	// what the system emits and six literals listing it again.
+	d, _ := m.Float64Histogram(metricschema.InstrumentPluginOperationDuration, metric.WithUnit("s"))
+	c, _ := m.Int64Counter(metricschema.InstrumentPluginCalls)
+	h, _ := m.Int64Counter(metricschema.InstrumentPluginHealthChecks)
+	r, _ := m.Int64Counter(metricschema.InstrumentPluginRestarts)
+	lf, _ := m.Int64Counter(metricschema.InstrumentPluginLaunchFailures)
+	pe, _ := m.Int64Counter(metricschema.InstrumentPluginProtocolErrors)
 	return telemetry{tp.Tracer(instrumentationName), m, d, c, h, r, lf, pe}
 }
 
@@ -71,9 +75,9 @@ func (t telemetry) start(ctx context.Context, operation, plugin, task string) (c
 	ctx, span := t.tracer.Start(ctx, "flowstate.plugin."+operation, trace.WithAttributes(attrs...))
 	started := time.Now()
 	return ctx, span, func(err error) {
-		outcome := "success"
+		outcome := metricschema.OutcomeSuccess
 		if err != nil {
-			outcome = "error"
+			outcome = metricschema.OutcomeError
 			span.SetStatus(codes.Error, "plugin operation failed")
 		}
 		// The metric carries the same attributes as the span, filtered
