@@ -418,6 +418,12 @@ type FlowstateServer struct {
 	// started serving. See [WithSearchAttributesRegistered].
 	searchAttributesRegistered bool
 
+	// eagerStart requests that a run's first workflow task be handed straight to
+	// a worker sharing this server's Temporal client, rather than going through
+	// matching. Off unless the process co-locating both says otherwise — see
+	// [WithEagerWorkflowStart].
+	eagerStart bool
+
 	// dataConverter reads everything this server wrote through a Temporal
 	// client: memos, a schedule's stored arguments, an activity's heartbeat
 	// details. It is set in [New] and never nil. See [WithDataConverter].
@@ -612,6 +618,47 @@ func WithDataConverter(dc converter.DataConverter) Option {
 // in it — the exact dishonesty CLAUDE.md's List section exists to prevent.
 func WithSearchAttributesRegistered() Option {
 	return func(s *FlowstateServer) error { s.searchAttributesRegistered = true; return nil }
+}
+
+// WithEagerWorkflowStart asks Temporal to hand a new run's first workflow task
+// back on the start response, for a worker sharing this server's Temporal
+// client to execute immediately, rather than writing it to a task queue for
+// some worker to poll for.
+//
+// It is for one topology and one only: a process that is both the starter and
+// the worker, on a single [client.Client]. `flow server dev` is that process —
+// one client from the dev server serves both the control plane and the worker
+// it starts (`cmd/flow/serverdev.go`) — and is the only caller in this
+// repository. The SDK enforces the topology rather than trusting it: a start
+// only carries the eager request when the *same client instance* has a running
+// workflow worker registered on the run's task queue with a free task slot
+// (`internal/internal_eager_workflow.go`, `eagerWorkflowDispatcher.applyToRequest`),
+// and when the cluster advertises the capability
+// (`internal/internal_workflow_client.go:2172`). Anywhere else — `flow server`
+// with `flow worker` in another process, a tenant whose runs go to a client no
+// worker shares ([WithNamespacePool], [WithTaskQueues]) — the request is simply
+// not made and dispatch proceeds normally.
+//
+// Off by default, and the default is not timidity about the fallback. Eager
+// start does not respect worker versioning: "an eagerly started workflow may
+// run on any available local worker even if that worker is not in the default
+// build ID set" (`client.StartWorkflowOptions.EnableEagerStart`, SDK v1.47.0),
+// and Temporal's own safe-deployments guidance says the same. Pinning a run to
+// a Current deployment version is this engine's sole compatibility mechanism
+// (see `pkg/flowstate/v1/engine/versioning.go`), so a co-located *versioned*
+// deployment that turned this on would let a run begin on whichever binary
+// happens to share the client, quietly outside the pin. `flow server dev` is
+// safe because its stack is unversioned by construction, which is a property of
+// that command rather than of this server — so this stays an option a
+// co-located caller adopts knowingly, and must not be promoted into an
+// unconditional line in [FlowstateServer.prepareCreate].
+//
+// Nothing observable about execution changes: the same first workflow task, the
+// same history, the same result, taken by a worker in this process instead of
+// after a matching round trip. What it removes is that round trip on every
+// start in the local authoring loop.
+func WithEagerWorkflowStart() Option {
+	return func(s *FlowstateServer) error { s.eagerStart = true; return nil }
 }
 
 // namespaceMemoKey is the memo field recording which tenant a run belongs to.
@@ -1397,6 +1444,15 @@ func (s *FlowstateServer) prepareCreate(
 		// description at this call site the memo does not already say more
 		// tersely — see [FlowstateServer.CreateSchedule], which does.
 		StaticSummary: runStaticSummary(identity.GetNamespace(), wf.GetName()),
+
+		// False unless the process that built this server co-locates a worker
+		// on the very client below, and said so — see [WithEagerWorkflowStart],
+		// which carries the worker-versioning reason this is a deployment's
+		// decision rather than an unconditional line here. Set on the options
+		// every create path shares, so `flow run`, a create-if-absent
+		// SignalWithStart and a webhook delivery all get the co-located
+		// dispatch or none of them do.
+		EnableEagerStart: s.eagerStart,
 	}
 
 	// Projected into visibility only when registration was confirmed at

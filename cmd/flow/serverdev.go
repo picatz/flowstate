@@ -571,6 +571,21 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	serverOpts := []server.Option{
 		server.WithDataConverter(cfg.Codec.DataConverter()),
 		server.WithPluginCatalog(pluginCatalog),
+
+		// The one thing this command has that neither `flow server` nor
+		// `flow worker` can have: the control plane below and the worker a few
+		// lines down share the single client this function opened, which is the
+		// exact topology Temporal's eager workflow start requires. Every `flow
+		// run` against this stack then skips the matching round trip its first
+		// workflow task would otherwise wait for.
+		//
+		// Scoped here rather than set for every deployment because eager start
+		// does not respect worker versioning — see [server.WithEagerWorkflowStart],
+		// which carries that argument in full. It is sound for this command
+		// specifically because this stack is unversioned by construction
+		// (devPostureUnversioned above), so there is no Current version for an
+		// eager dispatch to step around.
+		server.WithEagerWorkflowStart(),
 	}
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
