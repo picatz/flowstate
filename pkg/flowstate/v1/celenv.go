@@ -79,7 +79,13 @@ func (l Limits) programOptions() []cel.ProgramOption {
 	var opts []cel.ProgramOption
 	if l.Cost > 0 {
 		// CostLimit implies OptTrackCost.
-		opts = append(opts, cel.CostLimit(l.Cost))
+		//
+		// The estimator is what decides that a unit of this budget buys a
+		// bounded number of *bytes* rather than one operation of any size; see
+		// celcost.go for why cel-go's own size-aware pricing cannot reach a
+		// parsed AST. It is installed here rather than at any call site because
+		// this is the one place both execution drivers build a program.
+		opts = append(opts, cel.CostLimit(l.Cost), cel.CostTracking(evaluationCostEstimator))
 	}
 	if l.InterruptCheckFrequency > 0 {
 		opts = append(opts, cel.InterruptCheckFrequency(l.InterruptCheckFrequency))
