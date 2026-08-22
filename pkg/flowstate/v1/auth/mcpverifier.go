@@ -15,38 +15,6 @@ import (
 // Go SDK's bearer-token middleware wants. picatz/flowstate#558's slice two:
 // a second verifier is the thing this file exists to avoid.
 
-// Claim names an inbound token may carry that this deployment refuses rather
-// than interprets.
-//
-// Both are RFC 8693 (OAuth 2.0 Token Exchange) delegation claims: "act"
-// records that the bearer is an agent exercising some other party's
-// authority, and "may_act" records that the token's subject permits some
-// other party to do so in a future token. Flowstate has nowhere to map
-// either yet — a trust policy cannot express which claim carries a
-// delegator, and #567's D2 leaves that naming decision open — so a token
-// carrying one is refused outright.
-//
-// Refused, specifically, rather than stripped. Admitting the request as the
-// bare subject named by "sub" would let it proceed while the audit record
-// said nothing was delegated: the token itself claims an agent is acting for
-// somebody, and a deployment that cannot yet read that claim must not answer
-// as though it were never made. That is #567's S7a amendment, "deferred
-// fail-closed", and it is the confused-deputy shape stated one layer earlier
-// than the mapping that would otherwise get it wrong.
-//
-// These are deliberately not [ClaimOnBehalfOf]: that one is a claim
-// Flowstate's own issuer *mints* into an assertion it is vouching for, where
-// these two are claims an external identity provider mints into a token
-// Flowstate only verifies. See pkg/flowstate/v1/authtest/negative.go, whose
-// WithDelegation and WithMayAct mint exactly the tokens this refuses.
-const (
-	// ClaimActor is RFC 8693 section 4.1's "act".
-	ClaimActor = "act"
-
-	// ClaimMayAct is RFC 8693 section 4.4's "may_act".
-	ClaimMayAct = "may_act"
-)
-
 // MCPTokenVerifier adapts v — which already performs every check OAuth 2.1
 // section 5.2 asks a resource server for: signature against a discovered key
 // set, an "alg" allowlist, "exp"/"iat"/"nbf", an exact "iss" match against a
@@ -135,9 +103,13 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 			return nil, fmt.Errorf("%w: the token's audience does not name this resource", mcpauth.ErrInvalidToken)
 		}
 
-		if claim, refused := refusedDelegationClaim(principal.Claims); refused {
-			return nil, fmt.Errorf("%w: the token carries a %q delegation claim, which this deployment "+
-				"does not interpret and will not ignore", mcpauth.ErrInvalidToken, claim)
+		// Redundant behind an [OIDCVerifier], which refuses a delegated token
+		// before it ever returns a Principal (see delegation.go), and kept
+		// anyway: this adapter accepts any [Verifier], and a surface that
+		// lost the refusal by being handed a different one would be the
+		// asymmetry this call exists to have removed, pointing the other way.
+		if err := refuseDelegationClaims(principal.Claims); err != nil {
+			return nil, fmt.Errorf("%w: %s", mcpauth.ErrInvalidToken, PublicReason(err))
 		}
 
 		// A Principal with no issuer or no subject cannot produce a session
@@ -196,21 +168,4 @@ func MCPSessionUserID(p Principal) string {
 	fmt.Fprintf(sum, "%d:%s%d:%s", len(p.Issuer), p.Issuer, len(p.Subject), p.Subject)
 
 	return hex.EncodeToString(sum.Sum(nil))
-}
-
-// refusedDelegationClaim reports the first delegation claim present in a
-// verified claims set, if any. See [ClaimActor] for why presence alone is
-// enough — the value is never read, because there is nothing here yet that
-// could read it correctly.
-func refusedDelegationClaim(claims map[string]any) (string, bool) {
-	// Checked in a fixed order rather than by ranging the map, so a token
-	// carrying both is always refused by naming the same one and a test can
-	// assert the message.
-	for _, name := range []string{ClaimActor, ClaimMayAct} {
-		if _, present := claims[name]; present {
-			return name, true
-		}
-	}
-
-	return "", false
 }

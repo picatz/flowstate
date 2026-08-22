@@ -39,6 +39,7 @@ type Authenticator struct {
 	peerVerifier                 PeerVerifier
 	observe                      func(context.Context, *http.Request, error)
 	protectedResourceMetadataURL string
+	expectedResource             string
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -92,6 +93,58 @@ func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
 	return func(a *Authenticator) {
 		a.protectedResourceMetadataURL = pr.MetadataURL()
+	}
+}
+
+// WithExpectedResource narrows what a verified token may be spent on here: the
+// token's "aud" must name resource, the canonical resource URI (RFC 8707
+// section 2) this RPC surface identifies as, or the request is refused.
+//
+// It is the check [MCPTokenVerifier] has always performed against
+// [ProtectedResource.Resource], available to the Connect surface for the first
+// time. The two surfaces are otherwise the same deployment behind the same
+// trust policy, and a [TrustedIssuer] entry lists every audience that issuer
+// may mint for — so a deployment whose entry accepts both its RPC audience and
+// its MCP resource lets a token minted for one be spent at the other. The
+// entry's list admits a token to the deployment; this admits it to this
+// surface.
+//
+// # Why this is opt-in, and what flips it later
+//
+// Unset (the default) is unnarrowed: every deployment that does not configure
+// one builds the exact same Authenticator this constructor always built, and
+// no token that verifies today starts failing. That is the cost, stated
+// plainly — an RPC surface is narrowed only when an operator says so, and
+// until then the trust policy's audience list is the whole of the check.
+//
+// It is the right default only because of what is true today: nothing mints an
+// RPC token carrying this deployment's resource URI. `--protected-resource` is
+// optional on `flow server` (required only on `flow mcp serve`, whose surface
+// *is* the resource), the RFC 9728 document a deployment may serve is
+// advertisement rather than enforcement, and clients ask their authorization
+// server for whatever audience they were configured with. Narrowing by default
+// would refuse every one of those tokens on upgrade, which is a fail-closed
+// posture bought by an outage.
+//
+// What flips it: once `flow server` grows a flag that turns this on and
+// deployments have run with it, the default can invert — narrow
+// whenever a protected resource is configured at all, since a deployment that
+// named its resource has said what its tokens should be minted for. That flag
+// is deliberately not in this change; see the pull request's follow-up note,
+// and #890 for why a serving-surface setting is named after the thing it
+// configures rather than after the check it performs.
+//
+// An empty resource is ignored, so a caller threading through an unset
+// configuration value gets the unnarrowed default rather than a surface that
+// refuses everyone.
+//
+// Only bearer tokens are narrowed. A client certificate carries no audience,
+// so a request authenticated by [WithPeerVerifier] alone is unaffected; a
+// request carrying both is refused unless the token also names this resource,
+// which is the same "both must verify and agree" rule that path already has.
+func WithExpectedResource(resource string) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.expectedResource = resource
 	}
 }
 
@@ -153,6 +206,20 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		// whatever it returned. Reaching a handler with an identity that reads as
 		// unauthenticated is worse than a rejection.
 		tokenErr = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
+	}
+
+	// Recorded as a token failure rather than returned here, so that the mTLS
+	// paths below treat a token for the wrong resource exactly as they treat
+	// any other invalid token: no fallback to the certificate, and no
+	// precedence rule invented for this one check. See [WithExpectedResource]
+	// for why an unset resource narrows nothing.
+	if tokenErr == nil && a.expectedResource != "" && !tokenPrincipal.HasAudience(a.expectedResource) {
+		// The resource is not named in the error: a caller holding a token for
+		// some other service learns its audience was wrong, and does not learn
+		// this deployment's resource identifier from a failure — that is
+		// published in the RFC 9728 document the challenge points at, which is
+		// where a client is meant to read it.
+		tokenErr = fmt.Errorf("%w: the token's audience does not name this resource", ErrInvalidAudience)
 	}
 
 	// req.TLS.VerifiedChains is set by crypto/tls itself, only once the peer's
