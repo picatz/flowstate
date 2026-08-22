@@ -978,9 +978,33 @@ type SignalWithStartResponse struct {
 	// no other way to learn it: [workflow_id] and [run_id] are populated
 	// identically either way, a run and a workflow execution, so this field is
 	// the only place the distinction is reported.
-	Created       bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Created bool `protobuf:"varint,3,opt,name=created,proto3" json:"created,omitempty"`
+	// SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+	// this RPC: the same question, the same three answers, and deliberately the
+	// same name rather than a second vocabulary for one fact.
+	//
+	// This RPC substitutes the trusted copy exactly as `Run` does — see the
+	// server's `trustedWorkflow` — and then transforms what it runs the same way,
+	// writing the deployment's plugin selection onto it before the engine sees it.
+	// So a caller here faces the identical question a caller of `Run` faces: is
+	// the specification I hold the one that ran, and may I therefore trust its
+	// `sensitive: true` declarations to describe this entity's outputs? Read
+	// [RunResponse.specification_as_submitted] for the whole argument, including
+	// why *unset* is not `false` and why neither may be read as assent.
+	//
+	// One thing is this RPC's own, and it is a consequence of [created]. When this
+	// call created the entity, the answer is about the specification this call
+	// handed the engine, exactly as `Run`'s is. When it did not — a mutation
+	// delivered to an entity that was already running — the executing
+	// specification is whatever *that* run was created with, which this server did
+	// not compare against anything and will not claim to know: the answer is false,
+	// the fail-closed one, and it is stated rather than left unset because the
+	// server is answering rather than staying silent. A caller wanting the precise
+	// view of an entity it did not create has no route to it through this field,
+	// which is the honest position.
+	SpecificationAsSubmitted *bool `protobuf:"varint,4,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *SignalWithStartResponse) Reset() {
@@ -1030,6 +1054,13 @@ func (x *SignalWithStartResponse) GetRunId() string {
 func (x *SignalWithStartResponse) GetCreated() bool {
 	if x != nil {
 		return x.Created
+	}
+	return false
+}
+
+func (x *SignalWithStartResponse) GetSpecificationAsSubmitted() bool {
+	if x != nil && x.SpecificationAsSubmitted != nil {
+		return *x.SpecificationAsSubmitted
 	}
 	return false
 }
@@ -2152,12 +2183,14 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\apayload\x18\x05 \x01(\v2\x1a.flowstate.v1.Node.OutputsR\apayload\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"k\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xcd\x01\n" +
 	"\x17SignalWithStartResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x18\n" +
-	"\acreated\x18\x03 \x01(\bR\acreated\"d\n" +
+	"\acreated\x18\x03 \x01(\bR\acreated\x12A\n" +
+	"\x1aspecification_as_submitted\x18\x04 \x01(\bH\x00R\x18specificationAsSubmitted\x88\x01\x01B\x1d\n" +
+	"\x1b_specification_as_submitted\"d\n" +
 	"\rCancelRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x02R\n" +
@@ -2400,6 +2433,7 @@ func file_flowstate_v1_service_proto_init() {
 		(*GetResponse_Error)(nil),
 		(*GetResponse_Outputs)(nil),
 	}
+	file_flowstate_v1_service_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
