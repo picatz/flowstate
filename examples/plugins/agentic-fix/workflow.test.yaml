@@ -21,6 +21,8 @@ edition: v2026.3
 defaults:
   inputs:
     repo: https://github.com/example/broken.git
+    branch: agent/fix
+    workspace: repo
   stubs:
     - task: log
       returns: {}
@@ -218,3 +220,37 @@ tests:
         fix_ref: ""
         handed_off: true
         taken_over: true
+
+  - name: a build that is already green is left untouched and nobody is asked
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The initial run at the tip already passes — a stale trigger, or a flaky
+      # failure that cleared. The whole attempt loop is skipped: no codex turn is
+      # asked for, no commit is pushed, nothing is verified again. Their stubs are
+      # deliberately absent, so a regression that ran the loop anyway would fail
+      # loudly on a missing stub rather than quietly mutate a green branch.
+      - task: http
+        where: "inputs.json.ref == 'sha-0'"
+        returns:
+          passed: true
+          output: ""
+    expect:
+      ran: [tip, failing, unresolved, spent, report]
+      # `attempt` never runs (the build is good), so neither does the gate.
+      skipped: [attempt, handoff]
+      outputs:
+        # Zero attempts, and fixed: the build was already good, and this run
+        # wrote nothing. `fix_ref` is the tip that already passed, not empty.
+        attempts: 0
+        fixed: true
+        fix_ref: sha-0
+        handed_off: false
+        taken_over: false

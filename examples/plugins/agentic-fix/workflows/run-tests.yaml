@@ -1,9 +1,6 @@
 edition: v2026.3
 name: agentic-fix-run-tests
-description: >-
-  Asks CI to run the suite at one exact commit and reports whether it passed,
-  with the output a failing run produced.
-
+description: Asks CI to run the suite at one exact commit and reports whether it passed, with the output a failing run produced.
 # The verification half of `agentic-fix`, as a separate file for one reason
 # worth stating: it binds to a *commit*, not to a branch. `ref:` is required and
 # has no default, so this workflow cannot be asked to verify "the latest" - which
@@ -14,34 +11,29 @@ description: >-
 # uses it runs it once per attempt, and because verification is the piece most
 # likely to differ per repository: point this at a different CI, or replace the
 # body entirely, and the loop above it does not change.
-
 inputs:
   ref:
     type: string
     required: true
-    must: this != ""
-    example: 8b1a9953c4611296a827abf8c47804d7
     description: the exact commit to run the suite against
-
+    example: 8b1a9953c4611296a827abf8c47804d7
+    must: this != ""
 steps:
   - id: suite
     description: Ask CI for a run at this commit and wait for its verdict.
     timeout: 15m
     http:
+      json: '${{"ref": inputs.ref}}'
       method: POST
-      url: https://ci.internal.example.com/test-runs
-      parse_json: true
-      json:
-        ref: ${inputs.ref}
       outputs:
-        passed: ${response.json.passed}
         output: ${response.json.output}
-
+        passed: ${response.json.passed}
+      parse_json: true
+      url: https://ci.internal.example.com/test-runs
 outputs:
   passed:
     value: ${steps.suite.passed}
     description: whether the suite passed at that commit
-
   output:
     value: ${steps.suite.output}
     description: what a failing run printed, which is what the next attempt's prompt is built from

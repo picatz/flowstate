@@ -1,28 +1,42 @@
 # A reconciler: the loop an operator framework exists to give you, as one file.
 #
-# The shape is observe, compare, act, wait — and the part that makes it a
+# The shape is wait, then observe, compare, act — and the part that makes it a
 # reconciler rather than an event handler is *where the decision comes from*.
 # Every pass reads the world's current state (`observed`) and compares it to the
-# state this run is holding (`target.replicas`). Nothing branches on which event
+# state this run is holding (`goal.desired`). Nothing branches on which event
 # woke it up. That is what level-triggered means, and it is the property that
 # makes a reconciler survivable: a notification that was never delivered, was
 # delivered twice, or arrived while the process was down changes how *soon* the
 # next pass happens and never what that pass decides.
 #
-# The wait at the bottom of the body is the whole scheduler:
+# The wait at the *top* of the body is the whole scheduler, and its position is
+# load-bearing rather than stylistic (see the retirement note below):
 #
 #   the deadline lapses    nothing told us anything for a resync interval, so
-#                          go round anyway — this is the poll that catches drift
+#                          reconcile anyway — this is the poll that catches drift
 #                          nobody announced (a human scaling by hand, a node
 #                          lost, a controller fighting us)
-#   a signal arrives       something announced a change, so go round *now*
+#   a signal arrives       something announced a change, so reconcile *now*
 #                          rather than at the end of the interval
+#
+# Why the wait comes first, not last. A `retired: true` signal can arrive while
+# this run is suspended — buffered across a Continue-As-New, delivered before the
+# body ever reaches the wait. If the mutation ran before the wait consumed that
+# signal, a workload already declared retired would get one last scale on its way
+# out (the durable harness sends retirement immediately and would demonstrate
+# exactly that). So the wait — the only place retirement is consumed — is the
+# first thing each pass does, and every mutation below is gated on the pass not
+# being a retirement. A delayed or buffered retirement therefore ends the run
+# before anything is observed or written. The cost is that the very first pass
+# waits up to one resync interval before its first reconcile; a caller that wants
+# an immediate first pass sends a `spec-changed` carrying the current desired
+# count, which wakes it at once.
 #
 # `renewal-reminder` is the closest sibling in this corpus and the contrast is
 # the point: there, the lapse *is* the work and the signal ends the run. Here
-# both outcomes lead to the same body, because a reconciler that did different
-# work depending on how it woke would be edge-triggered — and an edge-triggered
-# reconciler is correct exactly until the first missed edge.
+# both outcomes lead to the same reconcile, because a reconciler that did
+# different work depending on how it woke would be edge-triggered — and an
+# edge-triggered reconciler is correct exactly until the first missed edge.
 #
 # What this file does NOT have, and where it would go:
 #
@@ -38,14 +52,19 @@
 #     itself worth knowing — a reconciler is not made of special verbs.
 #
 # The durability property this demonstrates: a run that is *asleep* between
-# passes, holding the desired state and the pass count, and is answerable the
-# whole time. Nothing here is holding a worker, a thread, or a connection while
-# a resync interval elapses — so a reconciler that does one pass a minute for a
-# year costs a timer, not a process.
+# passes, holding the desired state and the pass count, answerable the whole
+# time, and resuming exactly where it was after any worker restart. Nothing here
+# holds a worker, a thread, or a connection while a resync interval elapses — a
+# reconciler waiting out a thirty-second interval costs a durable timer, not a
+# running process. What it is *not* is unbounded: `max_iterations` caps the total
+# passes one run may make (see its own note), so a genuinely perpetual reconciler
+# is one a retirement signal ends, or one an operator re-creates — the ceiling is
+# the safety net that turns "retirement never came" into a named failure rather
+# than an infinite loop.
 #
 #   flow test examples/deployment-reconciler/          # every path, virtual clock
 #   flow run local examples/deployment-reconciler/workflow.yaml \
-#     --signal spec-changed='{"retired": true}'        # one pass, then retire
+#     --signal spec-changed='{"retired": true}'        # retire before any pass
 #
 # and durably, where the sleeping is real:
 #
@@ -54,107 +73,135 @@
 # (needs `flow server` and `flow worker`; see the main README's Quickstart)
 edition: v2026.3
 name: deployment-reconciler
-description: >-
-  Converges a workload toward a desired replica count, one level-triggered pass
-  at a time, woken either by a spec change or by the resync interval lapsing —
-  and asleep, durably, in between.
-
+description: Converges a workload toward a desired replica count, one level-triggered pass at a time, woken either by a spec change or by the resync interval lapsing — and asleep, durably, in between.
 inputs:
   target:
     type: string
-    required: false
     default: checkout-api
     description: the workload this reconciler is responsible for
-
   desired_replicas:
     type: int
-    required: false
     default: 5
+    description: the replica count to converge on at the start; a spec-changed signal carrying a valid new one replaces it for every later pass
     must: this > 0 && this <= 100
-    description: >-
-      the replica count to converge on at the start; a spec-changed signal
-      carrying a new one replaces it for every later pass
-
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.
     log:
       message: ${"reconciling %s toward %d replica(s)".format([inputs.target, inputs.desired_replicas])}
-
   - id: reconcile
-    description: One pass per iteration - observe, compare, converge, then sleep until something happens or the resync interval lapses.
+    description: One pass per iteration - wait for a tick or a change, then observe, compare, and converge unless the pass is a retirement.
     loop:
       # Two things travel between passes, so the carried state is a map: the
       # replica count this reconciler is currently responsible for, and how many
       # passes have run. `loop-accumulate` is the file that introduces the map
-      # shape; here the second field is not bookkeeping — `passes` is what makes
-      # the very first pass distinguishable from the ones after it, which is what
-      # this example's own test file drives its scripted cluster with.
-      as: target
+      # shape.
+      as: goal
       init:
-        replicas: ${inputs.desired_replicas}
+        desired: ${inputs.desired_replicas}
         passes: 0
-      # The desired state changes only when somebody announces a new one. A pass
+      # The desired count carried forward is whatever this pass settled on:
+      # `next_desired` below, which is the validated signal value on a pass that
+      # received one and the unchanged current value on every other pass. A pass
       # that woke on the resync interval carries the same number forward — which
       # is exactly why the interval lapsing is not a no-op: the *observed* side
       # may have moved even when the desired side did not.
       update:
-        replicas: >-
-          ${steps.notified.value
-            ? steps.pace.payload.?desired_replicas.orValue(target.replicas)
-            : target.replicas}
-        passes: ${target.passes + 1}
+        desired: ${steps.next_desired.value}
+        passes: ${goal.passes + 1}
       # The only thing that ends a reconciler is being told the workload is
       # retired. Converging is not a stopping condition: a workload that matches
       # its spec right now is the ordinary state of a healthy system, and a
       # reconciler that exited there would stop watching at the exact moment it
       # had nothing to complain about.
-      until: ${steps.notified.value && steps.pace.payload.?retired.orValue(false)}
-      # The budget for *this* segment rather than for the workload's lifetime: a
-      # reconciler that lives for months does so across many Continue-As-New
-      # segments, each with its own budget of this many passes. See docs/DSL.md's
-      # "carried state", and `renewal-reminder`, which says the same thing about
-      # the same ceiling.
-      #
-      # Spending it without `until:` holding is a *failed* run rather than a
-      # quiet stop, which is the language's rule and the right one here: on the
-      # durable driver the segment seam keeps a long-lived reconciler going, and
-      # a local rehearsal has no seam — so `flow run local` with nothing to
-      # retire the workload genuinely fails after twenty resync intervals, and
-      # that is the honest answer rather than a reconciler that decided on its
-      # own it was finished.
-      max_iterations: 20
+      until: ${steps.retiring.value}
+      # A ceiling on the total passes one run may make, and it is cumulative for
+      # the life of the run rather than per Continue-As-New segment: the engine
+      # carries the iteration index across every segment seam (engine's runLoop
+      # resumes from the frame's NextIteration), so this is a lifetime bound, not
+      # a per-segment one. A reconciler is normally ended by a retirement signal
+      # long before it; the ceiling exists so that "retirement never arrived" is
+      # a *named* failure (LoopExhausted) rather than a loop that runs forever.
+      # A workload meant to be reconciled for months lives across runs an
+      # operator re-creates, or raises this toward the schema's own maximum; it
+      # is deliberately not framed as "one process for a year", because no single
+      # run is that.
+      max_iterations: 1000
       steps:
-        # The level. Read every pass, unconditionally, before anything decides
-        # anything — including on the pass that was woken by a signal *saying*
-        # what the new state is. Trusting the notification's contents instead
-        # would be the edge-triggered mistake in its most tempting form: the
-        # signal says 7, so scale to 7, without ever asking what is actually
-        # running.
+        # The wait, first — the scheduler, and the only place a retirement is
+        # consumed. A durable timer with an interrupt on it: the resync interval
+        # is the ceiling on how long this reconciler can be wrong without
+        # noticing, and the signal is how a system that already knows says so
+        # sooner. Thirty seconds is a demo's interval; a real one is minutes, and
+        # the file reads identically at either.
+        - id: pace
+          wait_for_signal:
+            name: spec-changed
+            timeout: 30s
+
+        # Which of the two woke us, named once for the steps and loop-level
+        # expressions that read it.
+        - id: notified
+          value: ${!steps.pace.timed_out}
+
+        # Retirement, decided before anything is observed or written. This is the
+        # gate that makes the wait-first ordering matter: a `retired: true`
+        # consumed here — however early it arrived — ends the run at `until:`
+        # below with no observe and no scale.
+        - id: retiring
+          value: ${steps.notified.value && steps.pace.payload.?retired.orValue(false)}
+
+        # Its complement, named once: every step below that must not run on a
+        # retiring pass reads this rather than re-deriving `!retiring`.
+        - id: reconciling
+          value: ${!steps.retiring.value}
+
+        # The desired count this pass will converge on. A signal may carry a new
+        # one, and a signal is an untrusted input: unlike `inputs.desired_replicas`,
+        # which `must:` range-checks at submit, a payload value is whatever a
+        # sender put there. So it is adopted only when it is an int in the same
+        # (0, 100] range the input constraint enforces; a wrong type, a zero, or a
+        # value over the ceiling is ignored and the current count carried forward,
+        # rather than POSTed to the control plane on the next pass or crashing the
+        # reconciler on a type error. The `&&` short-circuits, so the range
+        # comparisons never run against a non-int value.
+        - id: next_desired
+          value: "${(steps.notified.value && steps.reconciling.value && has(steps.pace.payload.desired_replicas) &&\ntype(steps.pace.payload.desired_replicas) == type(0) && steps.pace.payload.desired_replicas > 0 &&\nsteps.pace.payload.desired_replicas <= 100) ? steps.pace.payload.desired_replicas : goal.desired}"
+
+        # The level. Read every reconciling pass, unconditionally within that
+        # pass, before anything decides whether to act — including on the pass
+        # that was woken by a signal *saying* what the new state is. Trusting the
+        # notification's contents instead would be the edge-triggered mistake in
+        # its most tempting form: the signal says 7, so scale to 7, without ever
+        # asking what is actually running. Skipped only on a retiring pass, which
+        # has nothing to reconcile.
         - id: observed
+          if: ${steps.reconciling.value}
           timeout: 10s
           http:
             method: GET
-            url: https://control-plane.internal.example.com/workloads/status
-            query:
-              name: ${inputs.target}
-            parse_json: true
             outputs:
               replicas: ${response.json.replicas}
+            parse_json: true
+            query: '${{"name": inputs.target}}'
+            url: https://control-plane.internal.example.com/workloads/status
 
         # The comparison, named once. Both the converge step below and the
         # `passes_that_acted` output read this name rather than re-deriving it —
         # a second copy of a predicate is free to disagree with the first, which
         # is what `flow lint`'s repeated-expression rule is about.
         - id: drift
-          value: ${steps.observed.replicas != target.replicas}
+          if: ${steps.reconciling.value}
+          value: ${steps.observed.replicas != steps.next_desired.value}
 
         # The act, and the only step here that changes anything. It is behind an
-        # `if:` because a converged workload must not be written to on every
-        # resync: a reconciler whose steady state is a stream of no-op writes is
-        # one an operator learns to ignore.
+        # `if:` for two reasons at once: a retiring pass must never write, and a
+        # converged workload must not be written to on every resync — a
+        # reconciler whose steady state is a stream of no-op writes is one an
+        # operator learns to ignore. The `&&` short-circuits, so a retiring pass
+        # (where `drift` was skipped and has no value) never evaluates it.
         - id: converge
-          if: ${steps.drift.value}
+          if: ${steps.reconciling.value && steps.drift.value}
           timeout: 10s
           retry:
             attempts: 3
@@ -162,47 +209,34 @@ steps:
             backoff: 2.0
             max_interval: 10s
           http:
+            json: '${{"name": inputs.target, "replicas": steps.next_desired.value}}'
             method: POST
-            url: https://control-plane.internal.example.com/workloads/scale
-            parse_json: true
-            json:
-              name: ${inputs.target}
-              replicas: ${target.replicas}
             outputs:
               accepted: ${response.json.accepted}
+            parse_json: true
+            url: https://control-plane.internal.example.com/workloads/scale
 
-        # The scheduler. A durable timer with an interrupt on it: the resync
-        # interval is the ceiling on how long this reconciler can be wrong
-        # without noticing, and the signal is how a system that already knows
-        # says so sooner. Thirty seconds is a demo's interval; a real one is
-        # minutes, and the file reads identically at either.
-        - id: pace
-          wait_for_signal:
-            name: spec-changed
-            timeout: 30s
+  # The observations this run made, in order — read once here so the outputs
+  # below do not each re-filter. A retiring pass contributes no `observed`, so
+  # this is the history of passes that actually reconciled, which is also what
+  # `passes` counts.
+  - id: observations
+    value: ${steps.reconcile.results.filter(p, has(p.observed)).map(p, p.observed.replicas)}
 
-        # Which of the two woke us, named once for the two loop-level
-        # expressions that need it. `until:` and `update:` are evaluated in this
-        # scope, so a body step is where a value both of them read belongs.
-        - id: notified
-          value: ${!steps.pace.timed_out}
-
+  # How many reconcile passes actually observed, named once for the two outputs
+  # that ask.
+  - id: pass_count
+    value: ${steps.observations.value.size()}
 outputs:
   passes:
-    value: ${steps.reconcile.results.size()}
-    description: how many reconcile passes ran before the workload was retired
-
+    value: ${steps.pass_count.value}
+    description: how many reconcile passes actually ran — a retirement consumed before any pass reconciled is zero, which is the fix for a workload retired before it was ever observed
   passes_that_acted:
-    value: ${steps.reconcile.results.filter(p, p.drift.value).size()}
-    description: >-
-      how many of those passes found drift and wrote to the control plane — the
-      rest observed a converged workload and did nothing, which is the state a
-      healthy reconciler spends most of its life in
-
+    value: ${steps.reconcile.results.filter(p, has(p.converge)).size()}
+    description: how many of those passes found drift and wrote to the control plane — the rest observed a converged workload and did nothing, which is the state a healthy reconciler spends most of its life in
   final_desired_replicas:
-    value: ${steps.reconcile.state.replicas}
-    description: the replica count this reconciler was responsible for when it stopped, after every spec change it was told about
-
+    value: ${steps.reconcile.state.desired}
+    description: the replica count this reconciler was responsible for when it stopped, after every valid spec change it was told about
   final_observed_replicas:
-    value: ${steps.reconcile.results[steps.reconcile.results.size() - 1].observed.replicas}
-    description: what the control plane last reported, which is the claim about the world rather than about this run's intent
+    value: "${(steps.pass_count.value > 0) ? (steps.observations.value[steps.pass_count.value - 1]) : -1}"
+    description: what the control plane last reported, which is the claim about the world rather than about this run's intent, or -1 when this run retired before observing anything
