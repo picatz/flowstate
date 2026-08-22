@@ -63,8 +63,13 @@ In CI, and on any machine, with no plugin, no model, no forge and no network:
 $ flow test examples/plugins/agentic-fix/
 ```
 
-Three cases: fixed on the second attempt, five attempts and a person takes over,
-five attempts and nobody answers the gate either. Everything except the four
+Four cases: fixed on the second attempt; five attempts and a person takes over;
+five attempts and nobody answers the gate either; and an attempt that fails
+outright — the gateway down — which reaches the same person by a different road.
+That last one is why the attempt count is read through a `has(...)` guard: a loop
+that spends its budget publishes an account of every attempt, and a loop that
+fails part way through one publishes none, so the run reports zero attempts
+rather than failing while evaluating its own report. Everything except the four
 effects runs for real — the loop, the carried state, the budget, the `if:`, the
 gate and its 24-hour deadline, which passes in microseconds on the virtual
 clock.

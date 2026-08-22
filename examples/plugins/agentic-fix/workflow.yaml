@@ -195,8 +195,17 @@ steps:
   # A loop reports one `results` entry per iteration, so its size is the attempt
   # count — and writing that phrase four times is four copies free to drift, which
   # is what `flow lint` says as R5/repeated-expression.
+  #
+  # The guarded read is not defensive habit, it is the two failures being
+  # different. A loop that spends its whole budget is the one failure entitled to
+  # publish its iterations, because every one of them finished: `results` is
+  # there, with five entries. A loop that fails *mid*-body — the forge refusing a
+  # push, the gateway down — has an unfinished iteration and publishes no
+  # `results` at all (docs/DSL.md, "And the failure carries its account"). Both
+  # reach this step, because both are tolerated; reading `results` unguarded
+  # would turn the second one into a run that failed evaluating its own report.
   - id: spent
-    value: ${steps.attempt.results.size()}
+    value: '${has(steps.attempt.results) ? steps.attempt.results.size() : 0}'
 
   # The human in the loop, as a step. Reached only when the attempts did not
   # produce a passing suite, and fail-closed: a gate nobody answers within a day
@@ -221,7 +230,10 @@ steps:
 outputs:
   attempts:
     value: ${steps.spent.value}
-    description: how many agentic turns this run actually spent
+    description: >-
+      how many agentic turns this run actually spent — zero when an attempt
+      failed outright rather than producing a verdict, since a loop that failed
+      part way through an iteration publishes no account of them
 
   fixed:
     value: ${!steps.unresolved.value}

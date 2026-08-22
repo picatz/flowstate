@@ -176,3 +176,45 @@ tests:
         fix_ref: ""
         handed_off: true
         taken_over: false
+
+  - name: an attempt that fails outright still reaches a person
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 30m
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The gateway is down. The turn is not retried (`attempts: 1`), so the
+      # first attempt fails part way through the body rather than producing a
+      # verdict — a different failure from spending the budget, and the one that
+      # publishes no `results` for the loop at all.
+      - task: codex.exec
+        fails:
+          kind: Upstream
+          message: model gateway unavailable
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      # `apply` and `verify` never happen: the attempt died before either.
+      skipped: [apply, verify]
+      outputs:
+        # Zero, and truthfully so: no attempt finished, so the loop has no
+        # account of any to publish. A file that read `results` unguarded would
+        # fail evaluating this rather than answering it.
+        attempts: 0
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true
