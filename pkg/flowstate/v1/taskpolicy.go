@@ -7,7 +7,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -150,6 +149,14 @@ type TaskPolicyDeniedError struct {
 	Identity string
 }
 
+// noPolicyIdentity is what [describePolicyIdentity] renders for an identity
+// no rule could match on, and the value [TaskPolicyDeniedError.Error] tests
+// for when deciding whether to explain where a rehearsal's identity comes
+// from. A named constant rather than a string literal in each place, because
+// the two are one decision: change the wording and the explanation would
+// silently stop being attached to the case it explains.
+const noPolicyIdentity = "no identity — every field a rule can read is empty"
+
 // describePolicyIdentity renders the identity a task-shape rule was evaluated
 // against, for [TaskPolicyDeniedError.Error] and nothing else.
 //
@@ -173,9 +180,14 @@ type TaskPolicyDeniedError struct {
 func describePolicyIdentity(identity *WorkloadIdentity) string {
 	claims := slices.Sorted(maps.Keys(identity.GetClaims()))
 
+	// "every field a rule can read" is exact rather than loose: the
+	// activation [TaskPolicy.Check] builds is subject, issuer, namespace and
+	// claims — `deployment` is on [WorkloadIdentity] and is not exposed to a
+	// task-shape rule — so an identity carrying only a deployment is, to
+	// this policy surface, no identity at all, and saying so is honest.
 	if identity.GetSubject() == "" && identity.GetIssuer() == "" &&
 		identity.GetNamespace() == "" && len(claims) == 0 {
-		return "no identity — every field a rule can read is empty"
+		return noPolicyIdentity
 	}
 
 	return fmt.Sprintf("identity subject=%q issuer=%q namespace=%q claims=%v",
@@ -202,7 +214,7 @@ func describePolicyIdentity(identity *WorkloadIdentity) string {
 // That neutrality is why the rehearsal clause no longer tells the reader to
 // check "the --task-policy passed to this local invocation". Half the venues
 // it speaks to have no such flag: `--task-policy` is declared on `flow
-// worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task
+// worker`, `flow run local`, `flow mcp`, `flow server dev` and `flow task
 // run`, and deliberately not on `flow test` (#652 item 2), which instead
 // inherits whatever policy the process hosting it installed — `flow mcp
 // --task-policy` serving the `flowstate_test` tool, or any caller of
@@ -225,7 +237,7 @@ func (e *TaskPolicyDeniedError) Error() string {
 	if e.Identity != "" {
 		provenance = fmt.Sprintf("; evaluated against %s", e.Identity)
 
-		if e.Local && strings.HasPrefix(e.Identity, "no identity") {
+		if e.Local && e.Identity == noPolicyIdentity {
 			provenance += "; a rehearsal carries an identity only where one was named — " +
 				"`flow run local --as-subject/--as-issuer/--as-namespace/--as-claim`, and " +
 				"nowhere at all under `flow test`, whose `starter:` reaches the workflow's " +
