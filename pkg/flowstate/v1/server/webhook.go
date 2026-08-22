@@ -58,8 +58,11 @@ import (
 // [v1.DefaultCostLimit], applied inside [v1.BindWebhookTriggerInputs] through the
 // same [v1.Scope] every other evaluation in this system uses. How many candidate
 // signatures one header offers is bounded in [v1.VerifyWebhookDelivery]. And how
-// large a header may be is [http.Server.MaxHeaderBytes], which belongs to whoever
-// runs the server.
+// large the headers may be is [http.Server.MaxHeaderBytes], while how *many* of
+// them there are is [http.Server.MaxHeaderValueCount] — separate bounds because a
+// sender picks the ratio between them, one enormous value and thirty thousand
+// tiny ones costing the same bytes and wildly different numbers of map entries.
+// Both belong to whoever runs the server, and `flow server` sets both.
 //
 // # What a refusal says
 //
