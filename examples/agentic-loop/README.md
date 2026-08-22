@@ -113,17 +113,19 @@ to rehearse the real effect of whichever task you deliberately left unstubbed.
 
 ### 5. `flowstate_run`, `flowstate_signal`, `flowstate_get` — the durable half
 
-These need a server (`flow mcp --address ...`); the four above do not. `flowstate_run`
-submits the compiled specification and answers with a run id. `flowstate_signal`
+These need a server (`flow mcp --address ...`); the four above do not, and neither
+does `flowstate_compile`, which turns the source into the specification
+`flowstate_run` takes. `flowstate_run` submits it and answers with a run id.
+`flowstate_signal`
 delivers `turn-approved` to a waiting gate — this run's `workflowId`, the name from
 `wait_for_signal:`, and `payload.namedValues.approved` set to a boolean literal.
 `flowstate_get` reads back the same document `flowstate_run_local` answered with
 above: status, timing, and step outputs, bounded so a long run's transcript is
 reduced to something that still parses rather than refused.
 
-The rehearsal proved conditions, retries, compensation and data flow. It proves
-nothing about durability, and nothing about whether the gateway behaves the way a
-stub's `returns:` said it would.
+The rehearsal proved this file's conditions, its retry policies and its data flow.
+It proves nothing about durability, and nothing about whether the gateway behaves
+the way a stub's `returns:` said it would.
 
 ## Running it yourself
 
@@ -139,8 +141,8 @@ That is the same run `flowstate_test` performs, on files instead of strings, and
 is what CI runs over this directory.
 
 `flow run local examples/agentic-loop/workflow.yaml` needs a model gateway and a
-tracker at the two hosts `vars:` names — neither of which exists — so it fails at the
-first step, with DNS rather than with a policy:
+tracker at the two hosts its `http:` steps name — neither of which exists — so it
+fails at the first step, with DNS rather than with a policy:
 
 ```console
 $ flow run local examples/agentic-loop/workflow.yaml
