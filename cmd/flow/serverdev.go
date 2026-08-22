@@ -571,6 +571,21 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	serverOpts := []server.Option{
 		server.WithDataConverter(cfg.Codec.DataConverter()),
 		server.WithPluginCatalog(pluginCatalog),
+
+		// The one thing this command has that neither `flow server` nor
+		// `flow worker` can have: the control plane below and the worker a few
+		// lines down share the single client this function opened, which is the
+		// exact topology Temporal's eager workflow start requires. Every `flow
+		// run` against this stack then skips the matching round trip its first
+		// workflow task would otherwise wait for.
+		//
+		// Scoped here rather than set for every deployment because eager start
+		// does not respect worker versioning — see [server.WithEagerWorkflowStart],
+		// which carries that argument in full. It is sound for this command
+		// specifically because this stack is unversioned by construction
+		// (devPostureUnversioned above), so there is no Current version for an
+		// eager dispatch to step around.
+		server.WithEagerWorkflowStart(),
 	}
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
@@ -586,6 +601,14 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	})
 	engine.Register(w, runtime)
 
+	// Before the listener below exists, and that order is load-bearing rather
+	// than tidy. Start is what registers this worker with the client's eager
+	// dispatcher, and it does so before returning, so by the time anything can
+	// connect to this stack there is a worker for [server.WithEagerWorkflowStart]
+	// to hand a first workflow task to. Starting the worker after serving would
+	// leave the earliest runs quietly falling back to ordinary dispatch — a race
+	// whose only symptom is the optimization not happening. Keep this above the
+	// listener.
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("starting the worker: %w", err)
 	}
