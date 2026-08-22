@@ -21,7 +21,6 @@
 # the shortest answer to "what does this need".
 edition: v2026.3
 name: parameterized-deploy
-
 inputs:
   # No default, so a run must supply it. The description is the one part of a
   # declaration written for whoever supplies the value, and it is repeated back in the
@@ -64,7 +63,6 @@ inputs:
     type: bool
     default: false
     description: plan the deploy without announcing it
-
 steps:
   # Inputs are in scope everywhere an expression is: a step's own `vars:`, its `if:`,
   # and a task's inputs. They are *not* in scope for the workflow's top-level `vars:`,
@@ -72,30 +70,26 @@ steps:
   # the step that needs it, as here.
   - id: plan
     vars:
-      target: ${inputs.service + ' in ' + inputs.region}
+      target: ${inputs.service + " in " + inputs.region}
     log:
-      message: ${'planning ' + target}
       # `fields:` are string-valued, so a number is rendered rather than passed.
-      fields:
-        replicas: ${string(inputs.replicas)}
+      fields: '${{"replicas": string(inputs.replicas)}}'
+      message: ${"planning " + target}
 
   # An input deciding whether a step runs at all. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: announce
     if: ${!inputs.dry_run}
     http:
-      method: POST
-      url: https://httpbin.org/anything
       # A task input reading an argument, which is the ordinary case: the workflow
       # is the same either way, and what it does with the world is parameterized.
-      json:
-        service: ${inputs.service}
-        region: ${inputs.region}
-        replicas: ${inputs.replicas}
+      json: '${{"service": inputs.service, "region": inputs.region, "replicas": inputs.replicas}}'
+      method: POST
       parse_json: true
+      url: https://httpbin.org/anything
 
   # The other side of the same condition, so a dry run still says what it did.
   - id: note_dry_run
     if: ${inputs.dry_run}
     log:
-      message: "${'dry run, ' + inputs.service + ' was not announced'}"
+      message: ${"dry run, " + inputs.service + " was not announced"}

@@ -1,9 +1,6 @@
 edition: v2026.3
 name: callback-address
-description: >-
-  Hands an external reviewer the address of this very run, then waits for the
-  signal that address will carry back.
-
+description: Hands an external reviewer the address of this very run, then waits for the signal that address will carry back.
 # `approval-gate` and `expense-approval` wait for a person who already knows
 # which run to answer. This is the other half of that shape, and it is the one
 # that could not be written at all until `run.workflow_id` and `run.run_id`
@@ -39,17 +36,15 @@ description: >-
 # same expressions produce the id `flow signal` takes:
 #
 #   flow signal <workflow-id> review-decided --data '{"accepted": true}'
-
 inputs:
   # No default — there is no sensible absent value for "which document", only a
   # plausible one to paste, which is what `example:` is for.
   document:
     type: string
     required: true
+    description: the document being sent out for review
     example: contract-2041.pdf
     must: this.matches(r'^[A-Za-z0-9._-]+$')
-    description: the document being sent out for review
-
 steps:
   # The registration. Everything the reviewer needs in order to answer is in
   # this one request: which document, and where to send the decision.
@@ -68,14 +63,9 @@ steps:
   # before a wait that may outlive several segments.
   - id: register
     http:
+      json: '${{"document": inputs.document, "callback": {"workflow_id": run.workflow_id, "run_id": run.run_id, "signal": "review-decided"}}}'
       method: POST
       url: https://reviews.example.com/reviews
-      json:
-        document: ${inputs.document}
-        callback:
-          workflow_id: ${run.workflow_id}
-          run_id: ${run.run_id}
-          signal: review-decided
 
   # The wait the address above was registered for. Seconds here so the example
   # finishes; the number a real review policy would write is days, and nothing
@@ -93,10 +83,7 @@ steps:
   # that answered with something else entirely — both of which this reads as
   # "abandoned," the same as the run's own `outcome` output always has.
   - id: outcome
-    value: >-
-      ${steps.decision.payload.?accepted
-          .optMap(accepted, accepted ? "accepted" : "rejected")
-          .orValue("abandoned")}
+    value: '${steps.decision.payload.?accepted.optMap(accepted, accepted ? "accepted" : "rejected").orValue("abandoned")}'
 
   # One switch over the named outcome, rather than three siblings each
   # re-testing the payload or the timeout by hand. `rejected` and `abandoned`
@@ -111,11 +98,7 @@ steps:
           steps:
             - id: accepted
               log:
-                message: >-
-                  ${"%s was accepted by %s".format(
-                      [inputs.document, steps.decision.sender.identity.subject == ""
-                        ? "an unattested caller"
-                        : steps.decision.sender.identity.subject])}
+                message: '${"%s was accepted by %s".format([inputs.document, (steps.decision.sender.identity.subject == "") ? "an unattested caller" : steps.decision.sender.identity.subject])}'
         - case: rejected
           steps:
             - id: rejected
@@ -131,7 +114,6 @@ steps:
             log:
               level: warn
               message: ${"nobody answered the review of %s in time".format([inputs.document])}
-
 outputs:
   # That this run had an address to hand out at all — asserted rather than
   # reported, and the distinction is the point.
@@ -152,7 +134,6 @@ outputs:
   addressed:
     value: ${run.workflow_id != "" && run.run_id != ""}
     description: whether this run had an address to register at all
-
   outcome:
     value: ${steps.outcome.value}
     description: what the reviewer decided, or that they never answered

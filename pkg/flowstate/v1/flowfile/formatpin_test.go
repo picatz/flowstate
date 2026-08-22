@@ -43,11 +43,11 @@ func TestFormatKeepsADigestPinBesideCall(t *testing.T) {
 name: caller
 description: pins what it calls
 steps:
-- id: provision
-  call: ./callee.yaml
-  digest: ` + pin + `
-  with:
-    tenant: acme
+  - id: provision
+    call: ./callee.yaml
+    digest: ` + pin + `
+    with:
+      tenant: acme
 `
 	assert.Equal(t, want, string(got))
 }
@@ -146,12 +146,12 @@ steps:
 	want := `edition: v2026.3
 name: caller
 steps:
-- id: provision
-  call: ./callee.yaml
-  # reviewed 2026-01-01
-  digest: ` + pin + `
-  with:
-    tenant: acme
+  - id: provision
+    call: ./callee.yaml
+    # reviewed 2026-01-01
+    digest: ` + pin + `
+    with:
+      tenant: acme
 `
 	assert.Equal(t, want, string(got))
 }

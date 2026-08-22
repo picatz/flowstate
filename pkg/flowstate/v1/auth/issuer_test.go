@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -66,7 +68,18 @@ func newIssuer(t *testing.T, clock *authtest.Clock, opts ...auth.IssuerOption) (
 	key, err := auth.GenerateSigningKey("test-key", jwa.ES256)
 	require.NoError(t, err)
 
-	issuer, err := auth.NewIssuer(server.URL, key, append([]auth.IssuerOption{auth.WithIssuerClock(clock.Now)}, opts...)...)
+	// The claim set is closed, so an issuer these tests mint through has to
+	// declare what [testIdentity] carries. Derived from that identity rather
+	// than spelled again, so adding a claim there does not silently start
+	// failing every mint in the package. A test about the allowlist itself
+	// declares its own set — see TestMintRefusesAnUndeclaredClaim.
+	declared := slices.Sorted(maps.Keys(testIdentity().Claims))
+
+	issuer, err := auth.NewIssuer(server.URL, key,
+		append([]auth.IssuerOption{
+			auth.WithIssuerClock(clock.Now),
+			auth.WithDeclaredClaims(declared...),
+		}, opts...)...)
 	require.NoError(t, err)
 
 	mu.Lock()

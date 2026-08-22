@@ -92,14 +92,14 @@ vars:
   # a value every step can reach
   greeting: hello
 steps:
-# the only step
-- id: greet
-  log: # the work
-    message: ${"hello, " + inputs.name}
-# the second step
-- id: again
-  log:
-    message: bye
+  # the only step
+  - id: greet
+    log: # the work
+      message: ${"hello, " + inputs.name}
+  # the second step
+  - id: again
+    log:
+      message: bye
 # a footer at the end of the file
 `,
 		},
@@ -138,28 +138,28 @@ steps:
 name: shapes
 description: A folded description the formatter unfolds, with a comment above the key it belongs to.
 steps:
-- id: fan
-  for_each:
-    items: ${[1, 2]}
-    as: "n"
-    steps:
-    # inside a loop body
-    - id: inner
-      log:
-        message: ${string(n)}
-- id: branches
-  parallel:
-  - steps:
-    # inside a parallel branch
-    - id: left
-      log:
-        message: left
-  - steps:
-    - id: right
-      log:
-        message: right
-- id: hold
-  sleep: 30s # a wait
+  - id: fan
+    for_each:
+      items: ${[1, 2]}
+      as: n
+      steps:
+        # inside a loop body
+        - id: inner
+          log:
+            message: ${string(n)}
+  - id: branches
+    parallel:
+      - steps:
+          # inside a parallel branch
+          - id: left
+            log:
+              message: left
+      - steps:
+          - id: right
+            log:
+              message: right
+  - id: hold
+    sleep: 30s # a wait
 `,
 		},
 		{
@@ -177,12 +177,12 @@ steps:
 			want: `edition: v2026.3
 name: blocks
 steps:
-- id: greet
-  log:
-    # above a literal block scalar
-    message: |-
-      first line
-      second line
+  - id: greet
+    log:
+      # above a literal block scalar
+      message: |-
+        first line
+        second line
 `,
 		},
 		// A comment beside an anchor, and beside the alias that reads it, once had a
@@ -220,12 +220,12 @@ steps:
 	const want = `edition: v2026.3
 name: sorted
 steps:
-- id: fetch
-  http:
-    # first alphabetically, written last
-    method: GET
-    # last alphabetically, written first
-    url: https://example.com
+  - id: fetch
+    http:
+      # first alphabetically, written last
+      method: GET
+      # last alphabetically, written first
+      url: https://example.com
 `
 
 	assert.Equal(t, want, formatFile(t, src))
@@ -399,16 +399,16 @@ steps:
 	const want = `edition: v2026.3
 name: dotted
 steps:
-- id: send
-  http:
-    headers:
-      # about the first header
-      x.a.b: one
-      # about the second header
-      x.a:
-        b: two
-    method: POST
-    url: https://example.com
+  - id: send
+    http:
+      headers:
+        # about the first header
+        x.a.b: one
+        # about the second header
+        x.a:
+          b: two
+      method: POST
+      url: https://example.com
 `
 
 	assert.Equal(t, want, formatFile(t, src))
@@ -546,9 +546,9 @@ steps:
 			want: `edition: v2026.3
 name: greeter # why
 steps:
-- id: a
-  log:
-    message: hi
+  - id: a
+    log:
+      message: hi
 `,
 		},
 		{
@@ -564,9 +564,9 @@ steps:
 			want: `edition: v2026.3
 name: greeter
 steps:
-- id: a
-  log:
-    message: hi # why
+  - id: a
+    log:
+      message: hi # why
 `,
 		},
 		{
@@ -586,11 +586,11 @@ steps:
 			want: `edition: v2026.3
 name: greeter
 steps:
-- id: a
-  log:
-    message: |- # why
-      one
-      two
+  - id: a
+    log:
+      message: |- # why
+        one
+        two
 `,
 		},
 		{
@@ -608,8 +608,8 @@ steps:
 			want: `edition: v2026.3
 name: greeter
 steps:
-- id: a
-  log: {} # why
+  - id: a
+    log: {} # why
 `,
 		},
 		{
@@ -642,17 +642,17 @@ inputs:
     type: string
     required: true
 steps:
-- id: route
-  switch:
-    value: ${inputs.action}
-    cases:
-    - case: opened
-      steps: [] # nothing to do yet
-    default:
-      steps:
-      - id: a
-        log:
-          message: hi
+  - id: route
+    switch:
+      value: ${inputs.action}
+      cases:
+        - case: opened
+          steps: [] # nothing to do yet
+      default:
+        steps:
+          - id: a
+            log:
+              message: hi
 `,
 		},
 	} {
@@ -687,17 +687,17 @@ inputs:
     type: string
     required: true
 steps:
-- id: route
-  switch:
-    value: ${inputs.action}
-    cases:
-    - case: opened
-      steps: [] # nothing to do yet
-    default:
-      steps:
-      - id: a
-        log:
-          message: hi
+  - id: route
+    switch:
+      value: ${inputs.action}
+      cases:
+        - case: opened
+          steps: [] # nothing to do yet
+      default:
+        steps:
+          - id: a
+            log:
+              message: hi
 `
 
 	got := formatFile(t, src)
@@ -773,12 +773,12 @@ steps: # after a key whose value is a block sequence
 	const want = `edition: v2026.3
 name: greeter
 steps: # after a key whose value is a block sequence
-# after the dash
-- id: a
-  log: # after a key whose value is a block mapping
-    message: | # on a block scalar header
-      one
-      two
+  # after the dash
+  - id: a
+    log: # after a key whose value is a block mapping
+      message: | # on a block scalar header
+        one
+        two
 `
 
 	got := formatFile(t, src)

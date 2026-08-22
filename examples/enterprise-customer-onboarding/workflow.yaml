@@ -1,10 +1,6 @@
 edition: v2026.3
 name: enterprise-customer-onboarding
-description: >-
-  Checks quota, provisions a tenant's database, billing, and access grant as
-  reusable sub-workflows, confirms go-live after a grace period, and undoes
-  what it provisioned if activation fails.
-
+description: Checks quota, provisions a tenant's database, billing, and access grant as reusable sub-workflows, confirms go-live after a grace period, and undoes what it provisioned if activation fails.
 # Onboarding a customer is rarely one system's job - it is several teams'
 # provisioning APIs, called in an order that matters, with a real answer for
 # "what happens if the last step fails after earlier ones succeeded." Four
@@ -63,31 +59,23 @@ description: >-
 # started this run, never of an argument a Flowfile passes to a callee. A
 # malicious or buggy `with:` value cannot forge that boundary; conflating
 # the two is the mistake worth naming rather than repeating.
-
 inputs:
   tenant:
     type: string
     required: true
+    description: the new tenant's slug - passed to every sub-workflow, never invented by one
     example: acme
     must: this.matches(r'^[a-z][a-z0-9-]*$')
-    description: the new tenant's slug - passed to every sub-workflow, never invented by one
-
   plan:
     type: string
     required: true
-    example: growth
-    must: 'this in ["starter", "growth", "enterprise"]'
     description: the billing plan this tenant is being onboarded onto
-
+    example: growth
+    must: this in ["starter", "growth", "enterprise"]
   activation_grace_hours:
     type: int
     required: true
-    example: 1
-    must: this >= 0 && this <= 336
-    description: >-
-      how long after provisioning completes before the tenant goes live and
-      billing starts - the SLA window a real deployment would size per plan
-
+    description: how long after provisioning completes before the tenant goes live and billing starts - the SLA window a real deployment would size per plan
     # `inputs.json` beside this file sets this to 0 - a real value (an
     # immediate go-live, no grace period) and also the one that lets `flow
     # run local` and this repo's own example harness finish in seconds
@@ -96,6 +84,8 @@ inputs:
     # hours is not a special case in the engine, only a deliberately small
     # one here - the same trade-off approval-gate's own header names for its
     # day-long gate.
+    example: 1
+    must: this >= 0 && this <= 336
 
 # Who may deliver `activation-confirmed` at all, enforced by
 # `FlowstateServer.Signal` before Temporal ever sees the signal - the same
@@ -107,15 +97,14 @@ signals:
     allow:
       - claims:
           role: account-manager
-
 steps:
   # A read, not an effect - a reusable precondition every onboarding-shaped
   # workflow can share without any of them needing to compensate it.
   - id: check_quota
     call: ./workflows/check-quota.yaml
     with:
-      tenant: ${inputs.tenant}
       plan: ${inputs.plan}
+      tenant: ${inputs.tenant}
 
   # Each callee's own `undo:` joins this run's undo stack the moment its
   # `call:` step returns - see workflows/provision-database.yaml's comment
@@ -125,13 +114,11 @@ steps:
     call: ./workflows/provision-database.yaml
     with:
       tenant: ${inputs.tenant}
-
   - id: provision_billing
     call: ./workflows/provision-billing.yaml
     with:
-      tenant: ${inputs.tenant}
       plan: ${inputs.plan}
-
+      tenant: ${inputs.tenant}
   - id: provision_access
     call: ./workflows/provision-access.yaml
     with:
@@ -177,40 +164,27 @@ steps:
   - id: activate
     if: ${steps.activation_confirmation.confirmed}
     http:
+      json: '${{"tenant": inputs.tenant, "database_id": steps.provision_database.resource_id, "billing_id": steps.provision_billing.resource_id, "access_id": steps.provision_access.resource_id}}'
       method: POST
       url: https://provisioning.internal.example.com/tenants/activate
-      json: >-
-        ${ {"tenant": inputs.tenant,
-            "database_id": steps.provision_database.resource_id,
-            "billing_id": steps.provision_billing.resource_id,
-            "access_id": steps.provision_access.resource_id} }
-
   - id: activation_deferred
     if: ${!steps.activation_confirmation.confirmed}
     log:
       level: warn
-      message: >-
-        ${"activation for %s deferred: %s".format(
-            [inputs.tenant,
-             steps.activation_confirmation.timed_out ? "no confirmation within the window" : "confirmation was not given"])}
-
+      message: '${"activation for %s deferred: %s".format([inputs.tenant, steps.activation_confirmation.timed_out ? "no confirmation within the window" : "confirmation was not given"])}'
 outputs:
   activated:
     value: ${steps.activation_confirmation.confirmed}
     description: whether the account manager confirmed go-live and the tenant was actually activated
-
   tenant:
     value: ${inputs.tenant}
     description: which tenant this run onboarded
-
   database_id:
     value: ${steps.provision_database.resource_id}
     description: the provisioned database's id
-
   billing_id:
     value: ${steps.provision_billing.resource_id}
     description: the provisioned billing account's id
-
   access_id:
     value: ${steps.provision_access.resource_id}
     description: the provisioned access grant's id

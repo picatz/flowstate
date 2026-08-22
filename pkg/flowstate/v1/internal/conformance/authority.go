@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -124,7 +126,12 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 	if err != nil {
 		tb.Fatalf("building fixture signing key: %v", err)
 	}
-	issuer, err := auth.NewIssuer("https://flowstate.example", key)
+	// The issuer's claim set is closed, so the fixture declares exactly the
+	// claims its own identity carries. Derived from that identity rather than
+	// listed again: a fixture that declared a different set would fail at the
+	// mint, which is a confusing way to learn that two lists disagree.
+	issuer, err := auth.NewIssuer("https://flowstate.example", key,
+		auth.WithDeclaredClaims(slices.Sorted(maps.Keys(a.Identity.Claims))...))
 	if err != nil {
 		tb.Fatalf("building fixture issuer: %v", err)
 	}
