@@ -956,6 +956,13 @@ func multiTenantIssuerFor(issuer string) (multiTenantIssuer, bool) {
 // callers this entry admits belong to; it says nothing about which callers
 // those are, so with it alone every workload on the platform lands in one
 // tenant together.
+//
+// What this cannot do is judge whether a rule narrows anything *useful* — an
+// operator who writes a rule pinning a claim every token from that platform
+// carries identically has admitted the world again. That is deliberately left
+// alone: it is a sentence in a reviewed file saying what was meant, which is
+// the thing a policy is for, where the case this refuses is a file that says
+// nothing at all.
 func (t TrustedIssuer) validateMultiTenantPinning() error {
 	if len(t.Require) > 0 || t.NamespaceClaim != "" {
 		return nil
