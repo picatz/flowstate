@@ -84,9 +84,9 @@ labels:
   cost-center: cc-1234
   team: payments
 steps:
-- id: gather
-  log:
-    message: gathering
+  - id: gather
+    log:
+      message: gathering
 `, string(written))
 
 	// And it reads back as the same workflow, which is the property the byte

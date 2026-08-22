@@ -38,8 +38,8 @@ name: scheduled-report
 # tenant and the starter already follow, and for the same reason: there is nobody
 # there at seven in the morning to derive anything from.
 labels:
-  team: payments
   cost-center: cc-1234
+  team: payments
 
 # A scheduled workload is the case parameters were made for: one file, and a
 # schedule per thing it reports on. Arguments are bound once, when the schedule is
