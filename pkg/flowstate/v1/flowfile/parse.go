@@ -68,7 +68,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "inputs", "outputs", "vars", "steps", "triggers", "signals", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -781,6 +781,19 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// Description is set only when the key is present, so that "no description"
 	// and "an empty description" stay distinguishable — which is what the schema's
 	// optional means, and what makes Marshal an exact inverse.
+	// What this workflow *is*, written where an author writes it: directly under
+	// the name, above everything the run computes. Labels say who owns this
+	// workload and what it belongs to, and every run records them so an operator
+	// can select on them later — see [v1.Workflow.Labels] and `labels` in
+	// [v1.RunFilter]'s vocabulary.
+	//
+	// Compiled through [compiler.stringMap], which is the one thing in this
+	// grammar that turns a mapping of strings into a `map<string, string>`; the
+	// other caller is a signal rule's `claims:`. A second one would drift.
+	if f, found := fields.get("labels"); found {
+		workflow.Labels = c.stringMap(f.value, "labels", ref{path: "labels", label: "labels"})
+	}
+
 	if f, found := fields.get("description"); found {
 		if description, ok := c.text(f.value, "description", ref{path: "description", label: "description"}); ok {
 			workflow.Description = proto.String(description)

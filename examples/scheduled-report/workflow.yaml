@@ -22,6 +22,25 @@
 edition: v2026.3
 name: scheduled-report
 
+# Who owns this workload and what it bills to. Labels are the author's own facts
+# about what this workflow *is*, and they exist to be selected on: every run the
+# schedule fires records them, and `flow list --filter` reads them back.
+#
+#   flow list --all --filter '"team" in labels && labels["team"] == "payments"'
+#
+# The guard is not decoration. A run of a workflow that declares no labels carries
+# none, and indexing a key that is absent is an error — so membership is asked
+# first, exactly as `close_time` is guarded with `finished`. Asking the negative
+# question needs no guard at all: `!("team" in labels)` finds what nobody labelled.
+#
+# A schedule's firings carry these too, recorded from this file when the schedule
+# is created rather than looked up when it fires at 07:00 — the same rule the
+# tenant and the starter already follow, and for the same reason: there is nobody
+# there at seven in the morning to derive anything from.
+labels:
+  cost-center: cc-1234
+  team: payments
+
 # A scheduled workload is the case parameters were made for: one file, and a
 # schedule per thing it reports on. Arguments are bound once, when the schedule is
 # created — `flow schedule create ... --input region=us-east-1` — and every firing
@@ -39,7 +58,6 @@ inputs:
     type: bool
     default: false
     description: whether to include the per-service breakdown
-
 triggers:
   schedule:
     # Weekdays at 07:00. Written as a cron expression because that is what "at 07:00
@@ -50,7 +68,21 @@ triggers:
     # 25, a month that is not a month — and leaves the rest to the cluster, which is
     # the standing rule: report what is a property of the file, and stay silent about
     # what a deployment decides.
-    cron: "0 7 * * MON-FRI"
+    cron: 0 7 * * MON-FRI
+
+    # A calendar, beside the cron expression rather than instead of it: the two are
+    # unioned, so this file fires on the weekday cadence above *and* on the first of
+    # each month at 06:00, an hour before the daily report, for the roll-up that
+    # covers the month just ended. Written here rather than as a second cron
+    # expression because a calendar names its fields, and `0 6 1 * *` does not.
+    #
+    # A field nobody writes takes Temporal's default: seconds, minutes and hours
+    # default to zero, and the date fields match everything. So this is 06:00:00 on
+    # the first, once, rather than sixty times in the 06:00 hour.
+    calendars:
+      - hour: 6
+        day_of_month: 1
+        comment: monthly roll-up
 
     # The zone the expression is read in. Empty means UTC. Which zones exist is the
     # Temporal cluster's answer, loaded from the environment it runs in, so nothing
@@ -67,20 +99,6 @@ triggers:
     # terminate_other and allow_all.
     overlap: skip
 
-    # A calendar, beside the cron expression rather than instead of it: the two are
-    # unioned, so this file fires on the weekday cadence above *and* on the first of
-    # each month at 06:00, an hour before the daily report, for the roll-up that
-    # covers the month just ended. Written here rather than as a second cron
-    # expression because a calendar names its fields, and `0 6 1 * *` does not.
-    #
-    # A field nobody writes takes Temporal's default: seconds, minutes and hours
-    # default to zero, and the date fields match everything. So this is 06:00:00 on
-    # the first, once, rather than sixty times in the 06:00 hour.
-    calendars:
-      - day_of_month: 1
-        hour: 6
-        comment: monthly roll-up
-
     # Recover a firing missed during a short control-plane outage, but never turn a
     # forgotten schedule into a year's worth of work. Misses older than six hours
     # are dropped, and `skip` above keeps recovered work from piling up behind a
@@ -92,13 +110,12 @@ triggers:
     # A report that fails every morning should be one page in somebody's inbox, not
     # thirty.
     pause_on_failure: true
-
 steps:
   - id: gather
     vars:
-      scope: ${'region ' + inputs.region}
+      scope: ${"region " + inputs.region}
     log:
-      message: ${'gathering yesterday\'s numbers for ' + scope}
+      message: ${"gathering yesterday's numbers for " + scope}
 
   # An argument deciding whether a step happens at all, which is how one file serves
   # a terse schedule and a verbose one.
@@ -106,12 +123,10 @@ steps:
     if: ${inputs.detailed}
     log:
       message: per-service breakdown included
-
   - id: publish
     log:
-      message: ${'report ready for ' + inputs.region}
       level: info
-
+      message: ${"report ready for " + inputs.region}
 outputs:
   # What the run answers with. A scheduled run has nobody watching it, so what it
   # reports is what anybody will ever see of it — `flow get` on the run id, which

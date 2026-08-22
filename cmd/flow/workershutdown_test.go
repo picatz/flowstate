@@ -72,8 +72,8 @@ func startFlowWorker(t *testing.T, namespace string, env []string, extraArgs ...
 
 	args := append([]string{"worker",
 		"--allow-unversioned-interpreter",
-		"--address", devServer.FrontendHostPort(),
-		"--namespace", namespace,
+		"--temporal-address", devServer.FrontendHostPort(),
+		"--temporal-namespace", namespace,
 	}, extraArgs...)
 
 	cmd := exec.Command(bin, args...)

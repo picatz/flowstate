@@ -352,10 +352,14 @@ no `continue-on-error`. It landed advisory with 21 findings, measured below, bec
 a check is tried against a corpus before it is turned on; the corpus is clean now,
 so the trial is over.
 
-**The byte-identical clause is not satisfied anywhere in the repository today**, and
-the measurement is in Part III. It is stated here as the target because that is what
-the rule is for, and recorded there as unmet because a charter that describes a tree
-it has not looked at is worth nothing.
+**The byte-identical clause is enforced over `examples/` and unmet for the snippets
+in prose**, and the measurement is in Part III. `flow fmt` now writes what the corpus
+already spelled — short durations, plain-first quoting, indented sequences (#850) —
+and `TestEveryExampleIsAlreadyWhatTheFormatterWrites` holds every workflow under
+`examples/` to those bytes, alongside a second pass proving idempotence and a
+`proto.Equal` proving the reformat kept the workflow each file compiles to. The
+snippets in `README.md` and `docs/DSL.md` are not yet held to anything, which is the
+half of this clause that remains.
 
 ### R9. The charter enforces itself or shrinks
 
@@ -446,24 +450,38 @@ shipped both answers to #545, which means the status quo is not the conservative
 position but the inconsistent one. Condemned by R4, which binds the resolution without
 pre-empting #545's measurement of what YAML permits.
 
-**R8's byte-identical clause, which nothing in the tree satisfies.** Measured by
-running `flow fmt --stdout` over each shown Flowfile and comparing bytes:
+**R8's byte-identical clause, held over the corpus and still open in prose.**
+Measured by running `flow fmt --stdout` over each shown Flowfile and comparing bytes:
 
 | Corpus | Canonical today |
 | --- | --- |
-| `examples/*/workflow.yaml` (62 files) | 0 byte-identical; 2 differ only by a trailing newline; 60 differ in content |
+| every workflow under `examples/` (87 files) | all byte-identical, and held there by a test |
 | the one complete workflow in `README.md` | not canonical |
 | the one complete workflow in `docs/DSL.md` | `flow fmt` **refuses** it, because a comment inside it cannot be carried back |
 
-The direction of the failure is the finding. `flow fmt` today writes sequences at
-zero indentation, unfolds a folded block scalar into one long line, normalizes `24h`
-to `24h0m0s`, and re-quotes a single-quoted string with backslash escapes. Making the
-corpus byte-canonical would therefore mean rewriting every teaching file in the
-repository into a shape no teaching file currently uses, and in one case into a shape
-whose comment the formatter cannot keep at all. So the gap is not that the examples
-are sloppy. It is that the formatter is not yet good enough to be the canon for
-hand-written teaching files, and **that is the first thing the tier-4 slice has to
-resolve**, before R8's CI leg can exist.
+The first row was `0 byte-identical` when this table was written, and the direction
+of that failure was the finding: `flow fmt` wrote sequences at zero indentation,
+normalized `24h` to `24h0m0s`, and re-quoted a single-quoted string with backslash
+escapes — so making the corpus canonical would have meant rewriting every teaching
+file into a shape no teaching file used. The gap was never that the examples were
+sloppy; it was that the formatter was not canon for anything.
+
+#850 closed it in that direction rather than this one. Each of those three defaults
+was decided against what the corpus already spelled — the shortest exact duration,
+plain-then-single-quoted scalars, indented sequences — and `examples/` was reformatted
+once against the result. What is left of the clause is the two rows above that are
+not `examples/`, and one of them names its own remaining work: the formatter still
+refuses a comment written inside a mapping the compiler folds into a single
+expression, so `docs/DSL.md`'s worked example cannot be held to bytes until either
+that comment moves or the fold keeps a place to hang it.
+
+One rewrite the corpus reformat did *not* make, and it is the reason a folded block
+scalar no longer appears in the list above: `flow fmt` still unfolds one into a
+single line, and roughly 120 folded scalars in `examples/` were unfolded by the
+reformat. Re-folding is a re-wrapping decision — a width, and a rule for where a
+break may fall that no string can be corrupted by — and it was left undecided rather
+than guessed at, since a formatter that folds wrongly changes what a file says. It is
+the next thing this clause needs after the prose snippets.
 
 **What tier 4 found in the shown corpus, and what it finds now.** `flow lint
 examples/` reported 21 findings across 12 of the 86 files it read, measured at the

@@ -1,10 +1,6 @@
 edition: v2026.3
 name: optional-dispatch
-description: >-
-  A signal answers true, answers false, or never arrives — three outcomes an
-  optional keeps apart, where a defaulted read would collapse two of them
-  into one.
-
+description: A signal answers true, answers false, or never arrives — three outcomes an optional keeps apart, where a defaulted read would collapse two of them into one.
 # `payload.?approved.orValue(false)` looks like a safe read and is a bug the
 # moment "nobody decided" and "decided no" are different answers: both take
 # the same branch, because a default cannot tell a missing field from one
@@ -22,7 +18,6 @@ description: >-
 #     --signal decision-made='{"approved": false}'
 #
 #   flow run local examples/optional-dispatch/workflow.yaml   # nobody signals: lapses
-
 steps:
   - id: request
     log:
@@ -40,8 +35,8 @@ steps:
       name: decision-made
       timeout: 2s
       outputs:
-        responded: ${payload.?approved.hasValue()}
         approved: ${payload.?approved.orValue(false)}
+        responded: ${payload.?approved.hasValue()}
         timed_out: ${timed_out}
 
   # Named once, so the three cases are three visible branches rather than a
@@ -55,12 +50,9 @@ steps:
   # gate nobody answered is safe precisely because the wait's `outputs:` gave
   # it a default, which is the other half of what this example is showing.
   - id: answer
-    value: >-
-      ${steps.gate.approved ? "approved" : "rejected"}
-
+    value: '${steps.gate.approved ? "approved" : "rejected"}'
   - id: outcome
-    value: >-
-      ${steps.gate.timed_out || !steps.gate.responded ? "no_response" : steps.answer.value}
+    value: '${(steps.gate.timed_out || !steps.gate.responded) ? "no_response" : steps.answer.value}'
 
   # One switch over the named value, rather than three siblings each
   # re-testing `steps.gate.timed_out` and `steps.gate.approved` by hand.
@@ -73,7 +65,6 @@ steps:
             - id: publish
               log:
                 message: decision received - approved, publishing
-
         - case: rejected
           steps:
             - id: hold
@@ -85,10 +76,7 @@ steps:
             log:
               level: warn
               message: no response arrived before the deadline, escalating
-
 outputs:
   outcome:
     value: ${steps.outcome.value}
-    description: >-
-      approved, rejected, or no_response — never the same branch for
-      "nobody decided" and "decided no"
+    description: approved, rejected, or no_response — never the same branch for "nobody decided" and "decided no"

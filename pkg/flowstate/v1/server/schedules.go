@@ -280,6 +280,16 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		actionMemo[k] = v
 	}
 
+	// The workflow's labels, written to both memos for the reason immediately
+	// above: a `labels` filter has to see the same answer whichever of the two
+	// memos it is reading, and [labelsMemoEntry] is the one function that
+	// guarantees a schedule's firings carry what a direct run of the same
+	// workflow carries.
+	for k, v := range labelsMemoEntry(workflow.GetLabels()) {
+		scheduleMemo[k] = v
+		actionMemo[k] = v
+	}
+
 	// Answered last, against the specification about to be frozen into the
 	// schedule's action rather than against the one the trusted lookup returned —
 	// the same place in the same order [FlowstateServer.Run] answers it, and for

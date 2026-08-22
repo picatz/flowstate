@@ -158,11 +158,11 @@ vars:
   call: not a call
   digest: not a digest
 steps:
-- id: provision
-  call: ./callee.yaml
-  digest: ` + pin + `
-  with:
-    tenant: acme
+  - id: provision
+    call: ./callee.yaml
+    digest: ` + pin + `
+    with:
+      tenant: acme
 `
 	assert.Equal(t, want, string(got))
 }
