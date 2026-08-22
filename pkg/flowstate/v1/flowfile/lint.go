@@ -398,7 +398,16 @@ func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 		if repeat.Count() < styleRepeatThreshold {
 			continue
 		}
-		if !hoistable(repeat.repr) {
+
+		// What is worth naming is under the rendering, not the rendering. See
+		// [namedRepeat]: a fence's `string(...)` is a call the author never
+		// wrote, and counting it turns "three sentences mention this value"
+		// into a finding whose own remedy re-creates it.
+		reported, rendered, ok := namedRepeat(repeat.repr, repeat.Expr)
+		if !ok {
+			continue
+		}
+		if !hoistable(reported) {
 			continue
 		}
 
@@ -433,11 +442,98 @@ func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 			Message: fmt.Sprintf(
 				"`%s` is stated %d times in this file%s; state it once in a `value:` step "+
 					"and read it back as `${steps.<id>.value}`, so the copies cannot drift apart",
-				repeat.Expr, repeat.Count(), where),
+				rendered, repeat.Count(), where),
 		})
 	}
 
 	return findings
+}
+
+// namedRepeat is the expression a repetition is worth naming, given the one
+// [Audit] counted — and whether there is one at all.
+//
+// Interpolation desugars every fence to `string(<fence>)` (`interp.go:436`), so
+// a value spliced into three sentences is counted as three statements of
+// `string(x)`: a call nobody typed, wrapping a read that costs nothing. #413
+// has the same shape one layer down, where a missing-overload diagnostic named
+// `string` at an author who had written no such thing.
+//
+// Counting it would be bad advice rather than merely noisy, because the remedy
+// R5 names does not converge. Hoist `string(inputs.amount_cents)` into a
+// `value:` step, read it back the only way a sentence can — `${steps.n.value}`
+// — and the file now states `string(steps.n.value)` three times instead. The
+// finding survives its own fix, forever. Measured, not reasoned: that rewrite
+// was applied to `examples/enterprise-fund-transfer` and reported again.
+//
+// So a conversion is looked through rather than counted:
+//
+//   - `string(<name>)` — a rendering of a name and nothing else. Not a
+//     repetition of any computation, and there is nothing a `value:` step could
+//     hold that a sentence would not immediately re-wrap. Reported as nothing.
+//   - `string(<computation>)` — the computation is the repetition, and naming
+//     *it* does converge: the `value:` step holds the computation, and what the
+//     three sentences then state is `string(steps.n.value)`, which is the case
+//     above and silent. Reported as the computation.
+//   - anything else is itself, unchanged. A repeat that is not a conversion is
+//     the ordinary case this rule was written for.
+//
+// The distinction is convergence and not taste, which is why it is drawn at "is
+// the argument a name" rather than at any judgment about what deserves a step.
+func namedRepeat(e *expr.Expr, rendered string) (*expr.Expr, string, bool) {
+	inner, ok := stringConversion(e)
+	if !ok {
+		return e, rendered, true
+	}
+	if isNameReference(inner) {
+		return nil, "", false
+	}
+
+	innerRendered, ok := renderExpr(inner)
+	if !ok {
+		return nil, "", false
+	}
+
+	return inner, innerRendered, true
+}
+
+// stringConversion reports the argument of a `string(x)` call, and whether the
+// expression was one.
+//
+// A receiver call (`x.string()`) is not this: CEL has no such method, and a
+// plugin's own function of that name is not the conversion interpolation
+// generates.
+func stringConversion(e *expr.Expr) (*expr.Expr, bool) {
+	call := e.GetCallExpr()
+	if call == nil || call.GetTarget() != nil {
+		return nil, false
+	}
+	if call.GetFunction() != "string" || len(call.GetArgs()) != 1 {
+		return nil, false
+	}
+
+	return call.GetArgs()[0], true
+}
+
+// isNameReference reports whether an expression is a name and nothing else —
+// an identifier, or a chain of plain field selections ending at one.
+//
+// A presence test (`has(x.y)`, which parses as a test-only select) is a
+// question rather than a name, and an index is a computation over one, so
+// neither is included.
+func isNameReference(e *expr.Expr) bool {
+	for {
+		switch kind := e.GetExprKind().(type) {
+		case *expr.Expr_IdentExpr:
+			return true
+		case *expr.Expr_SelectExpr:
+			if kind.SelectExpr.GetTestOnly() {
+				return false
+			}
+			e = kind.SelectExpr.GetOperand()
+		default:
+			return false
+		}
+	}
 }
 
 // plural is the "s" a count of more than one earns.
