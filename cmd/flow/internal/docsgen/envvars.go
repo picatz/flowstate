@@ -494,8 +494,10 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:  "TEMPORAL_ADDRESS",
 			value: "unset",
 			purpose: "Temporal's own environment configuration, honoured by every command that dials a " +
-				"cluster: `flow server` and `flow worker` resolve it through the SDK, and `--address` " +
-				"overrides it. `flow server dev` is the exception, and refuses to start while it is set: " +
+				"cluster: `flow server` and `flow worker` resolve it through the SDK, and " +
+				"`--temporal-address` overrides it (`--address` on those two commands is refused, and " +
+				"says so — picatz/flowstate#580). `flow server dev` is the exception, and refuses to " +
+				"start while it is set: " +
 				"that command starts a Temporal of its own, so a variable naming somebody else's cluster " +
 				"would be silently unused while its operator believed their runs were landing there.",
 			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
