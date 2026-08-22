@@ -124,6 +124,36 @@ const (
 	// explosions, so this bounds breadth and [maxDescriptorDepth] bounds depth.
 	DefaultMaxDescriptorFiles = 256
 
+	// DefaultMaxCatalogPlugins, DefaultMaxCatalogTasks and
+	// DefaultMaxCatalogDescriptorBytes bound a catalog document read by
+	// [TaskDefsFromCatalog], which is a different attack from the one
+	// MaxDescriptorBytes and MaxDescriptorFiles answer.
+	//
+	// Those two bound *one* descriptor. A catalog is a saved file or an RPC
+	// response naming as many plugins and as many tasks as its author likes,
+	// each carrying a descriptor that is individually well under the per
+	// descriptor cap, and every one of them is parsed, linked and retained. The
+	// resource the peer controls there is breadth and total volume, so those are
+	// what these bound: a bound on the size of one item is not a bound on how
+	// many items arrive (#854 review).
+	//
+	// The numbers are read off what a real deployment can produce. A plugin
+	// manifest may declare 64 tasks (plugin.proto's `max_items` on
+	// TaskManifest), and a search path holding more than a couple of hundred
+	// plugin binaries is not a deployment anybody has; the byte bound is what
+	// actually caps memory, since the other two multiplied by
+	// MaxDescriptorBytes would not.
+	DefaultMaxCatalogPlugins = 256
+
+	// DefaultMaxCatalogTasks bounds the tasks in a whole catalog, across every
+	// plugin in it: 64 plugins' worth of the 64 tasks a manifest may declare.
+	DefaultMaxCatalogTasks = 4096
+
+	// DefaultMaxCatalogDescriptorBytes bounds the serialized descriptors a whole
+	// catalog carries, summed. It is the bound that makes the two above bounds
+	// on memory rather than only on count.
+	DefaultMaxCatalogDescriptorBytes = 32 << 20 // 32 MiB
+
 	// DefaultMaxStderrLine bounds one line of a plugin's stderr. Logs are
 	// streamed a line at a time, so this is the whole memory bound on a plugin
 	// that writes without ever printing a newline.
@@ -273,6 +303,16 @@ type Config struct {
 	MaxDescriptorBytes int
 	MaxDescriptorFiles int
 
+	// MaxCatalogPlugins, MaxCatalogTasks and MaxCatalogDescriptorBytes bound a
+	// whole catalog document read by [TaskDefsFromCatalog] — how many plugins
+	// it names, how many tasks it names across all of them, and how many
+	// descriptor bytes it carries in total. Zero selects the corresponding
+	// defaults. See those defaults for why bounding one descriptor is not
+	// bounding a catalog.
+	MaxCatalogPlugins         int
+	MaxCatalogTasks           int
+	MaxCatalogDescriptorBytes int
+
 	// MaxStderrLine bounds one captured stderr line. Zero selects
 	// [DefaultMaxStderrLine].
 	MaxStderrLine int
@@ -325,6 +365,9 @@ func (c Config) withDefaults() Config {
 	setInt(&c.MaxRestarts, DefaultMaxRestarts)
 	setInt(&c.MaxDescriptorBytes, DefaultMaxDescriptorBytes)
 	setInt(&c.MaxDescriptorFiles, DefaultMaxDescriptorFiles)
+	setInt(&c.MaxCatalogPlugins, DefaultMaxCatalogPlugins)
+	setInt(&c.MaxCatalogTasks, DefaultMaxCatalogTasks)
+	setInt(&c.MaxCatalogDescriptorBytes, DefaultMaxCatalogDescriptorBytes)
 	setInt(&c.MaxStderrLine, DefaultMaxStderrLine)
 	setInt(&c.MaxStderrLinesPerMinute, DefaultMaxStderrLinesPerMinute)
 

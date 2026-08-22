@@ -239,6 +239,53 @@ message TaskDescription {
   //
   // Sorted and deduplicated, for the same reason secret_inputs above is.
   repeated string expression_inputs = 9;
+
+  // InputDescriptor and InputMessage — and OutputDescriptor and
+  // OutputMessage below them — carry the task's input and output messages
+  // the way a descriptor crosses a process: serialized FileDescriptorProtos,
+  // or a FileDescriptorSet holding a file and its dependencies, plus the
+  // full name of the message within them.
+  //
+  // Spelled exactly as flowstate.plugin.v1.TaskManifest spells the same four
+  // facts, because they are the same four facts. That message is how a
+  // plugin's descriptors reach a host; these are how a host's reach a reader
+  // that cannot launch one — a checked-in catalog document, a browser
+  // authoring surface, a server-side validator (#710).
+  //
+  // The `inputs` and `outputs` fields above are a *rendering* of these: field
+  // names, a type spelled as an author would write it, and constraint
+  // phrases, which is what a reader displaying a task wants and is not what a
+  // reader *validating* against one can use. Validation is descriptor-driven
+  // throughout — flowfile's validateTaskInputs asks the message descriptor
+  // for a field before it will report an unknown input, and stands down
+  // entirely when there is none — so a catalog carrying only the rendering
+  // reconstructs a task definition that accepts a misspelled input the
+  // launching validator refuses. A validator that is quietly weaker than the
+  // one it stands in for is the failure this exists to prevent.
+  //
+  // Empty bytes beside a set message name is the ordinary case rather than an
+  // omission: a message the reader's own build already has needs no bytes,
+  // only its name, and every built-in task's messages are in this schema.
+  // Bytes are carried for exactly the files the engine does not already
+  // provide, which for a plugin task is its own schema. Both empty means the
+  // task declares no message for that side, which TaskDef permits.
+  //
+  // Deliberately outside PluginDescription.task_schema_digest, which hashes
+  // the projection TaskDescriptionSansClaims builds and so cannot see these:
+  // that digest is embedded in every in-flight run's ResolvedPlugin and
+  // compared exactly at each segment boundary, and re-serialized descriptor
+  // bytes are not guaranteed identical across two builds of one unchanged
+  // plugin. The shape they describe is already covered there through
+  // `inputs` and `outputs`, which are derived from these and are stable.
+  //
+  // Deliberately not a claim field either, so ClaimsSchemaVersion does not
+  // bump for them: a bump is compared exactly by the same replay guard, and
+  // these say what a task's messages *are* rather than what a task asks to
+  // be trusted with.
+  bytes input_descriptor = 10;
+  string input_message = 11;
+  bytes output_descriptor = 12;
+  string output_message = 13;
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
