@@ -67,5 +67,48 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 			},
 			ExpectedKind: v1.ErrorKindInvalidInput,
 		},
+		{
+			// The failure that belongs to no task, and the one this set was
+			// blind to until #184 traced it. An expression the *engine*
+			// evaluates — a step's input here, a `vars:`, a loop's `items:` —
+			// never reaches a task, so nothing built a [v1.TaskError] and
+			// [v1.ClassifyError] fell through to its default: both drivers
+			// answered `Internal`, which errors.go defines as "a defect in
+			// Flowstate itself" and which [v1.ErrorKind.Retryable] reports
+			// true for. Agreeing on the wrong answer is still agreeing, which
+			// is exactly why a conformance set can miss it — so the case has
+			// to name the kind it wants rather than only that the two match.
+			//
+			// `['a'][5]` compiles and fails when evaluated, which is what
+			// keeps this a *runtime* classification rather than something
+			// `flow validate` would have refused first.
+			Name: "an input expression that fails to evaluate is Expression",
+			Workflow: &v1.Workflow{
+				Name: "error-kind-input-expression",
+				Steps: []*v1.Node{{
+					Id: "bad",
+					Kind: &v1.Node_Task{Task: &v1.Task{
+						Name:   "log",
+						Inputs: map[string]*v1.Value{"message": v1.NewExpr("['a'][5]")},
+					}},
+				}},
+			},
+			ExpectedKind: v1.ErrorKindExpression,
+		},
+		{
+			// The same classification down a different path, and the path an
+			// author is likeliest to take: a step's `if:` is evaluated by
+			// runNodes before the step's own `vars:` are in scope and before
+			// any task is dispatched, so a failure here is even further from a
+			// task than the input case above.
+			Name: "a condition that fails to evaluate is Expression",
+			Workflow: &v1.Workflow{
+				Name: "error-kind-condition-expression",
+				Steps: []*v1.Node{
+					guarded("bad", "['a'][5] == 'never'", "unreachable"),
+				},
+			},
+			ExpectedKind: v1.ErrorKindExpression,
+		},
 	}
 }

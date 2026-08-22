@@ -195,6 +195,14 @@ func NewTaskError(task string, kind ErrorKind, err error) *TaskError {
 // A failure that is not explicitly classified is reported as
 // [ErrorKindInternal], since an unclassified error is a gap in Flowstate rather
 // than a statement about the workload.
+//
+// A [TaskError] is checked first and an [ExpressionError] second, which is the
+// order the two can actually nest: a task that evaluates an expression of its
+// own classifies the result itself (the http task's `expect:` returns
+// [ErrorKindExpression] under its own name), and that outer judgement is the one
+// to keep. An [ExpressionError] reaching here unwrapped is an expression the
+// *engine* evaluated — a step's input, a `vars:`, an `if:`, a loop's `items:` —
+// which belongs to no task at all.
 func ClassifyError(err error) ErrorKind {
 	if err == nil {
 		return ""
@@ -202,6 +210,10 @@ func ClassifyError(err error) ErrorKind {
 	var taskErr *TaskError
 	if errors.As(err, &taskErr) {
 		return taskErr.Kind
+	}
+	var exprErr *ExpressionError
+	if errors.As(err, &exprErr) {
+		return ErrorKindExpression
 	}
 	return ErrorKindInternal
 }

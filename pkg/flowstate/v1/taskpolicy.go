@@ -227,6 +227,27 @@ func describePolicyIdentity(identity *WorkloadIdentity) string {
 // entirely: see that field's own doc for why a denial that does not say what
 // it evaluated leaves an author unable to tell an empty rehearsal identity
 // from a rule that matched them.
+//
+// # What this sentence deliberately does not say
+//
+// It names neither the task nor the sentinel, and both omissions are the
+// point (#184). Every denial reaches a surface through
+// [CheckTaskPolicy], which wraps this in a [TaskError] carrying the same
+// [Task] — so `task %q` here produced
+//
+//	step "fetch": task "http": denied by task-shape policy: task "http"
+//	refused by deployment task-shape policy …
+//
+// where the task is named twice, and the policy three times: [TaskError]
+// renders the position and the task, this restated the task, and
+// [ErrTaskPolicyDenied] was printed as a prefix to a sentence that then said
+// the same thing in longer words. One failure, one hop, three renderings of
+// it — exactly the flattening-then-rewrapping #184 records the rule against.
+//
+// What is lost is nothing a reader sees: [Task] is still carried as
+// structure, `errors.Is(err, ErrTaskPolicyDenied)` still matches through
+// [TaskPolicyDeniedError.Unwrap], and a denial's own words still name the
+// rule, the venue, the identity and the remedy.
 func (e *TaskPolicyDeniedError) Error() string {
 	rehearsal := ""
 	if e.Local {
@@ -253,9 +274,9 @@ func (e *TaskPolicyDeniedError) Error() string {
 			"deployment's, and " + remedy
 	}
 
-	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy%s (%s: %s)%s; "+
+	return fmt.Sprintf("refused by the deployment's task-shape policy%s (%s: %s)%s; "+
 		"this is not a mistake in the workflow file — %s",
-		ErrTaskPolicyDenied, e.Task, rehearsal, e.Reason, e.Detail, provenance, remedy)
+		rehearsal, e.Reason, e.Detail, provenance, remedy)
 }
 
 // Unwrap returns [ErrTaskPolicyDenied], and the underlying cause when there

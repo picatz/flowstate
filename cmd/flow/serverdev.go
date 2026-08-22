@@ -629,7 +629,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		uiURL:          devUIURL(flags.uiPort),
 		database:       flags.db,
 		otlp:           devOTLPEndpoint(),
-		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == "true",
+		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == v1.AllowLoopbackEgressValue,
 	}
 	stack.egressPolicy, _ = cmd.Flags().GetString("egress-policy")
 	stack.taskPolicy, _ = cmd.Flags().GetString("task-policy")
@@ -842,7 +842,7 @@ func writeDevBanner(surface *ui.UI, stack devStack) {
 	posture("--"+allowUnversionedFlag, devPostureUnversioned, warn)
 
 	if stack.loopbackEgress {
-		posture(v1.AllowLoopbackEgressEnv+"=true",
+		posture(v1.AllowLoopbackEgressEnv+"="+v1.AllowLoopbackEgressValue,
 			"the http task may reach this machine, including services this stack does not own", warn)
 	} else {
 		posture(v1.AllowLoopbackEgressEnv+" unset",
