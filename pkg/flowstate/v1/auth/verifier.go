@@ -275,8 +275,9 @@ func (v *OIDCVerifier) Prime(ctx context.Context) error {
 // whose type can support that algorithm; the signature verifies against that
 // key; "exp" and "iat" are present and the token is currently within its
 // lifetime, along with "nbf" if present; "iss" matches a trusted issuer exactly;
-// "aud" contains an audience that issuer accepts; and every claim rule of the
-// matching policy entry holds.
+// "aud" contains an audience that issuer accepts; it carries neither RFC 8693
+// delegation claim ([ClaimActor] or [ClaimMayAct], see delegation.go); and
+// every claim rule of the matching policy entry holds.
 //
 // Only the token's signature and claims decide the outcome. Nothing about the
 // request, such as its path or peer address, can widen what a token is allowed
@@ -349,6 +350,15 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 
 	claims, err := verifiedClaims(token.Claims)
 	if err != nil {
+		return Principal{}, err
+	}
+
+	// Refused here, before any trust policy entry is consulted, because no
+	// entry can express what to do with a delegation claim: an entry that
+	// admitted the token would be admitting the bare "sub" and discarding the
+	// issuer's statement that somebody else is acting. See delegation.go for
+	// why this is the verifier's refusal and not one surface's.
+	if err := refuseDelegationClaims(claims); err != nil {
 		return Principal{}, err
 	}
 

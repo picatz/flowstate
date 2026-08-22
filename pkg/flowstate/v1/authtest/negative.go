@@ -32,6 +32,13 @@ package authtest
 // silently admitting it as the bare, undelegated subject: refusing preserves
 // what the token itself claims, where admission would let the request
 // proceed under a story the audit trail no longer tells.
+//
+// Flowstate's own refusal now lives in pkg/flowstate/v1/auth/delegation.go and
+// is performed by auth.OIDCVerifier, so a token minted by either option below
+// is refused by every Flowstate bearer surface rather than by one of them.
+// That does not narrow what these options are for: they mint the token, and
+// the party refusing it may be this repository's verifier, a surface holding a
+// different Verifier, or somebody else's resource server entirely.
 const (
 	// claimAct is RFC 8693's "act" claim: the actor a token's subject was
 	// exercised through. A JWT carrying it says its bearer is not the party
