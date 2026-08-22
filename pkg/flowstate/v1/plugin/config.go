@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"time"
@@ -223,6 +224,30 @@ type Config struct {
 	// directory, and how a test launches one of several.
 	Only []string
 
+	// PinnedDigests, for the names it holds, is the digest the binary answering
+	// to that name must have before it is allowed to run: plugin name to
+	// "sha256:" and sixty-four lower-case hex characters, the one spelling
+	// [flowstatev1.ContentDigest] writes everywhere.
+	//
+	// [Config.Only] is an allowlist of names, and a name is a mutable reference:
+	// whoever can write the file at that path chooses what this worker executes
+	// under it, forever and silently. This is the allowlist of *contents*. It is
+	// checked against the digest taken from the descriptor the process is about
+	// to be exec'd from, at the top of the launch, before the process exists and
+	// therefore before any handshake — a compromised plugin's own announcement
+	// of itself cannot take part in the decision to admit it.
+	//
+	// It is opt-in per name, which is the cost this chooses: a name with no
+	// entry launches as it always has, so trust-on-first-use remains the default
+	// for a deployment that has not pinned anything, and pinning is adopted one
+	// plugin at a time rather than all at once. A name that *is* pinned fails
+	// closed — a mismatch, or an image that could not be measured, is a refusal.
+	//
+	// The digest to write here is the one this package logs as "distribution"
+	// when the plugin launches, and the one `sha256sum` prints for the same
+	// file. See [admit] for what a pin does and does not claim.
+	PinnedDigests map[string]string
+
 	// PermittedSchemes, when non-empty, lists the secret schemes plugins may
 	// claim. A plugin claiming anything else is refused rather than partially
 	// accepted, since a plugin whose reason for existing was refused is a live
@@ -387,6 +412,7 @@ func (c Config) withDefaults() Config {
 
 	c.SearchPath = slices.Clone(c.SearchPath)
 	c.Only = slices.Clone(c.Only)
+	c.PinnedDigests = maps.Clone(c.PinnedDigests)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
 
@@ -428,6 +454,15 @@ func (c Config) validate() error {
 	for _, scheme := range c.PermittedSchemes {
 		if scheme == "" {
 			return fmt.Errorf("plugin: PermittedSchemes contains an empty scheme")
+		}
+	}
+
+	// Sorted, so that a configuration with several bad pins reports the same one
+	// on every run: map iteration order would otherwise make the diagnostic an
+	// operator sees depend on nothing they can see.
+	for _, name := range slices.Sorted(maps.Keys(c.PinnedDigests)) {
+		if err := validateDigestPin(name, c.PinnedDigests[name]); err != nil {
+			return err
 		}
 	}
 
