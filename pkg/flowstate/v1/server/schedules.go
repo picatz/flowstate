@@ -17,6 +17,7 @@ import (
 	// with the client is how a sentinel comparison silently stops compiling.
 	sdk "go.temporal.io/sdk/temporal"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -135,6 +136,17 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// with `manual: denied`, add a `schedule:` trigger to their own copy, and
 	// have this handler create and later fire *that* copy under the trusted
 	// name.
+	//
+	// The caller's copy is kept as it arrived first, so the attestation below has
+	// something to compare the scheduled specification against — a clone, taken
+	// before the first thing that can change a specification, for the reason
+	// [FlowstateServer.Run] gives at its own capture: the lookup returns the
+	// request's own pointer when nothing is registered under that name, and
+	// [FlowstateServer.validateSpecification] then pins plugin versions onto that
+	// pointer, so holding a reference would be an equality that can only answer
+	// true.
+	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
+
 	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
@@ -268,6 +280,22 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		actionMemo[k] = v
 	}
 
+	// Answered last, against the specification about to be frozen into the
+	// schedule's action rather than against the one the trusted lookup returned —
+	// the same place in the same order [FlowstateServer.Run] answers it, and for
+	// the reason its comment gives at length: [FlowstateServer.validateSpecification]
+	// pins the deployment's plugin selection onto this specification above, so a
+	// question asked before that would be answered about a message that had not
+	// finished being assembled. Whole-message equality, so a transformation nobody
+	// has thought of yet costs a caller the precise view rather than costing them
+	// a secret.
+	//
+	// Before the create rather than after it, because the value below is what
+	// `Args` carries into every firing and nothing between here and the response
+	// touches it — computing it after would read the same message and say so less
+	// clearly.
+	asSubmitted := proto.Equal(submitted, workflow)
+
 	_, err = temporal.ScheduleClient().Create(ctx, client.ScheduleOptions{
 		ID:               scheduleIDFor(namespace, name),
 		Spec:             spec,
@@ -376,7 +404,15 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	return connect.NewResponse(&v1.CreateScheduleResponse{Schedule: description}), nil
+	return connect.NewResponse(&v1.CreateScheduleResponse{
+		Schedule: description,
+
+		// Always set, on both answers, for the reason [FlowstateServer.Run]
+		// always sets it: the field's design rests on silence meaning "this
+		// server does not say", so a server that does say must never let a
+		// deliberate answer be read as an old server's shrug.
+		SpecificationAsSubmitted: proto.Bool(asSubmitted),
+	}), nil
 }
 
 // maxScheduleScan bounds how many schedules one listing may read.

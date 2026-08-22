@@ -505,6 +505,16 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// will actually run. [FlowstateServer.trustedWorkflow] is the same
 	// substitution [FlowstateServer.Run] and [FlowstateServer.CreateSchedule]
 	// already apply.
+	//
+	// The caller's copy, kept as it arrived, so the attestation below has
+	// something to compare the executed specification against — a clone, taken
+	// here, before the first thing that can change a specification, for the
+	// reason [FlowstateServer.Run] gives at its own capture: the trusted lookup
+	// returns the request's own pointer when nothing is registered under that
+	// name, and the pin then writes onto that pointer, so a reference would be
+	// an equality that can only answer true.
+	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
+
 	workflow, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
@@ -572,6 +582,17 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// mutation that initiated it, even if this handler disappears immediately.
 	// A loser describes and authorizes the precise winning run below.
 	options.WorkflowExecutionErrorWhenAlreadyStarted = true
+
+	// Answered last, against the specification about to be handed to the engine
+	// rather than against the one the trusted lookup returned — the same place in
+	// the same order [FlowstateServer.Run] answers it, and for the reason its
+	// comment gives at length: [FlowstateServer.validateSubmission] pins the
+	// deployment's plugin selection onto this specification above, so a question
+	// asked before that would be answered about a message that had not finished
+	// being assembled. Whole-message equality, so a transformation nobody has
+	// thought of yet costs a caller the precise view rather than costing them a
+	// secret.
+	asSubmitted := proto.Equal(submitted, workflow)
 	run, err := temporal.ExecuteWorkflow(ctx, options, engine.Run, &v1.RunState{
 		Workflow:    workflow,
 		StepsBudget: int32(s.maxStepsPerRun),
@@ -636,6 +657,21 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		WorkflowId: workflowID,
 		RunId:      actualRunID,
 		Created:    created,
+
+		// Always set, on both answers, for the reason [FlowstateServer.Run]
+		// always sets it: the field's design rests on silence meaning "this
+		// server does not say", so a server that does say must never let a
+		// deliberate answer be read as an old server's shrug.
+		//
+		// Conjoined with `created`, which is this RPC's own half of the
+		// question. A delivery to an entity that was already running executes
+		// whatever specification *that* run was created with — possibly by
+		// another caller, from another file, under a trusted copy registered
+		// since. Nothing here compared it against anything, so nothing here may
+		// attest it, and the fail-closed answer is the true one rather than a
+		// convenient one: the comparison above is about a specification this
+		// call did not hand to any engine.
+		SpecificationAsSubmitted: proto.Bool(created && asSubmitted),
 	}), nil
 }
 
