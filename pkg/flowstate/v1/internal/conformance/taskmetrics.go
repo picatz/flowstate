@@ -270,10 +270,10 @@ func collectFlowstateMetrics(tb testing.TB, reader *sdkmetric.ManualReader) map[
 func attributeMap(attrs []attribute.KeyValue) map[string]string {
 	out := make(map[string]string, len(attrs))
 	for _, attr := range attrs {
-		// Emit rather than AsString, so that a non-string value — which the
-		// schema drops, and which therefore should never appear — would show
-		// up in a failure message as itself rather than as "".
-		out[string(attr.Key)] = attr.Value.Emit()
+		// Value.String rather than AsString, so that a non-string value — which
+		// the schema drops, and which therefore should never appear — would
+		// show up in a failure message as itself rather than as "".
+		out[string(attr.Key)] = attr.Value.String()
 	}
 
 	return out
