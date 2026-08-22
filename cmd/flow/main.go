@@ -2329,7 +2329,11 @@ flow validate examples/*/workflow.yaml
 flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | length > 0)'
 
 # Check a file whose steps name a plugin's tasks, against that plugin:
-flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml`,
+flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
+
+# The same check against a saved catalog, launching nothing:
+flow plugins --plugin-dir ./plugins -o json > plugins.lock.json
+flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
@@ -2514,7 +2518,10 @@ flow tasks http --output json | jq '.inputs'
 flow tasks --plugin-dir ./plugins
 
 # One plugin's task in full, the same page a built-in gets:
-flow tasks example.greet --plugin-dir ./plugins`,
+flow tasks example.greet --plugin-dir ./plugins
+
+# What a worker holding those plugins would run, read from a saved catalog:
+flow tasks --plugin-catalog plugins.lock.json`,
 	}
 	addOutputFlag(tasksCmd)
 	tasksCmd.Flags().Bool(expressionsFlag, false,

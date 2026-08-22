@@ -225,6 +225,7 @@ flow fix --stdout old.yaml > new.yaml
 | `--check` | `bool` | `false` | — | report what would change and exit non-zero if anything would, without writing |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
@@ -1479,6 +1480,9 @@ flow tasks --plugin-dir ./plugins
 
 # One plugin's task in full, the same page a built-in gets:
 flow tasks example.greet --plugin-dir ./plugins
+
+# What a worker holding those plugins would run, read from a saved catalog:
+flow tasks --plugin-catalog plugins.lock.json
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -1487,6 +1491,7 @@ flow tasks example.greet --plugin-dir ./plugins
 | `--expressions` | `bool` | `false` | — | describe what every expression can say: the CEL functions, the duration constructors, `now` inside a wait, and where a value comes from |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
@@ -1596,6 +1601,10 @@ flow validate examples/*/workflow.yaml -o jsonl | jq 'select(.diagnostics | leng
 
 # Check a file whose steps name a plugin's tasks, against that plugin:
 flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
+
+# The same check against a saved catalog, launching nothing:
+flow plugins --plugin-dir ./plugins -o json > plugins.lock.json
+flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workflow.yaml
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -1603,6 +1612,7 @@ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
