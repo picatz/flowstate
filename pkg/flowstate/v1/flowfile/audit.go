@@ -129,6 +129,15 @@ type ExprSite struct {
 	// when the position is not known.
 	Line int
 
+	// slot is the position in the schema this site is, carried for [Lint] the
+	// way [RepeatedExpr.repr] is: what a site *is* decides whether a
+	// suggestion made about it is one an author could take, and a workflow
+	// `vars:` entry and a declared `outputs:` entry are both workflow-level
+	// sites that differ on exactly that. Unexported because the measurement
+	// has no use for it — `flow audit` reports where an expression is written,
+	// not when it is evaluated.
+	slot v1.ValueSlot
+
 	// Negated reports that this site states the expression under a `!`, which is
 	// what makes it the other half of a hand-negated pair.
 	Negated bool
@@ -199,15 +208,31 @@ type auditCollector struct {
 // addressed by the trigger's name rather than by its index. See
 // [auditCollector.trigger] for why the last of those matters.
 func (c *auditCollector) workflow(wf *v1.Workflow) {
-	exprSites(wf, c.pos, func(step, field, path string, val *v1.Value) {
-		c.siteAt(step, field, path, val)
-	})
+	exprSites(wf, c.pos, c.siteAt)
 }
 
-// exprSites calls visit for every expression a workflow's document holds, with
-// the field an author reads it under and the path its position was recorded
-// against — the two spellings that differ in exactly the four places the arms
-// below name.
+// A writtenExpr is one expression a document holds, addressed three ways
+// because three different questions are asked of it.
+//
+// Field is the key an author reads it under and is what a report prints. Path
+// is where its position was recorded, which is the same string except in the
+// four places [exprSites] names — and passing Field where Path belongs is a
+// finding pointing at the enclosing key instead of the expression, or at
+// nothing at all (#865 review, Codex r3835040601).
+//
+// Slot is what the position *is* in the schema, which is neither of those: it
+// is what decides whether a suggestion made about the expression is one an
+// author could take. A workflow `vars:` entry and a declared `outputs:` entry
+// are both workflow-level and differ on exactly that.
+type writtenExpr struct {
+	Step  string
+	Field string
+	Path  string
+	Slot  v1.ValueSlot
+	Value *v1.Value
+}
+
+// exprSites calls visit for every expression a workflow's document holds.
 //
 // Extracted from [auditCollector.workflow] so that the tier-0 measurement and
 // the tier-4 lint ask one traversal where a written expression is, rather than
@@ -215,7 +240,7 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 // same reasoning #508 applied one level down, where [v1.WalkWorkflow] replaced
 // the per-caller lists of positions: a checker that cannot see an expression
 // says nothing about it, and says it silently.
-func exprSites(wf *v1.Workflow, pos *Positions, visit func(step, field, path string, val *v1.Value)) {
+func exprSites(wf *v1.Workflow, pos *Positions, visit func(writtenExpr)) {
 	v1.WalkWorkflow(wf, v1.Walk{
 		Value: func(site v1.ValueSite) {
 			switch site.Slot {
@@ -225,7 +250,12 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(step, field, path str
 				// was recorded under are not the same string. The field is the one
 				// that gets reported.
 				field := site.Field()
-				visit("", field, field+".value", site.Value)
+				visit(writtenExpr{
+					Field: field,
+					Path:  field + ".value",
+					Slot:  site.Slot,
+					Value: site.Value,
+				})
 
 			case v1.SlotCallArgument:
 				// The arguments are this file's writing; the callee is another
@@ -234,7 +264,13 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(step, field, path str
 				// which is what stops a library workflow's expressions being
 				// counted against every caller.
 				field := "with." + site.Name
-				visit(site.Step, field, field, site.Value)
+				visit(writtenExpr{
+					Step:  site.Step,
+					Field: field,
+					Path:  field,
+					Slot:  site.Slot,
+					Value: site.Value,
+				})
 
 			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookArgument, v1.SlotWebhookVerify:
 				triggerSite(pos, site, visit)
@@ -250,7 +286,13 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(step, field, path str
 
 			default:
 				field := site.Field()
-				visit(site.Step, field, field, site.Value)
+				visit(writtenExpr{
+					Step:  site.Step,
+					Field: field,
+					Path:  field,
+					Slot:  site.Slot,
+					Value: site.Value,
+				})
 			}
 		},
 	})
@@ -270,7 +312,7 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(step, field, path str
 // The field is qualified by the trigger's name for the reason the signals sites are
 // qualified by their policy: a file with more than one webhook must not have two
 // sites read as the same one.
-func triggerSite(pos *Positions, site v1.ValueSite, visit func(step, field, path string, val *v1.Value)) {
+func triggerSite(pos *Positions, site v1.ValueSite, visit func(writtenExpr)) {
 	if site.Slot == v1.SlotWebhookVerify {
 		// A `verify:` entry is a secret reference rather than an expression, so
 		// there is no sub-expression here to count and nothing an author could
@@ -293,24 +335,36 @@ func triggerSite(pos *Positions, site v1.ValueSite, visit func(step, field, path
 
 	switch site.Slot {
 	case v1.SlotWebhookIdempotencyKey:
-		visit("", field+".idempotency_key", fieldPath(at, "idempotency_key"), site.Value)
+		visit(writtenExpr{
+			Field: field + ".idempotency_key",
+			Path:  fieldPath(at, "idempotency_key"),
+			Slot:  site.Slot,
+			Value: site.Value,
+		})
 	case v1.SlotWebhookArgument:
-		visit("", field+".with."+site.Name,
-			fieldPath(fieldPath(at, "with"), site.Name), site.Value)
+		visit(writtenExpr{
+			Field: field + ".with." + site.Name,
+			Path:  fieldPath(fieldPath(at, "with"), site.Name),
+			Slot:  site.Slot,
+			Value: site.Value,
+		})
 	}
 }
 
-// siteAt records one written expression whose position was recorded under a path
-// that is not simply its field name.
-func (c *auditCollector) siteAt(step, field, path string, val *v1.Value) {
-	parsed := val.GetExpr()
+// siteAt records one written expression.
+func (c *auditCollector) siteAt(written writtenExpr) {
+	parsed := written.Value.GetExpr()
 	if parsed.GetExpr() == nil {
 		return
 	}
 
-	at := ExprSite{Step: step, Field: field, Line: c.line(step, path, parsed)}
-	written := resolveMacros(parsed.GetExpr(), parsed.GetSourceInfo().GetMacroCalls(), 0)
-	c.walk(written, at, nil)
+	at := ExprSite{
+		Step:  written.Step,
+		Field: written.Field,
+		Line:  c.line(written.Step, written.Path, parsed),
+		slot:  written.Slot,
+	}
+	c.walk(resolveMacros(parsed.GetExpr(), parsed.GetSourceInfo().GetMacroCalls(), 0), at, nil)
 }
 
 // walk records one sub-expression and descends into its children.

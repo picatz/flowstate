@@ -249,9 +249,17 @@ func nestedConditionals(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	var findings []StyleFinding
 	budget := maxLintNodes
 
-	exprSites(wf, pos, func(step, field, path string, val *v1.Value) {
-		parsed := val.GetExpr()
+	exprSites(wf, pos, func(written writtenExpr) {
+		parsed := written.Value.GetExpr()
 		if parsed.GetExpr() == nil {
+			return
+		}
+
+		// A site evaluated before any step has run has no remedy to be given:
+		// see [readsSteps]. Silence there is the tier-4 contract rather than a
+		// gap in it — every check owes a mechanical replacement, and a
+		// suggestion an author cannot take is worse than none.
+		if !readsSteps(written.Slot) {
 			return
 		}
 
@@ -260,19 +268,22 @@ func nestedConditionals(wf *v1.Workflow, pos *Positions) []StyleFinding {
 		// bites harder here: `filter` expands into a comprehension whose loop
 		// step is a ternary nobody typed, so counting conditionals over the
 		// expanded tree reports cel-go's expander rather than the file.
-		written := resolveMacros(parsed.GetExpr(), parsed.GetSourceInfo().GetMacroCalls(), 0)
-		if !holdsNestedConditional(written, false, &budget) {
+		resolved := resolveMacros(parsed.GetExpr(), parsed.GetSourceInfo().GetMacroCalls(), 0)
+		if !holdsNestedConditional(resolved, false, &budget) {
 			return
 		}
 
-		at := exprPosition(pos, step, field, parsed)
+		// The recorded path, never the display field: they are the same string
+		// everywhere except the four places [exprSites] names, and in those a
+		// field lookup lands on the enclosing key or on nothing.
+		at := exprPosition(pos, written.Step, written.Path, parsed)
 		findings = append(findings, StyleFinding{
 			Rule:    StyleNestedConditional,
 			Line:    at.Line,
 			Column:  at.Column,
-			Step:    step,
-			Field:   field,
-			Message: nestedConditionalAdvice(written),
+			Step:    written.Step,
+			Field:   written.Field,
+			Message: nestedConditionalAdvice(resolved),
 		})
 	})
 
@@ -391,6 +402,16 @@ func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 			continue
 		}
 
+		// Every site has to be able to read the step that would hold the name,
+		// not merely the first: the suggestion is one `value:` step read from
+		// all of them, so a single workflow `vars:` entry among the sites makes
+		// the whole rewrite one that does not compile. See [readsSteps].
+		if slices.ContainsFunc(repeat.Sites, func(site ExprSite) bool {
+			return !readsSteps(site.slot)
+		}) {
+			continue
+		}
+
 		first := repeat.Sites[0]
 		lines := make([]string, 0, len(repeat.Sites))
 		for _, site := range repeat.Sites {
@@ -425,6 +446,47 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// readsSteps reports whether an expression written in this position can read
+// `steps.<id>.value` at all.
+//
+// Every remedy R5 offers names the answer somewhere else in the file, and two
+// of the three name a *step*. So a position evaluated before any step has run
+// cannot take the advice, however simple the expression is — and this is not a
+// nicety about phrasing, because the file the advice produces does not compile.
+// The validator says so itself, at `vars.<name>`:
+//
+//	a var may not read a step: `vars:` is evaluated once before the first step
+//	runs, so "one" has produced nothing yet
+//
+// and a workflow var may not read another var either, so the third remedy is
+// gone with the first two. A webhook trigger's expressions are bound before a
+// run exists at all, and a signal policy's computed `subject:` is evaluated by
+// the server deciding whether a sender may signal, which is not a place a step
+// output is in scope.
+//
+// So those positions are silent rather than differently worded. Tier 4 owes a
+// mechanical replacement per check (docs/STYLE.md, Part II); a finding with no
+// replacement available is the thing CLAUDE.md rates worse than a missing one.
+// #865 review, Codex r3835040605, which found this by reading the predicate
+// below and noticing it asks about names and never about position.
+//
+// Everything else can: a step's own fields are evaluated when the step runs,
+// and a declared `outputs:` entry when the run ends.
+func readsSteps(slot v1.ValueSlot) bool {
+	switch slot {
+	case v1.SlotWorkflowVar,
+		v1.SlotSignalSubject,
+		v1.SlotWebhookIdempotencyKey,
+		v1.SlotWebhookArgument,
+		v1.SlotWebhookVerify,
+		v1.SlotInputDefault,
+		v1.SlotInputExample:
+		return false
+	default:
+		return true
+	}
 }
 
 // hoistable reports whether every name an expression reads is one that a
@@ -504,31 +566,51 @@ func dispatchAmong(nodes []*v1.Node, pos *Positions) []StyleFinding {
 		parsed  *expr.ParsedExpr
 	}
 
-	// One bucket per subject, in the order the subjects are first written, so
-	// the report follows the file rather than a map's iteration.
+	// Bucketed by the subject's rendering, which is the same two-stage
+	// comparison [auditCollector.record] makes and for the same reason: the
+	// rendering is a function of the shape alone, so it groups in one map
+	// lookup, and [exprEqual] is what decides, so two shapes that happen to
+	// render alike are counted apart rather than merged.
+	//
+	// A map rather than a scan over the subjects seen so far, because the
+	// number of siblings is the file author's to choose and a scan makes this
+	// quadratic in it — a near-budget document with thousands of distinct
+	// subjects would spend hundreds of millions of structural comparisons in a
+	// walk nothing charges for (#865 review, Codex r3835040597). Bucket order
+	// is kept beside the map so the report still follows the file rather than
+	// Go's map iteration.
 	var (
-		subjects []*expr.Expr
-		arms     = map[int][]arm{}
+		order   []string
+		buckets = map[string][]arm{}
+		subject = map[string]*expr.Expr{}
 	)
 
 	for _, node := range nodes {
 		parsed := node.GetCondition().GetExpr()
-		subject, literal, ok := equalityAgainstLiteral(parsed.GetExpr())
+		on, literal, ok := equalityAgainstLiteral(parsed.GetExpr())
 		if !ok {
 			continue
 		}
 
-		index := slices.IndexFunc(subjects, func(seen *expr.Expr) bool {
-			return exprEqual(seen, subject)
-		})
-		if index < 0 {
-			subjects = append(subjects, subject)
-			index = len(subjects) - 1
+		key, ok := renderExpr(on)
+		if !ok {
+			// No name to report the value under, and a suggestion that cannot
+			// say what to dispatch on is not a suggestion.
+			continue
 		}
 
-		arms[index] = append(arms[index], arm{
+		if seen, ok := subject[key]; ok {
+			if !exprEqual(seen, on) {
+				continue
+			}
+		} else {
+			subject[key] = on
+			order = append(order, key)
+		}
+
+		buckets[key] = append(buckets[key], arm{
 			id:      node.GetId(),
-			subject: subject,
+			subject: on,
 			literal: literal,
 			parsed:  parsed,
 		})
@@ -536,18 +618,31 @@ func dispatchAmong(nodes []*v1.Node, pos *Positions) []StyleFinding {
 
 	var findings []StyleFinding
 
-	for index, group := range arms {
+	for _, key := range order {
+		group := buckets[key]
 		if len(group) < styleDispatchThreshold {
 			continue
 		}
 
+		// One pass with a set rather than every pair, for the reason the
+		// bucketing above is a map: a group's size is the file's to choose.
+		// Keyed by the literal's rendering and confirmed by [constExprEqual],
+		// the same two stages, so a collision is resolved rather than trusted.
 		distinct := true
-		for i := range group {
-			for j := i + 1; j < len(group); j++ {
-				if constExprEqual(group[i].literal, group[j].literal) {
-					distinct = false
-				}
+		literals := make(map[string]*expr.Constant, len(group))
+		for _, a := range group {
+			rendered, ok := renderExpr(&expr.Expr{
+				ExprKind: &expr.Expr_ConstExpr{ConstExpr: a.literal},
+			})
+			if !ok {
+				distinct = false
+				break
 			}
+			if seen, repeated := literals[rendered]; repeated && constExprEqual(seen, a.literal) {
+				distinct = false
+				break
+			}
+			literals[rendered] = a.literal
 		}
 		if !distinct {
 			// Two steps that both run on one value. See [equalityDispatch] for
@@ -555,12 +650,7 @@ func dispatchAmong(nodes []*v1.Node, pos *Positions) []StyleFinding {
 			continue
 		}
 
-		rendered, ok := renderExpr(subjects[index])
-		if !ok {
-			// No name to report the value under, and a suggestion that cannot
-			// say what to dispatch on is not a suggestion.
-			continue
-		}
+		rendered := key
 
 		ids := make([]string, 0, len(group))
 		for _, a := range group {

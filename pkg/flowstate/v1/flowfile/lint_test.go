@@ -134,6 +134,96 @@ steps:
 		"the hoisting remedy is not available where the names are bound")
 }
 
+// TestLintPositionsADeclaredOutputAtItsExpression pins the position a finding
+// carries where the key an author reads and the path the position was recorded
+// under are two different strings.
+//
+// A declared output is a mapping whose expression sits under `value:`, so
+// `outputs.band` addresses the key and `outputs.band.value` addresses the
+// expression. Looking up the display field lands on the enclosing key — a
+// finding pointing at the line above the one to change — and the same
+// substitution loses a webhook expression's position outright, since those are
+// recorded under an indexed trigger path that no field spelling matches (#865
+// review, Codex r3835040601).
+//
+// Asserting the column is the point rather than decoration: the line is right
+// either way here, and the column is what tells the two lookups apart.
+func TestLintPositionsADeclaredOutputAtItsExpression(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: outputs
+inputs:
+  amount:
+    type: int
+steps:
+  - id: one
+    value: '1'
+outputs:
+  band:
+    value: '${inputs.amount > 100 ? "high" : (inputs.amount > 10 ? "medium" : "low")}'
+`)
+
+	nested := findingsFor(found, StyleNestedConditional)
+	require.Len(t, nested, 1)
+
+	assert.Equal(t, "outputs.band", nested[0].Field, "the display name stays the key an author reads")
+	assert.Equal(t, 11, nested[0].Line)
+	assert.Equal(t, 15, nested[0].Column,
+		"the column is inside the expression, not on the `band:` key that holds it")
+}
+
+// TestLintIsSilentWhereNoStepCanServeTheSuggestion is the phase half of the
+// same question the grammar-bound negatives ask about names.
+//
+// A workflow `vars:` entry is evaluated once before the first step runs, so it
+// can read neither a step nor another var — the validator says both, in those
+// words. All three of R5's remedies name something else in the file, and every
+// one of them is out of reach there, so the check is silent rather than
+// helpful-sounding: tier 4 owes a mechanical replacement per check, and advice
+// that produces a file the validator rejects is worse than none (#865 review,
+// Codex r3835040605).
+func TestLintIsSilentWhereNoStepCanServeTheSuggestion(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: prestep
+inputs:
+  amount:
+    type: int
+vars:
+  band: '${1 > 0 ? (2 > 1 ? "a" : "b") : "c"}'
+steps:
+  - id: one
+    log:
+      message: ${vars.band}
+`)
+
+	requireNoFindings(t, findingsFor(found, StyleNestedConditional))
+}
+
+// TestLintIsSilentOnARepeatOneSiteCannotRead is the same rule for the repeat
+// check, where it binds on a *set* of sites rather than on one.
+//
+// The suggestion is one `value:` step read from every site, so a single
+// workflow `vars:` entry among them makes the whole rewrite one that does not
+// compile — even though the other two sites could read it perfectly well.
+func TestLintIsSilentOnARepeatOneSiteCannotRead(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: mixed-phase
+inputs:
+  names:
+    type: list
+vars:
+  count: ${string(size(inputs.names))}
+steps:
+  - id: first
+    log:
+      message: ${string(size(inputs.names))}
+  - id: second
+    log:
+      message: ${string(size(inputs.names))}
+`)
+
+	requireNoFindings(t, findingsFor(found, StyleRepeatedExpr))
+}
+
 // TestLintIsSilentOnAnOptionalTraversalAndASingleConditional is the negative for
 // R5's first threshold.
 //

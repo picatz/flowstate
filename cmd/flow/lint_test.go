@@ -84,6 +84,89 @@ steps:
 	assert.Contains(t, res.Stdout, "nothing to suggest")
 }
 
+// TestLintNamesAFileItCouldNotCheck is the false all-clear this must never
+// give: a named file that does not compile was not checked, and a summary
+// saying "nothing to suggest" about it is a green tick for a file nobody read
+// (#865 review, Codex r3835040609).
+func TestLintNamesAFileItCouldNotCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: broken
+steps:
+  - id: nope
+    log:
+      message: ${1 +}
+`), 0o600))
+
+	res := runFlow(t, "lint", path)
+
+	require.NoError(t, res.Err, "advisory by default, even for a file it could not read")
+	assert.Contains(t, res.Stdout, "not checked for style")
+	assert.Contains(t, res.Stdout, path+":6:",
+		"the reason carries its own position, in the form an editor can jump to")
+	assert.Contains(t, res.Stdout, "0 file(s) checked",
+		"the summary counts what was read, and reads as zero rather than as clean")
+}
+
+// TestLintStrictFailsOnANamedFileItCouldNotCheck is the decision `--strict`
+// makes about that file.
+//
+// Two facts, two failures: a finding says the file is written a way the charter
+// has an opinion about, and this says the file was never looked at. A strict
+// check that stayed green on the second would go green exactly when somebody is
+// mid-edit — the moment a corpus most needs the check.
+func TestLintStrictFailsOnANamedFileItCouldNotCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+
+	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.3
+name: broken
+steps:
+  - id: nope
+    log:
+      message: ${1 +}
+`), 0o600))
+
+	res := runFlow(t, "lint", "--strict", path)
+
+	require.Error(t, res.Err, "a named file that could not be checked fails a strict run")
+	assert.Contains(t, res.Stdout, "not checked for style")
+}
+
+// TestLintStrictToleratesAWalkedFileItCouldNotCheck is the other half of that
+// decision, and the reason it is a split rather than a rule.
+//
+// A directory walk picks up every `*.yaml` shaped like a Flowfile, which
+// includes each `*.test.yaml` beside a workflow. Failing on those would make
+// `--strict` unusable over `examples/`, where sixty of them sit, so a walked
+// file is counted and a named one is named.
+func TestLintStrictToleratesAWalkedFileItCouldNotCheck(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.3
+name: clean
+steps:
+  - id: greet
+    log:
+      message: hello
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte(`edition: v2026.3
+name: broken
+steps:
+  - id: nope
+    log:
+      message: ${1 +}
+`), 0o600))
+
+	res := runFlow(t, "lint", "--strict", dir)
+
+	require.NoError(t, res.Err, "a walked file that will not compile does not fail a strict run")
+	assert.Contains(t, res.Stdout, "1 file(s) the walk found",
+		"but it is counted, so the run cannot read as having checked everything")
+}
+
 // TestLintPositionsAreClickable pins the one rendering detail every consumer
 // downstream matches on: `file:line:` with no space after the filename (#384).
 func TestLintPositionsAreClickable(t *testing.T) {

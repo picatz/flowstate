@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -122,6 +123,22 @@ type lintReport struct {
 	Skipped []string `json:"skipped"`
 
 	Totals lintTotals `json:"totals"`
+
+	// namedSkipped is the subset of Skipped that somebody asked for by name,
+	// with why each could not be read.
+	//
+	// Not in the JSON, because a machine consumer passed the paths and can
+	// intersect them with Skipped itself. It exists for the text form, which
+	// had no way to say that a named file went unchecked and so printed
+	// "nothing to suggest" about a file it never opened (#865 review, Codex
+	// r3835040609), and for `--strict`, which fails on one.
+	namedSkipped []skippedFile
+}
+
+// A skippedFile is one file this command was asked for and could not read.
+type skippedFile struct {
+	Path   string
+	Reason string
 }
 
 // A lintFile is one file's findings.
@@ -163,9 +180,18 @@ type lintTotals struct {
 }
 
 // errLintFindings reports that `--strict` was given and there was something to
-// report. It carries no message of its own because the findings have already
-// been printed.
-var errLintFindings = errors.New("style findings")
+// report. The findings themselves have already been printed.
+var errLintFindings = errors.New("style findings: the corpus is held to docs/STYLE.md")
+
+// errLintUnchecked reports that `--strict` was given and a file somebody named
+// could not be read at all.
+//
+// A separate failure from a finding, because it is a different fact: not "this
+// file is written a way the charter has an opinion about" but "this file was
+// never looked at". Under `--strict` the second has to fail too — see
+// [namedFiles] — or a strict check goes green the moment a file stops
+// compiling, which is exactly when somebody is editing it.
+var errLintUnchecked = errors.New("a named file could not be checked; `flow validate` reports why")
 
 // runLint reads every Flowfile under the paths given and renders the
 // suggestions.
@@ -191,10 +217,21 @@ func runLint(cmd *cobra.Command, paths []string) error {
 		Totals:  lintTotals{ByRule: map[string]int{}},
 	}
 
+	named, err := namedFiles(paths)
+	if err != nil {
+		return err
+	}
+
 	for _, path := range files {
 		wf, positions, err := flowfile.ParseFile(path)
 		if err != nil {
 			report.Skipped = append(report.Skipped, path)
+			if named[canonicalPath(path)] {
+				report.namedSkipped = append(report.namedSkipped, skippedFile{
+					Path:   path,
+					Reason: firstDiagnostic(err),
+				})
+			}
 			continue
 		}
 
@@ -225,11 +262,67 @@ func runLint(cmd *cobra.Command, paths []string) error {
 
 	// After the rendering, never instead of it: a caller running with --strict
 	// is a caller that wants to read what failed.
-	if strict && report.Totals.Findings > 0 {
-		return errLintFindings
+	if strict {
+		if len(report.namedSkipped) > 0 {
+			return errLintUnchecked
+		}
+		if report.Totals.Findings > 0 {
+			return errLintFindings
+		}
 	}
 
 	return nil
+}
+
+// namedFiles is the set of paths given on the command line that name a file
+// rather than a directory.
+//
+// The distinction decides what an unreadable file means, and the two answers
+// are different enough to be worth the stat. A file somebody *named* and this
+// command could not read is a request that went unanswered: under `--strict`
+// that is a failure, because a strict style check reporting green over a file
+// it never opened is a false all-clear, and a file becomes malformed exactly
+// when somebody is editing it. A file the *walk* found is a different thing —
+// most of what lands there is a `*.test.yaml` beside a workflow, which is
+// shaped like a Flowfile and is not one — so a directory stays tolerant, the
+// same split `flow fix` and `flow audit` already draw over the same walk.
+//
+// The stat is the one [collectFlowfiles] already does, repeated rather than
+// threaded out of it, because that walk is shared with three other verbs and
+// none of them asks this question.
+func namedFiles(paths []string) (map[string]bool, error) {
+	named := map[string]bool{}
+
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			// collectFlowfiles reports this as the failure it is; nothing here
+			// needs to decide about a path that does not exist.
+			return nil, fmt.Errorf("error reading %s: %w", path, err)
+		}
+		if !info.IsDir() {
+			named[canonicalPath(path)] = true
+		}
+	}
+
+	return named, nil
+}
+
+// firstDiagnostic renders the first reason a file could not be read, in the
+// `line:column: message` form every other position in this CLI is written in
+// (#384), so the notice a reader gets is one their editor and their CI
+// annotations can jump to.
+//
+// One diagnostic rather than all of them: `flow validate` is the verb that
+// reports a file's every problem, and this is a lint saying why it had nothing
+// to say about the file at all.
+func firstDiagnostic(err error) string {
+	diagnostics := errDiagnosticsOf(err)
+	if len(diagnostics) == 0 {
+		return err.Error()
+	}
+
+	return diagnostics[0].Error()
 }
 
 // lintFindings converts the analysis's answer into the rendered form, counting
@@ -293,9 +386,31 @@ func writeLintText(surface *ui.UI, report lintReport, strict bool) error {
 		}
 	}
 
+	// Before the summary, because the summary counts what was *read* and a
+	// reader who stops at it would otherwise take silence about a named file
+	// for a clean bill of health. A file somebody named and this could not
+	// parse is the one skip worth naming individually; the rest are counted,
+	// for the reason `flow audit` counts them.
+	for _, skipped := range report.namedSkipped {
+		fmt.Fprintln(out, positionLine(theme.Muted.Render(skipped.Path), theme.Danger.Render(
+			skipped.Reason+" — so it was not checked for style")))
+	}
+
+	// Counted rather than listed, for the reason `flow audit` counts them: most
+	// of what a walk skips is a `*.test.yaml` beside a workflow, which is shaped
+	// like a Flowfile and is not one, and naming each of the sixty in this
+	// corpus would bury the findings under a list that is not about style at
+	// all. A file somebody named is the one worth its own line, above.
+	if walked := len(report.Skipped) - len(report.namedSkipped); walked > 0 {
+		fmt.Fprintf(out, "%s\n", theme.Muted.Render(fmt.Sprintf(
+			"%d file(s) the walk found are not workflows this could read, a `*.test.yaml` "+
+				"beside a workflow most often; `flow validate` is the verb with something "+
+				"to say about one that should have been", walked)))
+	}
+
 	if report.Totals.Findings == 0 {
 		fmt.Fprintf(out, "%s\n", theme.Success.Render(fmt.Sprintf(
-			"%d files read, nothing to suggest", report.Totals.Files)))
+			"%d file(s) checked, nothing to suggest", report.Totals.Files)))
 		return nil
 	}
 

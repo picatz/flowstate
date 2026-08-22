@@ -218,6 +218,14 @@ literals distinct: a guard conjoined onto the equality has nowhere to go in a
 `switch:`, and two steps on one literal are two things that both happen, which a
 `switch:` cannot express at all.
 
+All three are also silent wherever no step could hold the answer. Every remedy this
+rule offers names something else in the file, and two of the three name a step, so a
+position evaluated before any step has run — a workflow `vars:` entry, a webhook
+trigger's expressions, a signal policy's computed `subject:` — cannot take the
+advice however simple the expression is. The validator is explicit about the first:
+a var may read neither a step nor another var, which removes the third remedy too.
+A check owing a mechanical replacement and having none owes silence instead.
+
 The positive shape, compiled by this document's own test:
 
 ```yaml
