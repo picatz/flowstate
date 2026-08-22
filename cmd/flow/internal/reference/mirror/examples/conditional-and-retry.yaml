@@ -15,7 +15,7 @@ steps:
 
   # Runs, because the condition holds.
   - id: deploy
-    if: ${vars.check == 'ready'}
+    if: ${vars.check == "ready"}
     timeout: 30s
     retry:
       attempts: 3
@@ -28,7 +28,7 @@ steps:
   # Skipped, because the condition is false. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: rollback
-    if: ${vars.check == 'failed'}
+    if: ${vars.check == "failed"}
     log:
       message: rolling back
 
@@ -49,7 +49,6 @@ steps:
   # like any other, so it can be carried into whatever comes next.
   - id: carry_on
     log:
-      message: notification failed, continuing anyway
+      fields: '${{"why": steps.notify.error}}'
       level: warn
-      fields:
-        why: ${steps.notify.error}
+      message: notification failed, continuing anyway

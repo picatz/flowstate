@@ -1,10 +1,6 @@
 edition: v2026.3
 name: ops-healthcheck
-description: >-
-  Probes a list of services with bounded fan-out, tolerates the ones that are
-  down, and answers with exactly what a pager or a status dashboard needs to
-  read.
-
+description: Probes a list of services with bounded fan-out, tolerates the ones that are down, and answers with exactly what a pager or a status dashboard needs to read.
 # A cron job that curls three endpoints and exits non-zero on the first
 # failure tells you one thing is down and nothing about the other two — and
 # if the box running it reboots mid-check, there is no run to look at
@@ -35,7 +31,6 @@ description: >-
 # started before a worker fleet redeploy finishes on whatever worker picks it
 # up afterwards, with the same answers it would have produced without the
 # redeploy.
-
 vars:
   # Just the names, read in `outputs:` below to say which services were even
   # asked about. `checks` needs the same list paired with a url, but a
@@ -48,8 +43,7 @@ vars:
   # entry in `checks.for_each.items` below — still two edits in one file,
   # against the five scattered edits (a whole branch, plus four re-derivations
   # in `outputs:`) the `parallel:` version needed.
-  service_names: ${['checkout', 'payments', 'search']}
-
+  service_names: ${["checkout", "payments", "search"]}
 steps:
   - id: checks
     for_each:
@@ -72,7 +66,6 @@ steps:
           continue_on_error: true
           http:
             method: GET
-            url: ${service.url}
             # A probe that came back healthy carries its name forward so the
             # outputs below can say which one it was; a probe that failed
             # never reaches this expression at all — `expect`'s default rule
@@ -82,6 +75,7 @@ steps:
             # exactly what `outputs:` below tests for.
             outputs:
               name: ${service.name}
+            url: ${service.url}
 
   # How many services this run set out to probe. Stated once: the sentence
   # below names it twice and `page_required` a third time, and three copies of
@@ -89,14 +83,9 @@ steps:
   # (docs/STYLE.md R5, `flow lint`).
   - id: probed_count
     value: ${size(vars.service_names)}
-
   - id: summary
     log:
-      message: >-
-        ${"probed " + string(steps.probed_count.value) + " service(s): " +
-          string(size(steps.checks.results.filter(r, has(r.probe.name)))) + " healthy, " +
-          string(steps.probed_count.value - size(steps.checks.results.filter(r, has(r.probe.name)))) + " down"}
-
+      message: '${"probed " + string(steps.probed_count.value) + " service(s): " + string(size(steps.checks.results.filter(r, has(r.probe.name)))) + " healthy, " + string(steps.probed_count.value - size(steps.checks.results.filter(r, has(r.probe.name)))) + " down"}'
 outputs:
   # Named rather than counted so a pager reads *what* to page about without
   # re-deriving it from a status code. A service's own name is missing from
@@ -105,14 +94,11 @@ outputs:
   # "the names in `service_names` that are not among the names `checks`
   # reported" is the same set the old file spelled out by hand three times.
   unhealthy_services:
-    value: >-
-      ${vars.service_names.filter(n,
-        !(n in steps.checks.results.filter(r, has(r.probe.name)).map(r, r.probe.name)))}
+    value: ${vars.service_names.filter(n, !(n in steps.checks.results.filter(r, has(r.probe.name)).map(r, r.probe.name)))}
     description: services whose probe did not come back healthy
   healthy_count:
     value: ${size(steps.checks.results.filter(r, has(r.probe.name)))}
     description: how many services reported healthy
   page_required:
-    value: >-
-      ${size(steps.checks.results.filter(r, has(r.probe.name))) < steps.probed_count.value}
+    value: ${size(steps.checks.results.filter(r, has(r.probe.name))) < steps.probed_count.value}
     description: whether an on-call human should be paged

@@ -1,9 +1,6 @@
 edition: v2026.3
 name: expense-approval
-description: >-
-  An expense report waits for a manager's sign-off, and escalates to finance
-  ops instead of sitting forever if the manager never answers.
-
+description: An expense report waits for a manager's sign-off, and escalates to finance ops instead of sitting forever if the manager never answers.
 # `approval-gate` shows one gate, answered or not. A real approval chain is
 # rarely one person: a manager who does not respond in time is not the end of
 # the request, it is the reason someone else gets asked. That is the shape
@@ -49,7 +46,6 @@ description: >-
 # `sender.identity.subject != inputs.employee` would refuse letting someone
 # approve their own report, and it is unwritable from a self-asserted payload
 # field.
-
 inputs:
   # No default: there is no sensible absent value for "who is asking", only a
   # plausible one to paste — which is what `example:` is for. `sensitive: true`
@@ -60,23 +56,21 @@ inputs:
   employee:
     type: string
     required: true
+    description: who filed the expense report
     example: jordan@example.com
     sensitive: true
     must: this.matches(r'^[^@]+@[^@]+$')
-    description: who filed the expense report
   amount:
     type: float
     required: true
-    example: 482.50
+    description: the amount being claimed, in USD
+    example: 482.5
     sensitive: true
     must: this >= 0.0
-    description: the amount being claimed, in USD
-
 steps:
   - id: submit
     log:
-      message: >-
-        ${"%s filed an expense report for $%.2f".format([inputs.employee, inputs.amount])}
+      message: ${"%s filed an expense report for $%.2f".format([inputs.employee, inputs.amount])}
 
   # The first gate. Seconds here so the example finishes; the number a real
   # policy would write is hours, and nothing else about the file changes to
@@ -86,6 +80,13 @@ steps:
       name: manager-approved
       timeout: 4s
       outputs:
+        # Who the *server* attested sent the approval, named on the step that
+        # received it and empty on every path where nobody approved anything.
+        # `sender` is in scope exactly here, which is why the shaping happens
+        # here: a later step reading `steps.manager_review.sender` would have to
+        # re-derive "did they actually say yes" to know whether the name means
+        # anything.
+        approved_by: '${payload.?approved.optMap(approved, approved ? sender.identity.subject : "").orValue("")}'
         # What the manager said, shaped ONCE here on the step that produced it,
         # the way approval-gate shapes its gate. "manager approved" used to be
         # written five times below - in `reimburse`'s `if:` and its log line,
@@ -109,16 +110,7 @@ steps:
         # actually sent the field, absent when they answered with something
         # else entirely. `.optMap` only ever sees an actual boolean; `.orValue`
         # supplies the case nothing was sent to decide.
-        decision: >-
-          ${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
-        # Who the *server* attested sent the approval, named on the step that
-        # received it and empty on every path where nobody approved anything.
-        # `sender` is in scope exactly here, which is why the shaping happens
-        # here: a later step reading `steps.manager_review.sender` would have to
-        # re-derive "did they actually say yes" to know whether the name means
-        # anything.
-        approved_by: >-
-          ${payload.?approved.optMap(approved, approved ? sender.identity.subject : "").orValue("")}
+        decision: '${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}'
         # Re-exposed because `outputs:` replaces what the wait produced:
         # `escalate`, `finance_review` and `outcome` all branch on it.
         timed_out: ${timed_out}
@@ -131,8 +123,7 @@ steps:
     if: ${steps.manager_review.timed_out}
     log:
       level: warn
-      message: >-
-        ${"manager did not respond in time; escalating %s's report to finance ops".format([inputs.employee])}
+      message: ${"manager did not respond in time; escalating %s's report to finance ops".format([inputs.employee])}
 
   # The second gate only exists on the path where the first one lapsed — an
   # approved or explicitly rejected report has nothing left to escalate, and
@@ -143,16 +134,14 @@ steps:
       name: finance-approved
       timeout: 3s
       outputs:
+        approved_by: '${payload.?approved.optMap(approved, approved ? sender.identity.subject : "").orValue("")}'
         # The finance gate, shaped the same way as the manager gate above and
         # for the same reason: "finance approved" was re-derived in `reimburse`,
         # `outcome`, and hand-negated in `deny`. Only ever read on the path
         # where the manager gate lapsed, so every reader below is guarded by
         # `steps.manager_review.timed_out`, the same short circuit the raw
         # predicates used.
-        decision: >-
-          ${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}
-        approved_by: >-
-          ${payload.?approved.optMap(approved, approved ? sender.identity.subject : "").orValue("")}
+        decision: '${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("no_decision")}'
         timed_out: ${timed_out}
 
   # The two gates named once, the same lesson approval-gate's own `decision`
@@ -184,8 +173,7 @@ steps:
   # line readable on its own.
   - id: direct_outcome
     if: ${!steps.manager_review.timed_out}
-    value: >-
-      ${steps.manager_review.decision == "approved" ? "approved_by_manager" : "denied"}
+    value: '${(steps.manager_review.decision == "approved") ? "approved_by_manager" : "denied"}'
 
   # `escalation_decision` and `escalation_outcome` only run, and are only read,
   # on the path where the manager gate expired - the same short circuit
@@ -193,17 +181,12 @@ steps:
   # into every read of the finance gate.
   - id: escalation_decision
     if: ${steps.manager_review.timed_out}
-    value: >-
-      ${steps.finance_review.decision == "approved" ? "approved_after_escalation" : "denied"}
-
+    value: '${(steps.finance_review.decision == "approved") ? "approved_after_escalation" : "denied"}'
   - id: escalation_outcome
     if: ${steps.manager_review.timed_out}
-    value: >-
-      ${steps.finance_review.timed_out ? "denied_no_response" : steps.escalation_decision.value}
-
+    value: '${steps.finance_review.timed_out ? "denied_no_response" : steps.escalation_decision.value}'
   - id: outcome
-    value: >-
-      ${steps.manager_review.timed_out ? steps.escalation_outcome.value : steps.direct_outcome.value}
+    value: "${steps.manager_review.timed_out ? steps.escalation_outcome.value : steps.direct_outcome.value}"
 
   # One switch over the named outcome, rather than two `if:`-guarded steps
   # each re-testing the manager and finance gates by hand. Two explicit cases
@@ -219,23 +202,18 @@ steps:
           steps:
             - id: reimburse
               log:
-                message: >-
-                  ${"reimbursing %s $%.2f, approved by %s".format(
-                      [inputs.employee, inputs.amount, steps.manager_review.approved_by])}
+                message: ${"reimbursing %s $%.2f, approved by %s".format([inputs.employee, inputs.amount, steps.manager_review.approved_by])}
         - case: approved_after_escalation
           steps:
             - id: reimburse_escalated
               log:
-                message: >-
-                  ${"reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format(
-                      [inputs.employee, inputs.amount, steps.finance_review.approved_by])}
+                message: ${"reimbursing %s $%.2f, approved by finance (%s) after the manager did not respond".format([inputs.employee, inputs.amount, steps.finance_review.approved_by])}
       default:
         steps:
           - id: deny
             log:
               level: warn
               message: ${"%s's expense report was not approved".format([inputs.employee])}
-
 outputs:
   # Deliberately more detailed than "approved: bool" — a caller reading this
   # after the fact (a payroll job, an auditor) needs to know *which* gate
@@ -256,8 +234,5 @@ outputs:
   # approver: `approved_by` on a gate is empty unless that gate was answered
   # with `approved: true`, so this only has to pick the gate this run reached.
   approved_by:
-    value: >-
-      ${steps.manager_review.timed_out ? steps.finance_review.approved_by : steps.manager_review.approved_by}
-    description: >-
-      who the server attested approved this, empty when nobody did — never a
-      payload field, which is a claim rather than an attestation
+    value: "${steps.manager_review.timed_out ? steps.finance_review.approved_by : steps.manager_review.approved_by}"
+    description: who the server attested approved this, empty when nobody did — never a payload field, which is a claim rather than an attestation
