@@ -194,7 +194,7 @@ func TestADeliveryLinksTheSendersTrace(t *testing.T) {
 			named = true
 			require.Equal(t, accepted.DeliveryID, attr.Value.AsString())
 		}
-		require.NotContains(t, attr.Value.Emit(), "evt_traced",
+		require.NotContains(t, attr.Value.String(), "evt_traced",
 			"the raw idempotency key reached a span attribute")
 	}
 	require.True(t, named, "the delivery span does not say which delivery it covered")
@@ -203,7 +203,7 @@ func TestADeliveryLinksTheSendersTrace(t *testing.T) {
 	// attacker-chosen text, and the parsed ids in the link are the whole of what
 	// a link needs.
 	for _, attr := range delivery.Attributes {
-		require.NotContains(t, attr.Value.Emit(), traceparent,
+		require.NotContains(t, attr.Value.String(), traceparent,
 			"the raw traceparent header was recorded as an attribute")
 	}
 }
