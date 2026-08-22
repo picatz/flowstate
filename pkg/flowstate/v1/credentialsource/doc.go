@@ -29,16 +29,25 @@
 // Nothing here decides whether the token is trustworthy; that is the server's
 // OIDCVerifier's job, against its own trust policy, when the token arrives.
 //
+// [SourceGitLab] and [SourceTerraformCloud] are the other shape a CI platform's
+// OIDC integration takes: there is no endpoint to ask. GitLab mints an ID token
+// before the job starts, for the audience the job's `id_tokens:` keyword names,
+// and puts it in an environment variable the job author named; HCP Terraform
+// does the same for a run whose workspace sets TFC_WORKLOAD_IDENTITY_AUDIENCE.
+// Neither can be asked for a second token addressed anywhere else, so those
+// Sources read, check and refuse rather than mint: an expired token, a token
+// that is not a JWT, or a token addressed to a relying party other than the one
+// the caller named is a refusal carrying the job-configuration key to change,
+// instead of an "unauthenticated" from the server that could equally mean a
+// wrong trust policy. The audience comparison, like the expiry, is an
+// unverified decode used for scheduling and diagnostics only — never for trust.
+//
 // [SourceFile] and [SourceEnv] are the plain case: a token already sitting in a
 // file or an environment variable, read fresh on every call rather than cached.
 // The file form matters most in practice, because it is the shape a rotating
 // credential actually arrives in — Kubernetes rewrites a projected service
 // account token in place, and reading it fresh on every call is what makes that
 // keep working without this package or its caller ever needing to notice.
-//
-// gitlab and terraform-cloud are named in the roadmap (issue #559) and not yet
-// implemented; [Resolve] refuses them by name rather than falling through to
-// something that looks like it worked.
 //
 // # Fail closed
 //
