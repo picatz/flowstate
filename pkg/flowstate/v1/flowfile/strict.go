@@ -10,8 +10,9 @@ import (
 // The Flowfile grammar is a strict subset of YAML. Three constructs YAML allows
 // are refused: anchors (`&name`), aliases (`*name`), and the merge key (`<<:`).
 // The compiler refuses them at the document tree before anything is resolved or
-// expanded; `flow fix` refuses to rewrite a file that holds one, for the same
-// reason and with the same words.
+// expanded; `flow fix` inlines the two of them that are a copy of bytes
+// (strictinline.go) and refuses to rewrite a file holding any of the rest, for
+// the same reason and with the same words.
 //
 // # Why refuse rather than support
 //
@@ -50,8 +51,12 @@ import (
 // maxNodes and maxAliasDepth are still driven by input an outside party chooses,
 // with no refusal in front of them. bounds_test.go exercises both there.
 //
-// `flow fix` mechanically inlining an alias on the way across an edition — so an
-// author is not left to spell it out by hand — is the other named follow-up.
+// `flow fix` no longer refuses everything it collects here. The two shapes that
+// are a copy of bytes — a whole-value alias, and the anchor naming the
+// single-line scalar it stands for — are spliced away on the way across, and the
+// file is migrated in the same run; everything else is refused exactly as
+// before, with these diagnostics. See strictinline.go for what is inlined, what
+// is not, and why the line is drawn there (#841).
 
 // strictFinding is one refused construct: its position, and the message naming
 // it and what to write instead.

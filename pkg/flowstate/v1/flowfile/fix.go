@@ -295,15 +295,26 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		return FixResult{Source: data, Refusals: []Diagnostic{refusal}}, nil
 	}
 
-	// A Flowfile holding an anchor, alias, or merge key is refused rather than
-	// rewritten, in the same words the compiler uses (see strict.go). The rewriter
-	// leaves it byte for byte alone: rooting a reference or stamping an edition
-	// onto a file the compiler then refuses for its anchors would be the "`flow
-	// fix . && git commit` succeeds on a file `flow validate` rejects" outcome this
-	// command exists to avoid. Mechanically inlining the construct — so the author
-	// is not left to spell it out by hand — is a named follow-up (#653); until
-	// then the positioned refusal tells them exactly what to write.
+	// A Flowfile holding an anchor, alias, or merge key is brought into the
+	// grammar where that can be done by copying bytes, and refused where it cannot
+	// — in the same words the compiler uses (see strict.go and strictinline.go).
+	//
+	// Inlining is its own round and does nothing else: it returns here, and the
+	// fixed-point loop re-parses a document that now holds no alias before any
+	// other rule runs. That ordering is not a convenience. Every pass below reads
+	// positions out of the tree it was handed, and a pass that ran alongside a
+	// splice would be reading offsets the splice has moved.
+	//
+	// What cannot be inlined is left byte for byte alone: rooting a reference or
+	// stamping an edition onto a file the compiler then refuses for its anchors
+	// would be the "`flow fix . && git commit` succeeds on a file `flow validate`
+	// rejects" outcome this command exists to avoid. The refusal is all or
+	// nothing for the same reason — a file half of whose aliases were spliced away
+	// is a file neither the author nor the compiler can read.
 	if strictRefusals := strictYAMLRefusalsIn(file); len(strictRefusals) > 0 {
+		if inlined, changes, ok := inlineStrictYAML(data, file); ok {
+			return FixResult{Source: inlined, Changes: changes}, nil
+		}
 		return FixResult{Source: data, Refusals: strictRefusals}, nil
 	}
 

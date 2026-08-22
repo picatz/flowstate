@@ -496,8 +496,9 @@ to be about one key. It edits the lines it must, copies the rest through byte fo
 so a file with nothing to change comes back identical, which is what makes running it
 over a directory safe — and refuses the shapes it would have to guess at: flow style,
 which has no line structure to rewrite, and — since the [strict YAML
-profile](#the-grammar-is-a-strict-subset-of-yaml) — any file carrying an anchor,
-alias, or merge key, which the grammar no longer accepts at all. A refusal exits
+profile](#the-grammar-is-a-strict-subset-of-yaml) — any file carrying a merge key,
+or an anchor or alias in a position where removing it would be a re-serialization
+rather than a copy of bytes. A refusal exits
 non-zero, as does `--check` finding work,
 so `flow fix . && git commit` cannot succeed over a file still written in a spelling
 nothing compiles.
@@ -547,24 +548,46 @@ omission. An edition boundary — a newer edition refusing what the edition a fi
 declares still resolves — would mean this build carried two grammars, which is
 precisely the cost the no-deprecation decision above was made to avoid: declaring
 an older edition has never made an older grammar compile. So a file is refused
-for an anchor whatever it says its edition is, and `flow fix` leaves it byte for
-byte alone rather than stamping it forward. The cost, paid knowingly: an author
-on an older edition spells the construct out by hand *before* `flow fix` will
-bring the file forward, rather than getting both in one pass.
+for an anchor whatever it says its edition is.
+
+What that cost — an author spelling the construct out by hand before any
+migration would run — bought back is `flow fix` **inlining** the two shapes where
+the removal is a copy of bytes (#841):
+
+- a **whole-value alias**, `message: *greeting` or a `- *greeting` entry of a
+  block sequence, replaced by the source text of the scalar its anchor names;
+- the **anchor** naming that scalar, `greeting: &greeting hi`, with the
+  `&greeting ` dropped and the value left exactly where it was written.
+
+The text copied is the author's own — the quotes they wrote, or the absence of
+them — because re-rendering a value is how a rewriter decides that `0o777` is
+511 or that `yes` is a boolean, which is the plain-scalar question below that
+this profile deliberately does not reach. Both edits are a splice inside one
+line: nothing is re-indented, no line is added, moved or removed, and so no
+comment can change what it is attached to.
+
+Everything else stays refused and byte for byte untouched: a **merge key**,
+whose precedence is a judgement and not a copy; an alias inside a **flow
+collection**; an anchor or alias on a mapping **key**; an anchor over a **block**
+mapping, sequence or block scalar, whose text is not one line; an alias naming an
+anchor that is missing, doubly defined, or written below it. A file holding one
+inlinable construct and one refused one is refused *whole* — half a migration is
+not a checkpoint an author can stand on. And because an inliner is an expander,
+the rewrite is bounded by the same total-node budget the compiler bounds its own
+expansion by: past `maxNodes` sites the file is refused and left alone.
 
 What this profile deliberately does **not** reach is plain-scalar typing:
 `message: 0o777` still compiles to the integer 511, and a bare `2026.1` still
 arrives as a float. That is the YAML substrate no profile of *constructs* touches,
 and it stays the open question behind #546.
 
-Two follow-ups are named rather than done here. `flow fix` **refuses** a file
-holding one of the three constructs today, in the same words the compiler uses,
-rather than mechanically inlining it on the way across an edition — the inlining is
-byte-safe and requires no judgement, so it is worth doing, but it is a rewriter of
-its own. And the machinery the refusal makes redundant (the cycle pass, the
-merge branch of the node budget, the formatter's merge handling) is left in place:
-closing the door is this change; removing the corridor behind it is cleanup a
-reviewer should read on its own.
+One follow-up is named rather than done. The machinery the refusal makes
+redundant (the cycle pass, the merge branch of the node budget, the formatter's
+merge handling) is left in place: closing the door was #840; removing the
+corridor behind it is cleanup a reviewer should read on its own. Note that
+"redundant" is not "unreachable" — `CallPins` and `Format` share a collector that
+resolves anchors, aliases and merge keys on a document that need not compile, so
+those bounds still stand in front of input an outside party chooses.
 
 ### The type system is not a later phase
 

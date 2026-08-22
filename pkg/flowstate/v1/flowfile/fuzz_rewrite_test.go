@@ -259,6 +259,39 @@ steps:
     fields:
       alias: "[&a x,*a,*a]"
 `,
+	// The two constructs `flow fix` now rewrites rather than refuses: a
+	// whole-value alias and the anchor naming the scalar it stands for
+	// (strictinline.go, #841). A seed rather than only a targeted test, because
+	// the rewrite is a splice located by column — so what a fuzzer is good at
+	// here is moving the bytes around it: a comment beside the value, a quote
+	// that does not close, a multi-byte rune left of the alias.
+	`edition: v2026.3
+name: inlinable
+vars:
+  greeting: &greeting "héllo"
+  other: *greeting
+steps:
+- id: a
+  log:
+    message: *greeting # beside the value
+`,
+	// And the shapes beside them that stay refused, so the fuzzer explores the
+	// boundary between the two from both sides: a merge key, an alias inside a
+	// flow collection, an anchor over a block, and an anchor on a key.
+	`edition: v2026.3
+name: not-inlinable
+defaults: &d
+  timeout: 30s
+vars:
+  one: &one 1
+  many: [*one, 2]
+  &k key: v
+steps:
+- id: a
+  <<: *d
+  log:
+    message: hi
+`,
 }
 
 // FuzzFixIdempotent fuzzes [flowfile.Fix] over the three properties its own
