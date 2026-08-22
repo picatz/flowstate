@@ -416,6 +416,10 @@ func validateAtDepth(wf *v1.Workflow, depth int, placement v1.UndoScope) Diagnos
 		ds = append(ds, validateUndo(id, node, inner, i, wf, placement)...)
 		ds = append(ds, validateAsync(id, node, placement)...)
 
+		// Against `scope` and not `inner`, and before the kind is known — see
+		// [validateCondition] for both.
+		ds = append(ds, validateCondition(id, node, scope, i, wf)...)
+
 		if task == nil {
 			// A step may be a loop or a parallel block rather than a task. Its
 			// nested steps are validated with the enclosing scope visible, since
@@ -682,18 +686,10 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 		})
 	}
 
-	// Some inputs are evaluated by the task itself, in a scope this validator does
-	// not model — the http task's `outputs` expression references the response, not
-	// earlier steps. Checking references in those would report every correct use as
-	// an unknown step, and a false diagnostic is worse than a missing one: it trains
-	// authors to ignore the tool. The registry declares which inputs those are.
+	// The step's `if:` is not checked here. It is a property of the *node* and not
+	// of the task — every kind of step may carry one — so it is checked once, by
+	// [validateCondition], from the walk that visits every kind (#869).
 	//
-	// A condition is an expression like any other and resolves against the same
-	// names, so it is checked the same way — but *before* the step's own vars are in
-	// scope, because it decides whether the step runs at all, so a var this step
-	// declares does not exist yet when the question is asked.
-	ds = append(ds, validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)...)
-
 	// What the task declares its inputs to be is checked separately from what they
 	// reference, because the two fail differently: a reference that cannot resolve is
 	// a mistake about the workflow, and an input the task does not have is a mistake
@@ -706,12 +702,48 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// declaration from (#158). A computed expression stays unchecked, deliberately.
 	ds = append(ds, checkExpressionInputTypes(id, task, wf)...)
 
+	// Some inputs are evaluated by the task itself, in a scope this validator does
+	// not model — the http task's `outputs` expression references the response, not
+	// earlier steps. Checking references in those would report every correct use as
+	// an unknown step, and a false diagnostic is worse than a missing one: it trains
+	// authors to ignore the tool. The registry declares which inputs those are.
 	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
 	for _, name := range sortedInputNames(checkable) {
 		ds = append(ds, validateInputRefs(id, name, checkable[name], inner, index, wf)...)
 	}
 
 	return ds
+}
+
+// validateCondition reports references in one step's `if:` that cannot resolve,
+// whatever kind of step it is.
+//
+// It lives here, on the node, rather than on any one kind, because `if:` is a field
+// of [v1.Node] and every kind may carry one — task, for_each, loop, parallel, wait,
+// call, value and switch. Until #869 it was checked on the task path only, so the
+// identical typo was a positioned diagnostic on a task step and silence on a
+// `wait_for_signal:` or a `sleep:`; a condition is an expression like any other and
+// resolves against the same names, so it is checked the same way.
+//
+// Two things about the scope, both taken from where the engine evaluates the
+// expression ([v1.EvalConditionInScope], called from `runNodes` in eval.go and from
+// the durable driver's execute.go) rather than from where it is written:
+//
+//   - The step's own `vars:` are *not* in scope. The condition decides whether the
+//     step runs at all, and both drivers evaluate it before binding the node's vars,
+//     so a var this step declares does not exist yet when the question is asked. This
+//     is why the walk passes `scope` and not `inner`.
+//   - `now` is *not* in scope, even on a wait. The engine binds it inside the wait's
+//     own expressions ([v1.NowIdentifier], bound by evalWaitExpr) and the condition is
+//     evaluated a level above that, in the same place a task step's condition is — so
+//     `${now}` in a wait's `if:` is a run-time failure, and saying so here is the
+//     whole point. [validateWait] adds it for the fields that do have a clock.
+//
+// A name an enclosing binding supplies — a loop's `as:` or the `item` it binds when
+// it writes no `as:` — stays legal, because the scope handed in already carries it:
+// the body's conditions are evaluated inside the body, where the engine has bound it.
+func validateCondition(id string, node *v1.Node, scope refScope, index int, wf *v1.Workflow) Diagnostics {
+	return validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)
 }
 
 // branchStepNodes returns every step across a parallel block's branches,
@@ -1284,6 +1316,11 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 		ds = append(ds, validateUndo(id, node, inner, index, wf, placement)...)
 		ds = append(ds, validateAsync(id, node, placement)...)
 
+		// The same check the top-level walk makes, in the same place and against
+		// the same scope: a nested step's `if:` is one expression evaluated by one
+		// [v1.EvalConditionInScope], wherever the step is written.
+		ds = append(ds, validateCondition(id, node, scope, index, wf)...)
+
 		task := node.GetTask()
 		if task == nil {
 			switch kind := node.GetKind().(type) {
@@ -1680,13 +1717,29 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// "unknown step" sends them looking for a step they never wrote. The
 			// answer they need is that it is bound where a clock exists and not
 			// here, and what to do instead.
+			//
+			// Why it is not bound here differs between an `if:` and everything
+			// else, and the difference is the whole of what an author has to
+			// understand. A condition on a *wait* is the case that reads like a
+			// contradiction — the step is a wait, and `now` is still not in scope —
+			// because both drivers evaluate the condition before entering the node
+			// (`runNodes` in eval.go, the durable driver's execute.go), so at that
+			// moment the wait has not started and there is no moment to bind. An
+			// input is the older story: it is resolved inside an activity, which has
+			// no clock that survives a retry.
+			rest := "a task input is resolved inside an activity, which has no clock that " +
+				"survives a retry, so compute the moment or the length in the wait itself, or " +
+				"pass the time in as an input"
+			if inputName == "if" {
+				rest = "a step's `if:` is evaluated before the step is entered, so even on a wait " +
+					"there is no moment to bind yet; move the comparison into the wait's own " +
+					"expression, or gate the step on an input or an earlier step's output"
+			}
 			ds = append(ds, Diagnostic{
 				Step: stepID, Field: inputName,
 				Message: "`now` is only available inside a wait (`sleep:`, `wait_until:`, and a " +
 					"signal's `timeout:`) where the engine binds it to the moment the wait is " +
-					"evaluated; a task input is resolved inside an activity, which has no clock that " +
-					"survives a retry, so compute the moment or the length in the wait itself, or pass " +
-					"the time in as an input",
+					"evaluated; " + rest,
 			})
 			continue
 		}
