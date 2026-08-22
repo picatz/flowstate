@@ -601,7 +601,11 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	})
 	recordDeliveryOutcome(span, accepted, err)
 	if err != nil {
-		r.log.ErrorContext(req.Context(), "a verified delivery did not start a run",
+		// Logged through the delivery span's context rather than the request's,
+		// so the line carries this delivery's trace and span ids: `otelslog`
+		// reads them off the context, and a failure an operator is reading is
+		// exactly when the trace it belongs to is worth one click away.
+		r.log.ErrorContext(ctx, "a verified delivery did not start a run",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
 
 		if errors.Is(err, errDeliveryNotStarted) {
@@ -625,7 +629,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.log.InfoContext(req.Context(), "accepted a delivery",
+	r.log.InfoContext(ctx, "accepted a delivery",
 		"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(),
 		"delivery", accepted.DeliveryID, "run", accepted.RunID, "joined", accepted.Joined)
 
