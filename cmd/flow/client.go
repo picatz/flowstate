@@ -79,9 +79,12 @@ type serverFlags struct {
 	credentialSource string
 
 	// audience is --audience / FLOWSTATE_AUDIENCE: the relying party a
-	// minted token, such as one from the "github-actions" source, is
-	// addressed to. Ignored by sources that present a token they did not
-	// mint.
+	// credential is addressed to. A request parameter for a source that
+	// mints, such as "github-actions"; a check for one that cannot, such as
+	// "gitlab" and "terraform-cloud", whose platforms fix the audience in the
+	// job or workspace configuration before the token exists. Ignored by
+	// "file" and "env", which present a token whose audience nothing here can
+	// read.
 	audience string
 
 	// clientCert is the client certificate/key/trust-root triple from
@@ -113,19 +116,24 @@ func addServerFlags(cmd *cobra.Command) {
 			"re-read per request, so a rotating token keeps working. "+
 			"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
 
-	// Names a credentialsource.Source explicitly. "github-actions" is what
-	// turns a CI job's ambient OIDC identity into a token without any
-	// hand-written curl; "file" and "env" force the same reading --token-file
-	// and FLOWSTATE_TOKEN already do, but as a refusal rather than silent
+	// Names a credentialsource.Source explicitly. "github-actions", "gitlab"
+	// and "terraform-cloud" are what turn a CI job's or a Terraform run's
+	// ambient OIDC identity into a token without any hand-written curl;
+	// "file" and "env" force the same reading --token-file and
+	// FLOWSTATE_TOKEN already do, but as a refusal rather than silent
 	// anonymity when the named source turns out empty.
 	cmd.Flags().String("credential-source", os.Getenv("FLOWSTATE_CREDENTIAL_SOURCE"),
 		"acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN "+
-			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. "+
-			"An unknown or unusable source is an error, never anonymous")
+			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, "+
+			"terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous")
 
 	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
-		"the relying party a minted credential should be addressed to (overrides "+
-			"FLOWSTATE_AUDIENCE); required by --credential-source=github-actions")
+		"the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); "+
+			"required by --credential-source=github-actions, which mints a token for it. "+
+			"gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience "+
+			"in the job or workspace configuration before the token exists — so for those it is "+
+			"checked against the token's own audience rather than requested, and a mismatch is "+
+			"refused with the setting to change")
 
 	// The client's own certificate, key and trust root — see
 	// cmd/flow/clientcert.go. Declared alongside the bearer-credential flags

@@ -155,6 +155,16 @@ type Workflow struct {
 	// listing's scan. The bounds are the ones every other author-written map in
 	// this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason
 	// stated there — a spec is a thing an outside party writes.
+	//
+	// `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the
+	// difference is not an oversight. That field is written in bytes because a
+	// second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts
+	// bytes — refuses the same sizes at mint, and one limit written down twice in
+	// two units is two limits that disagree about a value of 700 two-byte runes.
+	// Nothing enforces this map a second time: protovalidate is the only reader of
+	// the bound, so the unit that matters is the one its neighbours already use,
+	// and matching them is what keeps every author-written map in this file
+	// answering the same way.
 	Labels map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Profile names the vocabulary every expression in this workflow was compiled
 	// against: which CEL extension libraries are in scope.
