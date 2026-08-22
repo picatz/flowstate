@@ -1557,7 +1557,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Identity = RehearsalIdentityFromContext(ctx)
-	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope)
+	// The step the compensation undoes, which is the id the durable
+	// driver dispatches a compensation with (`executor.runUndoTask` passes
+	// `entry.GetStepId()`) — so the span naming it says the same thing on
+	// both drivers.
+	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope, entry.GetStepId())
 
 	return err
 }
@@ -1597,7 +1601,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	switch n := node.Kind.(type) {
 	case *Node_Task:
-		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
+		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope, node.GetId())
 
 	case *Node_ForEach:
 		// A wait inside the body reports this step as its nearest enclosing one,
@@ -2205,7 +2209,13 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // local run reproduces the same observable outcome — a flaky dependency that
 // succeeds on the second attempt succeeds in both places — rather than to make
 // local execution reliable.
-func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
+//
+// stepID is the id of the step being run, carried for the span alone and empty
+// only where the caller genuinely has none. It is what turns "some task failed"
+// into "this step failed" in a local run's trace — the same attribute the
+// durable driver's two authority-carrying activity entry points write, from the
+// same constant. See [StartTaskSpan].
+func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope, stepID string) (*Node_Outputs, error) {
 	// Resolved here, above the loop, because this is the position the durable
 	// driver resolves at: in workflow code, before an activity is scheduled
 	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so
@@ -2249,6 +2259,19 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	// whether a resulting denial's message says so — see [CheckTaskPolicy]'s
 	// own doc.
 	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
+		// A denied dispatch still gets its span, because durably it has one: the
+		// check runs *inside* the activity there (`engine.checkTaskDispatchPolicy`
+		// takes the span it writes the failure onto), so a policy that refuses a
+		// task produces one `flowstate.task/<name>` span with an error status
+		// under the durable driver. A local run that recorded nothing here would
+		// disagree about the trace precisely where an operator most wants to look
+		// — the netpolicy round tripper makes the same argument one package over
+		// for a refused request. The span covers no work, and there is none: the
+		// dispatch was refused before an attempt ran.
+		_, span := StartTaskSpan(ctx, resolved, stepID)
+		RecordTaskOutcome(span, err)
+		span.End()
+
 		return nil, err
 	}
 
@@ -2282,7 +2305,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttempt(ctx, resolved, timeouts.StartToClose, scope)
+		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID)
 		if err == nil {
 			return out, nil
 		}
@@ -2421,6 +2444,33 @@ func (e *causeEnrichedError) Error() string {
 
 func (e *causeEnrichedError) Unwrap() error {
 	return e.err
+}
+
+// runStepAttemptSpanned performs one attempt inside the span covering it.
+//
+// Per attempt, not per step, because that is what the durable driver does and
+// the difference is observable: an activity is scheduled again for each retry,
+// so each attempt is its own span there. A local run that reported one span for
+// a step that took three tries would tell an author a different story about the
+// same workflow, which is the whole failure invariant 5 exists to prevent.
+//
+// The span's context is what the attempt runs on, so everything the task reaches
+// nests under it — most visibly the CLIENT span the http task's request opens
+// through a [netpolicy.Policy]'s round tripper (#848), which under the durable
+// driver already hangs off the activity's task span and now hangs off this one.
+//
+// The outcome is recorded from the raw error rather than the one
+// [withCancellationCause] enriches, because the enrichment adds *text* and the
+// span records only a classification — and the classification of the enriched
+// error is the same one, since it wraps rather than replaces.
+func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
+	ctx, span := StartTaskSpan(ctx, task, stepID)
+	defer span.End()
+
+	out, err := runStepAttempt(ctx, task, timeout, scope)
+	RecordTaskOutcome(span, err)
+
+	return out, err
 }
 
 // runStepAttempt performs one attempt, bounded by the per-attempt timeout.

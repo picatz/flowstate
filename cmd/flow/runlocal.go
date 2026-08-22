@@ -161,8 +161,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	//
 	// And to a collector when one is configured, so that the two drivers agree about
 	// where a `log:` line ends up: the durable driver exports the same records from
-	// the worker. What differs is the trace id, and unavoidably — a local run makes
-	// no RPC and opens no span, so its records have no trace to belong to.
+	// the worker. The trace id agrees too, since #523's gap 3 — the local driver
+	// opens the same `flowstate.task/<name>` span around the step, so the record
+	// carries the trace of the step that emitted it here as well.
 	surface := newSurface(cmd)
 	ctx = v1.ContextWithLogger(ctx,
 		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))

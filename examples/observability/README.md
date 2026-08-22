@@ -345,9 +345,11 @@ the workflow id was the only real key.
 
 The server's and worker's **own** lines carry no trace id, and cannot: a worker
 saying it is starting up is not inside anybody's request. Find those by service
-and time. A `log:` step in `flow run local` carries none either — the local driver
-makes no RPC and opens no span, so there is no trace for the line to belong to,
-though the record is still exported.
+and time. A `log:` step in `flow run local` **does** carry one now: the local
+driver opens the same `flowstate.task/<name>` span the worker does, so a
+rehearsal's lines join a rehearsal's trace the same way. It did not until #523's
+gap 3 closed, which is why an older run of this lab shows local lines with an
+empty TraceID.
 
 The workflow id still works as a key and is still the string that joins Grafana to
 the Temporal UI. It is no longer the only one.
