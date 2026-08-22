@@ -50,24 +50,33 @@ import (
 // isolation (#431). What is asserted is "something other than the cost limit had
 // to stop this", which a generous deadline answers just as well.
 //
-// # The resource the cost limit does not bound
+// # The resource the cost limit bounds
 //
-// Measured while writing this, and reported as picatz/flowstate#847 rather than
-// asserted here: cel-go's *runtime* cost tracker — the one [cel.CostLimit]
-// spends, as distinct from the size-aware static estimator — prices string
-// concatenation at a flat rate independent of operand size. `s + s` costs 3
-// units whether `s` holds ten bytes or two hundred thousand, and a
-// hundred-iteration comprehension doing three concatenations per element costs
-// 1921 units either way. So [v1.DefaultCostLimit] bounds how many operations an
-// evaluation performs and not how many bytes it moves, and an activation whose
-// strings an outside party chose — a webhook body, an HTTP task's decoded
-// response — is the half of the product this system does not price.
+// Measured while writing this and reported as picatz/flowstate#847: the budget
+// used to bound how many operations an evaluation performed and not how many
+// bytes it moved. `s + s` cost 3 units whether `s` held ten characters or two
+// hundred thousand, and a hundred-iteration comprehension doing three
+// concatenations per element cost 1,912 units either way — 0.19% of the budget
+// for 172 MiB of allocation. An activation whose strings an outside party chose
+// — a webhook body, an HTTP task's decoded response — was the half of the
+// product nothing priced.
 //
-// That is exactly CLAUDE.md's rule about asking which resource the attacker
-// controls, so it is named here rather than left implicit: this target's
-// deadline assertion observes *time*, the cost limit bounds *operations*, and
-// memory is bounded by neither. Nothing here pins the current behaviour as
-// correct, because it is not.
+// That has since been closed, in `celcost.go`. The diagnosis was that cel-go
+// *does* price concatenation by operand size, in a switch on an overload ID
+// that only a checked AST carries, and flowstate evaluates parsed ASTs — so the
+// sizing was present in the library and unreachable from this path. An
+// [interpreter.ActualCostEstimator] installed at [v1.Evaluator] prices every
+// call by the size of the string or bytes it produced, which reaches cel-go's
+// own number for concatenation without restating it. The comprehension above
+// now exhausts the budget and is refused.
+//
+// So the three bounds this target sits between now say different things: the
+// deadline assertion below observes *time*, [v1.DefaultCostLimit] bounds
+// *bytes produced* as well as operations performed, and
+// [TestCELCostPricesBytesProducedNotOperationsPerformed] in `celcost_test.go`
+// is where that is pinned. This target still asserts only that *something*
+// stops an evaluation, because a fuzzer has no way to know which bound should
+// have fired for an arbitrary input.
 //
 // # What is not asserted
 //
