@@ -6,9 +6,13 @@
 //
 // It computes the files changed against the merge-base with origin/main,
 // maps them to Go packages, expands to every package whose build or tests
-// can see a changed one, and runs the always tier: build, vet and bounded
-// -race tests for the affected set, plus gofmt on the changed files. A
-// change under examples/ additionally seeds the affected set with whichever
+// can see a changed one, and runs the always tier: build, vet, staticcheck
+// and bounded -race tests for the affected set, plus gofmt on the changed
+// files. staticcheck is the same analyser, release and GOTOOLCHAIN pin the
+// required CI job runs, narrowed to that set — except where a change to the
+// harness or the module graph forces that job wide, when this analyses ./...
+// as the job does (#879). A change under
+// examples/ additionally seeds the affected set with whichever
 // packages' test files actually read example workflows off disk at runtime
 // (see exampleDataDepPackages) — a data dependency the import graph alone
 // cannot see (#589). The conditional legs fire only when their inputs
@@ -37,6 +41,25 @@ import (
 // bufVersion pins buf to the same release the Makefile and CI run, so this
 // tier cannot pass a schema the required jobs reject.
 const bufVersion = "v1.72.0"
+
+// staticcheckVersion and staticcheckToolchain pin the static analyser to what
+// ci.yml's required staticcheck job runs: the release its STATICCHECK_VERSION
+// names, under the GOTOOLCHAIN its run line sets.
+//
+// Both are load-bearing. A different release is a different rule set, so a
+// finding here would be a finding about a tool CI is not running. And a
+// different toolchain is not a finding at all: staticcheck's own go.mod
+// selects one older than this module's, so without the pin it downgrades
+// underneath itself and then fails type-checking the standard library
+// vendored into the newer toolchain's module cache — the same failure
+// CLAUDE.md records for govulncheck, for the same reason.
+//
+// staticcheck_test.go reads both values back out of the workflow, so this
+// tier cannot drift into a second opinion about the tool.
+const (
+	staticcheckVersion   = "2026.1"
+	staticcheckToolchain = "go1.26.6"
+)
 
 func main() {
 	// One flag, because there is one thing to choose: who is asking. The
@@ -244,6 +267,51 @@ func run() error {
 			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", append([]string{"test", "-race", "-timeout", "300s"}, affected...)...))
 	}
 
+	// Affected packages: staticcheck, on the same trigger and with the same
+	// pins as ci.yml's required staticcheck job.
+	//
+	// It is here because without it this tier could pass a commit that job
+	// rejects, which is the one thing the gate promises not to do. #878 is
+	// the live case: `go run ./tools/gate` passed, CI then failed on SA1019,
+	// and the author paid a full round trip for a diagnostic that costs
+	// seconds locally (#879).
+	//
+	// The scope is the only thing narrowed. CI analyses ./...; this analyses
+	// the affected set, on the same "diff-scoped locally, full in the queue"
+	// reasoning as vet directly above. That narrowing is safe for
+	// staticcheck's whole-package checks — U1000 reports a declaration
+	// nothing in the analysed set uses, so analysing a package without its
+	// callers would invent a finding — precisely because affectedPackages
+	// expands to every package whose build *or tests* can see a changed one.
+	// A changed package's callers are in the set by construction, so a
+	// declaration that is used is seen to be used.
+	//
+	// The affected set is not always what decides it, and that is the part
+	// worth reading. ciForceReason widens the *job* set on a change to the
+	// harness — a workflow, the Makefile, this gate's own source, the fuzz
+	// target list — and CI's staticcheck job then analyses ./... regardless
+	// of which Go packages the diff reached. Two shapes fall through a leg
+	// that consults only `affected`, and the first is the bad direction:
+	// a workflow-only diff (bumping STATICCHECK_VERSION, say) affects no Go
+	// package at all, so the leg would *skip* where the required job runs;
+	// and a change to this package would analyse only this package where the
+	// job analyses the module. So the leg takes ciForceReason's answer, and
+	// the scope follows the trigger.
+	//
+	// This is the slowest leg on a wide diff, because staticcheck type-checks
+	// everything it is given. That cost is deliberate and unconditional: an
+	// opt-out is a second opinion about whether the required job matters, and
+	// a diff wide enough to make this expensive is one already paying for a
+	// full CI run.
+	if !staticcheckRuns(p, affected) {
+		g.skip("staticcheck", "no Go packages affected by this diff")
+	} else if why := staticcheckForce(p); why != "" {
+		g.leg("staticcheck", why, staticcheck("./..."))
+	} else {
+		g.leg("staticcheck", fmt.Sprintf("%d affected package(s)", len(affected)),
+			staticcheck(affected...))
+	}
+
 	// Conditional: the ordering leg, when the flowtest package (whose every
 	// claim is an ordering claim; see CLAUDE.md on -cpu=1) is affected.
 	if needsOrdering(affected) {
@@ -411,7 +479,7 @@ func changedFiles(base string) ([]string, error) {
 	}
 	seen := map[string]bool{}
 	var out []string
-	for _, f := range strings.Split(diff+"\n"+untracked, "\n") {
+	for f := range strings.SplitSeq(diff+"\n"+untracked, "\n") {
 		if f = strings.TrimSpace(f); f != "" && !seen[f] {
 			seen[f] = true
 			out = append(out, f)
@@ -530,12 +598,63 @@ func command(name string, args ...string) cmdSpec {
 	return cmdSpec{argv: append([]string{name}, args...)}
 }
 
+// display is the shell-shaped line a leg prints before running this step, and
+// the same string its failure quotes. staticcheck_test.go compares it against
+// the workflow's own run line, so it is a method rather than something leg()
+// spells inline: a test asserting the two tiers run one command has to read
+// the command the gate actually runs.
+func (c cmdSpec) display() string {
+	if c.label != "" {
+		return c.label
+	}
+	out := strings.Join(c.argv, " ")
+	if len(c.env) > 0 {
+		out = strings.Join(c.env, " ") + " " + out
+	}
+	return out
+}
+
 func commandEnv(env []string, name string, args ...string) cmdSpec {
 	return cmdSpec{argv: append([]string{name}, args...), env: env}
 }
 
 func buf(args ...string) cmdSpec {
 	return command("go", append([]string{"run", "github.com/bufbuild/buf/cmd/buf@" + bufVersion}, args...)...)
+}
+
+// staticcheckForce is why this leg must analyse the whole module rather than
+// the affected set, or "" when the diff decides.
+//
+// It is ciForceReason with an empty event on purpose. The event-driven arms of
+// that function — a push to main, a merge group — describe runs that are not
+// this one: the local tier is always a pull request being prepared, so an
+// empty event is the honest input, and what is left is exactly the harness
+// forcing (ciWide) and the build-graph forcing (moduleWide) that also widen
+// the required job.
+func staticcheckForce(p plan) string {
+	return ciForceReason("", p)
+}
+
+// staticcheckRuns is the staticcheck leg's trigger, and deliberately the same
+// expression ciDecisions arrives at for the staticcheck *job*: forced, or any
+// affected Go package. ciDecisions spells the forcing as a post-pass that sets
+// every decision's Run (see the `if force != ""` loop in ci.go), which comes
+// to the same thing for one job.
+//
+// It is a named function rather than an inline condition so a test can assert
+// that equality holds. Two tiers gating one check on two different conditions
+// is how a local pass over a commit CI rejects comes back in a new shape —
+// which is what happened here: the first version of this leg read `affected`
+// alone, and a workflow-only diff skipped it while the required job ran.
+func staticcheckRuns(p plan, affected []string) bool {
+	return staticcheckForce(p) != "" || len(affected) > 0
+}
+
+// staticcheck runs the pinned analyser over the named packages, under the
+// pinned toolchain. See staticcheckVersion for why both pins are there.
+func staticcheck(pkgs ...string) cmdSpec {
+	return commandEnv([]string{"GOTOOLCHAIN=" + staticcheckToolchain},
+		"go", append([]string{"run", "honnef.co/go/tools/cmd/staticcheck@" + staticcheckVersion}, pkgs...)...)
 }
 
 // generatedClean is the pin that follows every generate step: after
@@ -626,13 +745,7 @@ func (g *gate) leg(name, why string, cmds ...cmdSpec) {
 	fmt.Printf("gate: %s: running (%s)\n", name, why)
 	g.ran++
 	for _, c := range cmds {
-		display := c.label
-		if display == "" {
-			display = strings.Join(c.argv, " ")
-			if len(c.env) > 0 {
-				display = strings.Join(c.env, " ") + " " + display
-			}
-		}
+		display := c.display()
 		fmt.Printf("gate: %s: $ %s\n", name, display)
 
 		var err error

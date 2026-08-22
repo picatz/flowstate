@@ -3,6 +3,7 @@ package flowstatev1_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -287,4 +288,141 @@ func TestLocalOnlyChangesTheMessageNotTheDecision(t *testing.T) {
 		"a rehearsal denial must say it came from a rehearsal")
 	require.NotContains(t, productionErr.Error(), "local rehearsal",
 		"a production denial must not claim to be a rehearsal")
+}
+
+// TestDenialSaysWhichIdentityItEvaluated is #652 item 3's other half, and the
+// one [v1.TaskPolicyDeniedError.Local] could not supply on its own.
+//
+// #877 documented that a rehearsal's `run.identity` is empty whatever a
+// `flow test` case's `starter:` says, which turns a rule reading
+// `identity.namespace` into a blanket refusal in that venue. Before this, the
+// resulting denial was textually identical to one where the rule looked at a
+// real identity and rejected it — so the author's next move ("change the
+// starter", "check my namespace") could not be derived from what they were
+// told. This asserts the two now read differently, in the direction that
+// matters: the empty case must say it had nothing to match.
+func TestDenialSaysWhichIdentityItEvaluated(t *testing.T) {
+	cfg := v1.TaskPolicyConfig{Allow: []string{`identity.namespace == "platform"`}}
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+	v1.SetDefaultTaskPolicy(policy)
+	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+	// A rehearsal that named nobody — `flow run local` with no `--as-*`, or
+	// any `flow test` case, whose `starter:` never reaches this policy.
+	anonymous := v1.CheckTaskPolicy(context.Background(), "codex.exec", nil, true)
+	require.Error(t, anonymous)
+
+	// A rehearsal that named somebody the allowlist still refuses. Same
+	// policy, same task, same venue: only the identity differs.
+	named := v1.CheckTaskPolicy(context.Background(), "codex.exec",
+		&v1.WorkloadIdentity{Namespace: "not-platform", Subject: "spiffe://acme/deployer"}, true)
+	require.Error(t, named)
+
+	anonymousDenied, ok := errors.AsType[*v1.TaskPolicyDeniedError](anonymous)
+	require.True(t, ok)
+	namedDenied, ok := errors.AsType[*v1.TaskPolicyDeniedError](named)
+	require.True(t, ok)
+
+	// Same decision — provenance changes what the denial says, never what it
+	// decides, exactly as Local does.
+	require.Equal(t, namedDenied.Reason, anonymousDenied.Reason)
+	require.Equal(t, namedDenied.Detail, anonymousDenied.Detail)
+
+	// The negative direction, and the whole point: an author cannot be told
+	// the same thing in both cases.
+	require.NotEqual(t, anonymous.Error(), named.Error(),
+		"a denial for want of any identity must not read like one where a rule matched an identity")
+
+	require.Contains(t, anonymous.Error(), "no identity",
+		"a denial evaluated against no identity must say so")
+	require.Contains(t, anonymous.Error(), "--as-subject",
+		"and must name how a rehearsal comes to have one")
+	require.Contains(t, anonymous.Error(), "flow test",
+		"and must say `flow test` has no way to supply one, since that is the venue #877 documented")
+
+	require.Contains(t, namedDenied.Error(), `namespace="not-platform"`,
+		"a denial that did evaluate an identity must name it")
+	require.NotContains(t, namedDenied.Error(), "no identity",
+		"a denial that evaluated a real identity must not claim it had none")
+	require.NotContains(t, namedDenied.Error(), "--as-subject",
+		"and must not send its reader hunting for an identity flag they already used")
+}
+
+// TestDenialRemedyIsTrueInEveryLocalVenue guards a false diagnostic that
+// shipped with the rehearsal clause: it told the reader to check "the
+// --task-policy passed to this local invocation", and `flow test` — one of
+// the four venues [v1.TaskPolicyDeniedError.Local] speaks for — takes no such
+// flag (#652 item 2), inheriting instead whatever the hosting process
+// installed. CLAUDE.md rates a false diagnostic worse than a missing one, so
+// the clause must name the process, not a flag only some of these commands
+// accept.
+func TestDenialRemedyIsTrueInEveryLocalVenue(t *testing.T) {
+	denied := &v1.TaskPolicyDeniedError{
+		Task:     "codex.exec",
+		Reason:   v1.TaskPolicyReasonDenyRule,
+		Detail:   `task == "codex.exec"`,
+		Local:    true,
+		Identity: "no identity — every field a rule can read is empty",
+	}
+
+	require.NotContains(t, denied.Error(), "--task-policy",
+		"the rehearsal remedy must not name a flag `flow test` does not accept")
+	require.Contains(t, denied.Error(), "the task-shape policy this process installed",
+		"it must point at the process's installed policy instead")
+}
+
+// TestDenialNeverRendersAClaimValue is the containment half. This message
+// travels wherever the denial does, which durably means through Temporal's
+// failure conversion and into workflow history — durable and broadly
+// readable, which is the property CLAUDE.md's "secrets never enter workflow
+// history" section is about. A claim is caller-supplied data of a shape this
+// package does not constrain, so provenance renders claim *keys* and never
+// values.
+func TestDenialNeverRendersAClaimValue(t *testing.T) {
+	const claimValue = "value-that-must-not-be-rendered"
+
+	cfg := v1.TaskPolicyConfig{Deny: []string{`task == "codex.exec"`}}
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+	v1.SetDefaultTaskPolicy(policy)
+	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
+
+	err = v1.CheckTaskPolicy(context.Background(), "codex.exec", &v1.WorkloadIdentity{
+		Namespace: "team-a",
+		Claims:    map[string]string{"session_token": claimValue},
+	}, false)
+	require.Error(t, err)
+
+	denied, ok := errors.AsType[*v1.TaskPolicyDeniedError](err)
+	require.True(t, ok)
+
+	// The key is useful — it answers "did the claim my rule reads travel at
+	// all" — and is already known to whoever wrote the rule.
+	require.Contains(t, denied.Error(), "session_token",
+		"the claim keys carried are provenance an author needs")
+
+	// Every containment shape CLAUDE.md enumerates: the value directly, in a
+	// struct holding it, and in a slice of those.
+	holder := struct{ Err error }{Err: denied}
+	for _, rendered := range []string{
+		denied.Error(),
+		err.Error(),
+		fmt.Sprintf("%v", denied),
+		fmt.Sprintf("%+v", denied),
+		fmt.Sprintf("%#v", denied),
+		// Spelled as the %s verb rather than a call to Error(), because %s
+		// is what an operator's own log line writes and is therefore the
+		// thing under test; calling Error() here would assert something the
+		// two lines above already assert.
+		fmt.Sprintf("%s", denied),
+		fmt.Sprintf("%v", holder),
+		fmt.Sprintf("%+v", holder),
+		fmt.Sprintf("%#v", holder),
+		fmt.Sprintf("%v", []any{holder}),
+		fmt.Sprintf("%+v", []any{holder}),
+	} {
+		require.NotContains(t, rendered, claimValue,
+			"a claim value must never reach a denial message, which travels into workflow history")
+	}
 }
