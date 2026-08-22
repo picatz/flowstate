@@ -7,6 +7,7 @@
 package flowstatev1
 
 import (
+	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -50,6 +51,31 @@ type WorkloadIdentity struct {
 	// authorization decisions may key on, such as a repository, environment, or
 	// team. Only claims an operator has configured as relevant are copied here,
 	// so this does not become a dumping ground for whole tokens.
+	//
+	// The bounds say the same thing the sentence above says, in a form the
+	// machine enforces. They are the schema half of `auth.MaxCarriedClaims` and
+	// its neighbours, which refuse the same sizes at mint: a claim set is a wire
+	// format that gets signed and cached by relying parties, so an oversized one
+	// has to be refused rather than truncated — a truncated claim set is a token
+	// that says something other than what was authorized.
+	//
+	// 32 pairs is ten times the largest set anything in this repository carries
+	// and twice `SignalPolicyRule.claims`'s bound; the key length is that rule's
+	// own 128, since both name claims out of the same tokens. Values get 1024
+	// rather than that rule's 256 because a carried value is data and not a
+	// match pattern — the longest real one measured here is a 63-byte GitHub
+	// Actions `job_workflow_ref`.
+	//
+	// `max_bytes` and not `max_len`, deliberately, and this is the whole reason
+	// the unit is named in these field names. protovalidate's `max_len` is
+	// `this.size()`, which counts Unicode *code points*; `max_bytes` is
+	// `bytes(this).size()`, which is what Go's `len` on a string counts and what
+	// `auth.validateCarriedClaims` therefore enforces. Under `max_len` a value of
+	// 700 two-byte runes passes the schema at 700 and is refused at the mint at
+	// 1400 bytes — one limit written down twice in two units, so the schema and
+	// the mint disagree about which identities are valid, and the identity that
+	// falls in the gap validates and then cannot obtain a credential. Same
+	// number, same unit, both layers.
 	Claims map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Namespace is the tenant, and it is the boundary every authorization decision
 	// about a run turns on: the caller's namespace is compared against the one
@@ -148,11 +174,11 @@ var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\"\x81\x02\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x9b\x02\n" +
 	"\x10WorkloadIdentity\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
-	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12B\n" +
-	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.WorkloadIdentity.ClaimsEntryR\x06claims\x12\x1c\n" +
+	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
+	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.WorkloadIdentity.ClaimsEntryB\x18\xbaH\x15\x9a\x01\x12\x10 \"\ar\x05 \x01(\x80\x01*\x05r\x03(\x80\bR\x06claims\x12\x1c\n" +
 	"\tnamespace\x18\x04 \x01(\tR\tnamespace\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x05 \x01(\tR\n" +
