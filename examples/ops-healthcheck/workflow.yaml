@@ -83,12 +83,19 @@ steps:
             outputs:
               name: ${service.name}
 
+  # How many services this run set out to probe. Stated once: the sentence
+  # below names it twice and `page_required` a third time, and three copies of
+  # one count are three chances to disagree about what was probed
+  # (docs/STYLE.md R5, `flow lint`).
+  - id: probed_count
+    value: ${size(vars.service_names)}
+
   - id: summary
     log:
       message: >-
-        ${"probed " + string(size(vars.service_names)) + " service(s): " +
+        ${"probed " + string(steps.probed_count.value) + " service(s): " +
           string(size(steps.checks.results.filter(r, has(r.probe.name)))) + " healthy, " +
-          string(size(vars.service_names) - size(steps.checks.results.filter(r, has(r.probe.name)))) + " down"}
+          string(steps.probed_count.value - size(steps.checks.results.filter(r, has(r.probe.name)))) + " down"}
 
 outputs:
   # Named rather than counted so a pager reads *what* to page about without
@@ -106,5 +113,6 @@ outputs:
     value: ${size(steps.checks.results.filter(r, has(r.probe.name)))}
     description: how many services reported healthy
   page_required:
-    value: ${size(steps.checks.results.filter(r, has(r.probe.name))) < size(vars.service_names)}
+    value: >-
+      ${size(steps.checks.results.filter(r, has(r.probe.name))) < steps.probed_count.value}
     description: whether an on-call human should be paged

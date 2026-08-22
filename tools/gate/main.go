@@ -316,16 +316,17 @@ func run() error {
 	}
 
 	// Conditional: the tier-4 style lint over the shown corpus, which is CI's
-	// advisory `flow lint examples/` step run locally for the same reason it
-	// runs there — to be read, not to gate. It is a leg of its own rather than
-	// a fourth command on the examples leg because its trigger is wider than
-	// that leg's: the rules live in pkg/flowstate/v1/flowfile, so a diff that
-	// changes what the lint says need not touch examples/ at all.
+	// `flow lint --strict examples/` step run locally. It is a leg of its own
+	// rather than a fourth command on the examples leg because its trigger is
+	// wider than that leg's: the rules live in pkg/flowstate/v1/flowfile, so a
+	// diff that changes what the lint says need not touch examples/ at all —
+	// and now that the leg can fail, that is the case it exists to catch
+	// locally rather than in CI.
 	//
-	// No --strict, matching CI exactly. The corpus has findings today
-	// (docs/STYLE.md, Part III), and a leg that failed on them would make every
-	// unrelated diff red for a reason the charter has already staged as its own
-	// slice.
+	// --strict, matching CI exactly, since #646's corpus slice cleared the 21
+	// findings the check landed with. The two have to keep saying the same
+	// thing: a local leg that passed what CI rejects is a gate that predicts
+	// the wrong answer, which is the one thing this tool is for.
 	styleWhy := ""
 	switch {
 	case p.examples:
@@ -335,7 +336,7 @@ func run() error {
 	}
 	if styleWhy != "" {
 		g.leg("style", styleWhy,
-			command("go", "run", "./cmd/flow", "lint", "examples/"),
+			command("go", "run", "./cmd/flow", "lint", "--strict", "examples/"),
 		)
 	} else {
 		g.skip("style", "no changes under examples/, and cmd/flow is unaffected")

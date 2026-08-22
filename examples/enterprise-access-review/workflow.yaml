@@ -155,17 +155,36 @@ steps:
         # was attested to be, so a defaulted read answers the presence-and-truth
         # half exactly as the guarded read did, false whether the field was
         # missing or explicitly false.
-        outcome: >-
-          ${(payload.?attested.orValue(false) &&
-              !sender.local && !run.local &&
-              sender.identity.subject != "" &&
-              sender.identity.subject == inputs.expected_reviewer)
-            ? "attested"
-            : (timed_out ? "expired" : "unattested")}
-        # Re-exposed because `outputs:` replaces what the wait produced:
-        # `recorded`'s log line and the `attested_by` output below still name
-        # the attested sender.
+        # `payload`, `sender`, `run` and `timed_out` are all in scope exactly
+        # here, which is why the *test* is shaped here. What it is not asked to
+        # do here is name the three endings: "attested, or else why not" is a
+        # conditional inside a conditional, which `flow lint` reports
+        # (docs/STYLE.md R5), and the two `value:` steps below take it apart
+        # into the two questions it actually is.
+        attested: >-
+          ${payload.?attested.orValue(false) &&
+            !sender.local && !run.local &&
+            sender.identity.subject != "" &&
+            sender.identity.subject == inputs.expected_reviewer}
+        # Re-exposed because `outputs:` replaces what the wait produced: only a
+        # timeout ever produces `expired`, and `no_attestation` below is what
+        # asks.
+        timed_out: ${timed_out}
+        # Re-exposed because `recorded`'s log line and the `attested_by` output
+        # below still name the attested sender.
         sender: ${sender}
+
+  # Why there is no attestation, in the case where there is not one. Two
+  # states, because `attested` above already answered the third.
+  - id: no_attestation
+    value: >-
+      ${steps.attestation.timed_out ? "expired" : "unattested"}
+
+  # The three endings, joined once. Every reader below compares this name, or
+  # `steps.attestation.attested` where the question really is the boolean.
+  - id: attestation_outcome
+    value: >-
+      ${steps.attestation.attested ? "attested" : steps.no_attestation.value}
 
   # Attested, and by someone real: the sender was actually authenticated (not
   # a local run), said yes, and is the reviewer this run declared it expects.
@@ -177,7 +196,7 @@ steps:
   # access review is not the same conflict of interest a self-approved
   # deploy is.
   - id: recorded
-    if: ${steps.attestation.outcome == "attested"}
+    if: ${steps.attestation.attested}
     log:
       message: >-
         ${"access review attested by %s for %d grant(s)".format(
@@ -191,21 +210,19 @@ steps:
   # so "attested sender who is not the expected reviewer" still has to be
   # checked here rather than delegated to `signals:` entirely.
   - id: unattested
-    if: ${steps.attestation.outcome != "attested"}
+    if: ${!steps.attestation.attested}
     log:
       level: warn
       message: access review closed without a valid attestation
 
 outputs:
   outcome:
-    value: ${steps.attestation.outcome}
+    value: ${steps.attestation_outcome.value}
     description: whether a real attestation closed this review, and why not if it did not
 
   attested_by:
     value: >-
-      ${steps.attestation.outcome == "attested"
-        ? steps.attestation.sender.identity.subject
-        : ""}
+      ${steps.attestation.attested ? steps.attestation.sender.identity.subject : ""}
     description: >-
       who the server attests attested this review, empty unless a real
       attestation happened - the audit trail itself, so not `sensitive:`

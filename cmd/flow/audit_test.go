@@ -81,7 +81,15 @@ func requireNoFinding(t *testing.T, report auditReport, path, want string) {
 		return
 	}
 
-	t.Fatalf("%s is not in the report at all", path)
+	// A file with nothing repeated twice or more is not in the report at all,
+	// which is the strongest possible pass for this assertion rather than a
+	// failure — `examples/enterprise-incident-response` reached exactly that
+	// state in #646's corpus slice. The reason the absence is still checked is
+	// the typo: a `path` naming no file in the corpus would otherwise assert
+	// nothing forever, so the file has to exist even when the report omits it.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s is neither in the report nor on disk: %v", path, err)
+	}
 }
 
 // siteLines is the lines a finding's occurrences sit on, in report order.

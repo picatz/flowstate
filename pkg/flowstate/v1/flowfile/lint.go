@@ -394,7 +394,11 @@ func holdsNestedConditional(e *expr.Expr, inside bool, budget *int) bool {
 func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	var findings []StyleFinding
 
-	for _, repeat := range Audit(wf, pos) {
+	// Canonicalized before the threshold, not after: what a bucket is worth
+	// naming decides which bucket it *is*, and two buckets that name one
+	// expression have to be counted as one before "three or more" means
+	// anything. See [canonicalRepeats].
+	for _, repeat := range canonicalRepeats(Audit(wf, pos)) {
 		if repeat.Count() < styleRepeatThreshold {
 			continue
 		}
@@ -438,6 +442,148 @@ func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	}
 
 	return findings
+}
+
+// canonicalRepeats rewrites each of [Audit]'s buckets onto the expression it is
+// worth naming, and collapses the buckets that land on the same one.
+//
+// The collapse is the half [namedRepeat] alone gets wrong, and it is wrong in
+// the direction that matters — under-counting. `size(inputs.items)` written
+// three times inside fences and once bare is *two* buckets to [Audit]:
+// `string(size(inputs.items))` with three sites, and `size(inputs.items)` with
+// four (a sub-expression survives only where no larger expression occurs as
+// often, and three is not four). Unwrapping each in isolation leaves two
+// findings naming one expression with two different counts — visibly a
+// duplicate here, and in the shape where the wider bucket is disqualified,
+// silently a count below a threshold the file is actually over.
+//
+// Merging keeps the widest bucket rather than unioning site lists, because a
+// union would double-count: every `string(f)` node holds an `f` node, so the
+// narrow bucket's sites are the wide one's sites at the same positions, and
+// nothing distinguishes "the same occurrence, seen twice" from "two occurrences
+// on one line" — which `examples/ops-healthcheck` genuinely has.
+//
+// Grouping is by rendering, confirmed by [exprEqual], which is the discipline
+// [auditCollector] itself uses: the rendering is what a reader compares, and the
+// tree is what decides whether two renderings are the same expression. Two
+// shapes that render alike and are not equal stay separate, exactly as [Audit]
+// keeps them separate.
+func canonicalRepeats(audited []RepeatedExpr) []RepeatedExpr {
+	var canonical []RepeatedExpr
+
+	for _, repeat := range audited {
+		reported, rendered, ok := namedRepeat(repeat.repr, repeat.Expr)
+		if !ok {
+			continue
+		}
+
+		repeat.Expr = rendered
+		repeat.repr = reported
+
+		merged := false
+		for i, kept := range canonical {
+			if kept.Expr != rendered || !exprEqual(kept.repr, reported) {
+				continue
+			}
+			if repeat.Count() > kept.Count() {
+				canonical[i] = repeat
+			}
+			merged = true
+			break
+		}
+		if !merged {
+			canonical = append(canonical, repeat)
+		}
+	}
+
+	return canonical
+}
+
+// namedRepeat is the expression a repetition is worth naming, given the one
+// [Audit] counted — and whether there is one at all.
+//
+// Interpolation desugars every fence to `string(<fence>)` (`interp.go:436`), so
+// a value spliced into three sentences is counted as three statements of
+// `string(x)`: a call nobody typed, wrapping a read that costs nothing. #413
+// has the same shape one layer down, where a missing-overload diagnostic named
+// `string` at an author who had written no such thing.
+//
+// Counting it would be bad advice rather than merely noisy, because the remedy
+// R5 names does not converge. Hoist `string(inputs.amount_cents)` into a
+// `value:` step, read it back the only way a sentence can — `${steps.n.value}`
+// — and the file now states `string(steps.n.value)` three times instead. The
+// finding survives its own fix, forever. Measured, not reasoned: that rewrite
+// was applied to `examples/enterprise-fund-transfer` and reported again.
+//
+// So a conversion is looked through rather than counted:
+//
+//   - `string(<name>)` — a rendering of a name and nothing else. Not a
+//     repetition of any computation, and there is nothing a `value:` step could
+//     hold that a sentence would not immediately re-wrap. Reported as nothing.
+//   - `string(<computation>)` — the computation is the repetition, and naming
+//     *it* does converge: the `value:` step holds the computation, and what the
+//     three sentences then state is `string(steps.n.value)`, which is the case
+//     above and silent. Reported as the computation.
+//   - anything else is itself, unchanged. A repeat that is not a conversion is
+//     the ordinary case this rule was written for.
+//
+// The distinction is convergence and not taste, which is why it is drawn at "is
+// the argument a name" rather than at any judgment about what deserves a step.
+func namedRepeat(e *expr.Expr, rendered string) (*expr.Expr, string, bool) {
+	inner, ok := stringConversion(e)
+	if !ok {
+		return e, rendered, true
+	}
+	if isNameReference(inner) {
+		return nil, "", false
+	}
+
+	innerRendered, ok := renderExpr(inner)
+	if !ok {
+		return nil, "", false
+	}
+
+	return inner, innerRendered, true
+}
+
+// stringConversion reports the argument of a `string(x)` call, and whether the
+// expression was one.
+//
+// A receiver call (`x.string()`) is not this: CEL has no such method, and a
+// plugin's own function of that name is not the conversion interpolation
+// generates.
+func stringConversion(e *expr.Expr) (*expr.Expr, bool) {
+	call := e.GetCallExpr()
+	if call == nil || call.GetTarget() != nil {
+		return nil, false
+	}
+	if call.GetFunction() != "string" || len(call.GetArgs()) != 1 {
+		return nil, false
+	}
+
+	return call.GetArgs()[0], true
+}
+
+// isNameReference reports whether an expression is a name and nothing else —
+// an identifier, or a chain of plain field selections ending at one.
+//
+// A presence test (`has(x.y)`, which parses as a test-only select) is a
+// question rather than a name, and an index is a computation over one, so
+// neither is included.
+func isNameReference(e *expr.Expr) bool {
+	for {
+		switch kind := e.GetExprKind().(type) {
+		case *expr.Expr_IdentExpr:
+			return true
+		case *expr.Expr_SelectExpr:
+			if kind.SelectExpr.GetTestOnly() {
+				return false
+			}
+			e = kind.SelectExpr.GetOperand()
+		default:
+			return false
+		}
+	}
 }
 
 // plural is the "s" a count of more than one earns.

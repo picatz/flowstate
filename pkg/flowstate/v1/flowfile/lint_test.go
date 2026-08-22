@@ -755,3 +755,204 @@ steps:
 	assert.Zero(t, found[0].Line)
 	assert.NotContains(t, found[0].String(), "0:", "an unknown position renders as no position")
 }
+
+// TestLintIsSilentOnAValueSplicedIntoThreeSentences covers the conversion
+// interpolation writes and nobody types.
+//
+// `${x}` desugars to `string(x)` (`interp.go:436`), so three log lines
+// mentioning one input used to be three statements of one call — a repetition
+// of a rendering rather than of a computation. #413 is the same shape one layer
+// down, where a missing-overload diagnostic named `string` at an author who had
+// written no such thing.
+func TestLintIsSilentOnAValueSplicedIntoThreeSentences(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: sentences
+inputs:
+  amount:
+    type: int
+steps:
+  - id: one
+    log:
+      message: transfer of ${inputs.amount} cents was rejected
+  - id: two
+    log:
+      message: approval for ${inputs.amount} cents lapsed
+  - id: three
+    log:
+      message: refusing to move ${inputs.amount} cents
+`)
+
+	requireNoFindings(t, findingsFor(found, StyleRepeatedExpr))
+}
+
+// TestLintReportsTheComputationUnderAFencesConversion is the other half: a
+// conversion is looked *through*, not past.
+//
+// Three sentences each counting the same list is a repeated computation, and
+// the finding has to name the computation rather than the fence's wrapper —
+// both because that is what an author would hoist and because naming the
+// wrapper is what made the advice loop.
+func TestLintReportsTheComputationUnderAFencesConversion(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: counted
+inputs:
+  names:
+    type: list
+steps:
+  - id: one
+    log:
+      message: probed ${size(inputs.names)} service(s)
+  - id: two
+    log:
+      message: ${size(inputs.names)} still to go
+  - id: three
+    log:
+      message: done with ${size(inputs.names)}
+`)
+
+	repeats := findingsFor(found, StyleRepeatedExpr)
+	require.Len(t, repeats, 1)
+	assert.Contains(t, repeats[0].Message, "`size(inputs.names)` is stated 3 times",
+		"the finding names the computation an author would hoist")
+	assert.NotContains(t, repeats[0].Message, "string(",
+		"and never the conversion the fence generated")
+}
+
+// TestTheRepeatRemedyConverges is the property the two tests above exist for,
+// asserted directly rather than implied: applying R5's own remedy to the
+// finding above has to *remove* it.
+//
+// Before this, it did not. Hoisting `string(size(inputs.names))` into a
+// `value:` step and reading the step back the only way a sentence can leaves
+// the file stating `string(steps.probed.value)` three times, and the check
+// reported that too — a finding that survived its own fix, forever. That was
+// found by doing exactly this to `examples/enterprise-fund-transfer`, which is
+// why the fixture below is the shape that rewrite produces rather than a
+// synthetic one.
+func TestTheRepeatRemedyConverges(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: hoisted
+inputs:
+  names:
+    type: list
+steps:
+  - id: probed
+    value: ${size(inputs.names)}
+  - id: one
+    log:
+      message: probed ${steps.probed.value} service(s)
+  - id: two
+    log:
+      message: ${steps.probed.value} still to go
+  - id: three
+    log:
+      message: done with ${steps.probed.value}
+`)
+
+	requireNoFindings(t, findingsFor(found, StyleRepeatedExpr))
+}
+
+// TestLintStillReportsAConversionAnAuthorWrote guards the narrowing from being
+// read as "conversions are exempt". `string(...)` around a computation is
+// reported as that computation wherever it appears, including where no fence
+// generated it — here the author wrote every character of the conversion, and
+// the repetition under it is reported exactly as it is under a fence.
+func TestLintStillReportsAConversionAnAuthorWrote(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: explicit
+inputs:
+  names:
+    type: list
+steps:
+  - id: one
+    log:
+      message: '${"probed " + string(size(inputs.names)) + " service(s)"}'
+  - id: two
+    log:
+      message: '${string(size(inputs.names)) + " still to go"}'
+  - id: three
+    log:
+      message: '${"done with " + string(size(inputs.names))}'
+`)
+
+	repeats := findingsFor(found, StyleRepeatedExpr)
+	require.Len(t, repeats, 1)
+	assert.Contains(t, repeats[0].Message, "`size(inputs.names)` is stated 3 times")
+}
+
+// TestLintMergesAFencedRepeatWithItsBareOne is the case unwrapping each of
+// [Audit]'s buckets in isolation gets wrong (#876 review, Codex 3835405362).
+//
+// `size(inputs.items)` three times inside fences and once bare is two buckets:
+// `string(size(inputs.items))` with three sites, and `size(inputs.items)` with
+// four — a sub-expression survives wherever no larger expression occurs as
+// often, and three is not four. Unwrapping both left two findings naming one
+// expression with two different counts, and the count a reader would act on is
+// whichever came first.
+//
+// One finding, four sites, is what the file actually says.
+func TestLintMergesAFencedRepeatWithItsBareOne(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: mixed
+inputs:
+  items:
+    type: list
+steps:
+  - id: one
+    log:
+      message: probed ${size(inputs.items)} item(s)
+  - id: two
+    log:
+      message: ${size(inputs.items)} still to go
+  - id: three
+    log:
+      message: done with ${size(inputs.items)}
+  - id: four
+    if: ${size(inputs.items) > 0}
+    log:
+      message: nonempty
+`)
+
+	repeats := findingsFor(found, StyleRepeatedExpr)
+	require.Len(t, repeats, 1, "one repetition is one finding, however many buckets counted it")
+	assert.Contains(t, repeats[0].Message, "`size(inputs.items)` is stated 4 times")
+	assert.Contains(t, repeats[0].Message, "on lines 9, 12, 15, 17",
+		"every site, including the bare one no fence wrapped")
+}
+
+// TestLintKeepsTheWiderBucketWhenMerging pins *which* of two merged buckets
+// survives, which is the half the test above cannot see.
+//
+// Two fenced occurrences and one bare: the fenced bucket holds two, under R5's
+// threshold of three, and the bare one holds all three. Keeping the narrower
+// bucket would drop this file below the threshold and report nothing — so the
+// merge takes the wider, and it can always do that safely because every
+// `string(f)` node holds an `f` node, which makes the narrow bucket's sites a
+// subset of the wide one's rather than a set to union with it.
+//
+// Mutation-proofed: inverting the comparison in [canonicalRepeats] fails this
+// and TestLintMergesAFencedRepeatWithItsBareOne; removing the merge entirely
+// fails only that one, because here the wider bucket already reports alone.
+func TestLintKeepsTheWiderBucketWhenMerging(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: barely
+inputs:
+  items:
+    type: list
+steps:
+  - id: one
+    log:
+      message: probed ${size(inputs.items)} item(s)
+  - id: two
+    log:
+      message: ${size(inputs.items)} still to go
+  - id: three
+    if: ${size(inputs.items) > 0}
+    log:
+      message: nonempty
+`)
+
+	repeats := findingsFor(found, StyleRepeatedExpr)
+	require.Len(t, repeats, 1)
+	assert.Contains(t, repeats[0].Message, "`size(inputs.items)` is stated 3 times")
+}

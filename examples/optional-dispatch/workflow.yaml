@@ -47,11 +47,20 @@ steps:
   # Named once, so the three cases are three visible branches rather than a
   # nested conditional repeated at every place that needs the answer — the
   # decomposition #540 asks for, over the one-line ternary this used to be.
+  #
+  # Two steps and not one: three answers in one expression is a conditional
+  # inside a conditional, which `flow lint` reports (docs/STYLE.md R5). `answer`
+  # is what the payload said, `outcome` is whether the payload counts at all.
+  # Note that `answer` is unguarded and always runs — reading `approved` on a
+  # gate nobody answered is safe precisely because the wait's `outputs:` gave
+  # it a default, which is the other half of what this example is showing.
+  - id: answer
+    value: >-
+      ${steps.gate.approved ? "approved" : "rejected"}
+
   - id: outcome
     value: >-
-      ${steps.gate.timed_out || !steps.gate.responded
-          ? "no_response"
-          : (steps.gate.approved ? "approved" : "rejected")}
+      ${steps.gate.timed_out || !steps.gate.responded ? "no_response" : steps.answer.value}
 
   # One switch over the named value, rather than three siblings each
   # re-testing `steps.gate.timed_out` and `steps.gate.approved` by hand.

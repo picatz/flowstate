@@ -347,8 +347,10 @@ The zero-tier-4-findings clause is enforced. `TestShownWorkflowsAreLintClean` ru
 compiled and not linted — and all of them are clean today. A snippet in prose is
 invisible to `flow fix --check`, `flow test` and `flow breaking`, which is what made
 it the half most worth having. Over `examples/` the same check runs as a CI leg, and
-it lands **advisory**: the corpus has 21 findings, measured below, and a check is
-tried against a corpus before it is turned on.
+that leg is **enforcing** since #646's corpus slice: `flow lint --strict examples/`,
+no `continue-on-error`. It landed advisory with 21 findings, measured below, because
+a check is tried against a corpus before it is turned on; the corpus is clean now,
+so the trial is over.
 
 **The byte-identical clause is not satisfied anywhere in the repository today**, and
 the measurement is in Part III. It is stated here as the target because that is what
@@ -395,6 +397,9 @@ table says tier 4 carries; each check's doc comment in
 names it too, so `R5/nested-conditional` is a heading to read here rather than a number
 to look up somewhere. It exits zero on every finding — that is what "warns, never
 blocks" means as an exit code — and `--strict` is the opt-in a corpus held to R8 uses.
+`examples/` is that corpus, and its CI leg passes `--strict` since #646's corpus
+slice; nothing else in the repository does, so the tier is still a suggestion
+everywhere an author's own file is concerned.
 
 Two properties of it are worth knowing before adding a fifth check. It is a *verb*
 rather than a mode of `flow validate`, because a tier-4 finding travelling in the
@@ -460,27 +465,50 @@ are sloppy. It is that the formatter is not yet good enough to be the canon for
 hand-written teaching files, and **that is the first thing the tier-4 slice has to
 resolve**, before R8's CI leg can exist.
 
-**What tier 4 finds in the shown corpus, now that it is the check rather than an
-approximation of one.** `flow lint examples/` reports 21 findings across 12 of the
-86 files it reads, measured at the commit that landed it:
+**What tier 4 found in the shown corpus, and what it finds now.** `flow lint
+examples/` reported 21 findings across 12 of the 86 files it read, measured at the
+commit that landed it:
 
-| Check | Findings | Where |
+| Check | Findings on landing | Where |
 | --- | --- | --- |
-| `R5/nested-conditional` | 12 | 6 files; `examples/expense-approval/workflow.yaml` holds five, and `examples/optional-dispatch/workflow.yaml:52` — the example most recently rewritten *for* style — is one |
+| `R5/nested-conditional` | 12 | 6 files; `examples/expense-approval/workflow.yaml` held five, and `examples/optional-dispatch/workflow.yaml:52` — the example most recently rewritten *for* style — was one |
 | `R5/repeated-expression` | 9 | 8 files, including three of the plugin examples |
 | `R5/equality-dispatch` | 0 | nothing in this corpus dispatches by sibling equality; the shapes that look like it are the partitioned complements the rule is written to stay silent on |
 
 The earlier draft of this paragraph counted 13 nested ternaries by scanning `${...}`
 spans for `?` characters and discounting optional traversals, and said in as many
-words that it was an approximation. The real count is 12, and the difference is the
+words that it was an approximation. The real count was 12, and the difference is the
 point: an approximation of a style rule is a number nobody can act on.
 
-That is not an argument against the rule. It is the corpus the check has to be tried
-against before it is turned on, which is why the CI leg lands advisory rather than
-`--strict`. Turning it on means fixing 21 findings across teaching files that have
-their own tests, and that is a slice of its own — deliberately not folded into the
-one that landed the rule, per the charter's own division between recording a
-disagreement and repairing it.
+**The corpus lints clean today, and the leg is enforcing.** #646's corpus slice
+resolved all 21 and flipped the CI leg in the same diff, so it cannot drift from the
+tree it describes: `flow lint --strict examples/`, no `continue-on-error`, and the
+identical `--strict` in `tools/gate` and `make check`.
+
+Two of the twenty-one were the check's own defect rather than a file's, and both
+were fixed in the check:
+
+- **The `string()` a fence desugars to was counted.** Interpolation rewrites every
+  `${x}` to `string(x)`, so a value spliced into three sentences read as three
+  statements of a call nobody typed — and R5's remedy did not converge: hoisting it
+  into a `value:` step and reading the step back leaves the file stating
+  `string(steps.n.value)` three times instead. Measured, by applying that rewrite and
+  watching the finding come back. `flow lint` now looks *through* a conversion:
+  `string(<name>)` is nothing, `string(<computation>)` is reported as the
+  computation, which does converge.
+- Nothing else needed the rule bent. The remaining nineteen took the remedies R5
+  already names — a second `value:` step for a three-way answer, one name for a
+  repeated element or count — and each file still teaches what it taught, which the
+  examples' own tests and `--coverage-required` are what check.
+
+One thing the slice is honest about costing: a three-way answer is now two steps
+wherever it appears, because the rule admits no single-expression spelling of one.
+`examples/expense-approval` gained four `value:` steps and
+`examples/list-comprehensions` one. That reads better in the enterprise files, where
+each name is a fact a reader wanted anyway, and is a real tax in the small ones,
+where the file's subject is the comprehension rather than the branching. It is
+recorded here rather than argued away: if a later slice adds a table-lookup or
+`switch:`-valued spelling for a small closed mapping, this is the evidence for it.
 
 ### Grandfathered or kept, with the reason on the record
 
