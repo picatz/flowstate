@@ -89,6 +89,131 @@ func TestDelegatedTokenExchange(t *testing.T) {
 	require.Empty(t, sent.form.Get("actor_token_type"))
 }
 
+// TestDelegatedCredentialsAreNotSharedBetweenDelegators is the negative
+// direction for the credential cache: not that a delegator gets its own
+// credential, but that it cannot be handed somebody else's.
+//
+// The cache is keyed on the workload identity and target, which is the whole of
+// what determines an undelegated exchange. A delegated one also depends on the
+// party being acted for, and that key cannot tell two of them apart — so the
+// same workload, step and target acting first for alice and then for bob would
+// serve bob whatever the authorization server minted for alice, inside the
+// credential's lifetime and with no exchange at all.
+func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	delegatorIssuer := newTestIssuer(t, authtest.WithClock(clock.Now))
+	tokenFor := func(subject string) string {
+		return delegatorIssuer.MintToken(delegatorIssuer.Claims(
+			authtest.WithSubject(subject),
+			authtest.WithAudience("https://as.example.com"),
+		))
+	}
+
+	// The authorization server mints a credential naming whoever the subject
+	// token names, which is what makes a mix-up visible in the result.
+	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
+		principal, err := auth.NewOIDCVerifier(
+			auth.Policy{
+				Issuers: []auth.TrustedIssuer{{
+					Name:      "delegators",
+					Issuer:    delegatorIssuer.URL(),
+					Audiences: []string{"https://as.example.com"},
+				}},
+			},
+			auth.WithClock(clock.Now),
+		)
+		require.NoError(t, err)
+
+		verified, err := principal.Verify(r.Context(), r.PostFormValue("subject_token"))
+		require.NoError(t, err)
+
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token": "credential-for-" + verified.Subject,
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	})
+
+	// One exchanger, whose delegator is whoever the current request is acting
+	// for — the shape an agent serving several people has.
+	var acting string
+	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL: party.url + "/token",
+		Audience: "https://as.example.com",
+		Clock:    clock.Now,
+		Delegator: func(context.Context) (auth.Material, string, error) {
+			return auth.NewSingleMaterial(tokenFor(acting)), "", nil
+		},
+	})
+	require.NoError(t, err)
+
+	broker, err := auth.NewBroker(issuer,
+		auth.WithTarget("partner", exchanger),
+		auth.WithAssumeAllowRules("true"),
+		auth.WithBrokerClock(clock.Now),
+	)
+	require.NoError(t, err)
+
+	// Same workload, same step, same target, twice — the cache hit.
+	acting = "alice@example.com"
+	first, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
+	require.NoError(t, err)
+	alice, ok := first.Bearer()
+	require.True(t, ok)
+	require.Equal(t, "credential-for-alice@example.com", alice)
+
+	acting = "bob@example.com"
+	second, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
+	require.NoError(t, err)
+	bob, ok := second.Bearer()
+	require.True(t, ok)
+
+	require.Equal(t, "credential-for-bob@example.com", bob,
+		"a delegated credential must never be served from a cache that cannot tell two delegators apart")
+	require.NotEqual(t, alice, bob, "bob must not receive alice's credential")
+}
+
+// TestUndelegatedCredentialsAreStillCached is the other half, so the fix above
+// cannot be satisfied by simply never caching: an ordinary exchange has nothing
+// beyond the workload and target to key on, and still gets one exchange.
+func TestUndelegatedCredentialsAreStillCached(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	var exchanges int
+	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
+		exchanges++
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"access_token": "downstream-token",
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+	})
+
+	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL: party.url + "/token",
+		Audience: "https://as.example.com",
+		Clock:    clock.Now,
+	})
+	require.NoError(t, err)
+
+	broker, err := auth.NewBroker(issuer,
+		auth.WithTarget("partner", exchanger),
+		auth.WithAssumeAllowRules("true"),
+		auth.WithBrokerClock(clock.Now),
+	)
+	require.NoError(t, err)
+
+	for range 3 {
+		_, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 1, exchanges, "an undelegated exchange is still cached")
+}
+
 // TestDelegatedTokenExchangeFailsClosed covers what a delegated exchange must
 // never degrade into.
 //

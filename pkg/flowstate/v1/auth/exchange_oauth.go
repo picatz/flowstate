@@ -188,6 +188,12 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 // Name implements [Exchanger].
 func (e *tokenExchanger) Name() string { return e.name }
 
+// isDelegated implements delegatingExchanger, so that [Broker] does not serve
+// one delegator's credential to another from a cache keyed on the workload
+// alone. See the call site in Broker.Credential for why that key cannot tell
+// two delegators apart.
+func (e *tokenExchanger) isDelegated() bool { return e.delegator != nil }
+
 // Requirement implements [Exchanger].
 func (e *tokenExchanger) Requirement() Requirement {
 	return Requirement{Audience: e.audience}
