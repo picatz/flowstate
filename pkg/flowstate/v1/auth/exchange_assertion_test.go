@@ -126,7 +126,11 @@ func TestAssertionCredentialDoesNotPrintTheToken(t *testing.T) {
 		fmt.Sprintf("%v", credential),
 		fmt.Sprintf("%+v", credential),
 		fmt.Sprintf("%#v", credential),
-		fmt.Sprintf("%s", credential), //lint:ignore S1025 the verb an operator's log line uses is the one under test
+		// %s is written out rather than calling String(), because the verb an
+		// operator's log line uses is the one under test. S1025 does not fire
+		// on it — Credential implements fmt.Formatter, not only Stringer — so
+		// there is nothing here to silence.
+		fmt.Sprintf("%s", credential),
 		fmt.Sprintf("%v", holder),
 		fmt.Sprintf("%+v", holder),
 		fmt.Sprintf("%#v", holder),
