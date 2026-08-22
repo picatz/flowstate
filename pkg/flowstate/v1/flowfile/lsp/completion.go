@@ -268,6 +268,11 @@ func lookupDSLKey(level, name string) (dslKey, bool) {
 // document is usually mid-edit and therefore invalid at exactly the moment
 // completion is requested.
 func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
+	// See [clampPosition]: a coordinate the protocol cannot express is brought
+	// to the origin here, so that every range this answer carries is one the
+	// client can apply.
+	pos = clampPosition(pos)
+
 	empty := &lsp.CompletionList{IsIncomplete: false, Items: []lsp.CompletionItem{}}
 	if doc.tooLarge {
 		return empty

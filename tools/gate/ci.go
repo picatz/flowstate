@@ -14,10 +14,18 @@ import (
 const (
 	flowfilePkg = modulePath + "/pkg/flowstate/v1/flowfile"
 	pluginPkg   = modulePath + "/pkg/flowstate/v1/plugin"
-	// v1Pkg is the root v1 package: home of FuzzWebhookEventBinding (#799),
-	// alongside every non-fuzz test already reading webhook.go, eval.go and
-	// the rest of this package's own files.
+	// v1Pkg is the root v1 package: home of FuzzWebhookEventBinding (#799)
+	// and FuzzCELEvaluate (#403), alongside every non-fuzz test already
+	// reading webhook.go, eval.go and the rest of this package's own files.
 	v1Pkg = modulePath + "/pkg/flowstate/v1"
+	// lspPkg holds FuzzLSPDocumentEdits (#403). Named separately from
+	// flowfilePkg even though it sits underneath it, because the affected
+	// set is computed over the import graph and not over the directory
+	// tree: lsp imports flowfile, so a flowfile change reaches this
+	// package, and a change to *this* package reaches nothing above it. A
+	// diff touching only the language server would otherwise skip the job
+	// that now fuzzes it.
+	lspPkg = modulePath + "/pkg/flowstate/v1/flowfile/lsp"
 )
 
 // decision is one job in .github/workflows/ci.yml and whether this diff can
@@ -121,14 +129,14 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 			Why: pick(goAffected, fmt.Sprintf("%d affected package(s)", len(affected)),
 				"no Go package is affected")},
 
-		// fuzz-smoke's six targets live in four packages. A target's
+		// fuzz-smoke's ten targets live in five packages. A target's
 		// behaviour is its package's behaviour, so the affected set
 		// decides this the same way it decides the ordering leg.
 		{Job: "fuzz-smoke", Output: "fuzz_smoke",
 			Run: needsFuzz(affected),
 			Why: pick(needsFuzz(affected),
 				"a package holding a fuzz target is affected",
-				"no package holding a fuzz target (flowfile, cmd/flow, plugin, flowstate/v1) is affected")},
+				"no package holding a fuzz target (flowfile, flowfile/lsp, cmd/flow, plugin, flowstate/v1) is affected")},
 
 		{Job: "appearance", Output: "appearance",
 			Run: needsAppearance(p, affected),
@@ -148,8 +156,9 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 
 // needsFuzz reports whether any package holding a fuzz target is affected.
 func needsFuzz(affected []string) bool {
-	return contains(affected, flowfilePkg) || contains(affected, cmdFlowPkg) ||
-		contains(affected, pluginPkg) || contains(affected, v1Pkg)
+	return contains(affected, flowfilePkg) || contains(affected, lspPkg) ||
+		contains(affected, cmdFlowPkg) || contains(affected, pluginPkg) ||
+		contains(affected, v1Pkg)
 }
 
 // needsAppearance reports whether this diff can move a recorded golden.

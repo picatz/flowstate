@@ -37,7 +37,7 @@ check:
 	GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 	GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
-# The six bounded fuzz smokes CI's fuzz-smoke job runs, verbatim, so the local
+# The ten bounded fuzz smokes CI's fuzz-smoke job runs, verbatim, so the local
 # gate cannot pass a commit the required job rejects. Time-bounded, single
 # worker, memory-bounded: a fuzzer's purpose is to find the input that
 # explodes, and these bounds are what make it safe to run on every push.
@@ -48,6 +48,10 @@ fuzz-smoke:
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
 	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzWebhookEventBinding -fuzztime 30s ./pkg/flowstate/v1/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzFixIdempotent -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzFormatIdempotent -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELEvaluate -fuzztime 30s ./pkg/flowstate/v1/
+	GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzLSPDocumentEdits -fuzztime 30s ./pkg/flowstate/v1/flowfile/lsp/
 
 # Bounded full test run (no -short). CI's `test` step runs this target rather
 # than its own copy of the command, so the bound cannot drift between the two —

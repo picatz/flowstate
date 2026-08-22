@@ -494,9 +494,25 @@ jobs:
   # path #799 found with zero fuzz reachability, the most attacker-reachable one in
   # the repo. Six times 30s measured at 280s total for five (docs/CI.md, PR #659,
   # 2026-08-15) — already most of the five-minute budget the comment this replaces
-  # claimed was comfortable — so the sixth target moves this job to
+  # claimed was comfortable — so the sixth target moved this job to
   # `timeout-minutes: 6` rather than leaving a ~20s margin against a runner having
-  # an ordinary slow day. Required
+  # an ordinary slow day.
+  #
+  # Ten now: #403's audit found the coverage map had holes where this repository's
+  # own history says bugs live, and four of them landed together. Two are the
+  # rewriters' *properties* rather than their crash-freedom —
+  # FuzzFixIdempotent and FuzzFormatIdempotent assert a fixed point, all-of-the-
+  # document-or-none (#382), and preservation, which is the class where every
+  # historical defect (both `flow fix` corruptions, #339, #381) produced bytes
+  # rather than a panic and so was invisible to a crash oracle. FuzzCELEvaluate is
+  # the runtime half of the CEL bound that FuzzCELCompile does not reach: the cost
+  # budget is spent by the interpreter, and what it is spent on is decided as much
+  # by the activation's data as by the expression's text. FuzzLSPDocumentEdits
+  # drives an editor's incremental edits and position requests, and found a
+  # backwards completion-edit range on its own seed corpus the first time it ran.
+  # Four more targets at 30s each puts the same linear estimate near 470s, so the
+  # job moves to `timeout-minutes: 10` on the identical reasoning: leave a real
+  # margin rather than a slow runner's worth. Required
   # since 2026-08-09: its 48h advisory window (the same one staticcheck had)
   # closed on 2026-08-04 and the job has run green since, so a failure here is
   # now a finding to triage, never flake to wave through. A crasher the fuzzer
@@ -506,7 +522,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.fuzz_smoke == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -538,6 +554,18 @@ jobs:
 
       - name: Fuzz smoke (FuzzWebhookEventBinding)
         run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzWebhookEventBinding -fuzztime 30s ./pkg/flowstate/v1/
+
+      - name: Fuzz smoke (FuzzFixIdempotent)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzFixIdempotent -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzFormatIdempotent)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzFormatIdempotent -fuzztime 30s ./pkg/flowstate/v1/flowfile/
+
+      - name: Fuzz smoke (FuzzCELEvaluate)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELEvaluate -fuzztime 30s ./pkg/flowstate/v1/
+
+      - name: Fuzz smoke (FuzzLSPDocumentEdits)
+        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzLSPDocumentEdits -fuzztime 30s ./pkg/flowstate/v1/flowfile/lsp/
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
   # real terminal and the goldens under cmd/flow/internal/appearance/testdata say
