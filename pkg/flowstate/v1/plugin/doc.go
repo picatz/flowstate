@@ -66,6 +66,13 @@
 //   - A scheme not in [Config.PermittedSchemes], when that is set. A deployment
 //     that lists what it permits gets exactly that and nothing a newly dropped-in
 //     binary adds.
+//   - A binary whose digest is not the one [Config.PinnedDigests] declared for
+//     the name it answers to. Refused before the process is started, so nothing
+//     the plugin says about itself is part of the decision. Digest pinning is
+//     admission of *bytes*: it says these exact bytes and is deliberately silent
+//     about provenance — who built them, and whether anyone vouches for them.
+//     Whether a handshake should carry a signature instead, and what a
+//     deployment would trust to verify one, is open (#146).
 //
 // # The handshake, end to end
 //
