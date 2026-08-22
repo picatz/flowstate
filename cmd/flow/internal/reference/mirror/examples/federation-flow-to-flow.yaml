@@ -1,0 +1,29 @@
+# One Flowstate deployment starting a run on another, with no shared secret
+# between them. The step names a credential target and nothing else; what
+# reaches the peer is the assertion this deployment signed for itself, and the
+# peer verifies it against the keys this deployment publishes.
+edition: v2026.3
+name: federation-flow-to-flow
+
+steps:
+  # The peer's Connect RPC surface, called as plain HTTP. `credential:` names
+  # the deployment's `assertion` target, so the worker mints an assertion whose
+  # audience is the peer and applies it as the bearer token inside the activity.
+  - id: start_on_peer
+    http:
+      method: POST
+      url: https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Run
+      credential: peer-flowstate
+      json:
+        workflow: reindex-search
+      expect: ${response.status_code == 200}
+
+  # The peer answers with the run it started, which is what makes the boundary
+  # auditable from this side: the caller records the run id it caused.
+  - id: record
+    vars:
+      started: ${json_parse(steps.start_on_peer.body)}
+    log:
+      message: started a run on the peer deployment
+      fields:
+        peer_run: ${started['run_id']}

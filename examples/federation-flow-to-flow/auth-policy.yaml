@@ -1,0 +1,28 @@
+# Deployment A's file: both directions of trust, one document.
+#
+# `issuers:` is inbound — who may call *this* deployment. `federation:` is
+# outbound — who this deployment may call, and as whom.
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [flowstate]
+    algorithms: [RS256]
+
+federation:
+  issuer: https://flowstate.example.com
+
+  # The replay window of a directly presented assertion is its lifetime, and
+  # this is the only knob that sets it. Two minutes is long enough to reach a
+  # peer and short enough that a captured assertion is worth little.
+  assertion_lifetime: 2m
+
+  allow:
+    - 'target == "peer-flowstate" && workload.namespace == "acme"'
+
+  targets:
+    # No exchange: the peer is an OIDC verifier, so the assertion *is* the
+    # credential. `audience:` is the peer's own identifier, and it is the only
+    # place this assertion is good for.
+    - name: peer-flowstate
+      assertion:
+        audience: https://flowstate.peer.example.com
