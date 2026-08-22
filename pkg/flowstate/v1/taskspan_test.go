@@ -1,4 +1,4 @@
-package engine
+package flowstatev1_test
 
 import (
 	"testing"
@@ -13,6 +13,11 @@ import (
 // must be named on the span beside a top-level one, because a trace that lists
 // some of a step's secrets reads as the whole list to anyone deciding what a
 // denied step asked for.
+//
+// It moved here with the function it covers (#523's gap 3): the task span's
+// vocabulary belongs to the package both drivers import, so this now pins the
+// behaviour for local runs as well as durable ones rather than for the engine
+// alone.
 func TestSecretReferenceAttributesSeeIntoAStructure(t *testing.T) {
 	t.Parallel()
 
@@ -28,11 +33,11 @@ func TestSecretReferenceAttributesSeeIntoAStructure(t *testing.T) {
 		},
 	}
 
-	attrs := secretReferenceAttributes(task)
+	attrs := v1.SecretReferenceAttributes(task)
 
 	var refs []string
 	for _, attr := range attrs {
-		if string(attr.Key) == "flowstate.secret.refs" {
+		if string(attr.Key) == v1.SpanAttributeSecretRefs {
 			refs = attr.Value.AsStringSlice()
 		}
 	}

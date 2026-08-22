@@ -34,12 +34,14 @@ import (
 // activity. A driver that lost the context, or that ran the task through some
 // other client, would fail here and nowhere else.
 //
-// This slice narrows the drivers' disagreement about tracing without closing
-// it. Gap 3 of #523 survives: the durable driver still opens
-// `flowstate.task/<name>` around every task and the local driver opens nothing,
-// so a local run's trace is this one span where a durable run's is a tree. What
-// both drivers must agree on today is exactly what is asserted below — that the
-// call itself is traced and propagated.
+// This slice narrowed the drivers' disagreement about tracing without closing
+// it, and gap 3 has since closed the rest of it: the local driver opens
+// `flowstate.task/<name>` too (see taskspan.go), so the client span asserted
+// below now hangs off a task span under *either* driver rather than being a
+// root locally and a child durably. That nesting is asserted here as well —
+// it is the cheapest possible evidence that the two drivers' spans are one
+// vocabulary and not two, since it can only hold if the local driver's span
+// context is the one the task's client actually runs on.
 
 // HTTPSpanQuerySecret is the credential-shaped value this case hides in the
 // request's query string, distinctive enough that a substring search cannot
@@ -195,6 +197,15 @@ func AssertHTTPSpan(tb testing.TB, server *TracedHTTPServer, recorder *tracetest
 		tb.Fatalf("the span covering an outbound call is %s, want a client span", stub.SpanKind)
 	}
 
+	// And where it sits: under the task span for the step that made the call,
+	// on both drivers. A client span rooted at the top of a trace is what the
+	// local driver produced before #523's gap 3 — the call was traced, and
+	// nothing said which step made it.
+	if parent := parentSpanName(recorder, stub); parent != v1.TaskSpanName("http") {
+		tb.Fatalf("the outbound call's span sits under %q, want %q — nothing in the trace says which step made the call",
+			parent, v1.TaskSpanName("http"))
+	}
+
 	// And the containment, in the direction that can fail: rendered through the
 	// %v family over every span, not checked against the one attribute somebody
 	// remembered.
@@ -214,6 +225,18 @@ func clientSpanFor(recorder *tracetest.SpanRecorder, received trace.SpanContext)
 	}
 
 	return tracetest.SpanStub{}, false
+}
+
+// parentSpanName names the recorded span one level above the given one, or the
+// empty string where it is a root or its parent was not recorded here.
+func parentSpanName(recorder *tracetest.SpanRecorder, stub tracetest.SpanStub) string {
+	for _, candidate := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
+		if candidate.SpanContext.SpanID() == stub.Parent.SpanID() {
+			return candidate.Name
+		}
+	}
+
+	return ""
 }
 
 // spanNames lists what was recorded, for a failure message that says what
