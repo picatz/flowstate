@@ -300,11 +300,6 @@ func triggerSite(pos *Positions, site v1.ValueSite, visit func(step, field, path
 	}
 }
 
-// site records every countable sub-expression of one written expression.
-func (c *auditCollector) site(step, field string, val *v1.Value) {
-	c.siteAt(step, field, field, val)
-}
-
 // siteAt records one written expression whose position was recorded under a path
 // that is not simply its field name.
 func (c *auditCollector) siteAt(step, field, path string, val *v1.Value) {
