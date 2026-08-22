@@ -109,6 +109,25 @@
 // Every denial is a [*DenyError] wrapping [ErrDenied], and names both what was
 // denied and which rule or category denied it. Callers report a policy decision
 // distinctly from a network failure with errors.Is(err, [ErrDenied]).
+//
+// # Tracing
+//
+// The client a policy hands out opens one CLIENT span per request — covering
+// the whole exchange, up to the response body being read or closed, since a
+// response is not over when its headers arrive — and injects W3C trace context
+// onto the request, so a call a workflow makes is correlatable from
+// both sides: this process's trace shows the hop, and the service on the other
+// end can parent its own span under it. Nothing is configured for this — the
+// tracer comes from the globally installed provider, and with none installed
+// nothing is recorded and no header is written: the no-op tracer's span context
+// is invalid, and an invalid span context injects nothing.
+//
+// A span says the shape of the call and never its content: the method, the
+// scheme, the host and port dialed, and the status returned. The URL is not
+// recorded in any form, because every part of one can carry a credential — a
+// token in the query, a secret path segment in a webhook URL, a password in
+// userinfo — and a span is exported to a collector that is not tenant-scoped.
+// [tracingRoundTripper] has the whole rule and the reasoning behind it.
 package netpolicy
 
 import (
@@ -254,7 +273,13 @@ func (p *Policy) newClient() *http.Client {
 	}
 
 	return &http.Client{
-		Transport:     &roundTripper{policy: p, next: transport},
+		// Tracing wraps the policy rather than the other way around, so the span
+		// covers the policy's answer as well as the peer's — a denial is an
+		// outcome of the request, and a refused request that produced no span at
+		// all would be the one an operator most wants to find. See
+		// [tracingRoundTripper] for what a span may say, which is much less than
+		// it knows.
+		Transport:     &tracingRoundTripper{next: &roundTripper{policy: p, next: transport}},
 		CheckRedirect: p.checkRedirect,
 		Timeout:       p.cfg.timeout,
 	}
