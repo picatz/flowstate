@@ -1,6 +1,8 @@
 package flowstatev1
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -254,4 +256,123 @@ func TestParseDescriptorProseRefusesWhatIsNotADescriptorSet(t *testing.T) {
 	// descriptor set".
 	_, err = ParseDescriptorProse([]byte{0x78, 0x01})
 	require.ErrorContains(t, err, "no files")
+}
+
+// setOfExactly returns a serialized descriptor set of exactly n bytes, padded
+// with a comment nobody reads.
+//
+// Padding through a comment rather than a field name is deliberate: the bound
+// under test is on the *artifact*, and prose is the part of one an author can
+// grow without limit — a schema with a long design note over every field is an
+// ordinary schema, and the reason this is bounded by bytes rather than by
+// declarations.
+func setOfExactly(t *testing.T, n int) []byte {
+	t.Helper()
+
+	file := proseFileProto()
+	file.SourceCodeInfo = &descriptorpb.SourceCodeInfo{
+		Location: []*descriptorpb.SourceCodeInfo_Location{{
+			Path:            []int32{4, 0, 2, 0},
+			Span:            []int32{1, 0, 1},
+			LeadingComments: proto.String(""),
+		}},
+	}
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{file}}
+
+	// Converged rather than computed, because a length prefix rolls over to
+	// another byte as the padding passes 127, 16383 and 2097151: an arithmetic
+	// guess lands near n, and "near" is exactly the distinction this test exists
+	// to make. Each round corrects the guess by how far the last one missed, so
+	// it settles in two or three; the loop is bounded so a fixture that cannot
+	// hit n fails the test rather than spinning.
+	pad := 0
+	for range 64 {
+		file.SourceCodeInfo.Location[0].LeadingComments = proto.String(strings.Repeat("x", pad))
+
+		raw, err := proto.Marshal(set)
+		require.NoError(t, err)
+
+		if len(raw) == n {
+			return raw
+		}
+
+		pad += n - len(raw)
+		require.GreaterOrEqual(t, pad, 0, "a set of %d bytes is smaller than an empty one", n)
+	}
+
+	t.Fatalf("could not build a descriptor set of exactly %d bytes", n)
+
+	return nil
+}
+
+// setOfFiles returns a serialized descriptor set holding n distinct files, each
+// small enough that the count is what the bound is being asked about.
+func setOfFiles(t *testing.T, n int) []byte {
+	t.Helper()
+
+	set := &descriptorpb.FileDescriptorSet{File: make([]*descriptorpb.FileDescriptorProto, 0, n)}
+	for i := range n {
+		set.File = append(set.File, &descriptorpb.FileDescriptorProto{
+			Name:    proto.String(fmt.Sprintf("prose/v1/p%d.proto", i)),
+			Package: proto.String("prose.v1"),
+			Syntax:  proto.String("proto3"),
+		})
+	}
+
+	raw, err := proto.Marshal(set)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(raw), DefaultMaxDescriptorBytes,
+		"this fixture must be refused for its file count, not for its size")
+
+	return raw
+}
+
+// TestParseDescriptorProseIsBounded is the house rule applied to both resources
+// the bytes decide: the bound is asserted *reached* as well as not exceeded,
+// because `<= limit` is also satisfied by a parser that gives up early, and a
+// limit nothing ever touches is a limit nothing tests.
+//
+// Two bounds rather than one, because they answer different attacks. A byte
+// bound does nothing about a set of a hundred thousand empty files, and a file
+// bound does nothing about one file carrying a gigabyte of comments.
+func TestParseDescriptorProseIsBounded(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bytes", func(t *testing.T) {
+		t.Parallel()
+
+		atLimit := setOfExactly(t, DefaultMaxDescriptorBytes)
+		require.Len(t, atLimit, DefaultMaxDescriptorBytes)
+
+		prose, err := ParseDescriptorProse(atLimit)
+		require.NoError(t, err, "an artifact of exactly the limit is inside it")
+		assert.NotNil(t, prose)
+
+		_, err = ParseDescriptorProse(setOfExactly(t, DefaultMaxDescriptorBytes+1))
+		require.ErrorContains(t, err, "over the")
+		assert.ErrorContains(t, err, "byte limit")
+	})
+
+	t.Run("files", func(t *testing.T) {
+		t.Parallel()
+
+		prose, err := ParseDescriptorProse(setOfFiles(t, DefaultMaxDescriptorFiles))
+		require.NoError(t, err, "a set of exactly the file limit is inside it")
+		require.NotNil(t, prose)
+		assert.Len(t, prose.byPath, DefaultMaxDescriptorFiles)
+
+		_, err = ParseDescriptorProse(setOfFiles(t, DefaultMaxDescriptorFiles+1))
+		require.ErrorContains(t, err, "file limit")
+	})
+}
+
+// TestTheProseBoundIsTheBoundAHostApplies is the agreement the constants exist
+// for: an artifact this parser accepts is one whose descriptors a host with
+// default configuration can accept, so an author cannot be refused at a host for
+// a size their own build called fine.
+func TestTheProseBoundIsTheBoundAHostApplies(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 1<<20, DefaultMaxDescriptorBytes)
+	assert.Equal(t, 256, DefaultMaxDescriptorFiles)
 }

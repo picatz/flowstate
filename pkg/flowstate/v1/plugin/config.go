@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -117,12 +118,21 @@ const (
 	// DefaultMaxDescriptorBytes bounds one serialized descriptor in a task
 	// manifest. Descriptors are attacker-chosen input that the host parses and
 	// links, so their size is bounded before any of that happens.
-	DefaultMaxDescriptorBytes = 1 << 20 // 1 MiB
+	//
+	// Defined in flowstatev1 rather than here, because the *writing* side needs
+	// the same number: a plugin reading its own descriptor set for the comments
+	// to attach ([flowstatev1.ParseDescriptorProse]) bounds it with this, so an
+	// artifact too large for a host to accept is refused at the plugin's startup
+	// — where its author sees it — rather than parsed there and refused later
+	// (#874 review). One bound, read by both sides, cannot come to mean two
+	// different sizes.
+	DefaultMaxDescriptorBytes = flowstatev1.DefaultMaxDescriptorBytes
 
 	// DefaultMaxDescriptorFiles bounds how many files one descriptor may carry
 	// when it is a FileDescriptorSet. Depth bounds do not stop breadth
 	// explosions, so this bounds breadth and [maxDescriptorDepth] bounds depth.
-	DefaultMaxDescriptorFiles = 256
+	// Defined alongside the byte bound above, for the same reason.
+	DefaultMaxDescriptorFiles = flowstatev1.DefaultMaxDescriptorFiles
 
 	// DefaultMaxCatalogPlugins, DefaultMaxCatalogTasks and
 	// DefaultMaxCatalogDescriptorBytes bound a catalog document read by

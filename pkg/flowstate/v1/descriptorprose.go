@@ -23,6 +23,27 @@ import (
 // manifest already carried, so nothing new travels and no second channel exists
 // to disagree with the first.
 
+// The bounds on a serialized descriptor, in the package both sides of the
+// plugin boundary import.
+//
+// They are the numbers [github.com/picatz/flowstate/pkg/flowstate/v1/plugin]'s
+// Config applies to a descriptor arriving from a plugin, defined here so the
+// side that *writes* one bounds it with the same value. The host's bound is not
+// a substitute for this one — it is applied after these bytes have already been
+// unmarshaled in the plugin's own process — and a second pair of constants would
+// be one bound wearing two numbers.
+const (
+	// DefaultMaxDescriptorBytes bounds one serialized descriptor: the bytes a
+	// plugin sends, and the descriptor set it reads for the comments to attach
+	// to them.
+	DefaultMaxDescriptorBytes = 1 << 20 // 1 MiB
+
+	// DefaultMaxDescriptorFiles bounds how many files one of those may carry.
+	// Depth bounds do not stop breadth explosions, so this bounds breadth and
+	// the reader's own depth bound bounds depth.
+	DefaultMaxDescriptorFiles = 256
+)
+
 // DescriptorProse holds the source comments of a `buf build` descriptor set,
 // keyed by the file path they describe.
 //
@@ -46,9 +67,26 @@ type DescriptorProse struct {
 // Bytes that are not a descriptor set, or a set carrying no file, are an error:
 // that is an author's build being wrong about its own schema, and it is worth
 // hearing about once at startup rather than never.
+//
+// This is exported, and an exported parser of a serialized descriptor is a
+// parser somebody will hand bytes it did not build — a file discovered at run
+// time, an artifact a build system fetched, a set from elsewhere. So it is
+// bounded in the two resources those bytes decide: size, before anything is
+// unmarshaled, and file count after, which the size bound is what makes finite.
+// The numbers are [DefaultMaxDescriptorBytes] and [DefaultMaxDescriptorFiles] —
+// the ones a host applies to the descriptor these comments end up inside — so a
+// set too large to be accepted at the far end is refused here, at the author's
+// own startup, rather than carried that far (#874 review).
 func ParseDescriptorProse(raw []byte) (*DescriptorProse, error) {
 	if len(raw) == 0 {
 		return nil, nil
+	}
+
+	if len(raw) > DefaultMaxDescriptorBytes {
+		return nil, fmt.Errorf(
+			"reading a descriptor set for its comments: it is %d bytes, over the %d byte limit",
+			len(raw), DefaultMaxDescriptorBytes,
+		)
 	}
 
 	set := &descriptorpb.FileDescriptorSet{}
@@ -57,6 +95,12 @@ func ParseDescriptorProse(raw []byte) (*DescriptorProse, error) {
 	}
 	if len(set.GetFile()) == 0 {
 		return nil, fmt.Errorf("reading a descriptor set for its comments: it holds no files")
+	}
+	if len(set.GetFile()) > DefaultMaxDescriptorFiles {
+		return nil, fmt.Errorf(
+			"reading a descriptor set for its comments: it holds %d files, over the %d file limit",
+			len(set.GetFile()), DefaultMaxDescriptorFiles,
+		)
 	}
 
 	prose := &DescriptorProse{byPath: make(map[string]*descriptorpb.FileDescriptorProto, len(set.GetFile()))}
