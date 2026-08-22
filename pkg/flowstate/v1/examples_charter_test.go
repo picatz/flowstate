@@ -140,12 +140,12 @@ func TestEveryLanguageConstructHasAnExample(t *testing.T) {
 // everything nested inside it.
 //
 // The recursion is over the *message*, not over the node shapes this package
-// knows about: any field holding a nested node is followed, whatever message
+// knows about: every message-valued field is followed, whatever message
 // introduced it. A `switch:` case, a `parallel:` branch, a loop body, a
-// compensation — all of them are reached because they hold nodes, and a node
-// nesting invented tomorrow is reached for the same reason, with nothing here to
-// update. Written the other way round — a switch over the kinds — this would be
-// one more hand-kept list of the thing it is checking.
+// compensation — all of them are reached without being named here, and a nesting
+// invented tomorrow is reached for the same reason, with nothing here to update.
+// Written the other way round — a switch over the kinds — this would be one more
+// hand-kept list of the thing it is checking.
 func walkConstructs(msg protoreflect.Message, report func(string)) {
 	desc := msg.Descriptor()
 
@@ -160,8 +160,12 @@ func walkConstructs(msg protoreflect.Message, report func(string)) {
 		}
 	}
 
-	if node, ok := msg.Interface().(*v1.Node); ok && node.GetTask() != nil {
-		report("task." + node.GetTask().GetName())
+	// Every [v1.Task], wherever it sits — a step's own, and the one a
+	// compensation carries. `undo:` holds a Task directly rather than a Node, so
+	// reading the name off the *node* would miss a task demonstrated only as the
+	// way something is taken back.
+	if task, ok := msg.Interface().(*v1.Task); ok {
+		report("task." + task.GetName())
 	}
 
 	msg.Range(func(field protoreflect.FieldDescriptor, value protoreflect.Value) bool {
@@ -206,8 +210,58 @@ func oneofFields(desc protoreflect.MessageDescriptor, name protoreflect.Name) []
 	return fields
 }
 
-// exampleCorpusIsReadable is a guard on the globs above: a rename that made them
-// match nothing would otherwise make the charter pass by checking nothing.
+// TestWalkConstructsSeesNestedConstructs is the guard on the walker itself.
+//
+// A charter that reports full coverage because its walk stops at the top level
+// is worse than no charter: it is a green tick over the exact gap it was written
+// to find. So the walk is held to a workflow whose interesting constructs are
+// all *inside* something else — a wait and a task nested two blocks deep, and a
+// task reachable only as a compensation — and asked to name them.
+func TestWalkConstructsSeesNestedConstructs(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(`
+edition: v2026.3
+name: nested
+steps:
+  - id: outer
+    switch:
+      value: ${1}
+      cases:
+        - case: 1
+          steps:
+            - id: inner
+              loop:
+                until: ${steps.gate.timed_out}
+                max_iterations: 2
+                steps:
+                  - id: gate
+                    wait_for_signal:
+                      name: something
+                      timeout: 1s
+                  - id: work
+                    log:
+                      message: nested
+                    undo:
+                      log:
+                        message: taken back
+`))
+	require.NoError(t, err)
+
+	seen := map[string]bool{}
+	for _, node := range wf.GetSteps() {
+		walkConstructs(node.ProtoReflect(), func(construct string) { seen[construct] = true })
+	}
+
+	for _, construct := range []string{"node.switch", "node.loop", "node.wait", "wait.signal", "node.task", "task.log"} {
+		assert.True(t, seen[construct],
+			"the walk did not reach %s in a workflow that has one, so the charter would report coverage it never checked", construct)
+	}
+}
+
+// TestExampleCorpusGlobsMatchTheTree is a guard on the globs above: a rename that
+// made them match nothing would otherwise make the charter pass by checking
+// nothing.
 func TestExampleCorpusGlobsMatchTheTree(t *testing.T) {
 	t.Parallel()
 
