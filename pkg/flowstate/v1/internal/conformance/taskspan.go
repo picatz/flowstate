@@ -69,9 +69,10 @@ const TaskSpanSecret = "s3cr3t-input-value-that-must-never-be-exported"
 // per *step* rather than per execution would produce two spans where the other
 // produced three. It also puts a non-task node in the run — the `for_each`
 // itself — which opens no `flowstate.*` span on either driver, and the shape
-// below says so by not listing one. Run-level and step-level spans are #523's
-// gap 4 and stay out of this slice; when they land, this expectation is where
-// the two drivers have to start agreeing about them.
+// below says so by not listing one. That stayed true when #523's gap 4 landed:
+// a span per non-task step was decided *against* (see [v1.StartRunSpan]'s doc
+// for the cardinality argument), and the run-level span is asserted by
+// [AssertRunIsOneTree] rather than folded in here.
 func TaskSpanWorkflow() *v1.Workflow {
 	return &v1.Workflow{
 		Name:    "task-spans",
@@ -121,6 +122,19 @@ func TaskSpanExpectedOutputs() *v1.Workflow_StepOutputs {
 		}},
 	}}
 }
+
+// taskSpanPrefix is what a task span's name starts with, and the filter every
+// reduction below applies.
+//
+// Narrower than `flowstate.` on purpose, since #547: the local driver opens a
+// `flowstate.run/<workflow>` span covering the whole run and the durable driver
+// does not, because Temporal's interceptor already opens one at that seam (see
+// [v1.StartRunSpan]). Reducing to *task* spans keeps this expectation the claim
+// it was written to be — the tree of task executions, identical under either
+// driver — and leaves the run root to [AssertRunIsOneTree], which takes the
+// root's name as a parameter because the two drivers legitimately name it
+// differently.
+const taskSpanPrefix = "flowstate.task/"
 
 // TaskSpanNode is one `flowstate.*` span reduced to what both drivers must say
 // the same way: its name, and the name of the nearest `flowstate.*` span above
@@ -203,7 +217,7 @@ func assertTaskSpanAttributes(tb testing.TB, recorder *tracetest.SpanRecorder) {
 	}
 
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
-		if !strings.HasPrefix(stub.Name, "flowstate.") {
+		if !strings.HasPrefix(stub.Name, taskSpanPrefix) {
 			continue
 		}
 
@@ -249,7 +263,7 @@ func recordedTaskSpans(recorder *tracetest.SpanRecorder) []TaskSpanNode {
 
 	var nodes []TaskSpanNode
 	for _, stub := range stubs {
-		if !strings.HasPrefix(stub.Name, "flowstate.") {
+		if !strings.HasPrefix(stub.Name, taskSpanPrefix) {
 			continue
 		}
 
@@ -259,7 +273,7 @@ func recordedTaskSpans(recorder *tracetest.SpanRecorder) []TaskSpanNode {
 			if !ok {
 				break
 			}
-			if strings.HasPrefix(above.Name, "flowstate.") {
+			if strings.HasPrefix(above.Name, taskSpanPrefix) {
 				node.Parent = above.Name
 
 				break
