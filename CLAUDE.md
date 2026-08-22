@@ -168,9 +168,10 @@ Two properties of the report worth knowing. The fixer list is not written down
 anywhere here — it comes from the diagnostics the pinned toolchain actually
 produces, so a toolchain bump that adds a modernizer shows up without anyone
 editing a list (the fifteen analyzers #521 measured were twenty-three by
-go1.26.6). And sites inside generated files are counted separately and excluded
-from every total, because a generated file is never hand-edited: a
-modernization there could only ever arrive through its generator.
+go1.26.6, and twenty-six by go1.27.0). And sites inside generated files are
+counted separately and excluded from every total, because a generated file is
+never hand-edited: a modernization there could only ever arrive through its
+generator.
 
 A third, and the only thing that can make the weekly job go red: the report is
 complete or it is not printed. When a package fails to load, `go fix -json`
@@ -235,7 +236,21 @@ harness (a workflow, the Makefile, `tools/gate`, the fuzz target list) or to
 the module graph forces the *job* wide through `ciForceReason`, and the leg
 takes the same answer and analyses `./...` too. A workflow-only diff affects
 no Go package at all, so a leg reading the affected set alone would skip
-exactly where the required job runs. Conditional legs fire only when
+exactly where the required job runs. The `vet` leg reads that same forcing,
+through the same two functions (`forcedWide`, `scopedLegRuns`), because CI's
+`test` job vets the module on exactly those diffs and vetting the module
+costs seconds (#887).
+
+The `test` leg is the one place the two tiers deliberately disagree, and it
+is a priced decision rather than the same gap left open: a full bounded
+`-race` run is the better part of ten minutes, this tier's value is that it
+answers in seconds to minutes, and a gate slow enough that people stop
+running it protects nothing. So on a harness diff it still runs the affected
+set — and its own printed line names the residual and cites #887, so a
+narrow test leg beside a wide CI job is something a reader can tell apart
+from a bug. `tools/gate/scope_test.go` pins both answers over the diffs
+where they could differ, the way `TestTheStaticcheckLegAndJobShareATrigger`
+pins staticcheck's. Conditional legs fire only when
 their inputs changed: the buf trio and the descriptorset pin on `proto/`, the
 docs mirror and reference drift checks on `docs/DSL.md` and on anything that
 reaches the binary generating them, example fix and coverage checks on
@@ -308,7 +323,7 @@ not the whole answer you want:
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
     git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-    go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+    go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
 `make check` in the repo root runs exactly that list, in that order, with the
 toolchain pins below already applied. Prefer it, and keep it and this section
@@ -379,18 +394,31 @@ your file makes it look like yours.
 
 It also has a failure that is not a finding at all. `go run …/govulncheck@v1.6.0`
 builds govulncheck using *its* `go` directive, then type-checks your tree against
-whatever toolchain `go.mod` selected — so on a machine honouring `toolchain
-go1.26.6` it reports `file requires newer Go version go1.26 (application built with
+whatever toolchain `go.mod` selected — so on a machine honouring this module's
+`go 1.27.0` it reports `file requires newer Go version go1.27 (application built with
 go1.25)` on files in the module cache and exits 1. CI does not see this, because
 `go-version-file: go.mod` installs the one version it then uses for everything.
 Pin the run to match and it scans clean:
 
-    GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+    GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
 `staticcheck` builds the same way — its own `go.mod` selects a toolchain, so it
 needs the identical pin, for the identical reason:
 
-    GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+    GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+
+The staticcheck *release* is pinned to the toolchain as well as beside it, and that
+direction is the one that bites. staticcheck type-checks with its own copy of
+`go/types`, which reads the export data the toolchain's compiler wrote, and export
+data has a format version that rises with the toolchain. Run a release older than
+the toolchain and it does not report findings and it does not say the version is
+unsupported — it fails per standard-library package with `internal error in
+importing "math/bits" (cannot decode …, export data version 4 is greater than
+maximum supported version 2); please report an issue (compile)`, which reads like a
+bug in the tool rather than a pin that needs moving. 2026.1 (v0.7.0) fails exactly
+that way under go1.27.0; 2026.2.1 (v0.8.1) is the release that reads it. So a
+toolchain bump moves `STATICCHECK_VERSION` too, and the two move together or the
+required job goes red for a reason that names nothing in your diff.
 
 staticcheck is required in CI, and the tree is at zero findings. It landed
 advisory (`continue-on-error: true`) for the 48-hour window every newly-added
