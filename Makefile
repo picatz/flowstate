@@ -22,7 +22,7 @@ check:
 	$(MAKE) test-plugins
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
-	go run ./cmd/flow lint examples/   # tier 4: advisory, exits 0 on every finding
+	go run ./cmd/flow lint --strict examples/
 	go run ./cmd/flow test --coverage-required examples/
 	go run ./cmd/flow breaking --against origin/main examples/
 	$(MAKE) fuzz-smoke
