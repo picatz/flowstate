@@ -354,13 +354,13 @@ empty TraceID.
 The workflow id still works as a key and is still the string that joins Grafana to
 the Temporal UI. It is no longer the only one.
 
-### What the root of a run's trace is
+### What span covers a run
 
-One root span covers a run, and which span that is depends on how the run was
-started and which driver ran it — the *shape* is the same either way, the name is
-not.
+One span covers a run end to end, and which span that is depends on how the run
+was started and which driver ran it — the *shape* is the same either way, the
+name is not.
 
-| How the run started | The root of its trace |
+| How the run started | The span covering the run |
 | --- | --- |
 | `flow run local` | `flowstate.run/<workflow>`, opened by the local driver |
 | through the server, onto a worker | `RunWorkflow:Run`, opened by Temporal's tracing interceptor |
@@ -369,6 +369,17 @@ not.
 The durable driver opens no `flowstate.run/*` span of its own, deliberately: the
 substrate already opens one at exactly that seam, and workflow code may not open
 a second — a span minted there is minted again on every replay.
+
+"Covering the run" is not the same as "the root of the trace", and on the
+instrumented server path they differ. When someone types `flow run`, the context
+propagates in over the RPC boundary and through `StartWorkflow:Run`, so
+`RunWorkflow:Run` has a *parent* — the whole point of section 5 above, where the
+one trace runs `flowstate` → `flowstate-server` → `flowstate-worker`. The trace's
+root there is the caller, not the run. The two rows that genuinely start a new
+trace are the ones with nothing trusted above them: a local run, which no RPC
+precedes, and a webhook delivery, whose span is a deliberate new root so an
+unauthenticated sender cannot choose the run's trace id (the link below is how
+the sender is recorded instead).
 
 A delivery that arrived carrying a `traceparent` gets a **link** on that webhook
 span, never a parent. In Tempo the link is a "caused by" edge you can follow to

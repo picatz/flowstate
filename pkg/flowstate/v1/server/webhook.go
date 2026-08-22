@@ -590,7 +590,12 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	defer span.End()
 
 	accepted, err := r.start(ctx, route, v1.WebhookDelivery{
-		Headers: headers,
+		// The trace context headers are stripped from what becomes
+		// `event.headers`, so a Flowfile mapping a header into an input cannot
+		// serialize peer-chosen `traceparent`/`tracestate` into RunState and
+		// history. The receiver has already consumed them, from the original
+		// request headers, as the delivery span's link — see `withoutTraceHeaders`.
+		Headers: withoutTraceHeaders(headers),
 		Body:    decoded,
 
 		// True because verification above said so, and set here rather than

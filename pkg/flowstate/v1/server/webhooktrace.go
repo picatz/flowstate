@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"maps"
 	"net/http"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -46,19 +48,37 @@ import (
 //
 // # What is read, and what is never written down
 //
-// [propagation.TraceContext] alone parses the header, and its output is the only
-// thing kept: a trace id, a span id and flags. The raw header value never
-// becomes an attribute, an event or a log field — it is attacker-chosen text, and
-// the parsed ids are the whole of what a link needs.
+// [propagation.TraceContext] alone parses the header, and exactly three fields
+// of its output are kept: the trace id, the span id, and the flags, copied into
+// a fresh [trace.SpanContext] in [WebhookReceiver.startDeliverySpan]. Everything
+// else a sender can put on the wire is peer-controlled data that must not reach
+// a collector or workflow history, and each channel it could take is closed on
+// purpose:
 //
-// Deliberately not the globally registered propagator, which is a composite
-// carrying baggage too. Baggage from a sender is arbitrary caller-controlled
-// key/value data that would ride the context into `ExecuteWorkflow` and be
-// written to workflow history — durable and broadly readable, invariant 8's
-// subject. `netpolicy`'s round tripper makes the same call in the outbound
-// direction and `plugin/telemetry.go` makes the narrower version of it for a
-// plugin this worker launched itself; an external sender gets less trust than
-// that, not more.
+//   - **The raw `traceparent` string** never becomes an attribute, an event or a
+//     log field — it is attacker-chosen text, and the parsed ids are the whole
+//     of what a link needs.
+//   - **`tracestate`** — opaque vendor key/value data, carried in the
+//     [trace.SpanContext] that [propagation.TraceContext] returns — is dropped by
+//     rebuilding the linked context from the three permitted fields rather than
+//     linking the extracted one, because [trace.WithLinks] would export a
+//     tracestate to the collector verbatim.
+//   - **Baggage** is stripped from the context the run starts in
+//     ([baggage.ContextWithoutBaggage]). It is not the global propagator that
+//     reads it here — [propagation.TraceContext] carries no baggage — but a
+//     deployment fronting this receiver with OTel middleware could have put
+//     inbound baggage in the request context, and Temporal's client interceptor
+//     would inject it, through the global baggage propagator, into the workflow's
+//     headers and thence into history (invariant 8: durable, broadly readable).
+//   - **The `traceparent`/`tracestate` headers themselves** are removed from the
+//     flattened map that becomes `event.headers` ([withoutTraceHeaders]), so a
+//     Flowfile mapping a header into an input cannot serialize raw trace metadata
+//     into [v1.RunState]. Link extraction reads the original [http.Header]
+//     instead, so nothing the receiver consumes is lost.
+//
+// `netpolicy`'s round tripper makes the same call in the outbound direction and
+// `plugin/telemetry.go` makes the narrower version of it for a plugin this worker
+// launched itself; an external sender gets less trust than that, not more.
 //
 // # Failing open on telemetry, closed on policy
 //
@@ -82,6 +102,40 @@ func webhookDeliverySpanName(workflow, trigger string) string {
 	return "flowstate.webhook/" + workflow + "/" + trigger
 }
 
+// traceContextHeaders are the inbound header names this receiver consumes as
+// trace context, lower-cased to match [webhookHeaders]'s own folding.
+//
+// These are the W3C names [propagation.TraceContext] parses, and only those:
+// the receiver extracts no `b3` or `x-*` propagator, so filtering those would
+// strip a signature header (`x-flowstate-signature` is exactly that shape)
+// while protecting nothing. The list is the single place that knows "which
+// headers are trace context", read by [withoutTraceHeaders] and asserted by the
+// containment test.
+var traceContextHeaders = []string{"traceparent", "tracestate"}
+
+// withoutTraceHeaders returns the delivery-facing header map with the trace
+// context headers removed, so raw trace metadata a sender chose cannot travel
+// into `event.headers`, be mapped into an input by a Flowfile, and land in
+// [v1.RunState] and workflow history.
+//
+// A copy, never a mutation of the caller's map: the same flattened headers are
+// handed to [v1.VerifyWebhookDelivery], and verification reading a different set
+// from what the delivery carries would be a subtle divergence for no reason.
+// Verification names its own signature headers ([v1.WebhookSignatureHeader],
+// [v1.StripeSignatureHeader]) and never a trace header, so what is removed here
+// is nothing it reads.
+func withoutTraceHeaders(headers map[string]string) map[string]string {
+	out := maps.Clone(headers)
+	if out == nil {
+		return nil
+	}
+	for _, name := range traceContextHeaders {
+		delete(out, name)
+	}
+
+	return out
+}
+
 // startDeliverySpan opens the span covering the acceptance of one verified
 // delivery, linked to the sender's trace where the sender carried one.
 //
@@ -95,6 +149,19 @@ func webhookDeliverySpanName(workflow, trigger string) string {
 // The provider is read per call for the reason [v1.StartTaskSpan] gives: a
 // receiver is built once and may outlive the moment telemetry is configured.
 func (r *WebhookReceiver) startDeliverySpan(ctx context.Context, route *webhookRoute, header http.Header) (context.Context, trace.Span) {
+	// Baggage is stripped from the context the span is started in, and therefore
+	// from the context that starts the run. [trace.WithNewRoot] below resets the
+	// span *parentage*, but baggage rides in the context beside the span, not
+	// under it — so a deployment that fronts this bare receiver with OTel
+	// middleware that extracted inbound baggage would leave that peer-controlled
+	// key/value data in `ctx`, and Temporal's client interceptor injects it,
+	// through the global baggage propagator, into the workflow's headers and
+	// thence into history (invariant 8: durable and broadly readable). There is
+	// no host-created baggage to forward at this boundary — a run starts fresh
+	// here — so the whole of it goes, which is the same fail-closed reduction
+	// `plugin/telemetry.go` makes for a plugin the worker launched itself.
+	ctx = baggage.ContextWithoutBaggage(ctx)
+
 	options := []trace.SpanStartOption{
 		// A server span: this covers handling an inbound request, which is work
 		// somebody else asked for.
@@ -117,9 +184,22 @@ func (r *WebhookReceiver) startDeliverySpan(ctx context.Context, route *webhookR
 	// Extracted into a context of its own, so the sender's span context is read
 	// and nothing else about it can reach the run: only the [trace.Link] below
 	// crosses.
-	if sender := trace.SpanContextFromContext(
+	if extracted := trace.SpanContextFromContext(
 		propagation.TraceContext{}.Extract(context.Background(), propagation.HeaderCarrier(header)),
-	); sender.IsValid() {
+	); extracted.IsValid() {
+		// Reconstructed from the three fields a link is documented to carry, and
+		// not linked as-extracted. A [trace.SpanContext] parsed from
+		// `traceparent` also carries `tracestate` — opaque, vendor-defined,
+		// peer-chosen key/value data from the `tracestate` header — and
+		// [trace.WithLinks] would export that to the collector verbatim. The
+		// trace id, span id and flags are the whole of what correlates the run
+		// to its cause; the vendor state is the sender's own and stops here.
+		sender := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    extracted.TraceID(),
+			SpanID:     extracted.SpanID(),
+			TraceFlags: extracted.TraceFlags(),
+			Remote:     true,
+		})
 		options = append(options, trace.WithLinks(trace.Link{SpanContext: sender}))
 	}
 
