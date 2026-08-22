@@ -207,12 +207,10 @@ func ClassifyError(err error) ErrorKind {
 	if err == nil {
 		return ""
 	}
-	var taskErr *TaskError
-	if errors.As(err, &taskErr) {
+	if taskErr, ok := errors.AsType[*TaskError](err); ok {
 		return taskErr.Kind
 	}
-	var exprErr *ExpressionError
-	if errors.As(err, &exprErr) {
+	if _, ok := errors.AsType[*ExpressionError](err); ok {
 		return ErrorKindExpression
 	}
 	return ErrorKindInternal
