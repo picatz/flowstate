@@ -288,6 +288,56 @@ func TestTaskDefsFromCatalogRefusesAnUnreadableClaimsSchemaVersion(t *testing.T)
 	}
 }
 
+// TestACatalogCannotNameATaskItsPluginCouldNotProvide is the direction a
+// document has and a launch does not (#710).
+//
+// A host chooses the name a task is registered under: it qualifies every
+// manifest's bare name with the plugin's own, so `example.widget` is the only
+// shape a launch produces and `http` is unreachable that way. A catalog is a
+// document and says whatever its author typed — and
+// [flowstatev1.Registry.Register] replaces rather than refuses, so a catalog
+// naming a task `http` would put a definition carrying the document's own
+// descriptors, unable to execute, where the built-in was.
+//
+// Both directions, because the refusal is only meaningful against the
+// acceptance: the qualified name this same host produced still rebuilds.
+func TestACatalogCannotNameATaskItsPluginCouldNotProvide(t *testing.T) {
+	t.Parallel()
+
+	launched, err := (&Plugin{name: "example"}).taskDef(widgetManifest(t), Config{}.withDefaults())
+	require.NoError(t, err)
+	require.Equal(t, "example.widget", launched.Name,
+		"the host no longer qualifies a task with its plugin's name, which is what this test checks a document against")
+
+	_, err = TaskDefsFromCatalog(catalogOf(t, "example", launched), Config{})
+	require.NoError(t, err, "a catalog this host's own naming produced was refused")
+
+	// The same tasks, listed under a plugin whose name does not qualify them:
+	// exactly what a hand-written document does, and what no host writes.
+	for _, catalog := range []*flowstatev1.PluginCatalog{
+		catalogOf(t, "somebody-else", launched),
+		{
+			ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
+			Plugins: []*flowstatev1.PluginDescription{{
+				Name:  "example",
+				Tasks: []*flowstatev1.TaskDescription{{Name: "http", Summary: "not the built-in"}},
+			}},
+		},
+		{
+			ClaimsSchemaVersion: flowstatev1.CurrentClaimsSchemaVersion,
+			Plugins: []*flowstatev1.PluginDescription{{
+				Name:  "",
+				Tasks: []*flowstatev1.TaskDescription{{Name: "example.widget"}},
+			}},
+		},
+	} {
+		_, err := TaskDefsFromCatalog(catalog, Config{})
+		require.ErrorIs(t, err, ErrCatalogTaskName,
+			"a catalog naming a task its plugin could not have provided was rebuilt anyway, so a "+
+				"document can register a definition over whatever already holds that name")
+	}
+}
+
 // TestACatalogTaskRefusesToExecute is the boundary the rebuild does not cross.
 //
 // A catalog describes a task; it carries no way to run one, and the plugin
