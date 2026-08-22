@@ -1,0 +1,117 @@
+# The rehearsal `flowstate_test` runs on bytes and `flow test` runs on these two
+# files. Every effectful step here is stubbed — the gateway turn, both tracker
+# calls, the log line — which is what makes the whole of this checkable with no
+# network, no gateway, no credential and no operator opt-in: a stubbed run never
+# invokes a real task at all, so there is nothing for an egress policy to govern.
+#
+# Three cases, and between them they hold down the three decisions the workflow's
+# own header names. Read them as the branch table for one number, `tokens`:
+#
+#   under the ceiling   -> no gate, and the write runs unattended
+#   over, and answered  -> the gate runs, says yes, and the write runs
+#   over, and ignored   -> the gate lapses, and the write does not run
+#
+# Note what the second and third differ by: one scripted signal. Same inputs,
+# same stubbed turn, same everything else — so the case pair is evidence about
+# the gate rather than about two unrelated runs.
+edition: v2026.3
+tests:
+  - name: a turn inside its budget lands with nobody asked
+    workflow: ./workflow.yaml
+    stubs:
+      # Stubbed by step id rather than by task, because both http steps shape
+      # their own `outputs:` — shaping is an input the http *task* evaluates
+      # against a real response, so a stub, which replaces the task, is what
+      # decides these names.
+      - step: brief
+        returns:
+          title: bound the agentic loop
+          body: the rehearsal has to be reachable from the MCP surface
+      - step: turn
+        returns:
+          summary: added a bound and a test
+          patch: "--- a/main.go\n+++ b/main.go\n"
+          # Under vars.token_budget (20000), so no person is asked.
+          tokens: 1200
+      - step: land
+        returns:
+          url: https://tracker.internal.example.com/patches/1
+      - task: log
+        where: >-
+          inputs.message == 'turn spent 1200 of 20000 tokens; landed at https://tracker.internal.example.com/patches/1' &&
+          inputs.fields.outcome == 'landed'
+        returns: {}
+    expect:
+      ran: [brief, turn, land, report]
+      # The gate not happening is the assertion. A `review` that ran and
+      # returned nothing would look identical in the outputs below.
+      skipped: [review]
+      outputs:
+        tokens: 1200
+        gated: false
+        landed: true
+        patch_url: https://tracker.internal.example.com/patches/1
+
+  - name: a turn over its budget lands only once a person answers
+    workflow: ./workflow.yaml
+    signals:
+      - name: turn-approved
+        # Long after the run starts and far inside the gate's 24h deadline.
+        # Time is virtual, so this case still finishes in milliseconds.
+        at: 2h
+        payload:
+          approved: true
+    stubs:
+      - step: brief
+        returns:
+          title: bound the agentic loop
+          body: the rehearsal has to be reachable from the MCP surface
+      - step: turn
+        returns:
+          summary: rewrote more than anyone expected
+          patch: "--- a/main.go\n+++ b/main.go\n"
+          # Over the ceiling, which is the only reason `review` runs at all.
+          tokens: 45000
+      - step: land
+        returns:
+          url: https://tracker.internal.example.com/patches/2
+      - task: log
+        returns: {}
+    expect:
+      ran: [brief, turn, review, land, report]
+      outputs:
+        tokens: 45000
+        gated: true
+        landed: true
+        patch_url: https://tracker.internal.example.com/patches/2
+
+  - name: the same turn does not land when the gate goes unanswered
+    workflow: ./workflow.yaml
+    # No `signals:` at all — the one difference from the case above. The wait
+    # runs out its 24h deadline against the virtual clock and reports
+    # `timed_out`, which the gate's own `outputs:` shaping turns into
+    # `approved: false` rather than into a payload nobody sent.
+    stubs:
+      - step: brief
+        returns:
+          title: bound the agentic loop
+          body: the rehearsal has to be reachable from the MCP surface
+      - step: turn
+        returns:
+          summary: rewrote more than anyone expected
+          patch: "--- a/main.go\n+++ b/main.go\n"
+          tokens: 45000
+      # No `land` stub, and that is load-bearing: a stub whose task is never
+      # invoked is itself reported, so an unused one here would fail this case
+      # rather than sit quietly. The write not happening is checked twice.
+      - task: log
+        where: inputs.fields.outcome == 'declined at the gate'
+        returns: {}
+    expect:
+      ran: [brief, turn, review, report]
+      skipped: [land]
+      outputs:
+        tokens: 45000
+        gated: true
+        landed: false
+        patch_url: ""
