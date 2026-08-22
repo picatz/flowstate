@@ -154,6 +154,48 @@ func TestServerDevRefusesToComposeIntoSomethingElse(t *testing.T) {
 	}
 }
 
+// TestOnlyTheDevStackAsksForEagerWorkflowStart keeps the option where its
+// argument holds.
+//
+// [server.WithEagerWorkflowStart] is sound in this command because it is one
+// process holding one Temporal client, serving both the control plane and the
+// worker, and running unversioned by construction. `flow server` (main.go) is
+// none of those: its workers are other processes, and a deployment that pins a
+// Current version relies on that pin being the only thing deciding which binary
+// picks up a run — which an eager dispatch does not respect. Copying the option
+// across is a one-line change that reads like a speed-up and quietly removes
+// that guarantee, so what is asserted is the count and where it is, not that the
+// dev stack has it.
+//
+// Read out of the source because there is nothing else to read: the option is a
+// closure over an unexported field, and the process that would demonstrate the
+// mistake is one `flow server` starts against a cluster this suite does not have.
+func TestOnlyTheDevStackAsksForEagerWorkflowStart(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	const asks = "server.WithEagerWorkflowStart()"
+
+	found := map[string]int{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+
+		source, err := os.ReadFile(filepath.Clean(name))
+		require.NoError(t, err)
+
+		if count := strings.Count(string(source), asks); count > 0 {
+			found[name] = count
+		}
+	}
+
+	assert.Equal(t, map[string]int{"serverdev.go": 1}, found,
+		"eager workflow start is requested somewhere other than `flow server dev`; "+
+			"read server.WithEagerWorkflowStart's doc on worker versioning before widening this")
+}
+
 // TestDevBannerSaysWhatTheReplacedFlagsSay pins the two posture sentences against
 // the commands they stand in for.
 //

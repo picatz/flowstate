@@ -154,6 +154,19 @@ func runDurable(workflow *embed.Workflow, tasks *embed.Tasks) error {
 	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:        "embedding-example-" + time.Now().UTC().Format(time.RFC3339Nano),
 		TaskQueue: engine.RunTaskQueueName,
+
+		// The worker above shares this client, which is the one topology
+		// Temporal's eager workflow start pays off in: the first workflow task
+		// comes back on this response for that worker to execute, instead of
+		// going through matching for it to poll for. An embedder without a
+		// co-located worker gets an ordinary dispatch and nothing else changes.
+		//
+		// Sound here because this program registers one unversioned worker.
+		// Eager start does not respect worker versioning, so an embedder
+		// running versioned workers should leave it off — the same reason
+		// `server.WithEagerWorkflowStart` is an option `flow server dev` opts
+		// into rather than a default.
+		EnableEagerStart: true,
 	}, engine.Run, &v1.RunState{
 		Workflow: workflow,
 		Inputs:   v1.NewNamedValues(map[string]any{"name": "embedder"}),
