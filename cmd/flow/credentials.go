@@ -25,8 +25,13 @@ import (
 //
 // --credential-source (or FLOWSTATE_CREDENTIAL_SOURCE) names one explicitly:
 // "github-actions" mints from the runner's OIDC token endpoint, addressed to
-// --audience / FLOWSTATE_AUDIENCE; "file" and "env" force the token-file or
-// FLOWSTATE_TOKEN reading below even when the other would otherwise win.
+// --audience / FLOWSTATE_AUDIENCE; "gitlab" and "terraform-cloud" present the
+// token their platform minted before the job or run began (GitLab's
+// `id_tokens:` variable, HCP Terraform's TFC_WORKLOAD_IDENTITY_TOKEN), and
+// check it against --audience rather than minting for it, because neither
+// platform can be asked for a second token; "file" and "env" force the
+// token-file or FLOWSTATE_TOKEN reading below even when the other would
+// otherwise win.
 // Naming a source is asking for a credential, so any of them failing to
 // produce one is a refusal — never a silent slide into anonymous.
 //

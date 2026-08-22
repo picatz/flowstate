@@ -40,12 +40,10 @@ inputs:
     type: string
     default: ord_local
     description: the order this run is about
-
   amount:
     type: int
     default: 0
     description: the amount captured, in the smallest currency unit
-
 triggers:
   - webhook: stripe
     # How a delivery is proved genuine. Required, with at least one scheme: an
@@ -72,20 +70,17 @@ triggers:
     # on arrives through this mapping into the signature above. A second input path
     # would be one `flow validate` could not check.
     with:
-      order_id: ${event.body.data.object.metadata.order_id}
       amount: ${event.body.data.object.amount}
-
+      order_id: ${event.body.data.object.metadata.order_id}
 steps:
   - id: record
     log:
-      message: ${'captured ' + string(inputs.amount) + ' for order ' + inputs.order_id}
       level: info
-
+      message: ${"captured " + string(inputs.amount) + " for order " + inputs.order_id}
 outputs:
   order:
     value: ${inputs.order_id}
     description: the order this run was started for
-
   amount:
     value: ${inputs.amount}
     description: the amount the delivery carried

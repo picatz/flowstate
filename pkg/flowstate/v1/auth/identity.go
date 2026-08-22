@@ -203,6 +203,97 @@ func (w WorkloadIdentity) LogValue() slog.Value {
 	)
 }
 
+// Bounds on the claims a [WorkloadIdentity] may carry into a minted assertion.
+//
+// A claim set is a wire format: it is signed, it travels to relying parties we
+// do not control, and it is cached by them. So it is bounded like every other
+// input in this repository, and an identity that exceeds a bound is **refused**
+// rather than trimmed to fit — a truncated claim set is a token that says
+// something other than what was authorized, and it says it under a signature.
+//
+// These are the Go half of the protovalidate rules on
+// flowstate.v1.WorkloadIdentity.claims, which state the same numbers where
+// `buf breaking` guards them. They are stated once here and read by both
+// [WorkloadIdentity.Validate] and [Issuer.mintFor], per CLAUDE.md's rule that
+// one constant cannot disagree with itself.
+//
+// The numbers come from measuring what legitimate identities carry, with
+// headroom:
+//
+//   - The largest carried claim set anywhere in this repository is three
+//     (`repository`, `ref`, `job_workflow_ref`, on a GitHub Actions identity),
+//     and the nearest schema neighbour that bounds a claim map at all,
+//     `SignalPolicyRule.claims`, allows sixteen. [MaxCarriedClaims] is 32.
+//   - The longest claim *name* measured is 18 bytes (`runner_environment`);
+//     [MaxCarriedClaimNameBytes] is that neighbour's own 128.
+//   - The longest claim *value* measured is 63 bytes (a `job_workflow_ref`);
+//     [MaxCarriedClaimValueBytes] is 1024, more than the neighbour's 256
+//     because a carried value is data rather than a match pattern.
+//   - [MaxCarriedClaimBytes] bounds the total, because the per-claim bounds
+//     multiply: 32 claims at their individual maxima would be 36 KiB, which is
+//     most of a [maxTokenBytes] token spent on carried claims alone. 8 KiB is
+//     twelve times the largest realistic claim set measured (~640 bytes) and
+//     leaves a minted assertion comfortably inside what any verifier will read.
+const (
+	// MaxCarriedClaims is how many claims an identity may carry.
+	MaxCarriedClaims = 32
+
+	// MaxCarriedClaimNameBytes bounds one claim's name.
+	MaxCarriedClaimNameBytes = 128
+
+	// MaxCarriedClaimValueBytes bounds one claim's value.
+	MaxCarriedClaimValueBytes = 1024
+
+	// MaxCarriedClaimBytes bounds the names and values together, which is the
+	// bound the per-claim ones do not imply.
+	MaxCarriedClaimBytes = 8 << 10
+)
+
+// validateCarriedClaims reports whether a claim set is within the bounds above.
+//
+// Claim *values* never appear in the errors it returns — only names, and only
+// truncated. This string travels wherever the refusal does, which on the
+// durable driver means Temporal's failure conversion and therefore workflow
+// history; a claim value is exactly the kind of caller-supplied data nobody
+// audited before it got there. The name is enough to fix the configuration,
+// and is the half the operator already wrote down. See
+// [describePolicyIdentity] in the flowstate package for the same reasoning
+// applied to the same data.
+//
+// [describePolicyIdentity]: https://github.com/picatz/flowstate/blob/main/pkg/flowstate/v1/taskpolicy.go
+func validateCarriedClaims(claims map[string]string) error {
+	if len(claims) > MaxCarriedClaims {
+		return fmt.Errorf("%w: identity carries %d claims, and an assertion may carry at most %d",
+			ErrInvalidIdentity, len(claims), MaxCarriedClaims)
+	}
+
+	total := 0
+	for _, name := range slices.Sorted(maps.Keys(claims)) {
+		value := claims[name]
+
+		switch {
+		case name == "":
+			return fmt.Errorf("%w: identity carries a claim with no name", ErrInvalidIdentity)
+		case len(name) > MaxCarriedClaimNameBytes:
+			return fmt.Errorf("%w: carried claim name %q is %d bytes, and at most %d are allowed",
+				ErrInvalidIdentity, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
+		case len(value) > MaxCarriedClaimValueBytes:
+			// The value's length, never the value.
+			return fmt.Errorf("%w: carried claim %q has a %d byte value, and at most %d are allowed",
+				ErrInvalidIdentity, truncate(name, 64), len(value), MaxCarriedClaimValueBytes)
+		}
+
+		total += len(name) + len(value)
+	}
+
+	if total > MaxCarriedClaimBytes {
+		return fmt.Errorf("%w: identity carries %d bytes of claims, and at most %d are allowed",
+			ErrInvalidIdentity, total, MaxCarriedClaimBytes)
+	}
+
+	return nil
+}
+
 // StepRef points at the unit of work an assertion is minted for: which step, of
 // which run, of which workload.
 //
@@ -364,5 +455,5 @@ func (w WorkloadIdentity) Validate() error {
 		}
 	}
 
-	return nil
+	return validateCarriedClaims(w.Claims)
 }
