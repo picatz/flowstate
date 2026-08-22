@@ -80,7 +80,7 @@ func TestWorkerRefusalIsReachedBeforeTemporalIs(t *testing.T) {
 	t.Setenv("FLOWSTATE_DEPLOYMENT_NAME", "")
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 
-	err := runFlow(t, "worker", "--address", "127.0.0.1:1").Err
+	err := runFlow(t, "worker", "--temporal-address", "127.0.0.1:1").Err
 
 	require.ErrorContains(t, err, "refusing to start an unversioned worker")
 }
@@ -558,7 +558,7 @@ func TestWorkerCapacityOptionsRefusalIsReachedBeforeTemporalIs(t *testing.T) {
 	t.Setenv("FLOWSTATE_BUILD_ID", "")
 
 	err := runFlow(t,
-		"worker", "--address", "127.0.0.1:1",
+		"worker", "--temporal-address", "127.0.0.1:1",
 		"--"+allowUnversionedFlag, "--max-concurrent-activities", "-5",
 	).Err
 
