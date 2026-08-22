@@ -768,14 +768,6 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		return Assertion{}, err
 	}
 
-	i.mu.RLock()
-	key := i.active
-	i.mu.RUnlock()
-
-	if key.IsZero() {
-		return Assertion{}, ErrNoSigningKey
-	}
-
 	var (
 		now       = i.clock()
 		expiresAt = now.Add(i.lifetime)
@@ -836,7 +828,33 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		claims[name] = identity.Claims[name]
 	}
 
+	// Choosing the key and signing with it happen under one hold of the read
+	// lock, and that is a correctness requirement rather than tidiness.
+	//
+	// Copying i.active and releasing the lock before signing leaves a window:
+	// [Issuer.Rotate] can retire that key and [Issuer.RevokeKey] can withdraw
+	// it, both completing while this signature is still in flight, and the
+	// assertion is then minted with a key the issuer has already told the world
+	// is revoked. A relying party holding a cached key set accepts it, so
+	// revocation would report success while still emitting new assertions
+	// signed by the compromised key — the one thing RevokeKey exists to stop.
+	//
+	// A read lock is the right one: concurrent mints still sign in parallel,
+	// since they share it. Only Rotate and RevokeKey take the write lock, and
+	// they now wait for in-flight signatures to finish — which is exactly the
+	// guarantee RevokeKey's doc claims, that no assertion signed with the key
+	// survives its return.
+	i.mu.RLock()
+	key := i.active
+	if key.IsZero() {
+		i.mu.RUnlock()
+		return Assertion{}, ErrNoSigningKey
+	}
+
 	token, err := key.sign(claims)
+	keyID := key.id
+	i.mu.RUnlock()
+
 	if err != nil {
 		return Assertion{}, err
 	}
@@ -846,7 +864,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		Subject:   subject,
 		Audience:  audience,
 		Issuer:    i.url,
-		KeyID:     key.id,
+		KeyID:     keyID,
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
 		ID:        id,

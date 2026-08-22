@@ -1,10 +1,13 @@
 package auth_test
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/picatz/jose/pkg/jwa"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -98,6 +101,87 @@ func TestRevokeKeyRefuses(t *testing.T) {
 		require.ErrorIs(t, issuer.RevokeKey(original), auth.ErrUnknownKey,
 			"a key already gone is unknown, not revoked again")
 	})
+}
+
+// TestRevokeKeyDoesNotRaceInFlightSigning covers the window between choosing a
+// signing key and signing with it.
+//
+// mintFor used to copy i.active and release the read lock before calling sign.
+// Rotate and RevokeKey could both complete inside that window, so an assertion
+// could be minted — and returned to a caller — signed with a key the issuer had
+// already withdrawn from its published set. A relying party holding a cached
+// key set accepts it, which means revocation reported success while still
+// emitting new assertions signed by the key an operator was trying to kill.
+//
+// What this can and cannot assert is worth being exact about, because the
+// obvious assertion is wrong. "Every returned assertion names a key still
+// published when the caller looks" is *not* a property an issuer can offer:
+// once mintFor returns, another rotation and revocation may land before the
+// caller reads anything, and that key is then legitimately gone. The window the
+// fix closes is the one *inside* mintFor, between choosing the key and signing
+// with it — and from outside, a signature that happened before RevokeKey
+// acquired the write lock is indistinguishable from one that happened after,
+// except by the race detector.
+//
+// So this drives the interleaving hard and lets `-race` be the judge, which is
+// what the gate and CI both run it under. The deterministic half of the
+// property lives in the tests above; this is the half that only shows up when
+// two goroutines are in the issuer at once.
+func TestRevokeKeyDoesNotRaceInFlightSigning(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	var (
+		wg   sync.WaitGroup
+		stop = make(chan struct{})
+	)
+
+	// Minters, racing the rotation below.
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+
+				assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.amazonaws.com")
+				if err != nil {
+					continue
+				}
+
+				// A mint that succeeded produced a real signature with a real
+				// key, whichever generation won the race. Anything else means
+				// the issuer handed back an assertion it had not signed.
+				assert.NotEmpty(t, assertion.KeyID, "a minted assertion names the key that signed it")
+				assert.NotEmpty(t, assertion.Token(), "a minted assertion carries its token")
+
+				// Reading the key set concurrently is itself part of what is
+				// being exercised: serving the published set races rotation
+				// and revocation exactly as minting does. Called directly
+				// rather than through publishedKeyIDs, whose require would
+				// call t.FailNow off the test's own goroutine.
+				assert.NotEmpty(t, issuer.KeySet().Keys)
+			}
+		}()
+	}
+
+	// Rotate and immediately revoke, repeatedly, which is the incident
+	// response this pair of verbs exists for.
+	previous := issuer.ActiveKeyID()
+	for generation := range 25 {
+		replacement, err := auth.GenerateSigningKey(fmt.Sprintf("gen-%d", generation), jwa.ES256)
+		require.NoError(t, err)
+		require.NoError(t, issuer.Rotate(replacement))
+		require.NoError(t, issuer.RevokeKey(previous))
+		previous = replacement.ID()
+	}
+
+	close(stop)
+	wg.Wait()
 }
 
 // TestRevokedKeyStopsVerifyingRealAssertions is the negative direction, end to
