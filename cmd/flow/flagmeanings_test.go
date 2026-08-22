@@ -151,8 +151,8 @@ func TestTemporalSettingsAreSpelledWithTemporalsPrefix(t *testing.T) {
 //
 // A warning would not do: continuing to accept `flow server --address` while
 // meaning Temporal is exactly the silent misconfiguration the rename exists to
-// prevent, so the refusal is an error, at parse time, naming every flag that
-// answers the question now.
+// prevent, so the refusal is an error — raised before the command does
+// anything, naming every flag that answers the question now.
 func TestRemovedFlagSpellingsRefuseAndSayWhatToSayInstead(t *testing.T) {
 	cases := []struct {
 		args    []string

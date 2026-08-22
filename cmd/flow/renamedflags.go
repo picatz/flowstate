@@ -19,8 +19,9 @@ import (
 // variable spells `flow server --address 0.0.0.0:8080`, the server dials that
 // as Temporal, binds its own default port, and nothing says why. Accepting the
 // old spelling with a warning preserves exactly that failure, which is the
-// thing the rename exists to kill, so a pinned command line fails at parse time
-// with both replacements named instead.
+// thing the rename exists to kill, so a pinned command line fails instead —
+// before the command does anything, with both replacements named, and with the
+// exit status a wrong command line already carries.
 //
 // Nor is it a deprecation: this repository has no deprecation lifecycle to hang
 // one on (picatz/flowstate#722), and "removed in a future release" has no
