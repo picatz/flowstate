@@ -1,0 +1,35 @@
+# The *peer* deployment's file — deployment B, the one being called. It is here
+# because federation is an agreement between two configurations, and reading
+# only one half of it teaches the wrong lesson: A cannot grant itself access,
+# and B's entry below is the whole of what makes A's `assertion` target work.
+#
+# Nothing in this file is Flowstate-specific. It is an ordinary `issuers:` entry
+# of the kind that admits a GitHub Actions token, pointed at another Flowstate
+# deployment's issuer instead — which is exactly the claim the `assertion`
+# target makes: any relying party that verifies OIDC can trust a Flowstate run,
+# and another Flowstate is just the nearest example of one.
+issuers:
+  - name: peer-flowstate
+    issuer: https://flowstate.example.com
+
+    # The audience A minted for. This is what stops an assertion A obtained for
+    # some other relying party from being replayed here — for a bearer token
+    # presented directly, it is the binding that does the work.
+    audiences: [https://flowstate.peer.example.com]
+    algorithms: [ES256]
+
+    # Which of A's workloads B admits. The claims are the ones every Flowstate
+    # assertion carries, so B authorizes on the run's identity rather than on
+    # "some request from A".
+    require:
+      - claim: workflow
+        any_of: [federation-flow-to-flow]
+      - claim: deployment
+        any_of: [prod]
+
+    # The tenant a call from A lands in is read off the assertion's own
+    # namespace claim, so two tenants in A stay two tenants in B rather than
+    # collapsing into one.
+    namespace_claim: namespace
+
+    role: peer

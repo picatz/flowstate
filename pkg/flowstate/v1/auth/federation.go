@@ -101,6 +101,11 @@ type FederationTarget struct {
 	// ClientCredentials configures an OAuth 2.0 client credentials grant
 	// authenticated by the Flowstate assertion.
 	ClientCredentials *ClientCredentialsTarget `json:"client_credentials,omitempty" yaml:"client_credentials,omitempty"`
+
+	// Assertion configures presenting the Flowstate assertion itself as the
+	// bearer credential, for a relying party that verifies OIDC and needs no
+	// exchange. See [AssertionConfig] for what that costs.
+	Assertion *AssertionTarget `json:"assertion,omitempty" yaml:"assertion,omitempty"`
 }
 
 // TokenExchangeTarget is the file form of [TokenExchangeConfig].
@@ -144,6 +149,14 @@ type ClientCredentialsTarget struct {
 	Scopes   []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 }
 
+// AssertionTarget is the file form of [AssertionConfig]. It carries only an
+// audience, because there is nothing to exchange with: the credential is the
+// assertion, and its lifetime is the issuer's `assertion_lifetime` above rather
+// than a second one written per target.
+type AssertionTarget struct {
+	Audience string `json:"audience" yaml:"audience"`
+}
+
 // ParseFederationPolicy decodes an outbound federation policy from YAML or JSON.
 // Unknown and duplicate fields are errors, so a misspelled key fails at startup
 // rather than silently dropping a restriction.
@@ -184,6 +197,7 @@ func (p FederationPolicy) Validate() error {
 			target.AWS != nil,
 			target.GCP != nil,
 			target.ClientCredentials != nil,
+			target.Assertion != nil,
 		} {
 			if set {
 				configured++
@@ -192,7 +206,7 @@ func (p FederationPolicy) Validate() error {
 		switch configured {
 		case 1:
 		case 0:
-			return fmt.Errorf("%w: targets[%d] %q: needs one of token_exchange, aws, gcp, or client_credentials",
+			return fmt.Errorf("%w: targets[%d] %q: needs one of token_exchange, aws, gcp, client_credentials, or assertion",
 				ErrInvalidPolicy, i, target.Name)
 		default:
 			return fmt.Errorf("%w: targets[%d] %q: configures %d providers, and a target names exactly one system",
@@ -355,6 +369,13 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				Scopes:     target.ClientCredentials.Scopes,
 				HTTPClient: cfg.client,
 				Clock:      cfg.clock,
+			})
+		case target.Assertion != nil:
+			// No HTTP client and no clock: this exchanger reaches nothing and
+			// takes its expiry from the assertion the issuer minted.
+			exchanger, err = NewAssertionExchanger(AssertionConfig{
+				Name:     target.Name,
+				Audience: target.Assertion.Audience,
 			})
 		default:
 			// Validate rejects this, and reaching it would mean a target with no

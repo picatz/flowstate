@@ -1,0 +1,30 @@
+# What this case pins is the same distinction `examples/http-federated` pins,
+# one rung further along: the step names a target and carries no credential
+# material of its own. The stub's `where:` requires `credential` to be present
+# and `bearer` and `headers` to be absent, so an edit that turned the target
+# name into an embedded token — or that reached the peer with a hand-written
+# `Authorization` header — fails here rather than passing quietly.
+#
+# The exchange itself is the deployment's, not the file's: which target a
+# workload may assume, what audience the assertion carries, and how long it
+# lives are all in `auth-policy.yaml`, and the auth package's own
+# `TestFlowstateToFlowstateFederation` stands up both deployments and proves the
+# peer admits what this step would send.
+edition: v2026.3
+tests:
+  - name: the step names the assertion target and carries no credential material of its own
+    workflow: ./workflow.yaml
+    stubs:
+      - task: http
+        where: >-
+          inputs.url == 'https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Run' &&
+          inputs.credential == 'peer-flowstate' &&
+          !('bearer' in inputs) && !('headers' in inputs)
+        returns:
+          status_code: 200
+          body: '{"run_id": "run-7"}'
+      - task: log
+        where: inputs.fields.peer_run == 'run-7'
+        returns: {}
+    expect:
+      ran: [start_on_peer, record]
