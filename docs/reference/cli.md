@@ -1214,7 +1214,6 @@ flow server --verbose
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `--address <string>` | `string` | — | — | Temporal server address (overrides environment configuration) |
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept |
 | `--authorization-server <string,...>` | `stringArray` | — | — | an authorization server this deployment advertises as able to mint tokens for --protected-resource. Repeatable; RFC 9728 requires at least one when --protected-resource is given. Each one must already be a kind: oidc issuer in --auth-policy — an authorization server this deployment's own verifier would reject is refused at start-up rather than advertised |
@@ -1224,11 +1223,9 @@ flow server --verbose
 | `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access; for local development only |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a socket separate from the public listener; empty (the default) means no internal listener at all. Pass a loopback address, such as --internal-listen 127.0.0.1:9090, to turn it on — nothing else is accepted: this listener carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as a bare host:port for net.Listen (default $FLOWSTATE_ADDRESS); not a URL, and not the client's --address — off loopback, refusePlaintextListener requires --tls-cert-file/--tls-key-file or --tls-terminated-upstream |
-| `--namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
-| `--profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--protected-resource <string>` | `string` | — | `FLOWSTATE_PROTECTED_RESOURCE` | the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as (overrides FLOWSTATE_PROTECTED_RESOURCE). No fragment, no trailing slash. Given together with one or more --authorization-server, this deployment serves RFC 9728 protected resource metadata at /.well-known/oauth-protected-resource, plus this resource's own path if it has one (RFC 9728 section 3.1's well-known-URI construction — a resource ending in /mcp serves its document at /.well-known/oauth-protected-resource/mcp, not at the bare prefix), and every 401 challenge names that exact document. Unset (the default): the route does not exist and every challenge reads exactly as it does today |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
@@ -1252,6 +1249,9 @@ flow server --verbose
 | `--secret-vault-path-prefix <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | path prefix inside the mount, above the namespace segment (default $FLOWSTATE_SECRET_VAULT_PATH_PREFIX) |
 | `--secret-vault-token-file <string>` | `string` | — | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | file holding a static Vault client token, re-read per login (default $FLOWSTATE_SECRET_VAULT_TOKEN_FILE; falls back to $FLOWSTATE_SECRET_VAULT_TOKEN directly, for a development vault or a test) |
 | `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
+| `--temporal-address <string>` | `string` | — | — | Temporal frontend address to dial (overrides environment configuration) |
+| `--temporal-namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
+| `--temporal-profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--tls-acme-accept-tos` | `bool` | `false` | — | agree to the ACME CA's subscriber agreement (overrides FLOWSTATE_TLS_ACME_ACCEPT_TOS); required to turn ACME on. Not defaulted: agreeing to a third party's terms on an operator's behalf is not this process's decision to make quietly |
 | `--tls-acme-cache <string>` | `string` | — | `FLOWSTATE_TLS_ACME_CACHE` | directory holding the ACME account key and issued certificates, required when --tls-acme-hosts is set. An in-memory-only cache re-issues on every restart, which burns a CA's rate limit; this must be a real, persistent directory. Created with mode 0700 if it does not exist, and refused if it exists but is readable or writable by anyone but its owner — it holds private keys |
 | `--tls-acme-directory <string>` | `string` | — | `FLOWSTATE_TLS_ACME_DIRECTORY` | ACME directory URL to request certificates from; unset means Let's Encrypt's production directory. Point this at a staging or private directory (Pebble, an enterprise ACME server) for anything other than a real production certificate |
@@ -1757,15 +1757,14 @@ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD
 flow worker --allow-unversioned-interpreter
 
 # Start a worker with custom Temporal server:
-flow worker --address localhost:7233 --deployment-name flowstate --build-id dev-1
+flow worker --temporal-address localhost:7233 --deployment-name flowstate --build-id dev-1
 
 # Start a worker with custom namespace:
-flow worker --namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
+flow worker --temporal-namespace production --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `--address <string>` | `string` | — | — | Temporal server address (overrides environment configuration) |
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--allow-unversioned-interpreter` | `bool` | `false` | — | start without a Worker Deployment version, accepting that deploying a different binary changes what runs already in flight compute; for local development |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to an access policy whose secrets rules authorize worker-side resolution |
@@ -1777,11 +1776,9 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--max-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which this worker process starts activity tasks; 0 takes the Temporal SDK default (effectively unlimited). Enforced locally, per worker process — see --task-queue-activities-per-second for the server-enforced, per-queue limit |
 | `--max-concurrent-activities <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES` | maximum number of activity tasks executing at once in this process; 0 takes the Temporal SDK default (1000). Raising this trades worker CPU/memory for throughput on a single replica; see docs/DEPLOYMENT.md's capacity section for when to raise this versus scaling out |
 | `--max-concurrent-workflow-tasks <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS` | maximum number of workflow tasks executing at once in this process; 0 takes the Temporal SDK default (1000). The value 1 is refused: a worker with a single workflow-task slot never polls its regular queue, which the SDK enforces by panicking |
-| `--namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
-| `--profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with --secret-command-namespaced, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in --secret-command with the tenant's namespace |
 | `--secret-dir <string>` | `string` | — | `FLOWSTATE_SECRET_DIR` | directory containing file: secrets (default $FLOWSTATE_SECRET_DIR) |
@@ -1807,6 +1804,9 @@ flow worker --namespace production --deployment-name flowstate --build-id "$(git
 | `--task-queue <string>` | `string` | `flowstate-run-task-queue` | `TEMPORAL_TASK_QUEUE` | task queue for Temporal workflows and activities |
 | `--task-queue-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue; 0 takes the Temporal SDK default (effectively unlimited). Per queue, not per worker: setting this differently on two workers sharing a queue is last-writer-wins on the server, and setting it disables eager activity execution for this worker (DisableEagerActivities) |
 | `--task-queue-prefix <string>` | `string` | — | `FLOWSTATE_TASK_QUEUE_PREFIX` | route each tenant's runs to a task queue of their own, named <prefix>_<namespace>, so a per-tenant worker fleet can be addressed; unset means every tenant shares the single default queue, which is the zero-configuration behavior |
+| `--temporal-address <string>` | `string` | — | — | Temporal frontend address to dial (overrides environment configuration) |
+| `--temporal-namespace <string>` | `string` | — | — | Temporal namespace (overrides environment configuration) |
+| `--temporal-profile <string>` | `string` | — | — | Temporal configuration profile to use |
 | `--tenant <string>` | `string` | — | — | execute only this Flowstate namespace's runs, refusing any other tenant's outright rather than executing it with this worker's secrets, egress policy and plugins. Pass an empty value (--tenant=) for the default tenant of an untenanted deployment. Needs a queue of this worker's own: either --task-queue-prefix (the same value the server was started with) or an explicit --task-queue |
 | `--worker-stop-timeout <string>` | `string` | `2m0s` | `FLOWSTATE_WORKER_STOP_TIMEOUT` | how long to wait for in-flight activities and workflow tasks to finish once a shutdown signal (SIGINT or SIGTERM) arrives, before this worker exits regardless |
 

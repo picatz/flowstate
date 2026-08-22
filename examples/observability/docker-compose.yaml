@@ -106,7 +106,7 @@ services:
     # is what pushes the last spans, points and log records.
     # Arguments only: the image's ENTRYPOINT is already `flow`.
     command: [
-      "server", "--address=temporal:7233",
+      "server", "--temporal-address=temporal:7233",
       "--insecure-no-auth", "--tls-terminated-upstream", "--verbose",
     ]
     ports:
@@ -125,7 +125,7 @@ services:
     # constantly and there are no workloads to protect, which is what makes
     # accepting the exposure honest here and dishonest anywhere else. README.md
     # shows the two flags that pin it instead.
-    command: ["worker", "--address=temporal:7233", "--allow-unversioned-interpreter", "--verbose"]
+    command: ["worker", "--temporal-address=temporal:7233", "--allow-unversioned-interpreter", "--verbose"]
 
   # ----------------------------------------------------------------- Temporal
 
