@@ -95,6 +95,15 @@ type RepeatedExpr struct {
 	// matter how each was spaced or wrapped.
 	Expr string
 
+	// repr is the first occurrence's parsed form, carried out of the collector
+	// for [Lint], which has to ask a question about the expression's *shape*
+	// that the rendering cannot answer: whether every name it reads is one a
+	// `value:` step elsewhere in the file could still read. Unexported because
+	// it is not part of the measurement — `flow audit` prints Expr and Sites
+	// and has no use for a tree — and re-parsing the rendering to recover it
+	// would be a second parse of something this already holds.
+	repr *expr.Expr
+
 	// Sites are where the expression is stated, in file order.
 	Sites []ExprSite
 
@@ -190,6 +199,23 @@ type auditCollector struct {
 // addressed by the trigger's name rather than by its index. See
 // [auditCollector.trigger] for why the last of those matters.
 func (c *auditCollector) workflow(wf *v1.Workflow) {
+	exprSites(wf, c.pos, func(step, field, path string, val *v1.Value) {
+		c.siteAt(step, field, path, val)
+	})
+}
+
+// exprSites calls visit for every expression a workflow's document holds, with
+// the field an author reads it under and the path its position was recorded
+// against — the two spellings that differ in exactly the four places the arms
+// below name.
+//
+// Extracted from [auditCollector.workflow] so that the tier-0 measurement and
+// the tier-4 lint ask one traversal where a written expression is, rather than
+// keeping two lists that agree until one of them forgets a slot. That is the
+// same reasoning #508 applied one level down, where [v1.WalkWorkflow] replaced
+// the per-caller lists of positions: a checker that cannot see an expression
+// says nothing about it, and says it silently.
+func exprSites(wf *v1.Workflow, pos *Positions, visit func(step, field, path string, val *v1.Value)) {
 	v1.WalkWorkflow(wf, v1.Walk{
 		Value: func(site v1.ValueSite) {
 			switch site.Slot {
@@ -199,7 +225,7 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 				// was recorded under are not the same string. The field is the one
 				// that gets reported.
 				field := site.Field()
-				c.siteAt("", field, field+".value", site.Value)
+				visit("", field, field+".value", site.Value)
 
 			case v1.SlotCallArgument:
 				// The arguments are this file's writing; the callee is another
@@ -207,10 +233,11 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 				// reads that file itself. The traversal does not recurse into it,
 				// which is what stops a library workflow's expressions being
 				// counted against every caller.
-				c.site(site.Step, "with."+site.Name, site.Value)
+				field := "with." + site.Name
+				visit(site.Step, field, field, site.Value)
 
 			case v1.SlotWebhookIdempotencyKey, v1.SlotWebhookArgument, v1.SlotWebhookVerify:
-				c.trigger(site)
+				triggerSite(pos, site, visit)
 
 			case v1.SlotInputDefault, v1.SlotInputExample, v1.SlotSwitchCaseValue:
 				// The three positions the language refuses an expression in: a
@@ -222,13 +249,14 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 				// output is a number somebody puts in a trend line.
 
 			default:
-				c.site(site.Step, site.Field(), site.Value)
+				field := site.Field()
+				visit(site.Step, field, field, site.Value)
 			}
 		},
 	})
 }
 
-// trigger records one expression a webhook trigger carries, addressed by the
+// triggerSite reports one expression a webhook trigger carries, addressed by the
 // trigger's name.
 //
 // [v1.Triggers.Webhooks] holds only webhook entries — a `- schedule:` entry sitting
@@ -242,7 +270,7 @@ func (c *auditCollector) workflow(wf *v1.Workflow) {
 // The field is qualified by the trigger's name for the reason the signals sites are
 // qualified by their policy: a file with more than one webhook must not have two
 // sites read as the same one.
-func (c *auditCollector) trigger(site v1.ValueSite) {
+func triggerSite(pos *Positions, site v1.ValueSite, visit func(step, field, path string, val *v1.Value)) {
 	if site.Slot == v1.SlotWebhookVerify {
 		// A `verify:` entry is a secret reference rather than an expression, so
 		// there is no sub-expression here to count and nothing an author could
@@ -250,13 +278,13 @@ func (c *auditCollector) trigger(site v1.ValueSite) {
 		return
 	}
 
-	at, ok := c.pos.TriggerPath(site.Owner)
+	at, ok := pos.TriggerPath(site.Owner)
 	if !ok {
 		// No positions at all (Audit(wf, nil)), or a name this walk cannot place —
 		// either way, nothing here can locate this trigger's expressions, and
 		// guessing at a path would risk landing on whichever entry happens to
-		// share that guessed index. c.siteAt degrades to Line: 0 on its own when
-		// pos is nil; skip explicitly rather than pass a path a non-nil pos might
+		// share that guessed index. A site degrades to Line: 0 on its own when pos
+		// is nil; skip explicitly rather than pass a path a non-nil pos might
 		// coincidentally match.
 		return
 	}
@@ -265,9 +293,9 @@ func (c *auditCollector) trigger(site v1.ValueSite) {
 
 	switch site.Slot {
 	case v1.SlotWebhookIdempotencyKey:
-		c.siteAt("", field+".idempotency_key", fieldPath(at, "idempotency_key"), site.Value)
+		visit("", field+".idempotency_key", fieldPath(at, "idempotency_key"), site.Value)
 	case v1.SlotWebhookArgument:
-		c.siteAt("", field+".with."+site.Name,
+		visit("", field+".with."+site.Name,
 			fieldPath(fieldPath(at, "with"), site.Name), site.Value)
 	}
 }
@@ -384,6 +412,11 @@ func (b *auditBucket) intersect(ancestors []string) {
 }
 
 // line reports the line an expression's own source begins on.
+func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
+	return exprPosition(c.pos, step, field, parsed).Line
+}
+
+// exprPosition reports where an expression's own source begins.
 //
 // The recorded span begins at the scalar holding the expression, which is the
 // expression itself when it was written inline (`if: ${...}`) and the `>-` header
@@ -395,8 +428,19 @@ func (b *auditBucket) intersect(ancestors []string) {
 // Counting back from the span's *end* instead would be wrong wherever YAML folds
 // a block scalar onto one logical line, which is most of this corpus: the folded
 // source has one line while the span still covers all of them.
-func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
-	span, ok := c.pos.locateExpr(step, field)
+//
+// The column is dropped in exactly that block-scalar case, and the drop is the
+// honest answer rather than a rounding: what is known is that the source starts
+// on the line after the header, and *where* on that line is the indentation the
+// folding chose, which this span does not record. [Diagnostic.Column] already
+// spells a zero as "only the line is known", so a reader gets a line they can
+// go to instead of a column that would point at the wrong character.
+//
+// Shared with [Lint] rather than kept as the measurement's own, because a
+// tier-0 count and a tier-4 finding that disagreed about where an expression
+// is written would be two answers to a question with one answer.
+func exprPosition(pos *Positions, step, field string, parsed *expr.ParsedExpr) Position {
+	span, ok := pos.locateExpr(step, field)
 	if !ok {
 		// A few positions are recorded against the key an author wrote rather
 		// than against the expression under it, an `undo:` input being the one
@@ -414,19 +458,19 @@ func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
 		// instead of the compensation. LocateKind has no candidate search to go
 		// wrong.
 		if field == "undo" {
-			if span, ok := c.pos.LocateKind(step, "undo"); ok {
-				return span.Start.Line
+			if span, ok := pos.LocateKind(step, "undo"); ok {
+				return span.Start
 			}
-			return 0
+			return Position{}
 		}
-		if span, ok := c.pos.Locate(step, field); ok {
-			return span.Start.Line
+		if span, ok := pos.Locate(step, field); ok {
+			return span.Start
 		}
-		return 0
+		return Position{}
 	}
 
 	if !span.Start.IsValid() {
-		return 0
+		return Position{}
 	}
 
 	// cel-go's line offsets are the offset just past each newline, with a final
@@ -436,10 +480,10 @@ func (c *auditCollector) line(step, field string, parsed *expr.ParsedExpr) int {
 	spanLines := span.End.Line - span.Start.Line + 1
 
 	if span.End.IsValid() && sourceLines > 0 && spanLines > sourceLines {
-		return span.Start.Line + 1
+		return Position{Line: span.Start.Line + 1}
 	}
 
-	return span.Start.Line
+	return span.Start
 }
 
 // report renders the buckets worth reporting, most repeated first.
@@ -459,6 +503,7 @@ func (c *auditCollector) report() []RepeatedExpr {
 
 		out = append(out, RepeatedExpr{
 			Expr:    key,
+			repr:    bucket.repr,
 			Sites:   sites,
 			Negated: negatedPair(sites),
 		})
