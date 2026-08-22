@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -55,6 +56,26 @@ var ErrCatalogOnly = errors.New("plugin: task was loaded from a catalog and cann
 // is safe to guess at.
 var ErrCatalogClaims = errors.New("plugin: catalog claims schema version is not this build's")
 
+// ErrCatalogTaskName reports that a catalog names a task its plugin could not
+// have provided.
+//
+// A launched plugin never chooses the name a task is registered under: the host
+// qualifies every manifest's bare name with the plugin's own
+// (`p.name + "." + name`, task.go:36), so `example.greet` is the only shape a
+// launch can produce and a bare `http` is not reachable that way at all. A
+// catalog is a *document*, and a document says whatever its author typed — so a
+// catalog naming a task `http` would, once rebuilt and registered, replace the
+// built-in of that name ([flowstatev1.Registry.Register] replaces rather than
+// refuses) with a definition that carries the document's descriptors and cannot
+// execute.
+//
+// That is a reader stronger than the thing it stands in for, in the one
+// direction that matters: a catalog could change what `flow validate` checks a
+// built-in step against. So the qualification the launcher applies is checked
+// here rather than assumed, and a catalog no host could have written is refused
+// whole (#710).
+var ErrCatalogTaskName = errors.New("plugin: catalog names a task its plugin could not have provided")
+
 // ErrCatalogTooLarge reports that a catalog is over one of the bounds on the
 // document as a whole — how many plugins it names, how many tasks across all of
 // them, or how many descriptor bytes it carries in total.
@@ -103,6 +124,10 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 	defs := make([]flowstatev1.TaskDef, 0, total)
 	for _, described := range catalog.GetPlugins() {
 		for _, task := range described.GetTasks() {
+			if err := checkQualified(described.GetName(), task.GetName()); err != nil {
+				return nil, err
+			}
+
 			def, err := TaskDefFromDescription(task, cfg)
 			if err != nil {
 				return nil, fmt.Errorf("plugin %q: %w", truncate(described.GetName(), 64), err)
@@ -112,6 +137,27 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 	}
 
 	return defs, nil
+}
+
+// checkQualified refuses a task name the plugin it is listed under could not
+// have produced. See [ErrCatalogTaskName] for why a document gets asked this
+// and a launched plugin does not.
+func checkQualified(plugin, task string) error {
+	if plugin == "" {
+		return fmt.Errorf("%w: a plugin in the catalog has no name, so nothing it lists can be attributed to it",
+			ErrCatalogTaskName)
+	}
+
+	prefix := plugin + "."
+	if !strings.HasPrefix(task, prefix) || task == prefix {
+		return fmt.Errorf(
+			"%w: plugin %q lists a task named %q, and a host names every one of a plugin's tasks "+
+				"%s<task>; a catalog naming a task any other way would register that name over "+
+				"whatever already holds it",
+			ErrCatalogTaskName, truncate(plugin, 64), truncate(task, 64), prefix)
+	}
+
+	return nil
 }
 
 // boundCatalog refuses a catalog that is over one of the whole-document bounds,

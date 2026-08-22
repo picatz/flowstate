@@ -79,6 +79,35 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// tree is rebuilt) can see it. A read-time fallback here would be invisible
 	// to that scan the same way it was before #725.
 
+	// A saved catalog and a way to launch plugins are two sources of one fact,
+	// and this is the only place that sees all of them — so the refusal is here,
+	// before [startPlugins] can bring a single process up behind a catalog the
+	// caller asked to be checked against (#710). See
+	// [errPluginCatalogAndLaunch] for why only flags given on the command line
+	// count, and why an ambient $FLOWSTATE_PLUGIN_DIR loses to an explicit
+	// --plugin-catalog rather than refusing the run.
+	if pluginCatalogPath(cmd) != "" {
+		var named []string
+		for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir"} {
+			if cmd.Flags().Changed(name) {
+				named = append(named, "--"+name)
+			}
+		}
+		if len(named) > 0 {
+			return pluginFlags{}, newUsageError(fmt.Errorf(
+				"%w: %s launches plugins and --%s reads what they said without launching anything; "+
+					"pass one of them",
+				errPluginCatalogAndLaunch, strings.Join(named, " and "), pluginCatalogFlag))
+		}
+
+		// Nothing is launched behind a catalog. An ambient search path is
+		// dropped here rather than left to [pluginFlags.configured], so that
+		// every later question about this invocation — whether to open a host,
+		// whether a --plugin pin has somewhere to look — is answered by the
+		// source the command line chose.
+		return pluginFlags{}, nil
+	}
+
 	// Resolved here rather than left to fail inside the host, because the message
 	// a person needs names the path they typed and the directory it resolved
 	// against, and by the time the host sees it only the first half survives.

@@ -1556,7 +1556,14 @@ func runLSP(cmd *cobra.Command, args []string) error {
 //     diagnostic about the file on the strength of something that went wrong
 //     with a process. False diagnostics are worse than missing ones.
 //
-// What is deliberately unchanged is the answer with no --plugin-dir: a step
+// Given --plugin-catalog instead, the same facts are read out of a document
+// `flow plugins --output json` wrote, and no process is launched at all
+// (#710) — the form the surfaces that cannot exec need, and the one a CI job
+// uses to check a repository's plugin examples with no plugin binaries in the
+// runner. The two flags are mutually exclusive on the command line; see
+// [loadPluginCatalog].
+//
+// What is deliberately unchanged is the answer with neither flag: a step
 // naming a plugin task still gets the installation-question diagnostic rather
 // than a pass, because whether a plugin is installed is a deployment's decision
 // and this process has not been told. See unknownTaskMessage in the flowfile
@@ -1579,10 +1586,34 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// launched, which is the same fact said the other way.
 	catalog, closePlugins, err := startPlugins(cmd, nil)
 	if err != nil {
+		// A wrong command line is passed through as it is. The sentence below
+		// says a plugin would not start, and for a refusal made before anything
+		// was launched — a pinned plugin with nowhere to look, or both plugin
+		// sources named at once — that is an account of something that never
+		// happened.
+		if isUsageError(err) {
+			return err
+		}
+
 		return fmt.Errorf("the plugins on --plugin-dir are what these files are checked "+
 			"against, and one of them would not start, so nothing was checked: %w", err)
 	}
 	defer closePlugins()
+
+	// Or the same facts without launching anything, from a document (#710).
+	// Same failure rule as the launch above, for the identical reason: a
+	// catalog that will not load fails this command naming the file, because
+	// carrying on would report every task the catalog was carrying as unknown.
+	// Same catalog value afterwards, so a `plugins:` requirement resolves
+	// against whichever source this invocation named — the two are mutually
+	// exclusive on the command line (see [pluginFlagsOf]), so only one of them
+	// ever answers.
+	if fromFile, err := loadPluginCatalog(cmd); err != nil {
+		return fmt.Errorf("the catalog on --%s is what these files are checked against, "+
+			"and it could not be read, so nothing was checked: %w", pluginCatalogFlag, err)
+	} else if fromFile != nil {
+		catalog = fromFile
+	}
 
 	if format.Machine() {
 		return validateMachine(cmd, args, format, catalog)
@@ -2322,6 +2353,13 @@ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml`,
 	// fails to launch does here, which is the decision that matters on this verb.
 	addPluginFlags(validateCmd)
 
+	// And the same question answered without executing anything, from a saved
+	// catalog (#710). It is the mechanism the surfaces that cannot exec need —
+	// a browser authoring surface (#102, #242), a server-side Validate RPC —
+	// and the one a CI job wants, since a checked-in catalog validates plugin
+	// examples with no plugin binaries in the runner.
+	addPluginCatalogFlag(validateCmd)
+
 	// Get command, which asks a server what a run is doing.
 	//
 	// `flow run` polls for this while it waits, which serves the case where the
@@ -2490,6 +2528,14 @@ flow tasks example.greet --plugin-dir ./plugins`,
 	// here answered that no task by that name exists in this build, which was a
 	// statement about the invocation rather than about the task.
 	addPluginFlags(tasksCmd)
+
+	// A catalog *is* a listing, which is why this verb takes the offline form
+	// too (#710): the document holds every task a plugin provides, with the
+	// descriptors this page renders, so `flow tasks --plugin-catalog` prints
+	// what a worker holding those plugins would run without holding them. The
+	// provenance lines then describe the machine the catalog was written on,
+	// which is what the document actually records.
+	addPluginCatalogFlag(tasksCmd)
 
 	// Task command, which runs one task without a workflow around it. Built in
 	// taskrun.go, beside the code it drives. See [newTaskCommand] for why the
