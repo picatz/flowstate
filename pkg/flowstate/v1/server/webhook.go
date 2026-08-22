@@ -581,7 +581,15 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	accepted, err := r.start(req.Context(), route, v1.WebhookDelivery{
+	// The span covering the acceptance, opened here and not one line earlier: it
+	// carries a link to whatever trace the sender named, and reading a
+	// `traceparent` from an unverified request would let anyone at all name our
+	// trace ids. See `webhooktrace.go` for why the sender's context is a link
+	// rather than a parent, and for what makes that linkage reach the run.
+	ctx, span := r.startDeliverySpan(req.Context(), route, req.Header)
+	defer span.End()
+
+	accepted, err := r.start(ctx, route, v1.WebhookDelivery{
 		Headers: headers,
 		Body:    decoded,
 
@@ -591,6 +599,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// that passed.
 		Verified: true,
 	})
+	recordDeliveryOutcome(span, accepted, err)
 	if err != nil {
 		r.log.ErrorContext(req.Context(), "a verified delivery did not start a run",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)

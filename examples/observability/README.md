@@ -354,6 +354,29 @@ empty TraceID.
 The workflow id still works as a key and is still the string that joins Grafana to
 the Temporal UI. It is no longer the only one.
 
+### What the root of a run's trace is
+
+One root span covers a run, and which span that is depends on how the run was
+started and which driver ran it — the *shape* is the same either way, the name is
+not.
+
+| How the run started | The root of its trace |
+| --- | --- |
+| `flow run local` | `flowstate.run/<workflow>`, opened by the local driver |
+| through the server, onto a worker | `RunWorkflow:Run`, opened by Temporal's tracing interceptor |
+| a webhook delivery | `flowstate.webhook/<workflow>/<trigger>`, with `RunWorkflow:Run` beneath it |
+
+The durable driver opens no `flowstate.run/*` span of its own, deliberately: the
+substrate already opens one at exactly that seam, and workflow code may not open
+a second — a span minted there is minted again on every replay.
+
+A delivery that arrived carrying a `traceparent` gets a **link** on that webhook
+span, never a parent. In Tempo the link is a "caused by" edge you can follow to
+the sender's trace; the run stays in a trace of its own, because a sender's span
+ends in milliseconds and the run it starts may last a week. A delivery with no
+`traceparent`, or with a malformed one, is accepted exactly as before and simply
+carries no link.
+
 ### 6. Tear it down
 
 ```console
