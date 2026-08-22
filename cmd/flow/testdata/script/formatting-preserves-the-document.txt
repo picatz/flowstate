@@ -21,10 +21,10 @@ edition: v2026.3
 name: untidy
 # a comment above the steps
 steps:
-- id: hello
-  # a comment inside a step
-  log:
-    message: hello
+  - id: hello
+    # a comment inside a step
+    log:
+      message: hello
 
 # Formatted once is formatted for good.
 $ flow fmt untidy.yaml

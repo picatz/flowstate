@@ -232,8 +232,20 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		// prefix is a string in git.v1.LsRemoteInputs; the only way the
 		// validator can know that is the descriptor this plugin shipped
 		// over its socket at launch, reconstructed by the host.
-		wrongType, err := flowfile.ValidateSource([]byte(strings.Replace(
-			string(readSource), `prefix: "refs/heads/"`, "prefix: 5", 1)))
+		//
+		// The substitution is checked to have happened. It is a textual edit of
+		// an example this test does not own, so the day that example's spelling
+		// moves — `prefix: "refs/heads/"` became `prefix: refs/heads/` when
+		// #850 settled the formatter's quoting — a replace that matches nothing
+		// hands the validator the unmodified, *valid* example and the assertion
+		// below reads as the plugin's schema not being checked at all.
+		broken := strings.Replace(string(readSource), "prefix: refs/heads/", "prefix: 5", 1)
+		if broken == string(readSource) {
+			t.Fatal("the example no longer spells `prefix:` the way this substitution expects, so nothing " +
+				"was made wrong and this case would pass without checking anything")
+		}
+
+		wrongType, err := flowfile.ValidateSource([]byte(broken))
 		if err != nil {
 			t.Fatalf("ValidateSource: unexpected error: %v", err)
 		}

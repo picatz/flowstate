@@ -70,16 +70,13 @@ description: An order as a long-lived entity — created by its first mutation, 
 # exercises directly against a real Temporal server (see
 # `TestEntityStateReportsCarriedVarsAndLoopState` and
 # `TestSignalWithStartCreatesOnceThenSignalsTheEntityThereafter`).
-
 vars:
   kind: order
-
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before reaching its first mutation still has something to have carried across the handover.
     log:
       message: order opened
-
   - id: lifecycle
     description: Runs one mutation per iteration, retired immediately by a `close` mutation rather than by exhausting `max_iterations`.
     loop:
@@ -121,15 +118,10 @@ steps:
             # An order genuinely abandoned for a month closes on its own
             # rather than sitting there — see `until:` above.
             timeout: 720h
-
 outputs:
   total_cents:
     value: ${steps.lifecycle.state}
     description: the sum of every mutation's amount_cents except the one that closed the order
   mutations:
     value: ${steps.lifecycle.results.size()}
-    description: >-
-      how many mutations this run processed, including the one that closed
-      it; reachable only when the order genuinely closed — see
-      loop-accumulate's own runaway case for what an unclosed order does
-      instead
+    description: how many mutations this run processed, including the one that closed it; reachable only when the order genuinely closed — see loop-accumulate's own runaway case for what an unclosed order does instead

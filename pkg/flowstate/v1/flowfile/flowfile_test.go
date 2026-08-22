@@ -51,12 +51,12 @@ func ExampleMarshal() {
 	// edition: v2026.3
 	// name: hello
 	// steps:
-	// - id: a
-	//   http:
-	//     url: https://example.com
-	// - id: b
-	//   log:
-	//     message: ${steps.a.body}
+	//   - id: a
+	//     http:
+	//       url: https://example.com
+	//   - id: b
+	//     log:
+	//       message: ${steps.a.body}
 }
 
 func ExampleUnmarshal() {

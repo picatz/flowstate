@@ -243,6 +243,22 @@ steps:
   log:
     message: waited
 `,
+	// A string whose *contents* spell the three constructs the grammar refuses in
+	// a document. The file is valid — they are inside a double-quoted scalar, so
+	// the strict profile has nothing to report — and the scalar-style chooser
+	// used to hand those bytes to a YAML decoder while verifying a plain
+	// candidate, which expanded the merge keys: 7.4 GiB for this file's
+	// twenty-four-level cousin (#889). Seeded so the fuzzer starts from the shape
+	// rather than having to find it, and so a mutation of it is cheap to reach.
+	`edition: v2026.3
+name: bomb
+steps:
+- id: a
+  log:
+    message: "&l3 {p: &l2 {p: &l1 {p: &l0 {a: x}, <<: *l0}, <<: *l1}, <<: *l2}"
+    fields:
+      alias: "[&a x,*a,*a]"
+`,
 }
 
 // FuzzFixIdempotent fuzzes [flowfile.Fix] over the three properties its own

@@ -15,7 +15,6 @@
 # its caller's locals.
 edition: v2026.3
 name: call-a-workflow
-
 steps:
   # `with:` binds the callee's declared inputs — checked against
   # provision-tenant's `inputs:` when this file is compiled, so binding a name it
@@ -30,8 +29,7 @@ steps:
   # `outputs:` — `url` here — read the same way a task's would be.
   - id: announce
     log:
-      message: ${'tenant ready at ' + steps.provision.url}
-
+      message: ${"tenant ready at " + steps.provision.url}
 outputs:
   # Read back from the callee a second time, at the run's own boundary rather
   # than a step's — proving the value survived past `announce` and not only
