@@ -482,3 +482,126 @@ func TestFormatAcceptsWhatValidateAccepts(t *testing.T) {
 		assert.NoErrorf(t, err, "at %d levels: flow validate accepts this document but flow fmt refused it", levels)
 	}
 }
+
+// TestFormatRefusesACommentThatWouldFoldIntoItsKey is #860, the third time a
+// rewriter in this repository has written a document its own parser rejects.
+//
+// A comment written after `key:` is anchored to the key, and the encoder emits a
+// key's comment immediately after the key token — which is correct only where the
+// value is written on the lines *below*. Where the value is written back beside
+// the key, the same placement emits `name # why: A0`: the comment folded into the
+// key, a document that fails to re-parse with `2:1: non-map value is specified`.
+//
+// The fuzzer found it from `name: #` with the scalar continuing on the next line
+// (committed as the corpus entry `comment_folded_into_key`), and it is the whole
+// reason `fuzz-smoke` — a required check — was going red on unrelated diffs.
+//
+// The answer is the one Format already gives a comment whose anchor no longer
+// exists, and the one #850 records `flow fmt` giving for comments it cannot
+// carry: refuse, positioned at the comment, and write nothing. Better no output
+// than wrong output; the cost is that these documents cannot be formatted at all
+// until the emitter can put the comment somewhere honest.
+func TestFormatRefusesACommentThatWouldFoldIntoItsKey(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		src    string
+		line   int
+		column int
+	}{
+		{
+			// The fuzzer's own input, byte for byte.
+			name:   "the value continues on the next line",
+			src:    "edition: v2026.3\nname: #\nA0\n",
+			line:   2,
+			column: 7,
+		},
+		{
+			name: "the value is written below the key and rendered beside it",
+			src: `edition: v2026.3
+name: # why
+  greeter
+steps:
+- id: a
+  log:
+    message: hi
+`,
+			line:   2,
+			column: 7,
+		},
+		{
+			name: "a nested key whose value is a scalar",
+			src: `edition: v2026.3
+name: greeter
+steps:
+- id: a
+  log:
+    message: # why
+      hi
+`,
+			line:   6,
+			column: 14,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow, err := flowfile.Unmarshal([]byte(test.src))
+			require.NoError(t, err, "the fixture does not compile, so it says nothing about Format")
+
+			out, err := flowfile.Format([]byte(test.src), workflow)
+			require.Error(t, err, "a comment was folded into a key rather than refused")
+			assert.Nil(t, out, "a refusal handed back bytes a caller could write")
+
+			var diagnostics flowfile.Diagnostics
+			require.True(t, errors.As(err, &diagnostics),
+				"the refusal is not positioned, so an author cannot find the comment that caused it")
+			require.Len(t, diagnostics, 1)
+			assert.Equal(t, test.line, diagnostics[0].Line)
+			assert.Equal(t, test.column, diagnostics[0].Column)
+			assert.Contains(t, diagnostics[0].Message, "comment cannot be kept")
+			assert.Contains(t, diagnostics[0].Message, "same line")
+		})
+	}
+}
+
+// TestFormatKeepsTheCommentPositionsAroundTheFoldingOne is the other half of
+// #860, and the reason the fix is a condition rather than a blanket refusal of
+// key-line comments.
+//
+// Every position here sits next to the one above and is carried correctly today:
+// a comment after a key whose value is a block mapping or a block sequence, a
+// comment on a block scalar's header, and a comment after a sequence dash. Each
+// was probed deliberately rather than left to the fuzzer, because a fix that
+// refused one comment too widely would delete a working feature and only the
+// bytes would say so.
+func TestFormatKeepsTheCommentPositionsAroundTheFoldingOne(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: greeter
+steps: # after a key whose value is a block sequence
+- # after the dash
+  id: a
+  log: # after a key whose value is a block mapping
+    message: | # on a block scalar header
+      one
+      two
+`
+
+	const want = `edition: v2026.3
+name: greeter
+steps: # after a key whose value is a block sequence
+# after the dash
+- id: a
+  log: # after a key whose value is a block mapping
+    message: | # on a block scalar header
+      one
+      two
+`
+
+	got := formatFile(t, src)
+	assert.Equal(t, want, got)
+	assert.Equal(t, got, formatFile(t, got), "formatting the formatted document changed it again")
+}

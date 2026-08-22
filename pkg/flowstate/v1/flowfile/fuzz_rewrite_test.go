@@ -358,6 +358,16 @@ func FuzzFixIdempotent(f *testing.F) {
 // common case Format returns directly (a document with no comments and no pins);
 // everything past that is this target's own ground.
 //
+// The first thing it found is committed beside it as the corpus entry
+// `comment_folded_into_key`: `name: #` with the scalar continuing on the next
+// line, which the emitter wrote back as `name #: A0` — the comment folded into
+// the key, a document that no longer parses (#860). The named regression tests
+// for it are TestFormatRefusesACommentThatWouldFoldIntoItsKey and
+// TestFormatKeepsTheCommentPositionsAroundTheFoldingOne in format_test.go, which
+// state the refusal's position and hold the neighbouring comment positions to
+// bytes, since a fix that refused one comment too widely would look identical
+// here.
+//
 // An error from Format is an ordinary answer and not asserted against: a workflow
 // this build compiled but cannot write back — a literal holding `${`, an
 // expression written with a macro cel-go cannot unparse, a comment the rewrite
