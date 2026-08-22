@@ -90,9 +90,14 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 // operator can compare a rehearsal against production, or ignore the
 // distinction, without either choice being made for them here.
 //
-// Every attribute recorded is a member of a fixed enumeration or a registered
-// task's name, and all of it passes through [metricschema.Attributes] anyway —
-// see that package for the rule and for what happens at a bound.
+// Every attribute recorded is a member of a fixed enumeration, or the task's
+// name as the workflow spells it. The second is author-chosen rather than
+// registry-checked — a step naming a task nobody registered still fails through
+// here, carrying that name — which is why it is classified as bounded by
+// *configuration* and passes through [metricschema.Attributes] like everything
+// else: the per-key distinct-value cap applies whether or not the name turned
+// out to name anything. See that package for the rule and for what a bound does
+// when it is reached.
 func ObserveTask(ctx context.Context, task *Task, stepID, driver string) (context.Context, trace.Span, func(error)) {
 	ctx, span := StartTaskSpan(ctx, task, stepID)
 	started := time.Now()
