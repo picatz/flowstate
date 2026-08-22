@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -347,7 +348,10 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		return Principal{}, err
 	}
 
-	claims := verifiedClaims(token.Claims)
+	claims, err := verifiedClaims(token.Claims)
+	if err != nil {
+		return Principal{}, err
+	}
 
 	var failures []error
 	for _, entry := range candidates {
@@ -520,14 +524,128 @@ func headerString(params header.Parameters, name string) string {
 	return text
 }
 
+// Bounds on the claim set a verified token may carry into a [Principal].
+//
+// These sit behind signature verification, so this is a trusted-issuer resource
+// question rather than an unauthenticated one — and it is still a bound worth
+// having, for the reason every bound in this repository is: the ratio is the
+// peer's to choose. [maxTokenBytes] bounds the token, and a 64 KiB token whose
+// payload is one enormous claim set is a legal token. An issuer we trust for
+// authentication is not thereby trusted to decide how much memory each of its
+// tokens costs us for the lifetime of the [Principal] it produces, which on a
+// long-lived worker is the lifetime of the request it authorizes.
+//
+// A token over a bound is refused, not trimmed: a [Principal] holding some of a
+// token's claims is one whose authorization rules read a claim set the issuer
+// never signed, and a rule keying on the claim that got dropped would silently
+// stop matching.
+//
+// The numbers, measured against real identity providers: a GitHub Actions ID
+// token carries about twenty claims, and the largest claim set in this
+// repository's own tests is fourteen at 640 bytes. 64 claims and 32 KiB give
+// room for an Entra or Okta token carrying a group list, while refusing the
+// pathological token that spends its whole 64 KiB on claims.
+const (
+	// maxVerifiedClaims is how many claims a verified token may carry.
+	maxVerifiedClaims = 64
+
+	// maxVerifiedClaimBytes bounds their total size, which the count does not.
+	maxVerifiedClaimBytes = 32 << 10
+
+	// maxVerifiedClaimDepth bounds how deeply a structured claim value nests.
+	// A claim value is arbitrary JSON the issuer chose, so measuring its size
+	// means walking it, and an unbounded walk over an attacker-influenced
+	// structure is a stack the peer controls the depth of.
+	maxVerifiedClaimDepth = 8
+)
+
 // verifiedClaims copies a verified claims set into a plain map, so that a
 // [Principal] carries no reference to the parsed token it came from.
-func verifiedClaims(claims jwt.ClaimsSet) map[string]any {
+//
+// It refuses a claim set outside the bounds above rather than returning a
+// partial one; see them for why.
+func verifiedClaims(claims jwt.ClaimsSet) (map[string]any, error) {
+	if len(claims) > maxVerifiedClaims {
+		return nil, fmt.Errorf("%w: token carries %d claims, and at most %d are accepted",
+			ErrMalformedToken, len(claims), maxVerifiedClaims)
+	}
+
+	total := 0
 	copied := make(map[string]any, len(claims))
 	for name, value := range claims {
+		size, err := claimSize(value, 1)
+		if err != nil {
+			// Claim names are safe to name and values are not; see
+			// [validateCarriedClaims].
+			return nil, fmt.Errorf("%w: claim %q: %w", ErrMalformedToken, truncate(name, maxClaimValueLength), err)
+		}
+
+		total += len(name) + size
+		if total > maxVerifiedClaimBytes {
+			return nil, fmt.Errorf("%w: token carries more than %d bytes of claims",
+				ErrMalformedToken, maxVerifiedClaimBytes)
+		}
+
 		copied[name] = value
 	}
-	return copied
+
+	return copied, nil
+}
+
+// claimSize approximates a decoded claim value's encoded size, so that the byte
+// bound above can be applied to a value that is not a string.
+//
+// It is deliberately an approximation: the point is to bound a resource, not to
+// reproduce an encoder. Every scalar counts as its rendered length or a small
+// fixed cost, and a container costs its members plus their keys. Depth is
+// bounded because nesting is the peer's choice.
+func claimSize(value any, depth int) (int, error) {
+	if depth > maxVerifiedClaimDepth {
+		return 0, fmt.Errorf("value nests deeper than %d levels", maxVerifiedClaimDepth)
+	}
+
+	switch typed := value.(type) {
+	case nil:
+		return 4, nil
+	case string:
+		return len(typed), nil
+	case bool:
+		return 5, nil
+	case float64, int64, int, json.Number:
+		return 20, nil
+	case []any:
+		total := 0
+		for _, element := range typed {
+			size, err := claimSize(element, depth+1)
+			if err != nil {
+				return 0, err
+			}
+			total += size
+			if total > maxVerifiedClaimBytes {
+				return total, nil
+			}
+		}
+		return total, nil
+	case map[string]any:
+		total := 0
+		for name, member := range typed {
+			size, err := claimSize(member, depth+1)
+			if err != nil {
+				return 0, err
+			}
+			total += len(name) + size
+			if total > maxVerifiedClaimBytes {
+				return total, nil
+			}
+		}
+		return total, nil
+	default:
+		// Anything the JSON decoder did not produce. Counted rather than
+		// refused, because refusing here would reject a token on the strength
+		// of a type this function has not been taught, which is a rejection an
+		// operator cannot act on.
+		return 20, nil
+	}
 }
 
 // stringClaim returns a claim that must be a non-empty string.

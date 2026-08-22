@@ -642,6 +642,15 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		claims[ClaimRun] = ref.Run
 	}
 
+	// Validate applies the same bound, and [Broker] reaches this function by a
+	// path that does not go through Mint. Checked again here because this is
+	// where a claim set becomes a signed token: an oversized one is refused,
+	// never trimmed, since a truncated claim set is an assertion that says
+	// something other than what was authorized.
+	if err := validateCarriedClaims(identity.Claims); err != nil {
+		return Assertion{}, err
+	}
+
 	// Validate rejects a carried claim that shadows a reserved one, so this
 	// cannot overwrite anything above. Checked again here because that check is
 	// what keeps the guarantee, and it belongs next to the code it protects.
