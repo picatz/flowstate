@@ -537,6 +537,16 @@ attack it closes. A billion-laughs document is rejected in the time it takes to
 walk the nodes actually on disk, because no alias is ever followed. See
 `flowfile/strict.go`.
 
+The refusal is **not gated on an edition**, and that is a decision rather than an
+omission. An edition boundary — a newer edition refusing what the edition a file
+declares still resolves — would mean this build carried two grammars, which is
+precisely the cost the no-deprecation decision above was made to avoid: declaring
+an older edition has never made an older grammar compile. So a file is refused
+for an anchor whatever it says its edition is, and `flow fix` leaves it byte for
+byte alone rather than stamping it forward. The cost, paid knowingly: an author
+on an older edition spells the construct out by hand *before* `flow fix` will
+bring the file forward, rather than getting both in one pass.
+
 What this profile deliberately does **not** reach is plain-scalar typing:
 `message: 0o777` still compiles to the integer 511, and a bare `2026.1` still
 arrives as a float. That is the YAML substrate no profile of *constructs* touches,

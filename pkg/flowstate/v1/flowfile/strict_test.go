@@ -327,3 +327,91 @@ steps:
 	assert.NotContains(t, string(result.Source), "edition: ",
 		"the edition stamp in particular: stamping a file the compiler refuses is the worst version of this")
 }
+
+// TestStrictRefusalIsNotGatedOnEdition pins the decision #840 made and #841 asked
+// to have ratified rather than left implicit: the refusal is unconditional, not
+// a property of the edition a file declares.
+//
+// The staged scope on #653 described an edition boundary — a newer edition
+// refuses, the edition a file declares still parses — so an upgrade in place
+// breaks nothing. #840 shipped unconditional refusal instead, and this is the
+// argument for keeping it, written where it can fail: an edition in this
+// repository is deliberately *not* a compatibility mechanism. "Declaring an
+// older edition does not make an older grammar compile. There is one grammar in
+// a build" (edition.go, the type's own doc comment) — so a boundary that let
+// v2026.3 refuse an alias while v2026.2 still resolved one would be two grammars
+// in one build, which is the exact cost the no-deprecation decision recorded in
+// docs/DSL.md was made to avoid. The narrower rule wins because the wider one
+// contradicts a rule already written down.
+//
+// The cost is real and is asserted here rather than described: for an edition
+// `flow fix` exists to migrate, an alias-bearing file gets no migration at all.
+// It comes back byte for byte, un-stamped, with a positioned refusal — the
+// author spells the alias out by hand first and gets the migration second.
+// Mechanically inlining a whole-value alias is what would buy that back, and is
+// the remaining item of #841.
+func TestStrictRefusalIsNotGatedOnEdition(t *testing.T) {
+	t.Parallel()
+
+	// Every edition this build recognises, so a new one added tomorrow is
+	// covered by this test on the day it is added rather than whenever someone
+	// remembers. The list itself is the source of truth (edition.go).
+	editions := flowfile.KnownEditions()
+	require.Contains(t, editions, flowfile.CurrentEdition, "premise: the current edition is a known one")
+	require.Greater(t, len(editions), 1, "premise: there is more than one edition to be gated on")
+
+	for _, edition := range editions {
+		t.Run(edition, func(t *testing.T) {
+			t.Parallel()
+
+			withAnchor := "edition: " + edition + `
+name: t
+defaults: &policy
+  timeout: 30s
+steps:
+  - id: a
+    log:
+      message: hi
+`
+			// The compiler refuses, in the same words, at the same position, no
+			// matter which edition the file claims to be written in.
+			_, _, err := flowfile.Parse([]byte(withAnchor))
+			require.Error(t, err, "an anchor is refused whatever edition the file declares")
+			d := firstDiagnostic(t, err)
+			assert.Equal(t, 3, d.Line)
+			assert.Contains(t, d.Message, "an anchor (`&policy`) is not part of the Flowfile grammar",
+				"the anchor is what is reported — not the edition, which is not what is wrong")
+
+			// And `flow fix` refuses it, leaving the bytes alone. Compared as
+			// bytes rather than by re-validating the output: a rewrite that
+			// still validates can still have changed what the file means, which
+			// is how this repository's two `flow fix` corruptions got through.
+			result, err := flowfile.Fix([]byte(withAnchor))
+			require.NoError(t, err)
+			require.NotEmpty(t, result.Refusals)
+			assert.Equal(t, withAnchor, string(result.Source), "a refused file is left byte for byte alone")
+			assert.Contains(t, string(result.Source), "edition: "+edition,
+				"including its declared edition: no file is stamped forward on the way to being refused")
+
+			// The premise that makes the assertion above cost something. Without
+			// the anchor, an older edition is a file `flow fix` migrates — so for
+			// those editions the refusal is withholding a rewrite the author
+			// would otherwise get, which is the price of the decision.
+			withoutAnchor := "edition: " + edition + `
+name: t
+steps:
+  - id: a
+    log:
+      message: hi
+`
+			clean, err := flowfile.Fix([]byte(withoutAnchor))
+			require.NoError(t, err)
+			require.Empty(t, clean.Refusals)
+			if edition != flowfile.CurrentEdition {
+				assert.True(t, clean.Changed(),
+					"premise: an older edition is one flow fix brings forward, so the refusal above costs a migration")
+				assert.Contains(t, string(clean.Source), "edition: "+flowfile.CurrentEdition)
+			}
+		})
+	}
+}
