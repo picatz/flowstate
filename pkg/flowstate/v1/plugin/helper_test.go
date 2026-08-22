@@ -139,6 +139,19 @@ func runFakePlugin() int {
 		}
 		fakeAnnounce()
 		return 0
+
+	case "record-run":
+		// Touches the file its env names the instant it runs, then exits
+		// without handshaking. It is the ELF — and so, on Linux, the
+		// descriptor-pinnable — analogue of markerPlugin's shell script: a
+		// launch that reaches exec leaves the marker, and admission that
+		// refuses before exec does not. It never serves, so a launch that does
+		// get here still fails, at the handshake, which is a different failure
+		// from a pin refusal. See TestPinnedDigestMismatchIsRefusedBeforeAnythingRuns.
+		if p := os.Getenv("FLOWSTATE_TEST_MARKER"); p != "" {
+			_ = os.WriteFile(p, nil, 0o600)
+		}
+		return 0
 	}
 
 	// Everything else serves.

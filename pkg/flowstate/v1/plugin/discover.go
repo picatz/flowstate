@@ -139,8 +139,31 @@ func Discover(cfg Config) ([]Found, error) {
 // would read as a flag, or anything else that would have to be quoted later.
 func pluginName(fileName string) (string, bool) {
 	name, ok := strings.CutPrefix(fileName, BinaryPrefix)
-	if !ok || name == "" || len(name) > MaxNameLen {
+	if !ok {
 		return "", false
+	}
+	if !validPluginName(name) {
+		return "", false
+	}
+
+	return name, true
+}
+
+// validPluginName reports whether name is a name a discovered plugin could
+// actually have: lower-case alphanumerics and interior hyphens, non-empty, and
+// no longer than [MaxNameLen] — the same constraint the schema puts on a
+// manifest name.
+//
+// It is its own function because two callers need the identical rule.
+// [pluginName] applies it to a discovered file's suffix; [validateDigestPin]
+// applies it to a pin's key, so that a pin naming something no plugin could be
+// called — `PinnedDigests["GitHub"]` for a binary discovered as `github` — is a
+// startup error rather than a pin that silently never matches and leaves the
+// real plugin running unpinned. A security control keyed by a name has to reject
+// a key that cannot name the thing it guards, or the guard fails open on a typo.
+func validPluginName(name string) bool {
+	if name == "" || len(name) > MaxNameLen {
+		return false
 	}
 
 	for i := range len(name) {
@@ -149,11 +172,11 @@ func pluginName(fileName string) (string, bool) {
 		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
 		case c == '-' && i > 0:
 		default:
-			return "", false
+			return false
 		}
 	}
 
-	return name, true
+	return true
 }
 
 // writableByOthers is every permission bit that lets a user who is not the

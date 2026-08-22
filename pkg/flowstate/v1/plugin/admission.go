@@ -69,6 +69,35 @@ func admit(cfg Config, name, path string, image *execImage) error {
 		))
 	}
 
+	if !image.pinned {
+		// The digest is of the open descriptor; the exec runs image.execPath,
+		// which when the image is not descriptor-pinned is the *path* — a name
+		// the kernel resolves again at cmd.Start. A pin verified against the
+		// descriptor's bytes therefore says nothing about the bytes that will
+		// run: an atomic replace between this hash and the exec matches the pin
+		// on the old inode while the new one runs. That is the launch's own
+		// TOCTOU window ([execImage]'s doc comment), and admission cannot be
+		// layered over a launch that reintroduces it.
+		//
+		// So a pinned name the platform cannot pin to a descriptor is refused
+		// rather than downgraded to trust-on-first-use, because a security
+		// control that silently weakens where it cannot be enforced is the
+		// fail-open this package's own doctrine forbids. The cost is stated
+		// plainly and is the honest one: pinning requires descriptor execution,
+		// which today means Linux and a directly-executed binary — not a script
+		// or other interpreter-run image (see pinToDescriptor's format gate).
+		// A deployment that must pin such a plugin has to run it somewhere that
+		// can, and being told so at launch beats being given a guarantee that
+		// does not hold.
+		return pluginError(name, path, fmt.Errorf(
+			"%w: %q is pinned to %s, but this platform cannot execute the exact bytes it measured "+
+				"(it runs the path, which can be replaced between the hash and the exec), so the pin cannot be honored; "+
+				"digest pinning requires descriptor execution — a directly-executed binary on a platform that supports it — "+
+				"rather than a script or other interpreter-run image",
+			ErrDigestPin, name, want,
+		))
+	}
+
 	got, err := image.digest()
 	if err != nil {
 		return pluginError(name, path, fmt.Errorf(
@@ -101,8 +130,20 @@ func admit(cfg Config, name, path string, image *execImage) error {
 // match is the same outage as a missing binary, arriving later and looking like
 // a compromise.
 func validateDigestPin(name, digest string) error {
-	if name == "" {
-		return fmt.Errorf("%w: PinnedDigests has an entry under an empty plugin name", ErrDigestPin)
+	if !validPluginName(name) {
+		// Keyed by the same rule [Discover] names a plugin with, because a pin
+		// is admission for whatever answers to this name and a key no plugin
+		// can ever be called is a pin that matches nothing — which leaves the
+		// plugin an operator meant to pin running unpinned. `PinnedDigests` set
+		// under "GitHub" for a binary discovered as "github" is the failing
+		// case: accepted today, matched never, fails open. Refusing it here
+		// turns that typo into a startup error naming the rule.
+		return fmt.Errorf(
+			"%w: PinnedDigests has an entry under %q, which is not a valid plugin name; "+
+				"a plugin name is lower-case letters, digits and interior hyphens, at most %d characters, "+
+				"so no discovered plugin could ever match this key",
+			ErrDigestPin, truncate(name, MaxNameLen+16), MaxNameLen,
+		)
 	}
 
 	hex, ok := strings.CutPrefix(digest, flowstatev1.ContentDigestPrefix)
