@@ -168,7 +168,8 @@ Two properties of the report worth knowing. The fixer list is not written down
 anywhere here — it comes from the diagnostics the pinned toolchain actually
 produces, so a toolchain bump that adds a modernizer shows up without anyone
 editing a list (the fifteen analyzers #521 measured were twenty-three by
-go1.26.6). And sites inside generated files are counted separately and excluded
+go1.26.6, and twenty-six by go1.27.0). And sites inside generated files are
+counted separately and excluded
 from every total, because a generated file is never hand-edited: a
 modernization there could only ever arrive through its generator.
 
@@ -308,7 +309,7 @@ not the whole answer you want:
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
     git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-    go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+    go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 
 `make check` in the repo root runs exactly that list, in that order, with the
 toolchain pins below already applied. Prefer it, and keep it and this section
@@ -380,17 +381,30 @@ your file makes it look like yours.
 It also has a failure that is not a finding at all. `go run …/govulncheck@v1.6.0`
 builds govulncheck using *its* `go` directive, then type-checks your tree against
 whatever toolchain `go.mod` selected — so on a machine honouring `toolchain
-go1.26.6` it reports `file requires newer Go version go1.26 (application built with
+go1.27.0` it reports `file requires newer Go version go1.27 (application built with
 go1.25)` on files in the module cache and exits 1. CI does not see this, because
 `go-version-file: go.mod` installs the one version it then uses for everything.
 Pin the run to match and it scans clean:
 
-    GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+    GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
 `staticcheck` builds the same way — its own `go.mod` selects a toolchain, so it
 needs the identical pin, for the identical reason:
 
-    GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+    GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+
+The staticcheck *release* is pinned to the toolchain as well as beside it, and that
+direction is the one that bites. staticcheck type-checks with its own copy of
+`go/types`, which reads the export data the toolchain's compiler wrote, and export
+data has a format version that rises with the toolchain. Run a release older than
+the toolchain and it does not report findings and it does not say the version is
+unsupported — it fails per standard-library package with `internal error in
+importing "math/bits" (cannot decode …, export data version 4 is greater than
+maximum supported version 2); please report an issue (compile)`, which reads like a
+bug in the tool rather than a pin that needs moving. 2026.1 (v0.7.0) fails exactly
+that way under go1.27.0; 2026.2.1 (v0.8.1) is the release that reads it. So a
+toolchain bump moves `STATICCHECK_VERSION` too, and the two move together or the
+required job goes red for a reason that names nothing in your diff.
 
 staticcheck is required in CI, and the tree is at zero findings. It landed
 advisory (`continue-on-error: true`) for the 48-hour window every newly-added

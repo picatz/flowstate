@@ -51,7 +51,7 @@ permissions:
 env:
   BUF_VERSION: v1.72.0
   GOVULNCHECK_VERSION: v1.6.0
-  STATICCHECK_VERSION: 2026.1
+  STATICCHECK_VERSION: 2026.2.1
   VHS_VERSION: v0.11.0
   TTYD_VERSION: 1.7.7
   TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
@@ -482,7 +482,7 @@ jobs:
       # library vendored into the newer toolchain's module cache — not a finding
       # about this tree at all.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+        run: GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 
   # The real-issuer OIDC check used to live here as a job gated on the auth
   # package being affected. It moved to federation.yml (push to main only)
