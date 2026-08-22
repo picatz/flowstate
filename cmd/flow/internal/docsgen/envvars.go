@@ -78,7 +78,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUDIENCE",
 			value:   "unset",
-			purpose: "Default for `--audience`: the relying party a minted credential is addressed to. Required by `--credential-source=github-actions`; ignored by a source that presents a token it did not mint.",
+			purpose: "Default for `--audience`: the relying party a credential is addressed to. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -102,7 +102,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
-			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
 			read:    "cmd/flow/client.go",
 		},
 		{
