@@ -235,7 +235,21 @@ harness (a workflow, the Makefile, `tools/gate`, the fuzz target list) or to
 the module graph forces the *job* wide through `ciForceReason`, and the leg
 takes the same answer and analyses `./...` too. A workflow-only diff affects
 no Go package at all, so a leg reading the affected set alone would skip
-exactly where the required job runs. Conditional legs fire only when
+exactly where the required job runs. The `vet` leg reads that same forcing,
+through the same two functions (`forcedWide`, `scopedLegRuns`), because CI's
+`test` job vets the module on exactly those diffs and vetting the module
+costs seconds (#887).
+
+The `test` leg is the one place the two tiers deliberately disagree, and it
+is a priced decision rather than the same gap left open: a full bounded
+`-race` run is the better part of ten minutes, this tier's value is that it
+answers in seconds to minutes, and a gate slow enough that people stop
+running it protects nothing. So on a harness diff it still runs the affected
+set — and its own printed line names the residual and cites #887, so a
+narrow test leg beside a wide CI job is something a reader can tell apart
+from a bug. `tools/gate/scope_test.go` pins both answers over the diffs
+where they could differ, the way `TestTheStaticcheckLegAndJobShareATrigger`
+pins staticcheck's. Conditional legs fire only when
 their inputs changed: the buf trio and the descriptorset pin on `proto/`, the
 docs mirror and reference drift checks on `docs/DSL.md` and on anything that
 reaches the binary generating them, example fix and coverage checks on
