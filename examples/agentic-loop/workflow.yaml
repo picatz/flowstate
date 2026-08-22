@@ -9,7 +9,10 @@
 # Three decisions here are the ones worth copying, and each is a claim
 # `workflow.test.yaml` beside this file checks rather than asserts in prose:
 #
-#   * a read is retried and the turn is not — see `brief` and `turn` below;
+#   * the read is retried, and neither the turn nor the write is — three steps,
+#     three postures, each with its own reason: see `brief`, `turn` and `land`
+#     below. A step that says nothing takes the http task's default of five
+#     attempts, which is right for a read and wrong for both of the others;
 #   * the budget is written down once, as the gate's own `if:`, and every later
 #     step asks whether the gate happened rather than re-deriving why;
 #   * a gate nobody answers denies. The deadline lapsing is not approval.
@@ -122,8 +125,30 @@ steps:
   # absence is readable, and re-deriving `tokens > budget` here would be the same
   # value written down twice — free to disagree with itself the day the ceiling
   # moves.
+  #
+  # And it is not retried, for a reason distinct from the turn's. A turn is not
+  # repeated because a second one is a *different* turn; this write is not
+  # repeated because a second one may be the *same* write, applied twice. The
+  # http task's default policy is five attempts and it retries a 5xx whatever
+  # the method, so a tracker that created the patch and then answered 500 —
+  # which is an ordinary way for a write to fail after succeeding — would get
+  # the identical body posted again, and this endpoint offers no idempotency key
+  # to make the second one a no-op. `attempts: 1` is the whole of the fix that
+  # is available in the file: the run fails, and a person or a later run decides
+  # what to do about a write whose outcome nobody knows.
+  #
+  # Three postures across three steps, then, and they are three different
+  # questions: `brief` is retried because repeating a read costs a moment,
+  # `turn` is not because repeating it costs money and determinism, and `land`
+  # is not because repeating it costs a duplicate nobody asked for.
   - id: land
     if: ${!has(steps.review) || steps.review.approved}
+    retry:
+      attempts: 1
+      # Written for the reason `turn`'s is: the compiled specification's schema
+      # requires a coefficient of at least 1, whether or not there is a second
+      # attempt to space out.
+      backoff: 1.0
     http:
       method: POST
       url: https://tracker.internal.example.com/issues/241/patches

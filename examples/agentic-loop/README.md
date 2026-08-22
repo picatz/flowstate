@@ -19,10 +19,15 @@ read off what the turn actually spent, a human gate crossed only when that ceili
 was, and the write that lands the result. Three decisions in it are the ones worth
 copying, and `workflow.test.yaml` checks each rather than asserting it in prose:
 
-- **A read is retried and the turn is not.** `brief` gets three attempts, because
-  nothing on the far side changes when it runs twice. `turn` gets `attempts: 1`,
-  because a retried agentic turn is a *new* turn: new cost, new nondeterminism, and
-  for a turn permitted to write, possibly new writes.
+- **The read is retried; neither the turn nor the write is.** `brief` gets three
+  attempts, because nothing on the far side changes when it runs twice. `turn` gets
+  `attempts: 1`, because a retried agentic turn is a *new* turn: new cost, new
+  nondeterminism, and for a turn permitted to write, possibly new writes. `land` gets
+  `attempts: 1` for a different reason — a retried write may be the *same* write
+  applied twice, and the http task's default of five attempts retries a 5xx whatever
+  the method, so a tracker that created the patch and then answered 500 would be sent
+  the identical body again. Say nothing on a step and you get the default, which is
+  right for exactly one of these three.
 - **The budget is written down once.** It is the gate's own `if:`; every later step
   asks `has(steps.review)` — whether the gate happened — rather than re-deriving why
   it would have.
@@ -48,12 +53,12 @@ loop that can be hammered unattended. A draft with `wait_for_signals:` in it:
 
 ```json
 {"report": {"files": [{"file": "workflow.yaml", "diagnostics": [
-  {"line": 113, "column": 5,
+  {"line": 116, "column": 5,
    "message": "unknown key \"wait_for_signals\"; did you mean \"wait_for_signal\"?",
    "step": "review", "code": "general",
    "edits": [{"title": "rename to `wait_for_signal`",
-              "changes": [{"range": {"startLine": 113, "startColumn": 5,
-                                     "endLine": 113, "endColumn": 21},
+              "changes": [{"range": {"startLine": 116, "startColumn": 5,
+                                     "endLine": 116, "endColumn": 21},
                            "newText": "wait_for_signal"}]}]}]}]}}
 ```
 
@@ -72,9 +77,9 @@ runs on two files:
 
 ```json
 {"file": "<submitted>", "cases": [
-  {"name": "a turn inside its budget lands with nobody asked", "passed": true, "failures": [], "duration": "0.007508600s"},
-  {"name": "a turn over its budget lands only once a person answers", "passed": true, "failures": [], "duration": "0.009292557s"},
-  {"name": "the same turn does not land when the gate goes unanswered", "passed": true, "failures": [], "duration": "0.005760094s"}],
+  {"name": "a turn inside its budget lands with nobody asked", "passed": true, "failures": [], "duration": "0.007588234s"},
+  {"name": "a turn over its budget lands only once a person answers", "passed": true, "failures": [], "duration": "0.006390707s"},
+  {"name": "the same turn does not land when the gate goes unanswered", "passed": true, "failures": [], "duration": "0.005869801s"}],
  "refused": ""}
 ```
 
@@ -115,9 +120,8 @@ to rehearse the real effect of whichever task you deliberately left unstubbed.
 
 These need a server (`flow mcp --address ...`); the four above do not, and neither
 does `flowstate_compile`, which turns the source into the specification
-`flowstate_run` takes. `flowstate_run` submits it and answers with a run id.
-`flowstate_signal`
-delivers `turn-approved` to a waiting gate — this run's `workflowId`, the name from
+`flowstate_run` takes. `flowstate_run` submits it and answers with a run id, and
+`flowstate_signal` delivers `turn-approved` to a waiting gate — this run's `workflowId`, the name from
 `wait_for_signal:`, and `payload.namedValues.approved` set to a boolean literal.
 `flowstate_get` reads back the same document `flowstate_run_local` answered with
 above: status, timing, and step outputs, bounded so a long run's transcript is
