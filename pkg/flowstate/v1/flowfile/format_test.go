@@ -483,42 +483,58 @@ func TestFormatAcceptsWhatValidateAccepts(t *testing.T) {
 	}
 }
 
-// TestFormatRefusesACommentThatWouldFoldIntoItsKey is #860, the third time a
-// rewriter in this repository has written a document its own parser rejects.
+// TestFormatWritesAKeyLineCommentAfterTheValueWhereTheKeyHasNoRoom is #850's
+// slice 1: the honest rendering #862 left open.
 //
-// A comment written after `key:` is anchored to the key, and the encoder emits a
-// key's comment immediately after the key token — which is correct only where the
-// value is written on the lines *below*. Where the value is written back beside
-// the key, the same placement emits `name # why: A0`: the comment folded into the
-// key, a document that fails to re-parse with `2:1: non-map value is specified`.
+// #862 found that a comment written after `key:` folds into the key
+// (`name # why: A0`, a document that no longer parses) wherever the value is
+// written back beside the key, and made every one of those positions a
+// positioned refusal — carried correctly, or not at all. That was the safe
+// answer and a lossy one: the file could not be formatted while the comment was
+// there, and the workaround was to move prose the author had placed deliberately.
 //
-// The fuzzer found it from `name: #` with the scalar continuing on the next line
-// (committed as the corpus entry `comment_folded_into_key`), and it is the whole
-// reason `fuzz-smoke` — a required check — was going red on unrelated diffs.
+// The line the author wrote on still exists in the output, though, and it still
+// ends somewhere a comment may legally sit. So the comment is written after the
+// *value* instead of after the key, and every shape #862's probe table listed as
+// unfixable is written back rather than refused:
 //
-// The answer is the one Format already gives a comment whose anchor no longer
-// exists, and the one #850 records `flow fmt` giving for comments it cannot
-// carry: refuse, positioned at the comment, and write nothing. Better no output
-// than wrong output; the cost is that these documents cannot be formatted at all
-// until the emitter can put the comment somewhere honest.
-func TestFormatRefusesACommentThatWouldFoldIntoItsKey(t *testing.T) {
+//   - a scalar (`name: greeter # why`);
+//   - a block scalar, whose header is what shares the line (`message: |- # why`);
+//   - a flow mapping, which is what [Marshal] writes for a task given no inputs
+//     (`log: {} # why`);
+//   - a flow sequence, which is what it writes for an empty branch
+//     (`steps: [] # why`).
+//
+// The cost is a column: `name: # why` with the value indented below comes back
+// as `name: greeter # why`. For the block scalar and the collections there is no
+// cost at all — the end of that line is where the comment already was.
+//
+// The fifth row of that table, a null value, is not reachable through Marshal:
+// it writes `{}` rather than a key with nothing after it, deliberately, so that
+// the output never looks like an unfinished line. The placement handles a null
+// the same way if one ever renders.
+//
+// Bytes, for the reason every other case in this file compares bytes: a comment
+// that survives in the wrong place is its own corruption. Each case formats
+// twice, because a formatter whose output it will not accept again fails
+// `flow fmt --check` on the file it just wrote.
+func TestFormatWritesAKeyLineCommentAfterTheValueWhereTheKeyHasNoRoom(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		name   string
-		src    string
-		line   int
-		column int
+		name string
+		src  string
+		want string
 	}{
 		{
-			// The fuzzer's own input, byte for byte.
-			name:   "the value continues on the next line",
-			src:    "edition: v2026.3\nname: #\nA0\n",
-			line:   2,
-			column: 7,
+			// The fuzzer's own input, byte for byte — the corpus entry
+			// `comment_folded_into_key`, which formats now rather than refusing.
+			name: "the value continues on the next line",
+			src:  "edition: v2026.3\nname: #\nA0\n",
+			want: "edition: v2026.3\nname: A0 #\n",
 		},
 		{
-			name: "the value is written below the key and rendered beside it",
+			name: "a scalar rendered beside the key it was written under",
 			src: `edition: v2026.3
 name: # why
   greeter
@@ -527,8 +543,13 @@ steps:
   log:
     message: hi
 `,
-			line:   2,
-			column: 7,
+			want: `edition: v2026.3
+name: greeter # why
+steps:
+- id: a
+  log:
+    message: hi
+`,
 		},
 		{
 			name: "a nested key whose value is a scalar",
@@ -540,30 +561,189 @@ steps:
     message: # why
       hi
 `,
-			line:   6,
-			column: 14,
+			want: `edition: v2026.3
+name: greeter
+steps:
+- id: a
+  log:
+    message: hi # why
+`,
+		},
+		{
+			// The header is what shares the key's line, so this is a shape that
+			// comes back exactly where it was written.
+			name: "a block scalar, whose header shares the key's line",
+			src: `edition: v2026.3
+name: greeter
+steps:
+- id: a
+  log:
+    message: # why
+      |-
+      one
+      two
+`,
+			want: `edition: v2026.3
+name: greeter
+steps:
+- id: a
+  log:
+    message: |- # why
+      one
+      two
+`,
+		},
+		{
+			// `log: {}` is what Marshal writes for a task given no inputs, so
+			// this is the flow-mapping position reached the way a Flowfile
+			// reaches it rather than by building the node in Go.
+			name: "a flow mapping, which is how a task with no inputs renders",
+			src: `edition: v2026.3
+name: greeter
+steps:
+- id: a
+  log: # why
+    {}
+`,
+			want: `edition: v2026.3
+name: greeter
+steps:
+- id: a
+  log: {} # why
+`,
+		},
+		{
+			// And `steps: []` is what it writes for a branch with no steps.
+			name: "a flow sequence, which is how an empty branch renders",
+			src: `edition: v2026.3
+name: greeter
+inputs:
+  action:
+    type: string
+    required: true
+steps:
+- id: route
+  switch:
+    value: ${inputs.action}
+    cases:
+    - case: opened
+      steps: # nothing to do yet
+        []
+    default:
+      steps:
+      - id: a
+        log:
+          message: hi
+`,
+			want: `edition: v2026.3
+name: greeter
+inputs:
+  action:
+    type: string
+    required: true
+steps:
+- id: route
+  switch:
+    value: ${inputs.action}
+    cases:
+    - case: opened
+      steps: [] # nothing to do yet
+    default:
+      steps:
+      - id: a
+        log:
+          message: hi
+`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			workflow, err := flowfile.Unmarshal([]byte(test.src))
-			require.NoError(t, err, "the fixture does not compile, so it says nothing about Format")
-
-			out, err := flowfile.Format([]byte(test.src), workflow)
-			require.Error(t, err, "a comment was folded into a key rather than refused")
-			assert.Nil(t, out, "a refusal handed back bytes a caller could write")
-
-			var diagnostics flowfile.Diagnostics
-			require.True(t, errors.As(err, &diagnostics),
-				"the refusal is not positioned, so an author cannot find the comment that caused it")
-			require.Len(t, diagnostics, 1)
-			assert.Equal(t, test.line, diagnostics[0].Line)
-			assert.Equal(t, test.column, diagnostics[0].Column)
-			assert.Contains(t, diagnostics[0].Message, "comment cannot be kept")
-			assert.Contains(t, diagnostics[0].Message, "same line")
+			got := formatFile(t, test.src)
+			assert.Equal(t, test.want, got)
+			assert.Equal(t, got, formatFile(t, got), "formatting the formatted document changed it again")
 		})
 	}
+}
+
+// TestFormatKeepsACommentBesideAnEmptySequence is the gap the rendering above
+// found in the walk itself, and it was a silent deletion rather than a refusal.
+//
+// A comment beside `[]` hangs off the sequence node, which is the same field
+// [sequenceHead] reads as the block above the *first* entry — so a sequence with
+// no entries had nobody to claim it and the collector never saw it at all. The
+// comment did not survive and did not refuse: it was dropped, and the formatted
+// file was one line of prose shorter with no diagnostic anywhere.
+//
+// It was reachable by hand before this change and is reachable by the formatter
+// after it, since `steps: [] # why` is now something `flow fmt` writes.
+func TestFormatKeepsACommentBesideAnEmptySequence(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: greeter
+inputs:
+  action:
+    type: string
+    required: true
+steps:
+- id: route
+  switch:
+    value: ${inputs.action}
+    cases:
+    - case: opened
+      steps: [] # nothing to do yet
+    default:
+      steps:
+      - id: a
+        log:
+          message: hi
+`
+
+	got := formatFile(t, src)
+	assert.Equal(t, src, got)
+	assert.Equal(t, got, formatFile(t, got), "formatting the formatted document changed it again")
+}
+
+// TestFormatRefusesTwoCommentsThatWouldShareOneSlot is the boundary of the
+// rendering above, and the part of #862's refusal that stays.
+//
+// The trailing placement writes into the value's own comment slot. Where the
+// author already wrote a comment there — one after the key and a second after
+// the value it renders beside — keeping both is not something the encoder can
+// express, and keeping one means deleting the other silently. So this refuses,
+// positioned at the comment that has nowhere to go, and says which of the two
+// reasons it is: the key survives and the line simply already ends in prose.
+//
+// The manual fix is one line, which is also the measure of what the refusal
+// costs: move either comment onto its own line above the key.
+func TestFormatRefusesTwoCommentsThatWouldShareOneSlot(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.3
+name: # why
+  greeter # and also
+steps:
+- id: a
+  log:
+    message: hi
+`
+
+	workflow, err := flowfile.Unmarshal([]byte(src))
+	require.NoError(t, err, "the fixture does not compile, so it says nothing about Format")
+
+	out, err := flowfile.Format([]byte(src), workflow)
+	require.Error(t, err, "two comments were written into one slot rather than refused")
+	assert.Nil(t, out, "a refusal handed back bytes a caller could write")
+
+	var diagnostics flowfile.Diagnostics
+	require.True(t, errors.As(err, &diagnostics),
+		"the refusal is not positioned, so an author cannot find the comment that caused it")
+	require.Len(t, diagnostics, 1)
+	assert.Equal(t, 2, diagnostics[0].Line)
+	assert.Equal(t, 7, diagnostics[0].Column)
+	assert.Contains(t, diagnostics[0].Message, "comment cannot be kept")
+	assert.Contains(t, diagnostics[0].Message, "already ends in a comment of its own")
 }
 
 // TestFormatKeepsTheCommentPositionsAroundTheFoldingOne is the other half of
