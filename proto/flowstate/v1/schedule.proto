@@ -223,6 +223,28 @@ message CreateScheduleResponse {
   // that most often reveals a cadence meaning something other than what was
   // intended.
   ScheduleDescription schedule = 1;
+
+  // SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+  // this RPC: the same question, the same three answers, and deliberately the
+  // same name rather than a second vocabulary for one fact.
+  //
+  // Creating a schedule goes through the same trusted lookup `Run` does — a
+  // caller must not be able to take a trusted `manual: denied` workflow, add a
+  // `schedule:` trigger to their own copy, and have this handler fire *that*
+  // copy under the trusted name — and through the same plugin pin, which the
+  // schedule then freezes into every firing. So the specification a caller holds
+  // may not be the one that will run at 03:00, and this says which. Read
+  // [RunResponse.specification_as_submitted] for the whole argument, including
+  // why *unset* is not `false` and why neither may be read as assent.
+  //
+  // Answered once, here, about the specification frozen into the schedule —
+  // which is the only moment it can be answered, because every firing afterwards
+  // happens with no caller present to be told anything. It is a claim about the
+  // creation, not a standing property of the schedule: a deployment that
+  // registers a trusted copy tomorrow changes nothing about the specification
+  // this schedule already carries, and a caller reading a schedule back later
+  // asks `DescribeSchedule`, which makes no attestation at all.
+  optional bool specification_as_submitted = 2;
 }
 
 // ListSchedulesRequest asks for the caller's schedules. It takes nothing today.

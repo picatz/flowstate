@@ -520,6 +520,31 @@ message SignalWithStartResponse {
   // identically either way, a run and a workflow execution, so this field is
   // the only place the distinction is reported.
   bool created = 3;
+
+  // SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+  // this RPC: the same question, the same three answers, and deliberately the
+  // same name rather than a second vocabulary for one fact.
+  //
+  // This RPC substitutes the trusted copy exactly as `Run` does — see the
+  // server's `trustedWorkflow` — and then transforms what it runs the same way,
+  // writing the deployment's plugin selection onto it before the engine sees it.
+  // So a caller here faces the identical question a caller of `Run` faces: is
+  // the specification I hold the one that ran, and may I therefore trust its
+  // `sensitive: true` declarations to describe this entity's outputs? Read
+  // [RunResponse.specification_as_submitted] for the whole argument, including
+  // why *unset* is not `false` and why neither may be read as assent.
+  //
+  // One thing is this RPC's own, and it is a consequence of [created]. When this
+  // call created the entity, the answer is about the specification this call
+  // handed the engine, exactly as `Run`'s is. When it did not — a mutation
+  // delivered to an entity that was already running — the executing
+  // specification is whatever *that* run was created with, which this server did
+  // not compare against anything and will not claim to know: the answer is false,
+  // the fail-closed one, and it is stated rather than left unset because the
+  // server is answering rather than staying silent. A caller wanting the precise
+  // view of an entity it did not create has no route to it through this field,
+  // which is the honest position.
+  optional bool specification_as_submitted = 4;
 }
 
 // Stopping a run is two different asks, and the difference is not a detail of

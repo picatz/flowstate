@@ -354,8 +354,13 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 		if group := takeAt(commentHead); group != nil {
 			x.Comment = group
 		}
-		if group := takeAt(commentKeyLine); group != nil {
+		// A key-line comment is the one kind whose home depends on what the
+		// *rendered* value turned out to be, so it is peeked at rather than
+		// taken: leaving it unplaced is what turns it into a refusal below.
+		keyLine := commentAnchor{path: child, kind: commentKeyLine}
+		if group, ok := in[keyLine]; ok && carriesKeyLineComment(x.Value) {
 			_ = x.Key.SetComment(group)
+			placed[keyLine] = true
 		}
 		if group := takeAt(commentFoot); group != nil {
 			x.FootComment = group
@@ -394,6 +399,45 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 	return nil
 }
 
+// carriesKeyLineComment reports whether a comment written after `key:` can be
+// rendered onto the key of an entry whose value is value.
+//
+// It can only be rendered where the value is written *below* the key, which is a
+// block mapping or a block sequence and nothing else. The encoder writes a key's
+// comment immediately after the key token, so on an entry whose value shares the
+// key's line it emits `name # why: A0` — the comment folded into the key, a
+// document that no longer parses (`non-map value is specified`) and, where it
+// does, no longer says the same thing. That is the corruption class CLAUDE.md
+// names as the worst thing this repository can do, and #860 found the fuzzer
+// hitting it from `name: #` with the value continuing on the next line.
+//
+// The shapes this excludes are every value that renders on the key's line:
+//
+//   - a scalar (`name # why: A0`);
+//   - a block scalar, whose *header* shares the line (`message # why: |-`);
+//   - a flow mapping or flow sequence (`items # why: [1, 2]`);
+//   - a null value, where the fold leaves `empty # why:`.
+//
+// Reporting false leaves the comment unplaced, which [unplaced] turns into a
+// positioned refusal — the same fail-closed answer this file already gives a
+// comment whose anchor no longer exists, and the answer #850 records `flow fmt`
+// giving today. Better no output than wrong output, and better a diagnostic
+// naming the line than prose silently deleted.
+func carriesKeyLineComment(value ast.Node) bool {
+	switch v := value.(type) {
+	case *ast.MappingNode:
+		return !v.IsFlowStyle
+	case *ast.MappingValueNode:
+		// A block mapping the parser handed back as its single entry rather
+		// than as a one-entry [ast.MappingNode].
+		return true
+	case *ast.SequenceNode:
+		return !v.IsFlowStyle
+	default:
+		return false
+	}
+}
+
 // sequenceHead returns the comment block above the i'th entry of a sequence.
 //
 // The first entry's is the sequence's own comment rather than an entry of
@@ -429,12 +473,21 @@ func unplaced(comments map[commentAnchor]*ast.CommentGroupNode, placed map[comme
 		if placed[anchor] {
 			continue
 		}
-		diagnostic := Diagnostic{
-			Message: "comment cannot be kept: what it is written against is not written back in the same shape " +
-				"(a mapping reached through an alias, or a block written back as one expression), so there is " +
-				"nowhere left to put it and nothing was written; move it above a key that survives, or leave " +
-				"this file unformatted",
+		message := "comment cannot be kept: what it is written against is not written back in the same shape " +
+			"(a mapping reached through an alias, or a block written back as one expression), so there is " +
+			"nowhere left to put it and nothing was written; move it above a key that survives, or leave " +
+			"this file unformatted"
+		if anchor.kind == commentKeyLine {
+			// The reason is a different one and an author can act on it, so it
+			// says so rather than being folded into the general refusal: the
+			// key survived, and the comment has no line of its own to sit on
+			// because the value is written beside the key rather than below it.
+			message = "comment cannot be kept: it is written after a key whose value is written back on the " +
+				"same line, so keeping it here would fold it into the key and produce a document that does " +
+				"not parse; nothing was written — move the comment onto its own line above the key, or " +
+				"leave this file unformatted"
 		}
+		diagnostic := Diagnostic{Message: message}
 		if token := group.GetToken(); token != nil && token.Position != nil {
 			diagnostic.Line = token.Position.Line
 			diagnostic.Column = token.Position.Column

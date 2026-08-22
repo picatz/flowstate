@@ -478,9 +478,30 @@ type CreateScheduleResponse struct {
 	// sees the next firing times without a second request, which is the one fact
 	// that most often reveals a cadence meaning something other than what was
 	// intended.
-	Schedule      *ScheduleDescription `protobuf:"bytes,1,opt,name=schedule,proto3" json:"schedule,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Schedule *ScheduleDescription `protobuf:"bytes,1,opt,name=schedule,proto3" json:"schedule,omitempty"`
+	// SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+	// this RPC: the same question, the same three answers, and deliberately the
+	// same name rather than a second vocabulary for one fact.
+	//
+	// Creating a schedule goes through the same trusted lookup `Run` does — a
+	// caller must not be able to take a trusted `manual: denied` workflow, add a
+	// `schedule:` trigger to their own copy, and have this handler fire *that*
+	// copy under the trusted name — and through the same plugin pin, which the
+	// schedule then freezes into every firing. So the specification a caller holds
+	// may not be the one that will run at 03:00, and this says which. Read
+	// [RunResponse.specification_as_submitted] for the whole argument, including
+	// why *unset* is not `false` and why neither may be read as assent.
+	//
+	// Answered once, here, about the specification frozen into the schedule —
+	// which is the only moment it can be answered, because every firing afterwards
+	// happens with no caller present to be told anything. It is a claim about the
+	// creation, not a standing property of the schedule: a deployment that
+	// registers a trusted copy tomorrow changes nothing about the specification
+	// this schedule already carries, and a caller reading a schedule back later
+	// asks `DescribeSchedule`, which makes no attestation at all.
+	SpecificationAsSubmitted *bool `protobuf:"varint,2,opt,name=specification_as_submitted,json=specificationAsSubmitted,proto3,oneof" json:"specification_as_submitted,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *CreateScheduleResponse) Reset() {
@@ -518,6 +539,13 @@ func (x *CreateScheduleResponse) GetSchedule() *ScheduleDescription {
 		return x.Schedule
 	}
 	return nil
+}
+
+func (x *CreateScheduleResponse) GetSpecificationAsSubmitted() bool {
+	if x != nil && x.SpecificationAsSubmitted != nil {
+		return *x.SpecificationAsSubmitted
+	}
+	return false
 }
 
 // ListSchedulesRequest asks for the caller's schedules. It takes nothing today.
@@ -1124,9 +1152,11 @@ const file_flowstate_v1_schedule_proto_rawDesc = "" +
 	"R\bbackfill\x1aN\n" +
 	"\vInputsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"W\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xb9\x01\n" +
 	"\x16CreateScheduleResponse\x12=\n" +
-	"\bschedule\x18\x01 \x01(\v2!.flowstate.v1.ScheduleDescriptionR\bschedule\"\x16\n" +
+	"\bschedule\x18\x01 \x01(\v2!.flowstate.v1.ScheduleDescriptionR\bschedule\x12A\n" +
+	"\x1aspecification_as_submitted\x18\x02 \x01(\bH\x00R\x18specificationAsSubmitted\x88\x01\x01B\x1d\n" +
+	"\x1b_specification_as_submitted\"\x16\n" +
 	"\x14ListSchedulesRequest\"r\n" +
 	"\x15ListSchedulesResponse\x12;\n" +
 	"\tschedules\x18\x01 \x03(\v2\x1d.flowstate.v1.ScheduleSummaryR\tschedules\x12\x1c\n" +
@@ -1221,6 +1251,7 @@ func file_flowstate_v1_schedule_proto_init() {
 	file_flowstate_v1_trigger_proto_init()
 	file_flowstate_v1_value_proto_init()
 	file_flowstate_v1_workflow_proto_init()
+	file_flowstate_v1_schedule_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
