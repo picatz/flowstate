@@ -36,16 +36,17 @@ func readWorkflowFile(t *testing.T, path string) []byte {
 func TestFormattingReturnsWhatTheCommandWrites(t *testing.T) {
 	t.Parallel()
 
-	// Indented under `steps:`, which is not how the document is written back, so
-	// there is something to reformat and the comment has to survive the rewrite
-	// rather than the document being handed back untouched.
+	// Flush against `steps:`, which is not how the document is written back —
+	// [flowfile.Marshal] indents a block sequence under the key that holds it
+	// (#850) — so there is something to reformat and the comment has to survive
+	// the rewrite rather than the document being handed back untouched.
 	const src = `# a comment formatting carries through
 edition: v2026.3
 name: greeter
 steps:
-  - id: greet
-    log:
-      message: hello world
+- id: greet
+  log:
+    message: hello world
 `
 
 	c := newClient(t)

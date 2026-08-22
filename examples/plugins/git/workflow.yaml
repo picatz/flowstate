@@ -17,37 +17,32 @@ description: Reads a public repository's branch refs using the "git" plugin's gi
 # same directory: same task, same inputs, the only difference is one field.
 # Reading a private repository is never a different task or a richer
 # schema - it is this exact call with `token:` filled in.
-
 vars:
   repo: https://github.com/octocat/Hello-World.git
-
 steps:
   - id: refs
     git.ls_remote:
-      url: ${vars.repo}
-      prefix: "refs/heads/"
+      prefix: refs/heads/
       # No token: this repository is public, so its refs are readable
       # unauthenticated - the only thing that changes for a private one is
       # this one field. See ls-remote-private.yaml for the identical call
       # with `token:` filled in, and commit-push.yaml for the one task in
       # this plugin where a token is not optional at all: writing always
       # needs a credential, because no forge accepts an anonymous push.
+      url: ${vars.repo}
 
   # The ref this file goes on to name, bound once rather than indexed at each
   # of the three places that read a field off it (docs/STYLE.md R5,
   # `flow lint`).
   - id: first_branch
     value: ${steps.refs.refs[0]}
-
   - id: announce
     log:
-      message: "${'%s - %d branch refs found, including %s at %s'.format([vars.repo, steps.refs.refs.size(), steps.first_branch.value.name, steps.first_branch.value.sha])}"
-
+      message: ${"%s - %d branch refs found, including %s at %s".format([vars.repo, steps.refs.refs.size(), steps.first_branch.value.name, steps.first_branch.value.sha])}
 outputs:
   branch_count:
     value: ${steps.refs.refs.size()}
     description: how many branch refs this repository currently advertises
-
   first_branch_sha:
     value: ${steps.first_branch.value.sha}
     description: the content this task binds to, rather than a name a later force-push could move

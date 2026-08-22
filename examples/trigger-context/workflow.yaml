@@ -40,13 +40,11 @@
 # deployment — which is what keeps a narrowed workflow developable at all.
 edition: v2026.3
 name: trigger-context
-
 inputs:
   order_id:
     type: string
     default: ord_local
     description: the order this run is about
-
 triggers:
   # One source, so the file has something other than a person that starts it.
   - webhook: payments
@@ -71,7 +69,6 @@ triggers:
       allowed_principals:
         - oncall@example.com
         - release-bot@example.com
-
 steps:
   # The branch every author writes first. A scheduled sweep does not page anyone;
   # everything else does. This is behaviour, and `trigger.kind` is the right thing
@@ -79,8 +76,8 @@ steps:
   - id: notify
     if: ${trigger.kind != "schedule"}
     log:
-      message: ${'paging about order ' + inputs.order_id + ' (started by ' + trigger.kind + ')'}
       level: info
+      message: ${"paging about order " + inputs.order_id + " (started by " + trigger.kind + ")"}
 
   # Provenance, written into the log where an operator reading an incident will
   # find it. `trigger.name` is the webhook or schedule that started the run — empty
@@ -92,14 +89,12 @@ steps:
   # signature header, and this value is written to durable history.
   - id: correlate
     log:
-      message: ${'source=' + trigger.name + ' delivery=' + trigger.delivery_id + ' principal=' + trigger.principal}
       level: info
-
+      message: ${"source=" + trigger.name + " delivery=" + trigger.delivery_id + " principal=" + trigger.principal}
 outputs:
   started_by:
     value: ${trigger.kind}
     description: how this run was started — manual, webhook, or schedule
-
   source:
     value: ${trigger.name}
     description: which declared trigger started it, empty for a manual start

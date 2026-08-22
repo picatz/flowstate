@@ -16,7 +16,6 @@ description: Posts a real comment on a real issue or pull request using the "git
 # plugin unable to tell whether the comment was actually created is never
 # retried automatically - the same reasoning the core http task's
 # retry_on_unknown_outcome exists for.
-
 inputs:
   owner:
     type: string
@@ -34,20 +33,18 @@ inputs:
     type: string
     required: true
     description: the comment's Markdown text
-
 steps:
   - id: comment
     github.issue_comment:
+      body: ${inputs.body}
+      number: ${inputs.number}
       owner: ${inputs.owner}
       repo: ${inputs.repo}
-      number: ${inputs.number}
-      body: ${inputs.body}
       # A secret reference, resolved inside the task, never a literal - see
       # plugins/github/README.md, "Authentication," for how this plugin
       # answers it: a GitHub App installation token when one is configured,
       # a personal access token otherwise.
       token: ${secret('github:token')}
-
 outputs:
   comment_url:
     value: ${steps.comment.html_url}

@@ -1,10 +1,6 @@
 edition: v2026.3
 name: approval-gate
-description: >-
-  Waits for a human to approve a deploy, then acts on what an attested sender
-  actually sent — authorization lives in `signals:`, not in this file's own
-  `if:`.
-
+description: Waits for a human to approve a deploy, then acts on what an attested sender actually sent — authorization lives in `signals:`, not in this file's own `if:`.
 # A workload that waits a week for a person and survives every worker restart in
 # between is the thing a CI system cannot copy. There, a job waiting for approval
 # is a held agent, and redeploying the fleet fails the job. Here the wait is state
@@ -98,7 +94,6 @@ description: >-
 # widen `allow:` to match anyone. Binding that requires policy the workflow's
 # own author does not control at all — deployment-side task-shape policy
 # (#187). That is gap 3, and it stays open, tracked at #187.
-
 inputs:
   # No default: there is no sensible absent value for the thing being shipped,
   # only a plausible one to paste — which is what `example:` is for (the
@@ -110,9 +105,9 @@ inputs:
   version:
     type: string
     required: true
+    description: the semver version being deployed, with or without a leading "v"
     example: v1.4.2
     must: this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')
-    description: the semver version being deployed, with or without a leading "v"
 
   # `must:` over a closed set rather than a bare string, because "deploy to
   # whatever string you typed" is not a production-shaped question — a typo'd
@@ -120,9 +115,9 @@ inputs:
   environment:
     type: string
     required: true
-    example: production
-    must: 'this in ["staging", "production"]'
     description: which environment this deploy targets
+    example: production
+    must: this in ["staging", "production"]
 
   # Who this run expects to approve it — resolved into `signals:` own
   # `subject:` rule below, at submit, rather than read anywhere in this
@@ -133,12 +128,9 @@ inputs:
   expected_approver:
     type: string
     required: true
+    description: who this run expects to approve it — narrows `signals:`'s own approver rule for this run, never the security boundary by itself
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
-    description: >-
-      who this run expects to approve it — narrows `signals:`'s own
-      approver rule for this run, never the security boundary by itself
-
 # The whole of who may deliver `deploy-approved`, enforced by
 # `FlowstateServer.Signal` against the attested sender before Temporal ever
 # sees the signal: an authenticated caller who fails any part of this is
@@ -167,7 +159,6 @@ signals:
         claims:
           team: release-managers
     distinct_from_starter: true
-
 steps:
   # `run.identity.subject` here, not `inputs.requested_by`: this is what the
   # request actually was, established when the run was submitted
@@ -177,10 +168,7 @@ steps:
   # rather than papering over it with a placeholder.
   - id: request
     log:
-      message: >-
-        ${"%s requests deploying %s to %s".format(
-            [run.identity.subject == "" ? "an unattested caller" : run.identity.subject,
-             inputs.version, inputs.environment])}
+      message: '${"%s requests deploying %s to %s".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.version, inputs.environment])}'
 
   # A short pause, so a notification has landed before anyone is asked to act on
   # it. A durable timer, not a sleeping worker.
@@ -237,10 +225,7 @@ steps:
   - id: approval
     wait_for_signal:
       name: deploy-approved
-      prompt: >-
-        ${"Approve deploying %s to %s, requested by %s?".format(
-            [inputs.version, inputs.environment,
-             run.identity.subject == "" ? "an unattested caller" : run.identity.subject])}
+      prompt: '${"Approve deploying %s to %s, requested by %s?".format([inputs.version, inputs.environment, (run.identity.subject == "") ? "an unattested caller" : run.identity.subject])}'
       timeout: 24h
       outputs:
         # The gate itself, stated once — and stated as the *outcome* rather than
@@ -272,16 +257,13 @@ steps:
         # wait immediately, `timed_out` false — so this state is named for what
         # is true in both sub-cases: nobody decided. `!timed_out` would claim
         # the timer lapsed when it did not.
-        outcome: >-
-          ${payload.?approved
-              .optMap(approved, approved ? "deployed" : "rejected")
-              .orValue("undecided")}
+        outcome: '${payload.?approved.optMap(approved, approved ? "deployed" : "rejected").orValue("undecided")}'
+        sender: ${sender}
         # Re-exposed deliberately: `outputs:` replaces what the wait produces,
         # so these are gone unless a line puts them back. `sender` is read by
         # the log lines and by `approver_subject`; `timed_out` is what lets the
         # `undecided` branch say *why* nothing was decided.
         timed_out: ${timed_out}
-        sender: ${sender}
 
   # A wait reports how it ended rather than failing, so a lapsed approval is an
   # ordinary branch and not an error to be tolerated.
@@ -327,9 +309,7 @@ steps:
           steps:
             - id: deploy
               log:
-                message: >-
-                  ${"deploying %s to %s, approved by %s".format(
-                      [inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
+                message: ${"deploying %s to %s, approved by %s".format([inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
 
         # The branch that used to be a hand-expanded negation, which #207 calls
         # the worst of the four: getting a De Morgan expansion subtly wrong is
@@ -340,9 +320,7 @@ steps:
           steps:
             - id: rejected
               log:
-                message: >-
-                  ${"%s declined the deploy of %s".format(
-                      [steps.approval.sender.identity.subject, inputs.version])}
+                message: ${"%s declined the deploy of %s".format([steps.approval.sender.identity.subject, inputs.version])}
 
         # This branch is where naming the gate found a real disagreement. The
         # `decision` output below used to report "expired" for a signal that
@@ -361,11 +339,7 @@ steps:
           steps:
             - id: undecided
               log:
-                message: >-
-                  ${steps.approval.timed_out
-                    ? "nobody approved deploying %s in time".format([inputs.version])
-                    : "the approval for %s carried no decision".format([inputs.version])}
-
+                message: '${steps.approval.timed_out ? "nobody approved deploying %s in time".format([inputs.version]) : "the approval for %s carried no decision".format([inputs.version])}'
 outputs:
   # Three states, not the six this file used to carry. "Approved, but the
   # wrong sender" is not a fourth: `signals:` refuses that signal before this
@@ -388,11 +362,5 @@ outputs:
   # nothing here to report, the same pattern `expense-approval`'s own
   # `approved_by` output uses.
   approver_subject:
-    value: >-
-      ${steps.approval.outcome == "deployed"
-        ? steps.approval.sender.identity.subject
-        : ""}
-    description: >-
-      who the server attests actually approved this, empty unless a deploy
-      really happened — never a payload field, which is a claim rather than
-      an attestation
+    value: '${(steps.approval.outcome == "deployed") ? steps.approval.sender.identity.subject : ""}'
+    description: who the server attests actually approved this, empty unless a deploy really happened — never a payload field, which is a claim rather than an attestation
