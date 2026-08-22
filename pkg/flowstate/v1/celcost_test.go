@@ -127,6 +127,68 @@ func TestCELCostBoundIsReachedByGrowthRatherThanSize(t *testing.T) {
 	})
 }
 
+// TestCELCostRefusesASingleAmplifyingCallBeforeItAllocates is the review
+// finding from PR #885 (thread r3836512090), kept as the expression Codex
+// wrote.
+//
+// The first version of this file charged only for the bytes a call *produced*,
+// and an estimator runs after the call that produced them. That bounds a
+// multiplication spread over many calls and does nothing about one call that
+// allocates everything at once. `lists.range(10000).map(i, body).join("")` is
+// that call: 10,000 appends cost roughly 10,000 units — nothing against a
+// 1,000,000-unit budget — and then a single `join` materialises 2 GB.
+//
+// Measured under GOMEMLIMIT=1GiB before the fix: refused, but only after
+// **11,882 MiB of allocation, 6,215 MiB of heap and 16.4 seconds**. The budget
+// did answer, and it answered long after the allocator had done the damage,
+// which is the same "bound that only fires once the machine is in trouble" this
+// file's other tests refuse to accept. After the fix: refused in 11 ms having
+// allocated nothing measurable.
+//
+// The fix is that a list is charged for the bytes entering it, so the budget is
+// spent during the comprehension that accumulates the 2 GB rather than at the
+// call that concatenates it. That is why this test asserts an allocation
+// ceiling rather than only an error: an assertion that this expression is
+// refused passed before the fix too.
+func TestCELCostRefusesASingleAmplifyingCallBeforeItAllocates(t *testing.T) {
+	const expr = `lists.range(10000).map(i, body).join("")`
+
+	allocated, err := evalWithActivation(t, expr, 200_000, 0)
+
+	require.Error(t, err, "an expression materialising 2 GB from one 200,000-character body must be refused")
+	require.ErrorContains(t, err, "cost limit exceeded")
+
+	require.Less(t, allocated, uint64(64),
+		"the evaluation allocated %d MiB; charging only for bytes produced let this reach 11,882 MiB "+
+			"before the budget noticed, because the estimator runs after the call that allocates. "+
+			"A regression here means the charge has moved back after the allocation it is meant to prevent",
+		allocated)
+}
+
+// TestCELCostChargesBytesEnteringAListRatherThanItsLength is the mechanism the
+// test above depends on, asserted directly so a failure says which half broke.
+//
+// Length is not the resource. A comprehension building a long list of small
+// strings is ordinary and must stay affordable; one building a short list of
+// large strings is the amplifier, because it is the bytes that a later `join`
+// or comparison has to materialise.
+func TestCELCostChargesBytesEnteringAListRatherThanItsLength(t *testing.T) {
+	t.Run("a long list of small strings is affordable", func(t *testing.T) {
+		_, err := evalWithActivation(t, `items.map(i, body)`, 10, 10_000)
+		require.NoError(t, err,
+			"accumulating 10,000 ten-character strings is 100,000 characters in total and must not be "+
+				"refused; charging by element count rather than by bytes would refuse it")
+	})
+
+	t.Run("a short list of large strings is refused", func(t *testing.T) {
+		_, err := evalWithActivation(t, `items.map(i, body)`, 200_000, 1_000)
+		require.Error(t, err,
+			"accumulating 1,000 copies of a 200,000-character body is 200 MB and must be refused while "+
+				"it is still being accumulated")
+		require.ErrorContains(t, err, "cost limit exceeded")
+	})
+}
+
 // TestCELCostLeavesNonStringResultsToCELGo pins the estimator's restraint.
 //
 // A returned cost replaces cel-go's own decision rather than adding to it
