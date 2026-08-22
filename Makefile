@@ -46,8 +46,15 @@ check:
 # picks it up. Time-bounded, single worker, memory-bounded: a fuzzer's purpose
 # is to find the input that explodes, and these bounds are what make it safe to
 # run on every push.
+#
+# The list is captured before the loop rather than piped into it: a pipeline's
+# status is the status of its right-hand side, so `list.sh | while read` would
+# report success on a run that fuzzed nothing at all if the list could not be
+# read — a check passing by not running, which is the failure this file
+# legislates against elsewhere. list.sh itself refuses to print an empty tier.
 fuzz-smoke:
-	@tools/fuzztargets/list.sh smoke | while read -r target dir; do \
+	@targets="$$(tools/fuzztargets/list.sh smoke)" || exit 1; \
+	echo "$$targets" | while read -r target dir; do \
 		echo "==> $$target ($$dir)"; \
 		GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz "$$target" -fuzztime 30s "./$$dir/" || exit 1; \
 	done

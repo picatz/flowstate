@@ -118,6 +118,27 @@ func TestNoRunnerHoldsItsOwnCopyOfTheList(t *testing.T) {
 	}
 }
 
+// TestEveryRunnerReadsTheList is the other half of that: a runner that names no
+// target and also reads no list is a runner that stopped fuzzing, which no test
+// above would notice. The Makefile and the deep tier loop over list.sh; CI's
+// fuzz-smoke job reaches the same list by running the Makefile target, which is
+// the trade ci.yml makes for the `test` job too.
+func TestEveryRunnerReadsTheList(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"Makefile", "tools/fuzztargets/list.sh smoke"},
+		{".github/workflows/deep.yml", "tools/fuzztargets/list.sh deep"},
+		{".github/workflows/ci.yml", "make fuzz-smoke"},
+	} {
+		data, err := os.ReadFile(filepath.Join(repoRoot, tc.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), tc.want) {
+			t.Errorf("%s no longer contains %q, so it is not reading the target list any more", tc.path, tc.want)
+		}
+	}
+}
+
 var fuzzFunc = regexp.MustCompile(`(?m)^func (Fuzz[A-Za-z0-9_]*)\(f \*testing\.F\)`)
 
 // fuzzTargetsInTree returns every fuzz target declared in this module, mapped
