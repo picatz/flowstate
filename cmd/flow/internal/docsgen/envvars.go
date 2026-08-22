@@ -156,8 +156,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_IDENTITY_KEY",
 			value:   "unset",
-			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
+			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation. It names one key, since a rotation names the keys in order and a list in an environment variable would need a separator; `--identity-key` on the command line replaces this default rather than adding to it.",
+			read:    "cmd/flow/main.go",
 		},
 		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",

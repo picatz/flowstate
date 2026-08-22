@@ -192,8 +192,7 @@ flow server dev -o json`,
 			"secrets section is read: this command serves every caller anonymously, so the policy's "+
 			"issuers go unused, and inheriting the path from $FLOWSTATE_AUTH_POLICY is refused rather "+
 			"than silently ignoring the authentication a deployment configured")
-	cmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
+	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
 	// The resolved endpoints as data, so a script or an agent can start the
 	// stack and then address it without parsing prose.

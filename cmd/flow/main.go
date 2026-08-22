@@ -7,6 +7,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -36,6 +37,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
+	"github.com/picatz/jose/pkg/jwk"
 	"github.com/sourcegraph/jsonrpc2"
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
@@ -139,10 +141,16 @@ type authFlags struct {
 	policyPath string
 	insecure   bool
 
-	// identityKeyPath holds the private key Flowstate signs its own assertions
-	// with, when the trust policy configures federation. Unset means the server
-	// verifies callers but issues nothing, which is the inbound-only deployment.
-	identityKeyPath string
+	// identityKeyPaths holds the keys Flowstate publishes when the trust policy
+	// configures federation, in the order they were given. Empty means the
+	// server verifies callers but issues nothing, which is the inbound-only
+	// deployment.
+	//
+	// The first names the private key assertions are signed with. Any after it
+	// are published for verification only, so assertions a previous process
+	// signed keep verifying across the restart that rotation actually is — see
+	// [identityBroker].
+	identityKeyPaths []string
 
 	// identityClaims names the caller token claims carried into each run's
 	// identity, where `workload.claims[...]` rules and downstream relying parties
@@ -151,18 +159,43 @@ type authFlags struct {
 	identityClaims []string
 }
 
+// identityKeyDefault is what --identity-key holds when it is not given: the one
+// path $FLOWSTATE_IDENTITY_KEY names, or nothing.
+//
+// Nothing, rather than a list holding one empty string, which is what wrapping
+// an unset variable would produce — and which would then be read as a key path
+// of "" and refuse start-up on a deployment that never configured federation.
+// A repeated flag replaces this default outright rather than appending to it
+// (pflag's StringArray), so an operator who sets both names the whole key set on
+// the command line, which is the reading that makes rotation's order explicit.
+// The variable stays single-valued: it is the inbound-only deployment's one key,
+// and a list of paths in an environment variable would need a separator this
+// repository has no convention for.
+func identityKeyDefault() []string {
+	if path := os.Getenv("FLOWSTATE_IDENTITY_KEY"); path != "" {
+		return []string{path}
+	}
+	return nil
+}
+
+// identityKeyUsage is the help text every command that loads identity keys
+// shows for --identity-key, so the rotation rule is worded once.
+const identityKeyUsage = "PKCS#8 PEM key used to mint short-lived workload assertions for federation " +
+	"targets (repeatable: the first signs, and every later one is published for verification only, " +
+	"so assertions signed before a restart keep verifying)"
+
 // authFlagsOf reads them off the command being run.
 func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
-	identityKeyPath, _ := cmd.Flags().GetString("identity-key")
+	identityKeyPaths, _ := cmd.Flags().GetStringArray("identity-key")
 	identityClaims, _ := cmd.Flags().GetStringArray("identity-claim")
 
 	return authFlags{
-		policyPath:      policyPath,
-		insecure:        insecure,
-		identityKeyPath: identityKeyPath,
-		identityClaims:  identityClaims,
+		policyPath:       policyPath,
+		insecure:         insecure,
+		identityKeyPaths: identityKeyPaths,
+		identityClaims:   identityClaims,
 	}
 }
 
@@ -1208,8 +1241,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
+		// The key ids as well, because a rotation is performed by restarting
+		// with a different --identity-key list and its whole result is which
+		// keys this process publishes and which one of them signs. An operator
+		// who cannot read that back has rehearsed nothing.
 		logger.Info("issuing workload identity assertions",
-			"discovery", broker.Issuer().URL()+auth.DiscoveryPath)
+			"discovery", broker.Issuer().URL()+auth.DiscoveryPath,
+			"signing_key", broker.Issuer().ActiveKeyID(),
+			"verify_only_keys", verifyOnlyKeyIDs(broker.Issuer()))
 	}
 	if protectedResource != nil {
 		logger.Info("serving RFC 9728 protected resource metadata",
@@ -1387,37 +1426,146 @@ func authVerifier(flags authFlags) (auth.Verifier, *auth.Policy, error) {
 // The signing key is a file rather than a policy field because a policy is
 // configuration a person edits and reads, and a private key is neither. The key
 // id is published in the JWKS and named in every assertion, so a date makes
-// rotation self-documenting: a verifier that has cached "2026-07" can be handed
-// "2026-08" without a coordinated restart.
+// rotation self-documenting: `2026-08.pem` publishes as "2026-08".
+//
+// # Rotation is a restart, so the flag repeats
+//
+// The issuer can rotate in place ([auth.Issuer.Rotate]) and nothing a deployment
+// runs ever calls it: the rotation an operator performs is to change what the
+// process is started with and restart it. A process that loaded exactly one key
+// publishes exactly that key from its first request onward, so every assertion
+// the previous process signed — still valid for the rest of its five minutes —
+// stops verifying at any relying party that refetches the key set on an unknown
+// "kid" (picatz/flowstate#891).
+//
+// So --identity-key repeats, and the order is the whole rule:
+//
+//   - **the first occurrence signs**, and
+//   - every later one is published for verification only, without its private
+//     half ever being retained.
+//
+// First rather than last because the command line then reads in the order the
+// operator thinks: the key being rotated *to* is the one they just generated and
+// the one they type first, and the older keys trail it in the order they are
+// eventually dropped. Nothing is derived from the file name or its modification
+// time — a key id is an operator-chosen file name, and a rotation that depended
+// on mtime would be decided by whichever file `cp` touched last.
+//
+// A verify-only entry may be either half: the operator's existing PKCS#8
+// private key file, whose public half is taken and whose private half is
+// dropped on the spot, or a PKIX public key PEM for a deployment that would
+// rather not mount the old private key at all. This process never signs with
+// one either way, since [auth.WithVerifyOnlyKey] takes a public key.
+//
+// Everything here fails closed: an entry that cannot be read or parsed, or two
+// entries publishing the same key id, refuses start-up rather than being
+// skipped. A key silently left out is a rotation the operator believes is
+// covered and is not.
 func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) {
 	if policy == nil || policy.Federation == nil {
-		if flags.identityKeyPath != "" {
+		if len(flags.identityKeyPaths) > 0 {
 			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	if flags.identityKeyPath == "" {
+	if len(flags.identityKeyPaths) == 0 {
 		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
 			"pass --identity-key with a PKCS#8 PEM private key, since Flowstate cannot issue an " +
 			"assertion it cannot sign")
 	}
 
-	pem, err := os.ReadFile(flags.identityKeyPath)
+	signingPath, verifyOnlyPaths := flags.identityKeyPaths[0], flags.identityKeyPaths[1:]
+
+	pem, err := os.ReadFile(signingPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading identity key: %w", err)
 	}
-	key, err := parseSigningKey(flags.identityKeyPath, pem)
+	key, err := parseSigningKey(signingPath, pem)
 	if err != nil {
 		return nil, err
 	}
 
-	broker, err := policy.Federation.Broker(key)
+	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
+	for _, path := range verifyOnlyPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading verify-only identity key: %w", err)
+		}
+		id, public, err := parseVerifyOnlyKey(path, data)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
+	}
+
+	// A duplicate id is refused by [auth.NewIssuer], which is where the key set
+	// being published actually lives, so the refusal cannot be bypassed by any
+	// other caller — see [auth.WithVerifyOnlyKey].
+	broker, err := policy.Federation.Broker(key, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
 	return broker, nil
+}
+
+// verifyOnlyKeyIDs names the keys the issuer publishes that it does not sign
+// with, in the order the key set serves them.
+//
+// Read back out of the published key set rather than remembered from the flags,
+// so the line an operator reads at start-up describes what relying parties will
+// actually fetch: a key that was named but not published, for whatever reason,
+// must not appear here.
+func verifyOnlyKeyIDs(issuer *auth.Issuer) []string {
+	active := issuer.ActiveKeyID()
+
+	var ids []string
+	for _, published := range issuer.KeySet().Keys {
+		id, _ := published[jwk.KeyID].(string)
+		if id == "" || id == active {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// parseVerifyOnlyKey decodes one --identity-key entry that is not the first, as
+// the public key it will be published as, deriving the key id from the file's
+// name exactly as [parseSigningKey] does.
+//
+// Both PEM shapes are accepted because both are what an operator has in hand: a
+// rotation names the previous *private* key file, which is what is already
+// mounted, while a deployment that would rather not mount a superseded private
+// key at all can hand over just its public half (openssl pkey -pubout). A private
+// key given here is read for its public half and nothing else — no
+// [auth.SigningKey] is built from it, so no signer closure ever captures it and
+// this process cannot sign with the key however the flags are ordered.
+func parseVerifyOnlyKey(path string, data []byte) (string, crypto.PublicKey, error) {
+	id := keyIDFromPath(path)
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return "", nil, fmt.Errorf("identity key %s is not PEM-encoded", path)
+	}
+
+	if public, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+		return id, public, nil
+	}
+
+	private, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("identity key %s is neither a PKCS#8 private key nor a PKIX public key "+
+			"(a key named after the first --identity-key is published for verification only, so either half will do; "+
+			"extract the public half of an existing key with: openssl pkey -in %s -pubout -out %s.pub.pem)", path, path, path)
+	}
+
+	public, err := publicKeyOf(private)
+	if err != nil {
+		return "", nil, fmt.Errorf("identity key %s: %w", path, err)
+	}
+	return id, public, nil
 }
 
 // parseSigningKey decodes a PKCS#8 PEM private key, deriving the key id from the
@@ -2247,19 +2395,21 @@ flow server --verbose`,
 	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize worker-side resolution")
-	workerCmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
+	workerCmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
 		"allow unauthenticated access; for local development only")
-	serverCmd.Flags().String("identity-key",
-		os.Getenv("FLOWSTATE_IDENTITY_KEY"),
+	serverCmd.Flags().StringArray("identity-key",
+		identityKeyDefault(),
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
 			"required when the trust policy configures federation; the file's base name "+
-			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\"")
+			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\". "+
+			"Repeatable: the first occurrence signs and every later one is published for "+
+			"verification only, so a restart that rotates keys does not reject assertions "+
+			"the previous process signed")
 
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an

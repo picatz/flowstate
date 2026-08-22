@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto"
 	"fmt"
 	"net/http"
 	"time"
@@ -248,6 +249,12 @@ func (p FederationPolicy) Validate() error {
 type federationConfig struct {
 	client *http.Client
 	clock  func() time.Time
+
+	// verifyOnly are extra public keys to publish beside the signing key. They
+	// are issuer options rather than a second list of key material here,
+	// because the issuer is the thing that publishes a key set and this type
+	// only has to carry them to it.
+	verifyOnly []IssuerOption
 }
 
 // A FederationOption configures how a [FederationPolicy] is built into a [Broker].
@@ -270,6 +277,18 @@ func WithFederationClock(clock func() time.Time) FederationOption {
 		if clock != nil {
 			c.clock = clock
 		}
+	}
+}
+
+// WithFederationVerifyOnlyKey publishes one more public key in the issuer's key
+// set, without a private half, so assertions a previous process signed keep
+// verifying across a restart. It is [WithVerifyOnlyKey] reached from a policy,
+// and takes the same (id, public key) pair for the same reasons; repeat it for
+// each key. See that option for what rotation across a restart needs and why
+// this is not revocation.
+func WithFederationVerifyOnlyKey(id string, public crypto.PublicKey) FederationOption {
+	return func(c *federationConfig) {
+		c.verifyOnly = append(c.verifyOnly, WithVerifyOnlyKey(id, public))
 	}
 }
 
@@ -305,6 +324,11 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	if cfg.clock != nil {
 		issuerOpts = append(issuerOpts, WithIssuerClock(cfg.clock))
 	}
+	// Last, so the retention and clock the policy configured are the ones the
+	// published keys are measured against: [NewIssuer] installs them once every
+	// option has been applied, but ordering them here keeps that from being a
+	// property a reader has to go and check.
+	issuerOpts = append(issuerOpts, cfg.verifyOnly...)
 
 	issuer, err := NewIssuer(p.Issuer, key, issuerOpts...)
 	if err != nil {
