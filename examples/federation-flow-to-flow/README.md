@@ -86,7 +86,12 @@ step names a target and holds no credential material — no bearer, no
 `Authorization` header, nothing resolved. An edit that embedded a token fails
 it.
 
-It cannot stand up two deployments, so it does not prove the peer admits what
+`TestEveryNetworkedExampleRuns` then *runs* this file against a stand-in with a
+broker holding a real `assertion` target, and that stand-in refuses a request
+with no bearer token — so the example only passes if the worker really minted an
+assertion and applied it. Deleting the `credential:` line fails it.
+
+Neither can stand up two deployments, so neither proves the peer admits what
 this step sends. That is
 `TestFlowstateToFlowstateFederation` in `pkg/flowstate/v1/auth`, which runs both
 halves in one process: A's issuer serves its real discovery document and key

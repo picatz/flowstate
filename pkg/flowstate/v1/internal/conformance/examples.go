@@ -314,6 +314,24 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 
+	// federation-flow-to-flow: the peer deployment's RPC surface. This is the one
+	// handler here that refuses an unauthenticated request, and it refuses on
+	// purpose: the whole claim of that example is that the step reaches a peer
+	// carrying an assertion the worker minted and applied, so a stand-in that
+	// answered 200 to anything would let the example pass with `credential:`
+	// removed. It cannot verify the assertion — it holds none of this
+	// deployment's keys, and pkg/flowstate/v1/auth's own
+	// TestFlowstateToFlowstateFederation is where verification is proven — but
+	// requiring that *something* was presented is the half a fixture can hold.
+	mux.HandleFunc("/flowstate.v1.WorkflowService/Run", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			w.WriteHeader(http.StatusUnauthorized)
+
+			return
+		}
+		write(w, map[string]any{"run_id": "run-7"})
+	})
+
 	// enterprise-fund-transfer: a debit or a credit, with which account in the
 	// request body rather than the path — literal URLs, so `PointAtStandIn` can
 	// rewrite them without tracing an expression, per that file's own `undo:`

@@ -74,8 +74,18 @@ func exampleBroker(t *testing.T) *auth.Broker {
 	require.NoError(t, err)
 	issuer, err := auth.NewIssuer("https://flowstate.example", key)
 	require.NoError(t, err)
+	// The `assertion` target of examples/federation-flow-to-flow needs no double:
+	// it performs no exchange, so the real exchanger is the cheap one, and what
+	// the http task applies here is an assertion this issuer actually signed.
+	peer, err := auth.NewAssertionExchanger(auth.AssertionConfig{
+		Audience: "https://flowstate.peer.example.com",
+	})
+	require.NoError(t, err)
+
 	broker, err := auth.NewBroker(issuer,
-		auth.WithTarget("partner-api", exampleExchanger{}), auth.WithAssumeAllowRules("true"))
+		auth.WithTarget("partner-api", exampleExchanger{}),
+		auth.WithTarget("peer-flowstate", peer),
+		auth.WithAssumeAllowRules("true"))
 	require.NoError(t, err)
 	return broker
 }
