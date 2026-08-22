@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // A plugin does not have to be a compiled binary. [Discover] admits any
@@ -61,12 +62,26 @@ func shebangPlugin(t *testing.T, mode string) (dir, script string) {
 // handshake, which only running one can show. It carries no build tag for the
 // same reason: a script plugin has to launch on every platform this package
 // supports, whatever each one does about pinning.
+// The waiting bounds are generous here for launch_test.go's
+// `timeoutIsTheBound` reason, and this test needs it more than most: what it
+// launches is a shell that execs a *copy of this whole race-instrumented test
+// binary*, written to disk by [shebangPlugin] moments earlier. Handshaking
+// within testConfig's three seconds is comfortable on an idle machine and a
+// coin flip on one running eleven packages' tests at once, and losing that
+// flip reports "a `#!` script plugin did not launch" — the regression's own
+// voice — for a machine that was merely busy. What is under test is whether a
+// script launches at all, never how fast (issue #852, the same confusion the
+// progress-starvation tests were carrying).
 func TestAShebangPluginStillLaunches(t *testing.T) {
 	t.Parallel()
 
 	dir, _ := shebangPlugin(t, "ok")
 
-	host := openHost(t, testConfig(t, dir))
+	cfg := testConfig(t, dir)
+	cfg.HandshakeTimeout = time.Minute
+	cfg.DescribeTimeout = time.Minute
+
+	host := openHost(t, cfg)
 
 	if _, ok := host.Lookup("ok"); !ok {
 		t.Fatal("a `#!` script plugin did not launch; scripts are a shape Discover accepts, " +

@@ -18,6 +18,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -185,6 +186,60 @@ func runProgressPlugin() int {
 	}
 
 	return 0
+}
+
+// starvationCallTimeout is the per-call timeout the three tests below run
+// under — the ones whose assertion is a *byte* budget: that a task's own
+// progress frames cannot spend the share its terminal response needs.
+//
+// It is deliberately far longer than [testConfig]'s own 3 seconds, and the
+// reason is launch_test.go's `timeoutIsTheBound` lesson arriving a second
+// time (issue #852). A timeout is the bound under test in exactly one place
+// in this package — a plugin that never handshakes — and incidental
+// everywhere else, so it must be short there and generous here. These three
+// tests stream a thousand-frame flood through a real subprocess, over a real
+// Unix socket, under the race detector; that takes about 1.4 seconds on an
+// idle machine and comfortably more than 3 on a machine several test
+// binaries are sharing. Sharing testConfig's 3 seconds made the deadline do
+// two jobs at once — the mechanism *and* the incidental bound — so a loaded
+// machine failed them with `deadline_exceeded` having relayed 810 of the
+// 1000 frames with nothing starved at all. That is a test reporting a
+// scheduling fact in the voice of a correctness one.
+//
+// Nothing is weakened by the length. A byte bound that stopped applying
+// fails these tests on the bytes, in well under a second (measured: with
+// transport.go's reserve reverted, the stream is truncated around frame 250
+// and connect reports one of its envelope protocol errors), and the
+// assertions below are about what crossed the wire rather than about when.
+// This timeout's only remaining job is the one a timeout should have here:
+// stopping a hang, so a plugin that never answers cannot hold a test open
+// until `go test -timeout` kills the whole binary.
+const starvationCallTimeout = 60 * time.Second
+
+// progressWireBytes reports what n progress frames of the shape the "looping"
+// fixture sends occupy on the wire, envelope included — the same measurement
+// [TestProgressFrameWireSizeStaysWithinBudget] makes against
+// maxProgressFrameWireBytes, made here so the starvation tests below can
+// assert their own premise rather than restate a number from a comment.
+//
+// The premise is what makes those tests mean anything: unless the progress
+// frames alone outgrow MaxResponseBytes, a shared budget would have been
+// large enough all along and the call succeeding proves nothing. Deriving it
+// is CLAUDE.md's "prefer deriving to duplicating" applied to a test's own
+// arithmetic — a schema change that shrinks a frame silently turns a
+// hardcoded 1000 into a loop count too small to reach the bound, and this
+// fails instead.
+func progressWireBytes(t *testing.T, n int) int {
+	t.Helper()
+
+	b, err := proto.Marshal(&pluginv1.ExecuteStreamResponse{
+		Message: &pluginv1.ExecuteStreamResponse_Progress{
+			Progress: &pluginv1.TaskProgress{Phase: pluginv1.TaskPhase_TASK_PHASE_REQUESTING},
+		},
+	})
+	require.NoError(t, err, "marshaling one progress frame")
+
+	return n * (len(b) + 5) // Connect's own streaming envelope: 1 flag byte + 4 length bytes.
 }
 
 // findTaskDef returns the def a host serves under name, for a test that needs
@@ -433,7 +488,8 @@ func TestProgressLoopDoesNotStarveTheTerminalResponse(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, pluginDir(t, "progress"))
-	cfg.MaxResponseBytes = 8192 // Smaller than the ~9000 bytes 1000 progress frames plus the terminal response add up to.
+	cfg.MaxResponseBytes = 8192             // Smaller than the ~9000 bytes 1000 progress frames plus the terminal response add up to.
+	cfg.CallTimeout = starvationCallTimeout // The bound under test is the byte budget above, not the clock — see the constant.
 
 	host := openHost(t, cfg)
 	def := findTaskDef(t, host, "progress.looping")
@@ -442,6 +498,15 @@ func TestProgressLoopDoesNotStarveTheTerminalResponse(t *testing.T) {
 	ctx := flowstatev1.ContextWithProgress(t.Context(), reporter.report)
 
 	const loopCount = 1000
+
+	// The premise, asserted rather than left to the comment above: the
+	// progress frames alone have to outgrow MaxResponseBytes, or a shared
+	// budget would have sufficed and everything below passes for a reason
+	// that is not this test's.
+	require.Greater(t, progressWireBytes(t, loopCount), cfg.MaxResponseBytes,
+		"this test asserts nothing unless %d progress frames outgrow MaxResponseBytes (%d) on their own",
+		loopCount, cfg.MaxResponseBytes)
+
 	_, err := def.Fn(ctx, map[string]*flowstatev1.Value{
 		"message": flowstatev1.NewLiteral(strconv.Itoa(loopCount)),
 	}, nil)
@@ -514,35 +579,67 @@ func TestProgressFramesPastTheCapAreDropped(t *testing.T) {
 // bounded by the same number, independently: see [newClients]), and at 9
 // measured bytes per frame (see [TestProgressFrameWireSizeStaysWithinBudget])
 // the combined ceiling below still exhausts in well under a hundred frames.
-// The elapsed-time assertion is what tells this apart from the call merely
-// running out its CallTimeout: a byte bound reached fails in milliseconds,
-// and a bound that quietly stopped applying would instead run the full loop
-// (cheaply, since the fixture's reporter silently drops every send once the
-// first one fails — see sdk.go's taskService.ExecuteStream) and eventually
-// time out, seconds later, on cfg.CallTimeout instead.
+//
+// What tells this apart from the call merely running out its CallTimeout is
+// the *shape* of the refusal, not how long it took to arrive. Reaching the
+// byte ceiling truncates the stream mid-envelope, which connect reports as
+// CodeInvalidArgument ("protocol error: incomplete envelope"); a deadline
+// expiring reports CodeDeadlineExceeded and satisfies
+// errors.Is(err, context.DeadlineExceeded). A bound that quietly stopped
+// applying produces neither: the fixture would run its whole loop (cheaply,
+// since the SDK's reporter silently drops every send once the first one
+// fails — see sdk.go's taskService.ExecuteStream), return its terminal
+// response, and the call would *succeed*, which the require.Error below
+// catches on its own.
+//
+// This used to be an elapsed-time assertion — refused in under 2 seconds,
+// against a 3-second CallTimeout — and issue #852 is what that costs: on a
+// loaded machine a one-second margin is a coin flip, and the two starvation
+// tests beside this one were failing on precisely that. Asking what the
+// error *is* answers the same question without asking the machine how busy
+// it was.
 func TestUnboundedProgressFloodIsStillRefused(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, pluginDir(t, "progress"))
-	cfg.MaxResponseBytes = 8192 // Small, but enough headroom for Open's own Describe call to succeed.
-	cfg.MaxProgressFrames = 5   // Reserve = 5 * maxProgressFrameWireBytes = 160 bytes; combined ceiling of 8352 exhausts in well under a thousand frames.
+	cfg.MaxResponseBytes = 8192             // Small, but enough headroom for Open's own Describe call to succeed.
+	cfg.MaxProgressFrames = 5               // Reserve = 5 * maxProgressFrameWireBytes = 160 bytes; combined ceiling of 8352 exhausts in well under a thousand frames.
+	cfg.CallTimeout = starvationCallTimeout // Only a hang-stopper here; the refusal under test is a byte one.
 
 	host := openHost(t, cfg)
 	def := findTaskDef(t, host, "progress.looping")
 
 	const loopCount = 200_000 // Far more than the combined ceiling could ever admit.
 
-	start := time.Now()
 	_, err := def.Fn(t.Context(), map[string]*flowstatev1.Value{
 		"message": flowstatev1.NewLiteral(strconv.Itoa(loopCount)),
 	}, nil)
-	elapsed := time.Since(start)
 
 	require.Error(t, err, "a plugin streaming far more than the combined ceiling admits must be refused, "+
 		"not accepted on the strength of the reserve #804 adds")
-	assert.Less(t, elapsed, 2*time.Second,
-		"the refusal must come from the byte bound being reached, not from cfg.CallTimeout (3s) expiring — "+
-			"an elapsed time this close to it means the bound stopped applying and the call ran the full loop instead")
+
+	// Positively, not by elimination — Codex's finding on picatz/flowstate#864,
+	// and the same under-assertion this test's own rewrite exists to remove.
+	// "not a deadline" is satisfied by a CodeUnavailable from a plugin that
+	// died, or a CodeInternal from a stream that broke for a reason nothing
+	// here configured, either of which would let an unrelated failure stand
+	// in for the refusal under test with the ceiling never reached at all.
+	// So this asserts the shape the byte ceiling actually produces:
+	// boundedTransport (transport.go) stops the body mid-message, connect
+	// finds a truncated envelope, and reports CodeInvalidArgument naming it.
+	// Measured twelve times over, idle and under eight-way CPU load, always
+	// "protocol error: incomplete envelope: unexpected EOF"; the substring is
+	// the narrower half of that message rather than the whole of it, because
+	// truncation has a sibling spelling ("promised N bytes in enveloped
+	// message") that connect chooses between by where in a frame the cut
+	// lands, and both are this bound firing.
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"the refusal must be the byte ceiling truncating the stream mid-envelope, not some other failure "+
+			"(a deadline, a dead plugin, a broken stream) standing in for it: %v", err)
+	assert.Contains(t, err.Error(), "envelope",
+		"the refusal must name the truncated envelope the byte ceiling produces: %v", err)
+	assert.False(t, errors.Is(err, context.DeadlineExceeded),
+		"the refusal must come from the byte bound being reached, not from cfg.CallTimeout expiring: %v", err)
 }
 
 // TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse is Codex's
@@ -566,7 +663,8 @@ func TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse(t *testing.T) 
 	t.Parallel()
 
 	cfg := testConfig(t, pluginDir(t, "progress"))
-	cfg.MaxResponseBytes = 8192 // Smaller than the ~9000 bytes 1000 progress frames plus the terminal response add up to — see TestProgressLoopDoesNotStarveTheTerminalResponse.
+	cfg.MaxResponseBytes = 8192             // Smaller than the ~9000 bytes 1000 progress frames plus the terminal response add up to — see TestProgressLoopDoesNotStarveTheTerminalResponse.
+	cfg.CallTimeout = starvationCallTimeout // The bound under test is the byte budget above, not the clock — see the constant.
 
 	host := openHost(t, cfg)
 	p, ok := host.Lookup("progress")
@@ -576,6 +674,11 @@ func TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse(t *testing.T) 
 	require.NoError(t, err, "TaskService")
 
 	const loopCount = 1000
+
+	require.Greater(t, progressWireBytes(t, loopCount), cfg.MaxResponseBytes,
+		"this test asserts nothing unless %d progress frames outgrow MaxResponseBytes (%d) on their own",
+		loopCount, cfg.MaxResponseBytes)
+
 	stream, err := service.ExecuteStream(t.Context(), connect.NewRequest(&pluginv1.ExecuteStreamRequest{
 		Task: &flowstatev1.Task{
 			Name:   "looping",
@@ -584,8 +687,19 @@ func TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse(t *testing.T) 
 	}))
 	require.NoError(t, err, "ExecuteStream")
 
+	// frames counts what arrived ahead of the terminal response, so the
+	// assertion below is about the order things crossed the wire in — a
+	// flood larger than the whole configured response budget, and the
+	// terminal response still behind it — rather than about how long any of
+	// it took. This path has no MaxProgressFrames counter of its own (see
+	// [taskService.ExecuteStream]'s doc comment for why), so every frame the
+	// fixture sent should be here.
 	var gotResponse bool
+	var frames int
 	for stream.Receive() {
+		if stream.Msg().GetProgress() != nil {
+			frames++
+		}
 		if stream.Msg().GetResponse() != nil {
 			gotResponse = true
 			break
@@ -594,5 +708,9 @@ func TestTaskServiceExecuteStreamDoesNotStarveTheTerminalResponse(t *testing.T) 
 	require.NoError(t, stream.Err(), "reading the stream: a task's own progress-reporting frequency must never "+
 		"starve its terminal response, on this exported path exactly as on the internal one")
 	assert.True(t, gotResponse, "the stream ended without ever delivering the terminal ExecuteResponse")
+	assert.Equal(t, loopCount, frames,
+		"the terminal response must arrive behind the whole progress flood — %d frames, %d bytes, more than the "+
+			"%d byte MaxResponseBytes a pre-#804 shared budget would have spent on them",
+		loopCount, progressWireBytes(t, loopCount), cfg.MaxResponseBytes)
 	require.NoError(t, stream.Close())
 }
