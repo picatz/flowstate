@@ -122,11 +122,11 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	}
 
 	// A block sequence is written indented under the key that holds it, which
-	// YAML allows either way and the corpus has already settled: 200 of the 202
-	// block sequences in `examples/` are written indented, and the two that are
-	// not sit in one file. The emitter's own default is the other one, so every
-	// example was being de-indented by a formatter claiming to be canon for
-	// them (#850).
+	// YAML allows either way and the corpus had already settled: of the 156
+	// block sequences the example workflows wrote under a key when this was
+	// decided, 154 were indented and 2 were flush. The emitter's own default is
+	// the other one, so every example was being de-indented by a formatter
+	// claiming to be canon for them (#850).
 	//
 	// The cost, stated: an indented sequence spends two more columns per level
 	// than a flush one, and a deeply nested `parallel:` branch inside a
@@ -497,8 +497,7 @@ func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
 // This is the one place the two rewriters in this repository had opposite
 // opinions, and the reformat in #850 is what made them collide. The compiler
 // folds `update:` written as a mapping of expressions into a single map
-// expression (nothing in the schema keeps the mapping's shape once every entry
-// is computed), so Marshal wrote it back fenced — and `flow fix` then promoted
+// expression, so Marshal wrote it back fenced — and `flow fix` then promoted
 // it straight back to the mapping form, because `fixshaping.go` declares that
 // form canonical for exactly these keys. `flow fmt` and `flow fix --check` can
 // therefore never both be satisfied by one file, which is a formatter that is
@@ -633,10 +632,10 @@ func retryToYAML(retry *v1.RetryPolicy) yaml.MapSlice {
 //
 // [time.Duration.String] writes every unit down to the second whether or not it
 // carries anything, so a day comes out `24h0m0s`. That is a legal duration and
-// it is not the one anybody writes: every one of the 44 durations in
-// `examples/` is written short — `24h`, `30m`, `720h`, `200ms` — and none is
-// zero-padded. A formatter is canon for a corpus, so canon here ratifies what
-// the corpus already spells rather than what Go's stringer happens to emit
+// it is not the one anybody writes: of the 37 literal durations the example
+// workflows held when this was decided, not one was zero-padded — `24h`, `30m`,
+// `720h`, `200ms`. A formatter is canon for a corpus, so canon here ratifies
+// what the corpus already spells rather than what Go's stringer happens to emit
 // (#850).
 //
 // The trailing zero units are dropped one at a time and the result is *parsed
@@ -862,15 +861,17 @@ func exprToText(parsed *expr.ParsedExpr) (string, error) {
 // this.matches(r'…')` by writing it double-quoted with every backslash doubled
 // — correct, unreadable, and not what a single file in `examples/` writes
 // (#850). So the style is *chosen* here, in the order the corpus already
-// prefers, and each candidate is verified rather than trusted:
+// prefers, and each candidate is verified rather than trusted. Of the 1615
+// scalar values the example workflows wrote on a `key: value` line when this
+// was decided, 1562 were plain, 26 single-quoted and 27 double-quoted:
 //
-//  1. plain, which is 1736 of the 1800 scalar values in `examples/`;
-//  2. single-quoted, where the text holds a `"` and no `'` — the 26 values
-//     written that way are every one of them a CEL expression carrying
-//     double-quoted strings, and single quotes keep them free of escaping;
-//  3. double-quoted otherwise, which is where the remaining 38 sit: text that
-//     would read back as a number, a bool or a timestamp if left plain, and
-//     text carrying a `'` of its own.
+//  1. plain, the overwhelming majority above;
+//  2. single-quoted, where the text holds a `"` and no `'` — 23 of the 26
+//     single-quoted values carry a double quote inside, which single quotes
+//     keep free of escaping;
+//  3. double-quoted otherwise, which is where the rest sit: text carrying a
+//     `'` of its own (15 of the 27), and text that would read back as a
+//     number, a bool or a timestamp if it were left plain.
 //
 // The cost, stated: this is now three round trips through the emitter per
 // scalar rather than one, on a path `flow fmt` runs over a whole directory. It
