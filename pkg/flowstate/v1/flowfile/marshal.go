@@ -44,6 +44,19 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		{Key: "name", Value: textToYAML(wf.GetName())},
 	}
 
+	// Directly under the name, the position the parser reads it in and an author
+	// writes it in: what this workflow *is* sits above what it does.
+	//
+	// Keys sorted, for [signalsToYAML]'s reason — a Go map has no order, and
+	// `flow fmt` run twice on one file has to produce the same bytes twice.
+	if labels := wf.GetLabels(); len(labels) > 0 {
+		written := yaml.MapSlice{}
+		for _, key := range slices.Sorted(maps.Keys(labels)) {
+			written = append(written, yaml.MapItem{Key: key, Value: textToYAML(labels[key])})
+		}
+		doc = append(doc, yaml.MapItem{Key: "labels", Value: written})
+	}
+
 	if wf.Description != nil {
 		doc = append(doc, yaml.MapItem{Key: "description", Value: textToYAML(wf.GetDescription())})
 	}
