@@ -338,12 +338,19 @@ func TestCIVendorDocumentedIssuerIsMatchedExactly(t *testing.T) {
 			clock := authtest.NewClock(time.Now())
 			issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
+			// The fixture's own require rules ride along because these
+			// documented issuers are public multi-tenant hosts, and a policy
+			// naming one with nothing pinned no longer loads at all — the
+			// refusal #893 added. This test is about issuer matching, so the
+			// entry just has to be a valid one; the pinning rule has its own
+			// tests in multitenant_test.go.
 			verifier, err := auth.NewOIDCVerifier(auth.Policy{
 				Issuers: []auth.TrustedIssuer{{
 					Name:      fixture.name,
 					Issuer:    fixture.documentedIssuer,
 					Audiences: []string{"https://flowstate.example.com"},
 					Namespace: "infra",
+					Require:   fixture.require,
 				}},
 			}, auth.WithClock(clock.Now))
 			require.NoError(t, err)
