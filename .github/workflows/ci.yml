@@ -407,10 +407,17 @@ jobs:
       # generated code, so the same `git diff --exit-code` catches a set that
       # describes a schema which has since moved. --exclude-imports keeps it to
       # this repository's own schema rather than googleapis and protovalidate.
+      #
+      # The third is the same artifact for the example plugin's own schema,
+      # which is what carries a plugin author's field comments to an editor
+      # (#723). It is a separate buf module, so it needs its own build; it is
+      # under the same pin, because a plugin's prose can go stale exactly the
+      # way the engine's can.
       - name: Verify generated code is current
         run: |
           go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} generate
           go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
           git diff --exit-code -- . || {
             echo "::error::generated code does not match the schema; run 'make check' (or 'buf generate' plus the 'buf build' line beside it) and commit the result"
             exit 1

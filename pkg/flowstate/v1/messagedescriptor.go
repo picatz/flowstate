@@ -46,6 +46,28 @@ import (
 // from them is a thing people check in and diff: two runs over one unchanged
 // task must produce one file.
 func MessageDescriptorBytes(md protoreflect.MessageDescriptor, alsoProvided ...protoreflect.FileDescriptor) ([]byte, string, error) {
+	return MessageDescriptorBytesWithProse(md, nil, alsoProvided...)
+}
+
+// MessageDescriptorBytesWithProse is [MessageDescriptorBytes] with the schema's
+// own comments carried along.
+//
+// The compiled-in descriptor a caller holds has none: protoc strips
+// SourceCodeInfo from what a .pb.go embeds, which is why this repository's host
+// side keeps its prose in a separate `buf build --exclude-imports` artifact
+// (see [github.com/picatz/flowstate/pkg/flowstate/v1/protodoc]). A plugin had no
+// equivalent, so a plugin author's field comments reached nobody's editor however
+// well the .proto was written (#723). Prose here is that same artifact, read from
+// the plugin's own build, grafted onto the descriptors this function was already
+// sending — the bytes were always able to carry comments; nothing was putting any
+// in.
+//
+// A nil prose is the documented fallback and behaves exactly as
+// [MessageDescriptorBytes] does: shape travels, prose does not, and the reader
+// renders one paragraph fewer rather than an error. So does a prose that
+// describes some other file, or one whose file has drifted from the compiled-in
+// one — see [DescriptorProse.sourceInfoFor].
+func MessageDescriptorBytesWithProse(md protoreflect.MessageDescriptor, prose *DescriptorProse, alsoProvided ...protoreflect.FileDescriptor) ([]byte, string, error) {
 	if md == nil {
 		return nil, "", nil
 	}
@@ -87,7 +109,18 @@ func MessageDescriptorBytes(md protoreflect.MessageDescriptor, alsoProvided ...p
 			collect(imports.Get(i).FileDescriptor)
 		}
 
-		set.File = append(set.File, protodesc.ToFileDescriptorProto(file))
+		fdp := protodesc.ToFileDescriptorProto(file)
+
+		// Set rather than assigned: a file that already carries source info is
+		// one reconstructed from bytes that carried it — a plugin's descriptor
+		// on its way into a catalog document (#854) — and overwriting that with
+		// a nil this caller has no prose for would strip on the second hop what
+		// survived the first.
+		if info := prose.sourceInfoFor(fdp); info != nil {
+			fdp.SourceCodeInfo = info
+		}
+
+		set.File = append(set.File, fdp)
 	}
 
 	collect(md.ParentFile())
