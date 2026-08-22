@@ -87,11 +87,19 @@ const (
 )
 
 // TaskPolicyDeniedError reports that a task-shape policy refused a dispatch.
-// It wraps [ErrTaskPolicyDenied], names the task and the rule responsible so
-// an operator (or an author reading a denial surfaced to them, per CLAUDE.md's
-// "Diagnostics are a feature" — this is a deployment refusal, not a file
-// diagnostic, and must read as one) can find the policy source and the
+// It wraps [ErrTaskPolicyDenied] and carries the task and the rule responsible
+// so an operator (or an author reading a denial surfaced to them, per
+// CLAUDE.md's "Diagnostics are a feature" — this is a deployment refusal, not a
+// file diagnostic, and must read as one) can find the policy source and the
 // remedy.
+//
+// Names the task in its own sentence, once. It is the authoritative carrier of
+// the name: a denial reaches most surfaces wrapped by [CheckTaskPolicy]'s
+// [TaskError], but a direct caller of [TaskPolicy.Check] receives it bare, and
+// only naming it here reaches that caller too (#899). The wrappers that would
+// otherwise prefix a second `task %q` — [TaskError.Error], [StepErrorText] —
+// defer to this via [selfNamesTask], so the name renders exactly once however
+// deeply the denial is wrapped (#184). See [TaskPolicyDeniedError.Error].
 type TaskPolicyDeniedError struct {
 	// Task is the qualified task name that was denied, e.g. "codex.exec".
 	Task string
@@ -227,6 +235,29 @@ func describePolicyIdentity(identity *WorkloadIdentity) string {
 // entirely: see that field's own doc for why a denial that does not say what
 // it evaluated leaves an author unable to tell an empty rehearsal identity
 // from a rule that matched them.
+//
+// # Named once, here, whatever wraps it
+//
+// This sentence names the task and does not print the sentinel, and both are
+// deliberate (#184, #899). The sentinel [ErrTaskPolicyDenied] stays matchable
+// through [TaskPolicyDeniedError.Unwrap] but is not spelled into the text,
+// where it only ever restated in longer words what the sentence already says.
+//
+// The task is the correction #899 made to #184's first cut. That cut removed
+// the name from here entirely, reasoning that [CheckTaskPolicy]'s [TaskError]
+// wrapper already renders it — true for every dispatch the drivers make, and
+// false for a direct caller of [TaskPolicy.Check], which docs/DSL.md recommends
+// for exercising denials and which receives this error bare. So the name lives
+// here, and the wrappers defer: [TaskError.Error] and [StepErrorText] both ask
+// [selfNamesTask] and skip their own `task %q` prefix when the wrapped error is
+// this one. The garbling #184 records against —
+//
+//	step "fetch": task "http": denied by task-shape policy: task "http"
+//	refused by deployment task-shape policy …
+//
+// naming the task twice and the policy three times over one hop — stays fixed:
+// one dispatch, one naming of its task, whether this error is read bare or
+// through either wrapper.
 func (e *TaskPolicyDeniedError) Error() string {
 	rehearsal := ""
 	if e.Local {
@@ -253,9 +284,22 @@ func (e *TaskPolicyDeniedError) Error() string {
 			"deployment's, and " + remedy
 	}
 
-	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy%s (%s: %s)%s; "+
+	// The task is named here, once, and this error is where it lives: a direct
+	// caller of [TaskPolicy.Check] (which docs/DSL.md recommends for exercising
+	// denials) receives this error with no [TaskError] wrapper around it, so if
+	// the name were only in the wrapper such a caller's err.Error() would name no
+	// task at all (#899). The wrappers that also render this — [TaskError.Error]
+	// and [StepErrorText] — defer to it via [selfNamesTask] rather than prefixing
+	// a second `task %q`, so one dispatch still names its task exactly once
+	// however deeply it is wrapped (#184).
+	subject := "this dispatch"
+	if e.Task != "" {
+		subject = fmt.Sprintf("task %q", e.Task)
+	}
+
+	return fmt.Sprintf("%s refused by the deployment's task-shape policy%s (%s: %s)%s; "+
 		"this is not a mistake in the workflow file — %s",
-		ErrTaskPolicyDenied, e.Task, rehearsal, e.Reason, e.Detail, provenance, remedy)
+		subject, rehearsal, e.Reason, e.Detail, provenance, remedy)
 }
 
 // Unwrap returns [ErrTaskPolicyDenied], and the underlying cause when there

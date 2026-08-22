@@ -111,6 +111,14 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	}()
 	log := cfg.logger().With("plugin", found.Name)
 
+	// Admission comes first, before a socket directory exists and before any
+	// process does. A pin the deployment declared decides whether these bytes
+	// may run at all, so it is answered with nothing of the plugin's own in
+	// evidence — it never gets to speak, let alone hand shake. See [admit].
+	if err := admit(cfg, found.Name, found.Path, image); err != nil {
+		return nil, err
+	}
+
 	socketDir, socketPath, err := makeSocketDir(cfg.SocketDir)
 	if err != nil {
 		return nil, pluginError(found.Name, found.Path, fmt.Errorf("%w: %w", ErrLaunch, err))

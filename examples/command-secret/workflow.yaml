@@ -1,6 +1,5 @@
 edition: v2026.3
 name: command-secret
-
 steps:
   # command: is the escape hatch: whatever "aws kms decrypt", "sops -d", "age -d",
   # "aws secretsmanager get-secret-value", or "doppler run" would print becomes the
@@ -9,6 +8,6 @@ steps:
   # reads the value from its standard output.
   - id: health
     http:
-      url: https://api.example.com/status/200
       bearer: ${secret('command:github-token')}
       expect: ${response.status_code == 200}
+      url: https://api.example.com/status/200
