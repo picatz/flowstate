@@ -392,10 +392,19 @@ by changing what it asserts.
 
 The bounded fuzz smoke job graduated to required on 2026-08-09, its advisory
 window long closed, and `make fuzz-smoke` (run by `make check`) runs the same
-target list CI runs — the Makefile is the one place that list is written, so
-this sentence cannot drift when a target is added — and the local gate
-therefore cannot pass a commit the required job rejects. A crasher it finds is a real defect with a corpus entry to triage,
-never flake to re-run away.
+target list CI runs — CI's job *is* `make fuzz-smoke`, and the list it loops
+over is `tools/fuzztargets/targets.txt`, the one place a target is written down
+— and the local gate therefore cannot pass a commit the required job rejects. A
+crasher it finds is a real defect with a corpus entry to triage, never flake to
+re-run away.
+
+That file is the whole list, tiers and all: 30s per target on every push for
+the ones tagged `smoke`, 10m per target weekly in `deep.yml`'s `fuzz-deep` job
+for every target, and the package set `tools/gate` uses to decide whether a diff
+can reach a fuzz target at all. Adding a target means adding a line there and
+nothing else; `tools/fuzztargets`' test walks the tree for
+`func Fuzz…(f *testing.F)` and fails when the file and the tree disagree, which
+is how the deep tier came to be running four of ten targets before #857.
 
 ## Both execution drivers must agree
 

@@ -45,14 +45,29 @@ jobs:
   # targets run sequentially in one job so at most one fuzzer holds memory at a
   # time. -fuzztime bounds time, not memory; GOMEMLIMIT is the memory bound.
   #
-  # continue-on-error on each target so one crasher does not hide the others'
-  # results; the gate step at the end turns any failure back into a red job. A
-  # crasher is written to the package's testdata/fuzz/<target>/ directory, and
-  # since the tracked corpus is committed, a crasher from this run is exactly an
-  # untracked file there — which is what the collect and report steps key on.
+  # "Every fuzz target in the repo" was a claim this job did not keep: it ran
+  # four while the smoke tier ran ten, because the list was written down by hand
+  # here and in three other places (#857). It is read from
+  # tools/fuzztargets/targets.txt now — the one written source — so a new target
+  # reaches this tier by existing, and tools/fuzztargets' test fails if a target
+  # in the tree is missing from the file.
+  #
+  # timeout-minutes follows from the list: twelve targets at 10m each is 120
+  # minutes of fuzzing, plus checkout, module download and compiling five
+  # packages (~4m) and the collect/report steps (~1m), so ~125m with 140 leaving
+  # a real margin rather than a slow runner's worth. It costs nothing in wall
+  # clock for the workflow, which runs its jobs in parallel and whose long pole
+  # is the soak job's 250.
+  #
+  # A failing target does not stop the ones after it — the loop records each
+  # target's outcome in fuzz-outcomes.txt, where a per-step `outcome` used to be
+  # read from, and the gate step at the end turns any failure back into a red
+  # job. A crasher is written to the package's testdata/fuzz/<target>/ directory,
+  # and since the tracked corpus is committed, a crasher from this run is exactly
+  # an untracked file there — which is what the collect and report steps key on.
   fuzz-deep:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 140
     permissions:
       contents: read
       issues: write
@@ -73,33 +88,33 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Fuzz deep (FuzzRoundTrip)
-        id: roundtrip
-        continue-on-error: true
+      # One step over the list instead of one step per target. Everything a
+      # per-target step used to provide is provided here: each target still
+      # writes its own fuzz-<target>.log, still runs even if an earlier one
+      # failed, and still reports its own outcome — `<target> success|failure`
+      # in fuzz-outcomes.txt, which the reporting step below reads exactly where
+      # it used to read steps.<id>.outcome. The log is grouped per target so the
+      # run's output is still navigable by target name.
+      - name: Fuzz deep (every target in the deep tier)
+        id: fuzz
         run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 10m ./pkg/flowstate/v1/flowfile/ 2>&1 | tee fuzz-FuzzRoundTrip.log
-
-      - name: Fuzz deep (FuzzCELCompile)
-        id: celcompile
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 10m ./pkg/flowstate/v1/flowfile/ 2>&1 | tee fuzz-FuzzCELCompile.log
-
-      - name: Fuzz deep (FuzzMCPToolArguments)
-        id: mcpargs
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 10m ./cmd/flow/ 2>&1 | tee fuzz-FuzzMCPToolArguments.log
-
-      - name: Fuzz deep (FuzzMessageDescriptor)
-        id: msgdesc
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 10m ./pkg/flowstate/v1/plugin/ 2>&1 | tee fuzz-FuzzMessageDescriptor.log
+          set -uo pipefail
+          tools/fuzztargets/list.sh deep > fuzz-targets.txt
+          : > fuzz-outcomes.txt
+          failed=false
+          while read -r target dir; do
+            echo "::group::${target} (${dir})"
+            if GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz "$target" -fuzztime 10m "./$dir/" 2>&1 | tee "fuzz-${target}.log"; then
+              printf '%s success\n' "$target" >> fuzz-outcomes.txt
+            else
+              printf '%s failure\n' "$target" >> fuzz-outcomes.txt
+              failed=true
+            fi
+            echo "::endgroup::"
+          done < fuzz-targets.txt
+          echo "failed=${failed}" >> "$GITHUB_OUTPUT"
+          echo "outcomes:"
+          cat fuzz-outcomes.txt
 
       # A crasher from this run is an untracked file under a testdata/fuzz/
       # directory (the committed seed corpus is tracked, so it never matches).
@@ -137,10 +152,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ROUNDTRIP_OUTCOME: ${{ steps.roundtrip.outcome }}
-          CELCOMPILE_OUTCOME: ${{ steps.celcompile.outcome }}
-          MCPARGS_OUTCOME: ${{ steps.mcpargs.outcome }}
-          MSGDESC_OUTCOME: ${{ steps.msgdesc.outcome }}
         run: |
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
@@ -202,13 +213,15 @@ jobs:
             } > "$body"
             gh issue create --title "$title" --label deep-tier --body-file "$body"
           }
-          harness FuzzRoundTrip "$ROUNDTRIP_OUTCOME" fuzz-FuzzRoundTrip.log
-          harness FuzzCELCompile "$CELCOMPILE_OUTCOME" fuzz-FuzzCELCompile.log
-          harness FuzzMCPToolArguments "$MCPARGS_OUTCOME" fuzz-FuzzMCPToolArguments.log
-          harness FuzzMessageDescriptor "$MSGDESC_OUTCOME" fuzz-FuzzMessageDescriptor.log
+          # One call per target that ran, from the outcomes the fuzz step
+          # recorded — the same accounting the four hand-written calls did,
+          # over however many targets the list holds.
+          while read -r name outcome; do
+            harness "$name" "$outcome" "fuzz-${name}.log"
+          done < fuzz-outcomes.txt
 
       - name: A failed target fails the job
-        if: steps.roundtrip.outcome == 'failure' || steps.celcompile.outcome == 'failure' || steps.mcpargs.outcome == 'failure' || steps.msgdesc.outcome == 'failure'
+        if: steps.fuzz.outputs.failed == 'true'
         run: |
           echo "::error::at least one fuzz target failed; see the deep-tier issue(s) filed by this run and the fuzz-crashers artifact"
           exit 1
