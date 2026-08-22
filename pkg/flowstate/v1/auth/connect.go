@@ -208,6 +208,23 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		tokenErr = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
 	}
 
+	// Refused here, on the Principal the Verifier returned, and not only inside
+	// [OIDCVerifier.Verify]. That is the seam where the repository's own
+	// verifier performs this refusal, but an Authenticator holds *any*
+	// [Verifier] — a custom implementation that returns a non-zero Principal
+	// carrying a delegation claim would otherwise be admitted here while the
+	// MCP surface refused the same Principal (mcpverifier.go runs the same
+	// helper for exactly this reason). Checking it at the surface as well as in
+	// the default verifier is what keeps the two surfaces symmetric for every
+	// Verifier rather than only for [OIDCVerifier], which is the whole point of
+	// the change this belongs to. Recorded as a token failure, not returned, so
+	// the mTLS paths below treat it as any other invalid token.
+	if tokenErr == nil {
+		if err := refuseDelegationClaims(tokenPrincipal.Claims); err != nil {
+			tokenErr = err
+		}
+	}
+
 	// Recorded as a token failure rather than returned here, so that the mTLS
 	// paths below treat a token for the wrong resource exactly as they treat
 	// any other invalid token: no fallback to the certificate, and no

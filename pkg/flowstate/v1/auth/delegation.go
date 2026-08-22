@@ -34,20 +34,25 @@ import (
 // — and CLAUDE.md's "fail closed" wants the answer to be structural rather
 // than remembered at each new surface.
 //
-// So the refusal is performed by [OIDCVerifier.Verify], the admission path
-// both surfaces run for every request: an [Authenticator] and an
-// [MCPTokenVerifier] each hold a [Verifier] and neither shares any other code,
-// while [OIDCVerifier] is the only implementation in this repository that
-// turns an externally minted token into a [Principal] — the other two
-// ([InsecureAnonymousVerifier] and the unconfigured stand-in) never read a
-// token at all. A surface added tomorrow inherits the refusal by verifying
-// tokens, which is the only thing a bearer surface cannot skip.
+// So the refusal is performed by [OIDCVerifier.Verify], the admission path the
+// repository's own verifier runs for every request, *and* re-checked by each
+// surface on the [Principal] its [Verifier] returned. That belt-and-braces is
+// not redundancy for its own sake: a [Verifier] is an interface, and an
+// [Authenticator] or an [MCPTokenVerifier] will accept any implementation of
+// it. [OIDCVerifier] is the only one in this repository that turns an
+// externally minted token into a delegation-bearing [Principal] — but a custom
+// or test [Verifier] that returned one would sail past a surface that trusted
+// the verifier to have refused it. So the surface refuses too, on the value it
+// is about to admit, which is the only thing that makes the guarantee hold for
+// every [Verifier] rather than only for the default one.
 //
-// [MCPTokenVerifier] keeps its own call to the same helper, because it accepts
-// any [Verifier] and a deployment (or a test) that hands it something other
-// than an [OIDCVerifier] must not thereby lose the refusal. Two call sites,
-// one spelling: the thing CLAUDE.md's "prefer deriving to duplicating" is
-// actually about is the *decision* being written down twice, and it is not.
+// Both [Authenticator.Authenticate] and [MCPTokenVerifier] therefore call this
+// helper on the returned [Principal]'s claims. Three call sites, one spelling:
+// the thing CLAUDE.md's "prefer deriving to duplicating" is actually about is
+// the *decision* being written down more than once, and it is not — every one
+// of them calls [refuseDelegationClaims]. The verifier-internal check is then
+// defense in depth: behind an [OIDCVerifier] the token never decodes to an
+// admitted [Principal] in the first place.
 //
 // These are deliberately not [ClaimOnBehalfOf]: that one is a claim
 // Flowstate's own issuer *mints* into an assertion it is vouching for, where

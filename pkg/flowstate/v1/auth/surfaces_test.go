@@ -280,3 +280,37 @@ func TestMCPTokenVerifierRefusesADelegatedPrincipalFromAnyVerifier(t *testing.T)
 		})
 	}
 }
+
+// TestAuthenticatorRefusesADelegatedPrincipalFromAnyVerifier is the RPC half of
+// the case above, and the one Codex's P1 on #905 named: moving the refusal into
+// OIDCVerifier.Verify left the Connect surface trusting whatever Verifier it
+// holds to have performed it. A custom Verifier that returns a delegation-
+// bearing Principal — exactly what delegatedPrincipalVerifier is — would then be
+// admitted at RPC while the MCP surface refused it, which is the very asymmetry
+// this change set out to kill, surviving for every non-OIDCVerifier Verifier.
+//
+// So Authenticate re-runs the shared refusal on the returned Principal, and this
+// asserts it: no OIDCVerifier in sight, a Principal that verifies in every other
+// respect, refused because the claim is present.
+func TestAuthenticatorRefusesADelegatedPrincipalFromAnyVerifier(t *testing.T) {
+	t.Parallel()
+
+	for _, claim := range []string{auth.ClaimActor, auth.ClaimMayAct} {
+		t.Run(claim, func(t *testing.T) {
+			t.Parallel()
+
+			// The failure observer sees the full cause; the caller sees only the
+			// public reason. Both are checked: the cause unwraps to
+			// ErrDelegatedToken, and the reason names the claim key so an
+			// operator can tell it from an audience refusal.
+			var observed error
+			authenticator := auth.NewAuthenticator(delegatedPrincipalVerifier{claim: claim},
+				auth.WithFailureObserver(func(_ context.Context, _ *http.Request, err error) { observed = err }))
+			identity, err := authenticator.Authenticate(t.Context(), rpcRequest(t, "any-token"))
+
+			requireRPCRefused(t, identity, err)
+			require.ErrorContains(t, err, `"`+claim+`"`)
+			require.ErrorIs(t, observed, auth.ErrDelegatedToken, "observed: %v", observed)
+		})
+	}
+}
