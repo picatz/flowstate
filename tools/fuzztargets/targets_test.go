@@ -2,12 +2,18 @@ package fuzztargets
 
 import (
 	"bytes"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // repoRoot is this package's module root: tools/fuzztargets is two levels down.
@@ -139,7 +145,53 @@ func TestEveryRunnerReadsTheList(t *testing.T) {
 	}
 }
 
-var fuzzFunc = regexp.MustCompile(`(?m)^func (Fuzz[A-Za-z0-9_]*)\(f \*testing\.F\)`)
+// TestDiscoveryFindsTargetsWrittenTheOtherWays. The completeness check above is
+// only as good as its idea of what a fuzz target looks like, and the shapes that
+// break a text search are ordinary Go: a signature broken across lines because
+// it grew a comment, a parameter named anything but `f`, `testing` imported
+// under an alias. Each of those is a target `go test` runs, so each has to be
+// one this finds — and the near-misses have to stay misses.
+func TestDiscoveryFindsTargetsWrittenTheOtherWays(t *testing.T) {
+	const src = `package p
+
+import (
+	"strings"
+	tst "testing"
+)
+
+// The shape the tree uses today.
+func FuzzOrdinary(f *tst.F) {}
+
+// A signature broken across lines.
+func FuzzMultiline(
+	// the corpus seeds go in here
+	f *tst.F,
+) {
+}
+
+// A parameter named something else, and an unnamed one.
+func FuzzOtherParamName(fuzzer *tst.F) {}
+func FuzzUnnamedParam(*tst.F)          {}
+
+// Not targets: a helper whose name only starts with the letters, a method, the
+// wrong parameter type, a second parameter, a return value.
+func Fuzzy(f *tst.F)                        {}
+func (h helper) FuzzMethod(f *tst.F)        {}
+func FuzzWrongParam(r *strings.Reader)      {}
+func FuzzTwoParams(f *tst.F, n int)         {}
+func FuzzReturnsSomething(f *tst.F) error   { return nil }
+`
+	file, err := parser.ParseFile(token.NewFileSet(), "fuzz_fixture_test.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := fuzzTargetsInFile(file)
+	want := []string{"FuzzOrdinary", "FuzzMultiline", "FuzzOtherParamName", "FuzzUnnamedParam"}
+	if !slices.Equal(got, want) {
+		t.Errorf("discovered %v, want %v", got, want)
+	}
+}
 
 // fuzzTargetsInTree returns every fuzz target declared in this module, mapped
 // to the module-relative directory it is declared in. plugins/ is skipped: they
@@ -149,6 +201,7 @@ func fuzzTargetsInTree(t *testing.T) map[string]string {
 	t.Helper()
 
 	found := map[string]string{}
+	fset := token.NewFileSet()
 	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -163,16 +216,16 @@ func fuzzTargetsInTree(t *testing.T) map[string]string {
 		if !strings.HasSuffix(d.Name(), "_test.go") {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
-			return err
+			return fmt.Errorf("%s: %w", path, err)
 		}
 		dir, err := filepath.Rel(repoRoot, filepath.Dir(path))
 		if err != nil {
 			return err
 		}
-		for _, m := range fuzzFunc.FindAllStringSubmatch(string(data), -1) {
-			found[m[1]] = filepath.ToSlash(dir)
+		for _, name := range fuzzTargetsInFile(file) {
+			found[name] = filepath.ToSlash(dir)
 		}
 		return nil
 	})
@@ -183,4 +236,80 @@ func fuzzTargetsInTree(t *testing.T) map[string]string {
 		t.Fatal("walked the tree and found no fuzz targets at all, which means this test cannot fail for the reason it exists")
 	}
 	return found
+}
+
+// fuzzTargetsInFile returns the fuzz targets one parsed test file declares.
+//
+// Parsed rather than pattern-matched, and matching the definition `go test`
+// itself uses: a top-level func named FuzzXxx taking one *testing.F and
+// returning nothing. A regexp over the source text was the first version of
+// this and had a hole exactly where the guard is supposed to be tightest — a
+// signature broken across lines, a parameter named something other than `f`, or
+// `testing` imported under an alias is a target Go runs and the regexp misses,
+// which is a target silently in no tier. That is the failure this whole file
+// exists to prevent, so the discovery has to be the compiler's answer and not
+// an approximation of it.
+func fuzzTargetsInFile(file *ast.File) []string {
+	testingName := ""
+	for _, spec := range file.Imports {
+		if spec.Path.Value != `"testing"` {
+			continue
+		}
+		testingName = "testing"
+		if spec.Name != nil {
+			testingName = spec.Name.Name
+		}
+	}
+	if testingName == "" || testingName == "_" || testingName == "." {
+		// A dot-import of testing is legal and would need a different
+		// check; nothing in this module does it, and guessing would be
+		// worse than the honest answer that this file declares none.
+		return nil
+	}
+
+	var names []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Name == nil {
+			continue
+		}
+		if !isFuzzTargetName(fn.Name.Name) {
+			continue
+		}
+		if fn.Type.TypeParams != nil || fn.Type.Results != nil {
+			continue
+		}
+		if params := fn.Type.Params; params == nil || len(params.List) != 1 || len(params.List[0].Names) > 1 {
+			continue
+		}
+		star, ok := fn.Type.Params.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		sel, ok := star.X.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "F" {
+			continue
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != testingName {
+			continue
+		}
+		names = append(names, fn.Name.Name)
+	}
+	return names
+}
+
+// isFuzzTargetName applies `go test`'s own naming rule: FuzzXxx, where the
+// character after the prefix does not begin a lower-case word. `Fuzzy` is a
+// helper, not a target, and Go will not run it as one.
+func isFuzzTargetName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "Fuzz")
+	if !ok {
+		return false
+	}
+	if rest == "" {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return !unicode.IsLower(r)
 }

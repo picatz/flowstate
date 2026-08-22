@@ -197,6 +197,14 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 		{"a Makefile change", []string{"Makefile"}, "pull_request"},
 		{"a change to the gate itself", []string{"tools/gate/ci.go"}, "pull_request"},
 		{"a module graph change", []string{"go.sum"}, "pull_request"},
+		// The fuzz target list is CI configuration: it decides which
+		// targets each tier runs and which packages reach the fuzz job.
+		// Promoting a deep-only target to smoke moves no Go package at
+		// all, so a diff of this file alone would otherwise skip the very
+		// job it reconfigures — including fuzz-smoke, whose new target
+		// would then first run somewhere nobody is watching.
+		{"a fuzz target list change", []string{"tools/fuzztargets/targets.txt"}, "pull_request"},
+		{"a change to how the list is read", []string{"tools/fuzztargets/list.sh"}, "pull_request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mustRun(t, decide(t, tc.changed, nil, tc.event), all...)

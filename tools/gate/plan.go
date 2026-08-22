@@ -40,7 +40,8 @@ type plan struct {
 	moduleWide bool
 
 	// ciWide means a file changed that decides what the verification tiers
-	// themselves do: a workflow, the Makefile, or this gate's own source.
+	// themselves do: a workflow, the Makefile, this gate's own source, or
+	// the fuzz target list every tier reads.
 	// A plan cannot reason about the effect of a change to the thing
 	// computing the plan, so CI runs everything. It is deliberately
 	// separate from moduleWide: that one widens the *affected package set*
@@ -143,7 +144,15 @@ func buildPlan(changed []string) plan {
 		// and without `continue`, because a workflow change is also an
 		// ordinary file change: tools/gate/ci.go is a Go file in a Go
 		// package, and the gate's own tests should still run for it.
-		if strings.HasPrefix(f, ".github/workflows/") || f == "Makefile" || strings.HasPrefix(f, "tools/gate/") {
+		//
+		// tools/fuzztargets is in this set because it *is* CI
+		// configuration: targets.txt decides which targets the smoke tier
+		// runs, which the deep tier runs, and which packages reach the
+		// fuzz job at all. Promoting a deep-only target to smoke changes
+		// nothing about any Go package, so without this the diff that
+		// reconfigures the fuzz job would skip it (#857).
+		if strings.HasPrefix(f, ".github/workflows/") || f == "Makefile" ||
+			strings.HasPrefix(f, "tools/gate/") || strings.HasPrefix(f, "tools/fuzztargets/") {
 			p.ciWide = true
 			reason("ci", f)
 		}
