@@ -2827,6 +2827,16 @@ flow lsp --plugin-dir ./plugins`,
 	auditCmd.GroupID = "workflow"
 	rootCmd.AddCommand(auditCmd)
 
+	// Beside `validate` and `audit`, between which it sits exactly: `validate`
+	// refuses a file, `audit` measures the language, and this suggests a better
+	// spelling of a file that is already correct. That is tier 4 of the style
+	// charter (docs/STYLE.md, Part II), which named the tier and had no tool for
+	// it (#646). See [newLintCommand] for why it is a verb rather than a flag on
+	// `validate`, and what that choice costs.
+	lintCmd := newLintCommand()
+	lintCmd.GroupID = "workflow"
+	rootCmd.AddCommand(lintCmd)
+
 	rootCmd.AddCommand(tasksCmd)
 	rootCmd.AddCommand(taskCmd)
 	rootCmd.AddCommand(pluginsCmd)

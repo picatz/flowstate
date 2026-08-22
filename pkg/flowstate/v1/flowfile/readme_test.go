@@ -49,17 +49,18 @@ var completeWorkflow = regexp.MustCompile("(?s)```yaml\n(edition:.*?)```")
 func TestREADMEWorkflowsCompile(t *testing.T) {
 	t.Parallel()
 
-	for _, doc := range []string{
-		"README.md",
-		filepath.Join("docs", "DSL.md"),
-		filepath.Join("docs", "ARCHITECTURE.md"),
-		// The style guide teaches by showing, so its positive examples are
-		// Flowfiles a reader will copy, and a style document whose own examples
-		// do not compile fails its first rule on the day it lands. Its negative
-		// examples are fragments by convention and so are not matched here; see
-		// TestStyleGuideShowsBothKinds, which holds that convention up.
-		filepath.Join("docs", "STYLE.md"),
-	} {
+	// [shownDocs] rather than a list here, because "the documents that show a
+	// Flowfile" is one set and the other check over it — R8's zero tier-4
+	// findings, in TestShownWorkflowsAreLintClean — has to be reading the same
+	// one. Two lists lose a document on the day somebody adds one, and the half
+	// that keeps compiling is the half nobody notices went quiet.
+	//
+	// The style guide is in that set because it teaches by showing: its positive
+	// examples are Flowfiles a reader will copy, and a style document whose own
+	// examples do not compile fails its first rule on the day it lands. Its
+	// negative examples are fragments by convention and so are not matched here;
+	// see TestStyleGuideShowsBothKinds, which holds that convention up.
+	for _, doc := range shownDocs {
 		t.Run(doc, func(t *testing.T) {
 			t.Parallel()
 

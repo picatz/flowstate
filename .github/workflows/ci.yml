@@ -284,6 +284,27 @@ jobs:
       - name: Examples are in the current edition
         run: go run ./cmd/flow fix --check examples/
 
+      # Tier 4 of the style charter (docs/STYLE.md, Part II), over the corpus R8
+      # holds to `shown ⊆ canonical`. Advisory, and not as a formality: the
+      # corpus has 21 findings today, measured in Part III, and the charter says
+      # in as many words that a check is tried against a corpus before it is
+      # turned on. Fixing those is a slice of its own (#646 follow-up); when it
+      # lands, this step takes `--strict` and drops continue-on-error, which is
+      # the whole of the change.
+      #
+      # Without `--strict` the command exits 0 on every finding, so
+      # continue-on-error is belt and braces rather than the mechanism — it is
+      # here so that a future `--strict` cannot turn this red by accident before
+      # somebody means it to.
+      #
+      # The half of R8 that is *not* advisory needs no step here: the fenced
+      # Flowfiles in README.md, docs/DSL.md, docs/ARCHITECTURE.md and
+      # docs/STYLE.md are linted by TestShownWorkflowsAreLintClean in the test
+      # run above, and they are clean.
+      - name: Examples in the canonical style (advisory)
+        continue-on-error: true
+        run: go run ./cmd/flow lint examples/
+
       # `flow test` is the reachability gate for #155: at least one example's
       # own *.test.yaml runs here, so "a workflow can test itself" is a claim
       # this job checks rather than one the design doc merely makes.

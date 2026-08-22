@@ -201,8 +201,30 @@ migration.
   comments. Taste, with a proxy: in a shown file, an expression that needed such a
   comment is a review rejection.
 
-Enforcement: tier 4 for the first, third and fourth; tier 3 for the second (shipped);
-review for the last.
+Enforcement: tier 4 for the first, third and fourth — all three shipped, as
+`R5/nested-conditional`, `R5/repeated-expression` and `R5/equality-dispatch` in
+`flow lint`; tier 3 for the second (shipped); review for the last.
+
+The first check is now the real one rather than the approximation Part III measured
+with: a conditional is a `_?_:_` call in the parsed expression, and an optional
+traversal is not a conditional there at all, so nothing counts `?` characters. The
+third and fourth carry a narrowing each that the prose above leaves implicit and a
+checker cannot. A repeat is only reported where every name it reads is one a
+`value:` step elsewhere could read — a loop's item, a step's own `vars:` key and
+`now` inside a wait are bound where they are written, and advising an author to
+hoist one of those is advice that breaks the file. A dispatch is only reported where
+each condition is exactly one equality against a literal, all on one value, all
+literals distinct: a guard conjoined onto the equality has nowhere to go in a
+`switch:`, and two steps on one literal are two things that both happen, which a
+`switch:` cannot express at all.
+
+All three are also silent wherever no step could hold the answer. Every remedy this
+rule offers names something else in the file, and two of the three name a step, so a
+position evaluated before any step has run — a workflow `vars:` entry, a webhook
+trigger's expressions, a signal policy's computed `subject:` — cannot take the
+advice however simple the expression is. The validator is explicit about the first:
+a var may read neither a step nor another var, which removes the third remedy too.
+A check owing a mechanical replacement and having none owes silence instead.
 
 The positive shape, compiled by this document's own test:
 
@@ -316,11 +338,17 @@ every snippet here:
 
 `legal` stays wide underneath all of that.
 
-Enforcement: a CI leg over `examples/`, `docs/DSL.md` and the README's fenced
-Flowfiles, once tier 4 exists. Until then, review against this text, plus the
-compile-time half that already runs: `TestREADMEWorkflowsCompile` compiles every
-complete workflow shown in `README.md`, `docs/DSL.md`, `docs/ARCHITECTURE.md` and
-this file.
+Enforcement: split, because the two clauses are not equally reachable today.
+
+The zero-tier-4-findings clause is enforced. `TestShownWorkflowsAreLintClean` runs
+`flow lint` over every complete workflow shown in `README.md`, `docs/DSL.md`,
+`docs/ARCHITECTURE.md` and this file — the same block set
+`TestREADMEWorkflowsCompile` compiles, read from one list so a document cannot be
+compiled and not linted — and all of them are clean today. A snippet in prose is
+invisible to `flow fix --check`, `flow test` and `flow breaking`, which is what made
+it the half most worth having. Over `examples/` the same check runs as a CI leg, and
+it lands **advisory**: the corpus has 21 findings, measured below, and a check is
+tried against a corpus before it is turned on.
 
 **The byte-identical clause is not satisfied anywhere in the repository today**, and
 the measurement is in Part III. It is stated here as the target because that is what
@@ -348,17 +376,34 @@ Four tiers over one idea: severity is decided by *whose problem it is*.
 | 1. Refuse | `flow validate` and the parser | position, problem, remedy; wrong everywhere rather than merely ugly; properties of the file only, never of a deployment | R4's fence rules, R6's no dead keys |
 | 2. Normalize | `flow fmt` | one form per construct, no options, idempotent, comments preserved | R7, and the byte-level half of R8 |
 | 3. Migrate | `flow fix` plus editions | byte-safe, exact-match, refuses rather than guesses, tested by bytes or by compiling the result and never by "still validates" | R3's retirements, R4's sweep, R5's guarded-read rewrite (shipped) |
-| 4. Suggest | does not exist yet | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; the tooling half of R8 |
+| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; the tooling half of R8 |
 
 Wrong-everywhere is tier 1. Same-meaning-two-spellings is tier 2 or tier 3.
 Legal-but-there-is-a-better-idiom is tier 4 and only tier 4, because promoting a
 taste rule to a refusal is how a language starts refusing its own generators.
 
-Tier 4 is the gap, and it is the highest-leverage build in this charter. It is what
+Tier 4 was the gap, and it is the highest-leverage build in this charter. It is what
 would have caught #540's stale example without a human reading it, and it is where
 every future style argument gets discharged. **A style comment in review that tier 4
 could have made is not a review comment. It is a missing check, and the review action
 is to file it.**
+
+`flow lint` is that tool, landed by [#646](https://github.com/picatz/flowstate/issues/646).
+It carries R5's three mechanical checks and nothing else, because those are what this
+table says tier 4 carries; each check's doc comment in
+`pkg/flowstate/v1/flowfile/lint.go` names the rule it descends from, and every finding
+names it too, so `R5/nested-conditional` is a heading to read here rather than a number
+to look up somewhere. It exits zero on every finding — that is what "warns, never
+blocks" means as an exit code — and `--strict` is the opt-in a corpus held to R8 uses.
+
+Two properties of it are worth knowing before adding a fifth check. It is a *verb*
+rather than a mode of `flow validate`, because a tier-4 finding travelling in the
+stream a tier-1 refusal travels in is one consumer's mistake away from being a
+refusal, and `Diagnostic` has no severity field to tell them apart with. And a
+check that cannot say what to write instead does not land: R5's repeat check stays
+silent where the expression reads a name bound where it sits, because "name this in
+a `value:` step" is advice that does not compile inside a loop body or a wait's
+output shaping.
 
 ## Part III: the rules applied to what shipped
 
@@ -415,15 +460,27 @@ are sloppy. It is that the formatter is not yet good enough to be the canon for
 hand-written teaching files, and **that is the first thing the tier-4 slice has to
 resolve**, before R8's CI leg can exist.
 
-**Nested ternaries in the shown corpus.** R5's first threshold has something to fire
-on: 13 expressions across 7 example files hold two or more conditional operators
-today, counted over every `${...}` span and discounting the `?` of an optional
-traversal, which is an approximation of the real check rather than the check itself.
-`examples/optional-dispatch/workflow.yaml:52` is one of them, and it is the example
-most recently rewritten *for* style; `examples/expense-approval/workflow.yaml` holds
-five. That is not an argument against the rule. It is the corpus the check has to be
-tried against before it is turned on, and the reason the tier-4 leg lands advisory
-for its first 48 hours the way every new check in this repository does.
+**What tier 4 finds in the shown corpus, now that it is the check rather than an
+approximation of one.** `flow lint examples/` reports 21 findings across 12 of the
+86 files it reads, measured at the commit that landed it:
+
+| Check | Findings | Where |
+| --- | --- | --- |
+| `R5/nested-conditional` | 12 | 6 files; `examples/expense-approval/workflow.yaml` holds five, and `examples/optional-dispatch/workflow.yaml:52` — the example most recently rewritten *for* style — is one |
+| `R5/repeated-expression` | 9 | 8 files, including three of the plugin examples |
+| `R5/equality-dispatch` | 0 | nothing in this corpus dispatches by sibling equality; the shapes that look like it are the partitioned complements the rule is written to stay silent on |
+
+The earlier draft of this paragraph counted 13 nested ternaries by scanning `${...}`
+spans for `?` characters and discounting optional traversals, and said in as many
+words that it was an approximation. The real count is 12, and the difference is the
+point: an approximation of a style rule is a number nobody can act on.
+
+That is not an argument against the rule. It is the corpus the check has to be tried
+against before it is turned on, which is why the CI leg lands advisory rather than
+`--strict`. Turning it on means fixing 21 findings across teaching files that have
+their own tests, and that is a slice of its own — deliberately not folded into the
+one that landed the rule, per the charter's own division between recording a
+disagreement and repairing it.
 
 ### Grandfathered or kept, with the reason on the record
 

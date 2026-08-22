@@ -480,6 +480,43 @@ flow keys public --in identity/2026-08.pem
 | `--id <string>` | `string` | — | — | key id published in the JWK (default: --in's file name, without its extension) |
 | `--in <string>` | `string` | — | — | path to a PKCS#8 private key PEM (required) |
 
+## `flow lint`
+
+Suggest the canonical spelling where a Flowfile is legal but not idiomatic
+
+```
+flow lint [path...] [flags]
+```
+
+Walk Flowfiles and report where one is written in a way the style charter (docs/STYLE.md) has an opinion about: a conditional nested inside a conditional, one expression stated three or more times, and a chain of sibling `if:` steps testing one value for equality where a `switch:` would let the validator check the branches.
+
+Every file this reports on is legal, validates, and runs. These are suggestions, which is what tier 4 of the charter means: it warns and never blocks, and this command exits 0 on every finding it has. `--strict` opts into a nonzero exit, which is what the CI leg over `examples/` uses — the files this repository teaches from are held to a narrower standard than the language is, because they are what an author copies.
+
+Each finding names the rule it descends from, so `R5/nested-conditional` is a heading to read in docs/STYLE.md rather than a number to look up in a table. What it reports is a property of the file and nothing else: no deployment is consulted, no policy is read, and nothing resolves over a network.
+
+A named file is taken as given; a directory is walked for Flowfiles, the same walk `validate` and `audit` use. A file that does not compile is skipped rather than linted, since `validate` is the verb with something to say about it.
+
+Examples:
+
+```sh
+# Read the whole corpus:
+flow lint examples/
+
+# One workflow:
+flow lint examples/expense-approval/workflow.yaml
+
+# The way CI reads it, where a finding is a failure:
+flow lint --strict examples/
+
+# Every finding as data:
+flow lint -o json examples/ | jq '.files[].findings[].rule'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
+| `--strict` | `bool` | `false` | — | exit nonzero when there is anything to report (tier 4 is advisory by default) |
+
 ## `flow list`
 
 List your runs
