@@ -4,8 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/cel-go/common/operators"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // Every tier-4 check gets two tests, and the second one is the one that matters.
@@ -556,6 +558,91 @@ steps:
 `)
 
 	requireNoFindings(t, found)
+}
+
+// TestLintDoesNotReportAnUnresolvedComprehensionsTernaries reaches the one
+// branch of the nesting walk that no Flowfile in this corpus reaches.
+//
+// A `ComprehensionExpr` has no surface syntax: it is what the parser expands a
+// macro into, and `filter`'s expansion is `cond ? accu + [x] : accu` — a ternary
+// nobody typed, sitting inside another one the moment the file's own expression
+// wraps it. [resolveMacros] normally puts the macro back as the call it was
+// written as, so the walk never meets one; when the record is missing or the
+// resolution bottoms out at its depth bound, it does. Reporting the expander's
+// own bookkeeping as an author's nested conditional is a suggestion to rewrite
+// something the file does not contain.
+//
+// Built here rather than parsed, because a parse that produced this would be
+// the bug. Removing the guard in [holdsNestedConditional] fails this and nothing
+// else in the suite.
+func TestLintDoesNotReportAnUnresolvedComprehensionsTernaries(t *testing.T) {
+	ternary := func(then, els *expr.Expr) *expr.Expr {
+		return &expr.Expr{ExprKind: &expr.Expr_CallExpr{CallExpr: &expr.Expr_Call{
+			Function: operators.Conditional,
+			Args: []*expr.Expr{
+				{ExprKind: &expr.Expr_IdentExpr{IdentExpr: &expr.Expr_Ident{Name: "cond"}}},
+				then, els,
+			},
+		}}}
+	}
+	name := func(id string) *expr.Expr {
+		return &expr.Expr{ExprKind: &expr.Expr_IdentExpr{IdentExpr: &expr.Expr_Ident{Name: id}}}
+	}
+
+	nested := ternary(ternary(name("a"), name("b")), name("c"))
+
+	budget := maxLintNodes
+	require.True(t, holdsNestedConditional(nested, false, &budget),
+		"the fixture is a nesting when nothing hides it")
+
+	comprehension := &expr.Expr{ExprKind: &expr.Expr_ComprehensionExpr{
+		ComprehensionExpr: &expr.Expr_Comprehension{
+			IterVar:  "x",
+			AccuVar:  "@result",
+			LoopStep: nested,
+			Result:   name("@result"),
+		},
+	}}
+
+	budget = maxLintNodes
+	assert.False(t, holdsNestedConditional(comprehension, false, &budget),
+		"an expansion the walk cannot attribute to anything the author wrote is not reported")
+}
+
+// TestLintStopsAtItsNodeBudget reaches the bound rather than merely staying
+// under it.
+//
+// [maxLintNodes] exists because the walk is over somebody else's document and
+// nothing else caps the sum over a file of arbitrarily many expressions. A bound
+// nothing reaches is a bound nothing tests, so this drives the walk with a
+// budget of one over a nesting that would otherwise report: the answer past the
+// bound is "not found", which is the missed suggestion the bound is willing to
+// cost, and never a walk that keeps going.
+func TestLintStopsAtItsNodeBudget(t *testing.T) {
+	wf, _, err := Parse([]byte(`edition: v2026.3
+name: nested
+inputs:
+  amount:
+    type: int
+steps:
+  - id: band
+    value: '${inputs.amount > 100 ? "high" : (inputs.amount > 10 ? "medium" : "low")}'
+`))
+	require.NoError(t, err)
+
+	parsed := wf.GetSteps()[0].GetValue().GetExpr()
+	require.NotNil(t, parsed.GetExpr(), "the fixture's expression is what this walks")
+
+	written := resolveMacros(parsed.GetExpr(), parsed.GetSourceInfo().GetMacroCalls(), 0)
+
+	spent := maxLintNodes
+	assert.True(t, holdsNestedConditional(written, false, &spent),
+		"with the real budget the nesting is found")
+	assert.Less(t, spent, maxLintNodes, "the walk spends budget")
+
+	exhausted := 1
+	assert.False(t, holdsNestedConditional(written, false, &exhausted),
+		"past the budget the walk stops looking rather than continuing")
 }
 
 // TestLintWithoutPositionsStillReports keeps the suggestions correct when there
