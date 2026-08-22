@@ -553,6 +553,21 @@ flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 # "Run", the one interpreter workflow, so name is the workflow's own declared
 # name instead, and it is empty for a run older than this field.
 flow list --all --filter 'name == "nightly-etl"'
+
+# One team's runs, by the labels the Flowfile declares. Guard the index: a run
+# carrying no labels has no such key, and indexing one that is absent is an
+# error, exactly as close_time is null above.
+flow list --all --filter '"team" in labels && labels["team"] == "payments"'
+
+# Which runs nobody labelled with an owner. This is why labels binds to an empty
+# map rather than to null: the negative question has to be askable.
+flow list --all --filter '!("team" in labels)'
+
+# A bad build shipped: everything still running on the version it pinned.
+flow list --all --filter 'worker_version == "flowstate.417" && status == "RUNNING"'
+
+# What one person started, as the qualified issuer#subject the server recorded:
+flow list --all --filter 'starter == "https://issuer.example#alice"'
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -561,7 +576,7 @@ flow list --all --filter 'name == "nightly-etl"'
 | `--all` | `bool` | `false` | — | keep asking until the listing is exhausted, rather than returning one page |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a minted credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by --credential-source=github-actions |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. An unknown or unusable source is an error, never anonymous |
-| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` (the workflow's own declared name, empty for a run older than this field); for example status == "FAILED" |
+| `--filter <string>` | `string` | — | — | keep only the runs a CEL expression answers yes about, over `workflow_id`, `run_id`, `status`, `start_time`, `close_time`, `finished`, `name` (the workflow's own declared name, empty for a run older than this field), `labels` (the workflow's declared labels, a map: guard an index with "team" in labels), `starter` (the qualified issuer#subject who submitted it), and `worker_version` (the Worker Deployment version the run is pinned to, empty where versioning is off); for example status == "FAILED" |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--page-size <int32>` | `int32` | `0` | — | how many runs to return per page; unset takes the server's default |
 | `--page-token <string>` | `string` | — | — | continue a previous listing from where it stopped |

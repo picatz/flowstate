@@ -130,7 +130,31 @@ type Workflow struct {
 	// Each step can have its own inputs and outputs, allowing for complex workflows
 	// that can perform a variety of operations.
 	Steps []*Node `protobuf:"bytes,3,rep,name=steps,proto3" json:"steps,omitempty"`
-	// Labels are key-value pairs that can be used to organize and categorize workflows.
+	// Labels are the author's own key-value facts about this workflow — the team
+	// that owns it, the cost centre it bills to, the pipeline it belongs to — and
+	// they exist to be *selected on* rather than read: every run records them at
+	// submit, [RunSummary.labels] carries them back, and `flow list --filter`
+	// exposes them as `labels`, so "which runs are payments' runs" is a question
+	// the listing can answer.
+	//
+	// Written by an author, in the Flowfile, as `labels:` directly under `name:`.
+	// Deliberately not a per-run argument: an input is what one run was asked to
+	// do, and a label is what every run of this workflow *is*. A caller who wants
+	// to distinguish two runs of the same workflow has `inputs:` and the run id
+	// already; a caller who wants to select the whole class has this.
+	//
+	// Recorded into the run's memo at submit, never read back out of a search
+	// attribute — see [RunSummary.labels] for the whole of that reasoning, which
+	// is [RunSummary.name]'s unchanged: a field a filter can read only on a
+	// deployment where attribute registration happened to succeed is worse than
+	// one it cannot read at all, because "sometimes" is indistinguishable from
+	// "nothing matched".
+	//
+	// Bounded because a label travels: into the run's memo, into Temporal's
+	// history, and into a CEL activation the server builds per execution during a
+	// listing's scan. The bounds are the ones every other author-written map in
+	// this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason
+	// stated there — a spec is a thing an outside party writes.
 	Labels map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Profile names the vocabulary every expression in this workflow was compiled
 	// against: which CEL extension libraries are in scope.
@@ -2859,13 +2883,13 @@ var File_flowstate_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\x85\v\n" +
+	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\x91\v\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
 	"\x05steps\x18\x03 \x03(\v2\x12.flowstate.v1.NodeB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\x12L\n" +
-	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06labels\x12\x1e\n" +
+	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\x12X\n" +
+	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x1c\xe2A\x01\x01\xbaH\x15\x9a\x01\x12\x10@\"\ar\x05\x10\x01\x18\x80\x01*\x05r\x03\x18\x80\x02R\x06labels\x12\x1e\n" +
 	"\aprofile\x18\x06 \x01(\tB\x04\xe2A\x01\x01R\aprofile\x12H\n" +
 	"\x04vars\x18\a \x03(\v2 .flowstate.v1.Workflow.VarsEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x04vars\x12U\n" +
 	"\x0fdeclared_inputs\x18\b \x03(\v2\x1e.flowstate.v1.InputDeclarationB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x0edeclaredInputs\x12X\n" +

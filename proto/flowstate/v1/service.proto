@@ -728,6 +728,53 @@ message RunSummary {
   // an error. See server/list.go and runfilter.go, where a filter comparing
   // against `name` simply does not match a run that carries none.
   string name = 6;
+
+  // Labels are the workflow's own declared labels ([Workflow.labels]), recorded
+  // on the run at submit.
+  //
+  // Populated from the memo, on [RunSummary.name]'s exact terms and for its exact
+  // reason: written unconditionally by every path that starts a run, read back
+  // through the same memo a listing already fetches for the tenant check, and
+  // never sourced from a search attribute — a `labels` filter that worked only
+  // where attribute registration succeeded would answer "nothing matched" to a
+  // filter with nothing wrong with it.
+  //
+  // Empty for a run of a workflow that declared none, and for a run started
+  // before this was recorded at all. The two are deliberately not distinguished:
+  // both are "this run carries no labels", which is the only question a filter
+  // asks. `labels["team"] == "payments"` does not match such a run, and
+  // `!("team" in labels)` does.
+  map<string, string> labels = 7;
+
+  // Starter is who submitted this run, as the qualified `issuer#subject` string
+  // recorded on it at submit — the same string, from the same memo, by the same
+  // rules as [GetResponse.starter], whose doc is the whole of the reasoning for
+  // the raw qualified form and for what an empty value means.
+  //
+  // Here rather than only on Get because the question an operator asks at scale
+  // is "whose runs are these", and answering it through Get is one RPC per run.
+  // It is the same fact in both places, read from the same memo by the same
+  // reader, so the two cannot disagree.
+  string starter = 8;
+
+  // WorkerVersion is the Worker Deployment version this run is pinned to, as
+  // `deployment-name.build-id` — Temporal's own spelling of the pair
+  // `flow worker --deployment-name`/`--build-id` configures.
+  //
+  // Empty when the deployment does not use Worker Deployment Versioning at all,
+  // which is the unconfigured default, and empty for a run started before its
+  // worker was versioned. Absence is therefore "this run is not pinned to a
+  // version", never "the version is unknown".
+  //
+  // Read from Temporal's own `WorkflowExecutionInfo.versioning_info` rather than
+  // from a memo, unlike every other field here, and the difference is the point:
+  // the pinned version is not a fact about the submission, it is a fact about
+  // where the run is *executing*, and it legitimately changes at Continue-As-New
+  // when a run takes the deployment's current version. A memo written at submit
+  // would freeze a value the run itself does not honour — the one shape of
+  // "recorded twice, drifting" this schema keeps out. It costs nothing extra:
+  // the listing response already carries it.
+  string worker_version = 9;
 }
 
 // ListResponse returns a page of the caller's runs.
