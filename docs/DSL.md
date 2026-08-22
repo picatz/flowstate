@@ -4908,17 +4908,36 @@ through `SignalPolicyCheck`, the function the server itself calls. That is a rul
 | Surface | What a case gets |
 | --- | --- |
 | `run.identity` | empty, `run.local` true, whatever `starter:` says — so an `if:` keyed on `run.identity.namespace` takes the empty branch here and may take another in production |
-| task-shape policy (`--task-policy`) | every dispatch reaches `CheckTaskPolicy`, with the *empty* scope identity, and `flow test` installs no policy for it to consult — the flag is declared on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, deliberately not on `flow test`. Nothing configured means every task dispatches. |
+| task-shape policy (`--task-policy`) | every dispatch reaches `CheckTaskPolicy`, with the *empty* scope identity, never with `starter:`. Which policy it consults belongs to the process, not the case — see below. |
 | egress policy (`--egress-policy`) | never consulted, because no request is made: the step that would reach the network is answered by its stub. Also not a flag on `flow test`. |
 | secret access policy | consulted, and fixed: `flow test` compiles `allow: ["true"]` and runs it under the constant identity `flow-test#flow-test`, never under `starter:`. Every `${secret(...)}` a case binds resolves. |
 
-The line all four sit on is the one that decides diagnostics: report what is a
-property of the file, and stay silent about what a deployment decides. `signals:` is
+Task-shape policy needs the precise version of that, because the convenient one is
+false. The `flow test` **command** installs no policy: `--task-policy` is declared on
+`flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, and
+deliberately not on `flow test`, so under that command nothing is configured and every
+task dispatches. But the policy is a *process-wide* installation
+(`SetDefaultTaskPolicy`), a case never clears it, and the same machinery runs in other
+hosts — the `flowstate_test` MCP tool runs a case in whatever process serves it, so
+under `flow mcp --task-policy` a case's dispatches are governed by that deployment's
+policy. **A rehearsal inherits whatever the hosting process installed.**
+
+Which is its own trap, and the reason the identity clause is not a footnote there: a
+rule reading `identity.namespace` or `identity.subject` is matched against the *empty*
+identity, not against `starter:`, however the case names one. A policy admitting only
+a named namespace therefore refuses every stubbed dispatch in that host, and no
+`starter:` an author can write changes the answer. The denial says so — it names the
+`--task-policy` passed to this local invocation — but the case file it fails is not
+where the cause lives.
+
+The line all four surfaces sit on is the one that decides diagnostics: report what is
+a property of the file, and stay silent about what a deployment decides. `signals:` is
 written *in the Flowfile*, so `flow test` owns it. Task-shape rules, egress rules and
 secret access rules are installed by whoever runs the worker, and a case whose verdict
-turned on which policy file happened to be passed on that invocation would be a test
-of that machine rather than of the workflow — which is why `flow test` takes no policy
-flags and should not grow them (#652 item 2).
+turns on which policy file was passed to the hosting process is testing that process
+rather than the workflow — which is why `flow test` takes no policy flags and should
+not grow them (#652 item 2), and why a suite meant to be portable is run by a command
+that has none.
 
 A case that wants to exercise one of those *denials* writes it against the policy's
 own package instead. `TaskPolicy.Check` and the secret access policy are pure
