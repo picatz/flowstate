@@ -46,6 +46,88 @@
 // for every local run, because a local run must never look like an attested
 // production one.
 //
+// # What a green case proves about identity, and what it does not
+//
+// The sentence to read first, because it is the one an author is most likely
+// to assume the other way round: **a green case says nothing about whether the
+// identity it names would be allowed to do any of this in production.**
+// Nothing attested a `starter:` or a `sender:` - they are what the file says
+// they are - and every policy a *deployment* installs is either absent from
+// this process or evaluated against somebody else entirely.
+//
+// What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
+// policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
+// itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
+// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
+// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
+// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// package passes the value anywhere.
+//
+// What does not read it, each for a reason worth stating separately:
+//
+//   - **`run.identity`.** Empty for every case, whatever `starter:` says, with
+//     `run.local` true - see [Test.Starter]. An `if:` keyed on
+//     `run.identity.namespace` therefore takes the empty branch here and may
+//     take another one in production.
+//
+//   - **Task-shape policy** ([v1.TaskPolicy]). Every dispatch does reach
+//     [v1.CheckTaskPolicy] - eval.go calls it at the seam both drivers share -
+//     and it is handed `scope.GetIdentity()`, which is that same empty
+//     identity. It is never handed a `starter:`.
+//
+//     Which policy it consults is a property of the *process*, not of the
+//     case, and the distinction is worth stating precisely because the
+//     convenient version of it is false. The `flow test` **command** installs
+//     none: `--task-policy` is declared on `flow worker`, `flow run local`,
+//     `flow mcp`, `flow serverdev` and `flow task run`, and deliberately not
+//     on `flow test`, so under that command [v1.TaskPolicyIn] finds nothing
+//     and every dispatch is allowed. But a policy is installed process-wide
+//     by [v1.SetDefaultTaskPolicy], runCase does not clear it with
+//     [v1.NewContextWithTaskPolicy], and `flow test`'s machinery is reachable
+//     from other hosts: the `flowstate_test` MCP tool runs
+//     [RunSourceContext] in whatever process serves it, so under
+//     `flow mcp --task-policy` a case's dispatches *are* governed by that
+//     deployment's policy. A rehearsal inherits whatever the hosting process
+//     installed.
+//
+//     Which is its own trap, and the reason the identity clause above is not
+//     a footnote: a rule that reads `identity.namespace` or
+//     `identity.subject` is matched against the empty identity there, not
+//     against `starter:`, however the case names one. So a policy admitting
+//     only a named namespace refuses every stubbed dispatch in that host, and
+//     an author reading the denial has no `starter:` to change that would
+//     make any difference. ([v1.TaskPolicyDeniedError] says as much in its
+//     message, naming the `--task-policy` passed to this local invocation.)
+//
+//   - **Egress policy** (`netpolicy`). Never consulted, because no request is
+//     made: a step that would reach the network is answered by its stub, so
+//     there is no URL for a policy to refuse. `--egress-policy` is likewise
+//     not offered on `flow test`.
+//
+//   - **Secret access policy** (`auth.SecretAccessPolicy`). Consulted, and this
+//     is the surface where the gap is easiest to miss, because the mechanism is
+//     real and the answer is fixed: [secretRuntime] compiles `allow: ["true"]`
+//     and runs it under the constant identity `flow-test#flow-test`, not under
+//     `starter:`. So every `${secret(...)}` a case binds resolves, and a
+//     deployment rule keyed on `identity.namespace` is neither loaded nor
+//     matched.
+//
+// The line all four sit on is CLAUDE.md's: report what is a property of the
+// file, and stay silent about what a deployment decides. `signals:` is written
+// in the Flowfile, so `flow test` owns it; task-shape, egress and secret
+// access rules are installed by whoever runs the worker, and a case whose
+// verdict turned on which policy file happened to be passed on the command
+// line would be a test of that machine rather than of the workflow — which is
+// exactly what a case gets when the hosting process installed one, so a suite
+// meant to be portable should be run by a command that takes no such flag.
+// A case
+// that wants to exercise one of those *denials* writes it against the policy's
+// own package - [v1.TaskPolicy.Check] and `auth.SecretPolicy` are pure
+// functions of (thing, identity), tested that way today, and need no workflow
+// at all - which is the same answer [secretRuntime]'s own doc has been giving
+// for secrets since it was written. See #652 item 2, where this was decided
+// and deliberately not built.
+//
 // # Why this runs the local driver only
 //
 // `flow test` is not a second execution engine. It is [v1.RunWithInputs] with
@@ -269,6 +351,14 @@ type Test struct {
 	// production one (eval.go's own eval, invariant 3). A case asserting on
 	// `run.identity.subject` therefore sees "" here whatever this field says,
 	// the same value `flow run local` shows it.
+	//
+	// One policy surface reads it, and the others a deployment installs read
+	// nothing of it at all — see the package doc's "What a green case proves
+	// about identity". The short version: `signals:` is a control the
+	// *workflow file* declares, so `flow test` exercises it; task-shape
+	// policy, egress policy and secret access policy are controls a
+	// *deployment* installs, and `flow test` neither takes them nor evaluates
+	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
 
 	// Expect is what the run must have done to pass.
