@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -117,6 +120,66 @@ type TaskPolicyDeniedError struct {
 	// to be unable to have: it reaches nothing but this struct's own Error()
 	// string.
 	Local bool
+
+	// Identity describes the identity the policy was evaluated against, in
+	// the terms a rule reads it — the provenance half of #652 item 3, and
+	// the half [Local] alone cannot supply.
+	//
+	// Local says a denial came from a rehearsal. It does not say *what the
+	// rule was matched against*, and that is the distinction an author most
+	// needs: a rehearsal carries no identity at all unless `flow run local
+	// --as-*` named one, and a `flow test` case's `starter:` never reaches
+	// this surface (documented at flowtest's package doc, landed in #877).
+	// So a rule reading `identity.namespace` refuses every dispatch in those
+	// venues, and the denial an author reads is textually identical to one
+	// where the rule genuinely matched *them*. Naming the evaluated identity
+	// is what tells "denied because the rehearsal identity is empty" apart
+	// from "denied because the rule matched".
+	//
+	// Rendered by [describePolicyIdentity] and set by [CheckTaskPolicy]
+	// after the decision is already made, under exactly the constraints
+	// Local documents above: nothing reads it but [Error]. Empty means no
+	// caller recorded one — a denial built by [TaskPolicy.Check] directly,
+	// which every driver's dispatch path goes through [CheckTaskPolicy]
+	// rather than reaching — and [Error] then says nothing about identity
+	// rather than inventing an answer. "No identity at all" is a different
+	// string, never the empty one.
+	//
+	// Claim *values* are deliberately absent from it; see
+	// [describePolicyIdentity].
+	Identity string
+}
+
+// describePolicyIdentity renders the identity a task-shape rule was evaluated
+// against, for [TaskPolicyDeniedError.Error] and nothing else.
+//
+// Two properties it is built for:
+//
+// A wholly empty identity gets prose rather than a row of empty quotes,
+// because that case is the one the message exists to make legible: an author
+// staring at `subject="" issuer="" namespace=""` has to know that is what a
+// rehearsal without `--as-*` looks like, and an author reading "no identity"
+// does not.
+//
+// Claim values never appear — only the sorted claim *keys*. A claim is
+// caller-supplied data of a shape this package does not get to constrain, and
+// this string travels wherever the denial does, which on the durable driver
+// means into Temporal's failure conversion and therefore into workflow
+// history (CLAUDE.md, "secrets never enter workflow history": the rule is
+// about a durable, broadly readable log, and a claim value is exactly the
+// kind of thing nobody audited before it got there). Keys are enough for the
+// provenance question — whether the claim a rule reads was carried at all —
+// and are the half a policy author already knows, since they wrote the rule.
+func describePolicyIdentity(identity *WorkloadIdentity) string {
+	claims := slices.Sorted(maps.Keys(identity.GetClaims()))
+
+	if identity.GetSubject() == "" && identity.GetIssuer() == "" &&
+		identity.GetNamespace() == "" && len(claims) == 0 {
+		return "no identity — every field a rule can read is empty"
+	}
+
+	return fmt.Sprintf("identity subject=%q issuer=%q namespace=%q claims=%v",
+		identity.GetSubject(), identity.GetIssuer(), identity.GetNamespace(), claims)
 }
 
 // Error implements the error interface. The message names what to do about
@@ -135,16 +198,52 @@ type TaskPolicyDeniedError struct {
 // `flow task run`, `flow mcp` serving a local session — not only the one
 // whose name is easiest to reach for, and this message must read true for
 // all of them.
+//
+// That neutrality is why the rehearsal clause no longer tells the reader to
+// check "the --task-policy passed to this local invocation". Half the venues
+// it speaks to have no such flag: `--task-policy` is declared on `flow
+// worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task
+// run`, and deliberately not on `flow test` (#652 item 2), which instead
+// inherits whatever policy the process hosting it installed — `flow mcp
+// --task-policy` serving the `flowstate_test` tool, or any caller of
+// [SetDefaultTaskPolicy]. Sending a `flow test` author hunting for a flag
+// their command does not accept is a false diagnostic, which CLAUDE.md rates
+// worse than a missing one, so the clause names the process rather than a
+// flag only some of these commands take.
+//
+// [Identity] is the other half, and the one this message was missing
+// entirely: see that field's own doc for why a denial that does not say what
+// it evaluated leaves an author unable to tell an empty rehearsal identity
+// from a rule that matched them.
 func (e *TaskPolicyDeniedError) Error() string {
 	rehearsal := ""
 	if e.Local {
-		rehearsal = " during a local rehearsal — check the " +
-			"--task-policy passed to this local invocation, not just the deployment's"
+		rehearsal = " during a local rehearsal"
 	}
-	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy%s (%s: %s); "+
-		"this is not a mistake in the workflow file — contact the operator who configured "+
-		"the task-shape policy if this dispatch should be permitted",
-		ErrTaskPolicyDenied, e.Task, rehearsal, e.Reason, e.Detail)
+
+	provenance := ""
+	if e.Identity != "" {
+		provenance = fmt.Sprintf("; evaluated against %s", e.Identity)
+
+		if e.Local && strings.HasPrefix(e.Identity, "no identity") {
+			provenance += "; a rehearsal carries an identity only where one was named — " +
+				"`flow run local --as-subject/--as-issuer/--as-namespace/--as-claim`, and " +
+				"nowhere at all under `flow test`, whose `starter:` reaches the workflow's " +
+				"own `signals:` policy and not this one — so a rule reading identity refused " +
+				"this dispatch for want of an identity to match, not because it matched yours"
+		}
+	}
+
+	remedy := "contact the operator who configured the task-shape policy if this " +
+		"dispatch should be permitted"
+	if e.Local {
+		remedy = "check the task-shape policy this process installed before blaming the " +
+			"deployment's, and " + remedy
+	}
+
+	return fmt.Sprintf("%s: task %q refused by deployment task-shape policy%s (%s: %s)%s; "+
+		"this is not a mistake in the workflow file — %s",
+		ErrTaskPolicyDenied, e.Task, rehearsal, e.Reason, e.Detail, provenance, remedy)
 }
 
 // Unwrap returns [ErrTaskPolicyDenied], and the underlying cause when there

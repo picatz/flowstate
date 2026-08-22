@@ -58,6 +58,24 @@ type TaskPolicyCase struct {
 	// DeniedTask is set.
 	DeniedReason v1.TaskPolicyReason
 
+	// DeniedIdentity is a substring the denial's message must contain,
+	// naming the identity the policy was evaluated against (#652 item 3).
+	// Only meaningful when DeniedTask is set.
+	//
+	// It is asserted on both drivers rather than in one driver's own tests
+	// because provenance is *observable* in the sense invariant 3 governs:
+	// an author reading a local denial and an operator reading the durable
+	// one for the same dispatch must be told the same thing about who the
+	// rule was matched against. The two reach it by different routes — the
+	// rehearsal identity context value locally, [v1.RunState.Identity]
+	// durably — which is exactly why the answer needs comparing rather than
+	// assuming.
+	//
+	// [v1.TaskPolicyDeniedError.Local] deliberately gets no such field: it
+	// is true locally and false durably by design, so it is the one part of
+	// this message the drivers are *supposed* to disagree about.
+	DeniedIdentity string
+
 	// ExpectedOutputs is what the run must produce when DeniedTask is empty.
 	ExpectedOutputs *v1.Workflow_StepOutputs
 }
@@ -133,10 +151,11 @@ func TaskPolicyCases() []TaskPolicyCase {
 				Profile: v1.CurrentProfile,
 				Steps:   []*v1.Node{says("report", "this must not run")},
 			},
-			Identity:     teamB,
-			Policy:       v1.TaskPolicyConfig{Allow: []string{`task == "log" && identity.namespace == "team-a"`}},
-			DeniedTask:   "log",
-			DeniedReason: v1.TaskPolicyReasonNoAllowRule,
+			Identity:       teamB,
+			Policy:         v1.TaskPolicyConfig{Allow: []string{`task == "log" && identity.namespace == "team-a"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonNoAllowRule,
+			DeniedIdentity: `namespace="team-b"`,
 		},
 		{
 			// A deny rule is the other half of the surface and has the
@@ -151,10 +170,11 @@ func TaskPolicyCases() []TaskPolicyCase {
 				Profile: v1.CurrentProfile,
 				Steps:   []*v1.Node{says("report", "this must not run")},
 			},
-			Identity:     teamB,
-			Policy:       v1.TaskPolicyConfig{Deny: []string{`identity.namespace == "team-b"`}},
-			DeniedTask:   "log",
-			DeniedReason: v1.TaskPolicyReasonDenyRule,
+			Identity:       teamB,
+			Policy:         v1.TaskPolicyConfig{Deny: []string{`identity.namespace == "team-b"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonDenyRule,
+			DeniedIdentity: `namespace="team-b"`,
 		},
 		{
 			// Its pair: the same deny rule leaves the other tenant alone.
@@ -201,6 +221,11 @@ func TaskPolicyCases() []TaskPolicyCase {
 			Policy:       v1.TaskPolicyConfig{Allow: []string{`identity.namespace == "team-a"`}},
 			DeniedTask:   "log",
 			DeniedReason: v1.TaskPolicyReasonNoAllowRule,
+			// The case the provenance clause exists for: nothing named an
+			// identity, so an identity-scoped allowlist matches nobody. A
+			// denial that did not say so reads exactly like one where the
+			// rule looked at a real identity and rejected it.
+			DeniedIdentity: "no identity",
 		},
 		{
 			// The core fail-closed matrix case, and the reachability property
@@ -213,9 +238,10 @@ func TaskPolicyCases() []TaskPolicyCase {
 				Profile: v1.CurrentProfile,
 				Steps:   []*v1.Node{says("report", "this must not run")},
 			},
-			Policy:       v1.TaskPolicyConfig{Deny: []string{`task == "log"`}},
-			DeniedTask:   "log",
-			DeniedReason: v1.TaskPolicyReasonDenyRule,
+			Policy:         v1.TaskPolicyConfig{Deny: []string{`task == "log"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonDenyRule,
+			DeniedIdentity: "no identity",
 		},
 		{
 			// The negative-direction pair, per CLAUDE.md ("test that A cannot
@@ -243,9 +269,10 @@ func TaskPolicyCases() []TaskPolicyCase {
 				Profile: v1.CurrentProfile,
 				Steps:   []*v1.Node{says("report", "this must not run")},
 			},
-			Policy:       v1.TaskPolicyConfig{Allow: []string{`task == "codex.exec"`}},
-			DeniedTask:   "log",
-			DeniedReason: v1.TaskPolicyReasonNoAllowRule,
+			Policy:         v1.TaskPolicyConfig{Allow: []string{`task == "codex.exec"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonNoAllowRule,
+			DeniedIdentity: "no identity",
 		},
 		{
 			// And its own negative-direction pair: the same allowlist permits
@@ -283,9 +310,10 @@ func TaskPolicyCases() []TaskPolicyCase {
 					},
 				},
 			},
-			Policy:       v1.TaskPolicyConfig{Deny: []string{`task == "log"`}},
-			DeniedTask:   "log",
-			DeniedReason: v1.TaskPolicyReasonDenyRule,
+			Policy:         v1.TaskPolicyConfig{Deny: []string{`task == "log"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonDenyRule,
+			DeniedIdentity: "no identity",
 		},
 	}
 }
