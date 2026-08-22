@@ -646,6 +646,31 @@ the step's answer — which is why `examples/http-expect` and
 `examples/http-output-shaping` assert the steps around those expressions rather
 than the expressions themselves.
 
+### What a case's identity is checked against
+
+A case can name who the run started as (`starter:`) and who each scripted signal
+stands in for (`sender:`). **A green case says nothing about whether that identity
+would be allowed to do any of this in production.** Nothing attested either one, and
+`flow test` takes no policy flags: `--task-policy` and `--egress-policy` are declared
+on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`,
+and deliberately not here.
+
+What a `starter:` reaches is the workflow's own `signals:` policy, through the same
+`SignalPolicyCheck` the server calls — so `distinct_from_starter:` and an `allow:`
+rule answer here the way they answer in production. What it does not reach:
+`run.identity` (empty for every case, `run.local` true), task-shape policy (the check
+runs, against the empty scope identity, with no policy installed to consult), egress
+policy (never reached — the request that would be refused is answered by a stub), and
+secret access policy (a fixed allow-everything rule, evaluated under the constant
+`flow-test#flow-test` identity rather than under `starter:`).
+
+That split is the diagnostics rule one level up: `signals:` is a control the Flowfile
+declares, so `flow test` exercises it; the other three are controls a deployment
+installs, and a case whose verdict depended on which policy file was passed on the
+command line would be testing that machine instead of the workflow. Denials in those
+three are written against the policy packages directly, which need no workflow at all.
+[docs/DSL.md](DSL.md) has the table and #652 has the decision.
+
 ## What this means for a change
 
 A change to this surface is finished when:

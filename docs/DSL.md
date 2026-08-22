@@ -124,6 +124,7 @@ headings below, not this list.*
   - [What it deliberately does not do](#what-it-deliberately-does-not-do)
   - [Rehearsing the gate, and who a rehearsal stands in for](#rehearsing-the-gate-and-who-a-rehearsal-stands-in-for)
   - [The same two parties, in a `*.test.yaml`](#the-same-two-parties-in-a-testyaml)
+  - [What a green case proves about that identity, and what it does not](#what-a-green-case-proves-about-that-identity-and-what-it-does-not)
 - [The standing rule](#the-standing-rule)
 <!-- toc:end -->
 
@@ -4889,6 +4890,42 @@ somebody started, so there is nobody for it to report.) A
 scripted sender that rendered as an attested one was a real inconsistency for as long as
 it lasted: `!sender.local` is what a workflow author reads to mean "a server accepted
 this", and a test harness is the last place that may be untrue.
+
+### What a green case proves about that identity, and what it does not
+
+The sentence worth reading before the rest of this section, because it is the one an
+author is most likely to assume the other way round: **a green case says nothing about
+whether the identity it names would be allowed to do any of this in production.**
+Nothing attested a `starter:` or a `sender:` — they are what the file says they are —
+and every policy a *deployment* installs is either absent from that process or
+evaluated against somebody else entirely.
+
+One surface reads a `starter:`, exhaustively: the workflow's own `signals:` policy,
+through `SignalPolicyCheck`, the function the server itself calls. That is a rule's
+`subject:`, `issuer:`, `namespace:` and `claims:` matching a scripted `sender:`, and
+`distinct_from_starter:` comparing the two qualified subjects. What does not read it:
+
+| Surface | What a case gets |
+| --- | --- |
+| `run.identity` | empty, `run.local` true, whatever `starter:` says — so an `if:` keyed on `run.identity.namespace` takes the empty branch here and may take another in production |
+| task-shape policy (`--task-policy`) | every dispatch reaches `CheckTaskPolicy`, with the *empty* scope identity, and `flow test` installs no policy for it to consult — the flag is declared on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, deliberately not on `flow test`. Nothing configured means every task dispatches. |
+| egress policy (`--egress-policy`) | never consulted, because no request is made: the step that would reach the network is answered by its stub. Also not a flag on `flow test`. |
+| secret access policy | consulted, and fixed: `flow test` compiles `allow: ["true"]` and runs it under the constant identity `flow-test#flow-test`, never under `starter:`. Every `${secret(...)}` a case binds resolves. |
+
+The line all four sit on is the one that decides diagnostics: report what is a
+property of the file, and stay silent about what a deployment decides. `signals:` is
+written *in the Flowfile*, so `flow test` owns it. Task-shape rules, egress rules and
+secret access rules are installed by whoever runs the worker, and a case whose verdict
+turned on which policy file happened to be passed on that invocation would be a test
+of that machine rather than of the workflow — which is why `flow test` takes no policy
+flags and should not grow them (#652 item 2).
+
+A case that wants to exercise one of those *denials* writes it against the policy's
+own package instead. `TaskPolicy.Check` and the secret access policy are pure
+functions of a thing and an identity, tested that way today, and need no run, no
+scope, and no workflow at all — the same answer this repository already gives for
+secret-policy denials, and a faster one than threading an identity through a case
+file and hoping.
 
 ## The standing rule
 
