@@ -314,7 +314,13 @@ func (e *Evaluator) EvalString(ctx context.Context, exprStr string, libs []strin
 	}
 	ast, issues := env.Parse(exprStr)
 	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("parse expression: %w", issues.Err())
+		// Parsing is an expression-failure phase like compiling and evaluating
+		// (which [Evaluator.Eval] already wraps): a malformed expression is the
+		// author's, not a defect in Flowstate, so it classifies [ErrorKindExpression]
+		// rather than falling through [ClassifyError] to the retryable Internal
+		// default. Without this wrapper parsing was the one phase still mislabeled
+		// (#184, #899).
+		return nil, &ExpressionError{Err: fmt.Errorf("parse expression: %w", issues.Err())}
 	}
 	return e.Eval(ctx, env, ast, activation)
 }

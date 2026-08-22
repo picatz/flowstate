@@ -128,7 +128,19 @@ type TaskError struct {
 }
 
 // Error implements the error interface.
+//
+// When the wrapped cause already names the task it concerns — a task-shape
+// policy denial does, so that a direct caller of [TaskPolicy.Check] reads the
+// name without this wrapper (#899) — this renders only the step position and
+// defers the naming to the cause, rather than prefixing a second `task %q` and
+// producing the double-naming #184 records against. See [selfNamesTask].
 func (e *TaskError) Error() string {
+	if selfNamesTask(e.Err) {
+		if e.Step != "" {
+			return fmt.Sprintf("step %q: %v", e.Step, e.Err)
+		}
+		return e.Err.Error()
+	}
 	switch {
 	case e.Step != "" && e.Task != "":
 		return fmt.Sprintf("step %q: task %q: %v", e.Step, e.Task, e.Err)
@@ -137,6 +149,17 @@ func (e *TaskError) Error() string {
 	default:
 		return e.Err.Error()
 	}
+}
+
+// selfNamesTask reports whether err, or an error it wraps, already names in its
+// own text the task it concerns — so a wrapper ([TaskError.Error],
+// [StepErrorText]) defers to it rather than prefixing a second `task %q`. A
+// task-shape policy denial ([TaskPolicyDeniedError]) is the one such error
+// today: it names the task itself so a bare [TaskPolicy.Check] caller sees it,
+// which would otherwise double under a wrapper that also named it (#184, #899).
+func selfNamesTask(err error) bool {
+	_, ok := errors.AsType[*TaskPolicyDeniedError](err)
+	return ok
 }
 
 // Unwrap returns the underlying cause, so callers can use [errors.Is] and

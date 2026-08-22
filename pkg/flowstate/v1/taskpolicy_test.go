@@ -475,3 +475,59 @@ func TestDenialNamesTheTaskExactlyOnce(t *testing.T) {
 	require.True(t, errors.Is(err, v1.ErrTaskPolicyDenied),
 		"the sentinel must stay matchable after leaving the message")
 }
+
+// TestDenialNamesTheTaskOnEverySurfaceExactlyOnce is #899's correction to
+// [TestDenialNamesTheTaskExactlyOnce]: the exactly-once count has to hold on the
+// *direct* [v1.TaskPolicy.Check] surface too, not only the wrapped one.
+//
+// #184's first cut moved the name out of [v1.TaskPolicyDeniedError.Error] and
+// onto [v1.CheckTaskPolicy]'s [v1.TaskError] wrapper. That names it once for
+// every dispatch the drivers make — and zero times for a direct caller of
+// [v1.TaskPolicy.Check], which docs/DSL.md recommends for exercising denials and
+// which receives the bare denial with no wrapper. So the name belongs on the
+// denial itself, and the wrappers defer; this checks all three renderings — the
+// bare denial, the classified [v1.TaskError], and [v1.StepErrorText] (the
+// recorded/durable text) — name the task once and only once.
+//
+// The rule denies on identity alone, so the only "codex.exec" any surface
+// contains is a rendering of the name rather than the operator's rule text
+// quoted back — the same care [TestDenialNamesTheTaskExactlyOnce] takes.
+func TestDenialNamesTheTaskOnEverySurfaceExactlyOnce(t *testing.T) {
+	cfg := v1.TaskPolicyConfig{Deny: []string{`identity.subject != "platform"`}}
+	policy, err := cfg.Policy()
+	require.NoError(t, err)
+
+	// The direct surface: a bare denial from Check, no wrapper. This is the one
+	// #184's first cut left naming no task at all.
+	direct := policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{Subject: "someone"})
+	require.Error(t, direct)
+	require.Contains(t, direct.Error(), `task "codex.exec"`,
+		"a direct TaskPolicy.Check caller must be told which task was refused")
+	require.Equal(t, 1, strings.Count(direct.Error(), "codex.exec"),
+		"the bare denial names its task exactly once:\n%s", direct.Error())
+
+	// The wrapped surface, and the recorded/durable surface, over the same
+	// dispatch — each must still name the task once, now by deferring to the
+	// denial rather than adding a second naming of their own.
+	ctx := v1.NewContextWithTaskPolicy(context.Background(), policy)
+	wrapped := v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Subject: "someone"}, false)
+	require.Error(t, wrapped)
+
+	for name, rendered := range map[string]string{
+		"TaskError.Error": wrapped.Error(),
+		"StepErrorText":   v1.StepErrorText(wrapped),
+	} {
+		require.Containsf(t, rendered, `task "codex.exec"`,
+			"%s must name the refused task", name)
+		require.Equalf(t, 1, strings.Count(rendered, "codex.exec"),
+			"%s names the task exactly once:\n%s", name, rendered)
+	}
+
+	// The sentinel and the structured task name survive on every surface, so a
+	// caller reading structure rather than text is unaffected by where the name
+	// is rendered.
+	require.True(t, errors.Is(direct, v1.ErrTaskPolicyDenied))
+	var denied *v1.TaskPolicyDeniedError
+	require.True(t, errors.As(direct, &denied))
+	require.Equal(t, "codex.exec", denied.Task)
+}
