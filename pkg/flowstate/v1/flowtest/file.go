@@ -46,6 +46,63 @@
 // for every local run, because a local run must never look like an attested
 // production one.
 //
+// # What a green case proves about identity, and what it does not
+//
+// The sentence to read first, because it is the one an author is most likely
+// to assume the other way round: **a green case says nothing about whether the
+// identity it names would be allowed to do any of this in production.**
+// Nothing attested a `starter:` or a `sender:` - they are what the file says
+// they are - and every policy a *deployment* installs is either absent from
+// this process or evaluated against somebody else entirely.
+//
+// What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
+// policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
+// itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
+// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
+// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
+// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// package passes the value anywhere.
+//
+// What does not read it, each for a reason worth stating separately:
+//
+//   - **`run.identity`.** Empty for every case, whatever `starter:` says, with
+//     `run.local` true - see [Test.Starter]. An `if:` keyed on
+//     `run.identity.namespace` therefore takes the empty branch here and may
+//     take another one in production.
+//   - **Task-shape policy** ([v1.TaskPolicy]). Every dispatch does reach
+//     [v1.CheckTaskPolicy] - eval.go calls it at the seam both drivers share -
+//     but it is handed `scope.GetIdentity()`, which is that same empty
+//     identity, and `flow test` installs no policy for it to consult:
+//     `--task-policy` is declared on `flow worker`, `flow run local`,
+//     `flow mcp`, `flow serverdev` and `flow task run`, and deliberately not
+//     on `flow test`. With no policy configured every dispatch is allowed, so
+//     a case is green whether or not a deployment's rules would refuse the
+//     task outright.
+//   - **Egress policy** (`netpolicy`). Never consulted, because no request is
+//     made: a step that would reach the network is answered by its stub, so
+//     there is no URL for a policy to refuse. `--egress-policy` is likewise
+//     not offered on `flow test`.
+//   - **Secret access policy** (`auth.SecretAccessPolicy`). Consulted, and this
+//     is the surface where the gap is easiest to miss, because the mechanism is
+//     real and the answer is fixed: [secretRuntime] compiles `allow: ["true"]`
+//     and runs it under the constant identity `flow-test#flow-test`, not under
+//     `starter:`. So every `${secret(...)}` a case binds resolves, and a
+//     deployment rule keyed on `identity.namespace` is neither loaded nor
+//     matched.
+//
+// The line all four sit on is CLAUDE.md's: report what is a property of the
+// file, and stay silent about what a deployment decides. `signals:` is written
+// in the Flowfile, so `flow test` owns it; task-shape, egress and secret
+// access rules are installed by whoever runs the worker, and a case whose
+// verdict turned on which policy file happened to be passed on the command
+// line would be a test of that machine rather than of the workflow. A case
+// that wants to exercise one of those *denials* writes it against the policy's
+// own package - [v1.TaskPolicy.Check] and `auth.SecretPolicy` are pure
+// functions of (thing, identity), tested that way today, and need no workflow
+// at all - which is the same answer [secretRuntime]'s own doc has been giving
+// for secrets since it was written. See #652 item 2, where this was decided
+// and deliberately not built.
+//
 // # Why this runs the local driver only
 //
 // `flow test` is not a second execution engine. It is [v1.RunWithInputs] with
@@ -269,6 +326,14 @@ type Test struct {
 	// production one (eval.go's own eval, invariant 3). A case asserting on
 	// `run.identity.subject` therefore sees "" here whatever this field says,
 	// the same value `flow run local` shows it.
+	//
+	// One policy surface reads it, and the others a deployment installs read
+	// nothing of it at all — see the package doc's "What a green case proves
+	// about identity". The short version: `signals:` is a control the
+	// *workflow file* declares, so `flow test` exercises it; task-shape
+	// policy, egress policy and secret access policy are controls a
+	// *deployment* installs, and `flow test` neither takes them nor evaluates
+	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
 
 	// Expect is what the run must have done to pass.
