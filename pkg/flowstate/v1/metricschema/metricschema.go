@@ -90,6 +90,45 @@
 // the attributes it declares" a claim about the table rather than about
 // whichever attribute somebody remembered to assert.
 //
+// # Signals this repository deliberately does not instrument
+//
+// Two of the questions #526 ranks are already answered by numbers somebody else
+// keeps, and instrumenting them here would produce a second, worse copy. Both
+// were checked against the tree rather than assumed, so the citations are the
+// point of this section: the next person to notice the gap can confirm the
+// mapping in five minutes instead of adding the instrument.
+//
+//   - **Worker saturation.** The Temporal Go SDK measures it: `temporal_
+//     worker_task_slots_available` and `temporal_worker_task_slots_used` are
+//     published by its slot supplier on every reserve and release
+//     (`internal/tuning.go:419` in go.temporal.io/sdk v1.47.0), and
+//     `temporal_num_pollers` by its pollers (`internal_task_pollers.go:242`),
+//     each tagged by worker type and task queue. They reach a collector
+//     whenever the process configures telemetry, because `cmd/flow` builds an
+//     OpenTelemetry metrics handler over the same meter provider these
+//     instruments use (`cmd/flow/telemetry.go:291`) and hands it to every
+//     Temporal client (`cmd/flow/main.go:245`). A `flowstate.worker.slots`
+//     gauge beside those would be this repository counting permits it does not
+//     issue, and #422's "renaming other people's metrics is its own sin"
+//     applies to re-deriving them too. Durable-only, exactly as #526 predicted
+//     — the local driver has no queue to be behind on.
+//   - **Schedule fires and misses.** A flowstate process never observes one. A
+//     schedule is a Temporal schedule (`server/schedules.go:309` creates it),
+//     so the firing happens inside Temporal with nothing of ours on the path;
+//     what this repository does is create, pause, trigger and describe. The
+//     counts already exist and are already exposed:
+//     `DescribeSchedule` reports `NumActions`,
+//     `NumActionsMissedCatchupWindow` and `NumActionsSkippedOverlap` straight
+//     from the schedule's own state (`server/schedules.go:694-696`). Those
+//     survive a restart of every flowstate process, which a counter in this
+//     one would not, so a local counter would disagree with the authority the
+//     API already serves — and, per CLAUDE.md, a view derived from the source
+//     of truth beats a parallel declaration of the same facts.
+//
+// Neither is closed forever. If a schedule ever fires through something this
+// repository runs, that is the moment for an instrument here, and it will find
+// the vocabulary already built.
+//
 // # Naming, continued: semconv first
 //
 // Where OpenTelemetry's semantic conventions already name a concept, the
@@ -205,6 +244,41 @@ const (
 	// produces.
 	PolicySurface = "flowstate.policy.surface"
 
+	// WebhookOutcome is what the receiver did with one delivery: a fixed
+	// enumeration written in this repository ([WebhookOutcomeAccepted],
+	// [WebhookOutcomeJoined], [WebhookOutcomeRefused]).
+	//
+	// It is on the same instrument as [WebhookRefusal] rather than on an
+	// instrument of its own, because the question #526 asks — "did delivery
+	// stop because the sender stopped, or because we are refusing everything" —
+	// is a ratio, and a refusals-only counter cannot answer it: zero refusals
+	// looks identical whether every delivery was accepted or none arrived.
+	WebhookOutcome = "flowstate.webhook.outcome"
+
+	// WebhookRefusal is why a delivery was refused, as the *receiver*
+	// classified it: a fixed enumeration written in this repository, the
+	// [WebhookRefusal…] values below, and written only on a refused delivery.
+	//
+	// Note what this is not, because [PolicySurface] one screen up refuses the
+	// thing it sounds like. The objection there is to a refusal's *sentence* —
+	// text that can quote what was refused, which is peer-influenced by
+	// construction. A member of a closed enumeration is the opposite: the value
+	// set is a property of this file, a sender cannot add to it, and the
+	// sentence it stands in for is still on the log line and the span where it
+	// belongs. #526's own cardinality table classifies this key the same way,
+	// for the same reason.
+	//
+	// Spelled with a dot rather than #526's proposed
+	// `flowstate.webhook.refusal_reason`, and the difference is this package's
+	// naming rule doing its job rather than a disagreement about the concept:
+	// an underscore is the wire and CEL surfaces' spelling (`run_id`,
+	// `delivery_id`), the telemetry side separates segments with dots, and
+	// TestTheSchemaClassifiesEveryKeyItPermits enforces it on every key this
+	// repository owns. The segment is dropped rather than joined by a dot
+	// because "the refusal" is already the reason: `flowstate.webhook.refusal
+	// = unverified` reads as the sentence it stands for.
+	WebhookRefusal = "flowstate.webhook.refusal"
+
 	// ErrorType is OpenTelemetry's own `error.type`, semconv v1.41.0 — the
 	// version pinned in go.mod and already used on spans by
 	// `netpolicy/tracing.go`. Its values here are the members of this
@@ -223,6 +297,30 @@ const (
 	DriverDurable = "durable"
 
 	SurfaceTaskDispatch = "task.dispatch"
+
+	// The [WebhookOutcome] members. "Joined" is its own outcome rather than a
+	// kind of acceptance because the receiver answers it differently (200
+	// rather than 202) and it means something different to an operator: the
+	// sender is retrying an event that already has a run, which is health on
+	// the receiver's side and possibly a misconfiguration on the sender's.
+	WebhookOutcomeAccepted = "accepted"
+	WebhookOutcomeJoined   = "joined"
+	WebhookOutcomeRefused  = "refused"
+
+	// The [WebhookRefusal] members: every way `server.WebhookReceiver`
+	// refuses a delivery, one member per refusal site, named for the receiver's
+	// decision rather than for the status code it answers with — two sites
+	// answer 503 for unrelated reasons, and an operator paging on "we are
+	// shedding load" must not be woken by "Temporal was unreachable".
+	WebhookRefusalMethod          = "method"
+	WebhookRefusalInFlightLimit   = "in_flight_limit"
+	WebhookRefusalBodyTooLarge    = "body_too_large"
+	WebhookRefusalBodyUnreadable  = "body_unreadable"
+	WebhookRefusalUnrouted        = "unrouted"
+	WebhookRefusalUnverified      = "unverified"
+	WebhookRefusalBodyUndecodable = "body_undecodable"
+	WebhookRefusalNotStarted      = "not_started"
+	WebhookRefusalInputsRejected  = "inputs_rejected"
 
 	// ErrorTypePanic is the [ErrorType] value for an execution that did not
 	// return at all.
@@ -293,6 +391,8 @@ var Table = []Attribute{
 	{Key: TaskOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
 	{Key: Driver, Class: ClassConstruction, Chooser: "this repository: local, durable"},
 	{Key: PolicySurface, Class: ClassConstruction, Chooser: "this repository's deny-by-default surfaces"},
+	{Key: WebhookOutcome, Class: ClassConstruction, Chooser: "this repository: accepted, joined, refused"},
+	{Key: WebhookRefusal, Class: ClassConstruction, Chooser: "this repository's webhook refusal classification"},
 	{Key: ErrorType, Class: ClassConstruction, Chooser: "this repository's error classification (v1.ErrorKind)", Convention: "OpenTelemetry semconv v1.41.0"},
 
 	{Key: "flowstate.delivery.id", Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
@@ -356,6 +456,31 @@ const (
 	// save cardinality would take the error rate with it.
 	InstrumentTaskExecutions = "flowstate.task.executions"
 
+	// InstrumentTaskRetries counts task executions that are not the first
+	// attempt at their step — "are retries climbing", #526's third question.
+	//
+	// A retry and not an attempt: the first attempt is already counted by
+	// [InstrumentTaskExecutions], so counting it again here would make the two
+	// instruments differ by a constant and give an operator a "retry rate" that
+	// is one whenever anything runs at all. Retries over executions is the
+	// ratio that means something.
+	//
+	// It is also what makes [InstrumentTaskDuration] readable, which is a
+	// second reason it is worth its own series: that histogram measures one
+	// *execution*, so a step retried four times contributes five measurements,
+	// and without this nothing says whether a heavy tail is slow work or a
+	// dependency being asked five times.
+	InstrumentTaskRetries = "flowstate.task.retries"
+
+	// InstrumentWebhookDeliveries counts webhook deliveries by what the
+	// receiver did with them, and — on the refused ones — why.
+	//
+	// Server-side only, deliberately: a webhook receiver is a thing the server
+	// runs, so there is no local-driver half to agree with and no
+	// [Driver] attribute on it. That is not the "both drivers must agree"
+	// invariant being waived, it is that surface having one driver.
+	InstrumentWebhookDeliveries = "flowstate.webhook.deliveries"
+
 	// InstrumentPolicyDenials counts refusals by a deny-by-default surface.
 	// A rate here is the difference between "traffic stopped" and "we are
 	// refusing all of it", which is a question an operator asks at 3am and
@@ -412,6 +537,16 @@ var Instruments = []Instrument{
 		Name:        InstrumentTaskExecutions,
 		Description: "task executions, by outcome",
 		Keys:        []string{TaskName, TaskOutcome, Driver, ErrorType},
+	},
+	{
+		Name:        InstrumentTaskRetries,
+		Description: "task executions that are a retry of their step",
+		Keys:        []string{TaskName, Driver},
+	},
+	{
+		Name:        InstrumentWebhookDeliveries,
+		Description: "webhook deliveries, by what the receiver did with them",
+		Keys:        []string{WebhookOutcome, WebhookRefusal},
 	},
 	{
 		Name:        InstrumentPolicyDenials,

@@ -360,14 +360,30 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // *not* write this key from its own retry counter, which counts something else.
 // See [v1.StartTaskSpan]'s note on it.
 //
-// The attempt is deliberately *not* a metric attribute, only a span one: it is
-// bounded by a retry policy nobody promises to keep small, and a label whose
-// bound is somebody's configuration is the shape [metricschema] refuses.
+// The attempt is deliberately *not* a metric attribute: it is bounded by a
+// retry policy nobody promises to keep small, and a label whose bound is
+// somebody's configuration is the shape [metricschema] refuses. It is a span
+// attribute, and — since #526's second slice — an argument to
+// [v1.ObserveTask], which uses it to decide whether this execution is a retry
+// and counts it if so. Neither of those puts the number on a label: one series
+// says "a retry happened", and which attempt it was stays on the span.
 func observeTask(ctx context.Context, task *v1.Task, stepID string, run func(context.Context, trace.Span) (*v1.Node_Outputs, error)) (*v1.Node_Outputs, error) {
-	return v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable,
+	// Read once, before the observation, because [v1.ObserveTask] needs it to
+	// count retries and the span attribute below needs the same number: asking
+	// the substrate twice for one fact is how two readings of it come to
+	// disagree. Outside an activity — the guard exists because these functions
+	// are ordinary Go and the tests call them directly — there is no attempt to
+	// read, and 1 is what "not a retry" is spelled as.
+	attempt := 1
+	inActivity := activity.IsActivity(ctx)
+	if inActivity {
+		attempt = int(activity.GetInfo(ctx).Attempt)
+	}
+
+	return v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable, attempt,
 		func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
-			if span.IsRecording() && activity.IsActivity(ctx) {
-				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, int(activity.GetInfo(ctx).Attempt)))
+			if span.IsRecording() && inActivity {
+				span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, attempt))
 			}
 
 			return run(ctx, span)

@@ -17,6 +17,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -508,6 +509,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// because a wrong method costs nothing and should not be able to occupy
 		// the budget that real deliveries share.
 		w.Header().Set("Allow", http.MethodPost)
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalMethod)
 		http.Error(w, "a delivery is POSTed", http.StatusMethodNotAllowed)
 
 		return
@@ -523,6 +525,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.log.WarnContext(req.Context(), "refused a delivery: too many in flight",
 			"path", req.URL.Path, "limit", cap(r.inFlight))
 		w.Header().Set("Retry-After", "1")
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalInFlightLimit)
 		http.Error(w, "too many deliveries in flight", http.StatusServiceUnavailable)
 
 		return
@@ -534,6 +537,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if errors.As(err, &tooLarge) {
 			r.log.WarnContext(req.Context(), "refused a delivery: body past the bound",
 				"path", req.URL.Path, "limit", v1.MaxWebhookPayloadBytes)
+			recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalBodyTooLarge)
 			http.Error(w, "the delivery body is too large", http.StatusRequestEntityTooLarge)
 
 			return
@@ -541,6 +545,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		r.log.WarnContext(req.Context(), "refused a delivery: body could not be read",
 			"path", req.URL.Path, "error", err)
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalBodyUnreadable)
 		http.Error(w, "the delivery body could not be read", http.StatusBadRequest)
 
 		return
@@ -554,6 +559,12 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// the answer that stands out.
 		_ = v1.SignWebhookBody(r.decoy, body)
 		r.refuse(req, "no such webhook", "path", req.URL.Path)
+		// Counted apart from a failed verification even though both answer the
+		// same 404 with the same sentence: the indistinguishability is what a
+		// *prober* is owed, and an operator reading their own receiver's
+		// metrics is not a prober. "Nobody can reach this endpoint" and "a
+		// sender's key is wrong" are different incidents.
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalUnrouted)
 		writeWebhookRefusal(w)
 
 		return
@@ -563,6 +574,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err := v1.VerifyWebhookDelivery(route.trigger, route.keys, headers, body, r.now()); err != nil {
 		r.refuse(req, "the delivery did not verify",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalUnverified)
 		writeWebhookRefusal(w)
 
 		return
@@ -576,6 +588,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		r.log.WarnContext(req.Context(), "a verified delivery did not decode",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalBodyUndecodable)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 
 		return
@@ -602,6 +615,11 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// purpose: what went wrong between this server and Temporal is not
 			// the sender's business even when the sender is genuine.
 			w.Header().Set("Retry-After", "5")
+			// A different member from the shed above, though both answer 503:
+			// the reason names the receiver's decision rather than the status,
+			// so "we are at our concurrency bound" and "Temporal did not
+			// answer" are two incidents an operator can alert on separately.
+			recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalNotStarted)
 			http.Error(w, "the delivery could not be started; retry", http.StatusServiceUnavailable)
 
 			return
@@ -611,6 +629,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// field it does not carry, an input that will not bind — which no retry
 		// fixes. Reported precisely, because whoever holds the signing key is
 		// entitled to know why their delivery did nothing.
+		recordWebhookRefusal(req.Context(), metricschema.WebhookRefusalInputsRejected)
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 
 		return
@@ -621,6 +640,15 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		"delivery", accepted.DeliveryID, "run", accepted.RunID, "joined", accepted.Joined)
 
 	status := http.StatusAccepted
+	outcome := metricschema.WebhookOutcomeAccepted
+	if accepted.Joined {
+		outcome = metricschema.WebhookOutcomeJoined
+	}
+	// The denominator every refusal rate above is read against, which is why
+	// the accepted path is counted at all: without it, "no refusals" and "no
+	// deliveries" are the same picture.
+	recordWebhookDelivery(req.Context(), outcome, "")
+
 	if accepted.Joined {
 		// 200 rather than 202: nothing was accepted for processing, because this
 		// delivery was already processed. A sender retrying gets a success either

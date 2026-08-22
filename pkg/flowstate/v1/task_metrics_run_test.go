@@ -61,3 +61,24 @@ func TestALocalTaskPanicIsRecordedAsAFailure(t *testing.T) {
 
 	conformance.AssertPanicRecordedAsFailure(t, reader, metricschema.DriverLocal)
 }
+
+// TestALocalRetryIsCounted is the local half of #526's retry counter: a step
+// whose task fails once is tried twice, and exactly one of those is counted as
+// a retry.
+//
+// The durable half is engine.TestADurableRetryIsCounted, and the two are one
+// case ([conformance.AssertRetryRecorded]) because the drivers retry by
+// entirely different mechanisms — a loop here, a rescheduled activity there —
+// which is precisely when one number written in two places drifts.
+//
+// No t.Parallel, for [conformance.RecordMetrics]'s reason above.
+func TestALocalRetryIsCounted(t *testing.T) {
+	conformance.RegisterFlakyTask(t)
+
+	reader := conformance.RecordMetrics(t)
+
+	_, err := v1.Run(t.Context(), conformance.RetryWorkflow())
+	require.NoError(t, err, "a step that fails once and then succeeds must succeed")
+
+	conformance.AssertRetryRecorded(t, reader, metricschema.DriverLocal)
+}

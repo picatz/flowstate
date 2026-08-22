@@ -109,6 +109,28 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 // (`panic(fmt.Sprintf("bad token %s", tok))`), which puts it in the same class
 // as an error message: the fact of the crash is exported, its words are not.
 //
+// attempt is which attempt at this step's task this execution is, counted from
+// one, and it is a parameter rather than something this function works out
+// because neither driver's counter is reachable from here: the local one is a
+// loop variable in `runStepWithPolicy`, the durable one is
+// `activity.GetInfo(ctx).Attempt`. Taking it here is what makes the retry
+// counter a property of the one call both drivers make, rather than two
+// recording sites that agree until one of them is edited. A caller with no
+// attempt to report — the local driver's denied-dispatch path, where no attempt
+// ever ran — passes 1, which records nothing.
+//
+// # Why the *count* of retries is shared when the attempt *number* is not
+//
+// [StartTaskSpan] deliberately writes `flowstate.attempt` on the durable side
+// only, because the number identifies an attempt the substrate owns and
+// remembers across a worker crash, while the local loop's integer is discarded
+// with the process — absence beats fabrication for a span somebody filters on.
+// A counter is not making that claim. It says a step was tried again, which is
+// a thing that happened under either driver, and which both drivers do the same
+// number of times for the same failure by [RetryAttemptsFor]. So the
+// classification differs from the span's on purpose, and it differs because the
+// two are answering different questions.
+//
 // driver is [metricschema.DriverLocal] or [metricschema.DriverDurable],
 // supplied by the caller because this function cannot tell: it is the same
 // code under both. It is an attribute rather than two instruments so that an
@@ -123,9 +145,17 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 // else: the per-key distinct-value cap applies whether or not the name turned
 // out to name anything. See that package for the rule and for what a bound does
 // when it is reached.
-func ObserveTask(ctx context.Context, task *Task, stepID, driver string, run func(context.Context, trace.Span) (*Node_Outputs, error)) (*Node_Outputs, error) {
+func ObserveTask(ctx context.Context, task *Task, stepID, driver string, attempt int, run func(context.Context, trace.Span) (*Node_Outputs, error)) (*Node_Outputs, error) {
 	ctx, span := StartTaskSpan(ctx, task, stepID)
 	started := time.Now()
+
+	// Counted where the retried attempt *starts*, not where the previous one
+	// decided to retry. The two differ by a backoff a cancellation can land in
+	// the middle of, and a retry counted at the decision would count attempts
+	// that never ran — a step cancelled during its backoff would report a retry
+	// nothing retried. It also means an attempt that panics is still counted as
+	// the retry it was, since the count is already recorded by then.
+	recordTaskRetry(ctx, task.GetName(), driver, attempt)
 
 	// Set on the normal path, immediately after run returns. False when the
 	// deferred function below runs means one thing only: run did not return, so
@@ -211,6 +241,32 @@ func recordTaskExecution(ctx context.Context, taskName, driver, errorType string
 	bounded := metricschema.WithAttributes(attrs...)
 	duration.Record(ctx, elapsed.Seconds(), bounded)
 	executions.Add(ctx, 1, bounded)
+}
+
+// recordTaskRetry counts this execution when it is a retry of its step, and
+// does nothing when it is the step's first attempt.
+//
+// The guard is here rather than at the two call sites for the reason every
+// other value in this file is: a rule written once cannot be applied
+// differently by one driver than by the other. attempt is 1-based, matching
+// both `activity.GetInfo(ctx).Attempt` and `runStepWithPolicy`'s loop, so
+// "attempt > 1" is the whole definition of a retry — and a caller that has no
+// attempt to report passes 1 and is counted as no retry, which is right: a
+// dispatch refused before anything ran did not retry anything.
+func recordTaskRetry(ctx context.Context, taskName, driver string, attempt int) {
+	if attempt <= 1 {
+		return
+	}
+
+	meter := otel.GetMeterProvider().Meter(taskMeterName)
+
+	retries, _ := meter.Int64Counter(metricschema.InstrumentTaskRetries,
+		metric.WithDescription("task executions that are a retry of their step"))
+
+	retries.Add(ctx, 1, metricschema.WithAttributes(
+		attribute.String(metricschema.TaskName, taskName),
+		attribute.String(metricschema.Driver, driver),
+	))
 }
 
 // RecordPolicyDenial counts one refusal by a deny-by-default surface.

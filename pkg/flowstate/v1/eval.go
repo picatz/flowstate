@@ -2278,7 +2278,10 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// execution instruments have to see the refused dispatch on both
 		// drivers too, or a local run's error rate would omit exactly the
 		// failures an operator most wants counted.
-		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
+		// Attempt 1, and never more: a refused dispatch is refused once, above
+		// the retry loop, so this execution is nobody's retry — see
+		// [ObserveTask]'s own note on the parameter.
+		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal, 1,
 			func(context.Context, trace.Span) (*Node_Outputs, error) { return nil, err })
 
 		return nil, err
@@ -2314,7 +2317,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID)
+		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID, attempt)
 		if err == nil {
 			return out, nil
 		}
@@ -2472,8 +2475,14 @@ func (e *causeEnrichedError) Unwrap() error {
 // [withCancellationCause] enriches, because the enrichment adds *text* and the
 // span records only a classification — and the classification of the enriched
 // error is the same one, since it wraps rather than replaces.
-func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
-	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+//
+// attempt is this driver's loop counter, handed to [ObserveTask] so that the
+// retry counter is recorded by the call both drivers make. It does not become
+// the `flowstate.attempt` span attribute, which stays durable-only for the
+// reason [StartTaskSpan] gives; [ObserveTask]'s doc has why a *count* of
+// retries is nonetheless shared when the attempt *number* is not.
+func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string, attempt int) (*Node_Outputs, error) {
+	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal, attempt,
 		func(ctx context.Context, _ trace.Span) (*Node_Outputs, error) {
 			return runStepAttempt(ctx, task, timeout, scope)
 		})

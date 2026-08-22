@@ -166,6 +166,18 @@ func AssertNoMetrics(tb testing.TB, reader *sdkmetric.ManualReader) {
 	}
 }
 
+// AssertDeclaredAttributesOnly is [assertDeclaredAttributesOnly] for a caller
+// outside this package — the webhook receiver's own metrics test, which is
+// server-side and therefore has no second driver to compare against, but whose
+// labels are held to exactly the same rule. The negative direction is the half
+// that guards something, so it is the half that must not be re-implemented per
+// subsystem.
+func AssertDeclaredAttributesOnly(tb testing.TB, collected map[string][]Point) {
+	tb.Helper()
+
+	assertDeclaredAttributesOnly(tb, collected)
+}
+
 // assertDeclaredAttributesOnly is the negative direction.
 //
 // Every attribute key on every collected point has to be one the instrument

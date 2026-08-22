@@ -23,6 +23,8 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -865,4 +867,56 @@ func TestAFailedWebhookReceiverGrantsNoTrust(t *testing.T) {
 	}))
 	require.NoError(t, err,
 		"a workflow from a NewWebhookReceiver call that ultimately failed was trusted anyway")
+}
+
+// TestAcceptedDeliveriesAreCountedApartFromJoinedOnes is the denominator half
+// of #526's webhook accounting, and the reason the receiver counts acceptances
+// at all rather than only refusals.
+//
+// A refusals-only counter reads identically whether every delivery is being
+// refused or none is arriving, which is precisely the pair of incidents #526
+// says an operator cannot currently tell apart. Counting the accepted ones is
+// what makes the refusal rate a rate.
+//
+// A redelivery is counted as `joined` rather than as `accepted` because the two
+// mean different things to whoever is reading: the receiver answered a
+// duplicate, which is its dedupe working, and a sender producing nothing but
+// joins is a sender misbehaving.
+//
+// No t.Parallel: [conformance.RecordMetrics] installs the process's meter
+// provider, so this test runs in the serial phase, before the parallel ones in
+// this file are released.
+func TestAcceptedDeliveriesAreCountedApartFromJoinedOnes(t *testing.T) {
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	reader := conformance.RecordMetrics(t)
+
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	body := deliveryBody("evt_counted")
+
+	first := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
+	require.Equal(t, http.StatusAccepted, first.StatusCode)
+
+	second := deliver(t, receiver, "/webhooks/order-webhook/storefront", body, signed)
+	require.Equal(t, http.StatusOK, second.StatusCode)
+
+	collected := conformance.CollectFlowstateMetrics(t, reader)
+
+	counted := map[string]uint64{}
+	for _, point := range collected[metricschema.InstrumentWebhookDeliveries] {
+		require.Emptyf(t, point.Attributes[metricschema.WebhookRefusal],
+			"an accepted delivery carries a refusal reason: %v", point.Attributes)
+		counted[point.Attributes[metricschema.WebhookOutcome]] += point.Count
+	}
+
+	require.Equal(t, map[string]uint64{
+		metricschema.WebhookOutcomeAccepted: 1,
+		metricschema.WebhookOutcomeJoined:   1,
+	}, counted, "a delivery and its redelivery were not counted apart")
+
+	conformance.AssertDeclaredAttributesOnly(t, collected)
 }

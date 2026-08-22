@@ -100,3 +100,29 @@ func runTaskMetricWorkflow(t *testing.T) (*v1.Workflow_StepOutputs, error) {
 
 	return outputs, nil
 }
+
+// TestADurableRetryIsCounted is the durable half of #526's retry counter, and
+// the half that exercises the mechanism this driver actually uses: nothing here
+// loops. Temporal schedules the activity a second time, so the retry is counted
+// at a fresh entry into [engine.Task], from `activity.GetInfo`'s attempt rather
+// than from any counter this process keeps.
+//
+// The local half is flowstatev1_test.TestALocalRetryIsCounted, over the same
+// [conformance.AssertRetryRecorded].
+func TestADurableRetryIsCounted(t *testing.T) {
+	conformance.RegisterFlakyTask(t)
+
+	reader := conformance.RecordMetrics(t)
+
+	testSuite := &testsuite.WorkflowTestSuite{}
+	env := testSuite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(engine.Run)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: conformance.RetryWorkflow()})
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError(),
+		"a step that fails once and then succeeds must succeed")
+
+	conformance.AssertRetryRecorded(t, reader, metricschema.DriverDurable)
+}
