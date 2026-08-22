@@ -111,7 +111,7 @@ func loadPluginCatalog(cmd *cobra.Command) (*v1.PluginCatalog, error) {
 	// verb printed a plugin's task, and nothing distinguishes the two sources
 	// in the output. On the account stream, so a `-o json` consumer's document
 	// is untouched.
-	if os.Getenv(pluginSearchPathEnv) != "" && !cmd.Flags().Changed("plugin-dir") {
+	if ambientPluginSearchPath() != "" && !cmd.Flags().Changed("plugin-dir") {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"$%s is set and no plugin was launched: --%s named %s, and this reads it instead.\n",
 			pluginSearchPathEnv, pluginCatalogFlag, path)

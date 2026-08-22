@@ -156,6 +156,16 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	}, nil
 }
 
+// ambientPluginSearchPath is what the environment says the search path is,
+// unsplit and unresolved.
+//
+// A function rather than an [os.Getenv] call at each site, so this file stays
+// the one place that reads $FLOWSTATE_PLUGIN_DIR — which is what the env-var
+// reference's `read:` column names, and what
+// docsgen's TestEveryDocumentedReadLocationIsWhereItIsRead checks. A second
+// reader elsewhere sends anyone following that column to the wrong file.
+func ambientPluginSearchPath() string { return os.Getenv(pluginSearchPathEnv) }
+
 // splitSearchPath splits a path-list environment variable, dropping empties.
 //
 // An empty entry is dropped rather than resolved, because it resolves to the
