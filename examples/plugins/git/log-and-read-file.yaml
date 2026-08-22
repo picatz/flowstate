@@ -48,26 +48,33 @@ steps:
       # repository is public; see ls-remote-private.yaml for the one field
       # that changes against a private one, unchanged for this task too.
 
+  # The commit git.log named, bound once. Six reads of `commits[0]` - the
+  # ref below, three fields in the log line, and two outputs - are six places
+  # a later edit could pick a different element by accident, so the element
+  # gets a name (docs/STYLE.md R5, `flow lint`).
+  - id: last_commit
+    value: ${steps.history.commits[0]}
+
   - id: content
     git.read_file:
       url: ${vars.repo}
       path: ${vars.path}
-      ref: ${steps.history.commits[0].sha}
+      ref: ${steps.last_commit.value.sha}
       # ref bound to git.log's own most-recent-touching commit - the audit
       # chain: read exactly what that commit left behind, not whatever the
       # default branch's tip happens to hold by the time this step runs.
 
   - id: announce
     log:
-      message: "${'%s at %s - last touched by %s in %s (\"%s\"), %d bytes there'.format([vars.path, vars.repo, steps.history.commits[0].author.name, steps.history.commits[0].sha, steps.history.commits[0].message, steps.content.size])}"
+      message: "${'%s at %s - last touched by %s in %s (\"%s\"), %d bytes there'.format([vars.path, vars.repo, steps.last_commit.value.author.name, steps.last_commit.value.sha, steps.last_commit.value.message, steps.content.size])}"
 
 outputs:
   last_editor:
-    value: ${steps.history.commits[0].author.name}
+    value: ${steps.last_commit.value.author.name}
     description: who git.log says touched this path most recently - the author line, unverified, since anyone with push access controls what it says
 
   last_touch_sha:
-    value: ${steps.history.commits[0].sha}
+    value: ${steps.last_commit.value.sha}
     description: the commit this task binds to, rather than a branch name a later force-push could move
 
   history_size:

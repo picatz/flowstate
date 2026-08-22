@@ -33,9 +33,15 @@ steps:
       # this plugin where a token is not optional at all: writing always
       # needs a credential, because no forge accepts an anonymous push.
 
+  # The ref this file goes on to name, bound once rather than indexed at each
+  # of the three places that read a field off it (docs/STYLE.md R5,
+  # `flow lint`).
+  - id: first_branch
+    value: ${steps.refs.refs[0]}
+
   - id: announce
     log:
-      message: "${'%s - %d branch refs found, including %s at %s'.format([vars.repo, steps.refs.refs.size(), steps.refs.refs[0].name, steps.refs.refs[0].sha])}"
+      message: "${'%s - %d branch refs found, including %s at %s'.format([vars.repo, steps.refs.refs.size(), steps.first_branch.value.name, steps.first_branch.value.sha])}"
 
 outputs:
   branch_count:
@@ -43,5 +49,5 @@ outputs:
     description: how many branch refs this repository currently advertises
 
   first_branch_sha:
-    value: ${steps.refs.refs[0].sha}
+    value: ${steps.first_branch.value.sha}
     description: the content this task binds to, rather than a name a later force-push could move
