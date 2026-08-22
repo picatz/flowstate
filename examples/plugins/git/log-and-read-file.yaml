@@ -32,21 +32,19 @@ description: Audits one file in a public repository - who last changed it, what 
 # names a ref at all (see read_file.go's own doc comment on doReadFile) -
 # without that, this chain would fail the moment the sha sat behind more
 # than a single fetched commit.
-
 vars:
-  repo: https://github.com/octocat/Hello-World.git
   path: README
-
+  repo: https://github.com/octocat/Hello-World.git
 steps:
   - id: history
     git.log:
-      url: ${vars.repo}
-      path: ${vars.path}
       max_commits: 5
       # No ref: means "the remote's default branch" - the same default
       # git.ls_remote's own examples leave unnamed. No token: this
       # repository is public; see ls-remote-private.yaml for the one field
       # that changes against a private one, unchanged for this task too.
+      path: ${vars.path}
+      url: ${vars.repo}
 
   # The commit git.log named, bound once. Six reads of `commits[0]` - the
   # ref below, three fields in the log line, and two outputs - are six places
@@ -54,37 +52,30 @@ steps:
   # gets a name (docs/STYLE.md R5, `flow lint`).
   - id: last_commit
     value: ${steps.history.commits[0]}
-
   - id: content
     git.read_file:
-      url: ${vars.repo}
       path: ${vars.path}
       ref: ${steps.last_commit.value.sha}
       # ref bound to git.log's own most-recent-touching commit - the audit
       # chain: read exactly what that commit left behind, not whatever the
       # default branch's tip happens to hold by the time this step runs.
-
+      url: ${vars.repo}
   - id: announce
     log:
-      message: "${'%s at %s - last touched by %s in %s (\"%s\"), %d bytes there'.format([vars.path, vars.repo, steps.last_commit.value.author.name, steps.last_commit.value.sha, steps.last_commit.value.message, steps.content.size])}"
-
+      message: ${"%s at %s - last touched by %s in %s (\"%s\"), %d bytes there".format([vars.path, vars.repo, steps.last_commit.value.author.name, steps.last_commit.value.sha, steps.last_commit.value.message, steps.content.size])}
 outputs:
   last_editor:
     value: ${steps.last_commit.value.author.name}
     description: who git.log says touched this path most recently - the author line, unverified, since anyone with push access controls what it says
-
   last_touch_sha:
     value: ${steps.last_commit.value.sha}
     description: the commit this task binds to, rather than a branch name a later force-push could move
-
   history_size:
     value: ${steps.history.commits.size()}
     description: how many of this path's commits git.log found, capped at max_commits (see LogOutputs.truncated for whether more exist)
-
   current_content:
     value: ${steps.content.content}
     description: the file's exact bytes at last_touch_sha, read by git.read_file bound to the commit git.log itself found - not necessarily the default branch's tip today
-
   current_is_binary:
     value: ${steps.content.binary}
     description: git.read_file's own NUL-byte heuristic - false here, since README is plain text
