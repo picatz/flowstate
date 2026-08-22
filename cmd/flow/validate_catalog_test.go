@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,6 +360,55 @@ func TestValidateRefusesACatalogItCannotRead(t *testing.T) {
 				"a catalog that failed to load was reported as the file's tasks being unknown:\n%s", output)
 		})
 	}
+}
+
+// TestValidateRefusesACatalogThatDefinesOneTaskTwice is the #863 review's
+// second finding at the surface an author uses.
+//
+// An edited catalog can list one qualified task twice, and a registry keeps one
+// definition per name — so without a refusal, which definition this file is
+// checked against is decided by the order the lines appear in. A live host
+// cannot produce such a document: a manifest providing a task twice is refused
+// at launch, and the host's qualification makes a cross-plugin collision
+// unreachable.
+//
+// What is asserted is the whole rule: the command fails, both plugin entries
+// are named so an author knows which two to look at, and *nothing was
+// registered* — which shows as the plugin-free installation question rather
+// than as the file passing against whichever definition won.
+func TestValidateRefusesACatalogThatDefinesOneTaskTwice(t *testing.T) {
+	bin := buildFlowBinary(t)
+	catalog := pluginCatalogFor(t, bin)
+
+	saved, err := os.ReadFile(catalog)
+	require.NoError(t, err)
+
+	// The document's own plugin entry, duplicated: two entries named "example",
+	// each listing example.greet. Written by editing the catalog `flow plugins`
+	// produced, because that is how one of these comes to exist.
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(saved, &doc))
+
+	plugins, ok := doc["plugins"].([]any)
+	require.True(t, ok && len(plugins) == 1, "the catalog does not hold exactly one plugin: %v", doc["plugins"])
+	doc["plugins"] = []any{plugins[0], plugins[0]}
+
+	edited, err := json.Marshal(doc)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "doubled.json")
+	require.NoError(t, os.WriteFile(path, edited, 0o600))
+
+	output, err := runFlowCapturing(t, bin, "validate", "--"+pluginCatalogFlag, path, exampleGreetWorkflow)
+	require.Error(t, err, "a catalog defining one task twice was accepted:\n%s", output)
+
+	assert.Contains(t, output, "example.greet",
+		"the refusal does not name the task that was defined twice:\n%s", output)
+	assert.Equal(t, 2, strings.Count(output, `"example"`),
+		"the refusal does not name both plugin entries that defined it:\n%s", output)
+	assert.NotContains(t, output, "no plugin task",
+		"a catalog that failed to load was reported as the file's tasks being unknown, "+
+			"which means definitions from it reached the registry:\n%s", output)
 }
 
 // TestFixWritesNothingWhenACatalogWillNotLoad is that decision on the one verb
