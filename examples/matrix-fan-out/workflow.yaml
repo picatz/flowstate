@@ -40,11 +40,11 @@ outputs:
   # this is how many targets were actually built, which is the number worth
   # promising a caller.
   targets_built:
-    value: ${size(steps.build.results)}
+    value: ${steps.built_count.value}
     description: how many matrix targets this run built
 
   summary:
-    value: built ${size(steps.build.results)} of ${size(vars.os) * size(vars.arch)} combinations
+    value: built ${steps.built_count.value} of ${size(vars.os) * size(vars.arch)} combinations
     description: what the run did, in one sentence
 
 steps:
@@ -73,6 +73,14 @@ steps:
 
   # `results` outlives the block, so the count is readable from here. Five, not
   # six: the excluded combination never became an item.
+  #
+  # Counted once here rather than at each of the three places that report it -
+  # the `report` line below and both `outputs:` above - so a later change to
+  # what counts as built cannot land in two of the three (docs/STYLE.md R5,
+  # `flow lint`).
+  - id: built_count
+    value: ${size(steps.build.results)}
+
   - id: report
     log:
-      message: built ${size(steps.build.results)} target(s)
+      message: built ${steps.built_count.value} target(s)

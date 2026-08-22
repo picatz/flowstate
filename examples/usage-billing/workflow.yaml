@@ -62,21 +62,28 @@ steps:
   # Back to `int`: money is cents, and `billable_blocks` is a `double`
   # produced by `ceil` — CEL will not silently mix the two in a
   # multiplication, so the result is converted back before it is priced.
+  #
+  # Converted once, here, rather than at each of the three places that price
+  # or report it. The conversion is part of what a billable block *is* in this
+  # file, so it gets a name (docs/STYLE.md R5, `flow lint`).
+  - id: whole_blocks
+    value: ${int(steps.billable_blocks.value)}
+
   - id: cost_cents
-    value: ${int(steps.billable_blocks.value) * inputs.price_per_1000_cents}
+    value: ${steps.whole_blocks.value * inputs.price_per_1000_cents}
 
   - id: announce
     log:
       message: >-
         ${"%d overage call(s), %d block(s), %d cent(s) owed".format([
-            steps.overage.value, int(steps.billable_blocks.value), steps.cost_cents.value])}
+            steps.overage.value, steps.whole_blocks.value, steps.cost_cents.value])}
 
 outputs:
   overage_calls:
     value: ${steps.overage.value}
     description: calls made past the included quota, never negative
   billable_blocks:
-    value: ${int(steps.billable_blocks.value)}
+    value: ${steps.whole_blocks.value}
     description: whole 1,000-call blocks charged, rounded up from any partial block
   cost_cents:
     value: ${steps.cost_cents.value}
