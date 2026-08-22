@@ -8,6 +8,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TaskRuntimeConfig is the immutable configuration owned by one worker: the
@@ -124,51 +125,49 @@ func orEmptyIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
 // say which step ran. See the span rules in activities.go.
 
 func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, stepID)
-	defer span.End()
+	out, err := observeTask(ctx, task, stepID, func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
+		// The deployment's task-shape policy (#187), checked here against the
+		// same identity parameter [executor.dispatch] already threads through
+		// for authorization — the fix for the gap found in review: this is the
+		// arm [v1.TaskNeedsAuthority] selects, so it is exactly the tasks that
+		// resolve secrets and act under the run's own identity that a
+		// deployment's policy most needs to be able to gate, and the first cut
+		// of #187 slice 1 checked [Task]/[TaskInScope] but not this one or
+		// [TaskInScopeAuthorized] — see [checkTaskDispatchPolicy]'s own doc.
+		// Checked before [a.context] installs the runtime a resolved secret
+		// reference would use, so a denied dispatch still resolves no
+		// credential (invariant 7's echo, restated for this arm).
+		if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+			return nil, err
+		}
 
-	// The deployment's task-shape policy (#187), checked here against the
-	// same identity parameter [executor.dispatch] already threads through
-	// for authorization — the fix for the gap found in review: this is the
-	// arm [v1.TaskNeedsAuthority] selects, so it is exactly the tasks that
-	// resolve secrets and act under the run's own identity that a
-	// deployment's policy most needs to be able to gate, and the first cut
-	// of #187 slice 1 checked [Task]/[TaskInScope] but not this one or
-	// [TaskInScopeAuthorized] — see [checkTaskDispatchPolicy]'s own doc.
-	// Checked before [a.context] installs the runtime a resolved secret
-	// reference would use, so a denied dispatch still resolves no
-	// credential (invariant 7's echo, restated for this arm).
-	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
-		return nil, err
-	}
+		ctx, stop := withHeartbeat(ctx)
+		defer stop()
 
-	ctx, stop := withHeartbeat(ctx)
-	defer stop()
+		ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 
-	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
-	out, err := task.Eval(ctx, nil)
-	recordTaskOutcome(span, err)
+		return task.Eval(ctx, nil)
+	})
 
 	return out, activityError(task.GetName(), err, continueOnError)
 }
 
 func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, stepID)
-	defer span.End()
+	out, err := observeTask(ctx, task, stepID, func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
+		// See [TaskAuthorized]'s identical check, this arm's sibling on the
+		// other axis (scope-carrying rather than not) of [executor.dispatch]'s
+		// four-way split.
+		if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+			return nil, err
+		}
 
-	// See [TaskAuthorized]'s identical check, this arm's sibling on the
-	// other axis (scope-carrying rather than not) of [executor.dispatch]'s
-	// four-way split.
-	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
-		return nil, err
-	}
+		ctx, stop := withHeartbeat(ctx)
+		defer stop()
 
-	ctx, stop := withHeartbeat(ctx)
-	defer stop()
+		ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 
-	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
-	out, err := task.EvalInScope(ctx, scope)
-	recordTaskOutcome(span, err)
+		return task.EvalInScope(ctx, scope)
+	})
 
 	return out, activityError(task.GetName(), err, continueOnError)
 }

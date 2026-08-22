@@ -11,6 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -2268,9 +2272,14 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// — the netpolicy round tripper makes the same argument one package over
 		// for a refused request. The span covers no work, and there is none: the
 		// dispatch was refused before an attempt ran.
-		_, span := StartTaskSpan(ctx, resolved, stepID)
-		RecordTaskOutcome(span, err)
-		span.End()
+		// Observed rather than merely spanned, for the same reason: durably
+		// this dispatch produces a task span *and* — since the denial is
+		// counted by the shared [CheckTaskPolicy] above — a denial. The
+		// execution instruments have to see the refused dispatch on both
+		// drivers too, or a local run's error rate would omit exactly the
+		// failures an operator most wants counted.
+		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
+			func(context.Context, trace.Span) (*Node_Outputs, error) { return nil, err })
 
 		return nil, err
 	}
@@ -2464,13 +2473,10 @@ func (e *causeEnrichedError) Unwrap() error {
 // span records only a classification — and the classification of the enriched
 // error is the same one, since it wraps rather than replaces.
 func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
-	ctx, span := StartTaskSpan(ctx, task, stepID)
-	defer span.End()
-
-	out, err := runStepAttempt(ctx, task, timeout, scope)
-	RecordTaskOutcome(span, err)
-
-	return out, err
+	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+		func(ctx context.Context, _ trace.Span) (*Node_Outputs, error) {
+			return runStepAttempt(ctx, task, timeout, scope)
+		})
 }
 
 // runStepAttempt performs one attempt, bounded by the per-attempt timeout.

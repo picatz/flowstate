@@ -224,6 +224,16 @@ func TestRunWorkflowTaskPolicy(t *testing.T) {
 						"diagnostics rule asks a deployment refusal to state")
 				require.Contains(t, workflowErr.Error(), "task-shape policy",
 					"the denial must read as a deployment refusal, not an ordinary task failure")
+				require.Contains(t, workflowErr.Error(), tc.DeniedIdentity,
+					"the denial must name the identity the rule was evaluated against, in the "+
+						"same words the local driver uses (#652 item 3)")
+
+				// The half the drivers are supposed to disagree about: a
+				// dispatch through an activity always has a server in front
+				// of it, so a durable denial must never read as a rehearsal
+				// — the local copy of this loop asserts the opposite.
+				require.NotContains(t, workflowErr.Error(), "local rehearsal",
+					"a durable denial must not claim to have come from a rehearsal")
 				return
 			}
 

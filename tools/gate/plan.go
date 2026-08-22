@@ -3,6 +3,7 @@ package main
 import (
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -410,23 +411,12 @@ func affectedPackages(pkgs []pkgMeta, changed map[string]bool) []string {
 	var out []string
 	for i := range pkgs {
 		p := &pkgs[i]
-		hit := reaches(p.ImportPath)
-		if !hit {
-			for _, t := range p.TestImports {
-				if reaches(t) {
-					hit = true
-					break
-				}
-			}
-		}
-		if !hit {
-			for _, t := range p.XTestImports {
-				if reaches(t) {
-					hit = true
-					break
-				}
-			}
-		}
+		// || short-circuits in the order written, so a package whose own
+		// path reaches a change is never asked about its test imports —
+		// the same work the `break`s here used to save.
+		hit := reaches(p.ImportPath) ||
+			slices.ContainsFunc(p.TestImports, reaches) ||
+			slices.ContainsFunc(p.XTestImports, reaches)
 		if hit {
 			out = append(out, p.ImportPath)
 		}
@@ -629,10 +619,5 @@ func pluginSkipNotices(p plan, moduleExists func(mod string) bool) []string {
 }
 
 func contains(paths []string, want string) bool {
-	for _, ip := range paths {
-		if ip == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(paths, want)
 }
