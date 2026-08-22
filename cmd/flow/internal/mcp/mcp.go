@@ -787,16 +787,87 @@ func dispatch(
 			out = deps.Redact(response)
 		}
 
-		encoded, err := protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(out)
+		encode := func(message proto.Message) ([]byte, error) {
+			return protojson.MarshalOptions{EmitUnpopulated: true}.Marshal(message)
+		}
+
+		// The bound this surface holds every answer to — see [MaxResultBytes].
+		//
+		// A GetResponse is reduced rather than refused, because it is the one
+		// answer here whose size the *workload* chooses and the one this
+		// surface therefore knows how to shed: see [getResponseLadder] for the
+		// order and for why no other response message has one. `flow get` is
+		// also the tool an agent reaches for when a run has gone wrong, which
+		// is exactly when its transcript is largest — refusing then answers
+		// "your run is too big to look at" to the question "what happened".
+		//
+		// Everything else is still refused, and the comment that used to sit
+		// here is still the reason: nothing knows which field of an arbitrary
+		// response could be dropped without changing what it says. Two of
+		// those refusals are load-bearing rather than residual:
+		//
+		//   - A **listing** must not shed runs. ListResponse.next_page_token
+		//     addresses where the server's scan stopped, not where a reduction
+		//     here stopped, and this package cannot mint one — so returning
+		//     fewer runs beside the server's token would leave the dropped
+		//     ones behind a cursor that has already moved past them, absent
+		//     from every later page rather than delayed. That is the defect
+		//     server/list.go bounds its own batch size to make
+		//     unrepresentable, and it must not be reintroduced one layer up.
+		//     Returning fewer runs with an *empty* token is worse still: a
+		//     truncated listing claiming to be the whole of it. `page_size` is
+		//     the caller's own honest lever, which is what the refusal names.
+		//   - A **ValidationReport** must not shed diagnostics, for the reason
+		//     diagnostics exist: a file reported with some of its problems
+		//     tells an author to fix what they were shown and ship the rest.
+		if response, ok := out.(*v1.GetResponse); ok {
+			rungs, notes := getResponseLadder(response, encode)
+
+			encoded, rung, err := FitResult(rungs...)
+			if err != nil {
+				return ToolError(err), nil
+			}
+
+			// The bound holds even if the ladder could not reach it.
+			//
+			// [FitResult]'s contract is to return its floor whether or not it
+			// fits, which is right for a caller that wraps the document in
+			// something it can annotate — but this tool answers with the bytes
+			// themselves, so an oversized floor here would be the bound quietly
+			// not applying. Every field the ladder knows how to shrink is
+			// bounded now, so reaching this is either a response carrying a
+			// field added since, or one that arrived invalid and could not be
+			// reduced without being made more so. Both are refusals rather than
+			// answers. Reported by Codex on picatz/flowstate#853.
+			if len(encoded) > MaxResultBytes {
+				return ToolError(fmt.Errorf(
+					"%s answered with %d bytes and could not be reduced below this surface's %d byte "+
+						"limit, so nothing was returned rather than a document cut short; read the run "+
+						"with `flow get`, or have the workflow carry less",
+					ToolName(method.Name), len(encoded), MaxResultBytes)), nil
+			}
+
+			content := []mcp.Content{&mcp.TextContent{Text: string(encoded)}}
+
+			// What left, as a second content block rather than a field in the
+			// document. The first block stays exactly the protojson of a
+			// GetResponse — the same bytes `--output json` prints, which is
+			// what keeps this surface from being a second dialect — so a
+			// caller that parses the answer is never handed a shape the schema
+			// does not describe. An MCP result is a list of blocks precisely
+			// so an annotation need not be smuggled into the payload.
+			if notes[rung] != "" {
+				content = append(content, &mcp.TextContent{Text: notes[rung]})
+			}
+
+			return &mcp.CallToolResult{Content: content}, nil
+		}
+
+		encoded, err := encode(out)
 		if err != nil {
 			return ToolError(err), nil
 		}
 
-		// The bound this surface holds every answer to — see [MaxResultBytes].
-		// Refusing rather than shortening, because nothing here knows which
-		// field of an arbitrary response could be dropped without changing
-		// what it says, and half a JSON document is not a smaller answer but
-		// an unreadable one.
 		if len(encoded) > MaxResultBytes {
 			return ToolError(fmt.Errorf(
 				"%s answered with %d bytes, over this surface's %d byte limit, so nothing was returned "+

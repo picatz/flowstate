@@ -960,7 +960,17 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 
 	require.Contains(t, answer.Run.RunOutputs.Values, "release",
 		"the transcript was what did not fit, and the run's own answer went with it")
-	assert.Empty(t, answer.Run.Outputs.StepValues, "the transcript is still here, so nothing was actually dropped")
+
+	// Reduced, not emptied. `GetResponse.kind` is a required oneof, so a
+	// transcript arm with no steps is a document v1.Validate rejects — the
+	// transcript rung therefore keeps as many whole, real steps as its budget
+	// allows instead of clearing the arm (#853). The ordering this test exists
+	// to pin is unchanged and asserted either way: the transcript is what gave
+	// way, and the declared outputs are what survived.
+	assert.NotEmpty(t, answer.Run.Outputs.StepValues,
+		"the transcript arm was emptied, which is a GetResponse the schema rejects")
+	assert.Less(t, len(answer.Run.Outputs.StepValues), 64,
+		"the transcript is still whole, so nothing was actually reduced")
 }
 
 // TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
