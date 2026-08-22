@@ -87,11 +87,15 @@ const (
 )
 
 // TaskPolicyDeniedError reports that a task-shape policy refused a dispatch.
-// It wraps [ErrTaskPolicyDenied], names the task and the rule responsible so
-// an operator (or an author reading a denial surfaced to them, per CLAUDE.md's
-// "Diagnostics are a feature" — this is a deployment refusal, not a file
-// diagnostic, and must read as one) can find the policy source and the
+// It wraps [ErrTaskPolicyDenied] and carries the task and the rule responsible
+// so an operator (or an author reading a denial surfaced to them, per
+// CLAUDE.md's "Diagnostics are a feature" — this is a deployment refusal, not a
+// file diagnostic, and must read as one) can find the policy source and the
 // remedy.
+//
+// Carries rather than *renders*: which task was refused reaches a reader from
+// [CheckTaskPolicy]'s [TaskError] wrapper, which every denial travels inside,
+// and naming it here as well said it twice. See [TaskPolicyDeniedError.Error].
 type TaskPolicyDeniedError struct {
 	// Task is the qualified task name that was denied, e.g. "codex.exec".
 	Task string
