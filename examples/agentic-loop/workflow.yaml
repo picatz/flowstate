@@ -121,15 +121,22 @@ steps:
       outputs:
         url: ${response.json.url}
 
+  # Whether the write happened, named once. Four later reads of
+  # `has(steps.land)` would be four copies free to drift apart the day the
+  # condition changes — `flow lint` says so as R5/repeated-expression, and this
+  # file's own second decision above says the same thing about the budget.
+  - id: landed
+    value: ${has(steps.land)}
+
   - id: report
     log:
       message: >-
         ${"turn spent %d of %d tokens; %s".format([steps.turn.tokens, vars.token_budget,
-        has(steps.land) ? "landed at " + steps.land.url : "not landed"])}
+        steps.landed.value ? "landed at " + steps.land.url : "not landed"])}
       fields:
         # A tolerated absence, said out loud: this run either has a landing URL
         # or has a reason it does not, and the field says which.
-        outcome: '${has(steps.land) ? "landed" : "declined at the gate"}'
+        outcome: '${steps.landed.value ? "landed" : "declined at the gate"}'
 
 outputs:
   tokens:
@@ -141,9 +148,9 @@ outputs:
     description: true when the turn went over budget and a person was asked — the gate happening, not its answer
 
   landed:
-    value: ${has(steps.land)}
+    value: ${steps.landed.value}
     description: true when the write ran; false when the gate denied it or nobody answered before the deadline
 
   patch_url:
-    value: '${has(steps.land) ? steps.land.url : ""}'
+    value: '${steps.landed.value ? steps.land.url : ""}'
     description: where the landed patch went, empty when nothing landed

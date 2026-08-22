@@ -42,7 +42,7 @@ tests:
           inputs.fields.outcome == 'landed'
         returns: {}
     expect:
-      ran: [brief, turn, land, report]
+      ran: [brief, turn, land, landed, report]
       # The gate not happening is the assertion. A `review` that ran and
       # returned nothing would look identical in the outputs below.
       skipped: [review]
@@ -78,7 +78,7 @@ tests:
       - task: log
         returns: {}
     expect:
-      ran: [brief, turn, review, land, report]
+      ran: [brief, turn, review, land, landed, report]
       outputs:
         tokens: 45000
         gated: true
@@ -108,7 +108,7 @@ tests:
         where: inputs.fields.outcome == 'declined at the gate'
         returns: {}
     expect:
-      ran: [brief, turn, review, report]
+      ran: [brief, turn, review, landed, report]
       skipped: [land]
       outputs:
         tokens: 45000
