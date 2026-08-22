@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/google/cel-go/cel"
@@ -120,7 +121,19 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "outputs", Value: outputs})
 	}
 
-	return yaml.Marshal(doc)
+	// A block sequence is written indented under the key that holds it, which
+	// YAML allows either way and the corpus has already settled: 200 of the 202
+	// block sequences in `examples/` are written indented, and the two that are
+	// not sit in one file. The emitter's own default is the other one, so every
+	// example was being de-indented by a formatter claiming to be canon for
+	// them (#850).
+	//
+	// The cost, stated: an indented sequence spends two more columns per level
+	// than a flush one, and a deeply nested `parallel:` branch inside a
+	// `for_each:` body is where a Flowfile is already widest. That is the trade
+	// the corpus made by hand, and the reading it buys — a `- ` that sits under
+	// the key it belongs to rather than beside it — is the reason it made it.
+	return yaml.MarshalWithOptions(doc, yaml.IndentSequence(true))
 }
 
 // pluginRequirementsToYAML writes the `plugins:` block.
@@ -556,9 +569,49 @@ func retryToYAML(retry *v1.RetryPolicy) yaml.MapSlice {
 	return out
 }
 
-// durationToYAML writes a duration the way the DSL reads one.
+// durationToYAML writes a duration the way the DSL reads one: in the shortest
+// spelling that reads back as the same duration.
+//
+// [time.Duration.String] writes every unit down to the second whether or not it
+// carries anything, so a day comes out `24h0m0s`. That is a legal duration and
+// it is not the one anybody writes: every one of the 44 durations in
+// `examples/` is written short — `24h`, `30m`, `720h`, `200ms` — and none is
+// zero-padded. A formatter is canon for a corpus, so canon here ratifies what
+// the corpus already spells rather than what Go's stringer happens to emit
+// (#850).
+//
+// The trailing zero units are dropped one at a time and the result is *parsed
+// back* rather than assumed: the shortening is a string operation on a format
+// this package does not own, so the only honest test that `24h` still means
+// what `24h0m0s` meant is [time.ParseDuration] saying so. Anything that fails
+// that test keeps the long form, which is always correct if never pretty.
+//
+// The cost, stated: a workflow whose duration is exactly a whole number of
+// hours no longer records the minutes and seconds it does not have, so a reader
+// scanning a column of `timeout:` values sees `24h` beside `90s` and has to
+// know the units rather than read them off a fixed shape. That is the trade the
+// corpus already made by hand, in every file.
 func durationToYAML(d *durationpb.Duration) string {
-	return d.AsDuration().String()
+	full := d.AsDuration().String()
+
+	// Only the two suffixes [time.Duration.String] pads with. `0s` alone is left
+	// exactly as it is: a zero duration has no shorter spelling, and trimming
+	// its only unit would leave nothing at all.
+	short := full
+	if trimmed, ok := strings.CutSuffix(short, "m0s"); ok {
+		short = trimmed + "m"
+	}
+	if trimmed, ok := strings.CutSuffix(short, "h0m"); ok {
+		short = trimmed + "h"
+	}
+	if short == full {
+		return full
+	}
+
+	if parsed, err := time.ParseDuration(short); err != nil || parsed != d.AsDuration() {
+		return full
+	}
+	return short
 }
 
 // inputValueToYAML writes a task input.
@@ -573,7 +626,7 @@ func inputValueToYAML(value *v1.Value) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return fenceOpen + text + fenceClose, nil
+		return fencedToYAML(text), nil
 	case *v1.Value_Literal:
 		return literalToYAML(kind.Literal)
 	case *v1.Value_SecretRef:
@@ -677,7 +730,22 @@ func fencedExprToYAML(value *v1.Value) (any, error) {
 		return nil, err
 	}
 
-	return fenceOpen + text + fenceClose, nil
+	return fencedToYAML(text), nil
+}
+
+// fencedToYAML writes expression source into a fence, in the style the corpus
+// writes one.
+//
+// It is [textToYAML] minus the fence escaping, which is exactly the difference:
+// the `${` here is a fence this function just wrote and must not be escaped
+// away, while every other rule about how a scalar is written applies to it
+// identically. Before this, a fenced expression was handed to the emitter as a
+// bare Go string and came back double-quoted with every CEL string literal's
+// quote escaped — `"${\"a\" + b}"` for a line the corpus writes as
+// `${"a" + b}` — which is the same "the emitter chose, and it chose against the
+// corpus" defect the quoting order above exists to settle (#850).
+func fencedToYAML(text string) any {
+	return styledScalarFor(fenceOpen + text + fenceClose)
 }
 
 // exprToText renders an expression back into source.
@@ -728,53 +796,135 @@ func exprToText(parsed *expr.ParsedExpr) (string, error) {
 // would have said `? ` today and been silent about whatever the next emitter
 // version, or the next field, gets wrong. #533 reached the same conclusion
 // about promoted scalars for the same reason.
+// # Which style, decided here rather than by the emitter
+//
+// Asking the emitter whether its own rendering survives answers a different
+// question from the one a formatter has to answer. It survived `must:
+// this.matches(r'…')` by writing it double-quoted with every backslash doubled
+// — correct, unreadable, and not what a single file in `examples/` writes
+// (#850). So the style is *chosen* here, in the order the corpus already
+// prefers, and each candidate is verified rather than trusted:
+//
+//  1. plain, which is 1736 of the 1800 scalar values in `examples/`;
+//  2. single-quoted, where the text holds a `"` and no `'` — the 26 values
+//     written that way are every one of them a CEL expression carrying
+//     double-quoted strings, and single quotes keep them free of escaping;
+//  3. double-quoted otherwise, which is where the remaining 38 sit: text that
+//     would read back as a number, a bool or a timestamp if left plain, and
+//     text carrying a `'` of its own.
+//
+// The cost, stated: this is now three round trips through the emitter per
+// scalar rather than one, on a path `flow fmt` runs over a whole directory. It
+// buys the property that no scalar is written in a style nothing checked, which
+// is the same trade the one round trip here was already making for the plain
+// form alone.
 func textToYAML(s string) any {
-	escaped := escapeFences(s)
-	if plainScalarSurvives(escaped) {
-		return escaped
-	}
-
-	return quotedScalar(escaped)
+	return styledScalarFor(escapeFences(s))
 }
 
-// plainScalarSurvives reports whether the emitter's own rendering of s reads
-// back as s.
+// styledScalarFor writes s in the first style it survives.
+func styledScalarFor(s string) any {
+	for _, candidate := range scalarStyles(s) {
+		if scalarSurvives(s, candidate) {
+			return candidate
+		}
+	}
+
+	// Unreachable for any string [json.Marshal] can write, which is every string
+	// Go holds; keeping the double-quoted form as the answer rather than
+	// erroring means a scalar nothing verified is still a scalar written in the
+	// one style that escapes everything.
+	return doubleQuoted(s)
+}
+
+// scalarStyles lists the ways s may be written, best first.
 //
-// One scalar in a one-entry mapping, which is the shape every caller of
-// [textToYAML] writes it in: the question is what the emitter does with this
-// value in a value position, and asking it directly is cheaper than modelling
-// its rules.
-func plainScalarSurvives(s string) bool {
-	encoded, err := yaml.Marshal(yaml.MapSlice{{Key: "v", Value: s}})
+// A string holding a newline is handed to the emitter itself rather than to one
+// of the styles below, because the style it picks there — a literal block
+// scalar, `|-`, with the lines written as lines — is the one this would pick
+// anyway and the only one of these three that does not turn a multi-line
+// message into a single line of `\n` escapes. It is still verified like every
+// other candidate, and it still falls through to the double-quoted form for a
+// string the block style cannot hold (a trailing space, a line that would
+// re-read as more indentation than it had).
+func scalarStyles(s string) []any {
+	if strings.Contains(s, "\n") {
+		return []any{s, doubleQuoted(s)}
+	}
+
+	styles := []any{plainScalar(s)}
+	if strings.Contains(s, `"`) && !strings.Contains(s, "'") {
+		styles = append(styles, singleQuoted(s))
+	}
+	return append(styles, doubleQuoted(s))
+}
+
+// A styledScalar is one string written one way, placed as those exact bytes.
+//
+// A [yaml.BytesMarshaler], so the emitter parses the bytes back into a node of
+// the style they spell rather than re-deciding the style itself: taking the
+// choice away from the emitter is the whole point, and it is the same mechanism
+// the double-quoting carve-out used before [textToYAML] had a preference order
+// to express.
+type styledScalar string
+
+// MarshalYAML places the bytes.
+func (q styledScalar) MarshalYAML() ([]byte, error) { return []byte(q), nil }
+
+// plainScalar writes s with no quoting at all.
+func plainScalar(s string) styledScalar { return styledScalar(s) }
+
+// singleQuoted writes s in YAML's single-quoted style, where the only escape is
+// a doubled quote and a backslash is itself.
+func singleQuoted(s string) styledScalar {
+	return styledScalar("'" + strings.ReplaceAll(s, "'", "''") + "'")
+}
+
+// doubleQuoted writes s in YAML's double-quoted style, escaped by the JSON
+// rules YAML shares for it.
+func doubleQuoted(s string) styledScalar {
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		// json.Marshal fails on no string, and a scalar that somehow reached
+		// here unwritable is better left to the emitter's own judgement than
+		// dropped.
+		return styledScalar(s)
+	}
+	return styledScalar(encoded)
+}
+
+// scalarSurvives reports whether writing s as candidate reads back as s.
+//
+// In both shapes [Marshal] ever places a scalar in — a mapping value and a
+// sequence entry — because a rendering can be safe in one and mean something
+// else in the other. `- x` as a plain mapping value is the five-character
+// string; as a plain sequence entry it is a nested sequence. Checking only the
+// mapping would let that through, which is a formatter changing what a file
+// says, so both are checked and a candidate has to survive both.
+func scalarSurvives(s string, candidate any) bool {
+	encoded, err := yaml.Marshal(yaml.MapSlice{{Key: "v", Value: candidate}})
 	if err != nil {
 		return false
 	}
-
 	var back yaml.MapSlice
 	if err := yaml.Unmarshal(encoded, &back); err != nil {
 		return false
 	}
-
-	return len(back) == 1 && back[0].Value == s
-}
-
-// quotedScalar is a string written in YAML's double-quoted style whatever the
-// emitter would have chosen for it.
-//
-// A [yaml.BytesMarshaler], so the bytes are placed as the value rather than
-// being re-analysed: the whole point is to take the choice away from the
-// emitter for the values it gets wrong.
-type quotedScalar string
-
-// MarshalYAML writes the double-quoted form, escaped by the JSON rules YAML
-// shares for this style.
-func (q quotedScalar) MarshalYAML() ([]byte, error) {
-	encoded, err := json.Marshal(string(q))
-	if err != nil {
-		return nil, fmt.Errorf("quoting %q: %w", string(q), err)
+	if len(back) != 1 || back[0].Value != s {
+		return false
 	}
 
-	return encoded, nil
+	encoded, err = yaml.Marshal(yaml.MapSlice{{Key: "v", Value: []any{candidate}}})
+	if err != nil {
+		return false
+	}
+	var list struct {
+		V []string `yaml:"v"`
+	}
+	if err := yaml.Unmarshal(encoded, &list); err != nil {
+		return false
+	}
+	return len(list.V) == 1 && list.V[0] == s
 }
 
 // literalToYAML writes a literal value, keeping the order of a map's entries so
