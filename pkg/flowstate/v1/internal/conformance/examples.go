@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +22,7 @@ import (
 	celpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // The corpus in `examples/` is run by two harnesses now, one per driver, and this
@@ -1169,3 +1172,59 @@ var exampleVariants = map[string][]ExampleVariant{
 func ExampleVariants(name string) []ExampleVariant {
 	return exampleVariants[name]
 }
+
+// ExamplesBroker builds the credential broker the `examples/` corpus needs,
+// with every target any example's `credential:` input names.
+//
+// It lives here for the same reason the stand-in above does. Two harnesses run
+// this corpus, one per driver, and each used to build its own broker: the local
+// one in examples_run_test.go, the durable one through a
+// [Authority.Broker] configured with a single target. An example added against
+// a target only one of them registered would then fail on one driver and pass
+// on the other — a disagreement the harness manufactured rather than one the
+// drivers had. One list, read by both.
+//
+// The `assertion` target takes no double, unlike the exchanging one beside it:
+// an assertion exchanger reaches nothing, so the real one is the cheap one, and
+// what a run applies here is an assertion this fixture issuer actually signed.
+func ExamplesBroker(tb testing.TB) *auth.Broker {
+	tb.Helper()
+
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		tb.Fatalf("generating examples signing key: %v", err)
+	}
+	key, err := auth.NewSigningKey("examples", private)
+	if err != nil {
+		tb.Fatalf("building examples signing key: %v", err)
+	}
+	issuer, err := auth.NewIssuer("https://flowstate.example", key)
+	if err != nil {
+		tb.Fatalf("building examples issuer: %v", err)
+	}
+
+	// federation-flow-to-flow: the peer deployment, reached by presenting the
+	// assertion itself.
+	peer, err := auth.NewAssertionExchanger(auth.AssertionConfig{
+		Audience: "https://flowstate.peer.example.com",
+	})
+	if err != nil {
+		tb.Fatalf("building examples assertion exchanger: %v", err)
+	}
+
+	broker, err := auth.NewBroker(issuer,
+		// http-federated: a partner reached by exchanging the assertion.
+		auth.WithTarget("partner-api", fixtureExchanger{token: ExamplesJITToken}),
+		auth.WithTarget("peer-flowstate", peer),
+		auth.WithAssumeAllowRules("true"))
+	if err != nil {
+		tb.Fatalf("building examples broker: %v", err)
+	}
+
+	return broker
+}
+
+// ExamplesJITToken is the bearer material the exchanging fixture target hands
+// back, named so a harness asserting on it and the harness producing it cannot
+// drift apart.
+const ExamplesJITToken = "example-jit-token"

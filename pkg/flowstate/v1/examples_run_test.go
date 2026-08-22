@@ -2,8 +2,6 @@ package flowstatev1_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,39 +53,16 @@ func exampleSecretProviders() []secrets.Provider {
 	return providers
 }
 
-type exampleExchanger struct{}
-
-func (exampleExchanger) Name() string { return "example-sts" }
-func (exampleExchanger) Requirement() auth.Requirement {
-	return auth.Requirement{Audience: "https://api.example.com"}
-}
-func (exampleExchanger) Exchange(context.Context, auth.Assertion) (auth.Credential, error) {
-	return auth.NewCredential(auth.CredentialBearer, time.Now().Add(time.Minute),
-		map[string]string{auth.CredentialAccessToken: "example-jit-token"})
-}
-
+// exampleBroker is [conformance.ExamplesBroker], which both drivers' harnesses
+// read so that a target reachable on one is reachable on the other. This
+// harness built its own for a while, with its own exchanger and its own list of
+// one target; an example added against a target only one harness registered
+// failed on one driver and passed on the other, which is a disagreement the
+// harness manufactured rather than one the drivers had.
 func exampleBroker(t *testing.T) *auth.Broker {
 	t.Helper()
-	_, private, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	key, err := auth.NewSigningKey("example", private)
-	require.NoError(t, err)
-	issuer, err := auth.NewIssuer("https://flowstate.example", key)
-	require.NoError(t, err)
-	// The `assertion` target of examples/federation-flow-to-flow needs no double:
-	// it performs no exchange, so the real exchanger is the cheap one, and what
-	// the http task applies here is an assertion this issuer actually signed.
-	peer, err := auth.NewAssertionExchanger(auth.AssertionConfig{
-		Audience: "https://flowstate.peer.example.com",
-	})
-	require.NoError(t, err)
 
-	broker, err := auth.NewBroker(issuer,
-		auth.WithTarget("partner-api", exampleExchanger{}),
-		auth.WithTarget("peer-flowstate", peer),
-		auth.WithAssumeAllowRules("true"))
-	require.NoError(t, err)
-	return broker
+	return conformance.ExamplesBroker(t)
 }
 
 // CLAUDE.md says a capability is not done until an example exercises it, "those
