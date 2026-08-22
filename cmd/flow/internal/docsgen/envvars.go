@@ -64,6 +64,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/credentialsource/github_actions.go",
 		},
 		{
+			name:    "CI_JOB_JWT_V2",
+			value:   "unset",
+			purpose: "Set by GitLab before 17.0, which removed it. Never read for its value: the `gitlab` credential source only checks whether it is present, so a job still relying on it is told that it was removed and to declare an `id_tokens:` token instead, rather than being told its ID token is missing.",
+			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
+		},
+		{
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
@@ -78,7 +84,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUDIENCE",
 			value:   "unset",
-			purpose: "Default for `--audience`: the relying party a minted credential is addressed to. Required by `--credential-source=github-actions`; ignored by a source that presents a token it did not mint.",
+			purpose: "Default for `--audience`: the relying party a credential is addressed to. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -102,7 +108,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
-			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -140,6 +146,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `--task-policy`: a YAML task-shape policy (#187) governing which identities may dispatch which tasks. When set it replaces the built-in policy (no restriction) entirely rather than merging with it.",
 			read:    "cmd/flow/taskpolicy.go",
+		},
+		{
+			name:    "FLOWSTATE_ID_TOKEN",
+			value:   "unset",
+			purpose: "The OIDC ID token a GitLab CI job's `id_tokens:` keyword mints, and the variable name `--credential-source=gitlab` reads unless told otherwise. GitLab lets the job author name the key, so this is Flowstate's convention rather than the platform's; a job using another name passes it as `credentialsource.Config.EnvVar`. Set by GitLab, never by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
 		},
 		{
 			name:    "FLOWSTATE_IDENTITY_KEY",
@@ -455,6 +467,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "GITLAB_CI",
+			value:   "unset",
+			purpose: "Set to `true` inside every GitLab CI job. Read by the `gitlab` credential source only to tell \"this is not a GitLab job\" apart from \"it is, and the job declares no ID token\" — two mistakes with different fixes. Never configured by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
+		},
+		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
@@ -524,6 +542,26 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "flowstate-run-task-queue",
 			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",
 			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "TFC_RUN_ID",
+			value:   "unset",
+			purpose: "Set by HCP Terraform in every run. Read by the `terraform-cloud` credential source only to tell \"this is not an HCP Terraform run\" apart from \"it is, and the workspace set no workload identity audience\". Never configured by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/terraform_cloud.go",
+		},
+		{
+			name:    "TFC_WORKLOAD_IDENTITY_AUDIENCE[_<TAG>]",
+			value:   "unset",
+			purpose: "The workspace variable an operator sets to make HCP Terraform mint a workload identity token for a run, naming the relying party — the Flowstate server. The tagged form mints a second token for another relying party. Set on the workspace, not in the run's environment, so nothing here reads it; it is named in the `terraform-cloud` source's diagnostics because it is the setting missing when the token is.",
+			read:    "pkg/flowstate/v1/credentialsource/terraform_cloud.go",
+			family:  true,
+		},
+		{
+			name:    "TFC_WORKLOAD_IDENTITY_TOKEN[_<TAG>]",
+			value:   "unset",
+			purpose: "The workload identity token HCP Terraform gives a run whose workspace set the audience variable above, and what `--credential-source=terraform-cloud` presents. The tagged form carries the token for a tagged audience. Set by HCP Terraform, never by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/terraform_cloud.go",
+			family:  true,
 		},
 	}
 }

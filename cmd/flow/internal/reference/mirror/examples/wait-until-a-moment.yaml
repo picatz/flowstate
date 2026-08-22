@@ -25,9 +25,8 @@ description: Holds a workload until a moment it computes, rather than for a fixe
 #
 # Like every wait here, this is a durable timer rather than a sleeping worker. A
 # workload can hold until next Tuesday while the fleet it started on is replaced.
-
 vars:
-  embargo: ${string(timestamp('2026-01-01T09:00:00Z'))}
+  embargo: ${string(timestamp("2026-01-01T09:00:00Z"))}
 steps:
   - id: request
     log:
@@ -48,10 +47,8 @@ steps:
   # a moment already past is defined to release the wait, so a workload resumed
   # after an outage reaches an open window and catches up instead of failing for
   # being late.
-
   - id: hold
     wait_until: ${vars.embargo}
-
   - id: publish
     log:
       message: ${"embargo lifted at %s; publishing".format([vars.embargo])}

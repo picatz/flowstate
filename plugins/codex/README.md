@@ -106,26 +106,21 @@ description: Runs one bounded OpenAI Codex agentic turn with the "codex" plugin 
 # - see codex.proto's own doc comment on the enum for why an author should
 # still write it: a Flowfile that names its own sandbox is legible without
 # reading this plugin's source to know what "unset" means today.
-
 vars:
-  prompt: "In one sentence, what does the term \"idempotent\" mean in the context of a retried HTTP request?"
-
+  prompt: In one sentence, what does the term "idempotent" mean in the context of a retried HTTP request?
 steps:
   - id: ask
     codex.exec:
+      api_key: ${secret('env:OPENAI_API_KEY')}
       prompt: ${vars.prompt}
       sandbox_mode: SANDBOX_MODE_READ_ONLY
-      api_key: ${secret('env:OPENAI_API_KEY')}
-
   - id: announce
     log:
-      message: "${'codex answered in %d output token(s): %s'.format([steps.ask.output_tokens, steps.ask.final_message])}"
-
+      message: '${"codex answered in %d output token(s): %s".format([steps.ask.output_tokens, steps.ask.final_message])}'
 outputs:
   final_message:
     value: ${steps.ask.final_message}
     description: the agent's own answer to the prompt
-
   output_tokens:
     value: ${steps.ask.output_tokens}
     description: tokens the model spent producing that answer

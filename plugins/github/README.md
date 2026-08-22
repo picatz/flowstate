@@ -52,37 +52,31 @@ description: Reads a public pull request's state using the "github" plugin - the
 # descriptors this plugin ships in its manifest at launch. See
 # plugins/github for the source and plugins/github/README.md for the
 # authentication modes it supports, in the order this plugin prefers them.
-
 vars:
-  owner: golang
-  repo: go
   # A pull request old enough to be merged and stable, so this example's
   # output does not change out from under it.
   number: 1
-
+  owner: golang
+  repo: go
 steps:
   - id: pr
     github.pull_request_get:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
       number: ${vars.number}
       # No token: a public repository's pull requests are readable
       # unauthenticated, at a much lower rate limit. Compare this to
       # comment-inputs.json, where posting a comment requires one.
-
+      owner: ${vars.owner}
+      repo: ${vars.repo}
   - id: announce
     log:
-      message: "${'pull request #%d (%s) - %s'.format([vars.number, steps.pr.state, steps.pr.title])}"
-
+      message: '${"pull request #%d (%s) - %s".format([vars.number, steps.pr.state, steps.pr.title])}'
 outputs:
   title:
     value: ${steps.pr.title}
     description: the pull request's title, read from GitHub's API without this build knowing its schema
-
   state:
     value: ${steps.pr.state}
-    description: "open or closed"
-
+    description: open or closed
   head_sha:
     value: ${steps.pr.head_sha}
     description: the commit at the tip of the pull request's branch
@@ -108,7 +102,6 @@ description: Posts a real comment on a real issue or pull request using the "git
 # plugin unable to tell whether the comment was actually created is never
 # retried automatically - the same reasoning the core http task's
 # retry_on_unknown_outcome exists for.
-
 inputs:
   owner:
     type: string
@@ -126,20 +119,18 @@ inputs:
     type: string
     required: true
     description: the comment's Markdown text
-
 steps:
   - id: comment
     github.issue_comment:
+      body: ${inputs.body}
+      number: ${inputs.number}
       owner: ${inputs.owner}
       repo: ${inputs.repo}
-      number: ${inputs.number}
-      body: ${inputs.body}
       # A secret reference, resolved inside the task, never a literal - see
       # plugins/github/README.md, "Authentication," for how this plugin
       # answers it: a GitHub App installation token when one is configured,
       # a personal access token otherwise.
       token: ${secret('github:token')}
-
 outputs:
   comment_url:
     value: ${steps.comment.html_url}
@@ -167,7 +158,6 @@ description: A review-triage pass over a public repository using the "github" pl
 # Every task here accepts an unset token and works exactly the same against
 # a public repository - see workflow.yaml's own comment on why, and this
 # plugin's README, "Authentication," for the private-repository case.
-
 vars:
   owner: golang
   repo: go
@@ -177,53 +167,47 @@ vars:
   # standard library ships a "crypto" tree, so this is a fragment its pull
   # requests plausibly touch without being tied to any one PR's identity.
   sensitive_path_fragment: crypto
-
 steps:
   - id: open_prs
     github.pull_request_list:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
-      state: open
       max_results: 5
       # No token: a public repository's pull requests are readable
       # unauthenticated, at a much lower rate limit - see workflow.yaml.
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      state: open
 
   # The pull request this file goes on to name three times - here, in the log
   # line, and in an output. Bound once, so the "whatever is actually open right
   # now" choice is made in one place (docs/STYLE.md R5, `flow lint`).
   - id: newest_pr
     value: ${steps.open_prs.pull_requests[0]}
-
   - id: pr_files
     github.pull_request_files:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
+      max_results: 100
       # Bound to the most recently created open pull request
       # github.pull_request_list just found - github.pull_request_list's
       # own default sort, GitHub's "created", descending - rather than a
       # number this file hard-codes, so the audit chain is "whatever is
       # actually open right now," not one pull request frozen in time.
       number: ${steps.newest_pr.value.number}
-      max_results: 100
-
-  - id: open_issues
-    github.issue_list:
       owner: ${vars.owner}
       repo: ${vars.repo}
-      state: open
+  - id: open_issues
+    github.issue_list:
+      direction: asc
       max_results: 5
+      owner: ${vars.owner}
+      repo: ${vars.repo}
       # Ascending by creation time, explicitly - GitHub's own default for
       # this endpoint is "created" descending (newest first), which would
       # make element zero the newest match, not the oldest this file's own
       # outputs claim it to be. direction: asc is what actually earns the
       # name "oldest" below.
       sort: created
-      direction: asc
-
+      state: open
   - id: issue_detail
     github.issue_get:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
       # The audit chain's other half: github.issue_list found which issues
       # are open; github.issue_get reads the one at the front of that
       # queue in full - body included, which a listing deliberately leaves
@@ -239,28 +223,24 @@ steps:
       # comment (github.proto) for the endpoint quirk this filter exists
       # to correct for.
       number: ${steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number}
-
+      owner: ${vars.owner}
+      repo: ${vars.repo}
   - id: announce
     log:
-      message: "${'%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")'.format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.newest_pr.value.number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}"
-
+      message: '${"%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")".format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.newest_pr.value.number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}'
 outputs:
   most_recent_open_pull_request:
     value: ${steps.newest_pr.value.number}
     description: the most recently created open pull request github.pull_request_list found (see PullRequestListOutputs.truncated for whether more than max_results are actually open)
-
   touches_a_sensitive_path:
     value: ${steps.pr_files.files.exists(f, f.filename.contains(vars.sensitive_path_fragment))}
     description: whether that pull request's own files (github.pull_request_files - filenames and line counts, no diff content read) include a path matching sensitive_path_fragment - the review-triage question this task exists to answer before any diff is ever read
-
   open_issue_count:
     value: ${steps.open_issues.issues.filter(i, !i.is_pull_request).size()}
     description: how many open issues (pull requests excluded - see issue_detail's own comment on why) github.issue_list found, capped at max_results (see IssueListOutputs.truncated for whether more exist)
-
   oldest_open_issue_title:
     value: ${steps.issue_detail.title}
     description: the full title of the oldest open issue among the listing above (github.issue_list's own sort/direction inputs, set to created/asc - see that step's comment), read in full via github.issue_get - the single-record detail a listing's own summary leaves out
-
   oldest_open_issue_is_actually_a_pull_request:
     value: ${steps.issue_detail.is_pull_request}
     description: GitHub answers issues and pull requests through the same endpoint - always false here, since issue_detail's own number is chosen by filtering pull requests out first (see that step's comment); kept as an explicit sanity check on that filter rather than an assumption
@@ -518,50 +498,43 @@ description: Reads a repository's open issues in two bounded pages using github.
 # plugins/github/pull_request_files_cursor_test.go, and
 # plugins/github/cursor_test.go for the encoding itself), which are free to
 # loop because they are not written in the DSL.
-
 vars:
   owner: golang
   repo: go
-
 steps:
   - id: page_one
     github.issue_list:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
-      state: open
-      max_results: 3
-      sort: created
       direction: asc
       # No cursor: this is a fresh walk, oldest-first.
-
-  - id: page_two
-    github.issue_list:
+      max_results: 3
       owner: ${vars.owner}
       repo: ${vars.repo}
-      state: open
-      max_results: 3
       sort: created
-      direction: asc
+      state: open
+  - id: page_two
+    github.issue_list:
       cursor: ${steps.page_one.next_cursor}
       # Empty when page_one was not truncated (this task always populates
       # next_cursor empty in that case) - github.issue_list then treats an
       # empty cursor exactly like an ordinary fresh call, which the "not
       # truncated" case having nothing left to resume makes the right
       # fallback rather than an error.
-
+      direction: asc
+      max_results: 3
+      owner: ${vars.owner}
+      repo: ${vars.repo}
+      sort: created
+      state: open
   - id: announce
     log:
-      message: "${'page one: %d issue(s) (truncated=%s); page two: %d issue(s) (truncated=%s), resumed at %s'.format([steps.page_one.issues.size(), string(steps.page_one.truncated), steps.page_two.issues.size(), string(steps.page_two.truncated), steps.page_one.next_cursor])}"
-
+      message: '${"page one: %d issue(s) (truncated=%s); page two: %d issue(s) (truncated=%s), resumed at %s".format([steps.page_one.issues.size(), string(steps.page_one.truncated), steps.page_two.issues.size(), string(steps.page_two.truncated), steps.page_one.next_cursor])}'
 outputs:
   page_one_numbers:
     value: ${steps.page_one.issues.map(i, i.number)}
     description: the first page's issue numbers, oldest first (sort created, direction asc)
-
   page_two_numbers:
     value: ${steps.page_two.issues.map(i, i.number)}
     description: the second page's issue numbers - continuing immediately after page_one's last entry (subject to the stated guarantee - see this file's own header comment for what a removal between calls can still do)
-
   resumed_from:
     value: ${steps.page_one.next_cursor}
     description: the opaque cursor page_two was resumed from - empty if page_one was not truncated

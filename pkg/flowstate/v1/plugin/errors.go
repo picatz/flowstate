@@ -49,6 +49,18 @@ var (
 	// version, same tasks, different bytes.
 	ErrDistribution = errors.New("plugin: distribution changed")
 
+	// ErrDigestPin reports that a deployment's declared digest for a plugin name
+	// and the binary answering to that name do not agree — or that the pin
+	// itself is not a digest this package can compare against, which is the same
+	// error found at startup instead of at the first launch.
+	//
+	// It is separate from [ErrDistribution] because the two are opposite halves
+	// of one question. ErrDistribution says the bytes behind a *running* plugin
+	// changed under it; this says bytes that were never entitled to answer to
+	// this name asked to run at all, and the refusal happens before the process
+	// exists.
+	ErrDigestPin = errors.New("plugin: digest not admitted")
+
 	// ErrDuplicateScheme reports that two plugins claim one secret scheme. Two
 	// answers for one scheme is a configuration error, not something to resolve
 	// by which plugin happened to load first.
