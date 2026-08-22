@@ -617,8 +617,27 @@ func TestUnboundedProgressFloodIsStillRefused(t *testing.T) {
 
 	require.Error(t, err, "a plugin streaming far more than the combined ceiling admits must be refused, "+
 		"not accepted on the strength of the reserve #804 adds")
-	assert.NotEqual(t, connect.CodeDeadlineExceeded, connect.CodeOf(err),
-		"the refusal must come from the byte bound being reached, not from cfg.CallTimeout expiring: %v", err)
+
+	// Positively, not by elimination — Codex's finding on picatz/flowstate#864,
+	// and the same under-assertion this test's own rewrite exists to remove.
+	// "not a deadline" is satisfied by a CodeUnavailable from a plugin that
+	// died, or a CodeInternal from a stream that broke for a reason nothing
+	// here configured, either of which would let an unrelated failure stand
+	// in for the refusal under test with the ceiling never reached at all.
+	// So this asserts the shape the byte ceiling actually produces:
+	// boundedTransport (transport.go) stops the body mid-message, connect
+	// finds a truncated envelope, and reports CodeInvalidArgument naming it.
+	// Measured twelve times over, idle and under eight-way CPU load, always
+	// "protocol error: incomplete envelope: unexpected EOF"; the substring is
+	// the narrower half of that message rather than the whole of it, because
+	// truncation has a sibling spelling ("promised N bytes in enveloped
+	// message") that connect chooses between by where in a frame the cut
+	// lands, and both are this bound firing.
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"the refusal must be the byte ceiling truncating the stream mid-envelope, not some other failure "+
+			"(a deadline, a dead plugin, a broken stream) standing in for it: %v", err)
+	assert.Contains(t, err.Error(), "envelope",
+		"the refusal must name the truncated envelope the byte ceiling produces: %v", err)
 	assert.False(t, errors.Is(err, context.DeadlineExceeded),
 		"the refusal must come from the byte bound being reached, not from cfg.CallTimeout expiring: %v", err)
 }
