@@ -356,21 +356,40 @@ the Temporal UI. It is no longer the only one.
 
 ### What span covers a run
 
-One span covers a run end to end, and which span that is depends on how the run
-was started and which driver ran it — the *shape* is the same either way, the
-name is not. It is not always the root of the trace, and on two of the three
-paths below it is not: read the second column for "how long did the run take"
-and the third for "where does this trace begin".
+Which span that is depends on how the run was started and which driver ran it —
+the *shape* is the same either way, the name is not. Two things it is easy to
+assume and easy to get wrong, both of which the columns below separate: the
+covering span is not always the root of its trace (on two of the three paths it
+is not), and durably it is not always a single span (a run that continues as new
+is covered by one span per segment — see the footnote). Read the second column
+for "how long did the run take" and the third for "where does this trace begin".
 
 | How the run started | The span covering the run | The root of its trace |
 | --- | --- | --- |
 | `flow run local` | `flowstate.run/<workflow>`, opened by the local driver | the same span |
-| through the server, onto a worker | `RunWorkflow:Run`, opened by Temporal's tracing interceptor | the caller's RPC span |
-| a webhook delivery | `RunWorkflow:Run`, beneath the delivery span | `flowstate.webhook/<workflow>/<trigger>` |
+| through the server, onto a worker | `RunWorkflow:Run` — one **per segment** † | the caller's RPC span |
+| a webhook delivery | `RunWorkflow:Run` — one **per segment** †, beneath the delivery span | `flowstate.webhook/<workflow>/<trigger>` |
+
+† **Durably, no single span covers a long run.** Temporal's interceptor opens one
+`RunWorkflow:Run` per *workflow execution*, and a run that continues as new is
+several executions: `engine.TestOneTraceSurvivesContinueAsNew` drives a run across
+handovers and finds `crossings + 1` such spans, all sharing **one trace id**. So
+the logical run is covered by the *chain* of them within that trace, not by any
+one of them.
+
+Measure a logical run's latency as the extent of that chain — earliest segment
+start to latest segment end, aggregated **by trace id** — never as one segment's
+duration, which is only the stretch between two handovers. In practice that means
+grouping by trace before asking a duration question about any run long enough to
+suspend, and it is why the trace id is the durable key here while `WorkflowID`
+addresses a segment.
 
 The durable driver opens no `flowstate.run/*` span of its own, deliberately: the
 substrate already opens one at exactly that seam, and workflow code may not open
-a second — a span minted there is minted again on every replay.
+a second — a span minted there is minted again on every replay. A first-party span
+spanning the whole chain is not available for the same reason; the trace id is
+what ties the segments together, and that is what
+`TestOneTraceSurvivesContinueAsNew` pins.
 
 "Covering the run" is not the same as "the root of the trace", and on the
 instrumented server path they differ. When someone types `flow run`, the context
@@ -383,15 +402,35 @@ precedes, and a webhook delivery, whose span is a deliberate new root so an
 unauthenticated sender cannot choose the run's trace id (the link below is how
 the sender is recorded instead).
 
-**Never read a run's duration off the webhook span.** `flowstate.webhook/*`
-covers *acceptance* — verifying the signature, mapping the payload, starting the
-run — and `ServeHTTP` ends it as soon as the sender gets its `202`, typically in
-milliseconds. The run it started carries on for as long as the run takes, which
-may be days and may cross Continue-As-New. The delivery span is the trace's root
-and the run's *cause*; `RunWorkflow:Run` beneath it is what covers the run, and
-that is the span a latency question is asking about. The same distinction is why
-a webhook-started trace looks lopsided in Tempo — a very short root over a very
-long child — and that shape is correct.
+**Never read a run's duration off the webhook span.** `flowstate.webhook/*` ends
+as soon as the sender gets its `202`, typically in milliseconds, while the run it
+started carries on for as long as the run takes — days, and across
+Continue-As-New. The delivery span is the trace's root and the run's *cause*; the
+`RunWorkflow:Run` span — or the chain of them, per the footnote — beneath it is
+what covers the run, and that is what a latency question is asking about. For a
+webhook-started run that suspends, both corrections apply at once: group by trace
+id, and take the chain's extent rather than the root's duration or any one
+segment's. The same distinction is why a webhook-started trace
+looks lopsided in Tempo — a very short root over a very long child — and that
+shape is correct.
+
+**And it does not cover the whole of acceptance either.** The span opens *after*
+the body is read, the signature verified, and the payload decoded; what it covers
+is binding the decoded delivery to the workflow's inputs and starting the run. So
+a slow body read, an expensive HMAC over a large payload, and decode time are all
+outside it, and a delivery that verifies but carries a malformed body produces
+**no span at all** — it is refused with a `400` before there is one.
+
+That is deliberate, and it is the same fail-closed reasoning as everything else on
+this endpoint: the webhook route is unauthenticated by construction, so a span
+opened before verification would hand anyone who can reach the port a
+span-creation primitive — junk requests minting spans, and trace-pipeline
+cardinality chosen by whoever sends the most garbage. Only an attested sender gets
+to create telemetry here. The cost is the measurement gap above, and it is the
+right trade: an operator can still see read-and-verify time in the reverse proxy's
+own access log, where an unauthenticated request already belongs. If a
+pre-verification span is ever genuinely wanted, it needs its own decision about
+what bounds its cardinality, not a quiet move of this line.
 
 A delivery that arrived carrying a `traceparent` gets a **link** on that webhook
 span, never a parent. In Tempo the link is a "caused by" edge you can follow to
