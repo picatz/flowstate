@@ -9,6 +9,7 @@ import (
 	"time"
 
 	yaml "github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/parser"
 	"github.com/google/cel-go/cel"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -966,6 +967,9 @@ func scalarSurvives(s string, candidate any) bool {
 	if err != nil {
 		return false
 	}
+	if expandsWhenRead(encoded) {
+		return false
+	}
 	var back yaml.MapSlice
 	if err := yaml.Unmarshal(encoded, &back); err != nil {
 		return false
@@ -978,6 +982,9 @@ func scalarSurvives(s string, candidate any) bool {
 	if err != nil {
 		return false
 	}
+	if expandsWhenRead(encoded) {
+		return false
+	}
 	var list struct {
 		V []string `yaml:"v"`
 	}
@@ -985,6 +992,59 @@ func scalarSurvives(s string, candidate any) bool {
 		return false
 	}
 	return len(list.V) == 1 && list.V[0] == s
+}
+
+// expandsWhenRead reports whether reading encoded would expand something, so
+// that [scalarSurvives] can decline to read it.
+//
+// This is the billion-laughs shape one level down from the one the grammar
+// already refuses, and it is worth stating precisely because the obvious reading
+// is that the strict profile covers it. It does not. The compiler refuses an
+// anchor, an alias and a merge key in the *document* — but a Flowfile may hold a
+// perfectly ordinary string whose *contents* happen to spell one, and the plain
+// candidate above is that string's own bytes handed back to a YAML parser as a
+// document of its own. The refusal never sees it: at the point it ran, this was
+// a quoted scalar and nothing more.
+//
+// The cost is real and was measured before this was written (#889): a Flowfile
+// of 371 bytes whose `message:` holds twenty nested merge keys
+// (`&l1 {p: &l0 {a: x}, <<: *l0}`, repeated) drove the round trip below to
+// 464 MiB and 0.6s; one level deeper did not finish inside two minutes. Merge
+// keys are the shape that does it, because merging *splices* a mapping's
+// entries into a new one at every level — a plain alias bomb of the same depth
+// stays linear here, since the decoder shares one decoded value between the
+// aliases that name it.
+//
+// So the verifier declines to read a document holding any of the three, which is
+// [strictYAMLRefusals] — the same walk the compiler and `flow fix` refuse with,
+// asked here rather than answered again. It reads the un-expanded tree the
+// parser built and refuses on the *presence* of the construct, so nothing is
+// ever followed; its own doc comment is the argument for why a bound that fires
+// after expansion has already paid the cost.
+//
+// Declining costs nothing in canon. A candidate whose bytes parse as an anchor,
+// an alias or a merge key is not a plain scalar spelling of s and could never
+// have compared equal to it — and the quoted styles [scalarStyles] falls through
+// to cannot carry any of this, because a leading quote makes the whole of the
+// text one scalar. The bomb above still formats; it comes back double-quoted,
+// exactly as it did before.
+//
+// Unreadable bytes report true, which is the fail-closed reading: unable to tell
+// whether reading this expands something is not the same as knowing it does not.
+func expandsWhenRead(encoded []byte) bool {
+	file, err := parser.ParseBytes(encoded, 0)
+	if err != nil {
+		return true
+	}
+	for _, doc := range file.Docs {
+		if doc == nil || doc.Body == nil {
+			continue
+		}
+		if len(strictYAMLRefusals(doc.Body)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // literalToYAML writes a literal value, keeping the order of a map's entries so
