@@ -1186,6 +1186,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
+
+		// The count beside the bytes; see [maxHeaderValueCount] for why one
+		// does not imply the other.
+		MaxHeaderValueCount: maxHeaderValueCount,
 	}
 
 	// Bound now, so a port already in use or a permission error is reported
@@ -1349,6 +1353,28 @@ func runServer(cmd *cobra.Command, args []string) error {
 // generous room while keeping an unauthenticated caller from choosing how much
 // memory the server allocates.
 const maxRequestBytes = 4 << 20 // 4 MiB
+
+// maxHeaderValueCount bounds how many header values a listener will parse from
+// one request, which is a different resource from how many bytes they occupy.
+//
+// MaxHeaderBytes already bounds the bytes. It does not bound the count, and the
+// two are not the same thing a peer controls: a megabyte spent on one enormous
+// header value costs one map entry, and the same megabyte spent on thirty
+// thousand `X-a: b` lines costs thirty thousand of them plus the slice growth
+// underneath. That is the ratio the sender picks, so the count is bounded on its
+// own — the rule this repository applies everywhere else, that bounding one
+// resource does not bound another the peer chooses the ratio to.
+//
+// Set explicitly even though Go 1.27's [http.DefaultMaxHeaderValueCount] is this
+// same 500, for the reason MaxHeaderBytes is written out beside it while being
+// exactly [http.DefaultMaxHeaderBytes]: an operator reading one of these structs
+// should see every bound the listener imposes, rather than having to know which
+// of them the standard library happens to supply this year.
+//
+// 500 is far past what a real client sends — a webhook delivery from a payments
+// provider carries a few dozen headers, and a proxy chain adds a handful more —
+// and far short of a count worth allocating for.
+const maxHeaderValueCount = 500
 
 // authVerifier builds the token verifier the server authenticates with.
 //

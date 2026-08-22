@@ -11,7 +11,10 @@
 // files. staticcheck is the same analyser, release and GOTOOLCHAIN pin the
 // required CI job runs, narrowed to that set — except where a change to the
 // harness or the module graph forces that job wide, when this analyses ./...
-// as the job does (#879). A change under
+// as the job does (#879). vet follows that same forcing (#887). The test leg
+// does not, because a full -race run is the one leg expensive enough to make
+// this tier stop being run at all; on a harness diff it stays narrow and says
+// so in its own line. A change under
 // examples/ additionally seeds the affected set with whichever
 // packages' test files actually read example workflows off disk at runtime
 // (see exampleDataDepPackages) — a data dependency the import graph alone
@@ -54,11 +57,18 @@ const bufVersion = "v1.72.0"
 // vendored into the newer toolchain's module cache — the same failure
 // CLAUDE.md records for govulncheck, for the same reason.
 //
+// The two are also coupled to each other, which is why they sit in one block:
+// staticcheck type-checks with its own go/types, so it can only read export
+// data at or below the format version its release understands. A release older
+// than the toolchain fails per standard-library package with "export data
+// version N is greater than maximum supported version M" rather than reporting
+// findings — so a toolchain bump moves the release with it. See CLAUDE.md.
+//
 // staticcheck_test.go reads both values back out of the workflow, so this
 // tier cannot drift into a second opinion about the tool.
 const (
-	staticcheckVersion   = "2026.1"
-	staticcheckToolchain = "go1.26.6"
+	staticcheckVersion   = "2026.2.1"
+	staticcheckToolchain = "go1.27.0"
 )
 
 func main() {
@@ -244,26 +254,56 @@ func run() error {
 	// Affected packages: vet and bounded -race tests. When go.mod moved,
 	// everything is affected and the bounds widen to the full-suite ones
 	// `make test` uses.
-	if len(affected) == 0 {
+	//
+	// narrowWhy is the diff-scoped reason both legs print when the affected
+	// set is what decides their scope.
+	narrowWhy := fmt.Sprintf("%d affected package(s)", len(affected))
+	if len(exampleDataDeps) > 0 {
+		narrowWhy += fmt.Sprintf(" (%d via examples/ data dependency, not the import graph: %s)",
+			len(exampleDataDeps), strings.Join(trimModulePrefix(exampleDataDeps), ", "))
+	}
+	if len(repoDataDeps) > 0 {
+		narrowWhy += fmt.Sprintf(" (%d via %s data dependency, not the import graph: %s)",
+			len(repoDataDeps), strings.Join(p.repoDataRoots, "/"), strings.Join(trimModulePrefix(repoDataDeps), ", "))
+	}
+
+	// vet's scope follows the forcing, exactly as the staticcheck leg's does
+	// below: where a change to the harness or to the module graph makes CI's
+	// job vet the whole module, this vets the whole module too. A workflow-
+	// or Makefile-only diff affects no Go package at all, so a leg reading
+	// `affected` alone skipped precisely where the required job ran, which is
+	// the hole #882 closed for staticcheck and #887 closes here.
+	//
+	// It is the cheap half of that gap. `go vet ./...` on this module is
+	// seconds, so following the forcing costs nothing anyone will notice.
+	if !scopedLegRuns(p, affected) {
 		g.skip("vet", "no Go packages affected by this diff")
-		g.skip("test", "no Go packages affected by this diff")
-	} else if p.moduleWide {
-		why := fmt.Sprintf("%s changed, every package is affected", p.reasons["module"])
-		g.leg("vet", why, command("go", append([]string{"vet"}, "./...")...))
-		g.leg("test", why,
-			commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-race", "-timeout", "900s", "./..."))
+	} else if why := forcedWide(p); why != "" {
+		g.leg("vet", why, vet(vetScope(p, affected)...))
 	} else {
-		why := fmt.Sprintf("%d affected package(s)", len(affected))
-		if len(exampleDataDeps) > 0 {
-			why += fmt.Sprintf(" (%d via examples/ data dependency, not the import graph: %s)",
-				len(exampleDataDeps), strings.Join(trimModulePrefix(exampleDataDeps), ", "))
-		}
-		if len(repoDataDeps) > 0 {
-			why += fmt.Sprintf(" (%d via %s data dependency, not the import graph: %s)",
-				len(repoDataDeps), strings.Join(p.repoDataRoots, "/"), strings.Join(trimModulePrefix(repoDataDeps), ", "))
-		}
-		g.leg("vet", why, command("go", append([]string{"vet"}, affected...)...))
-		g.leg("test", why,
+		g.leg("vet", narrowWhy, vet(vetScope(p, affected)...))
+	}
+
+	// test's scope does not follow the forcing, and that is a decision with a
+	// price rather than the same gap left open. `go test -race ./...` bounded
+	// the way CI runs it is the better part of ten minutes; this tier's whole
+	// value is that it answers in seconds to minutes, and a gate slow enough
+	// that people stop running it protects nothing (#887 prices all three
+	// options). So on a harness diff the leg still runs the affected set — and
+	// says so in its own line, naming what it did not run, so the residual is
+	// a decision a reader can see rather than a silence.
+	//
+	// The module-graph forcing is different and still widens: when go.mod
+	// moved, every package *is* affected, so there is no narrower answer to
+	// give.
+	switch {
+	case p.moduleWide:
+		g.leg("test", fmt.Sprintf("%s changed, every package is affected", p.reasons["module"]),
+			commandEnv([]string{"GOMEMLIMIT=2GiB"}, "go", "test", "-race", "-timeout", "900s", "./..."))
+	case len(affected) == 0:
+		g.skip("test", withTestResidual(p, "no Go packages affected by this diff"))
+	default:
+		g.leg("test", withTestResidual(p, narrowWhy),
 			commandEnv([]string{"GOMEMLIMIT=1GiB"}, "go", append([]string{"test", "-race", "-timeout", "300s"}, affected...)...))
 	}
 
@@ -296,16 +336,17 @@ func run() error {
 	// package at all, so the leg would *skip* where the required job runs;
 	// and a change to this package would analyse only this package where the
 	// job analyses the module. So the leg takes ciForceReason's answer, and
-	// the scope follows the trigger.
+	// the scope follows the trigger — the vet leg above now shares that
+	// answer through the same two functions (#887).
 	//
 	// This is the slowest leg on a wide diff, because staticcheck type-checks
 	// everything it is given. That cost is deliberate and unconditional: an
 	// opt-out is a second opinion about whether the required job matters, and
 	// a diff wide enough to make this expensive is one already paying for a
 	// full CI run.
-	if !staticcheckRuns(p, affected) {
+	if !scopedLegRuns(p, affected) {
 		g.skip("staticcheck", "no Go packages affected by this diff")
-	} else if why := staticcheckForce(p); why != "" {
+	} else if why := forcedWide(p); why != "" {
 		g.leg("staticcheck", why, staticcheck("./..."))
 	} else {
 		g.leg("staticcheck", fmt.Sprintf("%d affected package(s)", len(affected)),
@@ -622,8 +663,10 @@ func buf(args ...string) cmdSpec {
 	return command("go", append([]string{"run", "github.com/bufbuild/buf/cmd/buf@" + bufVersion}, args...)...)
 }
 
-// staticcheckForce is why this leg must analyse the whole module rather than
-// the affected set, or "" when the diff decides.
+// forcedWide is why a leg whose scope follows CI's must run over the whole
+// module rather than the affected set, or "" when the diff decides. The vet
+// and staticcheck legs both read it, so the two cannot come to different
+// answers about one question (#882 for staticcheck, #887 for vet).
 //
 // It is ciForceReason with an empty event on purpose. The event-driven arms of
 // that function — a push to main, a merge group — describe runs that are not
@@ -631,11 +674,11 @@ func buf(args ...string) cmdSpec {
 // empty event is the honest input, and what is left is exactly the harness
 // forcing (ciWide) and the build-graph forcing (moduleWide) that also widen
 // the required job.
-func staticcheckForce(p plan) string {
+func forcedWide(p plan) string {
 	return ciForceReason("", p)
 }
 
-// staticcheckRuns is the staticcheck leg's trigger, and deliberately the same
+// scopedLegRuns is the trigger for those same legs, and deliberately the same
 // expression ciDecisions arrives at for the staticcheck *job*: forced, or any
 // affected Go package. ciDecisions spells the forcing as a post-pass that sets
 // every decision's Run (see the `if force != ""` loop in ci.go), which comes
@@ -644,10 +687,48 @@ func staticcheckForce(p plan) string {
 // It is a named function rather than an inline condition so a test can assert
 // that equality holds. Two tiers gating one check on two different conditions
 // is how a local pass over a commit CI rejects comes back in a new shape —
-// which is what happened here: the first version of this leg read `affected`
-// alone, and a workflow-only diff skipped it while the required job ran.
-func staticcheckRuns(p plan, affected []string) bool {
-	return staticcheckForce(p) != "" || len(affected) > 0
+// which is what happened here: the first version of the staticcheck leg read
+// `affected` alone, and a workflow-only diff skipped it while the required job
+// ran.
+func scopedLegRuns(p plan, affected []string) bool {
+	return forcedWide(p) != "" || len(affected) > 0
+}
+
+// vet is the vet leg's command over the named packages, and vetScope is the
+// package set it is given: the whole module where the forcing widens CI's job,
+// the affected set otherwise. Both are named so a test can read the scope this
+// leg actually uses rather than a copy of the rule (scope_test.go).
+func vet(pkgs ...string) cmdSpec {
+	return command("go", append([]string{"vet"}, pkgs...)...)
+}
+
+func vetScope(p plan, affected []string) []string {
+	if forcedWide(p) != "" {
+		return []string{"./..."}
+	}
+	return affected
+}
+
+// testResidual is the clause the test leg adds to its own line when the
+// harness forcing has widened CI's test job while this leg stays narrow.
+//
+// It is a constant, and the test leg's line is built by the function below,
+// because this is the one place in the gate where the two tiers deliberately
+// disagree: a reader who sees a narrow test leg on a harness diff should be
+// able to tell a priced decision from a bug without opening #887. Everything
+// else here reports either "this ran" or "this could not be reached"; this
+// reports "this ran less than CI will".
+const testResidual = "CI's test job runs ./... for this harness diff — the packages outside the affected set are the residual gap priced in #887, so a failure there arrives from CI rather than from here"
+
+// withTestResidual appends that clause when the harness moved. It reads
+// p.ciWide rather than forcedWide because the module-graph forcing has no
+// residual: when go.mod moved, every package is affected and the leg runs the
+// whole module anyway.
+func withTestResidual(p plan, why string) string {
+	if !p.ciWide {
+		return why
+	}
+	return why + "; " + testResidual
 }
 
 // staticcheck runs the pinned analyser over the named packages, under the
