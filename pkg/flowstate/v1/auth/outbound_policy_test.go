@@ -412,6 +412,7 @@ func TestFederationRoundTrip(t *testing.T) {
 	// the one system it may present it to.
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
+declared_claims: [repository]
 allow:
   - 'target == "partner" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
 targets:
@@ -463,6 +464,7 @@ targets:
 		// refuses it: both sides get a say, which is what federation means.
 		permissive, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
+declared_claims: [repository]
 targets:
   - name: partner
     token_exchange:

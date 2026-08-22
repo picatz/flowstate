@@ -274,6 +274,7 @@ func TestFederationHTTPClientIsUsed(t *testing.T) {
 
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+declared_claims: [repository]
 targets:
   - name: partner
     token_exchange:

@@ -2,9 +2,11 @@ package auth_test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -33,7 +35,17 @@ func claimSet(count, valueBytes int) map[string]string {
 // than what was authorized, under a signature.
 func TestMintRefusesAnOverBoundClaimSet(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
-	issuer, _ := newIssuer(t, clock)
+
+	// Declared, so that what these cases exercise is the bound rather than the
+	// allowlist beside it. The over-bound cases never reach the allowlist —
+	// the size check runs first, which is why the odd-shaped names they use
+	// need no declaration — but the case that reaches the bound does.
+	declared := make([]string, 0, auth.MaxCarriedClaims)
+	for i := range auth.MaxCarriedClaims {
+		declared = append(declared, fmt.Sprintf("carried_%03d", i))
+	}
+
+	issuer, _ := newIssuer(t, clock, auth.WithDeclaredClaims(declared...))
 
 	tests := []struct {
 		name   string
@@ -183,4 +195,112 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 		require.Equal(t, "workflow-runner", principal.Subject)
 		require.Contains(t, principal.Claims, "padding_031")
 	})
+}
+
+// TestMintRefusesAnUndeclaredClaim is the property the allowlist exists for,
+// stated in the negative direction: mint a claim nobody declared and get an
+// error rather than a token.
+//
+// The denylist this replaced would have signed every one of these, because none
+// of them collides with a reserved name. That is the whole difference between a
+// claim set that is closed by convention and one that is closed by the code
+// that signs it.
+func TestMintRefusesAnUndeclaredClaim(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+
+	t.Run("a claim the issuer was never told about", func(t *testing.T) {
+		issuer, _ := newIssuer(t, clock)
+
+		identity := testIdentity()
+		identity.Claims = map[string]string{"environment": "production"}
+
+		assertion, err := issuer.Mint(t.Context(), identity, testStepRef(), "sts.amazonaws.com")
+		require.ErrorIs(t, err, auth.ErrUndeclaredClaim)
+		require.Contains(t, err.Error(), "environment", "the refusal has to name the claim to be actionable")
+		require.NotContains(t, err.Error(), "production", "a claim value must not appear in an error")
+		require.True(t, assertion.IsZero(), "a refused mint must produce no assertion")
+	})
+
+	t.Run("declaring it is what makes it mintable", func(t *testing.T) {
+		issuer, _ := newIssuer(t, clock, auth.WithDeclaredClaims("environment"))
+
+		identity := testIdentity()
+		identity.Claims = map[string]string{"environment": "production"}
+
+		assertion, err := issuer.Mint(t.Context(), identity, testStepRef(), "sts.amazonaws.com")
+		require.NoError(t, err)
+		require.NotEmpty(t, assertion.Token())
+	})
+
+	t.Run("an issuer declaring nothing carries nothing", func(t *testing.T) {
+		// The fail-closed default. A deployment that has not said which claims
+		// are part of its assertions' contract signs none of them.
+		key, err := auth.GenerateSigningKey("bare", jwa.ES256)
+		require.NoError(t, err)
+
+		issuer, err := auth.NewIssuer("https://flowstate.example.com", key, auth.WithIssuerClock(clock.Now))
+		require.NoError(t, err)
+		require.Empty(t, issuer.DeclaredClaims())
+
+		_, err = issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.amazonaws.com")
+		require.ErrorIs(t, err, auth.ErrUndeclaredClaim)
+	})
+
+	t.Run("the discovery document advertises exactly what may be minted", func(t *testing.T) {
+		// Derived from the declaration rather than listed again: an issuer that
+		// advertises a claim it would refuse to sign describes an assertion
+		// that does not exist.
+		issuer, _ := newIssuer(t, clock, auth.WithDeclaredClaims("environment"))
+
+		supported := issuer.Discovery().ClaimsSupported
+		require.Contains(t, supported, "environment")
+		require.Contains(t, supported, "repository")
+		require.NotContains(t, supported, "team")
+	})
+}
+
+// TestDeclaringAClaimThatCanNeverApplyIsAStartupError covers the other half of
+// fail-closed: a declaration is configuration, so a wrong one has to fail where
+// configuration is read rather than at the first mint that would have used it.
+func TestDeclaringAClaimThatCanNeverApplyIsAStartupError(t *testing.T) {
+	key, err := auth.GenerateSigningKey("k", jwa.ES256)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		declare string
+	}{
+		{
+			// Refused rather than ignored: a carried claim of this name can
+			// never be minted, so a declaration of it silently never applies.
+			name:    "a reserved claim the issuer sets itself",
+			declare: auth.ClaimOnBehalfOf,
+		},
+		{
+			name:    "a registered JWT claim",
+			declare: "sub",
+		},
+		{
+			name:    "a claim with no name",
+			declare: "",
+		},
+		{
+			name:    "a name longer than an assertion may carry",
+			declare: strings.Repeat("n", auth.MaxCarriedClaimNameBytes+1),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			issuer, err := auth.NewIssuer("https://flowstate.example.com", key, auth.WithDeclaredClaims(test.declare))
+			require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+			require.Nil(t, issuer)
+
+			// The same declaration in the file form fails where the file is
+			// parsed, not later when a broker is built from it.
+			_, err = auth.ParseFederationPolicy([]byte("issuer: https://flowstate.example.com\ndeclared_claims: [" +
+				strconv.Quote(test.declare) + "]\n"))
+			require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+		})
+	}
 }
