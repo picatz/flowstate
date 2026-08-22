@@ -102,17 +102,21 @@ steps:
 			want: "`task:` is no longer a step key; a step names its task directly now",
 		},
 		{
+			// `labels:` used to be this case, and is now a key the grammar has —
+			// so the case moved to a word next to a real one, which is the shape
+			// that has to keep being reported: a misspelling that does nothing is
+			// worse than a refusal, because the author has no reason to doubt it.
 			name: "unknown workflow key",
 			src: `edition: v2026.3
 name: t
-labels:
+lables:
   env: dev
 steps:
   - id: a
     log:
 `,
 			line: 3, col: 1,
-			want: `unknown key "labels"`,
+			want: `unknown key "lables"`,
 		},
 		{
 			name: "two kinds of work in one step",
