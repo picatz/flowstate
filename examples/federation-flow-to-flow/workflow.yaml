@@ -27,7 +27,7 @@ steps:
   # status is read back under the field name the wire actually carries, `status`.
   - id: record
     vars:
-      run: ${json_parse(steps.check_on_peer.body)}
+      peer: ${json_parse(steps.check_on_peer.body)}
     log:
-      fields: '${{"peer_status": run["status"]}}'
+      fields: '${{"peer_status": peer["status"]}}'
       message: read a run's status from the peer deployment
