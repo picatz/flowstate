@@ -208,8 +208,8 @@ const (
 	// ErrorType is OpenTelemetry's own `error.type`, semconv v1.41.0 — the
 	// version pinned in go.mod and already used on spans by
 	// `netpolicy/tracing.go`. Its values here are the members of this
-	// repository's error classification (`v1.ErrorKind`), which is a fixed
-	// enumeration; never an error *message*, which quotes its input.
+	// repository's error classification (`v1.ErrorKind`) plus
+	// [ErrorTypePanic]; never an error *message*, which quotes its input.
 	ErrorType = string(semconv.ErrorTypeKey)
 )
 
@@ -223,6 +223,17 @@ const (
 	DriverDurable = "durable"
 
 	SurfaceTaskDispatch = "task.dispatch"
+
+	// ErrorTypePanic is the [ErrorType] value for an execution that did not
+	// return at all.
+	//
+	// Its own value rather than one of `v1.ErrorKind`'s, because a panic is not
+	// something a task *reported*: no error was ever constructed, so nothing
+	// classified it, and labelling one "Internal" — the nearest kind — would
+	// state a classification nobody made. It is also the distinction an
+	// operator wants at 3am, since a crash and a returned failure call for
+	// different reading. Lowercase and bounded, like every other member here.
+	ErrorTypePanic = "panic"
 )
 
 // Attribute is one row of the schema: a key, how its value set is bounded, and

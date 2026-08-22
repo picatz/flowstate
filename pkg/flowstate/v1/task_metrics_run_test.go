@@ -3,6 +3,8 @@ package flowstatev1_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
@@ -38,4 +40,24 @@ func TestRunWorkflowRecordsNoMetricsWithoutAMeterProvider(t *testing.T) {
 	reader := conformance.RecordMetrics(t)
 
 	conformance.AssertNoMetrics(t, reader)
+}
+
+// TestALocalTaskPanicIsRecordedAsAFailure is the local half of the defect Codex
+// found on #888: a panicking task was recorded as outcome=success.
+//
+// Two claims, and both matter. The measurement says the execution failed and
+// says a panic is what failed it — and the panic still reaches the caller, with
+// nothing here having recovered it, because a local run's contract is that a
+// crash crashes the way the author's own code would.
+func TestALocalTaskPanicIsRecordedAsAFailure(t *testing.T) {
+	conformance.RegisterPanickingTask(t)
+
+	reader := conformance.RecordMetrics(t)
+
+	require.PanicsWithValue(t,
+		"the task panicked with "+conformance.TaskPanicSecret,
+		func() { _, _ = v1.Run(t.Context(), conformance.PanicWorkflow()) },
+		"the observation must not swallow or replace the panic")
+
+	conformance.AssertPanicRecordedAsFailure(t, reader, metricschema.DriverLocal)
 }

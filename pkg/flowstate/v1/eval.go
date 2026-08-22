@@ -13,6 +13,8 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -2276,8 +2278,8 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// execution instruments have to see the refused dispatch on both
 		// drivers too, or a local run's error rate would omit exactly the
 		// failures an operator most wants counted.
-		_, _, end := ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal)
-		end(err)
+		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
+			func(context.Context, trace.Span) (*Node_Outputs, error) { return nil, err })
 
 		return nil, err
 	}
@@ -2470,17 +2472,11 @@ func (e *causeEnrichedError) Unwrap() error {
 // [withCancellationCause] enriches, because the enrichment adds *text* and the
 // span records only a classification — and the classification of the enriched
 // error is the same one, since it wraps rather than replaces.
-func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (out *Node_Outputs, err error) {
-	ctx, _, end := ObserveTask(ctx, task, stepID, metricschema.DriverLocal)
-
-	// Deferred, so that the span still ends and the execution is still counted
-	// if the attempt panics — which is what `defer span.End()` bought here
-	// before the observation was a pair of calls.
-	defer func() { end(err) }()
-
-	out, err = runStepAttempt(ctx, task, timeout, scope)
-
-	return out, err
+func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
+	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+		func(ctx context.Context, _ trace.Span) (*Node_Outputs, error) {
+			return runStepAttempt(ctx, task, timeout, scope)
+		})
 }
 
 // runStepAttempt performs one attempt, bounded by the per-attempt timeout.

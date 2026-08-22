@@ -6,6 +6,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
@@ -75,14 +76,38 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 	return duration, executions
 }
 
-// ObserveTask opens the span covering one task execution and starts the clock
-// for its duration.
+// ObserveTask runs one task execution inside its span and its measurement.
 //
-// The returned function ends the observation: it records the outcome on the
-// span ([RecordTaskOutcome]), records the duration and the execution on their
-// instruments, and ends the span. Call it exactly once, on every path out —
-// which is why it is returned rather than left to a `defer span.End()` a later
-// edit can drift away from the recording site.
+// run is handed the span's context and the span itself — the second because a
+// caller may have something to write on it that only that caller knows, like
+// the durable driver's attempt number. Whatever run returns is what this
+// returns; the observation is closed exactly once, whichever way run leaves.
+//
+// # Why this takes the work rather than returning an ending function
+//
+// It returned `(ctx, span, end func(error))` until Codex found the hole on
+// #888, and the hole is worth writing down because the shape looked right. Each
+// caller held its own error variable and deferred `end(err)` — so when a task
+// panicked, the assignment to that variable never happened, the deferred call
+// read a nil, and the observation recorded **outcome=success with no
+// error.type** for an execution that crashed. The span said the same thing.
+// Temporal meanwhile reported the activity as failed, so the two disagreed
+// about one event, and the disagreement was in the direction that hides:
+// crashes missing from an error rate look like health.
+//
+// A deferred call cannot see a panic in flight unless it recovers, and
+// recovering in order to re-panic is not free — the substrate's own recover
+// would then capture a stack rooted at this file rather than at the code that
+// panicked, which is exactly the fact somebody debugging a crash needs. So
+// nothing here recovers. The observation owns the call instead and marks
+// completion with a flag only the normal path sets; the deferred close reads
+// that flag, records the panic outcome, and returns, leaving the panic to
+// continue unwinding with its own value and its own stack.
+//
+// The panic *value* is deliberately not recorded anywhere — not on the span,
+// not in a label. A panic can quote whatever it was handed
+// (`panic(fmt.Sprintf("bad token %s", tok))`), which puts it in the same class
+// as an error message: the fact of the crash is exported, its words are not.
 //
 // driver is [metricschema.DriverLocal] or [metricschema.DriverDurable],
 // supplied by the caller because this function cannot tell: it is the same
@@ -98,15 +123,58 @@ func taskInstruments() (metric.Float64Histogram, metric.Int64Counter) {
 // else: the per-key distinct-value cap applies whether or not the name turned
 // out to name anything. See that package for the rule and for what a bound does
 // when it is reached.
-func ObserveTask(ctx context.Context, task *Task, stepID, driver string) (context.Context, trace.Span, func(error)) {
+func ObserveTask(ctx context.Context, task *Task, stepID, driver string, run func(context.Context, trace.Span) (*Node_Outputs, error)) (*Node_Outputs, error) {
 	ctx, span := StartTaskSpan(ctx, task, stepID)
 	started := time.Now()
 
-	return ctx, span, func(err error) {
-		RecordTaskOutcome(span, err)
-		recordTaskExecution(ctx, task.GetName(), driver, time.Since(started), err)
+	// Set on the normal path, immediately after run returns. False when the
+	// deferred function below runs means one thing only: run did not return, so
+	// the goroutine is unwinding through a panic nobody has recovered.
+	completed := false
+
+	defer func() {
+		if completed {
+			return
+		}
+
+		// A fixed sentence, like every other status this repository writes:
+		// "the task panicked" is the fact, and the panic's own words stay out
+		// of the collector.
+		if span.IsRecording() {
+			span.SetStatus(codes.Error, "task panicked")
+		}
+		recordTaskExecution(ctx, task.GetName(), driver, metricschema.ErrorTypePanic, time.Since(started))
 		span.End()
+
+		// No recover, and therefore no re-panic: the panic continues from here
+		// with the value and the stack it started with, and whatever handles it
+		// — Temporal's activity executor, or nothing at all under a local run —
+		// sees exactly what it saw before this observation existed.
+	}()
+
+	out, err := run(ctx, span)
+	completed = true
+
+	RecordTaskOutcome(span, err)
+	recordTaskExecution(ctx, task.GetName(), driver, errorTypeFor(err), time.Since(started))
+	span.End()
+
+	return out, err
+}
+
+// errorTypeFor is the `error.type` value for a failure the task reported, and
+// empty for a success.
+//
+// The classification, never the message. `${steps.<id>.error}` is rendered from
+// whatever the task said and a task can say a great deal — an http task's error
+// names the URL it called. [ErrorKind] is a fixed enumeration written in this
+// repository, which is the only reason it can be a label at all.
+func errorTypeFor(err error) string {
+	if err == nil {
+		return ""
 	}
+
+	return ClassifyError(err).String()
 }
 
 // recordTaskExecution records one execution on both engine-level instruments.
@@ -115,9 +183,15 @@ func ObserveTask(ctx context.Context, task *Task, stepID, driver string) (contex
 // executions{outcome="error"} over executions, and a latency-by-outcome is the
 // histogram cut the same way. Two attribute sets would make the two questions
 // need two mental models of one event.
-func recordTaskExecution(ctx context.Context, taskName, driver string, elapsed time.Duration, err error) {
+// errorType is empty for a success, a member of the error classification for a
+// reported failure, and [metricschema.ErrorTypePanic] for an execution that did
+// not return at all. Taking the value rather than the error is what lets the
+// panic path record a failure it has no error for — there was never a
+// classified error, and inventing one would say the task reported something it
+// did not.
+func recordTaskExecution(ctx context.Context, taskName, driver, errorType string, elapsed time.Duration) {
 	outcome := metricschema.OutcomeSuccess
-	if err != nil {
+	if errorType != "" {
 		outcome = metricschema.OutcomeError
 	}
 
@@ -127,15 +201,10 @@ func recordTaskExecution(ctx context.Context, taskName, driver string, elapsed t
 		attribute.String(metricschema.TaskOutcome, outcome),
 	}
 
-	if err != nil {
-		// The classification, never the message. `${steps.<id>.error}` is
-		// rendered from whatever the task said and a task can say a great deal
-		// — an http task's error names the URL it called. [ErrorKind] is a
-		// fixed enumeration written in this repository, which is the only
-		// reason it can be a label at all. Written only on a failure, per
-		// semconv: a successful measurement carries no error.type, so success
-		// stays one series.
-		attrs = append(attrs, attribute.String(metricschema.ErrorType, ClassifyError(err).String()))
+	if errorType != "" {
+		// Written only on a failure, per semconv: a successful measurement
+		// carries no error.type, so success stays one series.
+		attrs = append(attrs, attribute.String(metricschema.ErrorType, errorType))
 	}
 
 	duration, executions := taskInstruments()
