@@ -80,6 +80,16 @@ import (
 // The run-level attribute vocabulary, named here for the same reason
 // [SpanAttributeTaskName] is: so a second driver, or a second caller, cannot
 // invent a parallel spelling of a concept this one already has.
+//
+// Each of these is also a row in `metricschema.Table`, which is the one place a
+// telemetry attribute key is *declared* (#522, invariant 1) and the place that
+// says whether a key may reach a metric at all. Spelled as a literal here and
+// not read from that package, matching how [SpanAttributeTaskName] already
+// stands beside `metricschema.TaskName`: `pkg/flowstate/v1` is the package
+// everything else must import, and `imports_test.go` ratchets what it may
+// import in return — so a span constant does not buy a shared spelling at the
+// price of another file in that table. The keys are identical and the tests
+// below and in `metricschema` both name them.
 const (
 	// SpanAttributeWorkflowName is the name of the workflow being run.
 	//
@@ -104,8 +114,11 @@ const (
 	//
 	// The digest and never the idempotency key it names: a key is frequently a
 	// signature header, and a span goes somewhere even less tenant-scoped than
-	// workflow history.
-	SpanAttributeDeliveryID = "flowstate.webhook.delivery.id"
+	// workflow history. `metricschema.Table` classifies this key as
+	// peer-controlled — one per delivery, chosen by an external sender — so it
+	// may never reach a metric, and a span is exactly where a per-event
+	// identifier belongs.
+	SpanAttributeDeliveryID = "flowstate.delivery.id"
 
 	// SpanAttributeDeliveryJoined is true when a delivery joined the run its
 	// event had already started rather than starting one, which is what a

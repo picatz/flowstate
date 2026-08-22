@@ -10,7 +10,47 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
+
+// TestTheRunSpanVocabularyIsTheSchemasVocabulary is what keeps the two
+// spellings of these keys identical, since `runspan.go` writes each as a
+// literal rather than importing the schema package (its doc says why: the
+// import ratchet in `imports_test.go`).
+//
+// A test rather than a shared constant is the trade this makes explicit — the
+// keys can only disagree for as long as it takes this to run — and it also
+// asserts the half a shared constant would not: that each key is *classified*,
+// so "may this reach a metric" has an answer somebody wrote down.
+func TestTheRunSpanVocabularyIsTheSchemasVocabulary(t *testing.T) {
+	t.Parallel()
+
+	for key, want := range map[string]metricschema.Class{
+		v1.SpanAttributeWorkflowName:   metricschema.ClassConfiguration,
+		v1.SpanAttributeTriggerName:    metricschema.ClassConfiguration,
+		v1.SpanAttributeDeliveryJoined: metricschema.ClassConstruction,
+
+		// Peer-controlled: one value per delivery, chosen by an external
+		// sender, so it is a span attribute and never a metric label.
+		v1.SpanAttributeDeliveryID: metricschema.ClassPeerControlled,
+	} {
+		var declared bool
+		for _, attr := range metricschema.Table {
+			if attr.Key != key {
+				continue
+			}
+			declared = true
+
+			if attr.Class != want {
+				t.Fatalf("%q is classified %s in the schema, want %s", key, attr.Class, want)
+			}
+		}
+		if !declared {
+			t.Fatalf("the run span writes %q, which metricschema.Table does not declare — "+
+				"add the row, so one place says what the key is and whether a metric may carry it", key)
+		}
+	}
+}
 
 // TestLocalRunIsOneTree is #523's gap 4 for the local driver: a rehearsal's
 // trace is one tree rooted at the run, not a forest of task spans with nothing
