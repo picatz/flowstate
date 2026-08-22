@@ -65,6 +65,17 @@ type WorkloadIdentity struct {
 	// rather than that rule's 256 because a carried value is data and not a
 	// match pattern — the longest real one measured here is a 63-byte GitHub
 	// Actions `job_workflow_ref`.
+	//
+	// `max_bytes` and not `max_len`, deliberately, and this is the whole reason
+	// the unit is named in these field names. protovalidate's `max_len` is
+	// `this.size()`, which counts Unicode *code points*; `max_bytes` is
+	// `bytes(this).size()`, which is what Go's `len` on a string counts and what
+	// `auth.validateCarriedClaims` therefore enforces. Under `max_len` a value of
+	// 700 two-byte runes passes the schema at 700 and is refused at the mint at
+	// 1400 bytes — one limit written down twice in two units, so the schema and
+	// the mint disagree about which identities are valid, and the identity that
+	// falls in the gap validates and then cannot obtain a credential. Same
+	// number, same unit, both layers.
 	Claims map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Namespace is the tenant, and it is the boundary every authorization decision
 	// about a run turns on: the caller's namespace is compared against the one
@@ -167,7 +178,7 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\x10WorkloadIdentity\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
 	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
-	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.WorkloadIdentity.ClaimsEntryB\x18\xbaH\x15\x9a\x01\x12\x10 \"\ar\x05\x10\x01\x18\x80\x01*\x05r\x03\x18\x80\bR\x06claims\x12\x1c\n" +
+	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.WorkloadIdentity.ClaimsEntryB\x18\xbaH\x15\x9a\x01\x12\x10 \"\ar\x05 \x01(\x80\x01*\x05r\x03(\x80\bR\x06claims\x12\x1c\n" +
 	"\tnamespace\x18\x04 \x01(\tR\tnamespace\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x05 \x01(\tR\n" +
