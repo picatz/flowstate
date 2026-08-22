@@ -148,7 +148,7 @@ func TestManifestIsDerived(t *testing.T) {
 func TestDescribeMessageOmitsWhatTheEngineHas(t *testing.T) {
 	t.Parallel()
 
-	raw, name, err := describeMessage(&flowstatev1.Task_Log_Inputs{})
+	raw, name, err := describeMessage(&flowstatev1.Task_Log_Inputs{}, nil)
 	if err != nil {
 		t.Fatalf("describeMessage: %v", err)
 	}
@@ -166,12 +166,12 @@ func TestDescribeMessageOmitsWhatTheEngineHas(t *testing.T) {
 func TestDescribeMessageNoMessage(t *testing.T) {
 	t.Parallel()
 
-	raw, name, err := describeMessage(nil)
+	raw, name, err := describeMessage(nil, nil)
 	if err != nil {
 		t.Fatalf("describeMessage: %v", err)
 	}
 	if raw != nil || name != "" {
-		t.Errorf("describeMessage(nil) = (%d bytes, %q), want nothing", len(raw), name)
+		t.Errorf("describeMessage(nil, nil) = (%d bytes, %q), want nothing", len(raw), name)
 	}
 }
 
@@ -687,7 +687,7 @@ func TestTaskManifestCarriesDeclarations(t *testing.T) {
 		},
 	}
 
-	manifest, err := task.manifest()
+	manifest, err := task.manifest(nil)
 	if err != nil {
 		t.Fatalf("manifest: %v", err)
 	}

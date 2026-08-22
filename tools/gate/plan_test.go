@@ -63,6 +63,37 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
+			// The example plugin's schema is a second buf module with
+			// a descriptor set of its own, which is what carries that
+			// plugin's field comments to an editor (#723). It rides
+			// the proto leg, so that a .proto edit re-pins the
+			// artifact built from it — but not the docs leg, since
+			// nothing under docs/reference/ is derived from a
+			// plugin's schema.
+			name:    "the example plugin's schema fires the proto leg and not the docs leg",
+			changed: []string{examplePluginProtoDir + "example/v1/example.proto"},
+			want: plan{
+				fileDirs: []string{examplePluginProtoDir + "example/v1"},
+				proto:    true,
+				reasons: map[string]string{
+					"proto": examplePluginProtoDir + "example/v1/example.proto",
+				},
+			},
+		},
+		{
+			// The artifact as well as its source: a pin over a file
+			// nothing rebuilt is not a pin.
+			name:    "the example plugin's descriptor set fires the proto leg",
+			changed: []string{examplePluginProse},
+			want: plan{
+				fileDirs: []string{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example"},
+				proto:    true,
+				reasons: map[string]string{
+					"proto": examplePluginProse,
+				},
+			},
+		},
+		{
 			name:    "DSL.md fires the docs leg",
 			changed: []string{"docs/DSL.md"},
 			want: plan{

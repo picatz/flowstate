@@ -264,11 +264,16 @@ func run() error {
 			buf("breaking", "--against", ".git#branch=origin/main"),
 			buf("generate"),
 			buf("build", "--exclude-imports", "-o", "pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb"),
+			// The example plugin's schema is a second module with a
+			// descriptor set of its own, carrying that plugin's
+			// field comments to an editor (#723). Same command,
+			// same pin, its own input.
+			buf("build", "--exclude-imports", "-o", examplePluginProse, examplePluginProtoDir),
 			generatedClean("generated code disagrees with the schema; stage and commit the regenerated files",
-				"*.pb.go", "pkg/flowstate/v1/protodoc/"),
+				"*.pb.go", "pkg/flowstate/v1/protodoc/", examplePluginProse),
 		)
 	} else {
-		g.skip("proto", "no changes under proto/ or to buf config")
+		g.skip("proto", "no changes under proto/, the example plugin's proto/, or to buf config")
 	}
 
 	// Conditional: the derived-docs surfaces. Editing docs/DSL.md requires

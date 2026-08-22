@@ -20,6 +20,16 @@ const flowtestPkg = modulePath + "/pkg/flowstate/v1/flowtest"
 // affected, its output can have moved. See needsDocs.
 const cmdFlowPkg = modulePath + "/cmd/flow"
 
+// The example plugin's schema and the descriptor set built from it, which is
+// how that plugin's field comments reach an editor's hover (#723). Both are
+// named here rather than at their two use sites, so the trigger and the
+// command it runs cannot come to disagree about where the artifact lives.
+const (
+	examplePluginDir      = "pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/"
+	examplePluginProtoDir = examplePluginDir + "proto/"
+	examplePluginProse    = examplePluginDir + "schema.descriptorset.binpb"
+)
+
 // plan is what the changed-file list alone decides: which conditional legs
 // fire, which files gofmt checks, and which directories feed the
 // file-to-package resolution. It is pure so the mapping is testable without
@@ -207,6 +217,23 @@ func buildPlan(changed []string) plan {
 			// stale reference docs.
 			p.docs = true
 			reason("docs", f)
+		}
+
+		// The example plugin's own schema, which is a second
+		// descriptor-set artifact under the same pin and for the same
+		// reason: it is what carries that plugin's field comments to an
+		// editor (#723), and one built from a .proto that has moved on
+		// is a set of sentences about a file that no longer exists. It
+		// rides the proto leg rather than gaining one of its own —
+		// there is one answer to "a schema in this repository changed",
+		// and two legs would be two places to keep it.
+		// The artifact itself is a trigger as well as its source, because a
+		// diff-only pin over a file nothing in this run rebuilt proves nothing:
+		// the leg has to re-derive it from the .proto to have an opinion about
+		// whether what is committed is what that .proto produces.
+		if strings.HasPrefix(f, examplePluginProtoDir) || f == examplePluginProse {
+			p.proto = true
+			reason("proto", f)
 		}
 
 		// The derived-docs surfaces: docs/DSL.md and the example

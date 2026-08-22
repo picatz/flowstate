@@ -296,6 +296,7 @@ not the whole answer you want:
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate
     go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+    go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
     git diff --exit-code
     go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
     go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
@@ -342,6 +343,15 @@ rather than googleapis and protovalidate as well. The `git diff --exit-code` tha
 follows covers both artifacts, for the identical reason it covers the first: a
 checked-in descriptor set that disagrees with the schema it describes is a set of
 sentences about a file that has moved on.
+
+The line after it is the same command pointed at the example plugin's own schema,
+which is a separate buf module and therefore needs its own build. That artifact is
+what carries a *plugin author's* field comments to an editor's hover: the SDK
+attaches it to the descriptors a manifest already ships (`sdk.Plugin.SchemaProse`,
+#723), because a plugin's compiled-in descriptor has its comments stripped by
+protoc exactly as the engine's does. It is opt-in for a plugin and pinned here for
+this one, since prose built from a `.proto` that has since moved is worse than no
+prose — a sentence attached to the wrong field.
 
 `flow docs generate` followed by the same `git diff --exit-code` is that mechanism
 pointed at prose. `docs/reference/` is derived from the task registry, the cobra
