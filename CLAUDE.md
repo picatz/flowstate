@@ -225,8 +225,12 @@ Before pushing a PR branch, run the diff-scoped tier:
 
 It computes the changed files against the merge-base with origin/main, maps
 them to packages, expands to every package whose build or tests can see a
-changed one, then runs the build, gofmt on the changed files, and vet plus
-bounded `-race` tests for the affected set. Conditional legs fire only when
+changed one, then runs the build, gofmt on the changed files, and vet,
+staticcheck and bounded `-race` tests for the affected set. The staticcheck
+leg is the same analyser, release and `GOTOOLCHAIN` pin the required CI job
+runs, narrowed to the affected packages — CI's own job is the same check over
+`./...` — because a gate missing a required check passes commits that check
+rejects (#878, #879). Conditional legs fire only when
 their inputs changed: the buf trio and the descriptorset pin on `proto/`, the
 docs mirror and reference drift checks on `docs/DSL.md` and on anything that
 reaches the binary generating them, example fix and coverage checks on
