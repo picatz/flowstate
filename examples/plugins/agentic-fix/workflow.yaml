@@ -1,0 +1,255 @@
+# An agent gets five tries at a broken build, and then a person does.
+#
+# This is #179's fourth showcase file, and the reason it is worth having as an
+# example rather than as a blog post is that every hard part of it is a property
+# of the *run* rather than of the agent:
+#
+#   * every attempt is durable. A worker dying between the patch and the test run
+#     does not lose the patch — it is a commit, and the commit is in history;
+#   * the patch is a value. `codex.exec` produces one, `git.commit_push` consumes
+#     one, and neither plugin knows the other exists. That is the whole
+#     inter-plugin contract: a typed output read by a typed input, checked before
+#     either process runs;
+#   * the credential is never in the agent's context. `${secret('env:OPENAI_API_KEY')}`
+#     and `${secret('git:token')}` are references resolved inside the task that
+#     needs them; the prompt this file builds carries a test log and nothing else;
+#   * verification binds to content. `verify` is called with the sha the push
+#     produced, never with a branch name, so what was tested is what was written;
+#   * the budget is real, and running out of it is an outcome rather than a
+#     crash. Five attempts, then a human — as a step, not as a bolt-on.
+#
+# The shape of the loop is the part to copy. `until: ${steps.verify.passed}` is
+# checked after the body, so an attempt always happens before anything decides
+# whether another one is needed, and `max_iterations: 5` is what makes "an agent
+# tries until it works" a promise the engine can keep. A loop that spends its
+# whole budget without its `until:` holding *fails* — that is the language's rule,
+# not this file's — so `continue_on_error:` on the loop step is what turns
+# exhaustion from a failed run into the branch where a person is asked. See
+# docs/DSL.md, "Bounded, because the author does not control the trip count",
+# for what a tolerated exhaustion leaves in scope: `results` for every attempt
+# that ran, and `error` for the budget having been spent.
+#
+# What each attempt learns from the last one is carried state: the failure text
+# the previous verification produced, and the commit that attempt wrote. So the
+# second prompt is about the second failure, and the second patch is computed
+# against the first patch's tree rather than against the branch this started on.
+#
+# This directory sits under `examples/plugins/` because it names tasks two
+# plugins provide, and a `flow` that has not loaded them is *supposed* to refuse
+# it — see examples/README.md on why those files sit a directory deeper. It is
+# not under `plugins/codex/` or `plugins/git/` because it belongs to neither: the
+# interesting claim is what happens when a value crosses between them.
+# `workflow.test.yaml` beside this file proves every path of it in CI with no
+# plugin, no model, no forge and no network, by stubbing at the task boundary.
+edition: v2026.3
+name: agentic-fix
+description: >-
+  Gives an agent five durable attempts at making a failing test suite pass —
+  each one a real commit, each one verified at the sha it produced — and hands
+  the work to a person when the budget runs out.
+
+# The floor each plugin has to meet, resolved against what the deployment
+# actually has before a run is accepted, so a mismatch is refused at submit with
+# a sentence naming what is installed rather than discovered as a missing task
+# three steps in. A major version is a different contract, so a v1 does not
+# satisfy either of these.
+plugins:
+  codex: v0.1.0
+  git: v0.1.0
+
+inputs:
+  repo:
+    type: string
+    required: true
+    example: https://github.com/your-org/your-repo.git
+    description: the repository whose build is broken
+
+  branch:
+    type: string
+    required: false
+    default: agent/fix
+    description: the branch each attempt commits to — never a shared trunk
+
+steps:
+  - id: tip
+    description: The commit the first attempt is computed against, read before anything is written.
+    git.ls_remote:
+      url: ${inputs.repo}
+      prefix: refs/heads/${inputs.branch}
+
+  - id: failing
+    description: The failure this run is trying to fix, at the tree it currently fails on.
+    call: ./workflows/run-tests.yaml
+    with:
+      ref: ${steps.tip.refs[0].sha}
+
+  - id: attempt
+    description: Five tries, each one a prompt built from the last failure, a commit, and a test run at that commit.
+    # The budget being spent is a branch of this workflow, not the end of it.
+    # Without this, an agent that failed five times would produce a FAILED run
+    # and the `handoff` gate below would never be reached — the person who has to
+    # pick the work up would find out from a dashboard.
+    continue_on_error: true
+    loop:
+      # Two things travel between attempts: what went wrong last time, and what
+      # to compute the next patch against.
+      as: prior
+      init:
+        failure: ${steps.failing.output}
+        base: ${steps.tip.refs[0].sha}
+        # How many attempts came before this one — zero on the first. It is
+        # carried rather than derived because a loop's own `results` are not
+        # readable from inside its body, and an attempt that wants to say which
+        # try it is (this one puts it in the commit message) has nowhere else to
+        # get the number.
+        n: 0
+      update:
+        failure: ${steps.verify.output}
+        base: ${steps.apply.sha}
+        n: ${prior.n + 1}
+      # Checked after the body, which is what makes an attempt always happen and
+      # lets the condition read the verification that attempt produced.
+      until: ${steps.verify.passed}
+      # The five tries. A ceiling rather than a hope: `until:` is a promise this
+      # loop cannot keep on its own, since nothing here can make a model
+      # eventually succeed.
+      max_iterations: 5
+      steps:
+        - id: propose
+          description: One bounded agentic turn, read-only, asked for a patch and nothing else.
+          timeout: 10m
+          # Not retried, and this is the decision most worth copying from
+          # `examples/agentic-loop`, which argues it at length: a retried
+          # agentic turn is a *new* turn — new cost, new nondeterminism — so a
+          # second attempt belongs to the loop, where it gets a fresh prompt
+          # carrying what actually happened, rather than to a retry policy
+          # repeating a prompt that has already been answered.
+          retry:
+            attempts: 1
+            # Written because the compiled specification requires a coefficient
+            # of at least 1, not because there is a second attempt to space out.
+            backoff: 1.0
+          codex.exec:
+            prompt: ${fix_prompt}
+            # Written out even though it is this task's own default: a file that
+            # names its own sandbox is legible without reading the plugin's
+            # source to learn what unset means today. Read-only is the honest
+            # setting here — this workflow, not the agent, is what writes.
+            sandbox_mode: SANDBOX_MODE_READ_ONLY
+            # A reference, resolved inside the task. The prompt above is built
+            # from a test log; no credential is ever in the agent's context, and
+            # nothing about this key reaches workflow history.
+            api_key: ${secret('env:OPENAI_API_KEY')}
+          vars:
+            # Private to this step, which is the right scope for a prompt
+            # nothing else reads. The failure text is the carried state: on the
+            # first attempt it is the failure this run started from, and on
+            # every later one it is what the previous attempt's own test run
+            # printed.
+            fix_prompt: >-
+              ${"The test suite fails with:\n\n%s\n\nProduce a minimal patch that makes it pass.".format([prior.failure])}
+
+        - id: apply
+          description: The patch as a commit on the agent branch, compare-and-swapped against the tree it was computed on.
+          # `base_ref:` is the carried `base`, never the branch's current tip.
+          # The task compare-and-swaps the push against exactly this value, so a
+          # concurrent write to the same branch is refused rather than silently
+          # forced — an agent loop is precisely where two writers is a thing
+          # that happens.
+          git.commit_push:
+            url: ${inputs.repo}
+            branch: ${inputs.branch}
+            base_ref: ${prior.base}
+            # Quoted because of YAML rather than because of the expression: a
+            # plain scalar cannot contain a colon followed by a space.
+            message: '${"agentic-fix: attempt %d".format([prior.n + 1])}'
+            patch: ${steps.propose.patch}
+            token: ${secret('git:token')}
+
+        - id: verify
+          description: Run the suite at the sha this attempt actually wrote.
+          # Bound to content rather than to a movable name. Calling this with
+          # `${inputs.branch}` would verify whatever the branch points at when
+          # CI gets around to it, which on the sixth attempt is not necessarily
+          # the fifth attempt's tree.
+          call: ./workflows/run-tests.yaml
+          with:
+            ref: ${steps.apply.sha}
+
+  # Whether the loop ended without a passing test run, named once. A tolerated
+  # failure leaves its account in scope, so the presence of an error on the loop
+  # step is the question — asked here and read by the gate, the report and the
+  # outputs, rather than re-derived from an attempt count three times.
+  #
+  # It is deliberately the broader question rather than "did the budget run
+  # out". The budget being spent is the expected way to get here, but an
+  # attempt that fails outright — the forge refusing a push, the model gateway
+  # down — lands here too, and it should: what the gate below is for is a person
+  # picking the work up, and the reason this run stopped trying matters to that
+  # person, not to whether they are asked. The reason is not lost, either; it is
+  # `${steps.attempt.error}`, in the transcript and in scope.
+  - id: unresolved
+    value: ${has(steps.attempt.error)}
+
+  # How many attempts actually ran, named once for the three places that ask.
+  # A loop reports one `results` entry per iteration, so its size is the attempt
+  # count — and writing that phrase four times is four copies free to drift, which
+  # is what `flow lint` says as R5/repeated-expression.
+  #
+  # The guarded read is not defensive habit, it is the two failures being
+  # different. A loop that spends its whole budget is the one failure entitled to
+  # publish its iterations, because every one of them finished: `results` is
+  # there, with five entries. A loop that fails *mid*-body — the forge refusing a
+  # push, the gateway down — has an unfinished iteration and publishes no
+  # `results` at all (docs/DSL.md, "And the failure carries its account"). Both
+  # reach this step, because both are tolerated; reading `results` unguarded
+  # would turn the second one into a run that failed evaluating its own report.
+  - id: spent
+    value: '${has(steps.attempt.results) ? steps.attempt.results.size() : 0}'
+
+  # The human in the loop, as a step. Reached only when the attempts did not
+  # produce a passing suite, and fail-closed: a gate nobody answers within a day
+  # reports `timed_out` and this run says plainly that nobody took the work,
+  # rather than reading a payload nobody sent.
+  - id: handoff
+    if: ${steps.unresolved.value}
+    wait_for_signal:
+      name: human-review
+      timeout: 24h
+      outputs:
+        taken_over: ${!timed_out && payload.?taken_over.orValue(false)}
+
+  - id: report
+    log:
+      level: '${steps.unresolved.value ? "warn" : "info"}'
+      message: >-
+        ${steps.unresolved.value
+          ? "%d attempts did not fix the build on %s".format([steps.spent.value, inputs.branch])
+          : "build fixed on %s after %d attempt(s)".format([inputs.branch, steps.spent.value])}
+
+outputs:
+  attempts:
+    value: ${steps.spent.value}
+    description: >-
+      how many agentic turns this run actually spent — zero when an attempt
+      failed outright rather than producing a verdict, since a loop that failed
+      part way through an iteration publishes no account of them
+
+  fixed:
+    value: ${!steps.unresolved.value}
+    description: whether an attempt reached a verified passing suite
+
+  fix_ref:
+    value: >-
+      ${steps.unresolved.value
+        ? ""
+        : steps.attempt.results[steps.spent.value - 1].apply.sha}
+    description: the commit whose test run passed, empty when no attempt got there
+
+  handed_off:
+    value: ${has(steps.handoff)}
+    description: true when the attempts ended without a fix and a person was asked — the gate happening, not its answer
+
+  taken_over:
+    value: ${has(steps.handoff) && steps.handoff.taken_over}
+    description: true when a person answered that gate and took the work, false when they declined or never answered

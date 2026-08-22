@@ -1,0 +1,220 @@
+# The whole of this workflow, in CI, with no plugin process, no model, no forge
+# and no network — because a stub replaces a task at the task boundary and
+# nothing below it. Every loop trip, every `if:`, the carried state, the budget
+# running out and the gate that follows it all run for real here through the
+# actual local driver; only the four effects are canned.
+#
+# That is the property worth pointing at: `codex.exec` and `git.commit_push` are
+# tasks *plugins* provide, and this file never loads either plugin. A stub names
+# a task the way a step does, so a workflow that depends on two separate
+# processes is still a workflow a laptop with no credentials can hold to its
+# behavior.
+#
+# The scripted forge is keyed on the loop's carried state — `prior.base` and
+# `prior.n`, which a stub's `where:` and `returns:` can both read, because they
+# are evaluated in the scope of the step being replaced. So each attempt's push
+# answers with a distinct sha, and the scripted CI answers per sha. Without that,
+# every attempt would be indistinguishable and "fixed on the second try" would
+# not be a claim this file could make.
+edition: v2026.3
+
+defaults:
+  inputs:
+    repo: https://github.com/example/broken.git
+  stubs:
+    - task: log
+      returns: {}
+
+tests:
+  - name: the second attempt passes, and nobody is asked anything
+    workflow: ./workflow.yaml
+    # Bound at the reference boundary, exactly as tasks are bound at the task
+    # boundary: no `env:` or `git:` provider is configured in this process, and
+    # neither needs to be. A reference with no entry here is refused the moment a
+    # stubbed task is invoked with it, so a test cannot quietly resolve a real
+    # credential.
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: narrowed the failure to one assertion
+          output_tokens: 812
+      # One push per attempt, answering with the sha that attempt produced. The
+      # `where:` reads the base this attempt was computed against, which is what
+      # makes the chain sha-0 -> sha-1 -> sha-2 an assertion rather than a
+      # coincidence: an `apply` that ignored the carried state and always pushed
+      # against the branch tip would match the first stub every time.
+      - task: git.commit_push
+        where: "prior.base == 'sha-0'"
+        returns:
+          sha: sha-1
+      - task: git.commit_push
+        where: "prior.base == 'sha-1'"
+        returns:
+          sha: sha-2
+      # The scripted CI. Keyed on the commit it was asked about, which is the
+      # point of `verify` being called with `${steps.apply.sha}`: a workflow that
+      # verified a branch name instead would ask about the same thing every time
+      # and this stub could not tell the attempts apart.
+      - task: http
+        where: "inputs.json.ref == 'sha-0'"
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+      - task: http
+        where: "inputs.json.ref == 'sha-1'"
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card (still)"
+      - task: http
+        where: "inputs.json.ref == 'sha-2'"
+        returns:
+          passed: true
+          output: ""
+    expect:
+      ran: [tip, failing, attempt, unresolved, spent, report]
+      # The gate is not reached at all, which is the difference between "a person
+      # approved this" and "nobody had to be asked".
+      skipped: [handoff]
+      outputs:
+        attempts: 2
+        fixed: true
+        fix_ref: sha-2
+        handed_off: false
+        taken_over: false
+
+  - name: five attempts do not fix it and a person takes the work
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      # Two hours into a gate with a day on it. The run is asleep until this
+      # arrives; the virtual clock is why the whole case takes milliseconds.
+      - name: human-review
+        at: 2h
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: another guess
+          output_tokens: 640
+      # A distinct sha per attempt, computed from the attempt counter the loop
+      # carries — an expression rather than five stubs.
+      - task: git.commit_push
+        returns:
+          sha: '${"sha-%d".format([prior.n + 1])}'
+      # CI never passes, whatever it is asked about, which is what spends the
+      # budget.
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      # `attempt` ran and *failed*, tolerated: the loop spent its whole budget
+      # without `until:` holding, which the language treats as a distinct failure
+      # rather than a quiet stop. `continue_on_error:` is what turns it into the
+      # branch below rather than into a FAILED run with nobody asked.
+      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      outputs:
+        attempts: 5
+        fixed: false
+        # Empty rather than the last sha: nothing here was verified as fixing
+        # anything, and reporting the last commit as the fix would be a claim
+        # about a test run that failed.
+        fix_ref: ""
+        handed_off: true
+        taken_over: true
+
+  - name: the budget runs out and nobody answers the gate either
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    # No signals at all: the day passes, the wait reports timed_out, and the
+    # shaped output turns that into `taken_over: false` rather than into a
+    # payload nobody sent. Fail-closed, on the branch where a human is the
+    # fallback.
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: another guess
+          output_tokens: 640
+      - task: git.commit_push
+        returns:
+          sha: '${"sha-%d".format([prior.n + 1])}'
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      outputs:
+        attempts: 5
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: false
+
+  - name: an attempt that fails outright still reaches a person
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 30m
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The gateway is down. The turn is not retried (`attempts: 1`), so the
+      # first attempt fails part way through the body rather than producing a
+      # verdict — a different failure from spending the budget, and the one that
+      # publishes no `results` for the loop at all.
+      - task: codex.exec
+        fails:
+          kind: Upstream
+          message: model gateway unavailable
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      # `apply` and `verify` never happen: the attempt died before either.
+      skipped: [apply, verify]
+      outputs:
+        # Zero, and truthfully so: no attempt finished, so the loop has no
+        # account of any to publish. A file that read `results` unguarded would
+        # fail evaluating this rather than answering it.
+        attempts: 0
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true

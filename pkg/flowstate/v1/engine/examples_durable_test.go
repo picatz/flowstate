@@ -167,6 +167,20 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// deployment-reconciler's loop has no other way to stop: a converged
+	// workload is still worth watching, so `until:` holds only on a
+	// `spec-changed` that says the workload was retired. That makes this
+	// payload the thing that keeps the example finite here rather than a
+	// choice between two paths — without it the run would spend its whole
+	// per-segment budget of passes and fail on the iteration limit, which is a
+	// true statement about a reconciler and not what this harness is asking.
+	// It is the payload the example's own `--signal` line documents.
+	"deployment-reconciler": {
+		"spec-changed": {NamedValues: map[string]*v1.Value{
+			"retired": v1.NewLiteral(true),
+		}},
+	},
+
 	// enterprise-access-review's `attestation` gate checks the attested sender
 	// against `inputs.expected_reviewer` — this harness's fixed simulated
 	// identity ("examples"/"flowstate:test") never matches the
