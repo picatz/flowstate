@@ -406,10 +406,20 @@ func scopeSitesInTree(t *testing.T) []scopeSite {
 //
 // go/types would answer the same question with more ceremony: it needs the package
 // type-checked, which means an importer and a build of everything this module
-// imports, for a lint that only ever asks about locals inside one function. The
-// parser's resolution is file-local, which is exactly the span this question lives
-// in — a literal and the assignment that identifies it are in one function or the
-// vouching does not happen at all.
+// imports — and x/tools, where the convenient loader lives, is not a dependency of
+// this module — for a lint that only ever asks about locals inside one function.
+// The parser's resolution is file-local, which is exactly the span this question
+// lives in: a literal and the assignment that identifies it are in one function or
+// the vouching does not happen at all.
+//
+// That is why the two maps below carry a `//lint:ignore SA1019`. ast.Object is
+// deprecated, and the deprecation's own stated reason is that an Ident's meaning
+// can require type information — its example is `T{K: 0}`, where `K` is a field or
+// a value depending on what `T` is. The only Idents read here are the local a
+// construction is assigned to and the `x` in `x.Identity = …`, both of which are
+// plain variable references the parser resolves exactly. The caveat is real and
+// does not reach this use; an unresolved binding is treated as un-vouched anyway,
+// so the failure direction is to ask for a reason rather than to invent one.
 func scopeSitesInFile(fset *token.FileSet, file *ast.File, rel string) []scopeSite {
 	const v1ImportPath = `"github.com/picatz/flowstate/pkg/flowstate/v1"`
 
@@ -463,7 +473,11 @@ func scopeSitesInFile(fset *token.FileSet, file *ast.File, rel string) []scopeSi
 		// each construction is bound to. Both collected over the whole body
 		// first, because the assignment legitimately comes after the
 		// construction.
+		//
+		//lint:ignore SA1019 deliberate: see "Bindings, not spellings" on this function for why the parser's own resolution is the right tool here and go/types the wrong one.
 		identified := map[*ast.Object]bool{}
+
+		//lint:ignore SA1019 the other half of the same decision.
 		boundTo := map[ast.Node]*ast.Object{}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			assign, ok := n.(*ast.AssignStmt)
