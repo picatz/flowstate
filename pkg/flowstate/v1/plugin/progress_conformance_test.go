@@ -193,7 +193,7 @@ func runProgressPlugin() int {
 // progress frames cannot spend the share its terminal response needs.
 //
 // It is deliberately far longer than [testConfig]'s own 3 seconds, and the
-// reason is [launch_test.go]'s `timeoutIsTheBound` lesson arriving a second
+// reason is launch_test.go's `timeoutIsTheBound` lesson arriving a second
 // time (issue #852). A timeout is the bound under test in exactly one place
 // in this package — a plugin that never handshakes — and incidental
 // everywhere else, so it must be short there and generous here. These three
@@ -207,9 +207,9 @@ func runProgressPlugin() int {
 // scheduling fact in the voice of a correctness one.
 //
 // Nothing is weakened by the length. A byte bound that stopped applying
-// fails these tests on the bytes, in well under a second (measured: the
-// truncation shows up as connect's "promised N bytes in enveloped message"
-// protocol error around frame 250 with the reserve reverted), and the
+// fails these tests on the bytes, in well under a second (measured: with
+// transport.go's reserve reverted, the stream is truncated around frame 250
+// and connect reports one of its envelope protocol errors), and the
 // assertions below are about what crossed the wire rather than about when.
 // This timeout's only remaining job is the one a timeout should have here:
 // stopping a hang, so a plugin that never answers cannot hold a test open
