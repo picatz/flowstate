@@ -22,6 +22,25 @@
 edition: v2026.3
 name: scheduled-report
 
+# Who owns this workload and what it bills to. Labels are the author's own facts
+# about what this workflow *is*, and they exist to be selected on: every run the
+# schedule fires records them, and `flow list --filter` reads them back.
+#
+#   flow list --all --filter '"team" in labels && labels["team"] == "payments"'
+#
+# The guard is not decoration. A run of a workflow that declares no labels carries
+# none, and indexing a key that is absent is an error — so membership is asked
+# first, exactly as `close_time` is guarded with `finished`. Asking the negative
+# question needs no guard at all: `!("team" in labels)` finds what nobody labelled.
+#
+# A schedule's firings carry these too, recorded from this file when the schedule
+# is created rather than looked up when it fires at 07:00 — the same rule the
+# tenant and the starter already follow, and for the same reason: there is nobody
+# there at seven in the morning to derive anything from.
+labels:
+  cost-center: cc-1234
+  team: payments
+
 # A scheduled workload is the case parameters were made for: one file, and a
 # schedule per thing it reports on. Arguments are bound once, when the schedule is
 # created — `flow schedule create ... --input region=us-east-1` — and every firing
