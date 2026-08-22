@@ -124,8 +124,13 @@ func orEmptyIdentity(identity *v1.WorkloadIdentity) *v1.WorkloadIdentity {
 // say which step ran. See the span rules in activities.go.
 
 func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, stepID)
-	defer span.End()
+	ctx, span, end := observeTask(ctx, task, stepID)
+
+	// Deferred over a named error result, so that every path out — a policy
+	// refusal, a task failure, a panic — ends the span and records the
+	// execution exactly once. See [Task]'s own copy of this pair.
+	var err error
+	defer func() { end(err) }()
 
 	// The deployment's task-shape policy (#187), checked here against the
 	// same identity parameter [executor.dispatch] already threads through
@@ -138,7 +143,7 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 	// Checked before [a.context] installs the runtime a resolved secret
 	// reference would use, so a denied dispatch still resolves no
 	// credential (invariant 7's echo, restated for this arm).
-	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+	if err = checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
 		return nil, err
 	}
 
@@ -147,19 +152,23 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 
 	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 	out, err := task.Eval(ctx, nil)
-	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err, continueOnError)
 }
 
 func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, stepID)
-	defer span.End()
+	ctx, span, end := observeTask(ctx, task, stepID)
+
+	// Deferred over a named error result, so that every path out — a policy
+	// refusal, a task failure, a panic — ends the span and records the
+	// execution exactly once. See [Task]'s own copy of this pair.
+	var err error
+	defer func() { end(err) }()
 
 	// See [TaskAuthorized]'s identical check, this arm's sibling on the
 	// other axis (scope-carrying rather than not) of [executor.dispatch]'s
 	// four-way split.
-	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+	if err = checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
 		return nil, err
 	}
 
@@ -168,7 +177,6 @@ func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task
 
 	ctx = a.context(withActivityLogger(ctx), identity, workflowName, runID, stepID)
 	out, err := task.EvalInScope(ctx, scope)
-	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err, continueOnError)
 }

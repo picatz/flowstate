@@ -69,6 +69,37 @@
 //     flowstate.plugin.health.status nests under its own subject. It reads as
 //     a plugin-level property today and is not one.
 //
+// # The rule, stated once
+//
+// **Every attribute value that reaches an instrument comes from a set this
+// deployment can enumerate.** A fixed enumeration written here, or a name the
+// deployment itself chose — a registered task, an installed plugin. Never a
+// generated identifier, never a value a request carried in, never a URL, never
+// a tenant-chosen free string. A key whose values are none of those is not
+// "probably fine because nobody would do that": it is refused, in [Table], by
+// class, and [Attributes] is the only door.
+//
+// # Instruments
+//
+// [Instruments] declares every instrument this repository creates: its name,
+// its unit, and the attribute keys it may carry. The recording sites read the
+// name from here rather than spelling it themselves, so the vocabulary is
+// declared once and read everywhere — the same reason the attribute keys are
+// constants rather than string literals at six call sites. A test derives its
+// expectations from this table, which is what makes "the instrument fires with
+// the attributes it declares" a claim about the table rather than about
+// whichever attribute somebody remembered to assert.
+//
+// # Naming, continued: semconv first
+//
+// Where OpenTelemetry's semantic conventions already name a concept, the
+// convention's spelling wins over an invented `flowstate.` one: [ErrorType] is
+// semconv v1.41.0's `error.type`, the version pinned in go.mod and already used
+// for spans by `netpolicy/tracing.go` and `cmd/flow/telemetry.go`. There is no
+// convention for workflow, task or policy execution — the semconv registry has
+// nothing in that domain at v1.41.0 — so those keep `flowstate.` names, which
+// is what that namespace is for.
+//
 // Author-chosen and attacker-chosen are different risk classes, and this
 // package treats them differently on purpose. A task name is written by
 // whoever writes the deployment's workflows; getting a bad one requires
@@ -85,6 +116,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
 
 // Class is how the value set behind an attribute key is bounded.
@@ -147,6 +179,50 @@ const (
 
 	// TaskName is the name of a task as the deployment registered it.
 	TaskName = "flowstate.task.name"
+
+	// TaskOutcome is "success" or "error", spelled the way [PluginOutcome]
+	// spells the same idea one subject over. Values are
+	// [OutcomeSuccess]/[OutcomeError] and nothing else.
+	TaskOutcome = "flowstate.task.outcome"
+
+	// Driver is which execution driver recorded the measurement: "local" or
+	// "durable" ([DriverLocal], [DriverDurable]).
+	//
+	// It is on every engine-level instrument on purpose. Invariant 5 says the
+	// two drivers must agree about anything observable, and a metric is now
+	// one of those things — with this key an operator can subtract one from
+	// the other, and without it a rehearsal's numbers and production's are
+	// silently added together.
+	Driver = "flowstate.driver"
+
+	// PolicySurface names which deny-by-default surface refused something: a
+	// fixed enumeration written in this repository ([SurfaceTaskDispatch] is
+	// the only member today).
+	//
+	// The surface and not the *reason*: a reason can quote what was refused,
+	// and a refusal's own words are peer-influenced text. The refusal's
+	// sentence belongs on the log line and the span the denial already
+	// produces.
+	PolicySurface = "flowstate.policy.surface"
+
+	// ErrorType is OpenTelemetry's own `error.type`, semconv v1.41.0 — the
+	// version pinned in go.mod and already used on spans by
+	// `netpolicy/tracing.go`. Its values here are the members of this
+	// repository's error classification (`v1.ErrorKind`), which is a fixed
+	// enumeration; never an error *message*, which quotes its input.
+	ErrorType = string(semconv.ErrorTypeKey)
+)
+
+// The fixed enumerations behind the [ClassConstruction] keys above, so that a
+// recording site records a member rather than a string it typed.
+const (
+	OutcomeSuccess = "success"
+	OutcomeError   = "error"
+
+	DriverLocal   = "local"
+	DriverDurable = "durable"
+
+	SurfaceTaskDispatch = "task.dispatch"
 )
 
 // Attribute is one row of the schema: a key, how its value set is bounded, and
@@ -172,6 +248,18 @@ type Attribute struct {
 	// Chooser names who decides the value, in the terms an operator reading a
 	// cardinality question would use.
 	Chooser string
+
+	// Convention names the external semantic convention this key is taken
+	// from, where it is taken from one — "OpenTelemetry semconv v1.41.0" for
+	// [ErrorType]. Empty means the key is this repository's own, and is
+	// therefore held to the `flowstate.` spelling the spans and logs use.
+	//
+	// A field rather than a prefix test, because "is this key ours" is a fact
+	// about where the key came from and not about how it happens to be
+	// spelled: semconv keys are deliberately unprefixed, and a test that
+	// inferred ownership from the prefix would have to be loosened into
+	// meaninglessness the first time one arrived.
+	Convention string
 }
 
 // Table is the schema: every attribute key this system's telemetry knows
@@ -191,6 +279,10 @@ var Table = []Attribute{
 	{Key: PluginOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
 	{Key: PluginHealthStatus, Class: ClassConstruction, Chooser: "this repository's plugin health enumeration"},
 	{Key: TaskName, Class: ClassConfiguration, Chooser: "the deployment, by which tasks it registers"},
+	{Key: TaskOutcome, Class: ClassConstruction, Chooser: "this repository: success, error"},
+	{Key: Driver, Class: ClassConstruction, Chooser: "this repository: local, durable"},
+	{Key: PolicySurface, Class: ClassConstruction, Chooser: "this repository's deny-by-default surfaces"},
+	{Key: ErrorType, Class: ClassConstruction, Chooser: "this repository's error classification (v1.ErrorKind)", Convention: "OpenTelemetry semconv v1.41.0"},
 
 	{Key: "flowstate.delivery.id", Class: ClassPeerControlled, Chooser: "the external sender, one per webhook delivery"},
 	{Key: "flowstate.run.id", Class: ClassPeerControlled, Chooser: "generated, one per execution"},
@@ -233,6 +325,153 @@ func NeverKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// The instrument names, declared here so that a recording site reads one
+// rather than spelling it, and so that renaming one is a single edit in the
+// file where the vocabulary lives.
+const (
+	// InstrumentTaskDuration is how long one task execution took, in seconds.
+	// One *execution*, not one step: a retried step is several, exactly as it
+	// is several spans (see v1.StartTaskSpan).
+	InstrumentTaskDuration = "flowstate.task.duration"
+
+	// InstrumentTaskExecutions counts those executions. It is the "are things
+	// failing, and where" instrument: the same attributes as the histogram, so
+	// an error rate is one division and needs no second vocabulary.
+	//
+	// It is deliberately not derived from the histogram's own count, even
+	// though a backend could: a view that drops the histogram's buckets to
+	// save cardinality would take the error rate with it.
+	InstrumentTaskExecutions = "flowstate.task.executions"
+
+	// InstrumentPolicyDenials counts refusals by a deny-by-default surface.
+	// A rate here is the difference between "traffic stopped" and "we are
+	// refusing all of it", which is a question an operator asks at 3am and
+	// today answers by reading logs.
+	InstrumentPolicyDenials = "flowstate.policy.denials"
+
+	// The plugin surface, which predates this table and now reads its names
+	// from it. Recorded in plugin/telemetry.go.
+	InstrumentPluginOperationDuration = "flowstate.plugin.operation.duration"
+	InstrumentPluginCalls             = "flowstate.plugin.calls"
+	InstrumentPluginHealthChecks      = "flowstate.plugin.health.checks"
+	InstrumentPluginRestarts          = "flowstate.plugin.restarts"
+	InstrumentPluginLaunchFailures    = "flowstate.plugin.launch.failures"
+	InstrumentPluginProtocolErrors    = "flowstate.plugin.protocol.errors"
+)
+
+// Instrument is one instrument's declaration: what it is called, what its
+// measurement means, and which attribute keys it may carry.
+//
+// Keys is an upper bound rather than a requirement — [ErrorType] is written on
+// a failed execution and absent from a successful one, which is what semconv
+// asks for and what lets a successful measurement stay one series. A test
+// asserts the collected attribute keys are a subset of this, which is the
+// direction that catches a key nobody declared.
+type Instrument struct {
+	Name string
+
+	// Unit is UCUM, as OpenTelemetry specifies: "s" for seconds, empty for a
+	// dimensionless count.
+	Unit string
+
+	// Description is what an operator reading a metrics catalogue sees.
+	Description string
+
+	// Keys are the attribute keys this instrument may carry. Every one of them
+	// must be allowlisted — TestEveryInstrumentDeclaresAllowlistedKeys.
+	Keys []string
+}
+
+// Instruments is every instrument this repository creates.
+//
+// Written down in one place so the vocabulary can be read — by a test, by a
+// docs generator, by whoever is deciding whether a new instrument duplicates
+// an existing one. A list nobody can enumerate is how a system ends up with
+// two spellings of one measurement.
+var Instruments = []Instrument{
+	{
+		Name:        InstrumentTaskDuration,
+		Unit:        "s",
+		Description: "duration of one task execution",
+		Keys:        []string{TaskName, TaskOutcome, Driver, ErrorType},
+	},
+	{
+		Name:        InstrumentTaskExecutions,
+		Description: "task executions, by outcome",
+		Keys:        []string{TaskName, TaskOutcome, Driver, ErrorType},
+	},
+	{
+		Name:        InstrumentPolicyDenials,
+		Description: "dispatches refused by a deny-by-default policy surface",
+		Keys:        []string{PolicySurface, TaskName, Driver},
+	},
+	{
+		Name:        InstrumentPluginOperationDuration,
+		Unit:        "s",
+		Description: "duration of one host-side plugin operation",
+		Keys:        []string{PluginName, PluginOperation, PluginOutcome, TaskName},
+	},
+	{
+		Name:        InstrumentPluginCalls,
+		Description: "host-side plugin operations, by outcome",
+		Keys:        []string{PluginName, PluginOperation, PluginOutcome, TaskName},
+	},
+	{
+		Name:        InstrumentPluginHealthChecks,
+		Description: "plugin health-check transitions",
+		Keys:        []string{PluginName, PluginHealthStatus},
+	},
+	{
+		Name:        InstrumentPluginRestarts,
+		Description: "supervised plugin restarts",
+		Keys:        []string{PluginName},
+	},
+	{
+		Name:        InstrumentPluginLaunchFailures,
+		Description: "plugin launches that failed",
+		Keys:        []string{PluginName},
+	},
+	{
+		Name:        InstrumentPluginProtocolErrors,
+		Description: "plugin protocol errors",
+		Keys:        []string{PluginName},
+	},
+}
+
+// InstrumentNames returns every declared instrument name, sorted.
+func InstrumentNames() []string {
+	names := make([]string, 0, len(Instruments))
+	for _, inst := range Instruments {
+		names = append(names, inst.Name)
+	}
+	sort.Strings(names)
+
+	return names
+}
+
+// InstrumentByName returns the declaration for name.
+func InstrumentByName(name string) (Instrument, bool) {
+	for _, inst := range Instruments {
+		if inst.Name == name {
+			return inst, true
+		}
+	}
+
+	return Instrument{}, false
+}
+
+// ConventionFor reports which external semantic convention key is taken from,
+// and is empty for a key this repository owns.
+func ConventionFor(key string) string {
+	for _, attr := range Table {
+		if attr.Key == key {
+			return attr.Convention
+		}
+	}
+
+	return ""
 }
 
 // Classification reports how the value set behind key is bounded, and whether

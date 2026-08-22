@@ -4,6 +4,7 @@ import (
 	"context"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -125,14 +126,20 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 // activity returns — see [activityError]'s own doc for why that is a
 // heuristic and not a correctness signal.
 func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, "")
-	defer span.End()
+	ctx, span, end := observeTask(ctx, task, "")
+
+	// Deferred over a named error result, so that every path out — a policy
+	// refusal, a task failure, a panic — ends the span and records the
+	// execution exactly once. The local driver's runStepAttemptSpanned does
+	// the same thing for the same reason.
+	var err error
+	defer func() { end(err) }()
 
 	// The deployment's task-shape policy (#187), checked once per activity
 	// entry — the durable driver's half of "once per dispatch," matching
 	// where the local driver checks, above its own retry loop
 	// (`eval.go`'s runStepWithPolicy).
-	if err := checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
+	if err = checkTaskDispatchPolicy(ctx, span, task, identity); err != nil {
 		return nil, err
 	}
 
@@ -158,7 +165,6 @@ func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, con
 	// there was nothing for [plugin.NewContextWithIdentity] to install it
 	// from. Same call, same helper, same reasoning as [TaskInScope]'s.
 	out, err := task.Eval(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(identity)), nil)
-	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err, continueOnError)
 }
@@ -182,10 +188,15 @@ func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, con
 // than benign — the frozen signature has no way to carry it, and inventing a
 // value this activity was never told would be a guess dressed as a fact.
 func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutputs) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, "")
-	defer span.End()
+	ctx, span, end := observeTask(ctx, task, "")
 
-	if err := checkTaskDispatchPolicy(ctx, span, task, nil); err != nil {
+	// Deferred over a named error result, so that every path out — a policy
+	// refusal, a task failure, a panic — ends the span and records the
+	// execution exactly once. See [Task]'s own copy of this pair.
+	var err error
+	defer func() { end(err) }()
+
+	if err = checkTaskDispatchPolicy(ctx, span, task, nil); err != nil {
 		return nil, err
 	}
 
@@ -197,7 +208,6 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 	// same explicit-empty caller every other path gives one, rather than the
 	// context simply never having a value at all.
 	out, err := task.Eval(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(nil)), prev)
-	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err, false)
 }
@@ -219,15 +229,20 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 // continueOnError carries the step's `continue_on_error:` across the activity
 // boundary the same way it does on [Task] — see that parameter's doc.
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOnError bool) (*v1.Node_Outputs, error) {
-	ctx, span := startTaskSpan(ctx, task, "")
-	defer span.End()
+	ctx, span, end := observeTask(ctx, task, "")
+
+	// Deferred over a named error result, so that every path out — a policy
+	// refusal, a task failure, a panic — ends the span and records the
+	// execution exactly once. See [Task]'s own copy of this pair.
+	var err error
+	defer func() { end(err) }()
 
 	// The deployment's task-shape policy (#187), checked once per activity
 	// entry against the run's real attested identity — this entry point is
 	// the one that carries a [v1.Scope], so unlike [Task]/[TaskWithPrev]
 	// identity here is whatever the run was actually started as (see
 	// varsScope in workflow.go).
-	if err := checkTaskDispatchPolicy(ctx, span, task, scope.GetIdentity()); err != nil {
+	if err = checkTaskDispatchPolicy(ctx, span, task, scope.GetIdentity()); err != nil {
 		return nil, err
 	}
 
@@ -243,7 +258,6 @@ func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOn
 	// installs — see runtime.go's taskActivities.context for the path that
 	// does.
 	out, err := task.EvalInScope(plugin.NewContextWithIdentity(withActivityLogger(ctx), orEmptyIdentity(scope.GetIdentity())), scope)
-	recordTaskOutcome(span, err)
 
 	return out, activityError(task.GetName(), err, continueOnError)
 }
@@ -339,8 +353,14 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // activity-side-only one still binds every caller in this package (invariant 4:
 // a span minted during replay is minted again on every replay).
 
-// startTaskSpan opens the task span and adds the attempt, which is this driver's
-// alone.
+// observeTask opens the task span, starts the duration measurement, and adds
+// the attempt, which is this driver's alone.
+//
+// The span and the instruments both come from [v1.ObserveTask], the one call
+// the local driver makes too, so the two drivers cannot end up naming an
+// instrument or an attribute key differently — invariant 5 for a measurement
+// rather than for an outcome. What is added here is the attempt attribute and
+// the driver label, both of which only this side can supply.
 //
 // The attempt is the substrate's, so it is asked of the substrate rather than
 // threaded through: a retried activity is a second span, and without this they
@@ -349,19 +369,29 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // outside an activity context — and because the local driver deliberately does
 // *not* write this key from its own retry counter, which counts something else.
 // See [v1.StartTaskSpan]'s note on it.
-func startTaskSpan(ctx context.Context, task *v1.Task, stepID string) (context.Context, trace.Span) {
-	ctx, span := v1.StartTaskSpan(ctx, task, stepID)
+//
+// The attempt is deliberately *not* a metric attribute, only a span one: it is
+// bounded by a retry policy nobody promises to keep small, and a label whose
+// bound is somebody's configuration is the shape [metricschema] refuses.
+func observeTask(ctx context.Context, task *v1.Task, stepID string) (context.Context, trace.Span, func(error)) {
+	ctx, span, end := v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable)
 
 	if span.IsRecording() && activity.IsActivity(ctx) {
 		span.SetAttributes(attribute.Int(v1.SpanAttributeAttempt, int(activity.GetInfo(ctx).Attempt)))
 	}
 
-	return ctx, span
+	return ctx, span, end
 }
 
 // recordTaskOutcome marks a failed span with what kind of failure it was, through
 // the one renderer both drivers share — see [v1.RecordTaskOutcome] for why the
 // classification and never the message.
+//
+// Still its own call in [checkTaskDispatchPolicy], which is handed a span rather
+// than an observation: the refusal is recorded on the span at the point the
+// decision is made, and the observation's own end records it again with the same
+// classification when the activity returns. Setting a status twice to the same
+// value is not a second fact.
 func recordTaskOutcome(span trace.Span, err error) {
 	v1.RecordTaskOutcome(span, err)
 }

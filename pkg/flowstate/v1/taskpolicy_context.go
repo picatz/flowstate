@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
 
 // defaultTaskPolicy is the process-wide task-shape policy, installed once by
@@ -124,6 +126,18 @@ func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentit
 	if errors.As(err, &denied) {
 		denied.Local = local
 	}
+
+	// One refusal, counted once, from the check both drivers share — so
+	// "everything is being refused" is a rate an operator can see rather than
+	// a pattern in a log file. The task's *name* and the surface, never the
+	// refusal's sentence: see [RecordPolicyDenial]. The driver is read from
+	// the same `local` this function already receives, so the label cannot
+	// disagree with the error's own Local field.
+	driver := metricschema.DriverDurable
+	if local {
+		driver = metricschema.DriverLocal
+	}
+	RecordPolicyDenial(ctx, metricschema.SurfaceTaskDispatch, task, driver)
 
 	return NewTaskError(task, ErrorKindPolicyDenied, err)
 }
