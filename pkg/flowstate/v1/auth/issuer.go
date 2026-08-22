@@ -414,6 +414,11 @@ type Issuer struct {
 // can still be verified. Only the public half is kept: a retired key must not be
 // able to sign again.
 type retiredKey struct {
+	// id is the key id assertions signed with this key name in their "kid"
+	// header, and what [Issuer.RevokeKey] addresses. It is also inside
+	// published, and is kept here as well so that finding a key by id is not a
+	// map lookup into a value whose shape belongs to the JOSE library.
+	id        string
 	algorithm jwa.Algorithm
 	published jwk.Value
 	expiresAt time.Time
@@ -600,6 +605,18 @@ func (i *Issuer) AssertionLifetime() time.Duration { return i.lifetime }
 // key's public half stays published for the configured retention period, so
 // assertions already in flight, and relying parties holding a cached key set,
 // keep working; its private half is dropped, so it cannot sign again.
+//
+// # Rotation is not revocation
+//
+// Rotating invalidates nothing that has already been signed, and that is
+// deliberate: keeping the retired key published for [DefaultKeyRetention] is
+// what stops rotation from rejecting assertions that are still perfectly
+// valid. An operator who rotates in response to a suspected key compromise has
+// therefore done nothing about the assertions already in flight, and the key
+// they are worried about keeps verifying for another day.
+//
+// [Issuer.RevokeKey] is the verb for that, and it is a different verb because
+// it has a different consequence.
 func (i *Issuer) Rotate(key SigningKey) error {
 	if key.IsZero() {
 		return fmt.Errorf("%w: cannot rotate to an unset key", ErrNoSigningKey)
@@ -616,6 +633,7 @@ func (i *Issuer) Rotate(key SigningKey) error {
 	now := i.clock()
 
 	i.retired = append(i.retired, retiredKey{
+		id:        i.active.id,
 		algorithm: i.active.algorithm,
 		published: i.active.published,
 		expiresAt: now.Add(i.keyRetention),
@@ -623,6 +641,62 @@ func (i *Issuer) Rotate(key SigningKey) error {
 	i.active = key
 
 	i.pruneLocked(now)
+
+	return nil
+}
+
+// RevokeKey withdraws a retired key from the published key set immediately,
+// rather than when its retention lapses.
+//
+// This is the verb [Issuer.Rotate] is not. Rotating drops a key's private half
+// and keeps its public half published for [DefaultKeyRetention], precisely so
+// that assertions already signed with it keep verifying — which means rotating
+// invalidates nothing already issued. Revoking is the operator saying that is
+// no longer acceptable: **every assertion signed with this key stops verifying
+// as soon as each relying party refreshes its cached key set**, and there is no
+// way to make the ones in flight work again.
+//
+// So this is the response to a key believed compromised, and it is not the
+// response to a scheduled rotation. Reach for [Issuer.Rotate] on a schedule and
+// this only when something has gone wrong.
+//
+// Two things it will not do, both because the alternative is an issuer that
+// silently stops working:
+//
+//   - The active key cannot be revoked. Withdrawing the key assertions are
+//     currently signed with would publish a set that verifies nothing this
+//     issuer is about to mint. Rotate to a new key first, then revoke the one
+//     it replaced.
+//   - An unknown key id is an error rather than a no-op, because "revoked" and
+//     "misspelled the key id and revoked nothing" must not look the same to
+//     whoever is handling an incident.
+//
+// The revocation is this process's. An issuer's key set lives in memory, so a
+// deployment running several of them revokes on each, and a relying party stops
+// accepting the key when its own cache of the key set next refreshes — which is
+// its [DefaultKeyCacheTTL], not ours.
+func (i *Issuer) RevokeKey(keyID string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if keyID == "" {
+		return fmt.Errorf("%w: revoking a key needs its id", ErrInvalidPolicy)
+	}
+
+	if keyID == i.active.id {
+		return fmt.Errorf("%w: key %q is the active signing key; rotate to a new key first, then revoke this one",
+			ErrInvalidPolicy, truncate(keyID, 64))
+	}
+
+	before := len(i.retired)
+	i.retired = slices.DeleteFunc(i.retired, func(key retiredKey) bool {
+		return key.id == keyID
+	})
+
+	if len(i.retired) == before {
+		return fmt.Errorf("%w: no retired key with id %q is published by this issuer",
+			ErrUnknownKey, truncate(keyID, 64))
+	}
 
 	return nil
 }
