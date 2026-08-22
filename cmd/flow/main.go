@@ -1501,7 +1501,13 @@ func runLSP(cmd *cobra.Command, args []string) error {
 
 	conn := jsonrpc2.NewConn(
 		cmd.Context(),
-		jsonrpc2.NewBufferedStream(stdio{}, jsonrpc2.VSCodeObjectCodec{}),
+		// lsp.NewBoundedStream rather than jsonrpc2.NewBufferedStream: the
+		// same codec and the same buffering, with each frame bounded by
+		// lsp.MaxFrameBytes. Everything this server reads *inside* a frame was
+		// bounded already; the frame itself was not, and the codec's header
+		// parse is an unbounded accumulating read on the first bytes anything
+		// on this process's standard input sends. See lsp.MaxFrameBytes.
+		lsp.NewBoundedStream(stdio{}),
 		// The registry the host registered into, handed over rather than reached
 		// for, so that what this server knows is what this command launched.
 		// lsp.NewHandler rather than jsonrpc2.AsyncHandler: same
