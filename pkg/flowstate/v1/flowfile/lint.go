@@ -394,20 +394,15 @@ func holdsNestedConditional(e *expr.Expr, inside bool, budget *int) bool {
 func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	var findings []StyleFinding
 
-	for _, repeat := range Audit(wf, pos) {
+	// Canonicalized before the threshold, not after: what a bucket is worth
+	// naming decides which bucket it *is*, and two buckets that name one
+	// expression have to be counted as one before "three or more" means
+	// anything. See [canonicalRepeats].
+	for _, repeat := range canonicalRepeats(Audit(wf, pos)) {
 		if repeat.Count() < styleRepeatThreshold {
 			continue
 		}
-
-		// What is worth naming is under the rendering, not the rendering. See
-		// [namedRepeat]: a fence's `string(...)` is a call the author never
-		// wrote, and counting it turns "three sentences mention this value"
-		// into a finding whose own remedy re-creates it.
-		reported, rendered, ok := namedRepeat(repeat.repr, repeat.Expr)
-		if !ok {
-			continue
-		}
-		if !hoistable(reported) {
+		if !hoistable(repeat.repr) {
 			continue
 		}
 
@@ -442,11 +437,66 @@ func repeatedExpressions(wf *v1.Workflow, pos *Positions) []StyleFinding {
 			Message: fmt.Sprintf(
 				"`%s` is stated %d times in this file%s; state it once in a `value:` step "+
 					"and read it back as `${steps.<id>.value}`, so the copies cannot drift apart",
-				rendered, repeat.Count(), where),
+				repeat.Expr, repeat.Count(), where),
 		})
 	}
 
 	return findings
+}
+
+// canonicalRepeats rewrites each of [Audit]'s buckets onto the expression it is
+// worth naming, and collapses the buckets that land on the same one.
+//
+// The collapse is the half [namedRepeat] alone gets wrong, and it is wrong in
+// the direction that matters — under-counting. `size(inputs.items)` written
+// three times inside fences and once bare is *two* buckets to [Audit]:
+// `string(size(inputs.items))` with three sites, and `size(inputs.items)` with
+// four (a sub-expression survives only where no larger expression occurs as
+// often, and three is not four). Unwrapping each in isolation leaves two
+// findings naming one expression with two different counts — visibly a
+// duplicate here, and in the shape where the wider bucket is disqualified,
+// silently a count below a threshold the file is actually over.
+//
+// Merging keeps the widest bucket rather than unioning site lists, because a
+// union would double-count: every `string(f)` node holds an `f` node, so the
+// narrow bucket's sites are the wide one's sites at the same positions, and
+// nothing distinguishes "the same occurrence, seen twice" from "two occurrences
+// on one line" — which `examples/ops-healthcheck` genuinely has.
+//
+// Grouping is by rendering, confirmed by [exprEqual], which is the discipline
+// [auditCollector] itself uses: the rendering is what a reader compares, and the
+// tree is what decides whether two renderings are the same expression. Two
+// shapes that render alike and are not equal stay separate, exactly as [Audit]
+// keeps them separate.
+func canonicalRepeats(audited []RepeatedExpr) []RepeatedExpr {
+	var canonical []RepeatedExpr
+
+	for _, repeat := range audited {
+		reported, rendered, ok := namedRepeat(repeat.repr, repeat.Expr)
+		if !ok {
+			continue
+		}
+
+		repeat.Expr = rendered
+		repeat.repr = reported
+
+		merged := false
+		for i, kept := range canonical {
+			if kept.Expr != rendered || !exprEqual(kept.repr, reported) {
+				continue
+			}
+			if repeat.Count() > kept.Count() {
+				canonical[i] = repeat
+			}
+			merged = true
+			break
+		}
+		if !merged {
+			canonical = append(canonical, repeat)
+		}
+	}
+
+	return canonical
 }
 
 // namedRepeat is the expression a repetition is worth naming, given the one

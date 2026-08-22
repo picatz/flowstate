@@ -879,3 +879,80 @@ steps:
 	require.Len(t, repeats, 1)
 	assert.Contains(t, repeats[0].Message, "`size(inputs.names)` is stated 3 times")
 }
+
+// TestLintMergesAFencedRepeatWithItsBareOne is the case unwrapping each of
+// [Audit]'s buckets in isolation gets wrong (#876 review, Codex 3835405362).
+//
+// `size(inputs.items)` three times inside fences and once bare is two buckets:
+// `string(size(inputs.items))` with three sites, and `size(inputs.items)` with
+// four — a sub-expression survives wherever no larger expression occurs as
+// often, and three is not four. Unwrapping both left two findings naming one
+// expression with two different counts, and the count a reader would act on is
+// whichever came first.
+//
+// One finding, four sites, is what the file actually says.
+func TestLintMergesAFencedRepeatWithItsBareOne(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: mixed
+inputs:
+  items:
+    type: list
+steps:
+  - id: one
+    log:
+      message: probed ${size(inputs.items)} item(s)
+  - id: two
+    log:
+      message: ${size(inputs.items)} still to go
+  - id: three
+    log:
+      message: done with ${size(inputs.items)}
+  - id: four
+    if: ${size(inputs.items) > 0}
+    log:
+      message: nonempty
+`)
+
+	repeats := findingsFor(found, StyleRepeatedExpr)
+	require.Len(t, repeats, 1, "one repetition is one finding, however many buckets counted it")
+	assert.Contains(t, repeats[0].Message, "`size(inputs.items)` is stated 4 times")
+	assert.Contains(t, repeats[0].Message, "on lines 9, 12, 15, 17",
+		"every site, including the bare one no fence wrapped")
+}
+
+// TestLintKeepsTheWiderBucketWhenMerging pins *which* of two merged buckets
+// survives, which is the half the test above cannot see.
+//
+// Two fenced occurrences and one bare: the fenced bucket holds two, under R5's
+// threshold of three, and the bare one holds all three. Keeping the narrower
+// bucket would drop this file below the threshold and report nothing — so the
+// merge takes the wider, and it can always do that safely because every
+// `string(f)` node holds an `f` node, which makes the narrow bucket's sites a
+// subset of the wide one's rather than a set to union with it.
+//
+// Mutation-proofed: inverting the comparison in [canonicalRepeats] fails this
+// and TestLintMergesAFencedRepeatWithItsBareOne; removing the merge entirely
+// fails only that one, because here the wider bucket already reports alone.
+func TestLintKeepsTheWiderBucketWhenMerging(t *testing.T) {
+	found := lintOf(t, `edition: v2026.3
+name: barely
+inputs:
+  items:
+    type: list
+steps:
+  - id: one
+    log:
+      message: probed ${size(inputs.items)} item(s)
+  - id: two
+    log:
+      message: ${size(inputs.items)} still to go
+  - id: three
+    if: ${size(inputs.items) > 0}
+    log:
+      message: nonempty
+`)
+
+	repeats := findingsFor(found, StyleRepeatedExpr)
+	require.Len(t, repeats, 1)
+	assert.Contains(t, repeats[0].Message, "`size(inputs.items)` is stated 3 times")
+}
