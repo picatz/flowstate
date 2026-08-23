@@ -42,7 +42,7 @@ func (c *requestCounter) lastAudience() string {
 	return c.audiences[len(c.audiences)-1]
 }
 
-// stubGitHubActionsEndpoint starts an HTTP server shaped like the runner's
+// stubGitHubActionsEndpoint starts an HTTPS server shaped like the runner's
 // token endpoint: it checks the bearer request token, records the requested
 // audience, and returns the given token as the endpoint's documented
 // {"value": "..."} body.
@@ -51,7 +51,7 @@ func stubGitHubActionsEndpoint(t *testing.T, token string) (*httptest.Server, *r
 
 	counter := &requestCounter{}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer runner-request-token" {
 			http.Error(w, "missing or wrong runner request token", http.StatusUnauthorized)
 			return
@@ -62,6 +62,8 @@ func stubGitHubActionsEndpoint(t *testing.T, token string) (*httptest.Server, *r
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"value": token})
 	}))
+	testEndpointClients.Store(server.URL, server.Client())
+	t.Cleanup(func() { testEndpointClients.Delete(server.URL) })
 	t.Cleanup(server.Close)
 
 	return server, counter
@@ -99,6 +101,11 @@ func newTestGitHubActionsSource(t *testing.T, endpoint, audience string, clock f
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
 
 	opts := []credentialsource.GitHubActionsOption{}
+	// The TLS test server uses a throwaway CA trusted by its own client.
+	// Production callers retain the default system roots.
+	if serverClient := endpointClient(endpoint); serverClient != nil {
+		opts = append(opts, credentialsource.WithGitHubActionsHTTPClient(serverClient))
+	}
 	if clock != nil {
 		opts = append(opts, credentialsource.WithGitHubActionsClock(clock))
 	}
@@ -109,4 +116,14 @@ func newTestGitHubActionsSource(t *testing.T, endpoint, audience string, clock f
 	}
 
 	return source
+}
+
+var testEndpointClients sync.Map
+
+func endpointClient(endpoint string) *http.Client {
+	client, _ := testEndpointClients.Load(endpoint)
+	if client == nil {
+		return nil
+	}
+	return client.(*http.Client)
 }

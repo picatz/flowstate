@@ -59,8 +59,8 @@ type githubActionsSource struct {
 type GitHubActionsOption func(*githubActionsSource)
 
 // WithGitHubActionsHTTPClient overrides the HTTP client used to reach the
-// runner's token endpoint. Exists for tests; production callers get
-// [http.DefaultClient].
+// runner's token endpoint. Exists for tests; production callers get a copy of
+// [http.DefaultClient] that refuses redirects.
 func WithGitHubActionsHTTPClient(client *http.Client) GitHubActionsOption {
 	return func(s *githubActionsSource) { s.httpClient = client }
 }
@@ -98,6 +98,7 @@ func NewGitHubActionsSource(audience string, opts ...GitHubActionsOption) (Sourc
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.httpClient = githubActionsHTTPClient(s.httpClient)
 
 	return s, nil
 }
@@ -141,6 +142,10 @@ func (s *githubActionsSource) mint(ctx context.Context) (Token, error) {
 	target, err := url.Parse(requestURL)
 	if err != nil {
 		return Token{}, fmt.Errorf("%w: %s is not a URL: %w", ErrSourceUnusable, envRequestURL, err)
+	}
+	if target.Scheme != "https" || target.Host == "" || target.User != nil {
+		return Token{}, fmt.Errorf("%w: %s must be an HTTPS URL with a host and no user information",
+			ErrSourceUnusable, envRequestURL)
 	}
 
 	// The endpoint already carries an api-version query parameter, so the
@@ -194,6 +199,23 @@ func (s *githubActionsSource) mint(ctx context.Context) (Token, error) {
 	}
 
 	return newToken(SourceGitHubActions, minted.Value, expiresAt), nil
+}
+
+// githubActionsHTTPClient copies client and refuses redirects. The request
+// carries the runner's credential in its Authorization header, so following a
+// URL selected by the endpoint can disclose that credential. Copying preserves
+// a caller's transport, timeout, cookie jar, and instrumentation without
+// mutating a client it may also use elsewhere.
+func githubActionsHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	copied := *client
+	copied.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return fmt.Errorf("runner token endpoint redirected to %s: redirects are refused because the request carries a credential",
+			req.URL.Redacted())
+	}
+	return &copied
 }
 
 // unverifiedExpiry reads a token's "exp" claim without checking its signature.

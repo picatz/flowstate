@@ -1,6 +1,9 @@
 package credentialsource_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -49,6 +52,47 @@ func TestGitHubActionsSource_NoAudience_FailsClosed(t *testing.T) {
 	_, err := credentialsource.NewGitHubActionsSource("")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+}
+
+func TestGitHubActionsSource_RefusesUnprotectedEndpoint(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
+
+	source, err := credentialsource.NewGitHubActionsSource("flowstate")
+	require.NoError(t, err)
+	_, err = source.Token(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+	assert.Zero(t, requests, "the runner credential must not be sent over plaintext HTTP")
+}
+
+func TestGitHubActionsSource_RefusesRedirect(t *testing.T) {
+	finalRequests := 0
+	minted := mintedJWT(t, referenceTime.Add(time.Hour))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		finalRequests++
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": minted})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL+"/start")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
+
+	source, err := credentialsource.NewGitHubActionsSource("flowstate",
+		credentialsource.WithGitHubActionsHTTPClient(server.Client()))
+	require.NoError(t, err)
+	_, err = source.Token(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+	assert.Zero(t, finalRequests, "the runner credential must not be sent to a redirect target")
 }
 
 // TestGitHubActionsSource_RequestsTheConfiguredAudience proves the audience a
