@@ -128,7 +128,10 @@ func newRunRecorder(clock *v1.VirtualClock) *runRecorder {
 func (r *runRecorder) record(event transcriptEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.recordLocked(event)
+}
 
+func (r *runRecorder) recordLocked(event transcriptEvent) {
 	if len(r.events) >= maxTranscriptEvents {
 		r.truncated = true
 		return
@@ -161,21 +164,29 @@ func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingSt
 	r.record(transcriptEvent{kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep})
 }
 
-// signalDelivered records one scripted delivery the moment the waiter
-// accepted it — the name, the payload as the file spelled it, and the
-// scripted sender's subject ("" for a script that named nobody).
-func (r *runRecorder) signalDelivered(name string, payload map[string]any, sender string) {
-	r.record(transcriptEvent{kind: eventSignalDelivered, signal: name, payload: payload, sender: sender})
-}
+// deliverRecorded runs one scripted delivery and records its outcome — the
+// delivery, or the refusal a declared signal policy or the queue's bound
+// answers with — *under the recorder's own lock, around the send itself*.
+// That ordering is the point (Codex, #1052): the moment [v1.LocalSignals.DeliverFrom]
+// makes a payload visible, the parked run goroutine can wake and try to
+// record the wait step's completion, and that record takes this same lock —
+// so holding it across the send is what keeps the account deterministic, the
+// delivery always before the completion it caused. Safe because DeliverFrom
+// buffers or refuses and returns; it never waits on the run's progress.
+//
+// A refusal is recorded as its own fact rather than dropped, because a
+// policy denial is precisely the outcome a case scripting a sender needs to
+// see; an account that showed it as delivered would be a false transcript in
+// exactly the runs that need debugging.
+func (r *runRecorder) deliverRecorded(name string, payload map[string]any, sender string, deliver func() error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-// signalRefused records a scripted delivery the waiter would not take — a
-// declared signal policy denying the sender, or the queue's bound. Recorded
-// as its own fact rather than dropped, because a policy denial is precisely
-// the outcome a case scripting a sender needs to see; an account that showed
-// it as delivered would be a false transcript in exactly the runs that need
-// debugging.
-func (r *runRecorder) signalRefused(name, reason string) {
-	r.record(transcriptEvent{kind: eventSignalRefused, signal: name, failure: reason})
+	if err := deliver(); err != nil {
+		r.recordLocked(transcriptEvent{kind: eventSignalRefused, signal: name, failure: err.Error()})
+		return
+	}
+	r.recordLocked(transcriptEvent{kind: eventSignalDelivered, signal: name, payload: payload, sender: sender})
 }
 
 // render turns the account into lines. Called once, after the run, on the
