@@ -271,7 +271,7 @@ func Test_populateProtoMessageFromValueMap_MapNonStringExprInput(t *testing.T) {
 // internal addresses.
 func testEgressPolicy(t *testing.T) *netpolicy.Policy {
 	t.Helper()
-	p, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	p, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithCredentialHosts("127.0.0.1", "localhost"))
 	if err != nil {
 		t.Fatalf("building test egress policy: %v", err)
 	}

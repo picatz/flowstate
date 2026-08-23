@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/require"
 )
@@ -105,6 +106,36 @@ func TestHTTPCredentialIsMintedAndContainedInsideExecution(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, out.String(), material)
 	require.Contains(t, out.String(), secrets.Redacted)
+}
+
+func TestHTTPCredentialRefusesUnapprovedDestination(t *testing.T) {
+	tests := map[string]func() map[string]*Value{
+		"federated credential": func() map[string]*Value {
+			return map[string]*Value{"credential": NewValue("partner-api")}
+		},
+		"static bearer": func() map[string]*Value {
+			return map[string]*Value{
+				"bearer": {Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "API_TOKEN"}}},
+			}
+		},
+	}
+	for name, authorityInputs := range tests {
+		t.Run(name, func(t *testing.T) {
+			received := false
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { received = true }))
+			defer server.Close()
+
+			policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+			require.NoError(t, err)
+			runtime := testTaskRuntime(t, "must-not-reach-peer")
+			runtime.Broker = testBroker(t, "must-not-reach-peer")
+			inputs := authorityInputs()
+			inputs["url"] = NewValue(server.URL)
+			_, err = taskFuncHTTP(policy)(ContextWithTaskRuntime(t.Context(), runtime), inputs, nil)
+			require.ErrorContains(t, err, "not an allowed credential recipient")
+			require.False(t, received)
+		})
+	}
 }
 
 // The full containment matrix that used to live here — a resolved bearer

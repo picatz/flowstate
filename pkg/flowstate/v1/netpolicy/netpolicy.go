@@ -256,6 +256,15 @@ type attrs struct {
 // no other package can collide with it or forge a value.
 type attrsKey struct{}
 
+type credentialRequestKey struct{}
+
+// ContextWithCredentials marks a request as carrying authority resolved by the
+// worker. The policy then requires its destination host to be explicitly named
+// with [WithCredentialHosts], including on every redirect hop.
+func ContextWithCredentials(ctx context.Context) context.Context {
+	return context.WithValue(ctx, credentialRequestKey{}, true)
+}
+
 // withAttrs returns a context carrying the given request attributes.
 func withAttrs(ctx context.Context, a attrs) context.Context {
 	return context.WithValue(ctx, attrsKey{}, a)
@@ -316,6 +325,16 @@ func (p *Policy) checkRequest(req *http.Request) error {
 	}
 
 	target := req.URL.Redacted()
+	if carrying, _ := req.Context().Value(credentialRequestKey{}).(bool); carrying {
+		host := ruleHost(req.URL)
+		if _, allowed := p.cfg.credentialHosts[host]; !allowed {
+			return &DenyError{
+				Reason: ReasonRequest,
+				Target: target,
+				Detail: fmt.Sprintf("host %q is not an allowed credential recipient", host),
+			}
+		}
+	}
 
 	scheme := strings.ToLower(req.URL.Scheme)
 	if _, ok := p.cfg.schemes[scheme]; !ok {

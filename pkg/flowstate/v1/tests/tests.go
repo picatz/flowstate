@@ -186,7 +186,7 @@ func NewHTTPServer(tb testing.TB) string {
 func allowLoopback(tb testing.TB) {
 	tb.Helper()
 
-	policy, err := netpolicy.New(netpolicy.WithAllowLoopback())
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithCredentialHosts("127.0.0.1", "localhost"))
 	if err != nil {
 		tb.Fatalf("building loopback egress policy: %v", err)
 	}

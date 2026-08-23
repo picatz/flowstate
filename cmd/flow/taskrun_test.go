@@ -611,7 +611,7 @@ func loopbackEgressPolicy(t *testing.T) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "egress.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("egress:\n  allow_loopback: true\n"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("egress:\n  allow_loopback: true\n  credential_hosts: [127.0.0.1]\n"), 0o600))
 
 	return path
 }

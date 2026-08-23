@@ -321,6 +321,17 @@ func taskFuncHTTP(policy *netpolicy.Policy) TaskFunc {
 				Claims:    id.GetClaims(),
 			})
 		}
+		// Reachability and authority are separate grants. Mark every request that
+		// will carry a resolved secret (including nested headers/body fields) or a
+		// federated credential so the transport can require an explicitly approved
+		// recipient and repeat that check after redirects.
+		carriesAuthority := taskInputs.GetCredential() != ""
+		for _, value := range input {
+			carriesAuthority = carriesAuthority || ValueHoldsSecretRef(value)
+		}
+		if carriesAuthority {
+			ctx = netpolicy.ContextWithCredentials(ctx)
+		}
 
 		httpReq, err := http.NewRequestWithContext(ctx, taskInputs.GetMethod(), requestURL, body)
 		if err != nil {

@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/idna"
 )
 
 // Default limits applied by [New] when the corresponding option is not supplied.
@@ -85,9 +87,10 @@ type config struct {
 
 	maxResponseBytes int64
 
-	allowRules []string
-	denyRules  []string
-	costLimit  uint64
+	allowRules      []string
+	denyRules       []string
+	costLimit       uint64
+	credentialHosts map[string]struct{}
 
 	rootCAs       *x509.CertPool
 	minTLSVersion uint16
@@ -128,6 +131,27 @@ func defaultConfig() config {
 // later option overrides an earlier one that sets the same field, while options
 // that add to a list accumulate.
 type Option func(*config) error
+
+// WithCredentialHosts names the only hosts to which a request carrying
+// worker-resolved authority may be sent. Ordinary egress permission is
+// deliberately insufficient: being reachable does not make a peer a credential
+// recipient.
+func WithCredentialHosts(hosts ...string) Option {
+	return func(c *config) error {
+		if c.credentialHosts == nil {
+			c.credentialHosts = make(map[string]struct{}, len(hosts))
+		}
+		for _, original := range hosts {
+			host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(original), "."))
+			ascii, err := idna.Lookup.ToASCII(host)
+			if err != nil || ascii == "" || strings.ContainsAny(ascii, ":/ ") {
+				return fmt.Errorf("credential host %q is not a hostname", original)
+			}
+			c.credentialHosts[ascii] = struct{}{}
+		}
+		return nil
+	}
+}
 
 // WithSchemes replaces the scheme allowlist. Schemes are compared
 // case-insensitively. The default allowlist is http and https, which rejects

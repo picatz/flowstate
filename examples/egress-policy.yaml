@@ -11,6 +11,11 @@
 # An empty file is the default policy. Every key below is optional; a misspelled
 # one is a startup error rather than a silently dropped restriction.
 egress:
+  # Reachability is not permission to receive credentials. Requests containing
+  # worker-resolved secrets or federation credentials are limited to these
+  # hosts, and every redirect hop is checked again.
+  credential_hosts: [partner-a.example.com]
+
   # Only https leaves this deployment. Naming http too is the default.
   schemes: [https]
 

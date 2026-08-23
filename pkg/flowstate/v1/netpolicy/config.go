@@ -29,6 +29,10 @@ type Config struct {
 // internal denied, bounded in every dimension. Absent fields keep the defaults
 // described on the corresponding option and constant.
 type EgressConfig struct {
+	// CredentialHosts names hosts allowed to receive worker-resolved secrets or
+	// federated credentials. General egress permission never implies this grant.
+	CredentialHosts []string `json:"credential_hosts,omitempty" yaml:"credential_hosts,omitempty"`
+
 	// Schemes replaces the scheme allowlist. Only http and https can be named,
 	// and naming neither — an explicitly empty list — is an error rather than a
 	// policy that allows nothing by accident. See [WithSchemes].
@@ -178,6 +182,12 @@ func (c Config) Options() ([]Option, error) {
 		return nil, fmt.Errorf(
 			"%w: allow is empty; an empty rule list would remove the allowlist gate entirely — delete "+
 				"the key to mean that, or write the rules a request must match", ErrInvalidPolicy)
+	}
+	if e.CredentialHosts != nil && len(e.CredentialHosts) == 0 {
+		return nil, fmt.Errorf("%w: credential_hosts is empty; name the permitted recipients or delete the key", ErrInvalidPolicy)
+	}
+	if len(e.CredentialHosts) > 0 {
+		opts = append(opts, WithCredentialHosts(e.CredentialHosts...))
 	}
 
 	allowNets, err := parsePrefixes("allow_networks", e.AllowNetworks)
