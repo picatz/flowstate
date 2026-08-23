@@ -548,6 +548,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 			Workflow:    req.Msg.GetWorkflow(),
 			StepsBudget: int32(s.maxStepsPerRun),
 			Identity:    identity,
+			Trace:       traceReferenceFromContext(ctx),
 			Inputs:      inputs,
 		},
 	)

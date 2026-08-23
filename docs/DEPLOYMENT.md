@@ -5,6 +5,27 @@ actually get, what each topology looks like as commands and unit files, and
 where the sharp edges are. It says what is true today, traced to the code that
 makes it true — not what would be nice.
 
+## Linking runs to traces
+
+When OpenTelemetry is configured, the server freezes the active submission
+trace ID and submission span ID into a `TraceReference` stored in Temporal memo
+and durable run state. The representation is replay-safe protobuf containing
+only canonical hexadecimal identifiers; it contains no OTLP endpoint,
+collector URL, vendor project, or account identifier. Runs created without an
+active valid span carry no reference, and old runs therefore remain
+indistinguishable from the honest "no trace was captured" case.
+
+Set `FLOWSTATE_TRACE_LINK_TEMPLATE` on human-facing `flow` clients—not workers
+or the stored model—to turn a reference into a link. The only supported
+placeholder is `{trace_id}`. For example:
+
+```sh
+FLOWSTATE_TRACE_LINK_TEMPLATE='https://traces.example/explore/{trace_id}' flow get RUN_ID
+```
+
+Machine JSON and MCP responses always return the reference itself, never this
+operator-specific URL.
+
 Read [Deployment portability](ARCHITECTURE.md#deployment-portability) first for
 the shape of the connection layer; this document is what to do with it.
 

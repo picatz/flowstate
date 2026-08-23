@@ -797,6 +797,11 @@ func documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/client.go",
 		},
 		{
+			name:    "FLOWSTATE_TRACE_LINK_TEMPLATE",
+			read:    "cmd/flow/output.go",
+			purpose: "A human-facing trace URL template. Use the single `{trace_id}` placeholder; Flowstate substitutes only the run's validated lowercase hexadecimal trace ID. The template is never stored with a run and does not affect JSON or MCP responses.",
+		},
+		{
 			name:    "FLOWSTATE_VERBOSE_LOGGING",
 			value:   "false",
 			purpose: "Default for `--verbose`. Read as a condition rather than as a string, so it does not appear as a flag default in the CLI reference.",

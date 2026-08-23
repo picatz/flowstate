@@ -51,6 +51,7 @@ Where a variable is the default of a flag, the flag wins when both are given.
 | `FLOWSTATE_SYMBOLS` | `unset` | Override symbol selection (`unicode`/`ascii`) when terminal detection guesses wrong. | `cmd/flow/internal/ui/ui.go` |
 | `FLOWSTATE_TOKEN` | `unset` | Bearer token the client authenticates with, used when no token file is set. | `cmd/flow/credentials.go` |
 | `FLOWSTATE_TOKEN_FILE` | `unset` | Default for `--token-file`: a file holding the bearer token, re-read per request so a rotated token is picked up without a restart. | `cmd/flow/client.go` |
+| `FLOWSTATE_TRACE_LINK_TEMPLATE` | — | A human-facing trace URL template. Use the single `{trace_id}` placeholder; Flowstate substitutes only the run's validated lowercase hexadecimal trace ID. The template is never stored with a run and does not affect JSON or MCP responses. | `cmd/flow/output.go` |
 | `FLOWSTATE_VERBOSE_LOGGING` | `false` | Default for `--verbose`. Read as a condition rather than as a string, so it does not appear as a flag default in the CLI reference. | `cmd/flow/main.go` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `unset` | Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network. | `cmd/flow/telemetry.go` |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `unset` | The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it — so a collector is a destination gained, not exchanged. | `cmd/flow/telemetry.go` |

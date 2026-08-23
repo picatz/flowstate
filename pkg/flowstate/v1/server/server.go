@@ -16,6 +16,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/temporalclient"
+	"go.opentelemetry.io/otel/trace"
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/operatorservice/v1"
@@ -285,6 +286,31 @@ func WithSearchAttributesRegistered() Option {
 // break the promise that a first run needs nothing but `temporal server
 // start-dev`.
 const namespaceMemoKey = "flowstate.namespace"
+
+// traceMemoKey records only a backend-neutral protobuf reference. Collector
+// addresses and vendor routing data are intentionally never durable run data.
+const traceMemoKey = "flowstate.trace"
+
+func traceReferenceFromContext(ctx context.Context) *v1.TraceReference {
+	span := trace.SpanContextFromContext(ctx)
+	if !span.IsValid() {
+		return nil
+	}
+	spanID := span.SpanID().String()
+	return &v1.TraceReference{TraceId: span.TraceID().String(), RootSpanId: &spanID}
+}
+
+func (s *FlowstateServer) traceReferenceOf(memo *commonpb.Memo) *v1.TraceReference {
+	payload, ok := memo.GetFields()[traceMemoKey]
+	if !ok {
+		return nil
+	}
+	var ref v1.TraceReference
+	if err := s.dataConverter.FromPayload(payload, &ref); err != nil || v1.Validate(&ref) != nil {
+		return nil
+	}
+	return &ref
+}
 
 // signalPolicyMemoKey is the memo field recording which signals a run
 // declared a delivery policy for, and what it is.
@@ -638,6 +664,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 		Workflow:    req.Msg.GetWorkflow(),
 		StepsBudget: int32(s.maxStepsPerRun),
 		Identity:    identity,
+		Trace:       traceReferenceFromContext(ctx),
 
 		// Checked and defaulted, once, above. The engine reads them and never
 		// re-derives them, so every segment of the run sees what this submission
@@ -653,6 +680,7 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 			WorkflowId: workflowID,
 			RunId:      run.GetRunID(),
 			Status:     v1.RunResponse_STATUS_RUNNING,
+			Trace:      traceReferenceFromContext(ctx),
 		},
 	), nil
 }
@@ -761,6 +789,9 @@ func (s *FlowstateServer) prepareCreate(
 	// `distinct_from_starter` will need to compare an authorized sender
 	// against.
 	memo := map[string]any{namespaceMemoKey: identity.GetNamespace()}
+	if ref := traceReferenceFromContext(ctx); ref != nil {
+		memo[traceMemoKey] = ref
+	}
 	for k, v := range starterMemoEntry(identity) {
 		memo[k] = v
 	}
@@ -998,6 +1029,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// why a run that is, by design, always RUNNING was otherwise
 				// unreadable through this RPC at all.
 				EntityState: entityState(ctx, temporal, resp),
+				Trace:       s.traceReferenceOf(resp.GetWorkflowExecutionInfo().GetMemo()),
 			},
 		), nil
 	case v1.RunResponse_STATUS_COMPLETED:
@@ -1032,6 +1064,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// before any of this existed reports — see the field's own comment,
 				// which is why there is no empty message to distinguish them.
 				RunOutputs: result.GetRunOutputs(),
+				Trace:      s.traceReferenceOf(resp.GetWorkflowExecutionInfo().GetMemo()),
 			},
 		), nil
 	case v1.RunResponse_STATUS_FAILED, v1.RunResponse_STATUS_CANCELED, v1.RunResponse_STATUS_TERMINATED, v1.RunResponse_STATUS_TIMED_OUT:
@@ -1050,6 +1083,7 @@ func (s *FlowstateServer) Get(ctx context.Context, req *connect.Request[v1.GetRe
 				// answer, and there is no compatibility arm for a run that
 				// predates the memo key.
 				Starter: s.reportedStarter(resp),
+				Trace:   s.traceReferenceOf(resp.GetWorkflowExecutionInfo().GetMemo()),
 				Kind: &v1.GetResponse_Error{
 					Error: failureError(ctx, temporal, req.Msg.GetWorkflowId(), req.Msg.GetRunId(), respStatus),
 				},

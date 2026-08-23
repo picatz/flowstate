@@ -260,6 +260,7 @@ func (s *FlowstateServer) summarize(execution *workflow.WorkflowExecutionInfo) *
 		StartTime:  start,
 		CloseTime:  close,
 		Name:       s.workflowNameOf(execution),
+		Trace:      s.traceReferenceOf(execution.GetMemo()),
 	}
 }
 

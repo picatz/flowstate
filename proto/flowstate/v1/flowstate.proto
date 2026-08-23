@@ -2957,6 +2957,39 @@ message RunRequest {
   }];
 }
 
+// TraceReference is the backend-neutral address of the distributed trace that
+// contains a run's submission. It deliberately carries no collector URL,
+// project, tenant, or vendor identifier: those are deployment configuration,
+// not durable facts about a workload.
+//
+// Identifiers use the canonical W3C hexadecimal spelling: lowercase ASCII,
+// exactly 16 bytes for a trace ID and (when present) 8 bytes for a span ID.
+message TraceReference {
+  option (buf.validate.message).cel = {
+    id: "trace_reference.trace_id.nonzero"
+    message: "trace_id must not be all zeroes"
+    expression: "this.trace_id != '00000000000000000000000000000000'"
+  };
+  option (buf.validate.message).cel = {
+    id: "trace_reference.root_span_id.nonzero"
+    message: "root_span_id must not be all zeroes"
+    expression: "!has(this.root_span_id) || this.root_span_id != '0000000000000000'"
+  };
+  string trace_id = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string = {
+      pattern: "^[0-9a-f]{32}$"
+    }
+  ];
+
+  // RootSpanId is the submission span that roots Flowstate's execution work in
+  // the captured trace. It is optional because an older run or a propagation
+  // mechanism that supplies only a trace ID may not identify such a span.
+  optional string root_span_id = 2 [(buf.validate.field).string = {
+    pattern: "^[0-9a-f]{16}$"
+  }];
+}
+
 // RunResponse is the response message for a workflow run.
 message RunResponse {
   message Error {
@@ -3020,6 +3053,7 @@ message RunResponse {
     Error error = 4;
     Workflow.StepOutputs outputs = 5;
   }
+  TraceReference trace = 6;
 }
 
 // GetRequest is the request message for getting a workflow run.
@@ -3158,6 +3192,9 @@ message GetResponse {
   // when the answer is missing (see the server's authorizeSignal) - so an empty
   // value here weakens nothing.
   string starter = 12;
+
+  // Trace is captured once at submission and is unchanged after the run closes.
+  TraceReference trace = 13;
 }
 
 // EntityState is a bounded projection of a running workload's carried state,
@@ -3923,6 +3960,9 @@ message RunState {
   // preserved across Continue-As-New so later steps act as the same principal
   // the caller was authenticated as.
   WorkloadIdentity identity = 5;
+  // Trace is immutable submission metadata. Its plain protobuf representation
+  // is replay-safe and survives Continue-As-New without consulting telemetry.
+  TraceReference trace = 15;
 
   // PendingSignals are signals that arrived before the step waiting for them was
   // reached, drained from their channels before this run suspended.
@@ -4298,6 +4338,7 @@ message RunSummary {
   // an error — see server/list.go and runfilter.go, where a filter comparing
   // against `name` simply does not match a run that carries none.
   string name = 6;
+  TraceReference trace = 7;
 }
 
 // ListResponse returns a page of the caller's runs.

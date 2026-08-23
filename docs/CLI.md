@@ -6,6 +6,22 @@ audiences — a person reading a terminal and a program reading a pipe — and a
 every defect in this area comes from serving one of them in a way that breaks the
 other.
 
+## Trace references
+
+Durable run submission captures the active distributed trace context. `run`,
+`get`, `list`, and every `watch` update return the same backend-neutral
+`trace.traceId` and optional `trace.rootSpanId`; JSON and MCP expose those proto
+fields unchanged. Both identifiers are canonical lowercase hexadecimal (32 and
+16 characters respectively). Runs submitted when telemetry is not configured,
+including local executions, report no `trace` rather than inventing one.
+
+For text and TUI output, an operator may set
+`FLOWSTATE_TRACE_LINK_TEMPLATE`, for example
+`https://traces.example/explore/{trace_id}`. Flowstate performs only literal
+replacement of the required `{trace_id}` placeholder with the validated trace
+ID. Collector URLs and vendor identifiers remain CLI configuration and are
+never stored on the run.
+
 [docs/ARCHITECTURE.md](ARCHITECTURE.md) describes what the system is.
 [CLAUDE.md](../CLAUDE.md) describes how to change it. This describes what a person
 meets.

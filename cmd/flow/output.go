@@ -178,8 +178,35 @@ func writeRun(surface *ui.UI, format OutputFormat, response *v1.GetResponse) err
 	}
 
 	writeRunOutputs(surface, response)
+	if err := writeTraceReference(surface, response.GetTrace()); err != nil {
+		return err
+	}
 
 	return writeStepOutputs(surface, response)
+}
+
+// writeTraceReference renders deployment configuration without letting it into
+// the stored run. This is deliberately placeholder substitution, not fmt or a
+// template language: the validated hexadecimal identifier is the only value
+// that can be inserted and no functions, paths, or environment values execute.
+func writeTraceReference(surface *ui.UI, ref *v1.TraceReference) error {
+	if ref == nil {
+		return nil
+	}
+	if err := v1.Validate(ref); err != nil {
+		return fmt.Errorf("server returned a malformed trace reference: %w", err)
+	}
+	template := os.Getenv("FLOWSTATE_TRACE_LINK_TEMPLATE")
+	if template == "" {
+		fmt.Fprintf(surface.Err, "trace %s\n", ref.GetTraceId())
+		return nil
+	}
+	if !strings.Contains(template, "{trace_id}") || strings.ContainsAny(
+		strings.ReplaceAll(template, "{trace_id}", ""), "{}") {
+		return fmt.Errorf("FLOWSTATE_TRACE_LINK_TEMPLATE must contain only the {trace_id} placeholder")
+	}
+	fmt.Fprintf(surface.Err, "trace %s\n", strings.ReplaceAll(template, "{trace_id}", ref.GetTraceId()))
+	return nil
 }
 
 // writeRunOutputs names what the run answered with, for a person.
