@@ -330,3 +330,78 @@ func TestDiscoveryNamesEveryPublishedAlgorithm(t *testing.T) {
 	document := issuer.Discovery()
 	require.ElementsMatch(t, []jwa.Algorithm{jwa.ES256, jwa.RS256}, document.IDTokenSigningAlgValuesSupported)
 }
+
+// steppingClock jumps forward on every reading, once a test arms it.
+//
+// A stopped clock cannot see the defect [TestPublishedAlgorithmsAndKeyTypesDescribeOneKeySet]
+// is about, because that defect is two readings of the clock disagreeing. This
+// makes the disagreement certain rather than a race a test would have to win.
+type steppingClock struct {
+	mu   sync.Mutex
+	now  time.Time
+	step time.Duration
+}
+
+// stepBy arms the clock: from here every reading lands this much later than the
+// one before it.
+func (c *steppingClock) stepBy(step time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.step = step
+}
+
+// Now returns the current instant and moves the clock on by the armed step.
+func (c *steppingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.now
+	c.now = c.now.Add(c.step)
+
+	return now
+}
+
+// TestPublishedAlgorithmsAndKeyTypesDescribeOneKeySet pins that the two
+// cryptographic fields of the workload document are read from one snapshot of
+// the key set.
+//
+// Answering them separately means two readings of the clock and two acquisitions
+// of the lock, which a retained key's retention can expire between — and, in a
+// running server, which [auth.Issuer.Rotate] or [auth.Issuer.RevokeKey] can land
+// between. Either way the published document names an algorithm whose key type
+// it does not name, or the reverse. A relying party caches that for the
+// discovery cache lifetime and then refuses assertions signed by a key it was
+// told about only half of.
+//
+// The clock here does deterministically what concurrency would do occasionally:
+// the retained RSA key is inside its retention at the first reading and outside
+// it at the second.
+func TestPublishedAlgorithmsAndKeyTypesDescribeOneKeySet(t *testing.T) {
+	var (
+		clock   = &steppingClock{now: referenceTime}
+		signing = newKeyPair(t, "2026-08")
+	)
+
+	rsaPrivate, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	issuer, err := auth.NewIssuer("https://flowstate.test", signing.signing,
+		auth.WithIssuerClock(clock.Now),
+		auth.WithKeyRetention(time.Hour),
+		auth.WithDeclaredClaims(slices.Sorted(maps.Keys(testIdentity().Claims))...),
+		auth.WithVerifyOnlyKey("2026-07", &rsaPrivate.PublicKey),
+	)
+	require.NoError(t, err)
+
+	// The retained key expires an hour after the instant the issuer was built,
+	// so a two-hour step straddles it exactly once.
+	clock.stepBy(2 * time.Hour)
+
+	metadata := issuer.WorkloadMetadata()
+
+	require.Contains(t, metadata.SigningAlgValuesSupported, jwa.RS256,
+		"test setup: the first reading of the clock has to still be inside the retained key's retention")
+	require.Contains(t, metadata.KeyTypesSupported, "RSA",
+		"the algorithms and the key types were read at different instants, so the published "+
+			"document describes two different key sets")
+}
