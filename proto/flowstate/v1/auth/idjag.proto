@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package flowstate.v1.auth;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/picatz/flowstate/pkg/flowstate/v1/authconfig";
+
+// IDJAGProfile configures the two-legged Identity Assertion JWT Authorization
+// Grant protocol. The revision is deliberately represented by a single enum:
+// draft revisions are wire protocols, not a feature flag that can float.
+message IDJAGProfile {
+  enum Revision {
+    REVISION_UNSPECIFIED = 0;
+    DRAFT_IETF_OAUTH_IDENTITY_ASSERTION_AUTHZ_GRANT_04 = 1;
+  }
+  enum ClientAuthenticationMethod {
+    CLIENT_AUTHENTICATION_METHOD_UNSPECIFIED = 0;
+    PRIVATE_KEY_JWT = 1;
+    MTLS = 2;
+  }
+  enum ProofRequirement {
+    PROOF_REQUIREMENT_UNSPECIFIED = 0;
+    BEARER = 1;
+    DPOP = 2;
+  }
+  enum ClientIDInterpretation {
+    CLIENT_ID_INTERPRETATION_UNSPECIFIED = 0;
+    GLOBAL = 1;
+    TENANT_SCOPED = 2;
+  }
+
+  Revision revision = 1 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  string identity_provider_issuer = 2 [(buf.validate.field).string.uri = true];
+  string identity_provider_token_endpoint = 3 [(buf.validate.field).string.uri = true];
+  string resource_authorization_server_issuer = 4 [(buf.validate.field).string.uri = true];
+  string resource_authorization_server_token_endpoint = 5 [(buf.validate.field).string.uri = true];
+  string assertion_audience = 6 [(buf.validate.field).string.min_bytes = 1];
+  string client_id = 7 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+  string resource_application = 8 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+  string target_resource = 9 [(buf.validate.field).string.uri = true];
+  repeated string requested_scopes = 10 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 128}}
+  }];
+  // Canonical RFC 9396 JSON. Mutually exclusive with requested_scopes.
+  bytes authorization_details_json = 11 [(buf.validate.field).bytes.max_len = 16384];
+  ClientAuthenticationMethod client_authentication_method = 12
+      [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  ProofRequirement proof_requirement = 13
+      [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  repeated string accepted_identity_classes = 14 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 128}}
+  }];
+  repeated string accepted_actor_classes = 15 [(buf.validate.field).repeated = {
+    max_items: 32
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 128}}
+  }];
+  repeated string identity_claim_allowlist = 16 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 128}}
+  }];
+  ClientIDInterpretation client_id_interpretation = 17
+      [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  string identity_provider_tenant = 18 [(buf.validate.field).string.max_bytes = 256];
+  string resource_authorization_server_tenant = 19 [(buf.validate.field).string.max_bytes = 256];
+  // An explicit, operator-reviewed relationship. Required by the Go client for
+  // cross-domain or tenant-scoped operation; tenant equality is never inferred.
+  string tenant_relationship = 20 [(buf.validate.field).string.max_bytes = 512];
+  uint32 maximum_assertion_lifetime_seconds = 21 [(buf.validate.field).uint32 = {gte: 1, lte: 300}];
+  bool require_consent = 22;
+  repeated string required_acr_values = 23 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 128}}
+  }];
+}
