@@ -347,6 +347,11 @@ type TrustedIssuer struct {
 	// are short-lived by design, so an operator can insist on that: a captured
 	// token stays useful for minutes rather than hours.
 	MaxTokenAge time.Duration `json:"max_token_age,omitempty" yaml:"max_token_age,omitempty"`
+
+	// Assurance projects this issuer's acr and amr vocabulary into Flowstate's
+	// canonical assurance vocabulary. Without a projection, assurance remains
+	// unknown; raw claims are never interpreted by authorization policy.
+	Assurance *AssuranceProjection `json:"assurance,omitempty" yaml:"assurance,omitempty"`
 }
 
 // ClaimRule requires that a claim in a verified token equals one of a set of
@@ -656,6 +661,11 @@ func (t TrustedIssuer) kind() string {
 func (t TrustedIssuer) validate() error {
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
+	}
+	if t.Assurance != nil {
+		if err := t.Assurance.validate(); err != nil {
+			return fmt.Errorf("assurance: %w", err)
+		}
 	}
 
 	switch t.kind() {

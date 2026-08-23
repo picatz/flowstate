@@ -3,8 +3,81 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "flowstatev1";
+
+// AuthenticationAssuranceLevel is the issuer-independent strength of an
+// authentication ceremony. Values are ordered from least to most restrictive;
+// policy compares the enum value only after an issuer projection has assigned
+// it (never directly from an untrusted acr string).
+enum AuthenticationAssuranceLevel {
+  AUTHENTICATION_ASSURANCE_LEVEL_UNSPECIFIED = 0;
+  AUTHENTICATION_ASSURANCE_LEVEL_BASELINE = 1;
+  AUTHENTICATION_ASSURANCE_LEVEL_MULTI_FACTOR = 2;
+  AUTHENTICATION_ASSURANCE_LEVEL_PHISHING_RESISTANT = 3;
+  AUTHENTICATION_ASSURANCE_LEVEL_HARDWARE_BACKED = 4;
+}
+
+// AuthenticationMethod is a normalized AMR value. An issuer projection maps
+// the issuer's vocabulary onto this closed set.
+enum AuthenticationMethod {
+  AUTHENTICATION_METHOD_UNSPECIFIED = 0;
+  AUTHENTICATION_METHOD_PASSWORD = 1;
+  AUTHENTICATION_METHOD_ONE_TIME_PASSWORD = 2;
+  AUTHENTICATION_METHOD_BIOMETRIC = 3;
+  AUTHENTICATION_METHOD_SECURITY_KEY = 4;
+  AUTHENTICATION_METHOD_HARDWARE_KEY = 5;
+  AUTHENTICATION_METHOD_MUTUAL_TLS = 6;
+  AUTHENTICATION_METHOD_SENDER_CONSTRAINED_CREDENTIAL = 7;
+}
+
+// CallerKind distinguishes a human, an autonomous workload, and an agent
+// acting on behalf of a human. The last kind has two assurance boundaries.
+enum CallerKind {
+  CALLER_KIND_UNSPECIFIED = 0;
+  CALLER_KIND_HUMAN = 1;
+  CALLER_KIND_WORKLOAD = 2;
+  CALLER_KIND_AGENT_FOR_HUMAN = 3;
+}
+
+message AuthenticationTime {
+  google.protobuf.Timestamp value = 1;
+}
+message MaximumAuthenticationAge {
+  google.protobuf.Duration value = 1;
+}
+message RequiredAcrValues {
+  repeated string values = 1;
+}
+message RequiredAuthenticationContextReferences {
+  repeated AuthenticationAssuranceLevel assurance_levels = 1;
+  repeated AuthenticationMethod authentication_methods = 2;
+}
+
+enum StepUpReasonCode {
+  STEP_UP_REASON_CODE_UNSPECIFIED = 0;
+  STEP_UP_REASON_CODE_ASSURANCE_LEVEL = 1;
+  STEP_UP_REASON_CODE_AUTHENTICATION_METHOD = 2;
+  STEP_UP_REASON_CODE_AUTHENTICATION_TOO_OLD = 3;
+  STEP_UP_REASON_CODE_AGENT_ASSURANCE = 4;
+  STEP_UP_REASON_CODE_HUMAN_ASSURANCE = 5;
+  STEP_UP_REASON_CODE_INTERACTION_UNAVAILABLE = 6;
+}
+
+message StepUpTransactionReference {
+  string value = 1;
+}
+
+message CallerAuthenticationContext {
+  CallerKind caller_kind = 1;
+  bool user_interaction_possible = 2;
+  AuthenticationAssuranceLevel assurance_level = 3;
+  repeated AuthenticationMethod authentication_methods = 4;
+  AuthenticationTime authentication_time = 5;
+  string acr = 6;
+}
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
@@ -69,7 +142,9 @@ message WorkloadIdentity {
         max_bytes: 128
       }
     }
-    values: {string: {max_bytes: 1024}}
+    values: {
+      string: {max_bytes: 1024}
+    }
   }];
 
   // Namespace is the tenant, and it is the boundary every authorization decision

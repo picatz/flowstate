@@ -10,6 +10,8 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -21,6 +23,558 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+// AuthenticationAssuranceLevel is the issuer-independent strength of an
+// authentication ceremony. Values are ordered from least to most restrictive;
+// policy compares the enum value only after an issuer projection has assigned
+// it (never directly from an untrusted acr string).
+type AuthenticationAssuranceLevel int32
+
+const (
+	AuthenticationAssuranceLevel_AUTHENTICATION_ASSURANCE_LEVEL_UNSPECIFIED        AuthenticationAssuranceLevel = 0
+	AuthenticationAssuranceLevel_AUTHENTICATION_ASSURANCE_LEVEL_BASELINE           AuthenticationAssuranceLevel = 1
+	AuthenticationAssuranceLevel_AUTHENTICATION_ASSURANCE_LEVEL_MULTI_FACTOR       AuthenticationAssuranceLevel = 2
+	AuthenticationAssuranceLevel_AUTHENTICATION_ASSURANCE_LEVEL_PHISHING_RESISTANT AuthenticationAssuranceLevel = 3
+	AuthenticationAssuranceLevel_AUTHENTICATION_ASSURANCE_LEVEL_HARDWARE_BACKED    AuthenticationAssuranceLevel = 4
+)
+
+// Enum value maps for AuthenticationAssuranceLevel.
+var (
+	AuthenticationAssuranceLevel_name = map[int32]string{
+		0: "AUTHENTICATION_ASSURANCE_LEVEL_UNSPECIFIED",
+		1: "AUTHENTICATION_ASSURANCE_LEVEL_BASELINE",
+		2: "AUTHENTICATION_ASSURANCE_LEVEL_MULTI_FACTOR",
+		3: "AUTHENTICATION_ASSURANCE_LEVEL_PHISHING_RESISTANT",
+		4: "AUTHENTICATION_ASSURANCE_LEVEL_HARDWARE_BACKED",
+	}
+	AuthenticationAssuranceLevel_value = map[string]int32{
+		"AUTHENTICATION_ASSURANCE_LEVEL_UNSPECIFIED":        0,
+		"AUTHENTICATION_ASSURANCE_LEVEL_BASELINE":           1,
+		"AUTHENTICATION_ASSURANCE_LEVEL_MULTI_FACTOR":       2,
+		"AUTHENTICATION_ASSURANCE_LEVEL_PHISHING_RESISTANT": 3,
+		"AUTHENTICATION_ASSURANCE_LEVEL_HARDWARE_BACKED":    4,
+	}
+)
+
+func (x AuthenticationAssuranceLevel) Enum() *AuthenticationAssuranceLevel {
+	p := new(AuthenticationAssuranceLevel)
+	*p = x
+	return p
+}
+
+func (x AuthenticationAssuranceLevel) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AuthenticationAssuranceLevel) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[0].Descriptor()
+}
+
+func (AuthenticationAssuranceLevel) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[0]
+}
+
+func (x AuthenticationAssuranceLevel) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AuthenticationAssuranceLevel.Descriptor instead.
+func (AuthenticationAssuranceLevel) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
+// AuthenticationMethod is a normalized AMR value. An issuer projection maps
+// the issuer's vocabulary onto this closed set.
+type AuthenticationMethod int32
+
+const (
+	AuthenticationMethod_AUTHENTICATION_METHOD_UNSPECIFIED                   AuthenticationMethod = 0
+	AuthenticationMethod_AUTHENTICATION_METHOD_PASSWORD                      AuthenticationMethod = 1
+	AuthenticationMethod_AUTHENTICATION_METHOD_ONE_TIME_PASSWORD             AuthenticationMethod = 2
+	AuthenticationMethod_AUTHENTICATION_METHOD_BIOMETRIC                     AuthenticationMethod = 3
+	AuthenticationMethod_AUTHENTICATION_METHOD_SECURITY_KEY                  AuthenticationMethod = 4
+	AuthenticationMethod_AUTHENTICATION_METHOD_HARDWARE_KEY                  AuthenticationMethod = 5
+	AuthenticationMethod_AUTHENTICATION_METHOD_MUTUAL_TLS                    AuthenticationMethod = 6
+	AuthenticationMethod_AUTHENTICATION_METHOD_SENDER_CONSTRAINED_CREDENTIAL AuthenticationMethod = 7
+)
+
+// Enum value maps for AuthenticationMethod.
+var (
+	AuthenticationMethod_name = map[int32]string{
+		0: "AUTHENTICATION_METHOD_UNSPECIFIED",
+		1: "AUTHENTICATION_METHOD_PASSWORD",
+		2: "AUTHENTICATION_METHOD_ONE_TIME_PASSWORD",
+		3: "AUTHENTICATION_METHOD_BIOMETRIC",
+		4: "AUTHENTICATION_METHOD_SECURITY_KEY",
+		5: "AUTHENTICATION_METHOD_HARDWARE_KEY",
+		6: "AUTHENTICATION_METHOD_MUTUAL_TLS",
+		7: "AUTHENTICATION_METHOD_SENDER_CONSTRAINED_CREDENTIAL",
+	}
+	AuthenticationMethod_value = map[string]int32{
+		"AUTHENTICATION_METHOD_UNSPECIFIED":                   0,
+		"AUTHENTICATION_METHOD_PASSWORD":                      1,
+		"AUTHENTICATION_METHOD_ONE_TIME_PASSWORD":             2,
+		"AUTHENTICATION_METHOD_BIOMETRIC":                     3,
+		"AUTHENTICATION_METHOD_SECURITY_KEY":                  4,
+		"AUTHENTICATION_METHOD_HARDWARE_KEY":                  5,
+		"AUTHENTICATION_METHOD_MUTUAL_TLS":                    6,
+		"AUTHENTICATION_METHOD_SENDER_CONSTRAINED_CREDENTIAL": 7,
+	}
+)
+
+func (x AuthenticationMethod) Enum() *AuthenticationMethod {
+	p := new(AuthenticationMethod)
+	*p = x
+	return p
+}
+
+func (x AuthenticationMethod) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AuthenticationMethod) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[1].Descriptor()
+}
+
+func (AuthenticationMethod) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[1]
+}
+
+func (x AuthenticationMethod) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AuthenticationMethod.Descriptor instead.
+func (AuthenticationMethod) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
+// CallerKind distinguishes a human, an autonomous workload, and an agent
+// acting on behalf of a human. The last kind has two assurance boundaries.
+type CallerKind int32
+
+const (
+	CallerKind_CALLER_KIND_UNSPECIFIED     CallerKind = 0
+	CallerKind_CALLER_KIND_HUMAN           CallerKind = 1
+	CallerKind_CALLER_KIND_WORKLOAD        CallerKind = 2
+	CallerKind_CALLER_KIND_AGENT_FOR_HUMAN CallerKind = 3
+)
+
+// Enum value maps for CallerKind.
+var (
+	CallerKind_name = map[int32]string{
+		0: "CALLER_KIND_UNSPECIFIED",
+		1: "CALLER_KIND_HUMAN",
+		2: "CALLER_KIND_WORKLOAD",
+		3: "CALLER_KIND_AGENT_FOR_HUMAN",
+	}
+	CallerKind_value = map[string]int32{
+		"CALLER_KIND_UNSPECIFIED":     0,
+		"CALLER_KIND_HUMAN":           1,
+		"CALLER_KIND_WORKLOAD":        2,
+		"CALLER_KIND_AGENT_FOR_HUMAN": 3,
+	}
+)
+
+func (x CallerKind) Enum() *CallerKind {
+	p := new(CallerKind)
+	*p = x
+	return p
+}
+
+func (x CallerKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CallerKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[2].Descriptor()
+}
+
+func (CallerKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[2]
+}
+
+func (x CallerKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CallerKind.Descriptor instead.
+func (CallerKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{2}
+}
+
+type StepUpReasonCode int32
+
+const (
+	StepUpReasonCode_STEP_UP_REASON_CODE_UNSPECIFIED             StepUpReasonCode = 0
+	StepUpReasonCode_STEP_UP_REASON_CODE_ASSURANCE_LEVEL         StepUpReasonCode = 1
+	StepUpReasonCode_STEP_UP_REASON_CODE_AUTHENTICATION_METHOD   StepUpReasonCode = 2
+	StepUpReasonCode_STEP_UP_REASON_CODE_AUTHENTICATION_TOO_OLD  StepUpReasonCode = 3
+	StepUpReasonCode_STEP_UP_REASON_CODE_AGENT_ASSURANCE         StepUpReasonCode = 4
+	StepUpReasonCode_STEP_UP_REASON_CODE_HUMAN_ASSURANCE         StepUpReasonCode = 5
+	StepUpReasonCode_STEP_UP_REASON_CODE_INTERACTION_UNAVAILABLE StepUpReasonCode = 6
+)
+
+// Enum value maps for StepUpReasonCode.
+var (
+	StepUpReasonCode_name = map[int32]string{
+		0: "STEP_UP_REASON_CODE_UNSPECIFIED",
+		1: "STEP_UP_REASON_CODE_ASSURANCE_LEVEL",
+		2: "STEP_UP_REASON_CODE_AUTHENTICATION_METHOD",
+		3: "STEP_UP_REASON_CODE_AUTHENTICATION_TOO_OLD",
+		4: "STEP_UP_REASON_CODE_AGENT_ASSURANCE",
+		5: "STEP_UP_REASON_CODE_HUMAN_ASSURANCE",
+		6: "STEP_UP_REASON_CODE_INTERACTION_UNAVAILABLE",
+	}
+	StepUpReasonCode_value = map[string]int32{
+		"STEP_UP_REASON_CODE_UNSPECIFIED":             0,
+		"STEP_UP_REASON_CODE_ASSURANCE_LEVEL":         1,
+		"STEP_UP_REASON_CODE_AUTHENTICATION_METHOD":   2,
+		"STEP_UP_REASON_CODE_AUTHENTICATION_TOO_OLD":  3,
+		"STEP_UP_REASON_CODE_AGENT_ASSURANCE":         4,
+		"STEP_UP_REASON_CODE_HUMAN_ASSURANCE":         5,
+		"STEP_UP_REASON_CODE_INTERACTION_UNAVAILABLE": 6,
+	}
+)
+
+func (x StepUpReasonCode) Enum() *StepUpReasonCode {
+	p := new(StepUpReasonCode)
+	*p = x
+	return p
+}
+
+func (x StepUpReasonCode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StepUpReasonCode) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[3].Descriptor()
+}
+
+func (StepUpReasonCode) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[3]
+}
+
+func (x StepUpReasonCode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StepUpReasonCode.Descriptor instead.
+func (StepUpReasonCode) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{3}
+}
+
+type AuthenticationTime struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthenticationTime) Reset() {
+	*x = AuthenticationTime{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthenticationTime) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthenticationTime) ProtoMessage() {}
+
+func (x *AuthenticationTime) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthenticationTime.ProtoReflect.Descriptor instead.
+func (*AuthenticationTime) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *AuthenticationTime) GetValue() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type MaximumAuthenticationAge struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         *durationpb.Duration   `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MaximumAuthenticationAge) Reset() {
+	*x = MaximumAuthenticationAge{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MaximumAuthenticationAge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MaximumAuthenticationAge) ProtoMessage() {}
+
+func (x *MaximumAuthenticationAge) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MaximumAuthenticationAge.ProtoReflect.Descriptor instead.
+func (*MaximumAuthenticationAge) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *MaximumAuthenticationAge) GetValue() *durationpb.Duration {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type RequiredAcrValues struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Values        []string               `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RequiredAcrValues) Reset() {
+	*x = RequiredAcrValues{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequiredAcrValues) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequiredAcrValues) ProtoMessage() {}
+
+func (x *RequiredAcrValues) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequiredAcrValues.ProtoReflect.Descriptor instead.
+func (*RequiredAcrValues) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RequiredAcrValues) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+type RequiredAuthenticationContextReferences struct {
+	state                 protoimpl.MessageState         `protogen:"open.v1"`
+	AssuranceLevels       []AuthenticationAssuranceLevel `protobuf:"varint,1,rep,packed,name=assurance_levels,json=assuranceLevels,proto3,enum=flowstate.v1.AuthenticationAssuranceLevel" json:"assurance_levels,omitempty"`
+	AuthenticationMethods []AuthenticationMethod         `protobuf:"varint,2,rep,packed,name=authentication_methods,json=authenticationMethods,proto3,enum=flowstate.v1.AuthenticationMethod" json:"authentication_methods,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *RequiredAuthenticationContextReferences) Reset() {
+	*x = RequiredAuthenticationContextReferences{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RequiredAuthenticationContextReferences) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RequiredAuthenticationContextReferences) ProtoMessage() {}
+
+func (x *RequiredAuthenticationContextReferences) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RequiredAuthenticationContextReferences.ProtoReflect.Descriptor instead.
+func (*RequiredAuthenticationContextReferences) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RequiredAuthenticationContextReferences) GetAssuranceLevels() []AuthenticationAssuranceLevel {
+	if x != nil {
+		return x.AssuranceLevels
+	}
+	return nil
+}
+
+func (x *RequiredAuthenticationContextReferences) GetAuthenticationMethods() []AuthenticationMethod {
+	if x != nil {
+		return x.AuthenticationMethods
+	}
+	return nil
+}
+
+type StepUpTransactionReference struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Value         string                 `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StepUpTransactionReference) Reset() {
+	*x = StepUpTransactionReference{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StepUpTransactionReference) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StepUpTransactionReference) ProtoMessage() {}
+
+func (x *StepUpTransactionReference) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StepUpTransactionReference.ProtoReflect.Descriptor instead.
+func (*StepUpTransactionReference) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *StepUpTransactionReference) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+type CallerAuthenticationContext struct {
+	state                   protoimpl.MessageState       `protogen:"open.v1"`
+	CallerKind              CallerKind                   `protobuf:"varint,1,opt,name=caller_kind,json=callerKind,proto3,enum=flowstate.v1.CallerKind" json:"caller_kind,omitempty"`
+	UserInteractionPossible bool                         `protobuf:"varint,2,opt,name=user_interaction_possible,json=userInteractionPossible,proto3" json:"user_interaction_possible,omitempty"`
+	AssuranceLevel          AuthenticationAssuranceLevel `protobuf:"varint,3,opt,name=assurance_level,json=assuranceLevel,proto3,enum=flowstate.v1.AuthenticationAssuranceLevel" json:"assurance_level,omitempty"`
+	AuthenticationMethods   []AuthenticationMethod       `protobuf:"varint,4,rep,packed,name=authentication_methods,json=authenticationMethods,proto3,enum=flowstate.v1.AuthenticationMethod" json:"authentication_methods,omitempty"`
+	AuthenticationTime      *AuthenticationTime          `protobuf:"bytes,5,opt,name=authentication_time,json=authenticationTime,proto3" json:"authentication_time,omitempty"`
+	Acr                     string                       `protobuf:"bytes,6,opt,name=acr,proto3" json:"acr,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *CallerAuthenticationContext) Reset() {
+	*x = CallerAuthenticationContext{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CallerAuthenticationContext) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CallerAuthenticationContext) ProtoMessage() {}
+
+func (x *CallerAuthenticationContext) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CallerAuthenticationContext.ProtoReflect.Descriptor instead.
+func (*CallerAuthenticationContext) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CallerAuthenticationContext) GetCallerKind() CallerKind {
+	if x != nil {
+		return x.CallerKind
+	}
+	return CallerKind_CALLER_KIND_UNSPECIFIED
+}
+
+func (x *CallerAuthenticationContext) GetUserInteractionPossible() bool {
+	if x != nil {
+		return x.UserInteractionPossible
+	}
+	return false
+}
+
+func (x *CallerAuthenticationContext) GetAssuranceLevel() AuthenticationAssuranceLevel {
+	if x != nil {
+		return x.AssuranceLevel
+	}
+	return AuthenticationAssuranceLevel_AUTHENTICATION_ASSURANCE_LEVEL_UNSPECIFIED
+}
+
+func (x *CallerAuthenticationContext) GetAuthenticationMethods() []AuthenticationMethod {
+	if x != nil {
+		return x.AuthenticationMethods
+	}
+	return nil
+}
+
+func (x *CallerAuthenticationContext) GetAuthenticationTime() *AuthenticationTime {
+	if x != nil {
+		return x.AuthenticationTime
+	}
+	return nil
+}
+
+func (x *CallerAuthenticationContext) GetAcr() string {
+	if x != nil {
+		return x.Acr
+	}
+	return ""
+}
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
@@ -107,7 +661,7 @@ type WorkloadIdentity struct {
 
 func (x *WorkloadIdentity) Reset() {
 	*x = WorkloadIdentity{}
-	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -119,7 +673,7 @@ func (x *WorkloadIdentity) String() string {
 func (*WorkloadIdentity) ProtoMessage() {}
 
 func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -132,7 +686,7 @@ func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadIdentity.ProtoReflect.Descriptor instead.
 func (*WorkloadIdentity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *WorkloadIdentity) GetSubject() string {
@@ -174,7 +728,26 @@ var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x9b\x02\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"F\n" +
+	"\x12AuthenticationTime\x120\n" +
+	"\x05value\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x05value\"K\n" +
+	"\x18MaximumAuthenticationAge\x12/\n" +
+	"\x05value\x18\x01 \x01(\v2\x19.google.protobuf.DurationR\x05value\"+\n" +
+	"\x11RequiredAcrValues\x12\x16\n" +
+	"\x06values\x18\x01 \x03(\tR\x06values\"\xdb\x01\n" +
+	"'RequiredAuthenticationContextReferences\x12U\n" +
+	"\x10assurance_levels\x18\x01 \x03(\x0e2*.flowstate.v1.AuthenticationAssuranceLevelR\x0fassuranceLevels\x12Y\n" +
+	"\x16authentication_methods\x18\x02 \x03(\x0e2\".flowstate.v1.AuthenticationMethodR\x15authenticationMethods\"2\n" +
+	"\x1aStepUpTransactionReference\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\tR\x05value\"\xa9\x03\n" +
+	"\x1bCallerAuthenticationContext\x129\n" +
+	"\vcaller_kind\x18\x01 \x01(\x0e2\x18.flowstate.v1.CallerKindR\n" +
+	"callerKind\x12:\n" +
+	"\x19user_interaction_possible\x18\x02 \x01(\bR\x17userInteractionPossible\x12S\n" +
+	"\x0fassurance_level\x18\x03 \x01(\x0e2*.flowstate.v1.AuthenticationAssuranceLevelR\x0eassuranceLevel\x12Y\n" +
+	"\x16authentication_methods\x18\x04 \x03(\x0e2\".flowstate.v1.AuthenticationMethodR\x15authenticationMethods\x12Q\n" +
+	"\x13authentication_time\x18\x05 \x01(\v2 .flowstate.v1.AuthenticationTimeR\x12authenticationTime\x12\x10\n" +
+	"\x03acr\x18\x06 \x01(\tR\x03acr\"\x9b\x02\n" +
 	"\x10WorkloadIdentity\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
 	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
@@ -185,7 +758,36 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"deployment\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xac\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x97\x02\n" +
+	"\x1cAuthenticationAssuranceLevel\x12.\n" +
+	"*AUTHENTICATION_ASSURANCE_LEVEL_UNSPECIFIED\x10\x00\x12+\n" +
+	"'AUTHENTICATION_ASSURANCE_LEVEL_BASELINE\x10\x01\x12/\n" +
+	"+AUTHENTICATION_ASSURANCE_LEVEL_MULTI_FACTOR\x10\x02\x125\n" +
+	"1AUTHENTICATION_ASSURANCE_LEVEL_PHISHING_RESISTANT\x10\x03\x122\n" +
+	".AUTHENTICATION_ASSURANCE_LEVEL_HARDWARE_BACKED\x10\x04*\xe2\x02\n" +
+	"\x14AuthenticationMethod\x12%\n" +
+	"!AUTHENTICATION_METHOD_UNSPECIFIED\x10\x00\x12\"\n" +
+	"\x1eAUTHENTICATION_METHOD_PASSWORD\x10\x01\x12+\n" +
+	"'AUTHENTICATION_METHOD_ONE_TIME_PASSWORD\x10\x02\x12#\n" +
+	"\x1fAUTHENTICATION_METHOD_BIOMETRIC\x10\x03\x12&\n" +
+	"\"AUTHENTICATION_METHOD_SECURITY_KEY\x10\x04\x12&\n" +
+	"\"AUTHENTICATION_METHOD_HARDWARE_KEY\x10\x05\x12$\n" +
+	" AUTHENTICATION_METHOD_MUTUAL_TLS\x10\x06\x127\n" +
+	"3AUTHENTICATION_METHOD_SENDER_CONSTRAINED_CREDENTIAL\x10\a*{\n" +
+	"\n" +
+	"CallerKind\x12\x1b\n" +
+	"\x17CALLER_KIND_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11CALLER_KIND_HUMAN\x10\x01\x12\x18\n" +
+	"\x14CALLER_KIND_WORKLOAD\x10\x02\x12\x1f\n" +
+	"\x1bCALLER_KIND_AGENT_FOR_HUMAN\x10\x03*\xc2\x02\n" +
+	"\x10StepUpReasonCode\x12#\n" +
+	"\x1fSTEP_UP_REASON_CODE_UNSPECIFIED\x10\x00\x12'\n" +
+	"#STEP_UP_REASON_CODE_ASSURANCE_LEVEL\x10\x01\x12-\n" +
+	")STEP_UP_REASON_CODE_AUTHENTICATION_METHOD\x10\x02\x12.\n" +
+	"*STEP_UP_REASON_CODE_AUTHENTICATION_TOO_OLD\x10\x03\x12'\n" +
+	"#STEP_UP_REASON_CODE_AGENT_ASSURANCE\x10\x04\x12'\n" +
+	"#STEP_UP_REASON_CODE_HUMAN_ASSURANCE\x10\x05\x12/\n" +
+	"+STEP_UP_REASON_CODE_INTERACTION_UNAVAILABLE\x10\x06B\xac\x01\n" +
 	"\x10com.flowstate.v1B\rIdentityProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -200,18 +802,39 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_identity_proto_rawDescData
 }
 
-var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_flowstate_v1_identity_proto_goTypes = []any{
-	(*WorkloadIdentity)(nil), // 0: flowstate.v1.WorkloadIdentity
-	nil,                      // 1: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(AuthenticationAssuranceLevel)(0),               // 0: flowstate.v1.AuthenticationAssuranceLevel
+	(AuthenticationMethod)(0),                       // 1: flowstate.v1.AuthenticationMethod
+	(CallerKind)(0),                                 // 2: flowstate.v1.CallerKind
+	(StepUpReasonCode)(0),                           // 3: flowstate.v1.StepUpReasonCode
+	(*AuthenticationTime)(nil),                      // 4: flowstate.v1.AuthenticationTime
+	(*MaximumAuthenticationAge)(nil),                // 5: flowstate.v1.MaximumAuthenticationAge
+	(*RequiredAcrValues)(nil),                       // 6: flowstate.v1.RequiredAcrValues
+	(*RequiredAuthenticationContextReferences)(nil), // 7: flowstate.v1.RequiredAuthenticationContextReferences
+	(*StepUpTransactionReference)(nil),              // 8: flowstate.v1.StepUpTransactionReference
+	(*CallerAuthenticationContext)(nil),             // 9: flowstate.v1.CallerAuthenticationContext
+	(*WorkloadIdentity)(nil),                        // 10: flowstate.v1.WorkloadIdentity
+	nil,                                             // 11: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(*timestamppb.Timestamp)(nil),                   // 12: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),                     // 13: google.protobuf.Duration
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
-	1, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	12, // 0: flowstate.v1.AuthenticationTime.value:type_name -> google.protobuf.Timestamp
+	13, // 1: flowstate.v1.MaximumAuthenticationAge.value:type_name -> google.protobuf.Duration
+	0,  // 2: flowstate.v1.RequiredAuthenticationContextReferences.assurance_levels:type_name -> flowstate.v1.AuthenticationAssuranceLevel
+	1,  // 3: flowstate.v1.RequiredAuthenticationContextReferences.authentication_methods:type_name -> flowstate.v1.AuthenticationMethod
+	2,  // 4: flowstate.v1.CallerAuthenticationContext.caller_kind:type_name -> flowstate.v1.CallerKind
+	0,  // 5: flowstate.v1.CallerAuthenticationContext.assurance_level:type_name -> flowstate.v1.AuthenticationAssuranceLevel
+	1,  // 6: flowstate.v1.CallerAuthenticationContext.authentication_methods:type_name -> flowstate.v1.AuthenticationMethod
+	4,  // 7: flowstate.v1.CallerAuthenticationContext.authentication_time:type_name -> flowstate.v1.AuthenticationTime
+	11, // 8: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	9,  // [9:9] is the sub-list for method output_type
+	9,  // [9:9] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -224,13 +847,14 @@ func file_flowstate_v1_identity_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   2,
+			NumEnums:      4,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_identity_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_identity_proto_depIdxs,
+		EnumInfos:         file_flowstate_v1_identity_proto_enumTypes,
 		MessageInfos:      file_flowstate_v1_identity_proto_msgTypes,
 	}.Build()
 	File_flowstate_v1_identity_proto = out.File

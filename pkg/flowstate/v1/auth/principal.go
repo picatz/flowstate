@@ -92,6 +92,10 @@ type Principal struct {
 	// add — see picatz/flowstate#582 — and nothing here reads it. Empty for
 	// every Principal a bearer token produced.
 	CertificateThumbprint string `json:"certificate_thumbprint,omitempty"`
+
+	// Authentication is normalized only by the projection on the TrustedIssuer
+	// entry that admitted the token. Request payloads cannot populate it.
+	Authentication AuthenticationContext `json:"authentication,omitempty"`
 }
 
 // AnonymousPrincipal returns the Principal assigned to callers when anonymous

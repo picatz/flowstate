@@ -396,17 +396,22 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		if err != nil {
 			return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
 		}
+		authentication, err := entry.projectAssurance(claims, lifetime, v.skew)
+		if err != nil {
+			return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
+		}
 
 		return Principal{
-			Issuer:     issuer,
-			IssuerName: entry.Name,
-			Subject:    subject,
-			Audience:   audiences,
-			Namespace:  namespace,
-			Role:       entry.Role,
-			IssuedAt:   lifetime.issuedAt,
-			ExpiresAt:  lifetime.expiresAt,
-			Claims:     claims,
+			Issuer:         issuer,
+			IssuerName:     entry.Name,
+			Subject:        subject,
+			Audience:       audiences,
+			Namespace:      namespace,
+			Role:           entry.Role,
+			IssuedAt:       lifetime.issuedAt,
+			ExpiresAt:      lifetime.expiresAt,
+			Claims:         claims,
+			Authentication: authentication,
 		}, nil
 	}
 
