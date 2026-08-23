@@ -44,6 +44,11 @@ type Principal struct {
 	// the rule that granted access, not just the issuer that signed the token.
 	IssuerName string `json:"issuer_name,omitempty"`
 
+	// AdmissionRules are the names of CEL conditions on the matched issuer
+	// entry that admitted this caller. Names are operator-authored safe audit
+	// context; expressions and claim values are deliberately not copied here.
+	AdmissionRules []string `json:"admission_rules,omitempty"`
+
 	// Subject is the token's verified "sub" claim: the issuer's name for the
 	// caller. For workload identity this is a workload, not a person, such as
 	// "system:serviceaccount:flowstate:runner" or "repo:picatz/flowstate:ref:refs/heads/main".
@@ -175,6 +180,9 @@ func (p Principal) LogValue() slog.Value {
 	attrs := []slog.Attr{slog.String("id", p.ID())}
 	if p.IssuerName != "" {
 		attrs = append(attrs, slog.String("issuer_name", p.IssuerName))
+	}
+	if len(p.AdmissionRules) > 0 {
+		attrs = append(attrs, slog.Any("admission_rules", p.AdmissionRules))
 	}
 	if p.Namespace != "" {
 		attrs = append(attrs, slog.String("namespace", p.Namespace))

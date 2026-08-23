@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -12,6 +13,10 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common/types"
+	authpb "github.com/picatz/flowstate/pkg/flowstate/auth/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/cellimits"
 	"github.com/picatz/jose/pkg/jwa"
 )
 
@@ -258,6 +263,17 @@ type TrustedIssuer struct {
 	// restricted by audience alone is a legitimate configuration.
 	Require []ClaimRule `json:"require,omitempty" yaml:"require,omitempty"`
 
+	// Conditions are named CEL admission conditions, all of which must evaluate
+	// to true. They run only after signature, issuer, audience, and lifetime
+	// verification. The closed activation contains `claims` (verified claims),
+	// `request` (TrustAdmissionRequest), and `deployment`
+	// (TrustAdmissionDeployment). Conditions compile and type-check at policy
+	// load; expressions must return bool. `require` remains compatibility syntax
+	// and is evaluated as part of the same ANDed admission rule set.
+	Conditions []*authpb.TrustAdmissionCondition `json:"conditions,omitempty" yaml:"conditions,omitempty"`
+
+	compiledConditions []compiledAdmissionCondition
+
 	// Role is the Flowstate role granted to callers admitted by this entry,
 	// recorded as [Principal.Role]. It comes from the policy and never from the
 	// token, so a caller cannot choose its own role.
@@ -347,6 +363,11 @@ type TrustedIssuer struct {
 	// are short-lived by design, so an operator can insist on that: a captured
 	// token stays useful for minutes rather than hours.
 	MaxTokenAge time.Duration `json:"max_token_age,omitempty" yaml:"max_token_age,omitempty"`
+}
+
+type compiledAdmissionCondition struct {
+	name    string
+	program cel.Program
 }
 
 // ClaimRule requires that a claim in a verified token equals one of a set of
@@ -448,8 +469,93 @@ func ParsePolicy(data []byte) (Policy, error) {
 	if err := policy.Validate(); err != nil {
 		return Policy{}, err
 	}
+	if err := policy.compileAdmissionConditions(); err != nil {
+		return Policy{}, err
+	}
 
 	return policy, nil
+}
+
+// compileAdmissionConditions compiles the policy's CEL once, at the
+// configuration boundary. The environment is intentionally closed: CEL's
+// standard identifiers plus these three declared values are the entire input.
+func (p *Policy) compileAdmissionConditions() error {
+	for i := range p.Issuers {
+		if err := p.Issuers[i].compileAdmissionConditions(); err != nil {
+			return fmt.Errorf("%w: issuers[%d] (%q): %w", ErrInvalidPolicy, i, p.Issuers[i].Name, err)
+		}
+	}
+	return nil
+}
+
+func (t *TrustedIssuer) compileAdmissionConditions() error {
+	env, err := cel.NewEnv(
+		cel.Types(&authpb.TrustAdmissionRequest{}, &authpb.TrustAdmissionDeployment{}),
+		cel.Variable("claims", cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable("request", cel.ObjectType("flowstate.auth.v1.TrustAdmissionRequest")),
+		cel.Variable("deployment", cel.ObjectType("flowstate.auth.v1.TrustAdmissionDeployment")),
+	)
+	if err != nil {
+		return fmt.Errorf("create CEL environment: %w", err)
+	}
+
+	t.compiledConditions = make([]compiledAdmissionCondition, 0, len(t.Conditions))
+	seen := make(map[string]struct{}, len(t.Conditions))
+	for i, condition := range t.Conditions {
+		if condition == nil {
+			return fmt.Errorf("conditions[%d] is null", i)
+		}
+		if condition.Name == "" || condition.Expression == "" {
+			return fmt.Errorf("conditions[%d]: name and expression are required", i)
+		}
+		if _, exists := seen[condition.Name]; exists {
+			return fmt.Errorf("conditions[%d]: duplicate name %q", i, condition.Name)
+		}
+		seen[condition.Name] = struct{}{}
+		ast, issues := env.Compile(condition.Expression)
+		if issues != nil && issues.Err() != nil {
+			return fmt.Errorf("condition %q does not compile: %w", condition.Name, issues.Err())
+		}
+		if ast.OutputType() != cel.BoolType {
+			return fmt.Errorf("condition %q has type %s, want bool", condition.Name, ast.OutputType())
+		}
+		program, err := env.Program(ast,
+			cel.CostLimit(cellimits.DefaultCostLimit),
+			cel.InterruptCheckFrequency(cellimits.DefaultInterruptCheckFrequency),
+		)
+		if err != nil {
+			return fmt.Errorf("condition %q: build program: %w", condition.Name, err)
+		}
+		t.compiledConditions = append(t.compiledConditions, compiledAdmissionCondition{name: condition.Name, program: program})
+	}
+	return nil
+}
+
+func (t TrustedIssuer) evaluateAdmissionConditions(ctx context.Context, claims map[string]any, request *authpb.TrustAdmissionRequest) ([]string, error) {
+	if len(t.Conditions) > 0 && len(t.compiledConditions) != len(t.Conditions) {
+		return nil, fmt.Errorf("admission conditions were not compiled")
+	}
+	deployment := &authpb.TrustAdmissionDeployment{IssuerEntry: t.Name, Role: t.Role, Namespace: t.Namespace}
+	names := make([]string, 0, len(t.compiledConditions))
+	for _, condition := range t.compiledConditions {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("admission condition %q evaluation canceled: %w", condition.name, err)
+		}
+		value, _, err := condition.program.ContextEval(ctx, map[string]any{
+			"claims": claims, "request": request, "deployment": deployment,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("admission condition %q evaluation failed: %w", condition.name, err)
+		}
+		if value != types.True {
+			if value == types.False {
+				return nil, fmt.Errorf("admission condition %q denied the caller", condition.name)
+			}
+			return nil, fmt.Errorf("admission condition %q returned an error", condition.name)
+		}
+		names = append(names, condition.name)
+	}
+	return names, nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
@@ -993,7 +1099,14 @@ func (t TrustedIssuer) validateMultiTenantPinning() error {
 			t.Issuer, known.platform, t.NamespaceClaim, t.NamespaceClaim, known.platform, known.claim)
 	}
 
-	if t.NamespaceClaim != "" || slices.ContainsFunc(t.Require, ClaimRule.narrowsWho) {
+	if t.NamespaceClaim != "" || slices.ContainsFunc(t.Require, ClaimRule.narrowsWho) ||
+		slices.ContainsFunc(t.Conditions, func(condition *authpb.TrustAdmissionCondition) bool {
+			// Compilation proves semantics later. This conservative load-time
+			// pinning check additionally insists that a public-provider rule
+			// actually consult verified claims; request/deployment-only rules do
+			// not distinguish one tenant's workload from another.
+			return condition != nil && strings.Contains(condition.Expression, "claims")
+		}) {
 		return nil
 	}
 
@@ -1137,6 +1250,14 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
+	clone.Conditions = make([]*authpb.TrustAdmissionCondition, len(t.Conditions))
+	for i, condition := range t.Conditions {
+		if condition != nil {
+			copy := *condition
+			clone.Conditions[i] = &copy
+		}
+	}
+	clone.compiledConditions = slices.Clone(t.compiledConditions)
 
 	return clone
 }
@@ -1155,32 +1276,35 @@ func (t TrustedIssuer) algorithms() []jwa.Algorithm {
 // The issuer already matched exactly, so what remains is everything specific to
 // this entry: its own algorithm allowlist, the audiences it accepts, the maximum
 // age it tolerates, and its claim rules.
-func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window lifetime, claims map[string]any, skew time.Duration) error {
+func (t TrustedIssuer) admits(ctx context.Context, alg jwa.Algorithm, audiences []string, window lifetime, claims map[string]any, subject string, skew time.Duration) ([]string, error) {
 	if !slices.Contains(t.algorithms(), alg) {
-		return fmt.Errorf("%w: %q", ErrDisallowedAlgorithm, truncate(alg, 32))
+		return nil, fmt.Errorf("%w: %q", ErrDisallowedAlgorithm, truncate(alg, 32))
 	}
 
 	if !slices.ContainsFunc(audiences, func(audience string) bool {
 		return slices.Contains(t.Audiences, audience)
 	}) {
-		return fmt.Errorf("%w: token is addressed to %q, want one of %v",
+		return nil, fmt.Errorf("%w: token is addressed to %q, want one of %v",
 			ErrInvalidAudience, truncate(strings.Join(audiences, ", "), maxClaimValueLength), t.Audiences)
 	}
 
 	if t.MaxTokenAge > 0 {
 		if age := window.age(skew); age > t.MaxTokenAge {
-			return fmt.Errorf("%w: token was issued %s ago, and this issuer allows at most %s",
+			return nil, fmt.Errorf("%w: token was issued %s ago, and this issuer allows at most %s",
 				ErrTokenExpired, age.Round(time.Second), t.MaxTokenAge)
 		}
 	}
 
 	for _, rule := range t.Require {
 		if err := rule.check(claims); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return t.evaluateAdmissionConditions(ctx, claims, &authpb.TrustAdmissionRequest{
+		Issuer: t.Issuer, Subject: subject, Audiences: slices.Clone(audiences),
+		IssuedAtUnix: window.issuedAt.Unix(), ExpiresAtUnix: window.expiresAt.Unix(),
+	})
 }
 
 // check reports whether a verified claims set satisfies this rule.

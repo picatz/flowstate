@@ -194,6 +194,9 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 	if err := policy.Validate(); err != nil {
 		return nil, err
 	}
+	if err := policy.compileAdmissionConditions(); err != nil {
+		return nil, err
+	}
 
 	cfg := config{
 		clock:        time.Now,
@@ -383,7 +386,8 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 
 	var failures []error
 	for _, entry := range candidates {
-		if err := entry.admits(alg, audiences, lifetime, claims, v.skew); err != nil {
+		ruleNames, err := entry.admits(ctx, alg, audiences, lifetime, claims, subject, v.skew)
+		if err != nil {
 			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.Name, err))
 			continue
 		}
@@ -398,15 +402,16 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		}
 
 		return Principal{
-			Issuer:     issuer,
-			IssuerName: entry.Name,
-			Subject:    subject,
-			Audience:   audiences,
-			Namespace:  namespace,
-			Role:       entry.Role,
-			IssuedAt:   lifetime.issuedAt,
-			ExpiresAt:  lifetime.expiresAt,
-			Claims:     claims,
+			Issuer:         issuer,
+			IssuerName:     entry.Name,
+			Subject:        subject,
+			Audience:       audiences,
+			Namespace:      namespace,
+			Role:           entry.Role,
+			IssuedAt:       lifetime.issuedAt,
+			ExpiresAt:      lifetime.expiresAt,
+			Claims:         claims,
+			AdmissionRules: ruleNames,
 		}, nil
 	}
 

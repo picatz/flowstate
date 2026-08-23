@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	authpb "github.com/picatz/flowstate/pkg/flowstate/auth/v1"
 )
 
 // mTLS composes with the rest of this package's trust policy rather than
@@ -139,6 +141,12 @@ var _ PeerVerifier = (*MTLSVerifier)(nil)
 //
 // policy is assumed already validated by [Policy.Validate].
 func NewMTLSVerifier(policy Policy) (*MTLSVerifier, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
+	if err := policy.compileAdmissionConditions(); err != nil {
+		return nil, err
+	}
 	var entries []mtlsEntry
 
 	for _, issuer := range policy.Issuers {
@@ -210,7 +218,8 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		// the way an OIDC rule reads a verified token claim.
 		claims := map[string]any{"subject": subject}
 
-		if err := entry.issuer.admitsPeer(claims); err != nil {
+		ruleNames, err := entry.issuer.admitsPeer(ctx, claims, subject)
+		if err != nil {
 			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.issuer.Name, err))
 			continue
 		}
@@ -227,6 +236,7 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		return Principal{
 			Issuer:                entry.issuer.Issuer,
 			IssuerName:            entry.issuer.Name,
+			AdmissionRules:        ruleNames,
 			Subject:               subject,
 			Namespace:             namespace,
 			Role:                  entry.issuer.Role,
@@ -256,13 +266,13 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 // audience, or max-token-age fields to check — [TrustedIssuer.validateMTLS]
 // refuses a policy that sets any of them — so this is the whole of what a
 // certificate must additionally satisfy beyond chaining to the entry's CA.
-func (t TrustedIssuer) admitsPeer(claims map[string]any) error {
+func (t TrustedIssuer) admitsPeer(ctx context.Context, claims map[string]any, subject string) ([]string, error) {
 	for _, rule := range t.Require {
 		if err := rule.check(claims); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return t.evaluateAdmissionConditions(ctx, claims, &authpb.TrustAdmissionRequest{Issuer: t.Issuer, Subject: subject})
 }
 
 // chainMatchesCA reports whether any certificate in any verified chain is one

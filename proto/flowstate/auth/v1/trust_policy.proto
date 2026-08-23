@@ -1,0 +1,20 @@
+syntax = "proto3";
+package flowstate.auth.v1;
+import "buf/validate/validate.proto";
+option go_package = "flowstateauthv1";
+message TrustAdmissionCondition {
+  string name = 1 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+  string expression = 2 [(buf.validate.field).string = {min_len: 1, max_bytes: 16384}];
+}
+message TrustAdmissionRequest {
+  string issuer = 1;
+  string subject = 2;
+  repeated string audiences = 3;
+  int64 issued_at_unix = 4;
+  int64 expires_at_unix = 5;
+}
+message TrustAdmissionDeployment {
+  string issuer_entry = 1;
+  string role = 2;
+  string namespace = 3;
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/cellimits"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -42,14 +43,14 @@ import (
 // wall-clock time or bytes. This budget is generous enough for the data shaping
 // real workflows do and small enough that a pathological expression fails fast
 // instead of exhausting the worker.
-const DefaultCostLimit uint64 = 1_000_000
+const DefaultCostLimit uint64 = cellimits.DefaultCostLimit
 
 // DefaultInterruptCheckFrequency is how many evaluation steps elapse between
 // context cancellation checks.
 //
 // Lower values cancel more promptly at the cost of checking more often. This
 // must be non-zero for context cancellation to take effect at all.
-const DefaultInterruptCheckFrequency uint = 256
+const DefaultInterruptCheckFrequency uint = cellimits.DefaultInterruptCheckFrequency
 
 // Limits bound a single CEL evaluation.
 //
