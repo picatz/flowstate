@@ -464,6 +464,9 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow breaking <path...>` | Report workflows whose declared inputs or outputs broke their contract against a git ref. `--against origin/main` compiles both sides and compares the compiled protos, so a shrunk interface fails while formatting churn does not. |
 | `flow lint <path...>` | Suggest the canonical spelling where a Flowfile is legal but not idiomatic: a conditional nested inside a conditional, one expression stated three or more times, sibling `if:` steps dispatching on one value where a `switch:` belongs. Each finding names the rule in [docs/STYLE.md](docs/STYLE.md) that decided it. Advice rather than refusal — it exits 0 on every finding, and `--strict` is the opt-in that makes one a failure. |
 | `flow audit <path...>` | Count the expressions a Flowfile states more than once, hand-negated pairs marked, every occurrence placed at a line. Written for whoever decides what the language grows rather than for the file's author: it is the evidence `value:` (#411) landed on, not a linter, and it exits 0 on every finding. |
+| `flow auth` | Explain or rehearse authorization decisions without authenticating a caller. |
+| `flow auth explain` | Combine bounded policy-set JSON offline with the production authorization combiner and print the decision trace. |
+| `flow auth rehearse` | Rehearse policy-set JSON offline through the same production authorization combiner. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. |
 | `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. |
 | `flow list` | List your runs. `--filter` narrows with CEL, e.g. `--filter 'status == "FAILED"'`; `--all` keeps paging past a short page. |

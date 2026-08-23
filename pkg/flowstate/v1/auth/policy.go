@@ -24,13 +24,14 @@ import (
 // configuration change an operator can review, rather than a change to a
 // provider-specific code path. Load one from a file with [ParsePolicy].
 type Policy struct {
-	// Issuers are the trusted issuer entries, in precedence order.
+	// Issuers are trusted issuer entries. Their order conveys no authority.
 	//
 	// Several entries may name the same issuer, which is how one platform
 	// grants different roles to different workloads: a GitHub Actions issuer
 	// can appear twice, once requiring repository "picatz/flowstate" with the
 	// role "deployer" and once requiring another repository with a lesser role.
-	// The first entry whose audience and claim rules a token satisfies wins.
+	// Exactly one entry must match a token. Multiple matches are rejected as an
+	// ambiguous identity mapping, so reordering this list cannot broaden access.
 	Issuers []TrustedIssuer `json:"issuers" yaml:"issuers"`
 
 	// Federation configures the other direction: the identity Flowstate presents

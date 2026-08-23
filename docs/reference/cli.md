@@ -79,6 +79,40 @@ flow audit -o json examples/ | jq '.totals'
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
+## `flow auth`
+
+Explain and rehearse authorization decisions
+
+```
+flow auth [command]
+```
+
+## `flow auth explain`
+
+Combine versioned policy sets offline using the production combiner
+
+```
+flow auth explain [flags]
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--policy-set <string,...>` | `stringArray` | — | — | policy-set JSON file (repeatable) |
+| `--request <string>` | `string` | — | — | authorization request JSON file (required; use - for stdin) |
+
+## `flow auth rehearse`
+
+Combine versioned policy sets offline using the production combiner
+
+```
+flow auth rehearse [flags]
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--policy-set <string,...>` | `stringArray` | — | — | policy-set JSON file (repeatable) |
+| `--request <string>` | `string` | — | — | authorization request JSON file (required; use - for stdin) |
+
 ## `flow breaking`
 
 Report workflows whose declared inputs or outputs broke a contract

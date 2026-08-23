@@ -382,6 +382,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 	}
 
 	var failures []error
+	var matches []Principal
 	for _, entry := range candidates {
 		if err := entry.admits(alg, audiences, lifetime, claims, v.skew); err != nil {
 			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.Name, err))
@@ -397,7 +398,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 			return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
 		}
 
-		return Principal{
+		matches = append(matches, Principal{
 			Issuer:     issuer,
 			IssuerName: entry.Name,
 			Subject:    subject,
@@ -407,7 +408,13 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 			IssuedAt:   lifetime.issuedAt,
 			ExpiresAt:  lifetime.expiresAt,
 			Claims:     claims,
-		}, nil
+		})
+	}
+	if len(matches) > 1 {
+		return Principal{}, fmt.Errorf("%w: token matches %d trusted issuer entries for %q", ErrAmbiguousIdentity, len(matches), issuer)
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
 	}
 
 	switch len(failures) {

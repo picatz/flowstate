@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "flowstate/v1/identity.proto";
+
+option go_package = "flowstatev1";
+
+// PolicyLayer is the fixed order in which authorization inputs are reported.
+// Grant-bearing layers union their allows. Boundary layers never grant: every
+// applicable boundary intersects (attenuates) the union of grants.
+enum PolicyLayer {
+  POLICY_LAYER_UNSPECIFIED = 0;
+  POLICY_LAYER_DEPLOYMENT_GUARDRAIL = 1;
+  POLICY_LAYER_TENANT_BOUNDARY = 2;
+  POLICY_LAYER_SERVING_SURFACE = 3;
+  POLICY_LAYER_PRINCIPAL_GRANT = 4;
+  POLICY_LAYER_RESOURCE_POLICY = 5;
+  POLICY_LAYER_DELEGATION_SESSION_BOUNDARY = 6;
+  POLICY_LAYER_WORKLOAD_BOUNDARY = 7;
+  POLICY_LAYER_COMPUTE_BOUNDARY = 8;
+  POLICY_LAYER_NETWORK_BOUNDARY = 9;
+  POLICY_LAYER_STORAGE_BOUNDARY = 10;
+  POLICY_LAYER_SECRET_BOUNDARY = 11;
+  POLICY_LAYER_PLUGIN_BOUNDARY = 12;
+}
+
+enum PolicyKind {
+  POLICY_KIND_UNSPECIFIED = 0;
+  // Grants union with every other applicable grant set.
+  POLICY_KIND_GRANT = 1;
+  // Boundaries intersect and cannot create authority by themselves.
+  POLICY_KIND_BOUNDARY = 2;
+}
+
+enum RuleEffect {
+  RULE_EFFECT_UNSPECIFIED = 0;
+  RULE_EFFECT_ALLOW = 1;
+  // An applicable explicit deny overrides every allow at every layer.
+  RULE_EFFECT_DENY = 2;
+}
+
+enum RuleEvaluation {
+  RULE_EVALUATION_UNSPECIFIED = 0;
+  RULE_EVALUATION_MATCH = 1;
+  RULE_EVALUATION_NO_MATCH = 2;
+  RULE_EVALUATION_CEL_COMPILE_ERROR = 3;
+  RULE_EVALUATION_CEL_EVALUATION_ERROR = 4;
+  RULE_EVALUATION_COST_EXHAUSTED = 5;
+  RULE_EVALUATION_CANCELLED = 6;
+  RULE_EVALUATION_MISSING_ATTRIBUTE = 7;
+  RULE_EVALUATION_RELATIONSHIP_FAILURE = 8;
+}
+
+// PolicySet is an immutable, versioned policy input to the production combiner.
+message PolicySet {
+  string id = 1;
+  string revision = 2;
+  string policy_version = 3;
+  PolicyLayer layer = 4;
+  PolicyKind kind = 5;
+  bool required = 6;
+  repeated PolicyRule rules = 7;
+}
+
+message PolicyRule {
+  string id = 1;
+  RuleEffect effect = 2;
+  // CEL is compiled and evaluated by the bounded evaluator before combination.
+  string condition = 3;
+  RuleEvaluation evaluation = 4;
+}
+
+message AuthorizationRequest {
+  string policy_version = 1;
+  WorkloadIdentity principal = 2;
+  repeated string groups = 3;
+  string action = 4;
+  string resource_type = 5;
+  string resource = 6;
+  map<string, string> attributes = 7;
+  repeated PolicyLayer required_layers = 8;
+}
+
+enum DecisionReason {
+  DECISION_REASON_UNSPECIFIED = 0;
+  DECISION_REASON_ALLOWED = 1;
+  DECISION_REASON_NO_EXPLICIT_ALLOW = 2;
+  DECISION_REASON_EXPLICIT_DENY = 3;
+  DECISION_REASON_BOUNDARY_DENIED = 4;
+  DECISION_REASON_MISSING_REQUIRED_POLICY = 5;
+  DECISION_REASON_UNKNOWN_ACTION = 6;
+  DECISION_REASON_UNKNOWN_RESOURCE_TYPE = 7;
+  DECISION_REASON_MISSING_REQUIRED_ATTRIBUTE = 8;
+  DECISION_REASON_POLICY_VERSION_MISMATCH = 9;
+  DECISION_REASON_CEL_COMPILE_ERROR = 10;
+  DECISION_REASON_CEL_EVALUATION_ERROR = 11;
+  DECISION_REASON_CANCELLED = 12;
+  DECISION_REASON_COST_EXHAUSTED = 13;
+  DECISION_REASON_RELATIONSHIP_RESOLUTION_FAILURE = 14;
+  DECISION_REASON_AMBIGUOUS_IDENTITY_MAPPING = 15;
+}
+
+message PolicyContribution {
+  string policy_id = 1;
+  string revision = 2;
+  string rule_id = 3;
+  PolicyLayer layer = 4;
+  RuleEffect effect = 5;
+}
+
+message LayerOutcome {
+  PolicyLayer layer = 1;
+  PolicyKind kind = 2;
+  bool applicable = 3;
+  bool allowed = 4;
+  repeated string policy_ids = 5;
+}
+
+// AuthorizationDecision is deliberately bounded by the combiner: at most 64
+// contributions and one outcome per known layer are returned.
+message AuthorizationDecision {
+  bool allowed = 1;
+  DecisionReason reason = 2;
+  repeated PolicyContribution contributions = 3;
+  repeated LayerOutcome layers = 4;
+}

@@ -75,9 +75,10 @@ var (
 	// not one surface's.
 	ErrDelegatedToken = errors.New("auth: token carries an unsupported delegation claim")
 
-	// ErrAmbiguousIdentity is returned when a request carries both a verified
-	// client certificate and a bearer token, and they name different
-	// principals. Per CLAUDE.md's "fail closed", this is a refusal rather than
+	// ErrAmbiguousIdentity is returned when several authentication mappings
+	// match (including multiple TrustedIssuer entries for one token), or when a
+	// request carries a verified client certificate and bearer token that name
+	// different principals. Per CLAUDE.md's "fail closed", this is a refusal rather than
 	// a precedence rule: neither "the token wins" nor "the certificate wins"
 	// is a safe default on a control plane that mints workload assertions from
 	// whichever identity it decides to trust.

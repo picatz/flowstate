@@ -98,19 +98,14 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 		want    auth.Principal
 	}{
 		{
-			name: "CI token from the main branch gets the privileged role",
+			name: "CI token matching privileged and broad mappings is refused as ambiguous",
 			token: func(t *testing.T) string {
 				claims := actions.Claims(authtest.WithSubject("repo:picatz/flowstate:ref:refs/heads/main"), authtest.WithAudience("flowstate"))
 				claims["repository"] = "picatz/flowstate"
 				claims["ref"] = "refs/heads/main"
 				return actions.MintToken(claims)
 			},
-			want: auth.Principal{
-				Issuer:     actions.URL(),
-				IssuerName: "ci-main",
-				Subject:    "repo:picatz/flowstate:ref:refs/heads/main",
-				Role:       "deployer",
-			},
+			wantErr: auth.ErrAmbiguousIdentity,
 		},
 		{
 			name: "CI token from another branch falls through to the lesser role",
@@ -155,10 +150,7 @@ func TestWorkloadIdentityFederation(t *testing.T) {
 				claims["ref"] = "refs/heads/main"
 				return actions.MintToken(claims)
 			},
-			// The narrow entry rejects it on age, the broader one has no age
-			// limit but does not require the ref, so it admits the caller as a
-			// reader. This is what entry ordering means, and why the age limit
-			// belongs on every entry that needs it.
+			// The narrow entry rejects it on age, so exactly one mapping remains.
 			want: auth.Principal{
 				Issuer:     actions.URL(),
 				IssuerName: "ci-branch",
