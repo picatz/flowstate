@@ -408,9 +408,10 @@ func TestFederationRoundTrip(t *testing.T) {
 		verified <- principal
 
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "partner-token-for-" + principal.Subject,
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "partner-token-for-" + principal.Subject,
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	}))
 	t.Cleanup(relyingParty.Close)

@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,6 +30,11 @@ const (
 	// clientAssertionTypeJWT identifies the assertion as an RFC 7523 client
 	// authentication assertion.
 	clientAssertionTypeJWT = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+
+	// maxTokenExchangeLifetime is the largest lifetime the strict profile will
+	// accept from an untrusted token endpoint. It bounds both integer-to-duration
+	// conversion and the authority retained by a cached response.
+	maxTokenExchangeLifetime = 24 * time.Hour
 )
 
 // DelegatorTokenFunc supplies the token of the party a workload is acting for,
@@ -51,10 +59,15 @@ type DelegatorTokenFunc func(ctx context.Context) (token Material, tokenType str
 
 // TokenExchangeConfig configures an RFC 8693 OAuth 2.0 Token Exchange.
 //
-// This is the standards-based path and the one to reach for first. Any
-// authorization server that implements RFC 8693 can accept a Flowstate assertion
-// and return a credential for a downstream service, with no Flowstate-specific
-// support and no shared secret.
+// This is the standards-based path and the one to reach for first. It implements
+// the Flowstate RFC 8693 profile v1, not unrestricted RFC 8693: JWT subject and
+// actor tokens; an access-token request and result; Bearer presentation; one
+// optional canonical resource or audience; and an exact scope grant. The profile
+// rejects ID tokens, JWT assertions as results, sender-constrained tokens,
+// response extensions (including authorization_details and cnf), repeated target
+// parameters, transformed grants, may_act, and impersonation. Delegation requires
+// AllowDelegation and remains uncached. This deliberately small subset is one
+// Flowstate can represent and validate without discarding authority semantics.
 //
 // # Delegation
 //
@@ -116,6 +129,11 @@ type TokenExchangeConfig struct {
 	// access token.
 	RequestedTokenType string
 
+	// AllowDelegation is the explicit policy decision required before Delegator
+	// may be used. Impersonation (another party's subject token without an actor)
+	// is not supported by this profile.
+	AllowDelegation bool
+
 	// Delegator, when set, makes this a delegated exchange rather than a plain
 	// one. See [DelegatorTokenFunc], and [TokenExchangeConfig]'s own comment
 	// for which token ends up in which parameter.
@@ -160,10 +178,23 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 	if cfg.Audience == "" {
 		return nil, fmt.Errorf("%w: %s exchanger needs the audience the authorization server expects", ErrInvalidPolicy, name)
 	}
+	if cfg.Delegator != nil && !cfg.AllowDelegation {
+		return nil, fmt.Errorf("%w: %s exchanger delegation requires allow_delegation policy", ErrInvalidPolicy, name)
+	}
+	if cfg.AllowDelegation && cfg.Delegator == nil {
+		return nil, fmt.Errorf("%w: %s exchanger allows delegation but has no delegator", ErrInvalidPolicy, name)
+	}
 
 	tokenType := cfg.RequestedTokenType
 	if tokenType == "" {
 		tokenType = tokenTypeAccessToken
+	}
+	if tokenType != tokenTypeAccessToken {
+		return nil, fmt.Errorf("%w: %s exchanger requested token type %q is outside the supported RFC 8693 profile",
+			ErrInvalidPolicy, name, truncate(tokenType, 96))
+	}
+	if err := validateExchangeRequest(cfg); err != nil {
+		return nil, fmt.Errorf("%w: %s exchanger: %v", ErrInvalidPolicy, name, err)
 	}
 
 	clock := cfg.Clock
@@ -236,12 +267,124 @@ func (e *tokenExchanger) Exchange(ctx context.Context, assertion Assertion) (Cre
 		return Credential{}, err
 	}
 
-	var response tokenResponse
-	if err := decodeJSON(e.name, raw, &response); err != nil {
+	response, err := decodeTokenExchangeResponse(e.name, raw, e.tokenType, e.scopes)
+	if err != nil {
 		return Credential{}, err
 	}
 
-	return response.credential(e.name, e.name, assertion, e.clock(), DefaultCredentialLifetime)
+	return response.credential(e.name, e.name, assertion, e.clock(), 0)
+}
+
+// tokenExchangeResponse is deliberately not tokenResponse. RFC 8693 success
+// responses have stronger requirements than the other OAuth grants supported
+// by this package, and sharing the permissive decoder made absent fields and
+// transformed grants indistinguishable from valid answers.
+type tokenExchangeResponse struct {
+	AccessToken     string `json:"access_token"`
+	IssuedTokenType string `json:"issued_token_type"`
+	TokenType       string `json:"token_type"`
+	ExpiresIn       int64  `json:"expires_in"`
+	Scope           string `json:"scope,omitempty"`
+}
+
+func decodeTokenExchangeResponse(provider string, raw []byte, requestedType string, requestedScopes []string) (tokenResponse, error) {
+	var response tokenExchangeResponse
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields() // unsupported extensions must not silently shape authority
+	if err := decoder.Decode(&response); err != nil {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned an invalid RFC 8693 response: %v", ErrExchangeFailed, provider, err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned an invalid RFC 8693 response: %v", ErrExchangeFailed, provider, err)
+	}
+	if response.AccessToken == "" || response.TokenType == "" || response.IssuedTokenType == "" {
+		return tokenResponse{}, fmt.Errorf("%w: %s RFC 8693 response omitted access_token, token_type, or issued_token_type", ErrExchangeFailed, provider)
+	}
+	if response.IssuedTokenType != requestedType || response.IssuedTokenType != tokenTypeAccessToken {
+		return tokenResponse{}, fmt.Errorf("%w: %s issued token type %q does not match requested type %q", ErrExchangeFailed, provider, truncate(response.IssuedTokenType, 96), requestedType)
+	}
+	if !strings.EqualFold(response.TokenType, "Bearer") {
+		return tokenResponse{}, fmt.Errorf("%w: %s issued a %q or sender-constrained token, which cannot be represented as CredentialBearer", ErrExchangeFailed, provider, truncate(response.TokenType, 32))
+	}
+	if response.ExpiresIn <= 0 || response.ExpiresIn > int64(maxTokenExchangeLifetime/time.Second) {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned expires_in outside (0,%d]", ErrExchangeFailed, provider, int64(maxTokenExchangeLifetime/time.Second))
+	}
+	granted, err := canonicalScopes(response.Scope)
+	if err != nil {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
+	}
+	wanted, err := canonicalScopeList(requestedScopes)
+	if err != nil { // constructor already checked this; keep the boundary closed.
+		return tokenResponse{}, fmt.Errorf("%w: %s has invalid requested scope: %v", ErrExchangeFailed, provider, err)
+	}
+	if response.Scope == "" {
+		granted = wanted // RFC 6749: omission means the requested scope was granted.
+	}
+	if strings.Join(granted, " ") != strings.Join(wanted, " ") {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned a partial, transformed, or overbroad scope grant", ErrExchangeFailed, provider)
+	}
+	return tokenResponse{AccessToken: response.AccessToken, IssuedTokenType: response.IssuedTokenType,
+		TokenType: "Bearer", ExpiresIn: response.ExpiresIn, Scope: strings.Join(granted, " ")}, nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func validateExchangeRequest(cfg TokenExchangeConfig) error {
+	if _, err := canonicalScopeList(cfg.Scopes); err != nil {
+		return fmt.Errorf("invalid scopes: %v", err)
+	}
+	if cfg.TargetAudience != "" && !canonicalOpaqueValue(cfg.TargetAudience) {
+		return fmt.Errorf("invalid target audience")
+	}
+	if cfg.Resource != "" {
+		u, err := url.ParseRequestURI(cfg.Resource)
+		if err != nil || !u.IsAbs() || u.String() != cfg.Resource {
+			return fmt.Errorf("resource must be a canonical absolute URI")
+		}
+	}
+	return nil
+}
+
+func canonicalScopes(scope string) ([]string, error) {
+	if scope == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(scope) != scope || strings.Contains(scope, "  ") {
+		return nil, fmt.Errorf("scope is not canonical")
+	}
+	return canonicalScopeList(strings.Split(scope, " "))
+}
+
+func canonicalScopeList(scopes []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if scope == "" {
+			return nil, fmt.Errorf("empty scope")
+		}
+		for _, c := range []byte(scope) {
+			if c != 0x21 && (c < 0x23 || c > 0x5b) && (c < 0x5d || c > 0x7e) {
+				return nil, fmt.Errorf("scope contains a disallowed byte")
+			}
+		}
+		if _, ok := seen[scope]; ok {
+			return nil, fmt.Errorf("duplicate scope %q", truncate(scope, 32))
+		}
+		seen[scope] = struct{}{}
+	}
+	return append([]string(nil), scopes...), nil
+}
+
+func canonicalOpaqueValue(value string) bool {
+	return value == strings.TrimSpace(value) && value != "" && !strings.ContainsAny(value, "\x00\r\n\t")
 }
 
 // delegate rewrites form into RFC 8693's delegation shape: the delegator's
@@ -267,6 +410,10 @@ func (e *tokenExchanger) delegate(ctx context.Context, form url.Values, assertio
 
 	if tokenType == "" {
 		tokenType = tokenTypeJWT
+	}
+	if tokenType != tokenTypeJWT {
+		return fmt.Errorf("%w: %s: delegator token type %q is outside the supported RFC 8693 profile",
+			ErrExchangeFailed, e.name, truncate(tokenType, 96))
 	}
 
 	form.Set("subject_token", delegatorToken)

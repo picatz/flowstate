@@ -129,9 +129,10 @@ func TestOutboundValuesNeverLogSecrets(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "super-secret-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "super-secret-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
@@ -266,9 +267,10 @@ func TestFederationHTTPClientIsUsed(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "downstream-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 

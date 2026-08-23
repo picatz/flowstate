@@ -211,8 +211,9 @@ func TestTokenExchangerRejects(t *testing.T) {
 			name: "a token that is not a bearer token",
 			respond: func(t *testing.T, w http.ResponseWriter) {
 				writeJSON(t, w, http.StatusOK, map[string]any{
-					"access_token": "not-a-bearer",
-					"token_type":   "mac",
+					"access_token":      "not-a-bearer",
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+					"token_type":        "mac",
 				})
 			},
 			wantDetail: "mac",
@@ -278,6 +279,70 @@ func TestTokenExchangerRejects(t *testing.T) {
 	})
 }
 
+// TestTokenExchangeStrictProfileVectors pins the fail-closed boundary between
+// RFC 8693's extensible protocol and the smaller authority model Flowstate can
+// faithfully turn into CredentialBearer.
+func TestTokenExchangeStrictProfileVectors(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	base := map[string]any{
+		"access_token":      "downstream-token",
+		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"token_type":        "Bearer",
+		"expires_in":        300,
+		"scope":             "read",
+	}
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"missing issued token type", func(v map[string]any) { delete(v, "issued_token_type") }},
+		{"id token result", func(v map[string]any) { v["issued_token_type"] = "urn:ietf:params:oauth:token-type:id_token" }},
+		{"jwt assertion result", func(v map[string]any) { v["issued_token_type"] = "urn:ietf:params:oauth:token-type:jwt" }},
+		{"zero lifetime", func(v map[string]any) { v["expires_in"] = 0 }},
+		{"unbounded lifetime", func(v map[string]any) { v["expires_in"] = 86401 }},
+		{"malformed scope", func(v map[string]any) { v["scope"] = "read  write" }},
+		{"overbroad scope", func(v map[string]any) { v["scope"] = "read write" }},
+		{"proof downgrade", func(v map[string]any) { v["token_type"] = "DPoP" }},
+		{"confirmation extension", func(v map[string]any) { v["cnf"] = map[string]any{"jkt": "thumbprint"} }},
+		{"authorization details extension", func(v map[string]any) { v["authorization_details"] = []any{} }},
+		{"unknown extension", func(v map[string]any) { v["vendor_grant"] = "changed" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := make(map[string]any, len(base))
+			for key, value := range base {
+				response[key] = value
+			}
+			test.mutate(response)
+			party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+				writeJSON(t, w, http.StatusOK, response)
+			})
+			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+				TokenURL: party.url + "/token", Audience: "https://as.example.com",
+				Scopes: []string{"read"}, Clock: clock.Now,
+			})
+			require.NoError(t, err)
+			credential, err := exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+			require.ErrorIs(t, err, auth.ErrExchangeFailed)
+			require.True(t, credential.IsZero())
+		})
+	}
+
+	for _, tokenType := range []string{
+		"urn:ietf:params:oauth:token-type:id_token",
+		"urn:ietf:params:oauth:token-type:jwt",
+		"urn:example:token-type:unknown",
+	} {
+		_, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+			TokenURL: "https://as.example.com/token", Audience: "https://as.example.com",
+			RequestedTokenType: tokenType,
+		})
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	}
+}
+
 // TestClientCredentialsExchanger covers the client credentials grant, both
 // secretless and with a secret.
 func TestClientCredentialsExchanger(t *testing.T) {
@@ -286,9 +351,10 @@ func TestClientCredentialsExchanger(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "service-token",
-			"token_type":   "Bearer",
-			"expires_in":   1800,
+			"access_token":      "service-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        1800,
 		})
 	})
 
@@ -555,9 +621,10 @@ func TestGCPExchanger(t *testing.T) {
 			switch {
 			case r.URL.Path == "/v1/token":
 				writeJSON(t, w, http.StatusOK, map[string]any{
-					"access_token": "federated-token",
-					"token_type":   "Bearer",
-					"expires_in":   3600,
+					"access_token":      "federated-token",
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+					"token_type":        "Bearer",
+					"expires_in":        3600,
 				})
 			default:
 				// The IAM Credentials API authenticates with the federated token,
@@ -651,9 +718,10 @@ func TestCredentialNeverRevealsItself(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "super-secret-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "super-secret-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
