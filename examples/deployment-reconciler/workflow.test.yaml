@@ -34,6 +34,16 @@ defaults:
   stubs:
     - task: log
       returns: {}
+  # The controller the workflow's `signals:` policy admits by default. `flow
+  # test` checks a scripted signal's sender against that policy through the
+  # same check `FlowstateServer.Signal` runs, so every spec change below is
+  # admitted because the policy admits this sender — and the imposter case is
+  # refused for the reason production would refuse them.
+  sender:
+    subject: deploy-controller
+    issuer: https://issuer.example.com
+    claims:
+      team: platform-controllers
 
 tests:
   - name: drift nobody announced is found by the resync interval and corrected
@@ -286,6 +296,44 @@ tests:
         passes_that_acted: 1
         final_desired_replicas: 5
         final_observed_replicas: 2
+
+  # The negative direction of the `signals:` gate, which is the direction a
+  # functionality test cannot cover: not "the controller can scale" but "an
+  # authenticated caller who is not the controller cannot". The sender below
+  # carries the right claims and the wrong subject — an insider, not a
+  # stranger — and is refused by the server-side check before this run hears
+  # anything: the run never wakes early, observes a converged workload on the
+  # resync lapse, and there is no `converge` stub at all, so a write reaching
+  # the world fails loudly naming the step rather than quietly scaling to 9.
+  - name: an authenticated caller that is not the controller cannot scale the workload
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    signals:
+      - name: spec-changed
+        at: 0s
+        payload:
+          desired_replicas: 9
+        sender:
+          subject: nosy-teammate
+          issuer: https://issuer.example.com
+          claims:
+            team: platform-controllers
+    stubs:
+      - step: observed
+        returns:
+          replicas: 5
+          retired: false
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        wakeups: 1
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
 
   # The value the run publishes when the adoption happens on the very pass that
   # ends the run. `until:` holding skips `update:`, so the carried state never

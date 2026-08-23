@@ -140,6 +140,34 @@ inputs:
     # the unbounded mode this input exists alongside rather than a bigger number
     # here.
     must: this >= 0 && this <= 100
+
+  # Who may rewrite this run's desired state, since the spec store the header
+  # describes is only as trustworthy as the gate on its write channel. An input
+  # because *which* controller differs per deployment; that it must be a
+  # platform controller does not, and that half is written literally into
+  # `signals:` below where no caller can reach it — the same narrowing-only
+  # split `approval-gate` argues at length. Issuer-qualified, never a bare
+  # name, for the reason the approval examples give: a second identity
+  # provider could mint the same local part for somebody else entirely.
+  spec_controller:
+    type: string
+    default: https://issuer.example.com#deploy-controller
+    description: the issuer-qualified subject allowed to send spec-changed; every other sender is refused at the server before this run hears anything
+# Without this block the server treats `spec-changed` as unconstrained — an
+# absent policy admits any authenticated caller — and an unconstrained write
+# channel to the spec store means anyone who can address the run can scale the
+# workload. The rule pairs the interpolated subject above with a literal
+# `claims:` constraint, checked against the sender the server attested, before
+# Temporal ever sees the delivery. The conformance harnesses bypass this gate
+# by design (they compare engines given an already-authorized sender); the
+# `workflow.test.yaml` beside this file goes through the same check the server
+# runs, which is where the refusal case lives.
+signals:
+  spec-changed:
+    allow:
+      - subject: ${inputs.spec_controller}
+        claims:
+          team: platform-controllers
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.
