@@ -220,9 +220,21 @@ func NewOIDCVerifier(policy Policy, opts ...Option) (*OIDCVerifier, error) {
 	}
 
 	for _, entry := range policy.Issuers {
-		// A kind: mtls issuer is an operator-chosen label, not an OIDC URL. It is
-		// consumed only by PeerVerifier and must never become a discovery target
-		// or a bearer-token trust entry here.
+		// A kind: mtls entry's Issuer is an operator-chosen label naming a
+		// trusted CA, not an OIDC issuer URL: [TrustedIssuer.validateMTLS] asks
+		// only that it be non-empty. Indexing one here would make that label
+		// both a bearer-token trust entry and a key-set to fetch, so
+		// [OIDCVerifier.Prime] would request discovery and JWKS from whatever a
+		// label that happens to parse as a URL points at, and fail outright on
+		// one that does not — a deployment mixing kind: mtls with Prime cannot
+		// start. Certificate entries are consumed by [NewMTLSVerifier], which
+		// makes the mirror-image test at mtls.go over the same policy.
+		//
+		// The test is "not OIDC" rather than "is mTLS" deliberately. A kind
+		// added to the schema later is then excluded from bearer verification
+		// until someone decides it belongs here, rather than silently inheriting
+		// discovery and trust from a filter that only knew how to name one
+		// exception.
 		if entry.kind() != IssuerKindOIDC {
 			continue
 		}
