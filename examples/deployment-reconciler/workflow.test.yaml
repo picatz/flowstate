@@ -1,0 +1,662 @@
+# A control plane, scripted. Every case stubs `observed` with an answer keyed on
+# `goal.passes` — the pass counter the loop carries — so the world can report one
+# thing on the first pass and something else after this reconciler has written to
+# it. That keying is the whole trick, and it is available because a stub's
+# `where:` is evaluated in the scope of the step it replaces, which inside a loop
+# body includes the loop's own bare binding.
+#
+# Note what the stubs answer with: `replicas` *and* `retired`. Retirement is a
+# fact about the workload, read from the control plane every pass, not something
+# a signal payload carries — see the workflow's own `retiring` step for why that
+# ordering is what makes a queued signal harmless.
+#
+# What these cases hold the file to:
+#
+#   * convergence is decided by what was observed, not by what a signal said —
+#     the first case sends no signal at all and still corrects drift;
+#   * a spec change mid-interval is picked up on the following pass, from the
+#     observed side, and the written value is the new desired count;
+#   * a converged workload is never written to;
+#   * a workload the control plane reports as retired is never written to, even
+#     when it is drifted and even when a spec change is sitting in the queue —
+#     the FIFO case, and the reason retirement is observed rather than delivered;
+#   * an out-of-range or wrong-type replica count carried by a signal is ignored
+#     rather than adopted or allowed to crash the run.
+#
+# The waits are 30s each and the whole file runs in milliseconds: `flow test`
+# runs on a virtual clock, so the resync intervals cost nothing and the signals
+# below arrive at real offsets within them.
+edition: v2026.3
+
+# `log` answers with nothing, for every case: the opening line is for a person
+# reading the run and no assertion here is about it.
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+  # The controller the workflow's `signals:` policy admits by default. `flow
+  # test` checks a scripted signal's sender against that policy through the
+  # same check `FlowstateServer.Signal` runs, so every spec change below is
+  # admitted because the policy admits this sender — and the imposter case is
+  # refused for the reason production would refuse them.
+  sender:
+    subject: deploy-controller
+    issuer: https://issuer.example.com
+    claims:
+      team: platform-controllers
+
+tests:
+  - name: drift nobody announced is found by the resync interval and corrected
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    # No signals whatsoever. Every pass here is driven by the resync interval
+    # lapsing and by what the control plane reported — which is the
+    # level-triggered claim, stated as a run.
+    stubs:
+      # Pass 0: two replicas where five are wanted. Nobody announced this — a
+      # node was lost, or somebody scaled by hand.
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: 2
+          retired: false
+      # Pass 1: the cluster now reports what this reconciler last asked for.
+      - step: observed
+        where: goal.passes == 1
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      # Pass 2: the workload has been retired, which is what ends the run.
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 3
+        wakeups: 3
+        # Exactly one wrote. The second observed a converged workload and the
+        # third found it retired.
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a spec change raises the desired count and the next pass converges on it
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # Inside the first resync interval: the run is asleep on a 30s timer and
+      # the announcement wakes it early. What the payload carries is the new
+      # desired state — which the same pass still checks against the world
+      # rather than acting on directly.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 7
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: 5
+          retired: false
+      - step: observed
+        where: goal.passes == 1
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      # Pinned to the count this case is about: a `converge` that posted the
+      # stale 5 would match no stub at all and fail the case by name, rather
+      # than passing because some write happened.
+      - step: converge
+        where: inputs.json.replicas == 7
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 3
+        wakeups: 3
+        passes_that_acted: 1
+        final_desired_replicas: 7
+        final_observed_replicas: 7
+
+  - name: a workload that already matches its spec is never written to
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 3
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      # Declared and deliberately never matched: if `converge` ever ran here,
+      # `passes_that_acted` would say 1. The stub is here so that a run which did
+      # reach it fails on the assertion rather than on a missing stub, which is a
+      # much less legible way to be told the same thing.
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 2
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 3
+        final_observed_replicas: 3
+
+  - name: a retired workload is never scaled, even drifted and with a spec change queued
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    # The ordering case, and the reason retirement is read from the world rather
+    # than from a payload. A `wait_for_signal:` consumes exactly one delivery,
+    # oldest first, so a run suspended while a spec change *and* a retirement were
+    # both sent would consume the spec change and see no retirement in it. Here
+    # that spec change is queued and consumed by the only pass — and the pass
+    # still does not scale, because the control plane says the workload is
+    # retired. Against a file that read retirement from the payload this workload
+    # (2 replicas against a desired 9) would have been scaled on its way out.
+    signals:
+      - name: spec-changed
+        at: 0s
+        payload:
+          desired_replicas: 9
+    stubs:
+      - step: observed
+        returns:
+          replicas: 2
+          retired: true
+      # No `converge` stub at all: reaching it is the bug, and with no stub a run
+      # that got there fails loudly rather than quietly scaling a retired
+      # workload.
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        wakeups: 1
+        passes_that_acted: 0
+        # The queued spec change was consumed but never adopted: a retiring pass
+        # does not take a new desired count.
+        final_desired_replicas: 5
+        final_observed_replicas: 2
+
+  - name: an out-of-range replica count carried by a signal is ignored, not POSTed
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # Zero is outside the (0, 100] range the input constraint enforces, and a
+      # signal is an untrusted input the constraint never saw. Adopting it would
+      # carry 0 into the next pass and POST a scale-to-zero; instead the current
+      # count is kept and nothing drifts.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 0
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 2
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a wrong-type replica count carried by a signal is ignored without crashing
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # A string where a number belongs. Comparing it with `> 0` would fail
+      # expression evaluation and terminate the reconciler; the
+      # `type(...) == type(0)` guard short-circuits before the comparison, so the
+      # value is ignored and the run carries on.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: seven
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 2
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a bounded watch ends on its own pass budget with no signal at all
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # What `inputs.json` runs, and what both corpus harnesses therefore exercise:
+    # one reconcile pass, ended by the budget rather than by a retirement.
+    stubs:
+      - step: observed
+        returns:
+          replicas: 2
+          retired: false
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        wakeups: 1
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 2
+
+  # The negative direction of the `signals:` gate, which is the direction a
+  # functionality test cannot cover: not "the controller can scale" but "an
+  # authenticated caller who is not the controller cannot". The sender below
+  # carries the right claims and the wrong subject — an insider, not a
+  # stranger — and is refused by the server-side check before this run hears
+  # anything: the run never wakes early, observes a converged workload on the
+  # resync lapse, and there is no `converge` stub at all, so a write reaching
+  # the world fails loudly naming the step rather than quietly scaling to 9.
+  - name: an authenticated caller that is not the controller cannot scale the workload
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    signals:
+      - name: spec-changed
+        at: 0s
+        payload:
+          desired_replicas: 9
+        sender:
+          subject: nosy-teammate
+          issuer: https://issuer.example.com
+          claims:
+            team: platform-controllers
+    stubs:
+      - step: observed
+        returns:
+          replicas: 5
+          retired: false
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        wakeups: 1
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  # The value the run publishes when the adoption happens on the very pass that
+  # ends the run. `until:` holding skips `update:`, so the carried state never
+  # learns the new count — the output has to read the stopping iteration's own
+  # `next_desired`, and this case is what fails if it reads the carried state
+  # instead: the run would report 5 for a workload it just scaled to 7.
+  - name: a spec change adopted on the final pass is the count the run reports
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    signals:
+      - name: spec-changed
+        at: 0s
+        payload:
+          desired_replicas: 7
+    stubs:
+      - step: observed
+        returns:
+          replicas: 5
+          retired: false
+      - step: converge
+        where: inputs.json.replicas == 7
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        wakeups: 1
+        passes_that_acted: 1
+        final_desired_replicas: 7
+        final_observed_replicas: 5
+
+  - name: a replica count outside the allowed range is refused before anything runs
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 0
+    expect:
+      failed: true
+      error_contains: "must satisfy"
+
+  - name: a spec change sent from the CLI arrives as a double and is still adopted
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # What the documented command line actually delivers: the CLI decodes the
+      # payload with encoding/json, so a JSON number becomes a float64 and
+      # reaches the workflow as a CEL double. An exact-int guard would silently
+      # ignore every ordinary spec change sent that way and leave the reconciler
+      # on its stale count.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 7.0
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: 5
+          retired: false
+      - step: observed
+        where: goal.passes == 1
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        # Pinned to 7 as well: the point of this case is that a double-shaped
+        # payload is adopted, which is only proved if the 7 reaches the write.
+        where: inputs.json.replicas == 7
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 3
+        wakeups: 3
+        passes_that_acted: 1
+        # Adopted, and carried as an int rather than as 7.0.
+        final_desired_replicas: 7
+        final_observed_replicas: 7
+
+  - name: a fractional replica count carried by a signal is ignored
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # A count is a count: 7.5 is not a smaller number of replicas, it is a
+      # wrong answer, and adopting it would carry a fraction into the next scale
+      # request.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 7.5
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 2
+        wakeups: 2
+        passes_that_acted: 0
+        # Unchanged: the fraction was refused, so the reconciler is still
+        # responsible for 5.
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: an absurd replica count is refused by the range check, not by an overflow
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # 1e100 is a number, and in range terms it is very much not one. The guard
+      # checks the range *before* converting with int(), so this is refused by a
+      # comparison rather than terminating the run on an integer overflow inside
+      # the conversion.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 1e100
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 2
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a malformed status reading makes the pass wait rather than end the run
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    stubs:
+      # The control plane answers with a string where a boolean belongs. The run
+      # must not end here: a garbled answer is a reason to look again, not a
+      # reason to stop watching. So this pass decides nothing - it does not
+      # retire and it does not write - and the next resync reads again.
+      # Keyed on `wakeups`, not `passes`: an unreadable pass deliberately does
+      # not advance the reconcile counter, so a stub keyed on `passes == 0` would
+      # answer unreadably forever.
+      - step: observed
+        where: goal.wakeups == 0
+        returns:
+          replicas: 2
+          retired: "false"
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      # No converge stub: a pass that could not read the world must never write
+      # to it, so reaching the scale request fails the case loudly.
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # One reconcile pass, two wakes: the unreadable trip does not count as a
+        # reconcile, which is what keeps a bounded watch honest - a
+        # `max_passes: 1` run cannot report success having never understood an
+        # answer.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a bounded one-pass run does not spend its budget on a reading it could not use
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # The case that decides what `max_passes` promises. The first wake reads a
+    # control plane answering nonsense; if that spent the budget, this run would
+    # finish SUCCESSFULLY having reconciled nothing - a scheduled reconcile
+    # reporting success on an answer it never understood. Instead the unreadable
+    # trip does not count, the next wake reads properly, corrects the drift, and
+    # *that* pass ends the run.
+    stubs:
+      - step: observed
+        where: goal.wakeups == 0
+        returns:
+          replicas: 2
+          retired: "not-a-bool"
+      - step: observed
+        returns:
+          replicas: 2
+          retired: false
+      - step: converge
+        where: inputs.json.replicas == 5
+        returns:
+          status: 200
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # Exactly the one reconcile the caller asked for, out of two wakes.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 2
+
+  - name: a 2xx carrying unparseable json is an unreadable pass, not the end of the run
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # A `response:` stub rather than `returns:`, so the http task's own
+    # `parse_json:` and `outputs:` shaping run for real against this body (#925).
+    # That is the only way to reach this failure: it happens *below* every guard
+    # the outputs carry - `parse_json` rejects the body before an `outputs:`
+    # expression is evaluated at all, and does so permanently, so the step's own
+    # retries cannot help either.
+    stubs:
+      # A proxy's error page with a 200 on it, which is the shape that bites in
+      # production. Tolerated, so it becomes an unreadable pass.
+      - step: observed
+        where: goal.wakeups == 0
+        response:
+          status_code: 200
+          body: "<html>gateway timeout</html>"
+      # The control plane recovers, and this pass is the one that reconciles.
+      - step: observed
+        response:
+          status_code: 200
+          body:
+            replicas: 2
+            retired: false
+      - step: converge
+        where: inputs.json.replicas == 5
+        response:
+          status_code: 204
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # The unparseable trip did not spend the budget, and did not write.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 2
+
+  - name: a body that is not an object at all is an unreadable pass
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # The root-guard case, which used to be unreachable: a stub supplied shaped
+    # outputs, so the `outputs:` expressions never ran. With `response:` (#925)
+    # they run for real, and this is what `[]` does to
+    # `type(response.json) == type({})` - answers false rather than erroring, so
+    # the substituted values make the pass unreadable instead of failing it.
+    stubs:
+      - step: observed
+        where: goal.wakeups == 0
+        response:
+          status_code: 200
+          body: []
+      - step: observed
+        response:
+          status_code: 200
+          body:
+            replicas: 5
+            retired: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # One readable pass - the retirement - and the `[]` trip spent nothing.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a pass budget that could reach the loop ceiling is refused
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1000
+    # The boundary this cap exists for. `max_iterations` is 1000, and an
+    # unreadable wakeup spends an iteration without spending a pass - so a
+    # request for 1000 passes could only be met if every single wakeup was
+    # readable, and one garbled answer would end the run at the ceiling having
+    # made 999. Refusing the request keeps "an unreadable pass spends nothing"
+    # true for every budget this workflow accepts, rather than true up to a
+    # boundary nobody would find until it mattered.
+    expect:
+      failed: true
+      error_contains: "must satisfy"

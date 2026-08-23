@@ -167,6 +167,29 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// deployment-reconciler is kept finite by its own `max_passes` (1, in that
+	// example's `inputs.json`) rather than by this payload, and that division is
+	// deliberate. The example consumes a retirement in the *first* step of its
+	// loop body, before it observes or writes anything — which is the whole
+	// point of that ordering, since a retirement buffered across a
+	// Continue-As-New must not produce one last scale. So a `retired: true` here
+	// would end the run having exercised no read and no write, and the
+	// cross-driver comparison this harness exists for would be comparing two
+	// runs that did nothing.
+	//
+	// A spec change instead: it is consumed by the same wait, wakes the pass
+	// immediately (so the run does not sit out a resync interval on either
+	// driver), and leaves the pass reconciling — the stand-in reports fewer
+	// replicas than this asks for, so `observed`, `drift` and `converge` all run
+	// and both drivers are held to the same answer. The retirement path is the
+	// subject of that example's own `workflow.test.yaml`, where a virtual clock
+	// can place a signal before the first pass and assert nothing was scaled.
+	"deployment-reconciler": {
+		"spec-changed": {NamedValues: map[string]*v1.Value{
+			"desired_replicas": v1.NewLiteral(7),
+		}},
+	},
+
 	// enterprise-access-review's `attestation` gate checks the attested sender
 	// against `inputs.expected_reviewer` — this harness's fixed simulated
 	// identity ("examples"/"flowstate:test") never matches the
