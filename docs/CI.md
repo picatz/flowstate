@@ -37,6 +37,38 @@ off disk — #589).
 CI now asks that same code the same question, with `go run ./tools/gate -ci`,
 and skips the jobs the answer excludes.
 
+#### When there is no merge-base
+
+The one input that computation needs is a merge-base, and the environments this
+gate most needs to run in are the ones least likely to have one. A clone made
+with `--single-branch` has no `origin/main` ref; one made with `--depth` has the
+ref and none of the history it shares with the branch under review. The gate
+used to exit with an error naming the fix — `git fetch origin main` — which is
+correct advice and not something a CI job or an agent working in a supplied
+checkout is in a position to act on. Seven pull requests in one wave reported
+that refusal, and all seven were opened with nothing verified.
+
+So `resolveBase` repairs what it can, cheapest first: use the ref, else fetch
+the branch, else deepen a shallow clone. Each step is reached only because the
+one before it produced no merge-base, so a normal checkout pays for one
+`git merge-base` and nothing else.
+
+When none of that works — no network, no remote — the gate runs anyway, with
+every tracked file treated as changed. That answer goes through `buildPlan` like
+any other, which sets `moduleWide` and `ciWide` and selects every conditional
+leg, so the widest plan is reached by the one computation rather than by a
+second code path meaning "everything". Wide and slow beats narrow and wrong:
+overrunning the true scope costs time, while underrunning it passes commits the
+checks reject. It is the same reasoning that makes the merge queue ignore the
+plan entirely.
+
+`ciForceReason` carries that as its fourth forcing, beside the event, the
+harness and the module — because "must this ignore the diff" is one question and
+docs/CI.md's whole argument is that it has one answer. It is there for the
+*reason* rather than the scope: the whole tree would force a wide run through
+`ciWide` regardless, and a run told it is wide because the workflows changed
+sends a reader looking for a workflow diff that does not exist.
+
 | tier | scope | what decides it |
 |---|---|---|
 | `go run ./tools/gate` | local, before a push | the diff |

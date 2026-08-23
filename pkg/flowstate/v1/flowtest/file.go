@@ -1506,10 +1506,7 @@ func mergeDefaults(d *Defaults, test Test) Test {
 // WorkflowPath resolves a test's `workflow:` relative to the *.test.yaml file
 // that declared it.
 func WorkflowPath(testFile string, test *Test) string {
-	if filepath.IsAbs(test.Workflow) {
-		return test.Workflow
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Workflow)
+	return workflowPathIn(filepath.Dir(testFile), test)
 }
 
 // DeliveryPath resolves a trigger case's `payload:` the same way [WorkflowPath]
@@ -1518,11 +1515,5 @@ func WorkflowPath(testFile string, test *Test) string {
 //
 // Empty for a case that replays nothing.
 func DeliveryPath(testFile string, test *Test) string {
-	if test.Trigger == nil || test.Trigger.Payload == "" {
-		return ""
-	}
-	if filepath.IsAbs(test.Trigger.Payload) {
-		return test.Trigger.Payload
-	}
-	return filepath.Join(filepath.Dir(testFile), test.Trigger.Payload)
+	return deliveryPathIn(filepath.Dir(testFile), test)
 }

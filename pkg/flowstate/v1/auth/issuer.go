@@ -46,24 +46,33 @@ const (
 	DefaultKeyRetention = 24 * time.Hour
 )
 
-// DiscoveryPath is the OIDC well-known path used by consumers which require an
-// OIDC-shaped workload issuer. The document served there is explicitly not
-// OpenID Provider Metadata; see [OIDCCompatibilityDocument].
+// DiscoveryPath is where an [Issuer] publishes its OpenID Provider Metadata,
+// relative to its issuer URL. It is fixed by OpenID Connect Discovery.
 const DiscoveryPath = "/.well-known/openid-configuration"
 
-// builtInAssertionClaims is the public claim vocabulary owned by the mint.
-// Metadata and invariant tests consume this same declaration.
-var builtInAssertionClaims = []string{
-	jwt.Issuer, jwt.Subject, jwt.Audience, jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
+// WorkloadIssuerMetadataPath is where an [Issuer] publishes
+// [WorkloadIssuerMetadata], relative to its issuer URL.
+//
+// It is a path this project chooses, unlike [DiscoveryPath], because the
+// document served there is a contract this project defines rather than one a
+// specification fixes. Both are served: see [WorkloadIssuerMetadata] for why
+// the OpenID Provider Metadata is not replaced by it.
+const WorkloadIssuerMetadataPath = "/.well-known/workload-identity-configuration"
+
+// builtInClaimNames is the single declaration of the claims an [Issuer] mints
+// itself and advertises through discovery. A carried claim may not use one of
+// these names: a workload whose submitting token contained a claim called "sub"
+// must not be able to choose the subject of the assertion Flowstate mints for it.
+//
+// ClaimRun is included even though an assertion without a run reference omits it:
+// claims_supported describes claims the issuer can return, not claims every token
+// is required to contain.
+var builtInClaimNames = []string{
+	jwt.Issuer, jwt.Subject, jwt.Audience,
+	jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
 	ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
 	ClaimOnBehalfOf, ClaimOnBehalfOfIssuer, ClaimRunMode,
 }
-
-// reservedClaims are the claims an [Issuer] sets itself. A carried claim may not
-// use one of these names: a workload whose submitting token contained a claim
-// called "sub" must not be able to choose the subject of the assertion Flowstate
-// mints for it.
-var reservedClaims = builtInAssertionClaims
 
 // Claims an [Issuer] adds to every assertion, beyond the registered JWT claims.
 //
@@ -132,7 +141,7 @@ type SigningKey struct {
 	// cannot call a method on a value it reaches through an unexported field, so a
 	// key held in a plain field would be printed in full by %v on any struct that
 	// happened to contain it.
-	signer func(claims jwt.ClaimsSet) (string, error)
+	signer func(context.Context, jwt.ClaimsSet) (string, error)
 
 	// published is the public half rendered as a JSON Web Key, built when the key
 	// is created so that serving the key set cannot fail at request time.
@@ -193,7 +202,8 @@ func NewSigningKey(id string, private crypto.PrivateKey) (SigningKey, error) {
 	}
 	key.algorithm, key.published = algorithm, published
 
-	key.signer = signerFor(key.id, key.algorithm, private)
+	local := signerFor(key.id, key.algorithm, private)
+	key.signer = func(_ context.Context, claims jwt.ClaimsSet) (string, error) { return local(claims) }
 
 	return key, nil
 }
@@ -264,11 +274,11 @@ func (k SigningKey) LogValue() slog.Value {
 }
 
 // sign signs the given claims with this key.
-func (k SigningKey) sign(claims jwt.ClaimsSet) (string, error) {
+func (k SigningKey) sign(ctx context.Context, claims jwt.ClaimsSet) (string, error) {
 	if k.signer == nil {
 		return "", ErrNoSigningKey
 	}
-	return k.signer(claims)
+	return k.signer(ctx, claims)
 }
 
 // signerFor returns a closure that signs claims with the given private key.
@@ -596,7 +606,7 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	case issuer.jwksPath == DiscoveryPath:
 		return nil, fmt.Errorf("%w: key set path must not be the discovery path %q", ErrInvalidPolicy, DiscoveryPath)
 	case issuer.jwksPath == WorkloadIssuerMetadataPath:
-		return nil, fmt.Errorf("%w: key set path must not be the workload metadata path %q", ErrInvalidPolicy, WorkloadIssuerMetadataPath)
+		return nil, fmt.Errorf("%w: key set path must not be the workload issuer metadata path %q", ErrInvalidPolicy, WorkloadIssuerMetadataPath)
 	case issuer.keyRetention < 0:
 		return nil, fmt.Errorf("%w: key retention must not be negative", ErrInvalidPolicy)
 	}
@@ -727,7 +737,7 @@ func validateDeclaredClaims(names []string) ([]string, error) {
 		case len(name) > MaxCarriedClaimNameBytes:
 			return nil, fmt.Errorf("%w: declared claim name %q is %d bytes, and at most %d are allowed",
 				ErrInvalidPolicy, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
-		case slices.Contains(reservedClaims, name):
+		case slices.Contains(builtInClaimNames, name):
 			// Refused rather than ignored: a carried claim of this name can
 			// never be minted, whatever the declaration says, and a
 			// declaration that silently never applies is worse than none.
@@ -977,7 +987,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 	// where a claim becomes a signed statement.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
 		switch {
-		case slices.Contains(reservedClaims, name):
+		case slices.Contains(builtInClaimNames, name):
 			return Assertion{}, fmt.Errorf("%w: carried claim %q collides with a reserved claim", ErrInvalidIdentity, name)
 		case !slices.Contains(i.declared, name):
 			// The name, never the value: this error travels wherever the
@@ -1011,7 +1021,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		return Assertion{}, ErrNoSigningKey
 	}
 
-	token, err := key.sign(claims)
+	token, err := key.sign(ctx, claims)
 	keyID := key.id
 	i.mu.RUnlock()
 

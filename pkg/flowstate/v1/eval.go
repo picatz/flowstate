@@ -13,6 +13,7 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/google/cel-go/cel"
@@ -2329,8 +2330,18 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 		// execution instruments have to see the refused dispatch on both
 		// drivers too, or a local run's error rate would omit exactly the
 		// failures an operator most wants counted.
+		//
+		// Attempt 1, and not because there is nothing better to say: a policy
+		// refusal happens above the retry loop, so this dispatch had exactly
+		// one attempt and it was refused. The durable driver reports the same
+		// number here for the same reason — its check runs inside the activity,
+		// where `activity.GetInfo` reads 1 on a first dispatch — so the two
+		// agree without either one guessing.
 		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
-			func(context.Context, trace.Span) (*Node_Outputs, error) { return nil, err })
+			func(_ context.Context, span trace.Span) (*Node_Outputs, error) {
+				span.SetAttributes(attribute.Int(SpanAttributeAttempt, 1))
+				return nil, err
+			})
 
 		return nil, err
 	}
@@ -2365,7 +2376,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID)
+		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID, attempt)
 		if err == nil {
 			return out, nil
 		}
@@ -2523,9 +2534,17 @@ func (e *causeEnrichedError) Unwrap() error {
 // [withCancellationCause] enriches, because the enrichment adds *text* and the
 // span records only a classification — and the classification of the enriched
 // error is the same one, since it wraps rather than replaces.
-func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
+//
+// attempt is the retry loop's own counter, passed in rather than read from
+// anywhere ambient because this function is called once per attempt and the
+// loop above is the only thing that knows which one this is. It is the local
+// driver's half of [SpanAttributeAttempt]; the durable driver's half is
+// `activity.GetInfo(ctx).Attempt`, read in engine/activities.go. See
+// [StartTaskSpan]'s doc for why one key carries both and why that is honest.
+func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string, attempt int) (*Node_Outputs, error) {
 	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
-		func(ctx context.Context, _ trace.Span) (*Node_Outputs, error) {
+		func(ctx context.Context, span trace.Span) (*Node_Outputs, error) {
+			span.SetAttributes(attribute.Int(SpanAttributeAttempt, attempt))
 			return runStepAttempt(ctx, task, timeout, scope)
 		})
 }

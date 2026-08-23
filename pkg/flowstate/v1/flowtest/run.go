@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,37 @@ import (
 // than by accident continuing to pass.
 var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
+// RunOptions is what a caller may vary about a suite run. The zero value is
+// the run every door has always performed: every case, written order only,
+// report labelled by whatever the door knows.
+type RunOptions struct {
+	// Label names the report ([v1.TestReport.File]) — a path for a file on
+	// disk, "<submitted>" or similar for bytes, whatever a Go caller wants a
+	// reader to see for a built [File].
+	Label string
+
+	// Budget is the seeded-schedule exploration to run beyond the
+	// written-order pass (issue #800). The zero budget explores nothing.
+	Budget dst.Budget
+
+	// Select filters which cases run, by name; nil runs every case. A case
+	// filtered out is not run, not reported, and counted in
+	// [RunResult.Filtered] — the number a caller's own output must surface,
+	// because a green over a subset must never read as the file's green
+	// (issue #929).
+	Select func(name string) bool
+}
+
+// RunResult is everything one suite run produced.
+type RunResult struct {
+	Report    *v1.TestReport
+	Coverage  []*Coverage
+	Schedules *ScheduleReport
+
+	// Filtered is how many cases [RunOptions.Select] excluded from this run.
+	Filtered int
+}
+
 // RunFile runs every test in a `*.test.yaml`, returning one [v1.TestReport].
 //
 // Cases run sequentially and each gets its own [v1.VirtualClock] and its own
@@ -36,6 +68,185 @@ var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 func RunFile(path string) *v1.TestReport {
 	report, _ := RunFileWithCoverage(path)
 	return report
+}
+
+// Run runs a loaded [File]'s cases — the door for a suite built or loaded in
+// Go rather than named by path (issue #930; this is the [Run] the [File.Tests]
+// doc has always cited). dir is what a case's `workflow:` and a trigger case's
+// `payload:` resolve against, the way those paths resolve against the test
+// file's own directory when one exists; empty refuses any case that needs a
+// path resolved, exactly as [RunSourceContext]'s byte-born cases are refused.
+func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult {
+	file = file.withDefaultsApplied()
+
+	return runSuite(ctx, file, opts, func(test *Test) (loader, string) {
+		identity := workflowPathIn(dir, test)
+
+		// The refusal the doc above promises, made real: with no directory, a
+		// relative path would otherwise fall through [filepath.Join]'s
+		// identity on an empty prefix and resolve against the process working
+		// directory — so the same suite would silently run whatever file the
+		// caller's cwd happens to hold, or fail there, depending on where the
+		// test binary ran from. A path-shaped fact must never depend on cwd;
+		// refused per case, since a sibling case naming absolute paths is
+		// fine. Reported by Codex on picatz/flowstate#1015.
+		if dir == "" {
+			if err := pathlessRefusal(test); err != nil {
+				return loader{
+					load:      func() (*v1.Workflow, error) { return nil, err },
+					positions: func() *flowfile.Positions { return nil },
+				}, identity
+			}
+		}
+
+		var positions *flowfile.Positions
+		return loader{
+			load: func() (*v1.Workflow, error) {
+				workflow, parsed, err := flowfile.ParseFile(identity)
+				if err != nil {
+					return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
+				}
+				positions = parsed
+				return workflow, nil
+			},
+			positions:    func() *flowfile.Positions { return positions },
+			deliveryPath: deliveryPathIn(dir, test),
+		}, identity
+	})
+}
+
+// loader is one case's way of producing the workflow it runs against, plus
+// the two facts that travel with it: the parse positions (nil for bytes,
+// which have none to record) and where a trigger case's stored delivery
+// lives (empty where there is no directory to resolve one against).
+type loader struct {
+	load         func() (*v1.Workflow, error)
+	positions    func() *flowfile.Positions
+	deliveryPath string
+}
+
+// runSuite is the one loop every door shares: [Run] and
+// [RunFileUnderSchedules] for files, [RunSourceContext] for bytes. It owns
+// case selection, coverage and schedule accounting, and attaching the
+// coverage to the report — in one place, so the machine document cannot
+// disagree with the richer Go-side result about what was measured.
+func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*Test) (loader, string)) RunResult {
+	report := &v1.TestReport{File: opts.Label}
+
+	var allowUnreached map[string]string
+	if file.Coverage != nil {
+		allowUnreached = file.Coverage.AllowUnreached
+	}
+	coverage := newCoverageAccumulator(allowUnreached)
+	schedules := newScheduleAccumulator(opts.Budget)
+
+	filtered := 0
+	for _, test := range file.Tests {
+		if opts.Select != nil && !opts.Select(test.Name) {
+			filtered++
+			continue
+		}
+
+		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			report.Cases = append(report.Cases, stopped)
+
+			continue
+		}
+
+		l, identity := loaderFor(&test)
+
+		result, spec, transcript := schedules.run(ctx,
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
+				return runCase(ctx, &test, l.deliveryPath, l.load)
+			})
+		report.Cases = append(report.Cases, result)
+		coverage.observe(identity, spec, transcript, l.positions())
+	}
+
+	out := RunResult{
+		Report:    report,
+		Coverage:  coverage.result(),
+		Schedules: schedules.result(),
+		Filtered:  filtered,
+	}
+	// Attached here, for every door, so the whole document renders through
+	// protojson wherever it ends up — the CLI's machine modes and the MCP
+	// tool alike carry the same account (issue #931; before this, the MCP
+	// door had no accumulator at all and answered `coverage: []` forever
+	// while docs/reference/mcp.md promised the CLI's own report).
+	for _, c := range out.Coverage {
+		report.Coverage = append(report.Coverage, c.Report())
+	}
+	// The schedule account rides the same way (issue #931's other half):
+	// unset when nothing explored, so a report from a default run is the
+	// document it always was.
+	if out.Schedules != nil {
+		report.Schedules = out.Schedules.Report()
+	}
+	return out
+}
+
+// withDefaultsApplied folds the file's `defaults:` into every case, exactly
+// as [Load] folds them for a parsed file (#416) — the normalization a [File]
+// built in Go otherwise never receives, which made the same logical suite
+// behave differently depending on whether it was constructed or parsed:
+// inherited inputs, stubs and signal senders were silently absent from the
+// built one. Reported by Codex on picatz/flowstate#1015.
+//
+// A shallow copy with merged Tests, never a mutation of the caller's File — a
+// caller may hold and re-run it. On a file [Load] already merged, folding
+// again changes nothing, which is a property of [mergeDefaults]'s own rules
+// rather than luck: inputs re-copy to the values the first fold chose, a
+// default stub whose target key is already present is skipped (and the
+// inherited copies carry those keys), and a sender fills only signals that
+// have none. TestRunDoesNotDoubleMergeALoadedFile pins it.
+func (f *File) withDefaultsApplied() *File {
+	if f.Defaults == nil {
+		return f
+	}
+
+	merged := *f
+	merged.Tests = make([]Test, len(f.Tests))
+	for i := range f.Tests {
+		merged.Tests[i] = mergeDefaults(f.Defaults, f.Tests[i])
+	}
+	return &merged
+}
+
+// pathlessRefusal is what stops one case from running under [Run] with no
+// directory: a relative `workflow:` or trigger `payload:` has nothing to
+// resolve against, and the two honest answers are an absolute path or a
+// directory. Nil when every path the case names is absolute (or absent).
+func pathlessRefusal(test *Test) error {
+	if !filepath.IsAbs(test.Workflow) {
+		return fmt.Errorf("workflow %q is a relative path and this run has no directory to resolve it against; "+
+			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Workflow)
+	}
+	if test.Trigger != nil && test.Trigger.Payload != "" && !filepath.IsAbs(test.Trigger.Payload) {
+		return fmt.Errorf("trigger payload %q is a relative path and this run has no directory to resolve it against; "+
+			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Trigger.Payload)
+	}
+	return nil
+}
+
+// workflowPathIn and deliveryPathIn are [WorkflowPath] and [DeliveryPath] for
+// a caller holding the directory rather than the test file whose directory it
+// is — same rule, same one spelling, minus the Dir().
+func workflowPathIn(dir string, test *Test) string {
+	if filepath.IsAbs(test.Workflow) {
+		return test.Workflow
+	}
+	return filepath.Join(dir, test.Workflow)
+}
+
+func deliveryPathIn(dir string, test *Test) string {
+	if test.Trigger == nil || test.Trigger.Payload == "" {
+		return ""
+	}
+	if filepath.IsAbs(test.Trigger.Payload) {
+		return test.Trigger.Payload
+	}
+	return filepath.Join(dir, test.Trigger.Payload)
 }
 
 // RunFileWithCoverage is [RunFile] and, alongside the report, the branch
@@ -73,63 +284,32 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 // reason and now with a second one: a case whose virtual clock can never advance
 // has nothing to end it, and `--seeds N` multiplies whatever that costs by N.
 func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) (*v1.TestReport, []*Coverage, *ScheduleReport) {
-	report := &v1.TestReport{File: path}
+	result := RunPath(ctx, path, RunOptions{Budget: budget})
+	return result.Report, result.Coverage, result.Schedules
+}
+
+// RunPath is [Run] for a suite named by path rather than already loaded: load
+// the `*.test.yaml`, then run it with everything the options say, against the
+// file's own directory — which is what a case's `workflow:` and `payload:`
+// resolve against, the same rule `call:` resolves against ([WorkflowPath]'s
+// doc). An empty [RunOptions.Label] defaults to the path. A file that does not
+// load returns a refused report, the same one every path door has always
+// produced, with nil coverage and schedules — no case was ever reached.
+//
+// This is the door `flow test` walks through (with [RunOptions.Select] behind
+// `--run`, and [RunOptions.Budget] behind `--seeds`); [RunFileUnderSchedules]
+// is this with only a budget to say.
+func RunPath(ctx context.Context, path string, opts RunOptions) RunResult {
+	if opts.Label == "" {
+		opts.Label = path
+	}
 
 	file, err := Load(path)
 	if err != nil {
-		report.Refused = err.Error()
-		return report, nil, nil
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
 	}
 
-	var allowUnreached map[string]string
-	if file.Coverage != nil {
-		allowUnreached = file.Coverage.AllowUnreached
-	}
-	coverage := newCoverageAccumulator(allowUnreached)
-	schedules := newScheduleAccumulator(budget)
-
-	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
-	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
-	// what makes this the bytes-vs-paths seam [runCase] shares with
-	// [RunSource]: the loader is the only part of one case's run that differs
-	// between a file on disk and a workflow submitted as bytes.
-	for _, test := range file.Tests {
-		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
-			report.Cases = append(report.Cases, stopped)
-
-			continue
-		}
-
-		// The workflow's resolved path is its coverage identity: each case names
-		// its own `workflow:`, so this is what keeps two workflows' coverage
-		// apart within one file (Finding 3).
-		identity := WorkflowPath(path, &test)
-		// Kept rather than discarded, which is the whole of issue #801's part B.
-		// [flowfile.ParseFile] has always handed these back and this loop has
-		// always thrown them away, which is why coverage was the one author-facing
-		// diagnostic in the repo that could not name a position. A `switch:` arm
-		// needs one more than anything else does: a step has an id every surface
-		// resolves, and `on_event:case[2]` has nothing but where it is written.
-		var positions *flowfile.Positions
-		load := func() (*v1.Workflow, error) {
-			workflow, parsed, err := flowfile.ParseFile(identity)
-			if err != nil {
-				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
-			}
-			positions = parsed
-			return workflow, nil
-		}
-		deliveryPath := DeliveryPath(path, &test)
-
-		result, spec, transcript := schedules.run(ctx,
-			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
-				return runCase(ctx, &test, deliveryPath, load)
-			})
-		report.Cases = append(report.Cases, result)
-		coverage.observe(identity, spec, transcript, positions)
-	}
-
-	return report, coverage.result(), schedules.result()
+	return Run(ctx, file, filepath.Dir(path), opts)
 }
 
 // caseStoppedBefore reports the case a caller's context ended before it could
@@ -196,39 +376,34 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // the reason on the case; [RunSource] and [RunFile] pass a background context
 // and are unchanged by this existing.
 func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
-	report := &v1.TestReport{File: label}
-
 	file, err := LoadSource(testSource)
 	if err != nil {
-		report.Refused = err.Error()
-		return report
+		return &v1.TestReport{File: label, Refused: err.Error()}
 	}
 
-	load := func() (*v1.Workflow, error) {
-		workflow, err := flowfile.Unmarshal(workflowSource)
-		if err != nil {
-			return nil, fmt.Errorf("the submitted workflow source is not a valid Flowfile: %w", err)
-		}
-		return workflow, nil
-	}
-
-	for _, test := range file.Tests {
-		// See [caseStoppedBefore] for why the bound is checked here rather than
-		// only inside the run.
-		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
-			report.Cases = append(report.Cases, stopped)
-
-			continue
-		}
-
-		// No delivery path: bytes have no directory to resolve a fixture against,
-		// which is why [checkTrigger] refuses a trigger case in this shape rather
-		// than letting one arrive here with nowhere to read from.
-		result, _, _, _ := runCase(ctx, &test, "", load)
-		report.Cases = append(report.Cases, result)
-	}
-
-	return report
+	// The loader parses the one submitted workflow per case, with no delivery
+	// path (bytes have no directory to resolve a fixture against — which is
+	// why [checkTrigger] refuses a trigger case in this shape) and no parse
+	// positions (bytes have no file for a position to point into; a switch
+	// arm's coverage carries line zero here, as the schema documents). The
+	// label is the coverage identity, since every case runs the same
+	// submitted workflow. Coverage riding the report through [runSuite] is
+	// what makes this door answer with the same account the CLI's does
+	// (issue #931).
+	result := runSuite(ctx, file, RunOptions{Label: label}, func(*Test) (loader, string) {
+		return loader{
+			load: func() (*v1.Workflow, error) {
+				workflow, err := flowfile.Unmarshal(workflowSource)
+				if err != nil {
+					return nil, fmt.Errorf("the submitted workflow source is not a valid Flowfile: %w", err)
+				}
+				return workflow, nil
+			},
+			positions:    func() *flowfile.Positions { return nil },
+			deliveryPath: "",
+		}, label
+	})
+	return result.Report
 }
 
 // runCase runs one test and reports its verdict. load resolves the workflow

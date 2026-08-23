@@ -123,10 +123,6 @@ func checkProtectedResourceRouteCollision(pr *auth.ProtectedResource, broker *au
 			"OIDC discovery path this deployment already serves at a fixed location; choose a resource "+
 			"whose path does not end in %q", pr.Path(), auth.DiscoveryPath)
 	}
-	if pr.Path() == auth.WorkloadIssuerMetadataPath {
-		return fmt.Errorf("--protected-resource: the computed metadata path %q is identical to the "+
-			"workload issuer metadata path this deployment already serves; choose a different resource path", pr.Path())
-	}
 
 	if broker != nil {
 		if jwksPath := broker.Issuer().JWKSPath(); pr.Path() == jwksPath {

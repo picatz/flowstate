@@ -14,11 +14,18 @@ func decide(t *testing.T, changed []string, affected []string, event string) map
 	t.Helper()
 	p := buildPlan(changed)
 	out := map[string]decision{}
-	for _, d := range ciDecisions(p, affected, ciForceReason(event, p)) {
+	for _, d := range ciDecisions(p, affected, ciForceReason(event, resolvedBase, p)) {
 		out[d.Job] = d
 	}
 	return out
 }
+
+// resolvedBase stands in for a merge-base that was found, which is the input
+// every case below is about: they vary the *diff*, and a diff only exists when
+// there is a base to take it against. The no-base forcing is asserted on its
+// own in scope_test.go, deliberately separately — mixing it in here would make
+// every one of these cases silently exercise it instead.
+const resolvedBase = "0000000000000000000000000000000000000000"
 
 func mustRun(t *testing.T, ds map[string]decision, jobs ...string) {
 	t.Helper()
@@ -64,7 +71,7 @@ func TestEveryDecisionSaysWhy(t *testing.T) {
 		{"proto/flowstate/v1/flowstate.proto"},
 		{".github/workflows/ci.yml"},
 	} {
-		for _, d := range ciDecisions(buildPlan(tc), nil, ciForceReason("pull_request", buildPlan(tc))) {
+		for _, d := range ciDecisions(buildPlan(tc), nil, ciForceReason("pull_request", resolvedBase, buildPlan(tc))) {
 			if d.Why == "" {
 				t.Errorf("%v: job %q has no reason recorded", tc, d.Job)
 			}
