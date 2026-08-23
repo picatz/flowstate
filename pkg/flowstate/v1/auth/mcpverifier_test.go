@@ -82,14 +82,16 @@ func TestMCPTokenVerifierAdmitsAToken(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, info)
-	require.Equal(t, auth.MCPSessionUserID(auth.Principal{Issuer: issuer.URL(), Subject: "agent"}), info.UserID,
+	principal, ok := auth.MCPPrincipal(info)
+	require.True(t, ok)
+	require.Equal(t, auth.MCPSessionUserID(principal), info.UserID,
 		"UserID is what the SDK pins a session to, and it must be derived from the verified principal")
 	require.False(t, info.Expiration.IsZero(),
 		"the middleware refuses a TokenInfo with no expiration unless AllowMissingExpiration is set")
 	require.Empty(t, info.Scopes,
 		"#567's D1 is deferred by omission: this surface names no scope anywhere")
-	require.Empty(t, info.Extra,
-		"a verified claims map has no reader on this surface, and carrying it is a way for token contents to reach a log")
+	require.Equal(t, "agent", principal.Subject)
+	require.Equal(t, mcpResource, principal.Audience[0])
 }
 
 // TestMCPTokenVerifierRefusesAWrongAudienceToken is the audience check every
@@ -419,4 +421,109 @@ func TestNewProtectedResourceRefusesAQuery(t *testing.T) {
 		AuthorizationServers: []string{"https://idp.example.com"},
 	}, policy)
 	require.NoError(t, err)
+}
+
+// TestMCPSessionUserIDSurvivesATokenRefresh is the pin from the other side.
+//
+// A streamable-HTTP session outlives an access token — that is the point of a
+// short one — so the caller reconnects mid-session with a freshly minted token
+// carrying the same identity and new "iat", "exp", "nbf" and "jti". Binding to
+// the claims map whole made every one of those a different principal, and the
+// SDK answers 403: the session hijacking check refusing the session's own
+// owner, which is a worse outage than the one it prevents because it happens on
+// a schedule.
+//
+// The authorization-relevant claims are deliberately *not* filtered. A token
+// whose namespace or role changed really is a different caller for this
+// purpose, and the second half of the test says so — otherwise "ignore the
+// claims that change" would drift into "ignore the claims", and a re-mint that
+// dropped a scope would keep the session it was granted under.
+func TestMCPSessionUserIDSurvivesATokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	identity := func(claims map[string]any) auth.Principal {
+		return auth.Principal{
+			Issuer:    "https://idp.example.com",
+			Subject:   "alice@example.com",
+			Namespace: "team-a",
+			Role:      "operator",
+			Audience:  []string{"https://flowstate.example.com"},
+			Claims:    claims,
+		}
+	}
+
+	first := identity(map[string]any{
+		"namespace": "team-a",
+		"iat":       float64(1_700_000_000),
+		"exp":       float64(1_700_003_600),
+		"nbf":       float64(1_700_000_000),
+		"jti":       "01HQ0000000000000000000000",
+	})
+	refreshed := identity(map[string]any{
+		"namespace": "team-a",
+		"iat":       float64(1_700_003_000),
+		"exp":       float64(1_700_006_600),
+		"nbf":       float64(1_700_003_000),
+		"jti":       "01HQ1111111111111111111111",
+	})
+
+	require.Equal(t, auth.MCPSessionUserID(first), auth.MCPSessionUserID(refreshed),
+		"an ordinary refresh changed the session key, so the SDK answers 403 to the session's own owner")
+
+	rescoped := identity(map[string]any{
+		"namespace": "team-b",
+		"iat":       float64(1_700_000_000),
+		"exp":       float64(1_700_003_600),
+		"nbf":       float64(1_700_000_000),
+		"jti":       "01HQ0000000000000000000000",
+	})
+
+	require.NotEqual(t, auth.MCPSessionUserID(first), auth.MCPSessionUserID(rescoped),
+		"a token that authorizes something else kept the session it was not granted under")
+}
+
+// unmarshalableClaims is a claims map json.Marshal refuses, which is the only
+// way to reach [auth.MCPSessionUserID]'s error branch: this package's own
+// verifier produces JSON values, so the branch exists for a custom
+// [auth.Verifier] returning something else.
+func unmarshalableClaims() map[string]any {
+	return map[string]any{"unrepresentable": make(chan int)}
+}
+
+// TestMCPSessionUserIDStaysUnambiguousWhenTheClaimsCannotBeEncoded is the
+// fail-closed claim in that branch's own comment, checked rather than asserted
+// in prose.
+//
+// It hashed the claims map's *type* and the marshal error, both of which are
+// identical for every principal a given broken verifier produces — so two
+// callers got one session key, and one caller's token was accepted for the
+// other's session. That is the exact defect the length-prefixed encoding above
+// exists to prevent, reachable through the branch written to be the safe one.
+func TestMCPSessionUserIDStaysUnambiguousWhenTheClaimsCannotBeEncoded(t *testing.T) {
+	t.Parallel()
+
+	a := auth.MCPSessionUserID(auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "alice", Claims: unmarshalableClaims(),
+	})
+	b := auth.MCPSessionUserID(auth.Principal{
+		Issuer: "https://idp.example.com", Subject: "mallory", Claims: unmarshalableClaims(),
+	})
+	c := auth.MCPSessionUserID(auth.Principal{
+		Issuer: "https://other.example.com", Subject: "alice", Claims: unmarshalableClaims(),
+	})
+
+	require.NotEqual(t, a, b, "two subjects at one issuer share a session key when the claims cannot be encoded")
+	require.NotEqual(t, a, c, "one subject at two issuers shares a session key when the claims cannot be encoded")
+
+	// And the same ambiguity the encoded path is length-prefixed against: no
+	// separator is safe here either, so the lengths go in.
+	require.NotEqual(t,
+		auth.MCPSessionUserID(auth.Principal{Issuer: "https://idp.example/ab", Subject: "victim", Claims: unmarshalableClaims()}),
+		auth.MCPSessionUserID(auth.Principal{Issuer: "https://idp.example/a", Subject: "bvictim", Claims: unmarshalableClaims()}),
+	)
+
+	// A binding that cannot be encoded must never collide with one that can,
+	// either: the refused principal is not "the principal with empty claims".
+	require.NotEqual(t, a,
+		auth.MCPSessionUserID(auth.Principal{Issuer: "https://idp.example.com", Subject: "alice"}))
 }

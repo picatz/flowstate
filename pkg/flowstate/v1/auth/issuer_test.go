@@ -18,6 +18,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
+	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
 
@@ -308,6 +309,27 @@ func TestIssuerRoundTrip(t *testing.T) {
 		require.True(t, ok, "assertion must carry the %q claim", claim)
 		require.Equal(t, want, got, "claim %q", claim)
 	}
+}
+
+// TestIssuerDiscoveryAdvertisesMintedClaims keeps the assertion and discovery
+// surfaces on the same contract. Registered JWT protocol claims are not carried
+// into Principal.Claims by verification, but they are still claims in the minted
+// token and are therefore intentionally advertised by claims_supported.
+func TestIssuerDiscoveryAdvertisesMintedClaims(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.amazonaws.com")
+	require.NoError(t, err)
+
+	token, err := jwt.Parse(assertion.Token())
+	require.NoError(t, err)
+
+	minted := slices.Sorted(maps.Keys(token.Claims))
+	advertised := slices.Clone(issuer.Discovery().ClaimsSupported)
+	slices.Sort(advertised)
+	require.Equal(t, minted, advertised,
+		"claims_supported must describe every built-in and declared claim the issuer can mint")
 }
 
 // TestIssuerAssertionIsAudienceScoped is the replay test: an assertion minted for
