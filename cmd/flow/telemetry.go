@@ -95,6 +95,18 @@ const telemetryFlushTimeout = 5 * time.Second
 // ignore it is gone. Logs-only is a real deployment — a fleet whose logs go to a
 // collector and whose traces do not — and it must not be told it configured
 // nothing.
+// Any signal, not traces alone, and that is the whole of the propagation
+// decision too — which is why there is one predicate here rather than two.
+// Metrics and, especially, correlated logs still need an incoming trace id to
+// cross Connect, Temporal and plugin boundaries when local spans are not being
+// sent, so "should this process propagate" and "did anyone ask for telemetry"
+// are the same question. Two functions with identical bodies would be one
+// meaning written down twice, and the copy that drifts is the one nothing runs.
+//
+// A malformed OTEL_*_EXPORTER reads as unconfigured here. That is the
+// fail-closed direction — an unparsed setting must not switch propagation on —
+// and it is not how an operator finds out: [initTelemetry] returns the same
+// error and refuses to start.
 func telemetryConfigured() bool {
 	c, _ := telemetryConfigFromEnv()
 	return c.traces || c.metrics || c.logs
@@ -139,14 +151,6 @@ func telemetryConfigFromEnv() (telemetryConfig, error) {
 		return c, err
 	}
 	return c, nil
-}
-
-// telemetryPropagationEnabled is deliberately not an alias for trace export.
-// Metrics and, especially, correlated logs still need an incoming trace ID to
-// cross Connect, Temporal, and plugin boundaries when local spans are not sent.
-func telemetryPropagationEnabled() bool {
-	c, _ := telemetryConfigFromEnv()
-	return c.traces || c.metrics || c.logs
 }
 
 // instanceID is service.instance.id: which copy of flowstate this is, stable
@@ -292,6 +296,11 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 			return nil, nil, fmt.Errorf("configuring the trace exporter: %w", err)
 		}
 		tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+		// The global, because that is where otelconnect looks: it was installed
+		// against the global providers all along, and this is the half that
+		// makes the installation mean something. Set only when traces are
+		// exported, so a deployment that asked for metrics alone leaves the
+		// no-op provider in place rather than building spans nothing sends.
 		otel.SetTracerProvider(tracerProvider)
 	}
 	var meterProvider *sdkmetric.MeterProvider
@@ -312,20 +321,15 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 			return nil, nil, fmt.Errorf("configuring the log exporter: %w", err)
 		}
 		loggerProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
+		// Logs have a global of their own, in their own package, because the log
+		// API is still pre-stable and lives outside go.opentelemetry.io/otel.
+		// Registered for the same reason as the other two and one more: a bridge
+		// built in a package that cannot see this one — the engine's activity
+		// logger, in pkg/flowstate/v1/engine — reaches an exporter only through
+		// this global. Unset, it is a no-op that discards, which is what keeps
+		// that bridge free in a binary nobody configured.
 		logglobal.SetLoggerProvider(loggerProvider)
 	}
-
-	// The globals, because that is where otelconnect looks. It was installed
-	// against the global providers all along; this is the half that makes the
-	// installation mean something.
-
-	// Logs have a global of their own, in their own package, because the log API
-	// is still pre-stable and lives outside go.opentelemetry.io/otel. Registered
-	// for the same reason as the other two and one more: a bridge built in a
-	// package that cannot see this one — the engine's activity logger, in
-	// pkg/flowstate/v1/engine — reaches an exporter only through this global.
-	// Unset, it is a no-op that discards, which is what keeps that bridge free
-	// in a binary nobody configured.
 
 	// W3C trace context plus baggage, the composite everything else in the
 	// ecosystem defaults to. Trace context is what carries the span across the
@@ -481,7 +485,7 @@ func telemetryLogHandler(next slog.Handler) slog.Handler {
 // client half gives: the command somebody asked for is `flow worker`, not `flow
 // worker with tracing`.
 func temporalTracingInterceptor() interceptor.Interceptor {
-	if !telemetryPropagationEnabled() {
+	if !telemetryConfigured() {
 		return nil
 	}
 

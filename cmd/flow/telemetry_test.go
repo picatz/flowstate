@@ -29,6 +29,8 @@ import (
 	noopLog "go.opentelemetry.io/otel/log/noop"
 	noopMetric "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -180,7 +182,12 @@ func TestTelemetrySignalEnvironmentMatrix(t *testing.T) {
 			got, err := telemetryConfigFromEnv()
 			require.NoError(t, err)
 			assert.Equal(t, test.want, got)
-			assert.Equal(t, test.wantPropagation, telemetryPropagationEnabled())
+			// Propagation and "did anyone ask for telemetry" are the same
+			// question, deliberately: correlated logs and metrics still need an
+			// incoming trace id even when local spans are not exported. The
+			// column stays so a future divergence has to be written down here
+			// rather than discovered in a collector.
+			assert.Equal(t, test.wantPropagation, telemetryConfigured())
 			base := slog.NewTextHandler(io.Discard, nil)
 			assert.Equal(t, test.want.logs, telemetryLogHandler(base) != base)
 		})
@@ -1169,4 +1176,56 @@ func TestSecretsAreRedactedOnTheOTLPPathToo(t *testing.T) {
 	// dropped: a record that lost the attribute entirely would also pass the
 	// assertion above, and would be a different bug.
 	require.Contains(t, exported, secrets.Redacted)
+}
+
+// TestOneSignalLeavesTheOthersNoOp is the negative direction, and it is the
+// claim this change actually makes.
+//
+// TestTracesOnlyBuildsATracerProvider above asserts that configuring traces
+// installs a tracer provider — which was already true when all three signals
+// were built together, so it passes just as happily against the all-or-nothing
+// version this replaces. What was never asserted is the *separation*: that a
+// deployment asking for one signal does not get SDK providers for the other
+// two, quietly batching and dropping records nobody asked to export.
+//
+// Written as "A cannot reach B" per CLAUDE.md rather than "A reaches A",
+// because the first shape is the one that fails when the separation regresses.
+func TestOneSignalLeavesTheOthersNoOp(t *testing.T) {
+	for _, test := range []struct {
+		name                           string
+		endpoint                       string
+		wantTracer, wantMeter, wantLog bool
+	}{
+		{name: "traces only", endpoint: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", wantTracer: true},
+		{name: "metrics only", endpoint: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", wantMeter: true},
+		{name: "logs only", endpoint: "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", wantLog: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			isolateTelemetry(t)
+			telemetryOff(t)
+
+			collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(collector.Close)
+			t.Setenv(test.endpoint, collector.URL)
+
+			_, shutdown, err := initTelemetry(t.Context())
+			require.NoError(t, err)
+			t.Cleanup(func() { shutdown(context.Background()) })
+
+			_, gotTracer := otel.GetTracerProvider().(*sdktrace.TracerProvider)
+			assert.Equal(t, test.wantTracer, gotTracer,
+				"tracer provider installed=%v, want %v — a signal nobody configured must stay no-op",
+				gotTracer, test.wantTracer)
+
+			_, gotMeter := otel.GetMeterProvider().(*sdkmetric.MeterProvider)
+			assert.Equal(t, test.wantMeter, gotMeter,
+				"meter provider installed=%v, want %v", gotMeter, test.wantMeter)
+
+			_, gotLog := logglobal.GetLoggerProvider().(*sdklog.LoggerProvider)
+			assert.Equal(t, test.wantLog, gotLog,
+				"logger provider installed=%v, want %v", gotLog, test.wantLog)
+		})
+	}
 }
