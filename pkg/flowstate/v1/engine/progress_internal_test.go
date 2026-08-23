@@ -126,3 +126,31 @@ func TestLoopStateTruncatedIsStickyAcrossClear(t *testing.T) {
 	assert.True(t, p.stateSnapshot().GetTruncated(),
 		"a snapshot after a clear still reports the earlier truncation")
 }
+
+// TestCurrentDetailsMarkdownMatchesPositionPathShape pins
+// [progress.currentDetailsMarkdown]'s two claims: it renders nothing before a
+// position exists (the same honest absence [progress.snapshot] treats an
+// empty stepID as), and once one exists it joins the step id and its path the
+// same "outer > inner" way `cmd/flow/get.go`'s positionPath does, so a reader
+// of `flow get`/`flow watch` sees the same shape in Temporal Web's Details
+// view (#753).
+func TestCurrentDetailsMarkdownMatchesPositionPathShape(t *testing.T) {
+	p := &progress{}
+
+	assert.Empty(t, p.currentDetailsMarkdown(),
+		"a position with no stepID must render nothing, not an invented \"on step 1\"")
+
+	p.enter(0, "deploy")
+	assert.Equal(t, "On step `deploy`", p.currentDetailsMarkdown())
+
+	p.enter(1, "each")
+	p.enter(2, "upload")
+	assert.Equal(t, "On step `deploy` > `each` > `upload`", p.currentDetailsMarkdown(),
+		"a nested position must join outer to inner, the same order positionPath renders")
+
+	// Re-entering a shallower depth truncates the path exactly as [progress.enter]
+	// documents, and the rendering must follow it rather than keep a stale tail.
+	p.enter(0, "cleanup")
+	assert.Equal(t, "On step `cleanup`", p.currentDetailsMarkdown(),
+		"entering a new top-level step must drop the previous step's deeper path")
+}

@@ -132,14 +132,14 @@ func TestPullRequestListCursorRefusesMismatchedBaseURL(t *testing.T) {
 	client := newPagedTestServer(t, 15, 4, pullRequestJSON)
 
 	p := stablePullRequestListParams(5)
-	p.baseURL = "https://github.example.com/api/v3"
+	p.apiBase = "https://github.example.com/api/v3"
 	_, _, cursor, err := doPullRequestList(context.Background(), client, "o", "r", p)
 	if err != nil {
 		t.Fatalf("producing a cursor: unexpected error: %v", err)
 	}
 
 	mismatched := stablePullRequestListParams(5)
-	mismatched.baseURL = "https://github.other-example.com/api/v3"
+	mismatched.apiBase = "https://github.other-example.com/api/v3"
 	mismatched.cursor = cursor
 	_, _, _, err = doPullRequestList(context.Background(), client, "o", "r", mismatched)
 	if err == nil {

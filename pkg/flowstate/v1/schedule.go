@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // What a schedule can be wrong about before a cluster ever sees it.
@@ -113,13 +115,449 @@ const (
 // Two bounds rather than one, because they bound different resources and an
 // attacker (or a tired operator) picks whichever the other one leaves open. The
 // count bounds how many separate evaluations the cluster is asked for; the total
-// span bounds how much *time* those evaluations cover, which is what decides how
-// many executions come out of them. One 40-day range and forty 1-day ranges are the
-// same burst, and only checking both refuses both.
+// span bounds how much *time* those evaluations cover. One 40-day range and forty
+// 1-day ranges are the same window, and only checking both refuses both. The
+// cadence-aware check below separately bounds how many executions that window can
+// produce.
 const (
-	MaxScheduleBackfills    = 10
-	MaxScheduleBackfillSpan = 31 * 24 * time.Hour
+	MaxScheduleBackfills       = 10
+	MaxScheduleBackfillSpan    = 31 * 24 * time.Hour
+	MaxScheduleBackfillFirings = 100000
 )
+
+// CheckScheduleBackfillForTrigger also bounds the work produced by the ranges.
+// A span alone is not a work bound: at the minimum one-second cadence the span
+// above contains millions of firing times. The estimate is deliberately an upper
+// bound. Five- and six-field cron cannot fire more than once a minute; calendars
+// and the seven-field form carrying seconds may fire once a second.
+//
+// Every cadence the trigger carries is charged its *own* firing count rather
+// than the whole trigger being charged the fastest cadence once per entry.
+// Those are not the same number and only one of them is the real ceiling: a
+// trigger with `every: 1s` alongside a `@daily` cron fires 86,401 times a day,
+// not twice the faster of the two. Charging the fastest one to all of them
+// refuses schedules whose actual fan-out is nowhere near the limit, which is
+// the other way a bound can be wrong.
+//
+// That sum is a safe upper bound in general — two cadences with independent
+// phases can, worst case, share no firing instant at all, so nothing shy of
+// evaluating the real fire times can prove less than their sum without risking
+// an undercount, which is the direction this check must never be wrong in.
+// The one case it *can* prove less than the sum without evaluating anything is
+// an exact duplicate: two entries that are the identical cron expression, or
+// the identical calendar, fire at exactly the same instants by construction,
+// so charging the duplicate a second time double-counts one set of firings as
+// if it were two. cronDedupeKey and calendarsEqual below charge each distinct
+// cadence once; anything short of a literal duplicate is still summed, which
+// stays the safe direction (#716).
+func CheckScheduleBackfillForTrigger(trigger *ScheduleTrigger, backfills []*ScheduleBackfill) error {
+	if err := CheckScheduleBackfill(backfills); err != nil {
+		return err
+	}
+	if len(backfills) == 0 {
+		return nil
+	}
+
+	var cadences []time.Duration
+	if every := trigger.GetEvery(); every != nil {
+		if period := every.AsDuration(); period > 0 {
+			cadences = append(cadences, period)
+		}
+	}
+
+	seenCron := make(map[string]bool, len(trigger.GetCron()))
+	for _, expression := range trigger.GetCron() {
+		key := cronDedupeKey(expression)
+		if seenCron[key] {
+			continue
+		}
+		seenCron[key] = true
+		cadences = append(cadences, cronMinimumPeriod(expression, trigger.GetTimeZone()))
+	}
+
+	calendars := trigger.GetCalendars()
+	for i, calendar := range calendars {
+		duplicate := false
+		for _, earlier := range calendars[:i] {
+			if calendarsEqual(calendar, earlier) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		cadences = append(cadences, calendarMinimumPeriod(calendar, trigger.GetTimeZone()))
+	}
+
+	if len(cadences) == 0 {
+		return fmt.Errorf("a backfill needs a schedule cadence whose firing count can be bounded")
+	}
+
+	remaining := int64(MaxScheduleBackfillFirings)
+	for i, b := range backfills {
+		// The estimate bounds what the *cadence* can produce inside a window,
+		// so the window has to be the one the cadence is actually allowed to
+		// fire in. A requested range wider than the trigger's own start_at/
+		// end_at cannot produce a single firing outside that window — Temporal
+		// will not schedule one — so charging the full requested range here
+		// counts firings that can never happen, over-estimating exactly the
+		// schedules a narrow start_at/end_at was written to keep small.
+		//
+		// startInclusive is true when the trigger's own start_at, not the
+		// requested range's own start, ends up as the effective left edge.
+		// trigger.start_at bounds its window inclusively (its own doc
+		// comment says so), unlike the backfill range's own start, which the
+		// remainder handling below already treats as the exclusive edge of
+		// (start, end] — so a firing landing exactly on that boundary needs
+		// charging separately rather than falling out of the same arithmetic
+		// that already covers the end being inclusive.
+		span, startInclusive := intersectedBackfillSpan(trigger, b)
+
+		// Jitter delays each firing by a random amount up to its own value,
+		// capped by the gap to the *next* firing — the schema's own doc
+		// comment says so. That cap is what keeps the padding below
+		// per-cadence rather than a flat addition to the shared span: a
+		// firing can only be delayed as far as the next one it would
+		// otherwise collide with, so a cadence firing every second can
+		// never be shifted more than a second regardless of how large
+		// `jitter` itself is. Padding every cadence by the *uncapped*
+		// jitter — as an earlier version of this fix did — refuses a fast
+		// cadence over a jitter the schedule can never actually apply to
+		// it: a one-day jitter on an every-second schedule cannot shift any
+		// firing by more than the one second to its neighbor, so charging a
+		// whole day of padding there is a false refusal wide enough to be
+		// its own bug, not just imprecision.
+		jitter := trigger.GetJitter().AsDuration()
+
+		var firings int64
+		for _, period := range cadences {
+			// A nominal firing up to jitter before the window's start can be
+			// delayed into it — a firing this estimate would otherwise miss
+			// entirely, since it never happens at its own nominal instant.
+			// One within jitter of the end can be delayed past it, but that
+			// only removes a firing this window would have charged, never
+			// adds one, so only the left edge needs padding. Capped at this
+			// cadence's own period for the reason above.
+			padded := span
+			if cap := min(jitter, period); cap > 0 {
+				padded += cap
+			}
+
+			quotient := int64(padded / period)
+			switch {
+			case startInclusive:
+				// [start, end] is closed at both ends now, and the tight upper
+				// bound on evenly spaced points in a closed interval of length
+				// L, at an unknown phase, is floor(L/period)+1 — always,
+				// regardless of whether L divides evenly: place one point
+				// exactly at the closed start, then one every period until the
+				// next would exceed L. That is exactly one more than the
+				// half-open bound below when L is an exact multiple of period,
+				// and identical to it otherwise — so this must never also
+				// apply the remainder bump below it, or an inexact L (span
+				// 99999s1ns at a 1s period, say) is charged 100,001 for a
+				// range that can hold at most 100,000, an over-count that
+				// refuses a legitimate backfill.
+				firings += quotient + 1
+			case padded%period != 0:
+				// Temporal's interval is (start, end], which holds one more
+				// evenly spaced firing than the floor of its length when the
+				// range is aligned that way: an aligned 300001s range at a 3s
+				// cadence holds 100,001 firings, and rounding down would have
+				// called it 100,000 and let it past the ceiling. Round up, so
+				// what is compared against the limit is a number the range
+				// can never exceed.
+				//
+				// By quotient and remainder rather than by
+				// (span+period-1)/period, which is the same arithmetic only
+				// while the sum fits: `@every` is an accepted spelling for a
+				// period near the top of time.Duration, and that sum
+				// overflows to a negative firing count, subtracting from a
+				// total another cadence was contributing honestly.
+				firings += quotient + 1
+			default:
+				firings += quotient
+			}
+			if firings > remaining {
+				return fmt.Errorf("the backfill can produce more than %d firings at this cadence; "+
+					"range %d would exceed the bounded recovery limit", MaxScheduleBackfillFirings, i+1)
+			}
+		}
+		remaining -= firings
+	}
+	return nil
+}
+
+// intersectedBackfillSpan reports how much of a requested backfill range falls
+// inside the trigger's own start_at/end_at window, saturating rather than
+// wrapping for the same reason [CheckScheduleBackfill] does: `Time.Sub` clamps
+// at the maximum duration rather than overflowing, so a clamped span is
+// refused elsewhere instead of being carried into arithmetic that could wrap.
+//
+// A trigger without a start_at or an end_at is unbounded on that side, so the
+// requested range's own edge stands; both unset reduces to the requested
+// range untouched, which is the behavior before this bound existed.
+//
+// The second return reports whether the trigger's own start_at, rather than
+// the requested range's own start, ended up as the effective left edge — see
+// this function's caller for why that boundary needs different treatment.
+func intersectedBackfillSpan(trigger *ScheduleTrigger, b *ScheduleBackfill) (time.Duration, bool) {
+	start, end := b.GetStartAt().AsTime(), b.GetEndAt().AsTime()
+	startFromTrigger := false
+
+	if ts := trigger.GetStartAt(); ts != nil {
+		if t := ts.AsTime(); t.After(start) {
+			start = t
+			startFromTrigger = true
+		}
+	}
+	if ts := trigger.GetEndAt(); ts != nil {
+		if t := ts.AsTime(); t.Before(end) {
+			end = t
+		}
+	}
+
+	switch {
+	case start.After(end):
+		// The trigger's window and the requested range do not overlap at
+		// all — nothing in this range can ever fire, so it contributes
+		// nothing to charge against the limit rather than a negative span.
+		return 0, false
+	case start.Equal(end):
+		// Not the same as "no overlap": if start came from the trigger's own
+		// inclusive start_at, that single instant is both the trigger's
+		// first possible firing and inside the requested range's inclusive
+		// end, so it can itself be a real firing — one this function's
+		// caller charges through startInclusive rather than through span,
+		// since a zero-length span carries no duration for span/period to
+		// divide. If start did not come from the trigger, this coincidence
+		// is the requested range's own exclusive start meeting its own
+		// inclusive end after end_at clipped down to it — genuinely empty,
+		// since the request's own start was never a firing this recovery
+		// asked for in the first place.
+		return 0, startFromTrigger
+	default:
+		return end.Sub(start), startFromTrigger
+	}
+}
+
+// cronDedupeKey normalizes a cron expression to the same form
+// [cronMinimumPeriod] classifies it by, so two spellings that are the
+// identical schedule — differing only in a trailing comment, in surrounding
+// whitespace, or in how many spaces separate two fields — are recognized as
+// the one duplicate they are, and anything short of that stays distinct.
+//
+// strings.Fields splits on any run of whitespace and drops empty results, so
+// rejoining with single spaces collapses "*  * * * * * *" (a stray extra
+// space) to the same key as "* * * * * * *" — both are the identical seven
+// fields to the cluster, which the dedup key has to agree with or a naive
+// byte comparison charges the same cadence twice.
+func cronDedupeKey(expression string) string {
+	return strings.Join(strings.Fields(stripCronComment(expression)), " ")
+}
+
+// calendarsEqual reports whether two calendar specifications fire at exactly
+// the same instants — every field that decides *when* a calendar matches, not
+// necessarily byte-for-byte identical messages. Comment is excluded on
+// purpose: Temporal reads it as documentation, never as part of what a
+// calendar matches, so two calendars whose ranges agree fire identically
+// regardless of what their comments say, and comparing it would refuse a
+// dedup two otherwise-identical calendars are entitled to. Cloned and cleared
+// rather than compared field by field, so a schema field added to this
+// message later is picked up here automatically instead of silently being
+// left out of the comparison.
+func calendarsEqual(a, b *ScheduleTrigger_Calendar) bool {
+	ac, _ := proto.Clone(a).(*ScheduleTrigger_Calendar)
+	bc, _ := proto.Clone(b).(*ScheduleTrigger_Calendar)
+	ac.Comment, bc.Comment = "", ""
+	return proto.Equal(ac, bc)
+}
+
+// stripCronComment removes a trailing comment, and only a trailing one.
+//
+// `#` is two things in a cron expression. Starting a whitespace-separated word
+// it begins a comment; inside a day-of-week field it is the nth-weekday-of-month
+// operator, which this repository accepts and tests (`0 9 * * 5#3`, the third
+// Friday). Cutting at the first `#` wherever it appears conflates them, and the
+// conflation loses fields: `* * * * * 5#3 2030` becomes six fields rather than
+// seven, so a seconds-resolution expression is charged one firing a *minute* —
+// an under-estimate, which is the direction that lets a backfill past the
+// ceiling. A 29-day range over two such Fridays estimates about 41,760 firings
+// against a possible 172,800.
+func stripCronComment(expression string) string {
+	for i := range len(expression) {
+		if expression[i] != '#' {
+			continue
+		}
+		if i == 0 || expression[i-1] == ' ' || expression[i-1] == '\t' {
+			return expression[:i]
+		}
+	}
+	return expression
+}
+
+// isUTC reports whether zone names no offset at all: the empty string
+// (unset, which [checkTimeZoneName] documents as meaning UTC) or a spelling
+// of UTC itself. Every other IANA name is a zone [wallClockCadencePeriod]
+// cannot inspect and therefore cannot bound.
+func isUTC(zone string) bool {
+	return zone == "" || strings.EqualFold(zone, "UTC") || strings.EqualFold(zone, "Etc/UTC")
+}
+
+// wallClockCadencePeriod is the safe minimum period for a cadence that
+// nominally fires once every `nominal` wall-clock duration, in the
+// schedule's own `time_zone`. Applies to every resolution coarser than a
+// second — minute, hour, and whole days or multiples of them — since only
+// second resolution is already the finest granularity this package assumes
+// and cannot be undercut by any offset change.
+//
+// UTC never observes an offset change — there is no daylight-saving or
+// political rule to apply to it — so a UTC cadence really is bound below by
+// its nominal length: two once-an-hour firings cannot be less than 60 real
+// minutes apart, ever, and the same holds at every coarser resolution. Any
+// other named zone is a different problem entirely. This package never
+// resolves `time_zone` against real tzdata (see [checkTimeZoneName]'s doc,
+// and the package doc's rule about keeping I/O off an author's keystroke
+// path — the same reasoning that keeps this whole file estimating rather
+// than evaluating), so nothing here can rule out an offset change of any
+// particular size for whichever zone a schedule names, at any resolution
+// coarser than a second. The familiar spring-forward case shifts by an hour;
+// `America/Caracas` shifted by thirty minutes in 2016, which would undercut
+// an *hourly* calendar's assumed 60-minute floor exactly the way a day-scale
+// shift undercuts a daily one; and IANA's database records changes as large
+// as a whole day (Samoa's 2011 shift). A named zone is therefore charged the
+// fastest cadence there is, at every resolution above a second — the
+// identical fail-closed default an unrecognized cron form gets in
+// [cronMinimumPeriod]. That gives up the ergonomic win this estimate exists
+// for on exactly the schedules that ask for local wall-clock behavior — a
+// real cost, stated here rather than left implicit — but the alternative is
+// a bound this package cannot prove, and an unproven bound is the exact
+// shape of undercount #716 exists to close.
+func wallClockCadencePeriod(zone string, nominal time.Duration) time.Duration {
+	if isUTC(zone) {
+		return nominal
+	}
+	return time.Second
+}
+
+// calendarMinimumPeriod reports the shortest interval a calendar can fire at,
+// read from which of its sub-day fields are populated.
+//
+// Temporal defaults an unwritten second, minute or hour to *zero* rather than to
+// "every" — which is the whole reason a calendar of `hour: 9` means 09:00:00
+// daily and not 3,600 firings between nine and ten. Charging every calendar one
+// firing a second ignores that: it estimates a two-day backfill of that calendar
+// at 172,800 firings and refuses it, for a schedule that produces two.
+//
+// So the ladder walks down from the finest field written. Anything at or below
+// the finest one is defaulted to zero and cannot multiply the count; anything
+// above it is free to be "every", which is already accounted for by the period
+// being no longer than that field's own unit. Every resolution coarser than a
+// second goes through [wallClockCadencePeriod], because every one of them
+// assumes a wall-clock gap bounded below by something — an assumption a named
+// zone's offset change can undercut regardless of which unit it is.
+func calendarMinimumPeriod(calendar *ScheduleTrigger_Calendar, timeZone string) time.Duration {
+	switch {
+	case len(calendar.GetSecond()) > 0:
+		return time.Second
+	case len(calendar.GetMinute()) > 0:
+		return wallClockCadencePeriod(timeZone, time.Minute)
+	case len(calendar.GetHour()) > 0:
+		return wallClockCadencePeriod(timeZone, time.Hour)
+	default:
+		// Second, minute and hour all default to zero, so the calendar fires at
+		// most once on any day it matches at all.
+		return wallClockCadencePeriod(timeZone, 24*time.Hour)
+	}
+}
+
+// cronMinimumPeriod reports the shortest interval an expression accepted by
+// [CheckCronExpression] can fire at, for use as the denominator of a firing
+// count that must never come out too low.
+//
+// It reads the grammar that function reads, in the same order — comment, zone
+// prefix, shorthand, field count — because classifying the raw string instead
+// gets every accepted form but the bare five-field one wrong. `@daily` and
+// `CRON_TZ=UTC 0 9 * * *` are not five whitespace-separated fields, and calling
+// them one-second cadences estimates a two-day backfill of `@daily` at 172,800
+// firings and refuses it, when it produces two.
+//
+// triggerTimeZone is the schedule's own `time_zone`, read when the expression
+// carries no `CRON_TZ=`/`TZ=` prefix of its own — an expression's own prefix
+// overrides the schedule's zone for that one entry, the same precedence
+// Temporal itself gives it, so a day-or-longer shorthand's DST exposure is
+// decided by whichever zone actually governs it.
+//
+// Anything it cannot classify is charged the fastest cadence there is. That is
+// the fail-closed direction here: an over-estimate refuses a backfill somebody
+// then writes more narrowly, where an under-estimate is the fan-out this whole
+// check exists to stop.
+func cronMinimumPeriod(expression string, triggerTimeZone string) time.Duration {
+	expression = strings.TrimSpace(stripCronComment(expression))
+
+	zoneName := triggerTimeZone
+	if zone, rest, found := strings.Cut(expression, " "); found {
+		if after, ok := strings.CutPrefix(zone, "CRON_TZ="); ok {
+			zoneName = after
+			expression = strings.TrimSpace(rest)
+		} else if after, ok := strings.CutPrefix(zone, "TZ="); ok {
+			zoneName = after
+			expression = strings.TrimSpace(rest)
+		}
+	}
+
+	if strings.HasPrefix(expression, "@") {
+		head, rest, _ := strings.Cut(expression, " ")
+		if strings.EqualFold(head, "@every") {
+			// `@every` carries its own interval, and the same reading
+			// CheckCronExpression leaves to the cluster is the one charged
+			// here; an interval it cannot read is charged a second.
+			if period, err := time.ParseDuration(strings.TrimSpace(rest)); err == nil && period > 0 {
+				return period
+			}
+			return time.Second
+		}
+		// The fixed shorthands, each charged the shortest period it can mean:
+		// a month is charged 28 days and a year 365, because a lower bound on
+		// the period is an upper bound on the firings. Every shorthand here
+		// goes through [wallClockCadencePeriod] for the same reason
+		// [calendarMinimumPeriod]'s every-resolution-but-second case does:
+		// each fires on a wall-clock boundary, whose minimum gap this
+		// package can bound only in UTC, regardless of whether the boundary
+		// is an hour or a year.
+		switch strings.ToLower(head) {
+		case "@hourly":
+			return wallClockCadencePeriod(zoneName, time.Hour)
+		case "@daily", "@midnight":
+			return wallClockCadencePeriod(zoneName, 24*time.Hour)
+		case "@weekly":
+			return wallClockCadencePeriod(zoneName, 7*24*time.Hour)
+		case "@monthly":
+			return wallClockCadencePeriod(zoneName, 28*24*time.Hour)
+		case "@yearly", "@annually":
+			return wallClockCadencePeriod(zoneName, 365*24*time.Hour)
+		default:
+			return time.Second
+		}
+	}
+
+	switch len(strings.Fields(expression)) {
+	case 5, 6:
+		// Minute-resolution: the five ordinary fields, and the same five with a
+		// year appended. Routed through [wallClockCadencePeriod] for the same
+		// reason the shorthands above are: an ordinary cron entry fires on a
+		// wall-clock minute boundary, whose minimum gap this package can
+		// bound only in UTC. A named zone can shift by more than a minute at
+		// an offset change, so a sub-minute rollback can repeat a matching
+		// local minute in under sixty seconds.
+		return wallClockCadencePeriod(zoneName, time.Minute)
+	default:
+		// Seven fields put seconds first. Anything else is not an expression
+		// CheckCronExpression accepts, and is charged the fastest cadence.
+		return time.Second
+	}
+}
 
 // CheckScheduleBackfill bounds an operator-requested historical replay before
 // it can turn a short outage into an unbounded burst of executions.

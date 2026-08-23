@@ -4,6 +4,25 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue. #489's lesson — four pull requests merged inside ninety
+  # seconds broke main, because each one's CI proved only "this branch merged
+  # with the main that existed when the run started" — was, until now,
+  # implemented as a human waiting between merges. That is a mechanism made of
+  # attention, and it costs a full six-minute main cycle per merge: twenty-five
+  # merges in one evening is two and a half hours of somebody watching.
+  #
+  # A merge queue is the mechanism that lesson deserved. GitHub builds the
+  # *prospective* merge — this pull request on top of everything ahead of it in
+  # the queue — and runs the required checks against that, which is precisely
+  # the artifact #489 says nothing was testing. It also batches, so N pull
+  # requests cost roughly N/batch-size runs rather than N serialized cycles, and
+  # a failure ejects the offending pull request instead of breaking main.
+  #
+  # Every merge_group run is a full run: see ciForceReason in tools/gate/ci.go.
+  # The diff-scoping below is a pull-request-lane optimisation, and the queue is
+  # the last gate before main, so main's protection never rests on the plan
+  # being right.
+  merge_group:
 
 # Read-only by default, and every job inherits it. A workflow that needs to write
 # something should say so on the job that needs it rather than here, so a token
@@ -32,7 +51,7 @@ permissions:
 env:
   BUF_VERSION: v1.72.0
   GOVULNCHECK_VERSION: v1.6.0
-  STATICCHECK_VERSION: 2026.1
+  STATICCHECK_VERSION: 2026.2.1
   VHS_VERSION: v0.11.0
   TTYD_VERSION: 1.7.7
   TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
@@ -44,13 +63,90 @@ env:
 #
 # main is deliberately excluded from cancellation: its runs are the record of
 # whether a commit was good when it landed, and cancelling one leaves a gap in
-# that record rather than saving anything worth having.
+# that record rather than saving anything worth having. A merge group is
+# excluded for a sharper reason: cancelling one does not save work, it strands
+# the queue — the required checks for that group never report, and everything
+# behind it waits on an answer that is never coming.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
 
 jobs:
+  # ── Which of the jobs below can this diff actually reach? ─────────────────
+  #
+  # A pull request changing one markdown file used to run appearance,
+  # fuzz-smoke, proto, staticcheck and test. None of those can be affected by
+  # that file, and around twenty-five such runs went through in a single
+  # evening.
+  #
+  # The rule that decides it is not written here. `tools/gate` already computes
+  # the changed files against the merge-base with origin/main, maps them to Go
+  # packages, and expands to every package whose build *or tests* can see a
+  # changed one — including the two cases a path filter cannot express at all:
+  # a package reached only through the import graph, and a package that reads
+  # examples/ off disk with no import anywhere (#589). `go run ./tools/gate -ci`
+  # points that same computation at this file's jobs.
+  #
+  # Writing `paths:` filters here instead would be this repository's
+  # most-repeated defect — one value written down twice — in its worst venue:
+  # the copy in YAML cannot be unit tested, cannot see the import graph, and
+  # drifts in silence. tools/gate/ci_test.go pins this file's job list against
+  # the plan's, so the two cannot drift apart without a test failing.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      test: ${{ steps.plan.outputs.test }}
+      proto: ${{ steps.plan.outputs.proto }}
+      vulncheck: ${{ steps.plan.outputs.vulncheck }}
+      staticcheck: ${{ steps.plan.outputs.staticcheck }}
+      fuzz_smoke: ${{ steps.plan.outputs.fuzz_smoke }}
+      appearance: ${{ steps.plan.outputs.appearance }}
+      # The same answers again as one JSON object, which is what the verdict
+      # job reads. Deliberately the *same* object the `if:` expressions on the
+      # jobs below are driven from: a verdict computed from a second source
+      # could agree with a plan nobody ran.
+      decisions: ${{ steps.plan.outputs.decisions }}
+    steps:
+      # fetch-depth: 0 rather than the shallow default, because a merge-base
+      # does not exist in a one-commit history. It costs nothing here — the
+      # pack is about five megabytes over three hundred-odd commits — and it is
+      # the difference between asking "what did this branch change" and
+      # guessing.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # persist-credentials / cache: — see the test job below. #577.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      # `+main:` forces the local ref, so a rerun on a branch whose base has
+      # moved does not fail on a non-fast-forward. Unauthenticated because
+      # persist-credentials: false left no token behind, which is fine for a
+      # public repository and is exactly what the test job's own base fetch
+      # already relies on.
+      - name: Fetch the base branch the plan is computed against
+        run: git fetch --no-tags origin +main:refs/remotes/origin/main
+
+      # -ci prints one line per job saying it runs or why it does not, writes a
+      # table to the run summary, and publishes the decisions as outputs. It
+      # runs no checks and fails on no finding: a wrong answer here is a job
+      # that did not run, and the verdict job is what turns that into red.
+      #
+      # The event name arrives through GITHUB_EVENT_NAME, which Actions sets.
+      # Anything other than pull_request forces the full set — see
+      # ciForceReason.
+      - name: Which jobs can this diff reach
+        id: plan
+        run: go run ./tools/gate -ci
+
   test:
+    needs: plan
+    if: needs.plan.outputs.test == 'true'
     runs-on: ubuntu-latest
     # A hung job otherwise runs to the six-hour default. Nothing here takes more
     # than a few minutes, so this bounds a stuck dev server or a wedged test
@@ -188,6 +284,27 @@ jobs:
       - name: Examples are in the current edition
         run: go run ./cmd/flow fix --check examples/
 
+      # Tier 4 of the style charter (docs/STYLE.md, Part II), over the corpus R8
+      # holds to `shown ⊆ canonical`. Enforcing since #646's corpus slice: the
+      # 21 findings the check landed with (#865, measured in Part III) are
+      # resolved, so `--strict` makes a finding an exit code and there is no
+      # `continue-on-error` to swallow it.
+      #
+      # That is the charter's own staging finished rather than a promotion of
+      # the tier: `flow lint` still exits 0 on findings by default everywhere
+      # else, and nothing here refuses a file. What is enforced is narrower and
+      # is a repository property rather than a language one — *the shown corpus*
+      # stays in the style the corpus is cited as an example of, so a new
+      # example cannot land carrying a shape docs/STYLE.md tells readers not to
+      # write.
+      #
+      # The half of R8 that is not this step needs no step here: the fenced
+      # Flowfiles in README.md, docs/DSL.md, docs/ARCHITECTURE.md and
+      # docs/STYLE.md are linted by TestShownWorkflowsAreLintClean in the test
+      # run above, and they are clean.
+      - name: Examples in the canonical style
+        run: go run ./cmd/flow lint --strict examples/
+
       # `flow test` is the reachability gate for #155: at least one example's
       # own *.test.yaml runs here, so "a workflow can test itself" is a claim
       # this job checks rather than one the design doc merely makes.
@@ -230,6 +347,8 @@ jobs:
   # plugin in the wild rather than producing a compile error someone can see. That
   # is why this is its own job — a schema failure is not a broken test.
   proto:
+    needs: plan
+    if: needs.plan.outputs.proto == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -241,9 +360,19 @@ jobs:
           persist-credentials: false
 
       # cache: — see the test job above; fork PRs restore but don't save. #577.
+      #
+      # cache-dependency-path names .github/cache-scope/proto beside go.sum so
+      # this job's build cache has a key of its own. Six jobs asking for one
+      # key means one of them saves and the other five are told the key is
+      # taken, so `buf` was rebuilt from source most runs — fifty-two seconds
+      # of the Lint step below. The file's contents are arbitrary; only their
+      # difference from the other jobs' matters. See the README beside it.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/cache-scope/proto
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Forty-three rules, all of them enforced everywhere.
@@ -278,16 +407,25 @@ jobs:
       # generated code, so the same `git diff --exit-code` catches a set that
       # describes a schema which has since moved. --exclude-imports keeps it to
       # this repository's own schema rather than googleapis and protovalidate.
+      #
+      # The third is the same artifact for the example plugin's own schema,
+      # which is what carries a plugin author's field comments to an editor
+      # (#723). It is a separate buf module, so it needs its own build; it is
+      # under the same pin, because a plugin's prose can go stale exactly the
+      # way the engine's can.
       - name: Verify generated code is current
         run: |
           go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} generate
           go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb
+          go run github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }} build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto
           git diff --exit-code -- . || {
             echo "::error::generated code does not match the schema; run 'make check' (or 'buf generate' plus the 'buf build' line beside it) and commit the result"
             exit 1
           }
 
   vulncheck:
+    needs: plan
+    if: needs.plan.outputs.vulncheck == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -316,6 +454,8 @@ jobs:
   # the point of a test kept with a `//lint:ignore` saying why. The tree is at
   # zero, so from here a finding is something this diff introduced.
   staticcheck:
+    needs: plan
+    if: needs.plan.outputs.staticcheck == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -323,9 +463,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # cache-dependency-path: a key of this job's own, so staticcheck's own
+      # build is cached against itself rather than against whichever job won
+      # the shared key that run. This is the job the contention cost most:
+      # eighty-five seconds of the step below was building staticcheck from
+      # source. See .github/cache-scope/README.md.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/cache-scope/staticcheck
           cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Same toolchain pin as govulncheck, and for the same reason: staticcheck's
@@ -333,83 +481,89 @@ jobs:
       # downgrades underneath itself and then fails type-checking the standard
       # library vendored into the newer toolchain's module cache — not a finding
       # about this tree at all.
+      #
+      # STATICCHECK_VERSION above moves with this pin rather than independently:
+      # a release older than the toolchain cannot decode its export data, and
+      # says so per standard-library package instead of reporting findings. See
+      # CLAUDE.md.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
+        run: GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@${{ env.STATICCHECK_VERSION }} ./...
 
-  # The one job with a real identity provider on the other end. Everything in
-  # pkg/flowstate/v1/auth verifies tokens from an in-process stand-in issuer,
-  # which proves this repository's reading of the specification and cannot prove
-  # that the provider people actually configure still serves what that reading
-  # assumes. Here the runner mints a genuine OIDC token, discovery runs against
-  # token.actions.githubusercontent.com, and the policy pins the repository
-  # claim to whichever repository is running the job, so a fork proves the same
-  # thing about itself rather than passing on a loose assertion.
+  # The real-issuer OIDC check used to live here as a job gated on the auth
+  # package being affected. It moved to federation.yml (push to main only)
+  # rather than staying a conditional PR job: `id-token: write` combined with a
+  # checkout of the pull request's own head let PR-authored code request and
+  # exfiltrate a live GitHub Actions OIDC token, and no `if:` condition closes
+  # that — the job still has to check out attacker-controlled code to decide
+  # whether to run the privileged step in the first place. Verifying the real
+  # issuer only after code has reached the protected main branch removes the
+  # untrusted-code precondition entirely rather than gating around it. See
+  # federation.yml for the check itself and why it deliberately has no
+  # pull_request trigger.
   #
-  # `id-token: write` is why this is a separate job rather than a step in the
-  # test job: it is what makes the runner's token endpoint answer at all, and it
-  # is granted to this job only. `contents: read` is restated because naming
-  # permissions on a job replaces the top-level block for that job rather than
-  # adding to it, and every other job keeps the read-only default untouched.
-  #
-  # Network to the issuer is a precondition, not an accident: this is the only
-  # check here that talks to a third party at run time. The test skips, loudly
-  # and with a sentence, anywhere the token endpoint is absent, so the same
-  # command is honest on a laptop and on a fork without the permission.
-  #
-  # Required since 2026-08-10: the 48h advisory window CLAUDE.md gives every
-  # newly added check (the same one staticcheck and the fuzz smoke job had, for
-  # the same reason, a check nobody has run against this tree can go red on code
-  # nobody touched) opened when this job landed on 2026-08-08 and closed with the
-  # job green on every main run since. So a failure here is now a finding to
-  # read, never flake to wave through: either the provider changed, or this
-  # repository cannot federate the identity it claims to.
-  federation:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      # persist-credentials / cache: — see the test job above. #577.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-
-      # -run so this job is the real-issuer check and nothing else; the offline
-      # auth tests already run in the test job, and running them twice would
-      # make a failure here ambiguous about which half broke.
-      - name: Verify a real CI token against the real issuer
-        # FLOWSTATE_REQUIRE_REAL_TOKEN turns the test's everywhere-else skip
-        # into a failure here: this job exists to run the live check, so an
-        # absent token endpoint means the grant or the variables regressed, and
-        # a green skip would be the gate passing while verifying nothing.
-        run: FLOWSTATE_REQUIRE_REAL_TOKEN=1 GOMEMLIMIT=1GiB go test -v -timeout 300s -run TestRealCIToken ./pkg/flowstate/v1/auth/
+  # This also means the `federation` name is no longer one of the jobs the
+  # plan can select and `verdict` aggregates — removing it here, from `plan`'s
+  # outputs above, and from `verdict`'s `needs:` below is the whole change;
+  # verdict already needs nothing job-specific to reflect that, since it fails
+  # unless every job the plan *did* select succeeded and every job it did not
+  # select was skipped.
 
   # Bounded per CLAUDE.md's fuzz recipe: `-parallel 1` and a memory limit because a
   # fuzzer's purpose is to find the input that explodes, `-fuzztime 30s` per target
-  # because that bounds time and not memory. Five targets now: the round-trip one
+  # because that bounds time and not memory. Six targets now: the round-trip one
   # that existed first, the three the roadmap called for — CEL compile, MCP
-  # tool-argument decode, plugin descriptor parsing — and the marshal round trip
-  # added with #513's escape, each its own step so one hanging does not hide the
-  # others' output. The last is not a duplicate of the first: FuzzRoundTrip
-  # explores whole documents and asserts the workflow survives, while this one
-  # varies one scalar in a fixed document and asserts the two things that failed
-  # independently of proto equality — that the bytes written still validate,
-  # which is `flow fmt`'s whole promise, and that marshalling twice is a fixed
-  # point. Five times 30s is still comfortably under this job's five-minute
-  # budget alongside checkout and setup. Required
+  # tool-argument decode, plugin descriptor parsing — the marshal round trip added
+  # with #513's escape, and FuzzWebhookEventBinding added for #799. The marshal round trip is
+  # not a duplicate of the first: FuzzRoundTrip explores whole documents and
+  # asserts the workflow survives, while this one varies one scalar in a fixed
+  # document and asserts the two things that failed independently of proto
+  # equality — that the bytes written still validate, which is `flow fmt`'s whole
+  # promise, and that marshalling twice is a fixed point. FuzzWebhookEventBinding
+  # is not a duplicate of FuzzMCPToolArguments either: that one decodes untrusted
+  # JSON against a proto schema and stops; this one carries a decoded delivery all
+  # the way through NewWebhookEvent and BindWebhookTriggerInputs into a CEL
+  # activation and an evaluated idempotency key — the unauthenticated-network-input
+  # path #799 found with zero fuzz reachability, the most attacker-reachable one in
+  # the repo. Six times 30s measured at 280s total for five (docs/CI.md, PR #659,
+  # 2026-08-15) — already most of the five-minute budget the comment this replaces
+  # claimed was comfortable — so the sixth target moved this job to
+  # `timeout-minutes: 6` rather than leaving a ~20s margin against a runner having
+  # an ordinary slow day.
+  #
+  # Ten now: #403's audit found the coverage map had holes where this repository's
+  # own history says bugs live, and four of them landed together. Two are the
+  # rewriters' *properties* rather than their crash-freedom —
+  # FuzzFixIdempotent and FuzzFormatIdempotent assert a fixed point, all-of-the-
+  # document-or-none (#382), and preservation, which is the class where every
+  # historical defect (both `flow fix` corruptions, #339, #381) produced bytes
+  # rather than a panic and so was invisible to a crash oracle. FuzzCELEvaluate is
+  # the runtime half of the CEL bound that FuzzCELCompile does not reach: the cost
+  # budget is spent by the interpreter, and what it is spent on is decided as much
+  # by the activation's data as by the expression's text. FuzzLSPDocumentEdits
+  # drives an editor's incremental edits and position requests, and found a
+  # backwards completion-edit range on its own seed corpus the first time it ran.
+  # Four more targets at 30s each puts the same linear estimate near 470s, so the
+  # job moves to `timeout-minutes: 10` on the identical reasoning: leave a real
+  # margin rather than a slow runner's worth.
+  #
+  # Eleven since #403's item 3 landed the other half of the LSP surface:
+  # FuzzLSPFrames takes the frame decoder and the read-loop dispatch upstream of
+  # the recover that FuzzLSPDocumentEdits documents itself as looking through. It
+  # costs 30s and no compile — it shares the lsp test binary with the target
+  # already here — which puts the estimate near 500s, still inside this budget.
+  # #403's item 4, FuzzSignalDeliveryDecode, is deliberately deep-only: its
+  # package links the Temporal SDK, and this tier is where a link that long is
+  # the thing being paid for rather than the fuzzing. Required
   # since 2026-08-09: its 48h advisory window (the same one staticcheck had)
   # closed on 2026-08-04 and the job has run green since, so a failure here is
   # now a finding to triage, never flake to wave through. A crasher the fuzzer
   # finds is a real defect with a corpus entry to commit, and a broken fuzz
   # harness is a broken check.
   fuzz-smoke:
+    needs: plan
+    if: needs.plan.outputs.fuzz_smoke == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -424,20 +578,19 @@ jobs:
       # source plus whatever it generates this run; a runner-local checkout means
       # generated corpus entries never persist between runs and never pollute a
       # commit.
-      - name: Fuzz smoke (FuzzRoundTrip)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzCELCompile)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzMarshalRoundTrip)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMarshalRoundTrip -fuzztime 30s ./pkg/flowstate/v1/flowfile/
-
-      - name: Fuzz smoke (FuzzMCPToolArguments)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 30s ./cmd/flow/
-
-      - name: Fuzz smoke (FuzzMessageDescriptor)
-        run: GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 30s ./pkg/flowstate/v1/plugin/
+      #
+      # One step running `make fuzz-smoke` rather than one step per target, and
+      # the target list read from tools/fuzztargets/targets.txt rather than
+      # spelled here (#857). The same trade the `test` job already makes: a job
+      # holding its own copy of a command list is a copy that drifts, and this
+      # one had — the weekly deep tier ran four of the ten targets this job ran,
+      # because each of the four places holding the list was kept by hand. The
+      # per-step boundary that is lost was there so a hanging target did not hide
+      # the others' output; the Makefile's loop prints `==> <target>` before each
+      # one and every target's output still streams into this step's log, so the
+      # hanging one is still the last one named.
+      - name: Fuzz smoke (every target in the smoke tier)
+        run: make fuzz-smoke
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
   # real terminal and the goldens under cmd/flow/internal/appearance/testdata say
@@ -465,6 +618,8 @@ jobs:
   # intended one, re-record with `make appearance-update` and commit the goldens
   # in the same change that moved the surface.
   appearance:
+    needs: plan
+    if: needs.plan.outputs.appearance == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: true
@@ -502,3 +657,97 @@ jobs:
       # pay for its own download.
       - name: Record and compare
         run: GOMEMLIMIT=2GiB go test -timeout 900s -count=1 -run TestAppearance ./cmd/flow/internal/appearance/
+
+  # ── The one check that decides ───────────────────────────────────────────
+  #
+  # This job and `plan` are the two required checks. None of the jobs above is
+  # required, and that inversion is the whole safety argument, because GitHub's
+  # semantics for a conditional required check fail in both directions:
+  #
+  #   * A required job skipped by an `if:` reports the conclusion `skipped`,
+  #     and a required status check treats `skipped` as satisfied. A job that
+  #     never looked at anything would report as a gate that passed. That is
+  #     the worst failure a gate has, and it is the *default* behaviour.
+  #   * A required check that never reports at all — the shape you get from a
+  #     workflow-level `paths:` filter, because the whole workflow is skipped
+  #     and produces no check runs — stays pending forever and blocks the
+  #     merge with no way to clear it.
+  #
+  # So neither "make the conditional jobs required" nor "filter the workflow by
+  # path" is available. What is available is a job that always runs, knows what
+  # the plan selected, and can see what every other job actually did. That is
+  # this one. `if: always()` means it reports on every run, including runs where
+  # something above failed or was skipped, so the required check is never
+  # missing; and it re-reads the plan rather than trusting a green tick, so a
+  # skip can only ever be a decision the plan made in writing.
+  #
+  # Read the four cases below as the answer to "how is a skipped-but-required
+  # check prevented from failing open": a job the plan selected must have
+  # succeeded, a job the plan did not select must have been skipped, a job the
+  # plan named that has no result at all is a failure, and a job in this file
+  # the plan never heard of is a failure too. The last two are the drift cases,
+  # and tools/gate/ci_test.go catches them before a push rather than after.
+  #
+  # One honest limitation, stated rather than left to be discovered: while
+  # `appearance` carries `continue-on-error: true`, its `needs` result is
+  # `success` even when it fails, so this job cannot distinguish those. That is
+  # what advisory means, and it is the only job here it applies to.
+  verdict:
+    needs: [plan, test, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # No checkout: this job reads two JSON documents and compares them. Not
+      # cloning the repository is one fewer thing that can go wrong in the job
+      # whose whole purpose is to be the check that cannot be wrong.
+      - name: Every job the plan selected ran and passed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PLAN: ${{ needs.plan.outputs.decisions }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+
+          if [ "${PLAN_RESULT}" != "success" ]; then
+            echo "::error::the plan job did not succeed (result: ${PLAN_RESULT}), so nothing is established about this diff and this check fails rather than reporting a pass it cannot justify"
+            exit 1
+          fi
+          if ! printf '%s' "${PLAN}" | jq -e 'type == "object" and (keys | length) > 0' >/dev/null; then
+            echo "::error::the plan job succeeded but published no decisions; treating that as a failure rather than as an empty set of obligations"
+            exit 1
+          fi
+
+          status=0
+
+          # Direction one: every job the plan named must have the result the
+          # plan implies. `true:success` and `false:skipped` are the only two
+          # readings that mean the gate looked at what it was meant to.
+          while read -r job want; do
+            got=$(printf '%s' "${RESULTS}" | jq -r --arg j "$job" '.[$j].result // "absent"')
+            case "${want}:${got}" in
+              true:success)
+                echo "ok       ${job}: ran and passed" ;;
+              false:skipped)
+                echo "ok       ${job}: skipped, and the plan says this diff cannot reach it" ;;
+              true:*)
+                echo "::error::${job} was selected by the plan for this diff but its result was '${got}'"
+                status=1 ;;
+              false:*)
+                echo "::error::${job} produced a result ('${got}') although the plan did not select it; the plan and that job's if: condition disagree, which means one of them is not the rule"
+                status=1 ;;
+            esac
+          done < <(printf '%s' "${PLAN}" | jq -r 'to_entries[] | "\(.key) \(.value)"')
+
+          # Direction two: every job this workflow has must be one the plan
+          # decided. A job added to ci.yml and not to ciDecisions would
+          # otherwise run, or not run, with nothing here obliged to care.
+          for job in $(printf '%s' "${RESULTS}" | jq -r 'keys[]'); do
+            [ "${job}" = "plan" ] && continue
+            if ! printf '%s' "${PLAN}" | jq -e --arg j "${job}" 'has($j)' >/dev/null; then
+              echo "::error::job '${job}' exists in this workflow but the plan does not decide it; add it to ciDecisions in tools/gate/ci.go"
+              status=1
+            fi
+          done
+
+          exit "${status}"

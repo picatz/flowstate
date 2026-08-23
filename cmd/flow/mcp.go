@@ -155,7 +155,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// The local half is the server's own handlers over no Temporal client: one
 	// implementation of Validate, whoever calls it. See server/validate.go for
 	// why a nil client is safe for exactly these two methods.
-	local := server.New(nil)
+	local, err := server.New(nil)
+	if err != nil {
+		return err
+	}
 
 	deps := flowmcp.Deps{
 		Redact: func(response *v1.GetResponse) *v1.GetResponse {
@@ -166,7 +169,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	deps.RemoteCatalogAddress = remoteCatalogAddressFor(cmd, flags)
 	extra := []flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(cmd)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
+		// No timeout: stdio's single caller is the process that launched this
+		// one, and this surface is unchanged by the bound `flow mcp serve`
+		// applies for its own reasons. See [testToolHandler].
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
 	}
 
 	return flowmcp.ServeTools(cmd.Context(), flowmcp.NewServer(version), local, remoteClient, deps, extra...)
@@ -482,7 +488,7 @@ type testToolArguments struct {
 // this surface that changes what a stubbed run may do, because a stubbed run
 // never reaches anything a flag could govern in the first place. See the
 // package comment above [flowmcp.TestToolName].
-func testToolHandler() mcp.ToolHandler {
+func testToolHandler(timeout time.Duration) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args testToolArguments
 
@@ -511,7 +517,43 @@ func testToolHandler() mcp.ToolHandler {
 					"\"tests:\\n  - name: it runs\\n    expect:\\n      failed: false\"")), nil
 		}
 
-		report := flowtest.RunSource("<submitted>", []byte(args.Workflow), []byte(args.Tests))
+		// timeout <= 0 is stdio's posture, unchanged: one trusted caller, at a
+		// terminal or behind an agent host it launched, who can interrupt a
+		// case the virtual clock cannot advance past. A positive timeout is
+		// what `flow mcp serve` passes, because there the submitted workflow
+		// is untrusted input and a `wait_for_signal:` with no timeout and no
+		// scripted signal is a legal Flowfile that never completes — see
+		// [flowtest.RunSourceContext].
+		runCtx := context.Background()
+		if timeout > 0 {
+			var cancel context.CancelFunc
+			// Derived from the request's context, so a caller that
+			// disconnects also ends the run rather than leaving it to burn
+			// the whole budget with nobody left to answer.
+			runCtx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+
+		report := flowtest.RunSourceContext(runCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests))
+
+		// A serving deadline must never be readable as a workflow's own
+		// failure. [flowtest] compares a case's `expect.failed` against
+		// whether the run returned an error, and a cancelled context produces
+		// one — so a case that expected failure would *pass* on a workflow
+		// that never completed, every later case would run against an already
+		// expired context and pass the same way, and the tool would answer
+		// success. The report is therefore discarded outright when the bound
+		// this handler imposed is what ended the run: an answer about cases
+		// that were never really run is worse than no answer. Reported by
+		// Codex on picatz/flowstate#807.
+		if runCtx.Err() != nil {
+			return flowmcp.ToolError(fmt.Errorf(
+				"the submitted tests did not finish within %s and were stopped, so no verdict is "+
+					"reported: a case that never completes is usually a `wait_for_signal:` with no "+
+					"`timeout:` and no stub scripting its signal, which parks the virtual clock with "+
+					"no deadline to advance to. Script the signal, give the wait a timeout, or split "+
+					"the file into smaller cases", timeout)), nil
+		}
 
 		encoded, err := renderTestResult(report)
 		if err != nil {
@@ -567,62 +609,82 @@ const maxTestFailureMessageBytes = 4 << 10
 // the ladder, and the floor that is returned whether or not it fits are the
 // same ones [renderRunLocalResult] already established.
 func renderTestResult(report *v1.TestReport) ([]byte, error) {
-	encoded, err := marshalJSON(report, false)
-	if err != nil {
-		return nil, fmt.Errorf("rendering the report: %w", err)
-	}
-	if len(encoded) <= flowmcp.MaxResultBytes {
-		return encoded, nil
-	}
-
-	// First, cap every failure's own message: a mismatch's %v of a large
-	// stubbed or computed value is the one part of this document a case
-	// controls the size of, and capping it keeps every case, every verdict,
-	// and every field/step/value a diagnostic named.
 	trimmed, ok := proto.Clone(report).(*v1.TestReport)
 	if !ok {
 		return nil, errors.New("rendering the report: the report is not a TestReport")
 	}
-	for _, c := range trimmed.GetCases() {
-		for _, f := range c.GetFailures() {
-			if len(f.GetMessage()) > maxTestFailureMessageBytes {
-				f.Message = f.GetMessage()[:maxTestFailureMessageBytes] +
-					fmt.Sprintf("... (truncated, exceeded %d bytes)", maxTestFailureMessageBytes)
-			}
-		}
-	}
-	encoded, err = marshalJSON(trimmed, false)
-	if err != nil {
-		return nil, fmt.Errorf("rendering the report: %w", err)
-	}
-	if len(encoded) <= flowmcp.MaxResultBytes {
-		return encoded, nil
-	}
 
-	// Still too big — enough cases with enough failures each that even capped
-	// messages do not fit. Report per-case verdicts only, dropping the
-	// diagnostics themselves down to a count: a report with no verdicts at
-	// all is worse than no answer, so this floor is returned whether or not
-	// it fits, the same reasoning [renderRunLocalResult]'s own last rung
-	// gives for the fields nothing further can drop.
-	summary := &v1.TestReport{File: report.GetFile(), Refused: report.GetRefused()}
-	for _, c := range trimmed.GetCases() {
-		caseError := c.GetError()
-		if caseError == "" && len(c.GetFailures()) > 0 {
-			caseError = fmt.Sprintf(
-				"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
-				len(c.GetFailures()), flowmcp.MaxResultBytes)
-		}
-		summary.Cases = append(summary.Cases, &v1.TestCase{
-			Name:     c.GetName(),
-			Passed:   c.GetPassed(),
-			Duration: c.GetDuration(),
-			Error:    caseError,
-		})
-	}
-	encoded, err = marshalJSON(summary, false)
+	encoded, _, err := flowmcp.FitResult(
+		func() ([]byte, error) {
+			encoded, err := marshalJSON(report, false)
+			if err != nil {
+				return nil, fmt.Errorf("rendering the report: %w", err)
+			}
+
+			return encoded, nil
+		},
+
+		// First, cap every failure's own message: a mismatch's %v of a large
+		// stubbed or computed value is the one part of this document a case
+		// controls the size of, and capping it keeps every case, every verdict,
+		// and every field/step/value a diagnostic named.
+		func() ([]byte, error) {
+			for _, c := range trimmed.GetCases() {
+				for _, f := range c.GetFailures() {
+					if len(f.GetMessage()) > maxTestFailureMessageBytes {
+						// ToValidUTF8 because the cut lands wherever the byte
+						// count does, and protojson refuses to marshal a string
+						// field holding invalid UTF-8 — slicing mid-rune would
+						// turn a large answer into an encoding error, which is
+						// the failure this ladder exists to replace arriving by
+						// a different door.
+						f.Message = strings.ToValidUTF8(f.GetMessage()[:maxTestFailureMessageBytes], "") +
+							fmt.Sprintf("... (truncated, exceeded %d bytes)", maxTestFailureMessageBytes)
+					}
+				}
+			}
+
+			encoded, err := marshalJSON(trimmed, false)
+			if err != nil {
+				return nil, fmt.Errorf("rendering the report: %w", err)
+			}
+
+			return encoded, nil
+		},
+
+		// Still too big — enough cases with enough failures each that even capped
+		// messages do not fit. Report per-case verdicts only, dropping the
+		// diagnostics themselves down to a count: a report with no verdicts at
+		// all is worse than no answer, so this floor is returned whether or not
+		// it fits, the same reasoning [renderRunLocalResult]'s own last rung
+		// gives for the fields nothing further can drop.
+		func() ([]byte, error) {
+			summary := &v1.TestReport{File: report.GetFile(), Refused: report.GetRefused()}
+			for _, c := range trimmed.GetCases() {
+				caseError := c.GetError()
+				if caseError == "" && len(c.GetFailures()) > 0 {
+					caseError = fmt.Sprintf(
+						"%d failure(s); their diagnostics were dropped because the answer exceeded %d bytes",
+						len(c.GetFailures()), flowmcp.MaxResultBytes)
+				}
+				summary.Cases = append(summary.Cases, &v1.TestCase{
+					Name:     c.GetName(),
+					Passed:   c.GetPassed(),
+					Duration: c.GetDuration(),
+					Error:    caseError,
+				})
+			}
+
+			encoded, err := marshalJSON(summary, false)
+			if err != nil {
+				return nil, fmt.Errorf("rendering the report: %w", err)
+			}
+
+			return encoded, nil
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("rendering the report: %w", err)
+		return nil, err
 	}
 
 	return encoded, nil
@@ -756,75 +818,121 @@ type runLocalResult struct {
 // bytes no caller can read, which converts a large answer into no answer at all;
 // dropping a part and *saying so* leaves the status and the reason — the two
 // things a model needs to decide what to do next — intact.
+// The rungs, and the floor's own reason for being returned whether or not it
+// fits, are unchanged; what left is [flowmcp.FitResult] doing the measuring, so
+// the "re-encode, re-measure, stop at the first that fits" discipline this
+// function used to spell out by hand is the same code the other two shrinking
+// answers on this surface run.
 func renderRunLocalResult(response *v1.GetResponse, logs []runLocalLogRecord) ([]byte, error) {
 	run, err := marshalJSON(response, false)
 	if err != nil {
 		return nil, fmt.Errorf("rendering the run: %w", err)
 	}
 
-	encoded, err := json.Marshal(runLocalResult{Run: run, Logs: logs})
-	if err != nil {
-		return nil, fmt.Errorf("rendering the answer: %w", err)
-	}
-	if len(encoded) <= flowmcp.MaxResultBytes {
-		return encoded, nil
-	}
-
-	// First the logs, which are commentary on the outputs.
-	result := runLocalResult{
-		Run:  run,
-		Note: fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", flowmcp.MaxResultBytes),
-	}
-	encoded, err = json.Marshal(result)
-	if err != nil {
-		return nil, fmt.Errorf("rendering the answer: %w", err)
-	}
-	if len(encoded) <= flowmcp.MaxResultBytes {
-		return encoded, nil
-	}
-
-	// Then the step transcript, keeping the status, the timing, any error, and
-	// the run's declared outputs — a run reported without its transcript is
-	// still an answer; an unparsable document is not.
 	trimmed, ok := proto.Clone(response).(*v1.GetResponse)
 	if !ok {
 		return nil, errors.New("rendering the answer: the run is not a GetResponse")
 	}
-	if trimmed.GetOutputs() != nil {
-		trimmed.Kind = nil
-	}
 
-	encoded, err = renderTrimmedRun(trimmed, fmt.Sprintf(
-		"the step outputs and logs were dropped: the answer exceeded %d bytes. "+
-			"Have the workflow carry less, or read the values it needs in a step of its own",
-		flowmcp.MaxResultBytes))
+	encoded, _, err := flowmcp.FitResult(
+		func() ([]byte, error) {
+			encoded, err := json.Marshal(runLocalResult{Run: run, Logs: logs})
+			if err != nil {
+				return nil, fmt.Errorf("rendering the answer: %w", err)
+			}
+
+			return encoded, nil
+		},
+
+		// First the logs, which are commentary on the outputs.
+		func() ([]byte, error) {
+			encoded, err := json.Marshal(runLocalResult{
+				Run:  run,
+				Note: fmt.Sprintf("logs were dropped: the answer exceeded %d bytes", flowmcp.MaxResultBytes),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("rendering the answer: %w", err)
+			}
+
+			return encoded, nil
+		},
+
+		// Then the step transcript, keeping the status, the timing, any error, and
+		// the run's declared outputs — a run reported without its transcript is
+		// still an answer; an unparsable document is not.
+		//
+		// Reduced rather than cleared. `GetResponse.kind` is a required oneof, so
+		// clearing it answers with a document protojson accepts and v1.Validate
+		// rejects; the transcript arm keeps a bounded subset of its real steps
+		// instead. See [flowmcp.ReduceTranscript], which is the same reduction
+		// flowstate_get performs, for why nothing is synthesized to stand in for
+		// what was omitted. Found by review on #853, in this ladder as well as in
+		// the one that borrowed its shape.
+		func() ([]byte, error) {
+			note := "the step outputs and logs were dropped"
+
+			if outputs := trimmed.GetOutputs(); outputs != nil {
+				kept, total := flowmcp.ReduceTranscript(outputs)
+				note = fmt.Sprintf(
+					"the logs were dropped and the step outputs reduced to %d of their %d steps",
+					kept, total)
+			}
+
+			return renderTrimmedRun(trimmed, fmt.Sprintf(
+				"%s: the answer exceeded %d bytes. "+
+					"Have the workflow carry less, or read the values it needs in a step of its own",
+				note, flowmcp.MaxResultBytes))
+		},
+
+		// Last, what the workflow declared it answers with. This is the most
+		// valuable part of the document and so the last to go — but it is chosen by
+		// the same submitted workflow as everything above it, so a single `outputs:`
+		// expression building a megabyte of string is enough to carry a run past the
+		// cap on its own. Dropping the transcript while leaving this untouched was
+		// the hole: the cap bounded the part a workflow was least able to abuse.
+		//
+		func() ([]byte, error) {
+			// Both places a run's declared outputs can live — see
+			// [flowmcp.DropDeclaredOutputs]. A local run carries them nested in
+			// the transcript arm, so the bare `trimmed.RunOutputs = nil` this
+			// replaced dropped nothing at all here once the rung above stopped
+			// clearing the arm outright.
+			flowmcp.DropDeclaredOutputs(trimmed)
+
+			return renderTrimmedRun(trimmed, fmt.Sprintf(
+				"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
+					"Read what the run produced with `flow get`, or have the workflow answer with less",
+				flowmcp.MaxResultBytes))
+		},
+
+		// The floor, and the rung that says "possibly a failure message" was not
+		// good enough. A run's failure message is workload-chosen and unbounded
+		// in the schema, so a local run that failed with a megabyte of error text
+		// walked every rung above as a no-op and came back over the ceiling —
+		// the same defect review found in flowstate_get's ladder (#853), in the
+		// ladder that one was modelled on.
+		//
+		// Truncated, never dropped: the reason a run failed is why anyone reads a
+		// failed run at all. What remains after this is a status, two ids, two
+		// timestamps and a bounded message — all bounded by the schema or by
+		// [flowmcp.CapErrorMessage] rather than by the workflow — so there is
+		// genuinely nothing left to drop that would not take the answer with it,
+		// and it is returned whether or not it fits, which is
+		// [flowmcp.FitResult]'s contract for a last rung.
+		func() ([]byte, error) {
+			flowmcp.CapErrorMessage(trimmed.GetError())
+
+			return renderTrimmedRun(trimmed, fmt.Sprintf(
+				"the declared outputs, step outputs and logs were dropped and this run's failure "+
+					"message truncated: the answer exceeded %d bytes. Read the run in full with "+
+					"`flow get`, or have the workflow answer with less",
+				flowmcp.MaxResultBytes))
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
-	if len(encoded) <= flowmcp.MaxResultBytes {
-		return encoded, nil
-	}
 
-	// Last, what the workflow declared it answers with. This is the most
-	// valuable part of the document and so the last to go — but it is chosen by
-	// the same submitted workflow as everything above it, so a single `outputs:`
-	// expression building a megabyte of string is enough to carry a run past the
-	// cap on its own. Dropping the transcript while leaving this untouched was
-	// the hole: the cap bounded the part a workflow was least able to abuse.
-	trimmed.RunOutputs = nil
-
-	encoded, err = renderTrimmedRun(trimmed, fmt.Sprintf(
-		"the declared outputs, step outputs and logs were dropped: the answer exceeded %d bytes. "+
-			"Read what the run produced with `flow get`, or have the workflow answer with less",
-		flowmcp.MaxResultBytes))
-	if err != nil {
-		return nil, err
-	}
-
-	// Deliberately returned whether or not it fits. What remains is a status, two
-	// ids, two timestamps and possibly a failure message — bounded by the schema
-	// rather than by the workflow — so there is nothing left to drop that would
-	// not take the answer with it.
 	return encoded, nil
 }
 

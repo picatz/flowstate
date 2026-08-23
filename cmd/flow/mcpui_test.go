@@ -14,7 +14,6 @@ import (
 	"golang.org/x/net/html"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 
@@ -638,7 +637,7 @@ func connectMCPAsUIHost(t *testing.T) *mcp.ClientSession {
 	srv := flowmcp.NewServer("test")
 	posture := defaultLocalRunPosture()
 
-	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil

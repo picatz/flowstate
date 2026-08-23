@@ -12,6 +12,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Values are the one place the DSL is genuinely ambiguous, so the rule it follows
@@ -377,6 +378,18 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref, placement sec
 	return normalizeExpr(val)
 }
 
+// maxNormalizePasses bounds [normalizeExpr]'s walk to the fixed point.
+//
+// The loop's progress is decided by cel-go's parser and unparser rather than by
+// anything here, which is the shape CLAUDE.md's bounds section describes: count
+// the round trips when the far side decides how much each one advances. Four is
+// the worst any shape in [TestNormalizeExprReachesAFixedPoint] needs and it does
+// not grow with nesting depth — `-(-(-(0)))` and a hundred nested negations
+// settle in the same number of passes, because each pass folds the whole tree
+// rather than one layer of it. The bound is the headroom over that, not the
+// budget the cases spend.
+const maxNormalizePasses = 8
+
 // normalizeExpr returns the expression as it would be written back out.
 //
 // Two spellings of one expression — ${a.b} and ${ a.b } — parse to ASTs that
@@ -384,20 +397,46 @@ func (c *compiler) expression(n ast.Node, src, path string, r ref, placement sec
 // from the second spelling is not equal to the same workflow after a round trip
 // through Marshal. Normalizing at compile time makes the stored expression a
 // fixed point of that round trip.
+//
+// It takes as many passes as it takes, because one is not always enough and
+// #880 is what that costs. `${-----0}` parses to a negation of a folded zero,
+// which unparses to `-0`, which parses to the constant `0` — a *different* tree
+// from the one the single pass stored, so Marshal wrote `${0}` over a workflow
+// holding `${-0}` and the round trip no longer came back equal. The other shapes
+// that need a second or third pass are the same idea: `-(0)`, `- - -0` and
+// `!(!(true))`, where the unparser drops the parentheses in one pass and the
+// parser then folds what they were separating in the next.
+//
+// The test for it is a fixed point, not a count: iterate until parsing what this
+// expression writes gives this expression back. A pass that changed nothing is
+// the only evidence that Marshal and the compiler agree.
 func normalizeExpr(val *v1.Value) *v1.Value {
-	text, err := cel.AstToString(cel.ParsedExprToAst(val.GetExpr()))
-	if err != nil {
-		// cel-go cannot write back an expression whose source used a macro, such
-		// as a comprehension, because the parsed form no longer records the macro
-		// call. Keeping it exactly as parsed is right: it executes correctly, and
-		// Marshal is the only thing that cannot represent it.
-		return val
+	for range maxNormalizePasses {
+		text, err := cel.AstToString(cel.ParsedExprToAst(val.GetExpr()))
+		if err != nil {
+			// cel-go cannot write back an expression whose source used a macro, such
+			// as a comprehension, because the parsed form no longer records the macro
+			// call. Keeping it exactly as parsed is right: it executes correctly, and
+			// Marshal is the only thing that cannot represent it.
+			return val
+		}
+		normalized := v1.NewExpr(text)
+		if normalized.Error() != nil {
+			return val
+		}
+		if proto.Equal(normalized.GetExpr(), val.GetExpr()) {
+			return val
+		}
+		val = normalized
 	}
-	normalized := v1.NewExpr(text)
-	if normalized.Error() != nil {
-		return val
-	}
-	return normalized
+
+	// Out of passes. The expression is kept and compilation continues, because
+	// what is left is a value that evaluates correctly and differs from what
+	// Marshal would write only in the source positions it carries — the same
+	// thing that was true before this loop existed, and not a reason to refuse
+	// an author's file. A diagnostic here would be a false one: nothing about
+	// the file is wrong, and no author could act on it.
+	return val
 }
 
 // composite compiles a sequence or mapping.

@@ -4,7 +4,7 @@ package sql.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/sql/gen/sql/v1;sqlv1";
 
-import "flowstate/v1/flowstate.proto";
+import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: sql.query (read, bounded) and sql.exec
 // (write, one activity = at most one transaction) - see doc.go for the full

@@ -57,16 +57,9 @@ type mutationDocument struct {
 func runCLI(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	root := newRootCommand()
+	res := runFlow(t, args...)
 
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(args)
-
-	err = root.Execute()
-
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // requireOnlyDocument parses stdout and insists it is one JSON document and nothing

@@ -62,4 +62,6 @@
 // nearly as portable - GitHub, GitLab, and Gitea all have issues and
 // comments. Neither would be named after GitHub if this build's task naming
 // were free to assume a portable vocabulary already existed.
+//
+// [pluginv1.TaskManifest]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/plugin/v1#TaskManifest
 package main

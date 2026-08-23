@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/covbuild"
 )
 
 // `--no-color` has to reach the exact plumbing NO_COLOR already goes through
@@ -82,7 +84,11 @@ func TestNoColorFlagSuppressesColourThroughTheRealBinary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "broken.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(brokenWorkflow), 0o600))
 
-	env := append(os.Environ(), "TTY_FORCE=1", "TERM=xterm-256color")
+	// GOCOVERDIR set explicitly (see internal/covbuild), for the same reason
+	// runFlow sets it: os.Environ() alone can carry a GOCOVERDIR that belongs
+	// to `go test -cover`'s own internal bookkeeping for this process, not the
+	// directory a merge ever reads counters back out of.
+	env := append(append(os.Environ(), "TTY_FORCE=1", "TERM=xterm-256color"), covbuild.Env()...)
 
 	withColor := exec.Command(bin, "validate", path)
 	withColor.Env = env

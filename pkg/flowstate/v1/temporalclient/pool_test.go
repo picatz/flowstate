@@ -58,6 +58,22 @@ func (m fakeMapper) TemporalNamespaces() []string {
 	return out
 }
 
+func (m fakeMapper) FlowstateNamespaces(temporalNamespace string) []string {
+	if m.mapsNothing {
+		return nil
+	}
+	var out []string
+	if m.fallback == temporalNamespace {
+		out = append(out, "")
+	}
+	for namespace, mapped := range m.temporal {
+		if mapped == temporalNamespace {
+			out = append(out, namespace)
+		}
+	}
+	return out
+}
+
 // TestPoolRoutingWithoutDialing exercises For's decisions against a pre-populated
 // pool.
 //
@@ -166,6 +182,66 @@ func TestPoolRoutingWithoutDialing(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "restart", "the message should tell an operator what to do")
 	})
+}
+
+// TestNewPoolRefusesAnUnregisteredNamespace is the negative direction of #769: a
+// tenancy mapping naming a Temporal namespace nobody registered must fail
+// construction, naming the tenant and the namespace, rather than dialing cleanly
+// and leaving the failure for that tenant's first submit.
+//
+// Dialing alone cannot catch this — [client.DialContext]'s eager check is
+// GetSystemInfo, a cluster-scoped RPC with no namespace argument, so it succeeds
+// against a namespace nobody registered. This is why the test needs the shared dev
+// server rather than a fake: the claim under test is what a real cluster answers
+// when asked to describe a namespace it does not have, and a fake mapper cannot
+// stand in for that answer.
+func TestNewPoolRefusesAnUnregisteredNamespace(t *testing.T) {
+	t.Parallel()
+
+	// This test never registers a namespace, so it never calls
+	// [newTemporalNamespace] — the one place the -short skip otherwise lives.
+	// Repeated here rather than routed through a helper: skipping late, after
+	// touching the nil devServer left by TestMain under -short, is the panic
+	// this guards, not a smaller version of it.
+	if testing.Short() {
+		t.Skip("skipping: needs the shared Temporal dev server, not started under -short; CI runs the full suite")
+	}
+
+	// Never registered on this package's dev server, and named after the test so
+	// a namespace left behind by a crash (there should be none — NewPool never
+	// registers one) says which test it came from.
+	missing := "unregistered-" + namespaceNameFor(t)
+
+	pool, err := NewPool(t.Context(), Config{
+		Address: devServer.FrontendHostPort(),
+	}, fakeMapper{temporal: map[string]string{"team-a": missing}}, nil)
+
+	require.Error(t, err, "a mapping naming a namespace the cluster does not have must fail construction")
+	require.Nil(t, pool)
+	require.Contains(t, err.Error(), missing,
+		"the error should name the namespace an operator has to register or fix")
+	require.Contains(t, err.Error(), "team-a",
+		"the error should name the tenant the mapping routes to the missing namespace")
+}
+
+// TestNewPoolAcceptsARegisteredMapping is the positive direction: a mapping naming
+// a namespace the cluster actually has still constructs, so the existence check
+// costs nothing to a deployment whose configuration is correct.
+func TestNewPoolAcceptsARegisteredMapping(t *testing.T) {
+	t.Parallel()
+
+	namespace := newTemporalNamespace(t)
+
+	pool, err := NewPool(t.Context(), Config{
+		Address: devServer.FrontendHostPort(),
+	}, fakeMapper{temporal: map[string]string{"team-a": namespace}}, nil)
+	require.NoError(t, err, "a mapping naming a namespace the cluster has must construct cleanly")
+	require.NotNil(t, pool)
+	t.Cleanup(pool.Close)
+
+	cl, err := pool.For("team-a")
+	require.NoError(t, err)
+	require.NotNil(t, cl, "the pool must hold a usable client for the namespace it verified")
 }
 
 func TestPoolCloseIsIdempotent(t *testing.T) {

@@ -334,85 +334,13 @@ steps:
 	require.Empty(t, ds, "the converged file still has problems: %v", ds)
 }
 
-// TestNoSuggestedEditThroughAMergeKey is the first negative direction, and the
-// reason [field.shared] exists.
-//
-// A key that arrived through `<<:` is written once in the anchor and read by
-// every mapping merging it. Replacing the source the diagnostic names would edit
-// the anchor, so an agent repairing what it thought was one step would rewrite
-// every step sharing the boilerplate. The diagnostic is still reported at both
-// sites, which is correct: both steps do have an unknown key. What is refused is
-// the claim that a program can fix it without looking.
-func TestNoSuggestedEditThroughAMergeKey(t *testing.T) {
-	t.Parallel()
-
-	const src = `edition: v2026.3
-name: merged
-steps:
-  - <<: &base
-      timeou: 5s
-    id: a
-    log:
-      message: hi
-  - <<: *base
-    id: b
-    log:
-      message: hi
-`
-
-	ds := problems(t, []byte(src))
-
-	reported := 0
-	for _, d := range ds {
-		if !strings.Contains(d.GetMessage(), `unknown key "timeou"`) {
-			continue
-		}
-		reported++
-		require.Empty(t, d.GetEdits(), "an edit that would rewrite the anchor")
-	}
-	require.Equal(t, 2, reported, "both steps should still be told about the key")
-}
-
-// TestNoSuggestedEditInsideAnAnchoredOrAliasedMapping is the same refusal for
-// the other two spellings of shared source, which the merge-key guard alone
-// does not cover: a mapping written as an `&anchor`, and one written as a bare
-// `*alias` of it.
-//
-// The alias case is the sharper of the two. The aliased mapping is the anchor's
-// source read from a second place, and that second place can be a context where
-// the key being renamed away is perfectly legal, so an edit that repairs the
-// reporting site can corrupt a site that was never wrong. The anchor case is
-// its prerequisite: source that may be aliased later is source with an unknown
-// number of readers, so neither side of the pair is one a rewriter may touch.
-// The diagnostics themselves are still reported, exactly as the merge-key case
-// keeps them.
-func TestNoSuggestedEditInsideAnAnchoredOrAliasedMapping(t *testing.T) {
-	t.Parallel()
-
-	const src = `edition: v2026.3
-name: anchored
-steps:
-  - &tpl
-    id: a
-    timeou: 5s
-    log:
-      message: hi
-  - *tpl
-`
-
-	ds := problems(t, []byte(src))
-
-	reported := 0
-	for _, d := range ds {
-		if !strings.Contains(d.GetMessage(), `unknown key "timeou"`) {
-			continue
-		}
-		reported++
-		require.Empty(t, d.GetEdits(),
-			"an edit into source an anchor or alias shares; applying it at one site rewrites every site")
-	}
-	require.NotZero(t, reported, "the unknown key inside the anchored mapping should still be reported")
-}
+// Two tests once lived here for the rename-edit suppression that a merge key, an
+// anchor, or an alias forced: a key written once in shared source and read from
+// several places must not carry an edit, because applying it at one site rewrites
+// every site. The grammar is now a strict subset of YAML that refuses all three
+// constructs (#653), so no diagnostic is ever built inside shared source — the
+// compiler rejects the document first. The suppression in `renameKeyEdit` that
+// those cases pinned is now dead code, tracked as follow-up cleanup.
 
 // TestNoSuggestedEditWhenTheSuggestionIsAlreadyWritten is the second negative
 // direction, and the one whose failure is silent.

@@ -54,11 +54,15 @@ var switchCorpusTable = map[string]switchCorpusEntry{
 	"optional-dispatch/report": closedDomain("no_response", "approved", "rejected"),
 
 	// `settle` dispatches on `outcome`, a `value:` step combining two wait
-	// gates' own shaped outcomes into the report's four endings — the same
-	// value-step tier as `optional-dispatch/report` above, over a nested
-	// conditional whose leaves are all string literals.
-	"expense-approval/settle": closedDomain("approved_by_manager", "approved_after_escalation",
-		"denied_no_response", "denied"),
+	// gates' own shaped outcomes into the report's four endings. Both of
+	// `outcome`'s branches are `steps.<id>.value` leaves rather than string
+	// literals, and one of them — `escalation_outcome` — has a leaf of its own
+	// again. That is the decomposition #674 is about, and since #646's corpus
+	// slice it is *two* hops deep rather than one, so this pin exercises the
+	// recursive case switchDomain's leaf walk added at more than its first
+	// step. The order is the order the ternaries read, outermost first.
+	"expense-approval/settle": closedDomain("denied_no_response", "approved_after_escalation",
+		"denied", "approved_by_manager"),
 
 	// `report` dispatches on `outcome`, a `value:` step over `steps.decision`'s
 	// own `.payload.?accepted` — the identical `optMap`/`orValue` chain

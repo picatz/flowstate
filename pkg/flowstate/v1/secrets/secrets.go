@@ -365,7 +365,12 @@ type Resolver interface {
 //     it. A provider with its own timeout should still respect an earlier deadline.
 //   - **Must scope by namespace.** Two namespaces asking for the same reference
 //     must get different secrets. Ignoring [Request.Namespace] is a tenancy
-//     breach, not a missing feature.
+//     breach, not a missing feature. Run
+//     [github.com/picatz/flowstate/pkg/flowstate/v1/secrets/secretstest.VerifyNamespaceIsolation]
+//     against your implementation before shipping it: this exact bug class has
+//     already shipped twice in this package's own providers (env.go, file.go),
+//     both times past tests that checked only that a namespace reaches its own
+//     secret and never that it cannot reach another's.
 //   - **Must return a value only through [NewSecret].** That is what keeps the
 //     value out of history, out of logs, and out of anything that formats it.
 //

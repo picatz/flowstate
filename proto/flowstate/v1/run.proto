@@ -1,0 +1,769 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "flowstate/v1/identity.proto";
+import "flowstate/v1/signal.proto";
+import "flowstate/v1/task.proto";
+import "flowstate/v1/trigger.proto";
+import "flowstate/v1/value.proto";
+import "flowstate/v1/workflow.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// PendingUndo is one compensation a run has registered and not yet run.
+//
+// # Resolved on registration, not on failure
+//
+// The task here carries *values*, not expressions over a scope that may no longer
+// exist. A step's `undo:` is resolved the instant that step succeeds, in that
+// step's own scope with its own outputs added, and what is stored is the result.
+//
+// Three problems disappear at once, and each of them is real:
+//
+//   - Compaction. A run that continues as new carries only the step outputs its
+//     *remaining* steps can still reference (`compactOutputsForRemainingSteps`).
+//     A deferred compensation expression would be a fifth reference site that walk
+//     does not know about, and the failure mode is the one that walk has already
+//     had twice: an output pruned, and a run that fails after a handover on a
+//     specification that never changed. A resolved value references nothing.
+//   - Determinism. Running a compensation schedules an activity and evaluates
+//     nothing, so nothing about compensating is new workflow-side work
+//     (ARCHITECTURE.md invariant 4).
+//   - Meaning. `${steps.provision.id}` inside an undo means the id that step
+//     produced, at the moment it produced it. Resolving later would let it mean
+//     whatever the scope held after some other step overwrote things.
+//
+// The cost is stated rather than hidden: what a compensation would have computed
+// from the *failure* (which step failed, what it said) is not available to it,
+// because at registration time the failure has not happened. That is a deliberate
+// narrowing and DSL.md argues it as one.
+//
+// # Size (ARCHITECTURE.md invariant 9)
+//
+// These ride in [RunState], so `CheckRunStateSize` weighs them at every
+// Continue-As-New along with everything else: it calls `proto.Size` on the whole
+// message rather than summing the fields it knows about, so this field was bounded
+// on the day it was added and nobody has to remember to count it. A run with an
+// undo on every step carries one resolved task per succeeded step, and
+// `Workflow.steps` is capped at 100.
+message PendingUndo {
+  // StepId is the step this undoes, for the sentence a failed run reports and for
+  // nothing else: nothing dispatches on it.
+  string step_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }
+  ];
+
+  // Task is the compensation with its inputs already resolved.
+  Task task = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+}
+
+// PendingSignal is a signal that arrived before the step waiting for it was
+// reached, carried across Continue-As-New.
+//
+// It exists because Temporal delivers a signal to the run that is current when it
+// arrives, and a run that suspends drops anything still buffered on a channel it
+// has not read. Without carrying them, approving a gate before the run reaches it
+// (which is ordinary behavior, not misuse) would silently lose the approval and
+// leave the run waiting forever.
+message PendingSignal {
+  // Name is the signal that arrived.
+  string name = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // Payload is what it carried, which becomes the waiting step's outputs.
+  Node.Outputs payload = 2;
+
+  // Sender is who the server attested for this signal, carried alongside the
+  // payload for the same reason payload is carried: a signal drained before
+  // its step is reached must not lose either half when carried across
+  // Continue-As-New. Absent for a pending signal carried from before this
+  // field existed, which reads as unattested.
+  SignalSender sender = 3;
+}
+
+// SignalDelivery is what the server hands a waiting workflow over the signal
+// channel: the sender's own payload, paired with the sender the server
+// attested for it. It is not persisted directly ([PendingSignal] is the form
+// that survives Continue-As-New), but the two carry the same pair for the same
+// reason: a signal must not lose its sender any more than it may lose its
+// payload.
+message SignalDelivery {
+  // Payload is what the sender sent, unchanged and untrusted. See
+  // [SignalSender] for why it never carries identity.
+  Node.Outputs payload = 1;
+
+  // Sender is what the server established about the caller before forwarding
+  // the payload. Never absent on a signal a current server sends; absent only
+  // when reading a delivery recorded before this field existed.
+  SignalSender sender = 2;
+}
+
+// Scope is what an expression is evaluated against.
+//
+// It holds the outputs of steps that have already run, plus any variables bound
+// by enclosing control flow, such as a loop's current item.
+//
+// This is part of the schema rather than an internal Go type because it crosses
+// the wire: a task that evaluates its own expressions (the cel task's `expr`, the
+// http task's `outputs`) does so on a worker, so the scope has to travel with it.
+// Without that, a loop body could not use its own iterator in those inputs.
+//
+// Variables are Values, the same representation step outputs use, so anything a
+// step can produce can also be bound as a variable.
+message Scope {
+  // Outputs holds the outputs of steps that have already run.
+  Workflow.StepOutputs outputs = 1;
+
+  // Profile is the workflow's language profile, carried here because this is what
+  // reaches the worker that evaluates a task's own expressions.
+  //
+  // Without it that worker would evaluate against whatever profile its own build
+  // calls current, which is the same run computing against two vocabularies, the
+  // failure one profile exists to remove, reintroduced at the point where the work
+  // actually happens.
+  string profile = 3;
+
+  // Vars holds the names bound *where an expression is written*, resolved bare: a
+  // `for_each` binding, a step's own `vars:`, `now` inside a wait.
+  //
+  // The name is a historical one and is kept deliberately. This field has carried
+  // bare bindings since before there was a rooted namespace, and an activity
+  // scheduled before an upgrade holds that shape in history: a retry after the
+  // upgrade replays the same payload. Redefining the field would make a new worker
+  // read an old loop's `item` as an ambient var and leave the bare name unbound, so
+  // the rooted namespace went to [Scope.ambient_vars] instead and this one did not
+  // move. A field that crosses a version boundary means what it has always meant.
+  //
+  // Because every name here is bare they can collide, and that is refused at
+  // validation rather than resolved: a step var that shadows an enclosing loop
+  // binding, or either shadowing `now`, is reported at the inner declaration. By the
+  // time a spec reaches the engine there is nothing left to decide.
+  map<string, Value> vars = 2 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+  }];
+
+  // AmbientVars holds the rooted `vars.<name>` namespace, which is the workflow's
+  // declared vars.
+  //
+  // Only the workflow level declares into here. A step's `vars:` are bare and land in
+  // [Scope.vars] instead, because they are author-chosen and lexically local rather
+  // than ambient, so there is exactly one source for this map and no shadowing to
+  // resolve within it.
+  //
+  // A new field rather than a new meaning for an old one: see [Scope.vars].
+  map<string, Value> ambient_vars = 4 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+  }];
+
+  // Inputs holds the rooted `inputs.<name>` namespace: the arguments this run was
+  // started with, checked against [Workflow.declared_inputs] and defaulted at
+  // submit.
+  //
+  // Carried on the scope rather than looked up from the specification where an
+  // expression is evaluated, because the specification is not everywhere the scope
+  // is: a task declaring `needs_prev_outputs` evaluates its own expressions inside
+  // an activity, on a worker holding this message and nothing else. Without the
+  // field, `${inputs.region}` would resolve in a step's `if:` and be unbound in the
+  // http task's `outputs:` two lines below it: one spelling with two behaviours,
+  // decided by a property of the task an author has no reason to know. That is the
+  // failure `now` is placed to avoid; see [Scope.ambient_vars], which was added and
+  // then omitted from the compacted copy the executor ships, with exactly that
+  // result.
+  //
+  // Values only, never expressions: what a caller sends is data (see
+  // [RunRequest.inputs]), and a default is required to be a literal by the
+  // compiler.
+  //
+  // A new field rather than folding these into [Scope.ambient_vars]: a var and an
+  // input are different things with different roots, and merging them would make
+  // `${vars.region}` resolve an argument nobody declared as a var.
+  map<string, Value> inputs = 5 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+    max_pairs: 64
+  }];
+
+  // Identity is the attested identity of whoever started this run, exposed to
+  // expressions under the `run` root (`run.identity.subject`,
+  // `run.identity.issuer`, `run.identity.namespace`, `run.identity.claims`),
+  // so a rule can compare the caller who requested the run against the
+  // caller who satisfies a gate later. See [RunState.identity], which this is
+  // copied from and never anything else: a workflow author cannot set this,
+  // and a signal's own sender (see [SignalSender]) cannot either, because
+  // both are attested at a boundary the workflow does not control.
+  //
+  // Deliberately narrower than [WorkloadIdentity] itself: `deployment` is
+  // left off, because it answers "which installation ran this" rather than
+  // "who is this caller", and that is exactly the question CLAUDE.md's
+  // diagnostics rule already answers for a different surface: a fact a
+  // deployment decides, not a fact about the file, does not belong in a
+  // workflow's own logic. An outbound authorization policy already sees it as
+  // `workload.deployment` (see [WorkloadIdentity.deployment]); a workflow
+  // gating on it would be asking a question that belongs one layer down.
+  //
+  // Absent for a run that predates this field, and for every local run: both
+  // read as an identity with every field empty, and [Scope.local] is what
+  // tells those two cases apart from a run the server genuinely attested with
+  // an anonymous identity.
+  WorkloadIdentity identity = 6;
+
+  // Local marks a scope built by the local driver (`flow run local`, `flow
+  // test`), which has no authenticated caller at all, read under
+  // `run.local`. Mirrors [SignalSender.local] for the identical reason: an
+  // empty `run.identity.subject` must never be silently confused with a real
+  // caller who merely authenticated anonymously (no identity provider
+  // configured), so the local driver states outright that nothing here was
+  // attested, rather than leaving an author to infer it from an empty string.
+  //
+  // Never true on any scope the durable driver builds, even when
+  // [Scope.identity] is empty because the run was started without
+  // authentication: that is only possible in development, and it is still a
+  // server attesting an anonymous caller rather than no caller at all.
+  bool local = 7;
+
+  // Address is the run's own address: what an expression reads as
+  // `run.workflow_id` and `run.run_id`.
+  //
+  // Carried on the scope for the reason [Scope.inputs] is: a task declaring
+  // `needs_prev_outputs` evaluates its own expressions inside an activity, on a
+  // worker holding this message and nothing else, so without the field
+  // `${run.workflow_id}` would resolve in a step's `if:` and be unbound in the
+  // http task's `outputs:` two lines below it.
+  //
+  // Not carried in [RunState]: each driver derives it where it is, from a source
+  // that is stable for the whole run (see [RunAddress]), so there is no value
+  // crossing the Continue-As-New seam and nothing for invariant 10 to protect.
+  RunAddress address = 8;
+
+  // Trigger is how this run started, read under the `trigger` root. See
+  // [TriggerContext].
+  //
+  // Carried on the scope for the reason [Scope.inputs] and [Scope.address] are:
+  // a task declaring `needs_prev_outputs` evaluates its own expressions inside
+  // an activity, on a worker holding this message and nothing else, so without
+  // the field `${trigger.kind}` would resolve in a step's `if:` and be unbound
+  // in the http task's `outputs:` two lines below it — one spelling with two
+  // behaviours, decided by a property of the task an author has no reason to
+  // know.
+  //
+  // Unlike [Scope.address] this *is* carried in [RunState], because no
+  // substrate can answer the question: how a run started is a fact about the
+  // submission, known once, at the boundary that admitted it.
+  TriggerContext trigger = 9;
+}
+
+// RunAddress is a run's own address: the pair that identifies it to anything
+// outside it, including this engine's own control plane.
+//
+// This exists because a workload that has to be *called back* (hand an external
+// system a token, wait for that system to answer) cannot say where the answer
+// should be sent without it. That is Temporal's `expense` sample, and it is also
+// every shape where one run tells a peer how to reach it.
+//
+// # Why exactly these two fields
+//
+// [workflow_id] is the address: it is what `flow signal <workflow-id> <name>`
+// takes, what `flow get` takes, and what the Signal RPC resolves. [run_id]
+// disambiguates which execution of that id: the same workflow id may be
+// reused once an earlier run has finished.
+//
+// What is deliberately absent is a start time and an attempt count, and the
+// absence is load-bearing rather than an oversight. A start time is a clock read
+// by another name: `now` is bound *only* inside a wait, and docs/ARCHITECTURE.md
+// argues that placement at length: a name resolvable only where a replay-safe
+// clock exists in every case. Putting a timestamp on the run root would make a
+// clock readable from every expression in the language, through a field nobody
+// would think of as a clock. An attempt count is the same mistake one layer
+// down: it is a fact about the substrate's scheduling, it changes underneath a
+// run, and a workflow branching on it is a workflow whose meaning depends on
+// how many times a worker happened to crash. Neither belongs here; adding one
+// to "complete" the message would quietly undo the reasoning behind `now`.
+message RunAddress {
+  // WorkflowID is the id the run is addressed by, the same id `flow signal`
+  // and `flow get` take.
+  //
+  // Stable for the whole run, including across Continue-As-New: Temporal keeps
+  // the workflow id and mints a new run id for each continued execution.
+  string workflow_id = 1;
+
+  // RunID identifies which execution of [workflow_id] this is.
+  //
+  // The durable driver fills this from Temporal's `FirstRunID`, not from the
+  // current execution's run id, and the difference is the whole point: the
+  // current run id changes at every Continue-As-New, so a workload that
+  // suspended once would report a different address than it did before it
+  // suspended: a value that changes halfway through a run, which is exactly
+  // what [RunState.vars] exists to prevent for `vars:`. `FirstRunID` is
+  // preserved along the whole chain of continued executions, so it names the
+  // run an author thinks they wrote.
+  string run_id = 2;
+}
+
+// EntityState is a bounded projection of a running workload's carried state,
+// answered by a Temporal query that reaches a live worker rather than
+// derived from anything the service itself records.
+//
+// # Bounded twice, on two different resources
+//
+// Vars and LoopState are themselves already bounded transitively (every
+// value in them travelled here inside a `RunState` that `CheckRunStateSize`
+// already refused to let grow past Temporal's blob limit at the last
+// Continue-As-New), but a query answer is its own resource, read by a
+// caller who did not ask "how big is this," so this message additionally
+// caps how many loop entries it reports (an author writing several
+// concurrent loops inside a `parallel:` block is not a hazard the blob-size
+// check alone would catch) and how many bytes the whole projection may
+// serialize to. Either bound being reached sets [truncated] rather than
+// silently dropping data or growing the response without limit: see
+// `entityStateMaxLoopEntries` and `entityStateMaxBytes` in
+// `pkg/flowstate/v1/engine/progress.go`.
+message EntityState {
+  // Vars are the workflow's own top-level `vars:`, evaluated once at the
+  // start of the run: the same values every step's `${vars.*}` reads,
+  // snapshotted at query time.
+  map<string, Value> vars = 1;
+
+  // LoopState is, for every `loop:` currently active in this segment, the
+  // value its `state:` binding is carrying into the next iteration, keyed
+  // by the loop step's own id. A loop with no `state:` (a bounded
+  // retry-until carrying nothing) has no entry here, and a loop not
+  // currently active (finished, or not yet reached) has none either.
+  map<string, Value> loop_state = 2;
+
+  // Truncated is true when this snapshot was cut down to stay inside this
+  // message's own bound (see the message-level comment) rather than reflect
+  // the full state a caller free of that bound would see. A truncated
+  // answer omits vars and loop_state entirely rather than reporting a
+  // partial, silently-incomplete map: a reader must not mistake "some of
+  // the keys" for "all of the keys, this run just does not have more."
+  bool truncated = 3;
+}
+
+// PendingActivity is one activity Temporal is retrying, projected from its
+// Describe response into the vocabulary this schema speaks.
+//
+// Deliberately not named by step. Temporal identifies a pending activity by an
+// id it generated and a function name the engine registered, and neither is a
+// name an author chose; the engine cannot stamp the step's id onto the activity
+// either, because a loop running iterations in parallel schedules one step id
+// several times at once and activity ids must be unique. Which step a running
+// run is on is the progress query's answer, one field over: the two are read
+// together, and a field here that claimed the step would be guessing.
+message PendingActivity {
+  // Attempt is the attempt about to run or running, starting at 1. An attempt
+  // count climbing on a RUNNING run is the signature of a workload that is
+  // stuck rather than working.
+  int32 attempt = 1;
+
+  // LastFailure is the message of the most recent failed attempt, which is the
+  // sentence that usually contains the whole diagnosis.
+  string last_failure = 2;
+
+  // NextAttemptScheduledTime is when the next attempt is due. Unset when an
+  // attempt is running right now.
+  google.protobuf.Timestamp next_attempt_scheduled_time = 3;
+
+  // Phase is what the running attempt last said it was doing: `requesting`
+  // while a request is out, `reading the response` once a peer has answered,
+  // `calling the plugin` around a plugin's RPC.
+  //
+  // This is the field that separates "this step has been running for four
+  // minutes" from knowing which end of it is slow, and the two phases an http
+  // request moves through fail differently: stuck requesting is a peer that has
+  // said nothing, stuck reading is a peer that answered and then stopped
+  // talking.
+  //
+  // Unset in three situations that a reader must not confuse with a fourth.
+  // The attempt may be between its start and its first report; it may be
+  // waiting to be retried, in which case nothing is running to have a phase at
+  // all; or the worker may be older than this field. None of those means "the
+  // step is doing nothing", and a renderer that printed a blank phase as an
+  // absence of work would be inventing one.
+  //
+  // The vocabulary is closed on purpose, and that is a security property rather
+  // than a style. This is projected from an activity heartbeat, heartbeats are
+  // written into workflow history, and history is durable and broadly readable,
+  // so a phase built from a task's inputs would be invariant 7's exact failure.
+  // The worker enforces it with a type that has no constructor; see
+  // `v1.Phase` and the AST check beside it.
+  string phase = 4;
+}
+
+// RunProgress is where a run has got to, answered by the running workflow itself.
+//
+// Not derivable from outside. A listing and a Describe both know a run is RUNNING and
+// neither knows what it is running, because the position lives in the interpreter's
+// own stack rather than in anything the service records. So it comes from a Temporal
+// query, which is the one way to ask a workflow a question without changing it: a
+// query runs against the live state, writes no history event, and cannot make the run
+// do anything.
+message RunProgress {
+  // StepId is the top-level step the run is on.
+  //
+  // Top-level always, which is a floor rather than a limitation. A run inside a
+  // parallel block or a concurrent loop is on several steps at once and has no single
+  // position (the same reason the engine refuses to suspend there), so the answer
+  // that is always true is the outermost one.
+  string step_id = 1;
+
+  // Path is the position from that step inward, where there is one: the loop and the
+  // body step within it, or the branch. Empty where the run is on a top-level step,
+  // and it stops at the boundary of concurrent work for the reason above.
+  repeated string path = 2;
+
+  // CompletedSteps is how many steps have finished in this segment of the run.
+  //
+  // Per segment rather than per run, and the distinction has to survive contact with
+  // whoever renders it: a run that continued as new starts a new count, because the
+  // budget it is measured against is per segment too. It is progress against a
+  // suspend, not against the workload.
+  int32 completed_steps = 3;
+
+  // PendingWaits are the signal waits the run is parked on right now.
+  //
+  // Here rather than in a message of its own beside `progress` on GetResponse,
+  // and rather than behind a second query: one query already reaches the worker
+  // for exactly this run's live state, the answer is the same size class as a
+  // step id and a short path, and it is answerable from the same moment. A
+  // second query would cost a second round trip on every `flow get` of a
+  // running run to learn something the first one already had in hand. The
+  // separate query [EntityState] gets is the counter-example that proves the
+  // rule: that answer can be as large as an author's own `vars:`, which is why
+  // it carries its own bound and its own cost.
+  //
+  // Empty is a real answer and a different one from unset. An unset
+  // [RunProgress] means no worker answered (see GetResponse.progress); an empty
+  // list inside one that *is* set means this run is parked on nothing, which is
+  // to say it is working rather than waiting.
+  //
+  // Where a position stops at the boundary of concurrent work, this does not:
+  // a position is singular and a set of waits is not, so a run holding two
+  // gates open in two parallel branches reports both.
+  repeated PendingWait pending_waits = 4;
+
+  // PendingWaitsTruncated is true when this answer reports fewer waits than the
+  // run is actually parked on, because the run held more than the reporting
+  // bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).
+  //
+  // A flag rather than silence, for [EntityState.truncated]'s reason: a reader
+  // must never mistake "some of the waits" for "all of the waits". Unlike that
+  // field it keeps the entries it did collect, because the bound here is a
+  // count rather than a size, and the first waits of a run holding hundreds are
+  // still the answer to "what is this parked on" rather than a partial map
+  // whose keys a caller might index by.
+  bool pending_waits_truncated = 5;
+}
+
+// PendingWait is one signal wait a run is parked on right now, answered by the
+// running workflow itself through the same query [RunProgress] is.
+//
+// Signal waits only. A run asleep on a timer is waiting for nothing anyone can
+// do anything about and its deadline is already implied by the step it is on,
+// while a run parked on a `wait_for_signal:` is waiting on a *person* - and
+// "which gate, and may I open it" is the question that could not be answered
+// before this existed. An operator holding a run id had no way to learn the
+// signal name to send.
+//
+// # Everything here is non-secret by construction
+//
+// A step id, a path of step ids, a signal name and a deadline: all four are
+// written in the specification by its author or computed from a timeout the
+// author wrote, and none is derived from a task's inputs, a response body, or a
+// resolved secret. That is the same discipline `v1.Phase` enforces with an
+// unexported field, applied to a projection whose members happen to already be
+// names rather than values. A payload a sender delivered is deliberately not
+// here: that is the one thing about a wait that could carry anything.
+message PendingWait {
+  // StepId is the waiting step's own id.
+  //
+  // The waiting step, not [RunProgress.step_id]'s top-level one, and the
+  // difference is what makes this useful: two gates open at once in two
+  // parallel branches share a top-level step, so reporting that one would give
+  // both entries the same name and neither an answer.
+  string step_id = 1;
+
+  // Path is the position of the waiting step from the top-level step inward,
+  // outermost first, excluding the waiting step itself: a wait inside a loop
+  // body reports the loop.
+  //
+  // Empty for a top-level wait, and empty inside concurrent work for the reason
+  // [RunProgress.path] stops there - the run has no single position to describe
+  // that wait's ancestry with. StepId and SignalName are exact in both cases,
+  // which is what an operator needs to act.
+  repeated string path = 2;
+
+  // SignalName is the name a sender must deliver to release this wait. It is
+  // the string `flow signal <run> <name>` takes.
+  string signal_name = 3;
+
+  // Deadline is when this wait lapses of its own accord, set only where the
+  // author wrote a `timeout:`.
+  //
+  // Unset means the gate blocks until somebody acts, which is a different
+  // situation and not a missing value: it is the spelling this schema
+  // recommends for an approval, and a run parked on one will wait as long as
+  // the run itself is allowed to live.
+  optional google.protobuf.Timestamp deadline = 4;
+
+  // Policed is true when the workflow's own `signals:` declares a policy for
+  // SignalName, so a delivery is authorized against it before it reaches this
+  // step.
+  //
+  // Reported because the two failure modes look identical from outside: a
+  // signal sent to an unpoliced name that nobody is waiting for, and a signal
+  // refused by a policy, both leave the run parked exactly as it was. Read from
+  // the top-level workflow's declarations, which is the same set the server
+  // records on the run and checks a delivery against - a called workflow's own
+  // `signals:` is not what authorizes a delivery to this run, so it is not what
+  // is reported here either.
+  bool policed = 5;
+
+  // Prompt is what this gate is asking for, evaluated from [Signal.prompt] at
+  // the moment the wait parked. Empty where the author wrote none.
+  //
+  // Everything the message-level comment says about this projection being
+  // non-secret by construction has to keep being true with a prompt in it, and
+  // a prompt is the one member here that is *not* simply a name written in the
+  // file - it is a value the file computed. That is exactly why [Signal.prompt]
+  // refuses to reach a `sensitive:` input or a secret reference: the containment
+  // argument is made at the field that produces the text, so this field carries
+  // text that was already refused the chance to hold anything private. A prompt
+  // that could not be produced safely arrives here as a refusal marker, never as
+  // the value it would have surfaced.
+  string prompt = 6;
+
+  // PromptTruncated is true when Prompt is shorter than what the author's
+  // expression produced, because it ran past [MaxWaitPromptBytes].
+  //
+  // A flag rather than an ellipsis somebody has to recognize, for
+  // [RunProgress.pending_waits_truncated]'s reason turned on a single value: a
+  // person deciding whether to approve something must be able to tell that they
+  // are reading part of the question. Truncation is at a UTF-8 boundary, so what
+  // is reported is always text rather than half a rune.
+  bool prompt_truncated = 7;
+}
+
+// Frame is one level of the execution position within a workflow.
+//
+// A workflow with nested control flow cannot record where it is with a single
+// index: "the third item of the loop in the second branch" is a path, not a
+// number. Frames are that path, outermost first, which is what allows a run to be
+// suspended and resumed from inside a loop rather than only between top-level
+// steps.
+message Frame {
+  // NextNode is the index of the next node to execute at this level.
+  int32 next_node = 1 [(buf.validate.field).int32 = {gte: 0}];
+
+  // NextIteration is the index of the next item to process, for a frame
+  // standing inside a for_each.
+  int32 next_iteration = 2 [(buf.validate.field).int32 = {gte: 0}];
+
+  // Results holds the outputs of iterations already completed by a for_each or
+  // loop at this level, so a resumed run still reports every iteration's
+  // results and not only those from the run that finished the loop.
+  //
+  // For a `loop:`, this is carried forward across a Continue-As-New only when
+  // something in the specification could still read it. See the doc on
+  // `LoopResultsReferenced` and `LoopResumeResults` in pkg/flowstate/v1/loop.go.
+  // A loop nothing reads starts each new segment's Results fresh rather than
+  // inheriting every prior segment's, which is what keeps an indefinitely
+  // running `loop:` + `wait_for_signal:` entity from carrying its whole
+  // history forward forever. When that has happened at least once, the
+  // finished loop's own reported `results` output is *omitted* rather than
+  // showing only the last segment's iterations: an absent key rather than a
+  // list that looks complete and is not. See docs/DSL.md's loop section for
+  // the contract this states to an author, and #229.
+  repeated Workflow.StepOutputs results = 3;
+
+  // CallOutputs holds the step outputs a called workflow's own steps had
+  // produced when a run suspended partway through it, for a frame standing
+  // inside a call.
+  //
+  // A call is transparent to suspension (see the executor's suspend rule), so a
+  // callee's steps may span a Continue-As-New exactly as a top-level sequential
+  // loop's do. The callee runs in its own isolated scope, though (that is the
+  // entire point of [CallScope]), so unlike a top-level segment, whose step
+  // outputs live in RunState.outputs, a callee's step outputs exist nowhere
+  // else. Without this they would vanish at the handover and the resumed
+  // segment would fail on the callee's own later steps referencing its
+  // earlier ones, on a specification that never changed.
+  //
+  // Absent for every frame that predates this field, which reads as an empty
+  // callee scope. That is correct, because no run written before this field existed
+  // could have been suspended inside a call; the capability did not exist yet.
+  Workflow.StepOutputs call_outputs = 4;
+
+  // CallVars holds the callee's own `vars:` block, evaluated once when the
+  // call began, for a frame standing inside a call whose callee declares any.
+  //
+  // Computed once and carried rather than re-evaluated on each resumed
+  // segment, for the identical reason a top-level run's own vars are: a
+  // Continue-As-New may hand a later segment to a different interpreter
+  // version under auto-upgrade (see docs/ARCHITECTURE.md's versioning
+  // section), and a profile pins which functions exist rather than how
+  // cel-go implements them. Re-evaluating inline would let the *same*
+  // expression compute two different answers across one call, on a
+  // specification that never changed: precisely the hazard
+  // `engine.WorkflowVars` exists to remove at the top level. A callee's vars
+  // get no weaker a guarantee merely for being nested.
+  //
+  // Absent for every frame that predates this field, or whose callee
+  // declares no `vars:` at all, both read as "nothing bound", which is
+  // correct in the first case for the reason call_outputs's is, and correct
+  // in the second because there is nothing to evaluate.
+  map<string, Value> call_vars = 5;
+
+  // LoopState is the value a [Loop] was carrying when a run suspended between its
+  // iterations, for a frame standing inside a loop.
+  //
+  // A `for_each` needs no equivalent, because its per-iteration binding is the item
+  // at [NextIteration] of a list [ForEach.items] recomputes on resume: the list is
+  // in the specification. A loop's carried value is not: it is computed by
+  // [Loop.update] from the *previous* iteration's body outputs, which do not escape
+  // the iteration and are gone once it ends. So the value itself has to travel, the
+  // same way [call_outputs] carries a callee's own step outputs across the seam for
+  // the same reason: the state exists nowhere in [RunState.outputs].
+  //
+  // A resolved value, never an expression: [Loop.update] is evaluated in workflow
+  // code at the end of each iteration (invariant 4 permits it, as it does a loop's
+  // `items:` and a step's `vars:`) and what is stored here is the result. So a
+  // resumed segment binds the carried value directly and evaluates nothing to get
+  // it, the same discipline [PendingUndo] follows, and for the same determinism
+  // reason.
+  //
+  // Absent for every frame that predates this field, and for a loop that carries no
+  // state at all, both read as "nothing carried", which is correct: a
+  // retry-until loop binds no name, so there is nothing for a resumed segment to
+  // rebind.
+  //
+  // Weighed by `CheckRunStateSize` along with the rest of [RunState] (invariant 9),
+  // which is the bound a *finite* loop's state needs: it is one value, carried
+  // across at most the loop's bounded iteration count. The unbounded entity loop
+  // that would need a byte bound of its own is deferred; see [Loop].
+  Value loop_state = 6;
+}
+
+message RunState {
+  Workflow workflow = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+  // Zero-based index of the next top-level step to execute.
+  //
+  // Superseded by frames, which can also describe a position inside nested
+  // control flow. It is still honored when frames is empty, so a run started
+  // before frames existed continues correctly.
+  int32 next_step = 2;
+  // Compact subset of outputs needed by subsequent steps.
+  Workflow.StepOutputs outputs = 3;
+  // Step budget for Continue-As-New. If 0 or unset, server/workflow defaults apply.
+  int32 steps_budget = 4;
+  // Execution position, outermost frame first. When empty, execution starts from
+  // next_step at the top level.
+  repeated Frame frames = 6;
+  // Identity the run acts as, established when the run was requested and
+  // preserved across Continue-As-New so later steps act as the same principal
+  // the caller was authenticated as.
+  WorkloadIdentity identity = 5;
+
+  // PendingSignals are signals that arrived before the step waiting for them was
+  // reached, drained from their channels before this run suspended.
+  //
+  // They must be carried, because a suspended run drops whatever is still
+  // buffered on a channel it never read. A workload whose approval arrived while
+  // it was on an earlier step would otherwise reach the gate with the approval
+  // already lost, and wait forever: the worst failure available to a feature
+  // whose whole promise is that waiting is reliable.
+  repeated PendingSignal pending_signals = 7;
+
+  // Vars are the workflow's `vars:` block, already evaluated.
+  //
+  // Carried rather than recomputed, so that "evaluated once at the start of the run"
+  // means once for the whole run and not once per Continue-As-New segment. The
+  // difference is not academic: invariant 10 has a continued run pick up whichever
+  // interpreter version is current, so a segment that re-evaluated its vars could
+  // compute a different answer from the one earlier steps saw: a value changing
+  // under a workload halfway through, for no cause visible in the file.
+  //
+  // Storing it also makes the evaluation happen exactly once per run rather than once
+  // per segment, which is the cheaper half of the same argument.
+  map<string, Value> vars = 8 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+  }];
+
+  // Inputs are the arguments the run was started with, already checked against
+  // the workflow's declarations and with defaults filled in.
+  //
+  // Carried rather than re-derived, for the reason `vars` above is: the checking
+  // and the defaulting happen once, at submit, and a later segment must see the
+  // same values the first one did. Re-applying a default in a later segment would
+  // mean a declaration edited between deploys could change an argument underneath
+  // a run in flight, which is the class of thing invariant 10 exists to stop.
+  //
+  // Add-only and absent-tolerant, like everything else here. A run started before
+  // this field existed reads back with it empty, which is exactly right (that run
+  // has no arguments), so nothing has to distinguish "old writer" from "no
+  // inputs", and no number is ever reused. Values only; see [RunRequest.inputs].
+  map<string, Value> inputs = 9 [(buf.validate.field).map = {
+    keys: {string: {min_len: 1}}
+    max_pairs: 64
+  }];
+
+  // Outputs are the run's declared outputs once computed.
+  //
+  // Empty until the run reaches the end of its steps, and empty forever for a
+  // workflow that declares none. Absent on a run started before this field
+  // existed, which reads as "no declared outputs": the same answer that run
+  // would give if asked, so an old state and a new reader agree without a
+  // compatibility arm.
+  RunOutputs run_outputs = 10;
+
+  // PendingUndo are the compensations registered by steps that have already
+  // succeeded, in the order they were registered.
+  //
+  // Carried because a saga is exactly the workload that outlives one segment: a
+  // provisioning run that suspends after step two and fails at step three has to
+  // undo work done by a segment that is no longer executing. Nothing else can know
+  // about it: history is not replayed after a Continue-As-New, which is the whole
+  // point of the seam.
+  //
+  // Append-only within a run, and consumed exactly once: a segment either finishes
+  // the run, suspends (appending what it registered), or fails, and only the
+  // failing segment runs these, after which the run ends. There is no path where a
+  // segment compensates and then continues, which is what makes "a compensation
+  // runs at most once" a property of the shape rather than a flag somebody checks.
+  //
+  // Absent on a run started before this field existed, which reads as "nothing to
+  // undo": the truth for such a run, since no specification it could be executing
+  // had an `undo:` to register (invariant 10, with no compatibility arm needed).
+  repeated PendingUndo pending_undo = 11;
+
+  // Trigger is how this run was started, established once at the boundary that
+  // admitted it and read by every step under the `trigger` root. See
+  // [TriggerContext].
+  //
+  // Carried rather than re-derived, for the reason [RunState.inputs] is: the
+  // fact is established once, by whichever entry path accepted the submission,
+  // and a later segment must see what the first one saw. It is also the reason
+  // reading it is replay-safe at all — a value fixed in state cannot drift the
+  // way a clock read would.
+  //
+  // Absent on a run started before this field existed, and on one started by a
+  // path that records nothing, which both read as every field empty. `flow
+  // validate` cannot tell those apart and neither can a workflow, which is
+  // correct: "no trigger recorded" is one fact, not two.
+  TriggerContext trigger = 12;
+}

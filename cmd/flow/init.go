@@ -360,7 +360,8 @@ func plainYAMLString(name string) bool {
 //
 // It is written in the formatter's own canonical shape, so `flow fmt` on a fresh
 // scaffold is a byte-for-byte no-op (#451): the description is one unfolded line,
-// list entries sit at the mapping's own indent, the CEL string is double-quoted,
+// list entries sit indented under the key that holds them (#850), the CEL string
+// is double-quoted,
 // and the blank lines are the ones Marshal keeps. A scaffold the CLI's own
 // formatter would rewrite is the CLI disagreeing with itself about canonical form,
 // and it teaches the shape `flow fmt` was about to undo. TestFmtOnTheScaffoldIsANoOp
@@ -378,15 +379,15 @@ inputs:
     default: world
     description: who to greet
 steps:
-# Every step declares an id. It is how a later step, a test case, and
-# ` + "`flow get`" + ` all refer to this one.
-- id: greet
-  log:
-    # ${...} is CEL, and an expression is the whole value rather than a
-    # fragment spliced into text, so a greeting is built in CEL. A run's
-    # inputs, earlier steps' outputs, and anything enclosing control flow
-    # bound are all in scope.
-    message: ${"hello, " + inputs.name}
+  # Every step declares an id. It is how a later step, a test case, and
+  # ` + "`flow get`" + ` all refer to this one.
+  - id: greet
+    log:
+      # ${...} is CEL, and an expression is the whole value rather than a
+      # fragment spliced into text, so a greeting is built in CEL. A run's
+      # inputs, earlier steps' outputs, and anything enclosing control flow
+      # bound are all in scope.
+      message: ${"hello, " + inputs.name}
 `
 }
 

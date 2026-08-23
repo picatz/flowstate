@@ -10,6 +10,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/watch"
 )
 
 // The first sad path anybody meets is the one where no server is running, and for
@@ -230,7 +232,7 @@ func TestTheWayOutSurvivesBeingWrapped(t *testing.T) {
 	refusal := unreachableServer(serverFlags{address: "localhost:9233"}, "", unavailable())
 
 	gaveUp := fmt.Errorf("gave up watching %q after 30s of the server being unable to answer: %w",
-		"flowstate-workflow-3f7c", transientError{refusal})
+		"flowstate-workflow-3f7c", watch.NewTransientError(refusal))
 
 	assert.NotEmpty(t, nextCommandsFor(gaveUp),
 		"the way out was lost behind the sentence that wrapped it")
@@ -243,16 +245,7 @@ func TestTheWayOutSurvivesBeingWrapped(t *testing.T) {
 func runVerbAgainst(t *testing.T, address string, args []string) error {
 	t.Helper()
 
-	root := newRootCommand()
-	root.SilenceUsage = true
-	root.SilenceErrors = true
-
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append(append([]string{}, args...), "--address", address))
-
-	err := root.Execute()
+	err := runFlow(t, append(append([]string{}, args...), "--address", address)...).Err
 	require.Error(t, err, "%v somehow succeeded against an address with nothing on it", args)
 
 	return err

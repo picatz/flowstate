@@ -315,15 +315,18 @@ is one rule with consequences — the fuller reasoning lives in
   here, rendered by the same protojson encoder, because a document scripts index
   by name is a contract and this project describes its contracts in the schema.
   Only its *values* come from the calling process rather than from the server.
-  `result` is `applied` for an act that is true once the server answers,
-  `requested` for one it has accepted and not yet performed, and `delivered` for
-  a signal the server has taken, which is a claim about the server and not about
-  the workflow: a signal held for a gate the run has not reached is dropped if
-  the run continues as new with the pending set full, so a workflow that never
-  observes it is a possible ending of a delivery that succeeded. The envelope
-  carries only what this process knows for certain, because inventing a
-  resulting state out of an empty response is exactly the claim the prose has
-  always refused to make. That emptiness is the real defect
+  What each `result` value means is canonical in one place — the `--help` text
+  every mutation verb ends with, `mutationFlagHelp` in `cmd/flow/output.go`,
+  mirrored generated in [docs/reference/cli.md](reference/cli.md) — rather than
+  restated here, so there is one wording to keep current instead of two that
+  can drift apart. The one fact worth adding here, because it is about the
+  design rather than about a flag: `delivered` is a claim about the server and
+  not about the workflow. A signal held for a gate the run has not reached is
+  dropped if the run continues as new with the pending set full, so a workflow
+  that never observes it is a possible ending of a delivery that succeeded.
+  The envelope carries only what this process knows for certain, because
+  inventing a resulting state out of an empty response is exactly the claim
+  the prose has always refused to make. That emptiness is the real defect
   (picatz/flowstate#374): when those responses gain fields, the envelope stops
   being the whole answer and the response's own protojson carries the rest.
 - **Exit status is a contract with three values.** `0`: the command succeeded
@@ -434,6 +437,11 @@ choose any of it. An opt-in a caller can send is not an opt-in.
 Nothing in a tool's arguments can widen any of it. A denied request means this
 process was not configured for it, not that the workflow is wrong — which is what
 the refusal says, so an agent corrects the right thing.
+
+Everything above is the stdio posture: one trusted caller, decided once at
+start-up. Reaching `flow mcp` over HTTP instead — many callers, authenticated
+per request — is a separate surface with its own authorization story; see
+[docs/MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md).
 
 ### Configuring a client
 
@@ -579,8 +587,8 @@ caller that ever injects the virtual one, through
 [`v1.NewContextWithClock`](../pkg/flowstate/v1/clock.go). Any case where the
 two drivers could disagree about what `now` means, or about whether a wait
 actually blocks for what it says, is covered by a shared case in
-`pkg/flowstate/v1/tests` that both drivers run — see `WaitCases` in
-`pkg/flowstate/v1/tests/wait.go` — which is what keeps "the local driver got
+`pkg/flowstate/v1/internal/conformance` that both drivers run — see `WaitCases` in
+`pkg/flowstate/v1/internal/conformance/wait.go` — which is what keeps "the local driver got
 faster" from quietly becoming "the local driver stopped rehearsing production."
 
 Stubbing happens at the task boundary and nowhere lower: a step's `if:`,
@@ -637,6 +645,42 @@ named the task's inputs since stubs existed, and that meaning is kept.
 the step's answer — which is why `examples/http-expect` and
 `examples/http-output-shaping` assert the steps around those expressions rather
 than the expressions themselves.
+
+### What a case's identity is checked against
+
+A case can name who the run started as (`starter:`) and who each scripted signal
+stands in for (`sender:`). **A green case says nothing about whether that identity
+would be allowed to do any of this in production.** Nothing attested either one, and
+`flow test` takes no policy flags: `--task-policy` and `--egress-policy` are declared
+on `flow worker`, `flow run local`, `flow mcp`, `flow serverdev` and `flow task run`,
+and deliberately not here.
+
+What a `starter:` reaches is the workflow's own `signals:` policy, through the same
+`SignalPolicyCheck` the server calls — so `distinct_from_starter:` and an `allow:`
+rule answer here the way they answer in production. What it does not reach:
+`run.identity` (empty for every case, `run.local` true), task-shape policy (the check
+runs, against the empty scope identity, never against `starter:`), egress policy
+(never reached — the request that would be refused is answered by a stub), and secret
+access policy (a fixed allow-everything rule, evaluated under the constant
+`flow-test#flow-test` identity rather than under `starter:`).
+
+Task-shape policy carries one qualification, because "`flow test` installs none" is
+true of the *command* and not of the *process*. The flag is declared on `flow worker`,
+`flow run local`, `flow mcp`, `flow serverdev` and `flow task run`, and deliberately
+not on `flow test` — but it installs a process-wide policy that a case never clears,
+and the same machinery runs elsewhere: the `flowstate_test` MCP tool runs cases in
+whatever process serves it, so under `flow mcp --task-policy` a case's dispatches are
+governed by that deployment's policy. A rehearsal inherits whatever the hosting
+process installed, and evaluates it against the empty identity — so a rule keyed on
+`identity.namespace` refuses every stubbed dispatch there, and no `starter:` an author
+can write changes that.
+
+That split is the diagnostics rule one level up: `signals:` is a control the Flowfile
+declares, so `flow test` exercises it; the other three are controls a deployment
+installs, and a case whose verdict turns on which policy file the hosting process was
+passed is testing that process instead of the workflow. Denials in those three are
+written against the policy packages directly, which need no workflow at all.
+[docs/DSL.md](DSL.md) has the table and #652 has the decision.
 
 ## What this means for a change
 
