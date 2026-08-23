@@ -1,0 +1,313 @@
+edition: v2026.3
+name: approval-escalation
+description: Asks an approver on a cadence, escalates to a backup when the primary stops answering, and auto-rejects when the budget of asks runs out — over the same attested `signals:` gate `approval-gate` shows once.
+# `approval-gate` is one ask. This is the chase that a real approval is: ask,
+# wait a period, ask again, ask somebody else, and — because a request nobody
+# ever answers cannot sit open forever — decide without them.
+#
+# Three files already hold two thirds of this, and it is worth saying which
+# part each one owns rather than restating them here:
+#
+#   - `approval-gate` owns the security half. Who may answer is `signals:`,
+#     checked by `FlowstateServer.Signal` against the attested sender before
+#     Temporal sees the delivery, never an `if:` in this file. That block below
+#     is that block, with one addition: two rules rather than one, so the
+#     backup approver this run escalates to can answer it as well.
+#   - `renewal-reminder` owns the cadence: a `loop:` around a bounded
+#     `wait_for_signal:`, where the deadline lapsing is the ordinary path and a
+#     delivered signal is the interrupt.
+#   - `expense-approval` owns escalation as two gates in sequence — a manager,
+#     then finance ops. That shape asks each person once. This one asks
+#     repeatedly, and escalation is *which* of them the next ask goes to.
+#
+# # The loop asks before it waits, which `renewal-reminder` does not
+#
+# There, an iteration waits and then does the periodic work on the lapse. Here
+# an iteration *asks* and then waits a period for the answer, which is what
+# makes the first ask an ordinary iteration rather than a step outside the loop
+# that would have to be written and maintained twice. It also makes the count
+# honest with nothing to reconcile: one iteration is one ask, so
+# `steps.chase.results.size()` is how many times somebody was asked, and every
+# ask after the first is a reminder.
+#
+# # `max_iterations:` is not the reminder budget (#914)
+#
+# The hazard this file exists to name, because the grammar cannot yet say it
+# and every reader of a chasing loop reaches for the wrong number first.
+#
+# `max_iterations:` is the engine's *per-segment* ceiling — the number of
+# iterations one Continue-As-New segment will run before the run suspends and
+# resumes carrying its state, documented under "carried state" in
+# `docs/DSL.md`. Reaching it is a **failed run**: a loop whose stop condition
+# never held has not decided anything, and reporting that as a completed run is
+# how a request stops being chased with nobody deciding it should. That is
+# exactly right for `renewal-reminder`, where nothing but the customer can end
+# the chase.
+#
+# An approval, though, has somewhere to go when nobody answers: it fails
+# closed, and "nobody decided in four asks" is an *outcome*, not a crash. An
+# outcome has to come from `until:` holding, because that is the only way a
+# loop ends without failing. So the budget lives in `until:` below, in
+# `vars.ask_budget`, and `max_iterations:` stays what it is — a ceiling well
+# above the budget, which this file never reaches and which would be a bug
+# report if it did.
+#
+# Read the two as one number and both readings go wrong in the same direction:
+# lower `max_iterations:` to "the budget" and the run fails instead of
+# auto-rejecting; raise `vars.ask_budget` past it and the auto-reject the file
+# promises silently becomes a failure at a number nobody wrote down.
+#
+# # Two commands
+#
+# Locally, with nobody answering — four asks a period apart, the last two to
+# the backup, then the auto-reject:
+#
+#   flow run local examples/approval-escalation/workflow.yaml \
+#     --input-file examples/approval-escalation/inputs.json
+#
+# That is a real four hours on `flow run local`, which reads the wall clock.
+# `flow test` runs the identical file on a virtual clock, which is where the
+# whole chase happens at once and where the cadence is *asserted* rather than
+# described — `workflow.test.yaml` beside this file is the thing to read:
+#
+#   flow test examples/approval-escalation/
+#
+# Answer it instead, standing in for the approver `signals:` names:
+#
+#   flow run local examples/approval-escalation/workflow.yaml \
+#     --input-file examples/approval-escalation/inputs.json \
+#     --signal approval-decision='{"approved": true}' \
+#     --signal-as-subject sre-lead@example.com \
+#     --signal-as-issuer https://issuer.example.com \
+#     --signal-as-claim team=release-managers
+#
+# Durably, the same file is a run that sits on its cadence across as many
+# worker deployments as the chase takes, reachable the whole while (needs
+# `flow server` and `flow worker`; see the main README's Quickstart):
+#
+#   flow signal <run-id> approval-decision --data '{"approved": true}'
+inputs:
+  # No default: there is no sensible absent value for the thing being approved,
+  # only a plausible one to paste, which is what `example:` is for.
+  change:
+    type: string
+    required: true
+    description: what is being approved, as it should read in the ask
+    example: deploy v1.4.2 to production
+
+  # The two approvers are inputs rather than literals because *who* is chased
+  # differs per request; that they must both be release managers does not, and
+  # that part is written literally into `signals:` below where no caller can
+  # reach it.
+  primary_approver:
+    type: string
+    required: true
+    description: who this run asks first — narrows the first `signals:` rule for this run
+    example: sre-lead@example.com
+    must: this.matches(r'^[^@]+@[^@]+$')
+
+  backup_approver:
+    type: string
+    required: true
+    description: who this run escalates to — narrows the second `signals:` rule for this run
+    example: sre-manager@example.com
+    must: this.matches(r'^[^@]+@[^@]+$')
+# The whole of who may answer, enforced by `FlowstateServer.Signal` against the
+# attested sender before Temporal ever sees the delivery. Two rules, matched as
+# alternatives (OR across rules, AND within one), which is what escalation
+# needs: the backup can answer the chase because this file's author wrote a
+# rule for them, not because the run escalated. Escalation changes who is
+# *asked*; it cannot widen who is *allowed*, and there is no moment in this
+# file's execution where the policy is different from what was frozen into the
+# run's memo at submit.
+#
+# Each rule pairs an interpolated `subject:` with a literal `claims:`
+# constraint, for the reason `approval-gate` states at length and `flow
+# validate` enforces: an interpolated field can only narrow a grant this file's
+# author already wrote, never invent one. A caller who names a stranger as
+# `backup_approver` has named somebody who still has to be a release manager to
+# answer anything. The subject is qualified with its issuer — never a bare
+# subject, since a second identity provider could mint the same local part for
+# somebody else entirely.
+signals:
+  approval-decision:
+    allow:
+      - subject: ${"https://issuer.example.com#" + inputs.primary_approver}
+        claims:
+          team: release-managers
+      - subject: ${"https://issuer.example.com#" + inputs.backup_approver}
+        claims:
+          team: release-managers
+    distinct_from_starter: true
+vars:
+  # How many times anybody is asked, in total, across both approvers. The
+  # budget, and deliberately not `max_iterations:` — see the header.
+  ask_budget: 4
+  # How many asks the primary approver gets before the chase escalates. Asks 1
+  # and 2 go to them; asks 3 and 4 go to the backup.
+  asks_before_escalation: 2
+steps:
+  - id: requested
+    description: A step before the loop, so a run that suspends before its first deadline still has something to have carried across the handover.
+    log:
+      message: '${"%s requested %s, and needs an approval".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.change])}'
+
+  - id: chase
+    description: One ask per iteration, each followed by a cadence-long wait for an answer, retired by somebody deciding or by the ask budget running out.
+    loop:
+      # A bare int: the only thing carried between iterations is how many asks
+      # have already gone out. `loop-accumulate` is the file that shows the map
+      # shape for when more than one value is carried.
+      as: asks
+      init: ${0}
+      # Unconditional, and correct because of where `update:` sits in an
+      # iteration: `until:` runs first and a loop that stops skips `update:`
+      # entirely. So this counts the asks that were followed by another one,
+      # which is what the escalation threshold and the ask numbering below both
+      # need; how many asks happened in total is `results.size()`, one per
+      # iteration including the closing one.
+      update: ${asks + 1}
+      # Two ways for the chase to end, and both of them are outcomes rather
+      # than failures.
+      #
+      # Somebody decided: `verdict` is `undecided` both when the wait lapsed
+      # and when a signal arrived carrying no `approved` field at all, so this
+      # one comparison says "nobody has decided yet" for both — which is the
+      # right reading, since an acknowledgement is not a decision and the
+      # request still needs one. The cost, stated plainly: an answer that
+      # carries no decision resolves the wait immediately, so the next ask goes
+      # out at once rather than a period later, and enough of them would spend
+      # the budget. That direction fails closed (an auto-reject), which is the
+      # side to be wrong on.
+      #
+      # Or the budget ran out: `asks + 1` is how many asks this iteration
+      # makes it, so the loop stops on the iteration that spends the last one.
+      until: ${steps.gate.verdict != "undecided" || asks + 1 >= vars.ask_budget}
+      # The per-segment ceiling, well above `vars.ask_budget` and never
+      # reached — see the header for why these are two numbers and not one.
+      max_iterations: 20
+      steps:
+        # The escalation is a real step rather than a comment saying one should
+        # exist, for the reason `expense-approval` gives: somebody reading this
+        # run's log sees the moment the request changed hands. It runs on the
+        # one iteration that crosses the threshold, not on every ask after it.
+        - id: escalation
+          if: ${asks == vars.asks_before_escalation}
+          log:
+            level: warn
+            message: '${"%s has not answered after %d asks; escalating to %s".format([inputs.primary_approver, asks, inputs.backup_approver])}'
+
+        # Who this ask goes to, named once as its own step rather than
+        # recomputed in the ask and in the prompt. Before the threshold it is
+        # the primary; from the threshold on, the backup.
+        - id: recipient
+          value: '${(asks >= vars.asks_before_escalation) ? inputs.backup_approver : inputs.primary_approver}'
+
+        - id: ask
+          log:
+            message: '${"ask %d of %d to %s: approve %s".format([asks + 1, vars.ask_budget, steps.recipient.value, inputs.change])}'
+
+        # The cadence. This `timeout:` is the whole of it: one period per ask,
+        # and how many reminders a run sends before a given moment is
+        # arithmetic over this number — which is what `workflow.test.yaml`
+        # asserts on the virtual clock rather than describing in a comment.
+        #
+        # An hour here so the example is one to run; a real policy writes a day
+        # and nothing else about the file changes.
+        - id: gate
+          wait_for_signal:
+            name: approval-decision
+            prompt: '${"Approve %s? (ask %d of %d, addressed to %s)".format([inputs.change, asks + 1, vars.ask_budget, steps.recipient.value])}'
+            timeout: 1h
+            outputs:
+              # The gate stated once, on the step that produced the data, in
+              # the scope where the wait's own result exists — the same shaping
+              # `approval-gate` uses, and the same three states for the same
+              # reason: a payload carrying no `approved` field is not a
+              # rejection, and it is not the timer lapsing either. Both are
+              # `undecided`, which is exactly the condition `until:` above
+              # reads to decide whether there is still a chase to run.
+              verdict: '${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("undecided")}'
+              # Re-exposed deliberately: `outputs:` replaces what the wait
+              # produces, so `sender` is gone unless a line puts it back. It is
+              # read below as evidence for the audit trail — who the server
+              # attested, not who a payload claimed — never as a gate, since
+              # `signals:` already refused everyone else.
+              sender: ${sender}
+
+  # How many asks went out, and how many of those were reminders — named once
+  # here and read back everywhere below, rather than restated at each reader
+  # (docs/STYLE.md R5, which `flow lint` reports as a repeated expression).
+  # There is one iteration per ask and one `results` entry per iteration, so
+  # this is the loop's own record rather than a second counter carried beside
+  # `asks` that could disagree with it.
+  - id: asks_made
+    value: ${steps.chase.results.size()}
+  - id: reminders
+    value: ${steps.asks_made.value - 1}
+
+  # Which ask ended the chase — always the last one, since the loop can only
+  # have stopped on the iteration that satisfied `until:`. `steps.reminders`
+  # doubles as that index: with one ask per iteration, the number of reminders
+  # is also the zero-based position of the ask that ended it.
+  - id: last_verdict
+    value: ${steps.chase.results[steps.reminders.value].gate.verdict}
+
+  # The four endings of the chase are three outcomes, assembled by two
+  # one-question steps rather than one ternary holding another (docs/STYLE.md
+  # R5, which `flow lint` reports). `undecided` on the *last* ask means the
+  # budget ran out with nobody deciding, which is this file's fail-closed
+  # answer and a materially different fact from somebody saying no.
+  - id: unapproved
+    value: '${(steps.last_verdict.value == "rejected") ? "rejected" : "auto_rejected"}'
+  - id: outcome
+    value: '${(steps.last_verdict.value == "approved") ? "approved" : steps.unapproved.value}'
+
+  # Only on the paths where a person actually answered. A lapsed wait has no
+  # sender to report, and a skipped step produces no outputs — so this `if:`
+  # states once what would otherwise be re-tested by every reader below.
+  - id: approver
+    if: ${steps.outcome.value != "auto_rejected"}
+    value: ${steps.chase.results[steps.reminders.value].gate.sender.identity.subject}
+
+  # One `switch:` over the named outcome. The domain is the file's to know —
+  # `outcome` is built from string literals through a conditional and a leaf
+  # `value:` step, which is the shape the validator reads a domain out of — so
+  # the three cases exhaust it and a `default:` beside them can never run.
+  - id: settle
+    switch:
+      value: ${steps.outcome.value}
+      cases:
+        - case: approved
+          steps:
+            - id: apply
+              log:
+                message: '${"%s approved %s after %d reminders".format([steps.approver.value, inputs.change, steps.reminders.value])}'
+        - case: rejected
+          steps:
+            - id: decline
+              log:
+                message: ${"%s declined %s".format([steps.approver.value, inputs.change])}
+        - case: auto_rejected
+          steps:
+            - id: auto_reject
+              log:
+                level: warn
+                message: '${"nobody decided %s in %d asks; rejecting it".format([inputs.change, vars.ask_budget])}'
+outputs:
+  # This cannot disagree with the branch that ran: `settle` dispatches on this
+  # exact name rather than re-deriving the endings a second time.
+  decision:
+    value: ${steps.outcome.value}
+    description: approved, rejected, or auto_rejected because the ask budget ran out
+  # One ask per iteration, and every ask after the first is a reminder — the
+  # count `steps.reminders` above states once, read back here.
+  reminders_sent:
+    value: ${steps.reminders.value}
+    description: how many times the approvers were chased after the first ask
+  escalated:
+    value: ${steps.asks_made.value > vars.asks_before_escalation}
+    description: whether the chase reached the backup approver
+  approver_subject:
+    value: '${(steps.outcome.value == "auto_rejected") ? "" : steps.approver.value}'
+    description: who the server attests decided this, empty when nobody did — never a payload field, which is a claim rather than an attestation
