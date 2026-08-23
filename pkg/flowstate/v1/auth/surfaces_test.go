@@ -203,6 +203,38 @@ func TestAuthenticatorAdmitsATokenNamingTheExpectedResource(t *testing.T) {
 	require.Equal(t, "alice@example.com", principal.Subject)
 }
 
+// TestSurfaceResourcesAreMutuallyExclusive holds each surface's token up to
+// both verifiers. The TrustedIssuer intentionally lists both audiences.
+func TestSurfaceResourcesAreMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	issuer, verifier := mcpTestVerifier(t)
+	for _, test := range []struct {
+		name, audience string
+		rpcOK, mcpOK   bool
+	}{
+		{name: "Connect RPC token", audience: mcpOtherResource, rpcOK: true},
+		{name: "remote MCP token", audience: mcpResource, mcpOK: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			token := issuer.MintToken(nil, authtest.WithSubject("alice@example.com"), authtest.WithAudience(test.audience))
+			identity, rpcErr := auth.NewAuthenticator(verifier, auth.WithExpectedResource(mcpOtherResource)).Authenticate(t.Context(), rpcRequest(t, token))
+			if test.rpcOK {
+				require.NoError(t, rpcErr)
+				require.NotNil(t, identity)
+			} else {
+				requireRPCRefused(t, identity, rpcErr)
+			}
+			info, mcpErr := auth.MCPTokenVerifier(verifier, mcpResource)(t.Context(), token, nil)
+			if test.mcpOK {
+				require.NoError(t, mcpErr)
+				require.NotNil(t, info)
+			} else {
+				requireRefused(t, info, mcpErr)
+			}
+		})
+	}
+}
+
 // TestAuthenticatorWithEmptyExpectedResourceNarrowsNothing pins the
 // fail-*open* half of an otherwise fail-closed option, which is deliberate and
 // therefore has to be stated: a caller threading an unset configuration value

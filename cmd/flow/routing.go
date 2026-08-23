@@ -72,9 +72,10 @@ import (
 // per-route wrapping exists to keep.
 func serverHandler(
 	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, broker *auth.Broker,
-	rpc http.Handler, webhooks *server.WebhookReceiver, protectedResource *auth.ProtectedResource,
+	rpcResource string, rpc http.Handler, webhooks *server.WebhookReceiver, protectedResource *auth.ProtectedResource,
 ) http.Handler {
 	authenticatorOpts := []auth.AuthenticatorOption{
+		auth.WithExpectedResource(rpcResource),
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "rejected unauthenticated request",
 				"procedure", req.URL.Path,

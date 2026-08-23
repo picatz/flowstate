@@ -158,6 +158,25 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 	}, nil
 }
 
+// ValidateResourceAudience validates a serving surface's canonical resource
+// identifier and proves that the loaded trust policy can admit a token minted
+// for it. It is shared by surfaces which do not publish RFC 9728 metadata but
+// still bind bearer tokens to a resource using [WithExpectedResource].
+func ValidateResourceAudience(resource string, policy *Policy) error {
+	if _, err := validateResourceURI(resource); err != nil {
+		return err
+	}
+	if policy == nil {
+		return fmt.Errorf("resource: no auth policy is loaded; a protected audience requires a trusted issuer")
+	}
+	for _, issuer := range policy.Issuers {
+		if slices.Contains(issuer.Audiences, resource) {
+			return nil
+		}
+	}
+	return fmt.Errorf("resource: %q is not among any trusted issuer's accepted audiences; add it to at least one issuers[].audiences entry", resource)
+}
+
 // Resource is the canonical resource identifier this document advertises —
 // [ProtectedResourceConfig.Resource], validated. It is the exact string every
 // accepted token's "aud" claim must carry (RFC 8707 section 2), which is what

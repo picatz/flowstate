@@ -109,30 +109,14 @@ func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
 // entry's list admits a token to the deployment; this admits it to this
 // surface.
 //
-// # Why this is opt-in, and what flips it later
+// # Configuration and migration
 //
-// Unset (the default) is unnarrowed: every deployment that does not configure
-// one builds the exact same Authenticator this constructor always built, and
-// no token that verifies today starts failing. That is the cost, stated
-// plainly — an RPC surface is narrowed only when an operator says so, and
-// until then the trust policy's audience list is the whole of the check.
-//
-// It is the right default only because of what is true today: nothing mints an
-// RPC token carrying this deployment's resource URI. `--protected-resource` is
-// optional on `flow server` (required only on `flow mcp serve`, whose surface
-// *is* the resource), the RFC 9728 document a deployment may serve is
-// advertisement rather than enforcement, and clients ask their authorization
-// server for whatever audience they were configured with. Narrowing by default
-// would refuse every one of those tokens on upgrade, which is a fail-closed
-// posture bought by an outage.
-//
-// What flips it: once `flow server` grows a flag that turns this on and
-// deployments have run with it, the default can invert — narrow
-// whenever a protected resource is configured at all, since a deployment that
-// named its resource has said what its tokens should be minted for. That flag
-// is deliberately not in this change; see the pull request's follow-up note,
-// and #890 for why a serving-surface setting is named after the thing it
-// configures rather than after the check it performs.
+// Serving surfaces are responsible for making this non-empty by default.
+// `flow server` requires its Connect RPC resource at startup and exposes an
+// explicit migration flag for deployments which temporarily need the older
+// issuer-wide behavior. Keeping the empty value meaningful here permits that
+// compatibility mode and non-bearer development surfaces without coupling this
+// package to command-line policy.
 //
 // An empty resource is ignored, so a caller threading through an unset
 // configuration value gets the unnarrowed default rather than a surface that

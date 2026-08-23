@@ -341,6 +341,27 @@ $ flow worker --tenant= --task-queue-prefix flowstate-run ...
 convenient way to keep them equal — a worker that spelled it differently would
 poll a queue nothing submits to, do nothing forever, and report nothing.
 
+### Bearer-token audiences are per surface
+
+An authenticated `flow server` requires a canonical Connect RPC resource URI via
+`--rpc-resource` or `FLOWSTATE_RPC_RESOURCE`. The exact string must appear in at
+least one trusted issuer's `audiences`, and every bearer token spent on Connect
+RPC must carry that exact `aud` value. It must be an absolute HTTPS URI (HTTP is
+accepted only for loopback), with no fragment or trailing slash.
+
+Do not reuse this identifier for remote MCP. A deployment might use
+`https://flowstate.example.com/rpc` for Connect RPC and
+`https://flowstate.example.com/mcp` for `flow mcp serve`; a future ordinary HTTP
+API gets its own third identifier. Even when one `TrustedIssuer` lists all of
+them, each surface's exact check prevents replay between surfaces.
+
+**Migration:** older deployments accepted any audience listed on the matched
+issuer. First add the RPC URI to the issuer's audience list and configure clients
+to request it, then set `--rpc-resource`. If that cannot be atomic,
+`--allow-issuer-wide-audiences` explicitly restores the old behavior for one
+migration window. It is mutually exclusive with `--rpc-resource`; remove it to
+complete migration. New deployments should never set it.
+
 ### Tier 3 — substrate isolation
 
 Containers or microVMs per tenant, network-level enforcement, per-tenant cloud
