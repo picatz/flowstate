@@ -1,0 +1,115 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// PolicyBundle is the immutable, signed input to authorization rollout. Its
+// digest is computed from deterministic protobuf bytes with digest cleared.
+message PolicyBundle {
+  string name = 1 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+  string revision = 2 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+  string policy_class = 3 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+  repeated PolicyRule rules = 4 [(buf.validate.field).repeated.max_items = 10000];
+  repeated PolicyRelationship relationships = 5 [(buf.validate.field).repeated.max_items = 10000];
+  repeated ClaimProjection claim_projections = 6 [(buf.validate.field).repeated.max_items = 256];
+  map<string, string> dependency_revisions = 7 [(buf.validate.field).map.max_pairs = 256];
+  string digest = 8;
+}
+
+message PolicyRule {
+  string name = 1 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+  string revision = 2 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+  string action = 3 [(buf.validate.field).string.min_len = 1];
+  string resource = 4 [(buf.validate.field).string.min_len = 1];
+  string condition = 5 [(buf.validate.field).string = {min_len: 1, max_bytes: 65536}];
+  bool allow = 6;
+}
+
+message PolicyRelationship { string subject = 1; string relation = 2; string resource = 3; }
+message ClaimProjection { string claim = 1; string attribute = 2; }
+
+message PolicySignature {
+  string bundle_digest = 1;
+  string authority_id = 2;
+  bytes signature = 3 [(buf.validate.field).bytes = {min_len: 64, max_len: 65}];
+  google.protobuf.Timestamp signed_at = 4;
+}
+
+message PolicyProvenance {
+  string source = 1;
+  string source_revision = 2;
+  string builder = 3;
+  google.protobuf.Timestamp built_at = 4;
+  map<string, string> dependency_revisions = 5;
+}
+
+message PolicyDiagnostic { string field = 1; string message = 2; }
+message PolicyValidationResult {
+  string bundle_digest = 1;
+  bool valid = 2;
+  repeated PolicyDiagnostic diagnostics = 3;
+}
+
+message AuthorizationRequest {
+  string tenant = 1;
+  string subject = 2;
+  string action = 3;
+  string resource = 4;
+  map<string, string> claims = 5;
+  map<string, string> attributes = 6;
+}
+
+message PolicyScenario { string name = 1; AuthorizationRequest request = 2; bool want_allowed = 3; }
+message PolicyDecision {
+  bool allowed = 1;
+  string bundle_name = 2;
+  string bundle_revision = 3;
+  string bundle_digest = 4;
+  repeated string rule_revisions = 5;
+  string reason = 6;
+}
+message PolicySimulationCase { string name = 1; PolicyDecision decision = 2; bool matched_expectation = 3; }
+message PolicySimulationResult { string bundle_digest = 1; repeated PolicySimulationCase cases = 2; bool passed = 3; }
+message PolicyRequestClass { string action = 1; string resource = 2; string tenant = 3; }
+message PolicySemanticDiff {
+  string from_digest = 1;
+  string to_digest = 2;
+  repeated PolicyRequestClass newly_allowed = 3;
+  repeated PolicyRequestClass newly_denied = 4;
+}
+
+message PolicyApproval {
+  string bundle_digest = 1;
+  repeated string authority_ids = 2;
+  google.protobuf.Timestamp approved_at = 3;
+  string approval_id = 4;
+}
+
+message PolicyActivation {
+  string activation_id = 1;
+  string approved_digest = 2;
+  string applied_digest = 3;
+  repeated string tenants = 4;
+  uint32 canary_percent = 5;
+  google.protobuf.Timestamp starts_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  bool break_glass = 8;
+  string audit_evidence = 9;
+}
+
+message PolicyRollback {
+  string activation_id = 1;
+  string from_digest = 2;
+  string to_digest = 3;
+  string safety_signal = 4;
+  google.protobuf.Timestamp rolled_back_at = 5;
+}
+
+message PolicyReviewWorkflowInput { PolicyBundle bundle = 1; PolicyProvenance provenance = 2; repeated PolicyScenario scenarios = 3; }
+message PolicyRolloutWorkflowInput { PolicyApproval approval = 1; PolicyActivation activation = 2; }
+message PolicySafetySignal { string name = 1; double value = 2; double rollback_threshold = 3; google.protobuf.Duration window = 4; }
