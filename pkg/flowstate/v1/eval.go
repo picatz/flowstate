@@ -1072,7 +1072,14 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// then nothing below this line does anything.
 	undo := NewUndoLog(nil)
 
-	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
+	err = runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil)
+	// A task is allowed to finish successfully after its context is cancelled.
+	// The run is not: observe the run context once more before declaring success,
+	// so the task's newly registered compensation follows the cancellation path.
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
 		// The run cannot continue, so whatever already happened is taken back —
 		// reverse order, every entry attempted, one summary appended to the failure.
 		// [RunUndoLog] owns all three of those rules and the durable driver reaches
