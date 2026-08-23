@@ -167,17 +167,26 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
-	// deployment-reconciler's loop has no other way to stop: a converged
-	// workload is still worth watching, so `until:` holds only on a
-	// `spec-changed` that says the workload was retired. That makes this
-	// payload the thing that keeps the example finite here rather than a
-	// choice between two paths — without it the run would spend its whole
-	// per-segment budget of passes and fail on the iteration limit, which is a
-	// true statement about a reconciler and not what this harness is asking.
-	// It is the payload the example's own `--signal` line documents.
+	// deployment-reconciler is kept finite by its own `max_passes` (1, in that
+	// example's `inputs.json`) rather than by this payload, and that division is
+	// deliberate. The example consumes a retirement in the *first* step of its
+	// loop body, before it observes or writes anything — which is the whole
+	// point of that ordering, since a retirement buffered across a
+	// Continue-As-New must not produce one last scale. So a `retired: true` here
+	// would end the run having exercised no read and no write, and the
+	// cross-driver comparison this harness exists for would be comparing two
+	// runs that did nothing.
+	//
+	// A spec change instead: it is consumed by the same wait, wakes the pass
+	// immediately (so the run does not sit out a resync interval on either
+	// driver), and leaves the pass reconciling — the stand-in reports fewer
+	// replicas than this asks for, so `observed`, `drift` and `converge` all run
+	// and both drivers are held to the same answer. The retirement path is the
+	// subject of that example's own `workflow.test.yaml`, where a virtual clock
+	// can place a signal before the first pass and assert nothing was scaled.
 	"deployment-reconciler": {
 		"spec-changed": {NamedValues: map[string]*v1.Value{
-			"retired": v1.NewLiteral(true),
+			"desired_replicas": v1.NewLiteral(7),
 		}},
 	},
 

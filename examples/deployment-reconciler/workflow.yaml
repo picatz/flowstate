@@ -23,8 +23,8 @@
 # this run is suspended — buffered across a Continue-As-New, delivered before the
 # body ever reaches the wait. If the mutation ran before the wait consumed that
 # signal, a workload already declared retired would get one last scale on its way
-# out (the durable harness sends retirement immediately and would demonstrate
-# exactly that). So the wait — the only place retirement is consumed — is the
+# out — this file's own test file delivers a retirement at 0s and asserts nothing
+# was observed or scaled. So the wait — the only place retirement is consumed — is the
 # first thing each pass does, and every mutation below is gated on the pass not
 # being a retirement. A delayed or buffered retirement therefore ends the run
 # before anything is observed or written. The cost is that the very first pass
@@ -84,6 +84,21 @@ inputs:
     default: 5
     description: the replica count to converge on at the start; a spec-changed signal carrying a valid new one replaces it for every later pass
     must: this > 0 && this <= 100
+  max_passes:
+    type: int
+    default: 0
+    # A bounded watch. Zero - the default - means "watch until retired", which is
+    # the reconciler's own semantics: a converged workload is still worth
+    # watching, so only a retirement ends it. A positive value ends the run after
+    # that many reconcile passes instead, which is what a *scheduled* reconcile
+    # wants (reconcile, report, exit) and what makes this file runnable to
+    # completion with no signal at all - `flow run local` with no `--signal`
+    # otherwise sits on the resync interval until `max_iterations` is spent. It
+    # is what this example's own `inputs.json` sets, so the corpus harnesses run
+    # a finite reconcile on both drivers rather than a run whose only path is
+    # consuming a retirement.
+    description: end the run after this many reconcile passes; 0 watches until a retirement signal arrives
+    must: this >= 0 && this <= 1000
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.
@@ -109,12 +124,18 @@ steps:
       update:
         desired: ${steps.next_desired.value}
         passes: ${goal.passes + 1}
-      # The only thing that ends a reconciler is being told the workload is
-      # retired. Converging is not a stopping condition: a workload that matches
-      # its spec right now is the ordinary state of a healthy system, and a
-      # reconciler that exited there would stop watching at the exact moment it
+      # What ends a reconciler is being told the workload is retired — or, for a
+      # deliberately finite watch, spending the `max_passes` budget its caller
+      # asked for. Converging is not a stopping condition either way: a workload
+      # that matches its spec right now is the ordinary state of a healthy
+      # system, and a reconciler that exited there would stop watching at the exact moment it
       # had nothing to complain about.
-      until: ${steps.retiring.value}
+      # Retirement, or the pass budget being spent. `goal.passes` is the count of
+      # passes *before* this one (`update:` increments after `until:` is
+      # evaluated), so `+ 1` is what this pass makes — a `max_passes` of 1 stops
+      # after one reconcile. The budget arm is skipped entirely when `max_passes`
+      # is 0, which is the watch-until-retired default.
+      until: ${steps.retiring.value || inputs.max_passes > 0 && goal.passes + 1 >= inputs.max_passes}
       # A ceiling on the total passes one run may make, and it is cumulative for
       # the life of the run rather than per Continue-As-New segment: the engine
       # carries the iteration index across every segment seam (engine's runLoop
