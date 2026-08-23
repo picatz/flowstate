@@ -93,6 +93,13 @@ func lateCancellationWorkflow(name, base, message string, undo bool) *v1.Workflo
 	return &v1.Workflow{
 		Name:    name,
 		Profile: v1.CurrentProfile,
+		// Declared so that the outputs claim below is a claim about something: a
+		// run with no declared outputs makes "outputs were not evaluated"
+		// vacuously true. This one resolves trivially on a completed run, so its
+		// absence from a cancelled run's transcript can only be the guard.
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "said", Value: v1.NewExpr("steps.first.said")},
+		},
 		Steps: []*v1.Node{
 			first,
 			{
@@ -159,7 +166,7 @@ func TestRunWorkflowUndoOnLateCancellation(t *testing.T) {
 
 			ctx = v1.ContextWithLogger(ctx, slog.New(cancelOnMessage{message: message, cancel: cancel}))
 
-			_, err := v1.Run(ctx, lateCancellationWorkflow("undo-late-cancel", base, message, test.undo))
+			transcript, err := v1.Run(ctx, lateCancellationWorkflow("undo-late-cancel", base, message, test.undo))
 
 			require.Error(t, err,
 				"a run stopped while its last step succeeded reported success, with its compensations never run")
@@ -176,6 +183,13 @@ func TestRunWorkflowUndoOnLateCancellation(t *testing.T) {
 				require.Contains(t, err.Error(), test.summary,
 					"the cancellation does not carry the account of what was compensated")
 			}
+
+			// The workflow declares an output that every completed run resolves,
+			// so an empty RunOutputs here is the guard's doing and nothing
+			// else's: a regression that evaluated declared outputs before
+			// honouring the stop would populate it and fail this line.
+			require.Nil(t, transcript.GetRunOutputs(),
+				"a cancelled run's transcript carried run outputs, so the declared outputs were evaluated after the stop")
 
 			require.Equal(t, test.recorded, recorded(),
 				"the effects that happened, and their order, are not what stopping this run should have produced")
