@@ -185,6 +185,13 @@
 //	mux.Handle(auth.DiscoveryPath, issuer.Handler())
 //	mux.Handle(issuer.JWKSPath(), issuer.Handler())
 //
+// A process that starts this way publishes exactly one key, which is why
+// rotating one across a restart takes [WithVerifyOnlyKey]: it publishes a
+// previous key's public half beside the signing key, so assertions the process
+// before this one signed keep verifying until the retention lapses. That is
+// what `flow`'s repeatable --identity-key builds, and [Issuer.Rotate] is its
+// in-process counterpart for a deployment that never restarts.
+//
 // The subject names the workload hierarchically, so a relying party can authorize
 // at whatever level it wants with a prefix match:
 //

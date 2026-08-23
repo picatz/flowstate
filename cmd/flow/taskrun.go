@@ -219,8 +219,7 @@ func addLocalRehearsalFlags(cmd *cobra.Command) {
 		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize this local rehearsal")
-	cmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
+	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 }
 
 // newTaskCommand builds `flow task` and the one verb under it.

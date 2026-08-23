@@ -165,30 +165,31 @@ func NewSigningKey(id string, private crypto.PrivateKey) (SigningKey, error) {
 			return SigningKey{}, fmt.Errorf("%w: RSA signing key is %d bits, want at least %d",
 				ErrInvalidPolicy, typed.N.BitLen(), minRSAKeyBits)
 		}
-		key.algorithm, public = jwa.RS256, &typed.PublicKey
+		public = &typed.PublicKey
 	case *ecdsa.PrivateKey:
 		if typed.Curve != elliptic.P256() {
 			return SigningKey{}, fmt.Errorf("%w: ECDSA signing keys must use P-256, got %s",
 				ErrInvalidPolicy, typed.Curve.Params().Name)
 		}
-		key.algorithm, public = jwa.ES256, &typed.PublicKey
+		public = &typed.PublicKey
 	case ed25519.PrivateKey:
-		key.algorithm, public = jwa.EdDSA, typed.Public()
+		public = typed.Public()
 	default:
 		return SigningKey{}, fmt.Errorf("%w: %T cannot sign assertions, want an RSA, P-256 ECDSA, or Ed25519 private key",
 			ErrInvalidPolicy, private)
 	}
 
-	key.signer = signerFor(key.id, key.algorithm, private)
-
-	published, err := jwk.ValueFromPublicKey(public)
+	// The algorithm and the published key come from the public half, through
+	// the same function a verify-only key goes through: a signing key and a
+	// key published for verification only differ in whether this process can
+	// sign with them, and must not differ in how they appear in the key set.
+	algorithm, published, err := publishValue(key.id, public)
 	if err != nil {
-		return SigningKey{}, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, id, err)
+		return SigningKey{}, err
 	}
-	published[jwk.KeyID] = id
-	published[jwk.Algorithm] = key.algorithm
-	published[jwk.PublicKeyUse] = "sig"
-	key.published = published
+	key.algorithm, key.published = algorithm, published
+
+	key.signer = signerFor(key.id, key.algorithm, private)
 
 	return key, nil
 }
@@ -403,11 +404,25 @@ type Issuer struct {
 	// [WithDeclaredClaims].
 	declared []string
 
+	// verifyOnly holds the keys [WithVerifyOnlyKey] named, in the order they
+	// were given, until [NewIssuer] can turn them into retired keys. They
+	// cannot be installed by the option itself because an option cannot fail
+	// and cannot see the retention or the clock it needs, both of which other
+	// options may still change.
+	verifyOnly []verifyOnlyKey
+
 	// mu guards the keys. Minting takes a read lock, rotation a write lock, so
 	// signing is not serialized.
 	mu      sync.RWMutex
 	active  SigningKey
 	retired []retiredKey
+}
+
+// verifyOnlyKey is a public key an operator named at start-up so that
+// assertions a previous process signed keep verifying. See [WithVerifyOnlyKey].
+type verifyOnlyKey struct {
+	id     string
+	public crypto.PublicKey
 }
 
 // retiredKey is a rotated-out key, kept published so assertions signed with it
@@ -484,6 +499,49 @@ func WithDeclaredClaims(names ...string) IssuerOption {
 	}
 }
 
+// WithVerifyOnlyKey publishes one more public key in the key set, without a
+// private half, so that assertions signed by a *previous process* keep
+// verifying while they live.
+//
+// # Why this exists beside [Issuer.Rotate]
+//
+// Rotate is an in-process rotation: it moves the outgoing key into the
+// published-but-not-signing set and installs a new one, with no restart. It is
+// therefore no help at all with the rotation an operator actually performs,
+// which is to change what a process is started with and restart it. A fresh
+// process builds a fresh issuer whose retired set is empty, so the key set it
+// publishes from its first request onward names the new key and nothing else —
+// and every assertion the old process signed, still valid for its remaining
+// lifetime, stops verifying against any relying party that refetches. This
+// option is how a deployment carries the old key across that boundary
+// (picatz/flowstate#891).
+//
+// The key is installed exactly where a rotated-out key goes, so there is one
+// set of published keys and one retention rule rather than two: it is dropped
+// from the key set [Issuer.KeySet] serves once the issuer's retention has
+// elapsed, measured from when the issuer was built, and it can be withdrawn
+// early by [Issuer.RevokeKey] like any other retired key.
+//
+// It is a public key, and deliberately not a [SigningKey]: a key this process
+// will never sign with has no business holding private material, and a
+// verify-only key that could sign would make the distinction a convention
+// rather than a property.
+//
+// Rotating is still not revoking. Publishing a previous key is what keeps
+// rotation from rejecting assertions that are perfectly valid; an operator
+// responding to a suspected compromise wants [Issuer.RevokeKey], or simply not
+// to name the key here.
+//
+// The id must be the one the old key published under, since it is what the
+// "kid" header of those assertions names, and it must differ from every other
+// key this issuer publishes — [NewIssuer] refuses a collision rather than
+// publishing two keys a verifier cannot tell apart.
+func WithVerifyOnlyKey(id string, public crypto.PublicKey) IssuerOption {
+	return func(i *Issuer) {
+		i.verifyOnly = append(i.verifyOnly, verifyOnlyKey{id: id, public: public})
+	}
+}
+
 // WithIssuerClock sets the clock used for assertion lifetimes and key retention.
 // It exists for tests.
 func WithIssuerClock(clock func() time.Time) IssuerOption {
@@ -543,7 +601,103 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	}
 	issuer.declared = declared
 
+	if err := issuer.installVerifyOnlyKeys(); err != nil {
+		return nil, err
+	}
+
 	return issuer, nil
+}
+
+// installVerifyOnlyKeys turns what [WithVerifyOnlyKey] collected into retired
+// keys, once every option has been applied and the retention and clock are
+// settled.
+//
+// Every failure here is a start-up error rather than a key quietly left out.
+// A deployment that named a key it cannot publish is a deployment whose
+// rotation is half-performed: the process would come up serving a key set that
+// silently rejects assertions the operator believes are covered, which is the
+// failure this option exists to prevent, arriving without a message.
+func (i *Issuer) installVerifyOnlyKeys() error {
+	now := i.clock()
+
+	for _, key := range i.verifyOnly {
+		switch {
+		case key.id == "":
+			return fmt.Errorf("%w: a verify-only key needs the id it was published under", ErrInvalidPolicy)
+		case strings.ContainsAny(key.id, " \t\n\r"):
+			return fmt.Errorf("%w: verify-only key id %q must not contain whitespace",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		case key.id == i.active.id:
+			return fmt.Errorf("%w: verify-only key id %q is the active signing key's id; a key needs its own id, or verifiers cannot tell them apart",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		}
+
+		if slices.ContainsFunc(i.retired, func(other retiredKey) bool { return other.id == key.id }) {
+			return fmt.Errorf("%w: verify-only key id %q was given twice; a key needs its own id, or verifiers cannot tell them apart",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		}
+
+		algorithm, published, err := publishValue(key.id, key.public)
+		if err != nil {
+			return err
+		}
+
+		i.retired = append(i.retired, retiredKey{
+			id:        key.id,
+			algorithm: algorithm,
+			published: published,
+			// Measured from start-up, because that is when this key stopped
+			// signing as far as this process can tell. An operator whose
+			// retention has to outlast a longer gap configures a longer
+			// key_retention rather than getting an unbounded one by default.
+			expiresAt: now.Add(i.keyRetention),
+		})
+	}
+
+	i.verifyOnly = nil
+
+	return nil
+}
+
+// publishValue renders a public key as the JSON Web Key an issuer publishes,
+// and reports the algorithm it is used with.
+//
+// The accepted key types are exactly [NewSigningKey]'s, seen from the public
+// side: a key that could not have signed for this issuer cannot verify for it
+// either, and admitting one here would publish a key set entry no assertion
+// this deployment ever minted can match.
+func publishValue(id string, public crypto.PublicKey) (jwa.Algorithm, jwk.Value, error) {
+	var algorithm jwa.Algorithm
+
+	switch typed := public.(type) {
+	case *rsa.PublicKey:
+		if typed.N.BitLen() < minRSAKeyBits {
+			return "", nil, fmt.Errorf("%w: RSA key %q is %d bits, want at least %d",
+				ErrInvalidPolicy, truncate(id, 64), typed.N.BitLen(), minRSAKeyBits)
+		}
+		algorithm = jwa.RS256
+	case *ecdsa.PublicKey:
+		if typed.Curve != elliptic.P256() {
+			return "", nil, fmt.Errorf("%w: ECDSA key %q must use P-256, got %s",
+				ErrInvalidPolicy, truncate(id, 64), typed.Curve.Params().Name)
+		}
+		algorithm = jwa.ES256
+	case ed25519.PublicKey:
+		algorithm = jwa.EdDSA
+	default:
+		return "", nil, fmt.Errorf("%w: %T cannot verify assertions, want an RSA, P-256 ECDSA, or Ed25519 public key",
+			ErrInvalidPolicy, public)
+	}
+
+	published, err := jwk.ValueFromPublicKey(public)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, truncate(id, 64), err)
+	}
+	published[jwk.KeyID] = id
+	published[jwk.Algorithm] = algorithm
+	published[jwk.PublicKeyUse] = "sig"
+
+	return algorithm, published, nil
 }
 
 // validateDeclaredClaims checks a declaration and returns it sorted and
