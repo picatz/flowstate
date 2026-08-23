@@ -415,3 +415,89 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 		"a forged Host header changed the advertised metadata URL")
 	require.NotContains(t, challenge, "attacker.example.com")
 }
+
+// TestAdmitsBearerTokensReadsTheKindAndNotTheAudienceList is the question
+// [auth.ValidateResourceAudience]'s callers ask before requiring a resource of
+// a deployment: is there anything here that mints a token whose "aud" a
+// surface could check?
+//
+// The negative direction is the one that matters. A certificate-only policy
+// must answer no even when someone has written an `audiences` list onto a
+// kind: mtls entry by hand — [auth.Policy.Validate] refuses that shape, but
+// this predicate is reachable with a Policy a caller built in Go, and reading
+// the audience list rather than the kind would let a field that means nothing
+// on that entry decide that bearer tokens exist.
+func TestAdmitsBearerTokensReadsTheKindAndNotTheAudienceList(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		policy *auth.Policy
+		admits bool
+	}{
+		{name: "nil policy trusts nobody"},
+		{name: "no issuers at all", policy: &auth.Policy{}},
+		{
+			name:   "a certificate-only policy",
+			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh"}}},
+		},
+		{
+			name: "a certificate-only policy with an audience list it may not have",
+			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{{
+				Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
+				Audiences: []string{"https://flowstate.example.com/rpc"},
+			}}},
+		},
+		{
+			name:   "an unset kind, which defaults to oidc",
+			policy: trustingPolicy("https://trusted.example.com"),
+			admits: true,
+		},
+		{
+			name: "a mixed policy",
+			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{
+				{Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh"},
+				{Name: "idp", Kind: auth.IssuerKindOIDC, Issuer: "https://idp.example.com", Audiences: []string{"flowstate"}},
+			}},
+			admits: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, test.admits, auth.AdmitsBearerTokens(test.policy))
+		})
+	}
+}
+
+// TestValidateResourceAudienceRefusesWhatNoBearerIssuerAccepts walks the same
+// boundary one level up: the resource has to be accepted by an issuer that
+// mints tokens, not merely present somewhere in the policy.
+func TestValidateResourceAudienceRefusesWhatNoBearerIssuerAccepts(t *testing.T) {
+	t.Parallel()
+
+	const rpc = "https://flowstate.example.com/rpc"
+
+	bearer := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name: "idp", Issuer: "https://idp.example.com", Audiences: []string{rpc},
+	}}}
+	require.NoError(t, auth.ValidateResourceAudience(rpc, bearer))
+
+	// A kind: mtls entry cannot satisfy it, however its audience list reads:
+	// the token whose "aud" this narrows does not exist on that path.
+	certificateOnly := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh", Audiences: []string{rpc},
+	}}}
+	require.ErrorContains(t, auth.ValidateResourceAudience(rpc, certificateOnly), "kind: oidc",
+		"a client certificate carries no audience, so an audience list on that entry must not admit one")
+
+	// Trusted issuer, wrong audience: the exact-match rule [TrustedIssuer]
+	// applies to a token's "aud", checked here at start-up instead.
+	elsewhere := &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name: "idp", Issuer: "https://idp.example.com", Audiences: []string{"https://flowstate.example.com/mcp"},
+	}}}
+	require.ErrorContains(t, auth.ValidateResourceAudience(rpc, elsewhere), "audiences")
+
+	require.Error(t, auth.ValidateResourceAudience(rpc, nil))
+	require.Error(t, auth.ValidateResourceAudience("", bearer))
+	require.Error(t, auth.ValidateResourceAudience(rpc+"/", bearer), "a trailing slash leaves the audience ambiguous")
+}
