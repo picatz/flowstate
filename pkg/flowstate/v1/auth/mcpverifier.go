@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/picatz/jose/pkg/jwt"
+
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 )
 
@@ -55,11 +57,14 @@ import (
 //     [mcpauth.RequireBearerTokenOptions.Scopes]. #567's D1 defers the
 //     scope vocabulary by omission: a challenge that named a scope would name
 //     a spelling that has to migrate the day that decision lands.
-//   - Extra is deliberately nil. It travels to tool handlers through the
-//     request context, and nothing on this surface authorizes per claim yet
-//     (that is S7b); carrying a verified claims map into a surface that does
-//     not read it is a place for a token's own contents to reach a log or a
-//     tool result by accident.
+//   - Extra carries the verified [Principal], and nothing else. This is S7b
+//     arriving: the local MCP path holds a *server.FlowstateServer, which
+//     reads [PrincipalFromContext], so the principal now has a reader rather
+//     than travelling to a surface that ignores it. It is the Principal and
+//     not the raw claims map for the reason the previous note gave — a
+//     token's own contents reaching a log or a tool result by accident — and
+//     it never carries the bearer token itself. Read it through
+//     [MCPPrincipal] rather than by key.
 //
 // The error text returned on refusal is written into the 401 body by the
 // middleware, so it is drawn from [PublicReason] and names nothing the caller
@@ -152,7 +157,9 @@ func MCPPrincipal(info *mcpauth.TokenInfo) (Principal, bool) {
 // spelling, which is the one way two copies of it could disagree.
 //
 // Both the issuer and the subject go into it, because a subject is only unique
-// within its issuer — the same reasoning [Principal.ID] gives.
+// within its issuer — the same reasoning [Principal.ID] gives. The
+// authorization-relevant claims go in with them and the ones that change on an
+// ordinary re-mint do not; see [bindableClaims] for which and why.
 //
 // # Why this is a digest of a length-prefixed encoding rather than a joined string
 //
@@ -183,16 +190,48 @@ func MCPSessionUserID(p Principal) string {
 		Issuer, Subject, Namespace, Role, CertificateThumbprint string
 		Audience                                                []string
 		Claims                                                  map[string]any
-	}{p.Issuer, p.Subject, p.Namespace, p.Role, p.CertificateThumbprint, p.Audience, p.Claims}
+	}{p.Issuer, p.Subject, p.Namespace, p.Role, p.CertificateThumbprint, p.Audience,
+		bindableClaims(p.Claims)}
 	encoded, err := json.Marshal(binding)
 	if err != nil {
-		// Verified token claims are JSON values. A custom verifier returning
-		// something else gets a distinct fail-closed binding, never a weaker
-		// issuer-and-subject-only one.
-		fmt.Fprintf(sum, "invalid:%T:%v", p.Claims, err)
+		// Verified token claims are JSON values, so this is unreachable for a
+		// token this package minted or verified. A custom Verifier returning
+		// something else still gets a binding that distinguishes principals:
+		// the issuer and subject go in explicitly, because hashing only the
+		// error and the claims map's *type* would give two different callers
+		// the same session key — one principal's token accepted for another's
+		// session, which is the opposite of fail-closed.
+		fmt.Fprintf(sum, "invalid:%d:%s%d:%s:%T:%v",
+			len(p.Issuer), p.Issuer, len(p.Subject), p.Subject, p.Claims, err)
 	} else {
 		sum.Write(encoded)
 	}
 
 	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// bindableClaims is p.Claims without the ones that change on an ordinary
+// refresh.
+//
+// A session is pinned to who the caller is, not to which token they presented.
+// "exp", "iat", "nbf" and "jti" differ on every mint, so binding to them would
+// make a routine refresh look like a different principal and answer 403 — the
+// failure this session pin exists to prevent, arriving from the other side.
+// Everything else is authorization-relevant and stays: a token whose namespace
+// or role changed really is a different caller for this purpose.
+func bindableClaims(claims map[string]any) map[string]any {
+	if len(claims) == 0 {
+		return nil
+	}
+
+	bindable := make(map[string]any, len(claims))
+	for name, value := range claims {
+		switch name {
+		case jwt.ExpirationTime, jwt.IssuedAt, jwt.NotBefore, jwt.JWTID:
+			continue
+		}
+		bindable[name] = value
+	}
+
+	return bindable
 }
