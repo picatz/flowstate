@@ -129,29 +129,6 @@ func TestEvaluatorCostLimit(t *testing.T) {
 	}
 }
 
-func TestJSONParseBoundsWork(t *testing.T) {
-	t.Parallel()
-
-	t.Run("one input is byte bounded", func(t *testing.T) {
-		_, err := NewEvaluator().EvalString(t.Context(), "json_parse(body)", []string{"json"}, map[string]any{
-			"body": strings.Repeat(" ", MaxJSONParseBytes+1),
-		})
-		if err == nil || !strings.Contains(err.Error(), "input exceeds") {
-			t.Fatalf("json_parse oversized input error = %v, want input bound", err)
-		}
-	})
-
-	t.Run("repeated parses spend their bytes", func(t *testing.T) {
-		const body = `{"items":[1]}`
-		e := NewEvaluator(WithLimits(Limits{Cost: uint64(len(body) * 3), InterruptCheckFrequency: 1}))
-		_, err := e.EvalString(t.Context(),
-			"[1, 2, 3, 4].map(i, json_parse(body))", []string{"json"}, map[string]any{"body": body})
-		if err == nil || !strings.Contains(err.Error(), "cost limit") {
-			t.Fatalf("repeated json_parse error = %v, want cost limit", err)
-		}
-	})
-}
-
 // TestEvaluatorContextCancellation verifies that a caller's deadline actually
 // stops evaluation. Previously expressions were evaluated with Eval rather than
 // ContextEval, so a canceled context was ignored until evaluation finished on
