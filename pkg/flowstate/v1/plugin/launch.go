@@ -15,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
 )
 
@@ -70,6 +73,13 @@ type instance struct {
 
 // launch starts a plugin binary and completes the handshake with it.
 //
+// image is the open handle on the executable, already hashed by the caller. What
+// is executed is that handle where the platform allows naming one, and the path
+// otherwise; either way the plugin's own argv[0] stays the path an operator
+// installed it at, because that is the name everything else here reports. A nil
+// image executes found.Path, which is what a caller with no digest to protect
+// wants.
+//
 // procCtx bounds the process's whole life: cancelling it terminates the plugin.
 // It is deliberately not the context of whatever call triggered the launch — a
 // plugin must outlive the request that first needed it.
@@ -78,18 +88,36 @@ type instance struct {
 // killed, the socket directory removed, and the pipes closed. A launch either
 // yields a usable instance or leaves nothing behind, because the failure paths
 // here are the ones that leak child processes.
-func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, err error) {
-	procCtx, _, finish := newTelemetry(cfg).start(procCtx, "launch", found.Name, "")
+func launch(procCtx context.Context, cfg Config, found Found, image *execImage) (inst *instance, err error) {
+	tel := newTelemetry(cfg)
+	procCtx, _, finish := tel.start(procCtx, "launch", found.Name, "")
 	defer func() {
 		finish(err)
-		if err != nil {
-			newTelemetry(cfg).launchFailures.Add(procCtx, 1)
+		if err == nil {
+			return
 		}
+		// Named, like every other instrument in this package. A deployment runs
+		// several plugins, so "something failed to launch" with no plugin name
+		// is a number an operator cannot act on: it says a launch failed and
+		// refuses to say whose. The name is [metricschema.ClassConfiguration]
+		// — bounded by which plugins the deployment installs — and is already
+		// the label on the calls counter and the health counter beside this
+		// one, so this is the schema's existing key rather than a new one.
+		named := metricschema.WithAttributes(attribute.String(metricschema.PluginName, found.Name))
+		tel.launchFailures.Add(procCtx, 1, named)
 		if errors.Is(err, ErrHandshake) || errors.Is(err, ErrHandshakeTimeout) {
-			newTelemetry(cfg).protocolErrors.Add(procCtx, 1)
+			tel.protocolErrors.Add(procCtx, 1, named)
 		}
 	}()
 	log := cfg.logger().With("plugin", found.Name)
+
+	// Admission comes first, before a socket directory exists and before any
+	// process does. A pin the deployment declared decides whether these bytes
+	// may run at all, so it is answered with nothing of the plugin's own in
+	// evidence — it never gets to speak, let alone hand shake. See [admit].
+	if err := admit(cfg, found.Name, found.Path, image); err != nil {
+		return nil, err
+	}
 
 	socketDir, socketPath, err := makeSocketDir(cfg.SocketDir)
 	if err != nil {
@@ -138,7 +166,19 @@ func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, e
 	// nothing in the path or the environment is interpreted, and no arguments,
 	// so there is nothing for a plugin to be configured with that an operator
 	// did not put in Config.Env.
-	cmd := exec.CommandContext(procCtx, found.Path)
+	//
+	// What is executed and what argv[0] says are deliberately allowed to differ:
+	// the first is the already-hashed descriptor wherever the platform can name
+	// one, which is the only way to be sure the digest describes this process,
+	// and the second is the installed path, which is what an operator, the
+	// catalog and every log line here call this plugin. Both contain a slash, so
+	// neither is looked up on $PATH.
+	execPath := found.Path
+	if image != nil {
+		execPath = image.execPath
+	}
+
+	cmd := exec.CommandContext(procCtx, execPath)
 	cmd.Args = []string{found.Path}
 	cmd.Dir = socketDir
 	cmd.Env = pluginEnv(cfg, socketPath, token)
@@ -192,12 +232,18 @@ func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, e
 	// stderr is a plugin's only diagnostic channel, so it is captured from
 	// before the handshake: the most valuable thing a plugin ever writes there
 	// is the reason it is about to fail to hand shake.
+	//
+	// The pump drains every line regardless of the limiter below: a full pipe
+	// looks like a hung plugin, and only what gets *relayed* into the host's
+	// own log is bounded.
 	inst.pumps.Add(1)
 	go func() {
 		defer inst.pumps.Done()
-		pumpPluginLog(stderrR, cfg.MaxStderrLine, func(line string, truncated bool) {
-			log.Info("plugin log", "line", line, "truncated", truncated)
-		})
+		relay, flush := stderrRelayFunc(cfg, log)
+		pumpPluginLog(stderrR, cfg.MaxStderrLine, relay)
+		if summary := flush(); summary != "" {
+			log.Warn(summary)
+		}
 	}()
 
 	handshake, err := inst.handshake(cfg, stdoutR, log)
@@ -206,7 +252,7 @@ func launch(procCtx context.Context, cfg Config, found Found) (inst *instance, e
 	}
 
 	inst.protocolVersion = handshake.ProtocolVersion
-	inst.clients = newClients(socketPath, token, cfg.MaxResponseBytes, found.Name)
+	inst.clients = newClients(socketPath, token, cfg.MaxResponseBytes, cfg.MaxProgressFrames, found.Name)
 
 	return inst, nil
 }
@@ -544,6 +590,39 @@ func isProtocolEnv(entry string) bool {
 		}
 	}
 	return false
+}
+
+// stderrRelayFunc returns the callback pumpPluginLog invokes per stderr line,
+// rate-limited to cfg.MaxStderrLinesPerMinute so that the volume the host
+// relays into its own log is bounded independently of how long any one line
+// is, and a flush to call once the pump sees EOF. A negative
+// MaxStderrLinesPerMinute disables the bound: every line is relayed, as
+// before this existed, and flush is a no-op.
+//
+// allow only reports a window's suppressed count when another line arrives to
+// roll the window over, so a plugin that floods and then goes quiet — a crash
+// is a common reason, and often the one this limiter's summary would explain
+// — leaves its last window's count unreported. flush recovers it once, after
+// the pump can no longer call allow.
+func stderrRelayFunc(cfg Config, log *slog.Logger) (relay func(line string, truncated bool), flush func() string) {
+	if cfg.MaxStderrLinesPerMinute < 0 {
+		return func(line string, truncated bool) {
+			log.Info("plugin log", "line", line, "truncated", truncated)
+		}, func() string { return "" }
+	}
+
+	limiter := newStderrLimiter(cfg.MaxStderrLinesPerMinute, stderrRateWindow, cfg.stderrClock)
+	return func(line string, truncated bool) {
+			ok, summary := limiter.allow()
+			if summary != "" {
+				log.Warn(summary)
+			}
+			if ok {
+				log.Info("plugin log", "line", line, "truncated", truncated)
+			}
+		}, func() string {
+			return limiter.flush()
+		}
 }
 
 // pumpPluginLog reads lines from a plugin and hands each to fn.

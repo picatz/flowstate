@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -106,6 +107,68 @@ steps:
 	text := diagnosticMessages(ds)
 	assert.Contains(t, text, `case "prod" is already handled`)
 	assert.Contains(t, text, "the first match wins")
+}
+
+func TestSwitchCaseCountsAreBoundedBeforeValidation(t *testing.T) {
+	t.Parallel()
+
+	const header = `edition: v2026.3
+name: t
+inputs:
+  key:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.key}
+      cases:
+`
+
+	t.Run("cases", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString(header)
+		for i := range 101 {
+			fmt.Fprintf(&src, "        - case: value-%d\n          steps: []\n", i)
+		}
+
+		_, err := flowfile.ValidateSource([]byte(src.String()))
+		require.ErrorContains(t, err, "switch has 101 cases; at most 100 are allowed")
+	})
+
+	t.Run("values", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString(header)
+		src.WriteString("        - case: [")
+		for i := range 101 {
+			if i > 0 {
+				src.WriteString(", ")
+			}
+			fmt.Fprintf(&src, "value-%d", i)
+		}
+		src.WriteString("]\n          steps: []\n")
+
+		_, err := flowfile.ValidateSource([]byte(src.String()))
+		require.ErrorContains(t, err, "switch case has 101 values; at most 100 are allowed")
+	})
+
+	t.Run("maximum flattened values", func(t *testing.T) {
+		var src strings.Builder
+		src.WriteString(header)
+		for caseIndex := range 100 {
+			src.WriteString("        - case: [")
+			for valueIndex := range 100 {
+				if valueIndex > 0 {
+					src.WriteString(", ")
+				}
+				fmt.Fprintf(&src, "value-%d-%d", caseIndex, valueIndex)
+			}
+			src.WriteString("]\n          steps: []\n")
+		}
+
+		_, err := flowfile.ValidateSource([]byte(src.String()))
+		require.NoError(t, err, "the schema-valid maximum must remain accepted")
+	})
 }
 
 // Diagnostic 3: exhaustiveness. No `default:` claims every value is handled,
@@ -493,4 +556,38 @@ steps:
 `)
 	require.NotEmpty(t, ds)
 	assert.Contains(t, diagnosticMessages(ds), "null, which is not a value to dispatch on")
+}
+
+// TestSwitchDuplicateAcrossCelNumericRounding pins the pair the bucketing can
+// get wrong in the silent direction.
+//
+// cel-go compares an integer against a double by converting the integer to
+// double, so 9007199254740993 and 9007199254740992.0 are equal to CEL and the
+// second arm can never be reached. A bucket key finer than that equality -- an
+// exact rational, say -- files them separately, finds no candidate to compare
+// against, and accepts the unreachable arm without a word. The duplicate check
+// exists precisely to refuse it.
+func TestSwitchDuplicateAcrossCelNumericRounding(t *testing.T) {
+	t.Parallel()
+
+	ds := validateSwitchSrc(t, `edition: v2026.3
+name: t
+inputs:
+  n:
+    type: int
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.n}
+      cases:
+        - case: 9007199254740992.0
+          steps: []
+        - case: 9007199254740993
+          steps: []
+      default:
+        steps: []
+`)
+	require.NotEmpty(t, ds, "an arm CEL can never reach must be refused as a duplicate")
+	assert.Contains(t, diagnosticMessages(ds), "is already handled by")
 }

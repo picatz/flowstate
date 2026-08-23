@@ -9,7 +9,7 @@
 // refuses to cross. Nothing here may be serialized, put in a Flowfile, sent to
 // a plugin as data, or written into a run's state. What travels is ciphertext;
 // the thing that produced it stays in the process that holds the key. Do not
-// "fix" this into `proto/flowstate/v1/flowstate.proto`.
+// "fix" this into the schema under `proto/flowstate/v1/`.
 //
 // # Where the seam actually is
 //

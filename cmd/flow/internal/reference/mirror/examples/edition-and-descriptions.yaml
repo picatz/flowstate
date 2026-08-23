@@ -22,9 +22,8 @@ description: Two keys about the file itself rather than about the work it does.
 #
 # It is not a compatibility switch. A build compiles one grammar, and declaring an
 # edition it does not have is an error rather than a translation request.
-
 vars:
-  roster: ${['ada', 'grace', 'katherine']}
+  roster: ${["ada", "grace", "katherine"]}
 steps:
   # `description:` is prose about a step: why it is here, which the mechanics
   # under it cannot say. The expression below says what this computes; only a

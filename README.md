@@ -18,6 +18,20 @@ pipelines with approval gates, and scheduled maintenance work.
 [Temporal]: https://temporal.io/
 [durable execution]: https://docs.temporal.io/temporal#durable-execution
 
+Hand-rolled Temporal gives you the durable execution but leaves policy, egress
+control, secret handling, and the authoring surface to build yourself, workflow by
+workflow, in Go. Airflow gives you an authoring surface and a scheduler, but its
+retries and state live at the DAG level, not inside a durably-resumable step, so a
+long wait or a worker crash mid-task is a different problem than the one it was
+built to solve. Flowstate keeps Temporal's durability, replaces hand-written Go
+workflow code with a typed, checkable specification, and puts signal
+authorization in the file the workload's author already owns rather than in a
+separate system they have to keep in sync. Egress and secret access are
+governed the same way, in CEL, but by the operator: a worker's separate
+`--egress-policy` and `--auth-policy` files, not the Flowfile. See
+[docs/USE_CASES.md](docs/USE_CASES.md) for four worked examples of what that buys
+in practice.
+
 ## See it work
 
 A deploy that waits for a human to approve it, however long that takes. Nothing holds
@@ -65,18 +79,26 @@ steps:
 
   # The gate. It resolves to one of three outcomes, named once, on the step
   # that produced the data. Three and not two, because a payload carrying no
-  # decision at all is neither an approval nor a rejection. Conditionals over
-  # string literals, deliberately: that is the shape `flow validate` can read a
-  # domain out of, and it is what makes the dispatch below checkable.
+  # decision at all is neither an approval nor a rejection — which is why the
+  # absent case stays visible: `payload.?approved` is an optional select,
+  # `optMap` runs only when the field was actually sent, and `orValue` supplies
+  # the case where nobody decided. (`.orValue(false)` on that read would be a
+  # bug: it makes "missing" and "answered no" the same branch.) String literals
+  # reached through conditionals and those optional idioms, deliberately: that
+  # is the shape `flow validate` can read a domain out of, and it is what makes
+  # the dispatch below checkable.
   - id: approval
     wait_for_signal:
       name: deploy-approved
       timeout: 24h
       outputs:
+        # `optMap`'s first argument names the value it binds — here `isApproved`,
+        # the payload's `approved` field once it is known to be present — and the
+        # second is the expression evaluated with that name in scope.
         outcome: >-
-          ${has(payload.approved)
-            ? (payload.approved ? "deployed" : "rejected")
-            : "undecided"}
+          ${payload.?approved
+              .optMap(isApproved, isApproved ? "deployed" : "rejected")
+              .orValue("undecided")}
         sender: ${sender}
 
   # One dispatch, not three sibling `if:`s. The validator knows this value is
@@ -236,7 +258,7 @@ Both are in the [Reference](#reference) below.
 | **Plugins** | Out-of-process tasks and secret backends over Connect RPC: `vcs`, `git`, `github`, `sql` (sqlite and postgres), `codex` (a bounded agentic run as a durable step), and an SDK to write your own | [plugins/](plugins) · [plugin/sdk](pkg/flowstate/v1/plugin/sdk) |
 | **Embedding** | Compile a Flowfile from bytes, register your own Go functions as tasks, and run locally or durably from your own Go program | [EMBEDDING.md](docs/EMBEDDING.md) · [examples/embedding](examples/embedding) |
 | **Examples** | Fifty-five worked Flowfiles, indexed by what each one demonstrates | [examples/README.md](examples/README.md) |
-| **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) |
+| **Editor, agent, terminal** | Diagnostics and completion in your editor (`flow lsp`), a control plane for an agent (`flow mcp`), a live view of a running workload (`flow watch`) | [EDITORS.md](docs/EDITORS.md) · [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent) · [MCP over HTTP, authorized (`flow mcp serve`)](docs/MCP_AUTHORIZATION.md) |
 
 ## Start here
 
@@ -247,6 +269,11 @@ Both are in the [Reference](#reference) below.
 - **An agent using Flowstate?** `flow mcp` serves the same surface over stdio:
   validate, compile, run locally, run durably, all without a Go compiler in the loop.
   See [flow mcp: the same surface, for an agent](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent).
+- **Deciding whether Flowstate fits?** [docs/USE_CASES.md](docs/USE_CASES.md) walks
+  four worked enterprise examples end to end.
+- **Looking for a particular document?** [docs/README.md](docs/README.md) is the
+  index: every page under `docs/`, one line on what it covers, which of them are
+  generated, and which are internal process rather than product documentation.
 
 ## Quickstart
 
@@ -262,18 +289,62 @@ NEXT
   flow run local my-pipeline/workflow.yaml
   flow test my-pipeline
 
+  then, durably, in two commands:
+  flow server dev
+  flow run my-pipeline/workflow.yaml
+
 $ go run ./cmd/flow run local my-pipeline/workflow.yaml
+running locally
 INFO hello, world
 COMPLETED workflow my-pipeline
-{"stepValues":{"greet":{"namedValues":{}}}, "runOutputs":null}
 
 $ go run ./cmd/flow test my-pipeline
 PASS  my-pipeline/workflow.test.yaml: the greeting uses the input it was given
+my-pipeline/workflow.test.yaml  1/1 steps reached
 ```
 
 That is the whole of the local loop, and it is worth rehearsing with: the two drivers
 are one execution model, so conditions, retries, timeouts, loops and waits behave
 here the way they behave in production.
+
+### What a run answers with
+
+On a terminal a run says what happened, in words, and stops there. Pipe it and stdout
+carries a document instead — the same document either driver writes, in the vocabulary
+the file is already written in. A step's outputs are `.steps.<id>`, and the values a
+workflow declared under `outputs:` are `.runOutputs.<name>`:
+
+```console
+$ go run ./cmd/flow run local ./examples/computed-outputs/workflow.yaml --input release=2026.9.0 | jq
+{
+  "steps": {
+    "report": {},
+    "roll_out": {
+      "results": [
+        { "place": {} },
+        { "place": {} },
+        { "place": {} }
+      ]
+    }
+  },
+  "runOutputs": {
+    "hosts_placed": 3,
+    "release": "2026.9.0",
+    "summary": "placed 2026.9.0 on 3 host(s)"
+  }
+}
+
+$ go run ./cmd/flow run local ./examples/computed-outputs/workflow.yaml -o json | jq -r '.status, .runOutputs.summary'
+STATUS_COMPLETED
+placed 2026.8.1 on 3 host(s)
+```
+
+A value is a value: `.runOutputs.hosts_placed` is `3`, not a tagged union you have to
+unwrap. That document is a contract — field names and shape are treated as a public
+interface, and every field is present even when empty, so an expression that resolves
+against one run resolves against the next. `--raw` writes the schema's own protojson
+(`stepValues`, `namedValues`, CEL's own encoding of a value) for a consumer generated
+against `flowstate.v1` rather than written by hand.
 
 ### Durably, on Temporal
 
@@ -307,14 +378,33 @@ anonymous callers.
 Then run a workflow durably, through the server:
 
 ```console
-$ go run ./cmd/flow run ./examples/hello-world-multi-step/workflow.yaml
-started flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2; come back to it with `flow watch flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2`
-COMPLETED workflow flowstate-workflow-01b09563-6f8a-4ab1-a1d0-67896e7b8da2 run 019fe297-35dc-743c-b8c0-2a3c65e64f8a after greet, shout
-{"stepValues":{"greet":{"namedValues":{}}, "shout":{"namedValues":{}}}, "runOutputs":null}
+$ go run ./cmd/flow run ./examples/computed-outputs/workflow.yaml --input release=2026.9.0
+running on localhost:9233 as an anonymous caller
+started workflow computed-outputs; come back to it with `flow watch flowstate-workflow-4a57133c-32b7-408f-8ff9-77bc0e7e3e05`
+COMPLETED workflow computed-outputs run 01a025b3-d4f1-7450-9333-bfca9a969d6b after report, roll_out
+outputs
+  hosts_placed 3
+  release 2026.9.0
+  summary placed 2026.9.0 on 3 host(s)
 ```
 
-The same file run with `flow run local` prints the same steps and the same final
-document; the difference is that this one survives its worker being restarted.
+While the run is going, a live view stands where the `COMPLETED` line is: where the
+run has got to, what is being retried, which gate it is parked on. It is drawn on
+stderr and erased when the run ends, leaving that one sentence — the same sentence
+`flow run local` writes about the same file, because the two drivers are one execution
+model and a person moving between them should have nothing to relearn.
+
+Each identifier is said once, and once is not zero. The workflow id — what
+`flow watch`, `flow get` and `flow cancel` are pointed at — is in the command it is
+for and nowhere else. The run id names *this attempt* of the workload, which is what
+`flow get --run-id` asks about, so it is on the line that stays; a workload that
+continues as new names each attempt as it hands over. Pipe this run and stdout
+carries the document instead, exactly as above.
+
+The same file run with `flow run local` prints the same steps and, piped, the same
+final document; the difference is that this one survives its worker being restarted.
+That is why the document is worth having one of rather than two: `.runOutputs.summary`
+is the same expression against a rehearsal and against production.
 
 `go install ./cmd/flow` puts `flow` on your `PATH` (at `$(go env GOPATH)/bin/flow`)
 once you'd rather not type `go run` every time. Everything above also has a `--help`,
@@ -372,6 +462,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow run local <file>` | Run a workflow in this process, no server and no Temporal. Same `--input`/`--input-file`, and answers signal gates from `--signal name=json`. |
 | `flow test [path...]` | Run a workflow's own `*.test.yaml` files: stubbed task responses, scripted signals, and a virtual clock, entirely through the local driver, so a `sleep: 24h` resolves in well under a second. `--output json` or `jsonl` reports what ran as data. |
 | `flow breaking <path...>` | Report workflows whose declared inputs or outputs broke their contract against a git ref. `--against origin/main` compiles both sides and compares the compiled protos, so a shrunk interface fails while formatting churn does not. |
+| `flow lint <path...>` | Suggest the canonical spelling where a Flowfile is legal but not idiomatic: a conditional nested inside a conditional, one expression stated three or more times, sibling `if:` steps dispatching on one value where a `switch:` belongs. Each finding names the rule in [docs/STYLE.md](docs/STYLE.md) that decided it. Advice rather than refusal — it exits 0 on every finding, and `--strict` is the opt-in that makes one a failure. |
 | `flow audit <path...>` | Count the expressions a Flowfile states more than once, hand-negated pairs marked, every occurrence placed at a line. Written for whoever decides what the language grows rather than for the file's author: it is the evidence `value:` (#411) landed on, not a linter, and it exits 0 on every finding. |
 | `flow get <id>` | Report what a run is doing, and its outputs if it finished. |
 | `flow watch <id>` | Follow a run until it finishes: a live view on a terminal, one line per change without one. |
@@ -396,6 +487,7 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow server dev` | Start the whole stack in one command on loopback: Temporal, the server, and a worker. Ephemeral unless `--db`, and every insecure posture it takes is stated at start-up. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 | `flow mcp` | Serve the control plane to an AI agent over stdin and stdout. See [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent). |
+| `flow mcp serve` | Serve a reduced control plane over HTTP as an OAuth 2.1 protected resource, requiring an audience-bound bearer token from a configured identity provider. See [MCP over HTTP, authorized](docs/MCP_AUTHORIZATION.md). |
 | `flow keys` | Generate and inspect signing keys for workload identity. |
 | `flow keys generate` | Generate a signing key, write it PKCS#8-PEM at file mode 0600, and print its public JWK. |
 | `flow keys public` | Print the public JWK for an existing signing key, without touching the private half. |
@@ -436,3 +528,7 @@ prerequisite. A credential is never sent over plain HTTP to anywhere but this
 machine. `flow` refuses rather than warns, unless an operator sets
 `FLOWSTATE_INSECURE_PLAINTEXT_TOKEN=true` to say that something else (a sidecar, a
 service mesh) is terminating TLS in front of it.
+
+## License
+
+[MIT](LICENSE).

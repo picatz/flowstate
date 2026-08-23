@@ -7,19 +7,19 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestRunAddressShapeLocal checks the local half of the shared assertion in
-// [tests.AssertRunAddressShape]: a local run has no address at all — no server
+// [conformance.AssertRunAddressShape]: a local run has no address at all — no server
 // in front of it, no Temporal behind it, nothing that could reach it by any
 // name — so it answers the sentinel rather than an empty string. The durable
 // half is [engine_test.TestRunAddressShapeDurable].
 func TestRunAddressShapeLocal(t *testing.T) {
-	outputs, err := v1.Run(context.Background(), tests.RunAddressWorkflow())
+	outputs, err := v1.Run(context.Background(), conformance.RunAddressWorkflow())
 	require.NoError(t, err)
 
-	tests.AssertRunAddressShape(t, outputs, v1.LocalRunAddress, v1.LocalRunAddress)
+	conformance.AssertRunAddressShape(t, outputs, v1.LocalRunAddress, v1.LocalRunAddress)
 }
 
 // TestLocalRunAddressIsNotBlank pins the rule the sentinel exists for, at the

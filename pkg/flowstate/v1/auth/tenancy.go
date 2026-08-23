@@ -104,3 +104,30 @@ func (t *Tenancy) TemporalNamespaces() []string {
 
 	return namespaces
 }
+
+// FlowstateNamespaces returns the Flowstate namespaces this mapping routes to the
+// given Temporal namespace, sorted, so a diagnostic about a broken Temporal
+// namespace can also name which tenants it affects.
+//
+// The empty string denotes the default tenant, so it sorts first when Default
+// maps here. Two tenants may share one Temporal namespace, which is why this
+// returns a slice rather than one answer.
+func (t *Tenancy) FlowstateNamespaces(temporalNamespace string) []string {
+	if t == nil {
+		return nil
+	}
+
+	var namespaces []string
+	if t.Default == temporalNamespace {
+		namespaces = append(namespaces, "")
+	}
+	for namespace, mapped := range t.Temporal {
+		if mapped == temporalNamespace {
+			namespaces = append(namespaces, namespace)
+		}
+	}
+
+	slices.Sort(namespaces)
+
+	return namespaces
+}

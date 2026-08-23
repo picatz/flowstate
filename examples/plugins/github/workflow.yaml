@@ -12,37 +12,31 @@ description: Reads a public pull request's state using the "github" plugin - the
 # descriptors this plugin ships in its manifest at launch. See
 # plugins/github for the source and plugins/github/README.md for the
 # authentication modes it supports, in the order this plugin prefers them.
-
 vars:
-  owner: golang
-  repo: go
   # A pull request old enough to be merged and stable, so this example's
   # output does not change out from under it.
   number: 1
-
+  owner: golang
+  repo: go
 steps:
   - id: pr
     github.pull_request_get:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
       number: ${vars.number}
       # No token: a public repository's pull requests are readable
       # unauthenticated, at a much lower rate limit. Compare this to
       # comment-inputs.json, where posting a comment requires one.
-
+      owner: ${vars.owner}
+      repo: ${vars.repo}
   - id: announce
     log:
-      message: "${'pull request #%d (%s) - %s'.format([vars.number, steps.pr.state, steps.pr.title])}"
-
+      message: '${"pull request #%d (%s) - %s".format([vars.number, steps.pr.state, steps.pr.title])}'
 outputs:
   title:
     value: ${steps.pr.title}
     description: the pull request's title, read from GitHub's API without this build knowing its schema
-
   state:
     value: ${steps.pr.state}
-    description: "open or closed"
-
+    description: open or closed
   head_sha:
     value: ${steps.pr.head_sha}
     description: the commit at the tip of the pull request's branch

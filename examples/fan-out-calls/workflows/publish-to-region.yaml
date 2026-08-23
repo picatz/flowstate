@@ -15,24 +15,15 @@
 edition: v2026.3
 name: publish-to-region
 description: Publish one build to one region's edge, and report the URL it is served from.
-
 inputs:
   region:
     type: string
     required: true
     description: the edge region to publish to
-
 steps:
   - id: upload
-    description: >-
-      Push the build to this region. "quarantined" is a region the edge
-      permanently refuses, which is what gives the caller a failure to tolerate.
+    description: Push the build to this region. "quarantined" is a region the edge permanently refuses, which is what gives the caller a failure to tolerate.
     http:
-      method: GET
-      url: https://httpbin.org/get
-      query:
-        region: ${inputs.region}
-      parse_json: true
       # The refusal is decided here, by `expect:`, rather than by pointing the
       # request at a URL that fails — the same reason `progressive-rollout`'s
       # canary check does: the CI harness rewrites a *literal* host onto its
@@ -40,11 +31,14 @@ steps:
       # one. `expect:` has no such constraint, and a region the edge refuses is
       # exactly the shape a real 4xx would arrive in: permanent, about the
       # request itself, and never worth retrying.
-      expect: ${inputs.region != 'quarantined' && response.status_code == 200}
+      expect: ${inputs.region != "quarantined" && response.status_code == 200}
+      method: GET
       outputs:
-        url: ${"https://" + response.json.args.region + ".cdn.example.com"}
         region: ${response.json.args.region}
-
+        url: ${"https://" + response.json.args.region + ".cdn.example.com"}
+      parse_json: true
+      query: '${{"region": inputs.region}}'
+      url: https://httpbin.org/get
 outputs:
   # The values the caller reads back, per iteration. A failed publish never
   # reaches either — `expect:` decided before `upload` produced anything — so

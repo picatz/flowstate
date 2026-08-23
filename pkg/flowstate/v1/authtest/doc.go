@@ -77,6 +77,18 @@
 // keys are cached and that a stream of unrecognized key ids does not turn the
 // deployment into a load generator.
 //
+// # Negative tokens for a resource server
+//
+// [Issuer.WrongAudienceToken] and [WrongIssuerToken] mint the two tokens an
+// OAuth 2.1 resource server (an HTTP MCP surface, for instance) must refuse
+// for reasons unrelated to each other, and [WithDelegation] and [WithMayAct]
+// mint one carrying RFC 8693's "act" and "may_act" claims, for a resource
+// server that accepts no delegation yet. Each is built to have exactly the
+// one defect its name promises: a wrong-audience or wrong-issuer token
+// otherwise verifies cleanly, so a negative test built on one is provably
+// exercising the check it names rather than passing because the token was
+// broken some other way too.
+//
 // # Beyond verification
 //
 // A verifier is the first thing a controlled issuer is good for, not the last.

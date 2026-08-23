@@ -143,14 +143,28 @@ func decodePageCursor(raw string) (pageCursor, error) {
 
 // filterFingerprint hashes an ordered list of "key=value" filter strings a
 // list task built its walk from - order matters (callers always pass the
-// same fields in the same order) and a nul byte separates each pair so
-// that, for instance, fields "a=1" then "b=" cannot collide with "a=1b="
-// then "" the way plain concatenation could.
+// same fields in the same order), and each field is hashed length-prefixed:
+// an 8-byte big-endian length, then the field's bytes, with the field count
+// itself prefixed the same way ahead of all of them.
+//
+// Length-prefixed rather than delimiter-separated, per CLAUDE.md's own "no
+// separator fixes an ambiguous encoding": a nul byte between fields keeps
+// "a=1" then "b=" apart from "a=1b=" then "" only for as long as no field
+// can itself contain a nul, and nothing in this plugin's validation
+// promises that of every value it fingerprints - issue_list's labels are
+// bounded by count and per-entry length, not by character class (see
+// validateLabels). A length prefix needs no such promise: the encoding of
+// a field list is unique whatever bytes the fields hold, so two different
+// filter sets cannot hash alike however a caller spells them.
 func filterFingerprint(fields ...string) fingerprint {
 	h := sha256.New()
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(fields)))
+	h.Write(n[:])
 	for _, f := range fields {
+		binary.BigEndian.PutUint64(n[:], uint64(len(f)))
+		h.Write(n[:])
 		h.Write([]byte(f))
-		h.Write([]byte{0})
 	}
 	var out fingerprint
 	copy(out[:], h.Sum(nil))
@@ -172,18 +186,30 @@ func requireCursorFingerprint(cur pageCursor, current fingerprint) error {
 	return nil
 }
 
-// normalizeBaseURL is the form of base_url every list task's own fingerprint
-// hashes, rather than the raw input string - trimming only the one piece of
-// variation newClient itself introduces (a trailing slash, always appended
-// back by newClient before use, so "https://x" and "https://x/" already
-// name the identical API endpoint and must fingerprint identically too).
+// canonicalAPIBase is the one spelling of an API base this plugin uses
+// wherever two spellings must compare equal - effectiveAPIBase's own
+// comparison against the operator-configured base, and the api_base field
+// of every list task's cursor fingerprint.
+//
+// Two differences mean nothing and are erased here. A trailing slash is the
+// variation newClient itself introduces (it appends one back before use, so
+// "https://x" and "https://x/" already name the identical API endpoint).
+// And the empty string is github.com: an unset base_url reaches
+// api.github.com, so it must canonicalize to the same value an explicitly
+// spelled "https://api.github.com" does, or one endpoint would fingerprint
+// two ways depending on how a caller happened to write it.
+//
 // Deliberately not a fuller normalization (case-folding the host, resolving
 // "..", and so on): base_url is checked as a valid URL by newClient itself
-// before a request is ever made, so this only needs to erase the one
-// difference that means nothing, not defend against a malformed value -
-// that is validateRepositoryURL/newClient's job, not the fingerprint's.
-func normalizeBaseURL(raw string) string {
-	return strings.TrimSuffix(raw, "/")
+// before a request is ever made, so this only needs to erase the
+// differences that mean nothing, not defend against a malformed value -
+// that is newClient's job, not the fingerprint's.
+func canonicalAPIBase(raw string) string {
+	base := strings.TrimSuffix(raw, "/")
+	if base == "" {
+		return defaultAPIBaseURL
+	}
+	return base
 }
 
 // cursorHasResumePosition reports whether (nextPage, nextSkip) - what a

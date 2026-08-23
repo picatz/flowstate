@@ -1,12 +1,11 @@
 edition: v2026.3
 name: onepassword-secret
-
 steps:
   # An op: reference names an item and, after "#", a field; the default field is
   # 1Password's own default for a password item. The worker resolves it inside the
   # activity that needs it, through the 1Password CLI.
   - id: health
     http:
-      url: https://api.example.com/status/200
-      bearer: ${secret('op:github#token')}
+      bearer: "${secret('op:github#token')}"
       expect: ${response.status_code == 200}
+      url: https://api.example.com/status/200

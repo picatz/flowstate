@@ -340,9 +340,12 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 //     `LogAttrs(ctx, …)` and the activity's context carries the span Temporal's
 //     tracing interceptor opened, so a step's line and the step's span share a
 //     trace id. That is the pairing the lab could not do before.
-//   - A `log:` step in `flow run local` **does not**, and cannot: the local
-//     driver runs no RPC and opens no span, so there is no trace for the line to
-//     belong to. The record is still exported, with a context and no span in it.
+//   - A `log:` step in `flow run local` **also correlates**, since #523's gap 3:
+//     the local driver opens the same `flowstate.task/<name>` span the durable
+//     driver does, on the context the task logs through, so a rehearsal's lines
+//     hang off the rehearsal's trace exactly as production's do. This entry read
+//     the opposite for as long as that driver opened no span at all — a local
+//     run made no RPC, and there was no trace for its lines to belong to.
 //   - The server's and worker's **own** lines do not. [infraLogger] is called at
 //     start-up and shutdown and logs through `Info`/`Warn` rather than the
 //     `Context` variants, and those moments are outside any request's span
