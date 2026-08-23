@@ -1,0 +1,486 @@
+# A reconciler: the loop an operator framework exists to give you, as one file.
+#
+# The shape is wait, then observe, compare, act — and the part that makes it a
+# reconciler rather than an event handler is *where the decision comes from*.
+# Every pass reads the world's current state (`observed`) and compares it to the
+# state this run is holding (`goal.desired`). Nothing branches on which event
+# woke it up. That is what level-triggered means, and it is the property that
+# makes a reconciler survivable: a notification that was never delivered, was
+# delivered twice, or arrived while the process was down changes how *soon* the
+# next pass happens and never what that pass decides.
+#
+# One boundary on that claim, stated rather than implied, because the desired
+# count itself arrives in a `spec-changed` payload. That is not a notification
+# in the sentence above's sense: a signal through the server is a durable,
+# attested *write* to the state this run holds — accepted or refused at the
+# `signals:` gate, queued, and consumed exactly once in arrival order — so
+# "never delivered" is a refusal the sender saw, not a loss the run absorbs,
+# and two changes sent in order apply in order. One bound qualifies that: a run
+# carries at most 128 undrained deliveries (`MaxPendingSignals`), and beyond it
+# the newest are dropped *after* the server acknowledged them (#1013) — so the
+# write guarantee holds for senders that stay under the carry bound, which an
+# authorized spec-changer at any human or controller cadence does, and does not
+# hold against an authorized sender flooding faster than the run consumes. The
+# run is the spec store here,
+# the same durable-entity shape `entity-order` shows; the control plane owns
+# only the *observed* side (`replicas`, `retired`), which is why retirement is
+# read from it every pass and a spec change is not. A deployment whose desired
+# state lives in the control plane instead inverts one step: read it in
+# `observed` beside `replicas`, and the signal carries no payload at all — a
+# pure wake-up. Same loop, one fewer guard, and the choice is whose database
+# the spec is — with one tiebreaker: that variant is also immune to the carry
+# bound above, so it is the right default when the senders are not trusted to
+# stay under it.
+#
+# The wait at the *top* of the body is the whole scheduler, and its position is
+# load-bearing rather than stylistic (see the retirement note below):
+#
+#   the deadline lapses    nothing told us anything for a resync interval, so
+#                          reconcile anyway — this is the poll that catches drift
+#                          nobody announced (a human scaling by hand, a node
+#                          lost, a controller fighting us)
+#   a signal arrives       something announced a change, so reconcile *now*
+#                          rather than at the end of the interval
+#
+# Where the stop condition comes from, and why it is not the signal. Retirement
+# is read from the control plane every pass (`observed.retired`), not from a
+# `retired: true` payload — and that is the single most load-bearing decision in
+# this file. A `wait_for_signal:` consumes exactly one queued delivery, oldest
+# first, so a run suspended while a spec change *and* a retirement were both sent
+# consumes the spec change and finds no retirement in it. A file that read
+# retirement from the payload would then scale a workload whose retirement had
+# already been declared — an edge-triggered mistake in the one place it does real
+# damage. Asking the world instead makes the queue's order irrelevant: whatever
+# woke a pass, the pass sees the workload as it actually is. The test file's
+# "retired workload is never scaled, even drifted and with a spec change queued"
+# case is exactly that scenario.
+#
+# The wait still comes first rather than last, for a smaller reason: a pass is a
+# wake-up followed by a fresh reading, so nothing here ever acts on an
+# observation taken before it went to sleep. The cost is that the very first pass
+# waits up to one resync interval; a caller wanting an immediate first pass sends
+# a `spec-changed` carrying the current desired count, which wakes it at once.
+#
+# `renewal-reminder` is the closest sibling in this corpus and the contrast is
+# the point: there, the lapse *is* the work and the signal ends the run. Here
+# both outcomes lead to the same reconcile, because a reconciler that did
+# different work depending on how it woke would be edge-triggered — and an
+# edge-triggered reconciler is correct exactly until the first missed edge.
+#
+# What this file does NOT have, and where it would go:
+#
+#   * an n-way `select:` (#166 shape 6). `pace` below waits for one signal or a
+#     deadline, which is a two-way select spelled with the grammar that exists:
+#     `timed_out` names which won. A third arm — a second signal, a cancellation
+#     — is not expressible today, and that is the missing spelling #179's
+#     reconciler sketch is waiting on, not the loop or the level-triggering.
+#   * a `k8s.get` / `k8s.scale` task. The control plane here is reached over
+#     `http:`, the same choice `enterprise-incident-response` makes: a plugin
+#     task would read a little better and would make this file unrunnable
+#     without a plugin process. The shape is unchanged either way, which is
+#     itself worth knowing — a reconciler is not made of special verbs.
+#
+# The durability property this demonstrates: a run that is *asleep* between
+# passes, holding the desired state and the pass count, answerable the whole
+# time, and resuming exactly where it was after any worker restart. Nothing here
+# holds a worker, a thread, or a connection while a resync interval elapses — a
+# reconciler waiting out a thirty-second interval costs a durable timer, not a
+# running process. What it is *not* is unbounded: `max_iterations` caps the total
+# passes one run may make (see its own note), so a genuinely perpetual reconciler
+# is one a retirement ends, or one an operator re-creates — the ceiling is
+# the safety net that turns "retirement never came" into a named failure rather
+# than an infinite loop.
+#
+#   flow test examples/deployment-reconciler/          # every path, virtual clock
+#   flow run local examples/deployment-reconciler/workflow.yaml \
+#     --input max_passes=1                             # one finite pass, no signal needed
+#
+# and durably, where the sleeping is real:
+#
+#   flow signal <workflow-id> spec-changed --data '{"desired_replicas": 7}'
+#
+# (needs `flow server` and `flow worker`; see the main README's Quickstart)
+edition: v2026.3
+name: deployment-reconciler
+description: Converges a workload toward a desired replica count, one level-triggered pass at a time, woken either by a spec change or by the resync interval lapsing — and asleep, durably, in between.
+inputs:
+  target:
+    type: string
+    default: checkout-api
+    description: the workload this reconciler is responsible for
+  desired_replicas:
+    type: int
+    default: 5
+    description: the replica count to converge on at the start; a spec-changed signal carrying a valid new one replaces it for every later pass
+    must: this > 0 && this <= 100
+  max_passes:
+    type: int
+    default: 0
+    # A bounded watch. Zero - the default - means "watch until the control plane
+    # reports this workload retired", which is the reconciler's own semantics: a
+    # converged workload is still worth watching, so only retirement ends it. A positive value ends the run after
+    # that many reconcile passes instead, which is what a *scheduled* reconcile
+    # wants (reconcile, report, exit) and what makes this file runnable to
+    # completion with no signal at all - `flow run local` with no `--signal`
+    # otherwise sits on the resync interval until `max_iterations` is spent. It
+    # is what this example's own `inputs.json` sets, so the corpus harnesses run
+    # a finite reconcile on both drivers rather than a run whose only path is
+    # consuming a retirement.
+    description: end the run after this many reconcile passes; 0 watches until the control plane reports the workload retired
+    # Capped an order of magnitude below the loop's own ceiling, and the gap is
+    # the point rather than a round number. `max_iterations: 1000` is the safety
+    # net that stops a runaway; this is a request. Unreadable wakeups spend an
+    # iteration without spending a pass, so a request that could equal the
+    # ceiling would make its own promise unkeepable at the boundary - ask for
+    # 1000 passes, meet one garbled answer, and the run ends at the net having
+    # made 999. Nine hundred iterations of slack (1000 - 100) is what keeps
+    # "an unreadable pass spends nothing" true for any legal request.
+    #
+    # A watch that wants to run longer than a hundred passes wants `0`, which is
+    # the unbounded mode this input exists alongside rather than a bigger number
+    # here.
+    must: this >= 0 && this <= 100
+
+  # Who may rewrite this run's desired state, since the spec store the header
+  # describes is only as trustworthy as the gate on its write channel. An input
+  # because *which* controller differs per deployment; that it must be a
+  # platform controller does not, and that half is written literally into
+  # `signals:` below where no caller can reach it — the same narrowing-only
+  # split `approval-gate` argues at length. Issuer-qualified, never a bare
+  # name, for the reason the approval examples give: a second identity
+  # provider could mint the same local part for somebody else entirely.
+  spec_controller:
+    type: string
+    default: https://issuer.example.com#deploy-controller
+    description: the issuer-qualified subject allowed to send spec-changed; every other sender is refused at the server before this run hears anything
+# Without this block the server treats `spec-changed` as unconstrained — an
+# absent policy admits any authenticated caller — and an unconstrained write
+# channel to the spec store means anyone who can address the run can scale the
+# workload. The rule pairs the interpolated subject above with a literal
+# `claims:` constraint, checked against the sender the server attested, before
+# Temporal ever sees the delivery. The conformance harnesses bypass this gate
+# by design (they compare engines given an already-authorized sender); the
+# `workflow.test.yaml` beside this file goes through the same check the server
+# runs, which is where the refusal case lives.
+signals:
+  spec-changed:
+    allow:
+      - subject: ${inputs.spec_controller}
+        claims:
+          team: platform-controllers
+steps:
+  - id: opened
+    description: A step before the loop, so a run that suspends before its first deadline has something to have carried across the handover.
+    log:
+      message: ${"reconciling %s toward %d replica(s)".format([inputs.target, inputs.desired_replicas])}
+  - id: reconcile
+    description: One pass per iteration - wait for a tick or a change, then observe, compare, and converge unless the pass is a retirement.
+    loop:
+      # Two things travel between passes, so the carried state is a map: the
+      # replica count this reconciler is currently responsible for, and how many
+      # passes have run. `loop-accumulate` is the file that introduces the map
+      # shape.
+      as: goal
+      init:
+        desired: ${inputs.desired_replicas}
+        passes: 0
+        # A wake counter beside the reconcile counter, because the two answer
+        # different questions and only `passes` drives the budget: this one
+        # advances on every trip, including the ones whose reading was unusable.
+        # It is what a body step can key on to tell "the first wake" from "the
+        # first reconcile" - the example's own test file does exactly that - and
+        # the run reports the same quantity from `results` (see `wakeups` in
+        # `outputs:`, which counts the stopping iteration this cannot).
+        wakeups: 0
+      # The desired count carried forward is whatever this pass settled on:
+      # `next_desired` below, which is the validated signal value on a pass that
+      # received one and the unchanged current value on every other pass. A pass
+      # that woke on the resync interval carries the same number forward — which
+      # is exactly why the interval lapsing is not a no-op: the *observed* side
+      # may have moved even when the desired side did not.
+      update:
+        desired: ${steps.next_desired.value}
+        # Counts reconcile passes, so an unreadable one does not advance it - the
+        # same rule `until:` applies to the budget.
+        passes: '${steps.readable.value ? (goal.passes + 1) : goal.passes}'
+        wakeups: ${goal.wakeups + 1}
+      # What ends a reconciler is being told the workload is retired — or, for a
+      # deliberately finite watch, spending the `max_passes` budget its caller
+      # asked for. Converging is not a stopping condition either way: a workload
+      # that matches its spec right now is the ordinary state of a healthy
+      # system, and a reconciler that exited there would stop watching at the exact moment it
+      # had nothing to complain about.
+      # Retirement, or the pass budget being spent. `goal.passes` is the count of
+      # passes *before* this one (`update:` increments after `until:` is
+      # evaluated), so `+ 1` is what this pass makes — a `max_passes` of 1 stops
+      # after one reconcile. The budget arm is skipped entirely when `max_passes`
+      # is 0, which is the watch-until-retired default.
+      #
+      # A pass that could not read the world does not count against the budget,
+      # and that is the honest reading of what `max_passes` promises: N
+      # *reconcile* passes, not N attempts at one. Without the `readable` term a
+      # `max_passes: 1` run whose single observation came back garbled would end
+      # SUCCESSFULLY having reconciled nothing - a scheduled reconcile reporting
+      # success on an answer it never understood, which is worse than either
+      # failing or looking again. Watch-until-retired mode is unaffected; it was
+      # going to keep waiting anyway.
+      #
+      # `retiring` implies `readable` (see that step), so both arms require a
+      # reading that made sense, and a run that finishes at all has made at least
+      # one.
+      until: ${steps.retiring.value || inputs.max_passes > 0 && steps.readable.value && goal.passes + 1 >= inputs.max_passes}
+      # A ceiling on the total passes one run may make, and it is cumulative for
+      # the life of the run rather than per Continue-As-New segment: the engine
+      # carries the iteration index across every segment seam (engine's runLoop
+      # resumes from the frame's NextIteration), so this is a lifetime bound, not
+      # a per-segment one. A reconciler is normally ended by a retirement signal
+      # long before it; the ceiling exists so that "retirement never arrived" is
+      # a *named* failure (LoopExhausted) rather than a loop that runs forever.
+      # A workload meant to be reconciled for months lives across runs an
+      # operator re-creates, or raises this toward the schema's own maximum; it
+      # is deliberately not framed as "one process for a year", because no single
+      # run is that.
+      max_iterations: 1000
+      steps:
+        # The wait, first — the scheduler, and the only place a retirement is
+        # consumed. A durable timer with an interrupt on it: the resync interval
+        # is the ceiling on how long this reconciler can be wrong without
+        # noticing, and the signal is how a system that already knows says so
+        # sooner. Thirty seconds is a demo's interval; a real one is minutes, and
+        # the file reads identically at either.
+        - id: pace
+          wait_for_signal:
+            name: spec-changed
+            timeout: 30s
+
+        # Which of the two woke us. It decides whether a *spec change* is on
+        # offer, and nothing else — see `retiring` below for why it no longer
+        # decides whether this workload is finished.
+        - id: notified
+          value: ${!steps.pace.timed_out}
+
+        # The level, read every pass before anything is decided — including
+        # whether this reconciler is finished. Unconditional because it is a
+        # read: only writes need gating, and this read is what the gate is made
+        # of.
+        - id: observed
+          timeout: 10s
+          # A read, so it is safe to retry: nothing on the far side changes
+          # because this ran twice, and a control plane having a bad second
+          # should not end a reconciler. Note what this retry is *not* for -
+          # see the note on the http block below.
+          retry:
+            attempts: 3
+            interval: 1s
+            backoff: 2.0
+            max_interval: 10s
+          # A read that fails is an unreadable pass, not the end of the
+          # reconciler - and this is the layer *below* every guard on the
+          # outputs. `parse_json:` rejects a 2xx carrying a truncated body or a
+          # proxy's HTML error page before any `outputs:` expression runs, and it
+          # does so as InvalidInput, which is permanent: the retry below cannot
+          # help, and without this line the run ends there. Tolerating the
+          # failure routes it where a garbled-but-parseable answer already goes -
+          # `readable` says no, the pass decides nothing, and the next resync
+          # reads again. A control plane broken for good still ends the run, at
+          # the loop's own ceiling, which is the bound that exists for that.
+          continue_on_error: true
+          http:
+            # No `expect:` on this read, deliberately, and the reason is a real
+            # constraint rather than an oversight. An `expect:` expression
+            # *replaces* the task's own status judgement entirely (see
+            # eval_task_http.go, httpExpectationMet), and an unmet one is
+            # classified InvalidInput, which is permanent. So a shape guard
+            # written here as `status_code == 200 && <types>` would turn a
+            # transient 503 - exactly what the retry above exists for - into a
+            # permanent failure and end the reconciler on a blip. There is no
+            # spelling of `expect:` that says "retryable", so the default
+            # judgement is left in place (2xx succeeds, 5xx is transient, 4xx is
+            # not) and the shape is checked in the body, where a bad reading can
+            # do something better than fail: see `readable` below.
+            method: GET
+            # The root is checked before either field is selected. `has(a.b)`
+            # selects on `a` in order to answer, so a body that is not an object
+            # at all - `[]`, `null`, a bare string from a proxy's error page -
+            # errors rather than answering false. `type(response.json) ==
+            # type({})` is the outermost guard and `&&` short-circuits, so
+            # nothing is ever selected on a non-object.
+            #
+            # Presence-guarded, for the reason run-tests.yaml's outputs are:
+            # `type(x)` evaluates x, and a control plane that omitted a field
+            # would fail this step on a missing key rather than reaching
+            # `readable` below. The substitutes are chosen to *fail* that check -
+            # a negative count and a non-boolean - so an incomplete body takes
+            # the same path as a malformed one: this pass decides nothing and the
+            # next resync reads again.
+            outputs:
+              replicas: "${(type(response.json) == type({}) && has(response.json.replicas)) ? response.json.replicas : -1}"
+              retired: '${(type(response.json) == type({}) && has(response.json.retired)) ? response.json.retired : "absent"}'
+            parse_json: true
+            query: '${{"name": inputs.target}}'
+            url: https://control-plane.internal.example.com/workloads/status
+
+        # Whether this pass got an answer it can actually use - including whether
+        # it got one at all. A tolerated failure on the read above (an
+        # unparseable body, a transport error that outlived its retries) leaves
+        # that step with no outputs, so presence comes before every other check
+        # here. An HTTP response is
+        # untyped, and every step below treats `replicas` as a count and
+        # `retired` as a boolean; a control plane answering `{"retired": "false"}`
+        # or `{"replicas": 2.5}` would otherwise reach a boolean operator or a
+        # scale request as a string or a fraction.
+        #
+        # The order inside matters: the type gate runs before any comparison, so
+        # a string is never compared with `>`; the range check runs before
+        # `int()`, so an absurd double like 1e100 is refused rather than
+        # overflowing the conversion.
+        #
+        # A bad reading is not a failure here, and that is the reconciler's
+        # advantage over failing at the boundary: this pass simply decides
+        # nothing - it does not retire and it does not write - and the next
+        # resync reads again. A garbled answer is a reason to look again, not a
+        # reason to end a run whose whole claim is that it keeps watching.
+        - id: readable
+          value: |-
+            ${has(steps.observed.replicas) && has(steps.observed.retired) && (type(steps.observed.replicas) == type(0) ||
+            type(steps.observed.replicas) == type(0.0) && steps.observed.replicas >= 0.0 &&
+            steps.observed.replicas <= 100000.0 && steps.observed.replicas == double(int(steps.observed.replicas))) &&
+            steps.observed.replicas >= 0 && type(steps.observed.retired) == type(true)}
+
+        # Retirement is a fact about the workload, not about the event that woke
+        # us — and reading it from the world rather than from a payload is the
+        # whole point of this file, which an earlier version got wrong.
+        #
+        # A `wait_for_signal:` consumes exactly one delivery, oldest first
+        # (engine's takePendingSignal walks the carried queue in arrival order;
+        # the local driver reads one from its channel). So a run that was
+        # suspended while a spec change *and* a retirement were both sent would
+        # consume the spec change, see no retirement in that payload, and scale a
+        # workload whose retirement had already been declared. Asking the control
+        # plane instead makes the queue's order irrelevant: whatever woke this
+        # pass, the pass sees the workload as it actually is.
+        #
+        # This is the level-triggered discipline applied to the stop condition,
+        # and it is why a signal here only ever changes *when* a pass happens.
+        - id: retiring
+          value: ${steps.readable.value && steps.observed.retired}
+
+        # The desired count this pass converges on. A spec change is the one
+        # thing a signal legitimately carries, and it is still an untrusted
+        # input: adopted only when it is an int in the same (0, 100] range the
+        # input constraint enforces, and never on a retiring pass. Several queued
+        # changes are applied oldest-first, one per pass, which converges — a
+        # stale desired count for one interval is not a wrong mutation, it is a
+        # slower correct one.
+        # The count a signal is offering this pass, if any: -1 stands for
+        # "nothing on offer", which the checks below reject like any other
+        # out-of-range value.
+        - id: proposed
+          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas)) ? steps.pace.payload.desired_replicas : -1}"
+
+        # The two shape questions, each asked once. Naming them keeps the guard
+        # below readable and stops `type(...)` being spelled four times in one
+        # expression, which is what `flow lint`'s repeated-expression rule is
+        # about.
+        - id: proposed_is_int
+          value: ${type(steps.proposed.value) == type(0)}
+        - id: proposed_is_double
+          value: ${type(steps.proposed.value) == type(0.0)}
+
+        # Ordered, not merely guarded: numeric first, so a string is never
+        # compared with `>`; then the range, so an absurd double like 1e100 is
+        # refused by a comparison rather than overflowing `int()`; then
+        # integrality, on a value already known to be small and in range.
+        - id: proposed_ok
+          value: |-
+            ${(steps.proposed_is_int.value || steps.proposed_is_double.value) && steps.proposed.value > 0 &&
+            steps.proposed.value <= 100 && (steps.proposed_is_int.value || steps.proposed.value == double(int(steps.proposed.value)))}
+
+        # Adopted only when every check held, and converted so the carried state
+        # stays an int rather than becoming 7.0.
+        - id: next_desired
+          value: "${steps.proposed_ok.value ? int(steps.proposed.value) : goal.desired}"
+
+        # The comparison, named once, read by the step that acts and by the
+        # output that counts.
+        - id: drift
+          value: ${steps.readable.value && steps.observed.replicas != steps.next_desired.value}
+
+        # The act, and the only step here that changes anything. Gated on the
+        # workload not being retired and on there being drift to correct: a
+        # retired workload is never written to, and a converged one is not
+        # written to on every resync.
+        - id: converge
+          if: ${!steps.retiring.value && steps.drift.value}
+          timeout: 10s
+          retry:
+            attempts: 3
+            interval: 1s
+            backoff: 2.0
+            max_interval: 10s
+          http:
+            json: '${{"name": inputs.target, "replicas": steps.next_desired.value}}'
+            method: POST
+            outputs:
+              status: ${response.status_code}
+            # No `parse_json:` and no body read. Nothing needs one -
+            # `passes_that_acted` counts whether this step *ran* - and requiring
+            # a JSON field would fail the step on a 204 No Content or any
+            # empty-bodied 2xx, which is a perfectly ordinary answer to "scale to
+            # 7". That failure would land *after* the change had been applied,
+            # which is the worst possible moment to invent one.
+            #
+            # `outputs:` is still shaped, though, and to a single deterministic
+            # field. Left unshaped, an http step records its whole response -
+            # body and headers - and the `Date` header is wall-clock, so the two
+            # drivers would carry different `results` across a Continue-As-New
+            # for a write they had both performed identically. The cross-driver
+            # harness caught exactly that.
+            # A POST whose outcome is unknown - it reached the control plane and
+            # the answer was lost - is not retried by default, because doing an
+            # operation twice is usually worse than reporting a failure. Here it
+            # is safe, and the reason is a property of *this* request rather than
+            # of POSTs generally: it sets an exact count. Applying "scale to 7"
+            # twice leaves seven replicas, so a repeat is a no-op rather than a
+            # second effect. An endpoint that took a *delta* ("add two") would be
+            # the opposite, and this line would be a bug there.
+            #
+            # Without it a single lost response ends the run: `converge` does not
+            # tolerate failure, so a transient network event would permanently
+            # stop a reconciler whose whole claim is that it survives them.
+            retry_on_unknown_outcome: true
+            url: https://control-plane.internal.example.com/workloads/scale
+  - id: observations
+    value: ${steps.reconcile.results.filter(p, p.readable.value).map(p, p.observed.replicas)}
+
+  # How many reconcile passes actually observed, named once for the two outputs
+  # that ask.
+  - id: pass_count
+    value: ${steps.observations.value.size()}
+outputs:
+  passes:
+    value: ${steps.pass_count.value}
+    description: how many reconcile passes ran; every pass reads the control plane, including the one that finds the workload retired
+  wakeups:
+    # From `results`, not from the carried counter, and the difference is a real
+    # property of the language rather than a preference: `update:` is skipped on
+    # the iteration where `until:` holds, so `goal.wakeups` never counts the pass
+    # that ended the run. One entry per iteration is what `results` already is.
+    value: ${steps.reconcile.results.size()}
+    description: how many times this run woke - a spec change or a resync interval - which exceeds `passes` exactly when the control plane answered something this reconciler could not read
+  passes_that_acted:
+    value: ${steps.reconcile.results.filter(p, has(p.converge)).size()}
+    description: how many of those passes found drift and wrote to the control plane — the rest observed a converged workload and did nothing, which is the state a healthy reconciler spends most of its life in
+  final_desired_replicas:
+    # From the stopping iteration's own `next_desired`, not from the carried
+    # state, for the same skipped-`update:` fact `wakeups` records above: a
+    # valid spec change adopted on the pass that ends the run is written to the
+    # control plane, but `until:` holding skips `update:`, so `state.desired`
+    # still holds the previous count — stale intent for a run that just
+    # converged toward the new one. The last iteration is the one that ended
+    # the run, and what it converged on is `next_desired` by construction.
+    value: ${steps.reconcile.results[steps.reconcile.results.size() - 1].next_desired.value}
+    description: the replica count this reconciler was responsible for when it stopped, after every valid spec change it was told about - including one adopted on the final pass
+  final_observed_replicas:
+    value: ${steps.observations.value[steps.pass_count.value - 1]}
+    description: what the control plane last reported, which is the claim about the world rather than about this run's intent

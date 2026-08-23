@@ -447,7 +447,7 @@ func (w WorkloadIdentity) Validate() error {
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(w.Claims)) {
-		if slices.Contains(reservedClaims, name) {
+		if slices.Contains(builtInClaimNames, name) {
 			// A carried claim that shadowed a reserved one would let whoever
 			// controls the submitting token dictate the minted assertion.
 			return fmt.Errorf("%w: carried claim %q collides with the reserved claim of the same name",

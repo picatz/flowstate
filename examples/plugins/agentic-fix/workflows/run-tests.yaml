@@ -1,0 +1,113 @@
+edition: v2026.3
+name: agentic-fix-run-tests
+description: Asks CI to run the suite at one exact commit and reports whether it passed, with the output a failing run produced.
+# The verification half of `agentic-fix`, as a separate file for one reason
+# worth stating: it binds to a *commit*, not to a branch. `ref:` is required and
+# has no default, so this workflow cannot be asked to verify "the latest" - which
+# is the shape that lets an agent's patch be tested against a tree that has moved
+# underneath it, and then reported as passing something it never ran on.
+#
+# It is a `call:` rather than three inlined steps because the agentic loop that
+# uses it runs it once per attempt, and because verification is the piece most
+# likely to differ per repository: point this at a different CI, or replace the
+# body entirely, and the loop above it does not change.
+inputs:
+  ref:
+    type: string
+    required: true
+    description: the exact commit to run the suite against
+    example: 8b1a9953c4611296a827abf8c47804d7
+    must: this != ""
+steps:
+  - id: suite
+    description: Ask CI for a run at this commit and wait for its verdict.
+    timeout: 15m
+    # A CI that answers unintelligibly has not said the suite passed, and that is
+    # all this workflow needs to conclude. `parse_json:` rejects a 2xx carrying a
+    # truncated body or a proxy's HTML error page *before* any `outputs:`
+    # expression runs, and permanently, so neither the shaping below nor a retry
+    # can catch it - without this line the very first call would end the caller's
+    # run outright, before its repair loop or its human handoff could happen.
+    # Tolerated, the step produces no outputs, the guards below read that absence
+    # as `passed: false`, and the caller does what it does with any failing
+    # suite.
+    continue_on_error: true
+    http:
+      json: '${{"ref": inputs.ref}}'
+      method: POST
+      # Shaped with a type guard rather than an `expect:`, and fail-closed. An
+      # `expect:` would replace the task's status judgement entirely and classify
+      # its own failure as permanent (eval_task_http.go), so a transient 503 from
+      # CI would stop being retried - the opposite of what a flaky CI needs.
+      # Leaving the default judgement in place keeps a 5xx retryable, and the
+      # shape is handled here.
+      #
+      # A malformed answer becomes `passed: false`, which is the safe direction
+      # and not a coercion this file has to apologise for: "we did not get a
+      # pass" is exactly true of a CI that answered `{"passed": "false"}` as a
+      # string. It routes to another attempt or to the human handoff, and it can
+      # never be mistaken for a green suite. (The reconciler refuses its bad
+      # reading instead of defaulting it, because there the defaulted value would
+      # be *written back* to the world; here it only decides whether to keep
+      # trying.)
+      outputs:
+        # Root first, then presence, then shape. `has(a.b)` selects on `a` in
+        # order to answer, so a body that is not an object at all - `[]`, `null`,
+        # a bare string from a proxy - errors rather than answering false. The
+        # outermost `type(response.json) == type({})` is what makes the rest
+        # safe, and `&&` short-circuits so nothing is selected on a non-object.
+        #
+        # Then `has()` before `type()`, because `type(x)` evaluates x first and a
+        # missing key is an *error*, not a type. A passing suite that omits
+        # `output` entirely would otherwise fail this step permanently on the
+        # very first call - before the repair loop or the human handoff could
+        # run. Presence, then shape, then the value; anything short of all three
+        # reads as "no pass", which is the safe direction.
+        output: '${(type(response.json) == type({}) && has(response.json.output) && type(response.json.output) == type("")) ? response.json.output : ""}'
+        passed: |-
+          ${type(response.json) == type({}) && has(response.json.passed) && type(response.json.passed) == type(true) &&
+          response.json.passed}
+        # Whether a verdict was actually *read*, as opposed to defaulted: the
+        # same checks without the final value, so true means the response carried
+        # a usable boolean whatever it said. This is what lets a caller tell "the
+        # suite failed" from "nobody could tell me" - a distinction that matters
+        # exactly when the answer gates a mutation.
+        verdict_read: ${type(response.json) == type({}) && has(response.json.passed) && type(response.json.passed) == type(true)}
+      parse_json: true
+      url: https://ci.internal.example.com/test-runs
+outputs:
+  passed:
+    value: ${has(steps.suite.passed) && steps.suite.passed}
+    description: whether the suite passed at that commit
+  unknown:
+    # The third state, and the reason this workflow now has one. A tolerated read
+    # (a timeout, a 401, an exhausted 5xx, an unparseable body) leaves no outputs
+    # at all, and an intelligible response can still carry no usable verdict.
+    # Both are "nobody could tell me", which is not the claim "the suite failed".
+    #
+    # A caller that writes only when the suite is *known* to be failing needs
+    # that distinction: collapsing an outage into `passed: false` would send an
+    # agent to modify a branch whose tests may be perfectly green. agentic-fix's
+    # `attempt` step gates on this.
+    #
+    # Read in two parts, because the two ways of not knowing are different. No
+    # `passed` at all means the read itself was tolerated - a timeout, a 401, an
+    # exhausted 5xx, an unparseable body - and there is nothing to interpret. A
+    # `verdict_read` that is present and false means the response arrived and
+    # intelligibly carried no verdict. Either is "nobody could tell me".
+    #
+    # The middle clause is deliberately absence-tolerant rather than demanding
+    # `verdict_read`: a caller's test may stub this step with shaped outputs
+    # (`returns:`), which is a test author saying "the suite answered *this*" -
+    # a definite verdict by construction, and not something that should read as
+    # an outage because a field the stub never heard of is missing.
+    value: ${!has(steps.suite.passed) || has(steps.suite.verdict_read) && !steps.suite.verdict_read}
+    description: true when no verdict could be read at all, which is distinct from a suite that failed
+  output:
+    # Guarded for the same reason the step's own shaping is: a step's outputs are
+    # whatever it actually produced, and a run reporting no output has no key
+    # here to read. Declaring the absence as an empty string keeps a caller that
+    # builds a prompt from it working, and keeps this workflow's contract - two
+    # outputs, always present - true rather than aspirational.
+    value: '${has(steps.suite.output) ? steps.suite.output : ""}'
+    description: what a failing run printed, which is what the next attempt's prompt is built from
