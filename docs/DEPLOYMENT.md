@@ -343,17 +343,36 @@ poll a queue nothing submits to, do nothing forever, and report nothing.
 
 ### Bearer-token audiences are per surface
 
-An authenticated `flow server` requires a canonical Connect RPC resource URI via
-`--rpc-resource` or `FLOWSTATE_RPC_RESOURCE`. The exact string must appear in at
-least one trusted issuer's `audiences`, and every bearer token spent on Connect
-RPC must carry that exact `aud` value. It must be an absolute HTTPS URI (HTTP is
-accepted only for loopback), with no fragment or trailing slash.
+A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical
+Connect RPC resource URI via `--rpc-resource` or `FLOWSTATE_RPC_RESOURCE`. The
+exact string must appear in at least one such issuer's `audiences`, and every
+bearer token spent on Connect RPC must carry that exact `aud` value. It must be
+an absolute HTTPS URI (HTTP is accepted only for loopback), with no fragment or
+trailing slash.
+
+The requirement follows the bearer issuer, not the flag. A trust policy of
+nothing but `kind: mtls` entries admits callers by client certificate, which
+carries no audience claim — `kind: mtls` entries are refused an `audiences` list
+outright — so there is nothing to bind and no resource is required. Passing
+either flag on such a deployment is an error rather than a no-op, so an operator
+is never left believing an audience is being enforced on a surface that has
+none. `--insecure-no-auth` refuses both for the same reason.
 
 Do not reuse this identifier for remote MCP. A deployment might use
 `https://flowstate.example.com/rpc` for Connect RPC and
 `https://flowstate.example.com/mcp` for `flow mcp serve`; a future ordinary HTTP
 API gets its own third identifier. Even when one `TrustedIssuer` lists all of
 them, each surface's exact check prevents replay between surfaces.
+
+One consequence to expect from that split. `--protected-resource` publishes the
+RFC 9728 document for the *MCP* resource, and a 401 from Connect RPC names that
+document only when it describes the RPC surface too. Give the two flags
+different values — as recommended above — and Connect RPC's 401 challenge reads
+`Bearer error="invalid_token"` with no `resource_metadata`, because sending a
+discovery-driven client to a document advertising the MCP audience would have it
+mint precisely the token Connect RPC is configured to refuse. Discovery for the
+RPC surface therefore has no document to point at yet; RPC clients are
+configured with their audience directly.
 
 **Migration:** older deployments accepted any audience listed on the matched
 issuer. First add the RPC URI to the issuer's audience list and configure clients

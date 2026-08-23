@@ -38,6 +38,7 @@ type Authenticator struct {
 	verifier                     Verifier
 	peerVerifier                 PeerVerifier
 	observe                      func(context.Context, *http.Request, error)
+	protectedResource            string
 	protectedResourceMetadataURL string
 	expectedResource             string
 }
@@ -90,8 +91,24 @@ func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 // it reads without this option: "Bearer error=\"invalid_token\"" and nothing
 // more, byte-identical to every deployment that has not configured a
 // protected resource.
+//
+// # Why the resource is kept beside its URL
+//
+// pr's own resource identifier is recorded as well as the document's URL, so
+// that [Authenticator.challengeMetadataURL] can tell whether the document
+// describes the surface doing the rejecting. A challenge is an instruction —
+// a client that reads "fetch this document" fetches it, asks its authorization
+// server for the audience the document names, and comes back with that token
+// — so pointing at a document for some *other* resource does not merely fail
+// to help, it sends a client to mint precisely the token this surface has
+// been configured to refuse. That is reachable from the configuration
+// docs/DEPLOYMENT.md recommends: `flow server --rpc-resource .../rpc
+// --protected-resource .../mcp` publishes the MCP document from the process
+// whose Connect RPC surface admits only the RPC audience. Reported by Codex
+// on picatz/flowstate#1007.
 func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
 	return func(a *Authenticator) {
+		a.protectedResource = pr.Resource()
 		a.protectedResourceMetadataURL = pr.MetadataURL()
 	}
 }
@@ -109,18 +126,42 @@ func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
 // entry's list admits a token to the deployment; this admits it to this
 // surface.
 //
-// # Configuration and migration
+// # Why this is opt-in, and what has since flipped it
 //
-// Serving surfaces are responsible for making this non-empty by default.
-// `flow server` requires its Connect RPC resource at startup and exposes an
-// explicit migration flag for deployments which temporarily need the older
-// issuer-wide behavior. Keeping the empty value meaningful here permits that
-// compatibility mode and non-bearer development surfaces without coupling this
-// package to command-line policy.
+// Unset (the default) is unnarrowed: every deployment that does not configure
+// one builds the exact same Authenticator this constructor always built, and
+// no token that verifies today starts failing. That is the cost, stated
+// plainly — an RPC surface is narrowed only when an operator says so, and
+// until then the trust policy's audience list is the whole of the check.
 //
-// An empty resource is ignored, so a caller threading through an unset
-// configuration value gets the unnarrowed default rather than a surface that
-// refuses everyone.
+// It was the right default because of what was true when it landed: nothing
+// minted an RPC token carrying this deployment's resource URI.
+// `--protected-resource` is optional on `flow server` (required only on
+// `flow mcp serve`, whose surface *is* the resource), the RFC 9728 document a
+// deployment may serve is advertisement rather than enforcement, and clients
+// ask their authorization server for whatever audience they were configured
+// with. Narrowing by default would have refused every one of those tokens on
+// upgrade, which is a fail-closed posture bought by an outage.
+//
+// What that paragraph said would flip it has happened, and this is the record
+// of it rather than a prediction: `flow server --rpc-resource` (see
+// cmd/flow/rpcresource.go) turns it on, and having grown the flag the command
+// went straight to requiring it — a deployment that has a bearer issuer to
+// bind to and has not named its RPC audience is refused at start-up, with
+// `--allow-issuer-wide-audiences` restoring the old behaviour for one
+// migration window. The flag is named after the thing it configures rather
+// than after the check it performs, per #890.
+//
+// So the empty value stays meaningful, and now carries three cases rather
+// than "not yet": that migration window, a surface with no bearer path to
+// narrow at all (`flow server --insecure-no-auth`, `flow server --dev`, and a
+// trust policy of nothing but kind: mtls entries — see [AdmitsBearerTokens]),
+// and any caller outside cmd/flow that has not made the decision. An empty
+// resource is therefore ignored rather than refused, so a caller threading
+// through an unset configuration value gets the unnarrowed default rather
+// than a surface that refuses everyone. Which of those a given deployment is
+// in, is decided by the command; this package stays out of command-line
+// policy.
 //
 // Only bearer tokens are narrowed. A client certificate carries no audience,
 // so a request authenticated by [WithPeerVerifier] alone is unaffected; a
@@ -280,19 +321,46 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 // RFC 6750 challenge that tells a client its token is the problem, and a short
 // reason that describes the failure without describing the trust policy.
 //
-// When a.protectedResourceMetadataURL is set, the challenge carries a
-// "resource_metadata" parameter naming it, per the MCP specification — see
-// [WithProtectedResource]. Deliberately no "scope" parameter: D1 in
-// picatz/flowstate#567 defers the action/scope vocabulary, and this
-// deployment has not defined one to name here.
+// The challenge itself is rendered by [bearerChallenge], which is also where
+// the parameters this deployment deliberately does not send are written down.
 func (a *Authenticator) unauthenticated(cause error) error {
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New(publicReason(cause)))
-	challenge := `Bearer error="invalid_token"`
-	if a.protectedResourceMetadataURL != "" {
-		challenge += fmt.Sprintf(`, resource_metadata=%q`, a.protectedResourceMetadataURL)
-	}
-	err.Meta().Set("WWW-Authenticate", challenge)
+	err.Meta().Set("WWW-Authenticate", bearerChallenge("invalid_token", a.challengeMetadataURL()))
 	return err
+}
+
+// challengeMetadataURL is the RFC 9728 document this surface's challenge may
+// name: the one [WithProtectedResource] configured, or nothing when that
+// document describes a resource this surface would not accept a token for.
+//
+// The two options are independent, and a deployment is expected to set both
+// with *different* values — that is the whole point of picatz/flowstate#1007,
+// and what docs/DEPLOYMENT.md now recommends. Naming the document anyway
+// would make the challenge an instruction to go and mint the one audience
+// [WithExpectedResource] has been told to refuse, and a discovery-driven
+// client that followed it would loop: fetch, mint, 401, fetch. Silence is the
+// honest answer — RFC 9728 section 5.1 makes the parameter optional, and a
+// caller reading a bare challenge learns "your token is not accepted here"
+// and no falsehood.
+//
+// It costs discovery on a surface that has narrowed itself, and that cost is
+// paid deliberately rather than papered over: publishing a *second* RFC 9728
+// document, for the RPC resource, is the thing that would buy it back, and
+// that is a route to mount, a collision to check against the three
+// serverHandler already registers, and a decision about a document whose
+// resource path ("/rpc") is not where Connect RPC actually answers ("/", plus
+// each procedure). It is a slice, not a line, and it is left as one.
+//
+// An unnarrowed surface (expectedResource empty — the migration window, the
+// insecure and dev servers, a certificate-only policy) keeps the document it
+// always named: it still accepts every audience its trust policy lists, so
+// the one the document advertises is among them and the instruction is good.
+func (a *Authenticator) challengeMetadataURL() string {
+	if a.expectedResource != "" && a.expectedResource != a.protectedResource {
+		return ""
+	}
+
+	return a.protectedResourceMetadataURL
 }
 
 // PrincipalFromContext returns the [Principal] that [Authenticator.Authenticate]

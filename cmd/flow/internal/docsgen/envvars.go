@@ -222,7 +222,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_RPC_RESOURCE",
 			value:   "unset",
-			purpose: "Default for `--rpc-resource` on `flow server`: the canonical Connect RPC resource URI required in every bearer token's `aud` claim. Required with `--auth-policy` unless the migration-only `--allow-issuer-wide-audiences` flag explicitly restores the older issuer-wide behavior. Distinct from the remote MCP protected resource and from any future HTTP surface.",
+			purpose: "Default for `--rpc-resource` on `flow server`: the canonical Connect RPC resource URI required in every bearer token's `aud` claim. Required whenever `--auth-policy` trusts a `kind: oidc` issuer, unless the migration-only `--allow-issuer-wide-audiences` flag explicitly restores the older issuer-wide behavior; a policy of nothing but `kind: mtls` entries mints no token to bind and needs neither flag. Distinct from the remote MCP protected resource and from any future HTTP surface.",
 			read:    "cmd/flow/rpcresource.go",
 		},
 		{
