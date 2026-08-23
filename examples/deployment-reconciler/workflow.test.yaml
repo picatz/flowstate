@@ -287,6 +287,40 @@ tests:
         final_desired_replicas: 5
         final_observed_replicas: 2
 
+  # The value the run publishes when the adoption happens on the very pass that
+  # ends the run. `until:` holding skips `update:`, so the carried state never
+  # learns the new count — the output has to read the stopping iteration's own
+  # `next_desired`, and this case is what fails if it reads the carried state
+  # instead: the run would report 5 for a workload it just scaled to 7.
+  - name: a spec change adopted on the final pass is the count the run reports
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    signals:
+      - name: spec-changed
+        at: 0s
+        payload:
+          desired_replicas: 7
+    stubs:
+      - step: observed
+        returns:
+          replicas: 5
+          retired: false
+      - step: converge
+        where: inputs.json.replicas == 7
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        wakeups: 1
+        passes_that_acted: 1
+        final_desired_replicas: 7
+        final_observed_replicas: 5
+
   - name: a replica count outside the allowed range is refused before anything runs
     workflow: ./workflow.yaml
     inputs:
