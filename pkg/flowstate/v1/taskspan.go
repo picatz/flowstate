@@ -263,3 +263,83 @@ func RecordTaskOutcome(span trace.Span, err error) {
 
 	span.SetStatus(codes.Error, ClassifyError(err).String())
 }
+
+// TemporalSpanErrorDescription is what a Temporal SDK span's error status says
+// instead of the failure's own text.
+//
+// A fixed string rather than a classification, unlike [RecordTaskOutcome]: this
+// wraps spans the SDK opens for every workflow and activity it runs, including
+// ones this repository knows nothing about, so there is no classification it is
+// entitled to claim. What it can say honestly is that the operation failed.
+//
+// The considered alternative was to read the classification back off the error
+// when it is a *temporal.ApplicationError, whose Type() this repository builds
+// from [ClassifyError] at engine/activities.go and is therefore safe by
+// construction. Two costs, and both are paid here rather than there. This
+// package does not import Temporal at all — `go list -deps ./pkg/flowstate/v1`
+// names nothing under go.temporal.io — and one description string is a poor
+// price for that edge, given the engine already exports the classification on
+// the first-party `flowstate.task` span an operator reads next. The
+// import-free spelling, a structural check for `interface{ Type() string }`,
+// fails open on every unrelated error type that happens to have that method,
+// which is the direction this repository refuses to fail.
+const TemporalSpanErrorDescription = "operation failed"
+
+// SanitizedTemporalSpanStarter is [opentelemetry.TracerOptions.SpanStarter] for
+// Temporal's tracing interceptor, and it exists because that interceptor is the
+// one span-writing path in this repository that does not already obey
+// [RecordTaskOutcome]'s rule.
+//
+// The interceptor's Finish calls RecordError with the activity's error and
+// SetStatus with its message, and both write that text into an exported span.
+// `${steps.<id>.error}` is rendered from whatever the task said, and a task can
+// say a great deal — an http task's error names the URL it called, a plugin's
+// names whatever the plugin wrote. The first-party flowstate.task span already
+// refuses to export that; the SDK span Temporal wraps around it did not, so the
+// same run leaked through the outer span what the inner one withheld.
+//
+// It lives here rather than in cmd/flow because `engine`'s trace-join tests build
+// the same interceptor and say in writing that they match the binary's options.
+// Left in cmd/flow, those tests would go on constructing the unsanitized version
+// while their comment claimed otherwise — one meaning written down twice, and the
+// copy that drifts is the one nothing executes in production.
+//
+// The signature is structural: it matches SpanStarter without this package
+// importing anything from Temporal.
+func SanitizedTemporalSpanStarter(
+	ctx context.Context,
+	tracer trace.Tracer,
+	name string,
+	options ...trace.SpanStartOption,
+) trace.Span {
+	_, span := tracer.Start(ctx, name, options...)
+
+	return sanitizedTemporalSpan{Span: span}
+}
+
+// sanitizedTemporalSpan is a [trace.Span] whose failure reporting says a
+// classification and never a message.
+type sanitizedTemporalSpan struct {
+	trace.Span
+}
+
+// RecordError writes nothing at all.
+//
+// Not a sanitized error — nothing. This repository's posture for a failed span
+// is a status and no exception event, which [RecordTaskOutcome] states and
+// plugin/telemetry.go repeats, because RecordError's whole job is to write an
+// error's own message into an exported event. Recording a constant instead would
+// be a third spelling of the same rule, and an event carrying no information
+// anybody can act on.
+func (sanitizedTemporalSpan) RecordError(error, ...trace.EventOption) {}
+
+// SetStatus replaces the description on a failure, and leaves every other code's
+// alone: an Ok or Unset description is set by the interceptor itself, not copied
+// from something a task wrote.
+func (s sanitizedTemporalSpan) SetStatus(code codes.Code, description string) {
+	if code == codes.Error {
+		description = TemporalSpanErrorDescription
+	}
+
+	s.Span.SetStatus(code, description)
+}

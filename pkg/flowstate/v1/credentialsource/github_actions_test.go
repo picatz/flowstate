@@ -1,6 +1,11 @@
 package credentialsource_test
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,6 +54,95 @@ func TestGitHubActionsSource_NoAudience_FailsClosed(t *testing.T) {
 	_, err := credentialsource.NewGitHubActionsSource("")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+}
+
+// TestGitHubActionsSource_RefusesAnUnprotectedEndpoint is the negative
+// direction, and it is written so that it cannot pass by the request merely
+// failing: the transport fails the test if it is ever asked to carry anything.
+// A server that is simply unreachable would satisfy an assertion about the
+// error alone.
+//
+// The host is deliberately not loopback. Plain http *to loopback* is allowed,
+// for the reason [auth.ValidateHTTPSURL] gives and for a stronger one here — a
+// runner's endpoint is never loopback in production, and whoever can point it
+// at 127.0.0.1 already runs code in the job and can read the request token
+// straight out of the environment. What must never happen is the credential
+// leaving the machine in the clear.
+func TestGitHubActionsSource_RefusesAnUnprotectedEndpoint(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "http://runner.example.com/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
+
+	source, err := credentialsource.NewGitHubActionsSource("flowstate",
+		credentialsource.WithGitHubActionsHTTPClient(&http.Client{
+			Transport: refuseToCarry{t: t},
+		}))
+	require.NoError(t, err)
+
+	_, err = source.Token(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+	assert.Contains(t, err.Error(), "must use https")
+}
+
+// refuseToCarry fails the test if the credential is ever handed to a transport.
+type refuseToCarry struct{ t *testing.T }
+
+func (r refuseToCarry) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.t.Errorf("the runner credential was handed to a transport for %s", req.URL.Redacted())
+
+	return nil, errors.New("this transport carries nothing")
+}
+
+// TestGitHubActionsSource_AllowsALoopbackEndpoint is the other direction of the
+// same rule, and the reason it is here rather than assumed: without it, someone
+// tightening the check to https-only would break every in-tree caller that
+// stands up an httptest server for this endpoint — which is exactly what
+// happened, and cost a red `test` job to discover.
+func TestGitHubActionsSource_AllowsALoopbackEndpoint(t *testing.T) {
+	minted := mintedJWT(t, referenceTime.Add(time.Hour))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": minted})
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
+
+	source, err := credentialsource.NewGitHubActionsSource("flowstate")
+	require.NoError(t, err)
+
+	_, err = source.Token(t.Context())
+	require.NoError(t, err, "plain http to loopback is how every local harness reaches this endpoint")
+}
+
+// TestGitHubActionsSource_RefusesRedirect pins the refusal rather than the
+// stripping net/http already does: Go drops Authorization across a redirect to a
+// different host, but compares hostnames and not schemes, so an https-to-http
+// hop on the same host would keep the header. The endpoint does not redirect,
+// so refusing outright is stricter and simpler than validating each hop.
+func TestGitHubActionsSource_RefusesRedirect(t *testing.T) {
+	var finalRequests atomic.Int64
+	minted := mintedJWT(t, referenceTime.Add(time.Hour))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+
+			return
+		}
+		finalRequests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": minted})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL+"/start")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-request-token")
+
+	source, err := credentialsource.NewGitHubActionsSource("flowstate",
+		credentialsource.WithGitHubActionsHTTPClient(server.Client()))
+	require.NoError(t, err)
+	_, err = source.Token(t.Context())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, credentialsource.ErrSourceUnusable)
+	assert.Zero(t, finalRequests.Load(), "the runner credential must not be sent to a redirect target")
 }
 
 // TestGitHubActionsSource_RequestsTheConfiguredAudience proves the audience a
