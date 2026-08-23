@@ -3166,8 +3166,11 @@ succeeds after the cancellation arrives is reported as having succeeded, as abov
 — and when that step is the *last* one, the run has nothing left to fail on, so
 nothing after it would ever have noticed the stop. Such a run does not report
 COMPLETED. It closes CANCELED, takes back whatever was registered, and does not
-evaluate its `outputs:`; what a caller gets is the partial transcript every
-stopped run gets. This is true whether or not anything was registered to
+evaluate its `outputs:`. An in-process caller — `flow run local`, or an embedder
+calling the engine directly — additionally gets the partial transcript every
+stopped run gets; a durable run's remote caller does not, because Temporal drops
+a workflow's result when it closes with an error, and the run's history is where
+that record lives instead. This is true whether or not anything was registered to
 compensate — a run with no `undo:` anywhere still closes CANCELED on that race,
 because what decides the status is that somebody stopped the run, not whether
 there happened to be cleanup to do. The alternative is a run reporting success
