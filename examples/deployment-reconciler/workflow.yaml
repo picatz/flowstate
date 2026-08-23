@@ -15,14 +15,22 @@
 # attested *write* to the state this run holds — accepted or refused at the
 # `signals:` gate, queued, and consumed exactly once in arrival order — so
 # "never delivered" is a refusal the sender saw, not a loss the run absorbs,
-# and two changes sent in order apply in order. The run is the spec store here,
+# and two changes sent in order apply in order. One bound qualifies that: a run
+# carries at most 128 undrained deliveries (`MaxPendingSignals`), and beyond it
+# the newest are dropped *after* the server acknowledged them (#1013) — so the
+# write guarantee holds for senders that stay under the carry bound, which an
+# authorized spec-changer at any human or controller cadence does, and does not
+# hold against an authorized sender flooding faster than the run consumes. The
+# run is the spec store here,
 # the same durable-entity shape `entity-order` shows; the control plane owns
 # only the *observed* side (`replicas`, `retired`), which is why retirement is
 # read from it every pass and a spec change is not. A deployment whose desired
 # state lives in the control plane instead inverts one step: read it in
 # `observed` beside `replicas`, and the signal carries no payload at all — a
 # pure wake-up. Same loop, one fewer guard, and the choice is whose database
-# the spec is.
+# the spec is — with one tiebreaker: that variant is also immune to the carry
+# bound above, so it is the right default when the senders are not trusted to
+# stay under it.
 #
 # The wait at the *top* of the body is the whole scheduler, and its position is
 # load-bearing rather than stylistic (see the retirement note below):
