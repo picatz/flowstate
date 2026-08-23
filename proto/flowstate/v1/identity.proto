@@ -98,3 +98,84 @@ message WorkloadIdentity {
   // decide what a run may reach.
   string deployment = 5;
 }
+
+// EntityKind is the closed vocabulary of objects that may participate in the
+// authorization relationship graph. Authentication claims are deliberately
+// not entities: callers must first be mapped to one of these stable references.
+enum EntityKind {
+  ENTITY_KIND_UNSPECIFIED = 0;
+  ENTITY_KIND_PRINCIPAL = 1;
+  ENTITY_KIND_AGENT = 2;
+  ENTITY_KIND_GROUP = 3;
+  ENTITY_KIND_TENANT = 4;
+  ENTITY_KIND_TEAM = 5;
+  ENTITY_KIND_WORKLOAD = 6;
+  ENTITY_KIND_SERVICE = 7;
+  ENTITY_KIND_PLUGIN = 8;
+  ENTITY_KIND_PROTECTED_RESOURCE = 9;
+}
+
+// EntityReference is a stable, tenant-qualified authorization object name.
+// It belongs in policy inputs and audit records, never in request context.
+message EntityReference {
+  string tenant = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 128}];
+  EntityKind kind = 2 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  string id = 3 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+}
+
+// RelationshipEdge is one revisioned fact. Relation uses a small built-in
+// vocabulary (member_of, owns, operates, parent_of, delegated_by) or a
+// resource-specific role prefixed with "role:" (for example role:deployer).
+message RelationshipEdge {
+  EntityReference subject = 1 [(buf.validate.field).required = true];
+  string relation = 2 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 128}];
+  EntityReference resource = 3 [(buf.validate.field).required = true];
+}
+
+// RelationshipLimits independently bound every dimension a graph backend can
+// make expensive. Zero is invalid; callers must make every budget explicit.
+message RelationshipLimits {
+  uint32 max_depth = 1 [(buf.validate.field).uint32.gt = 0];
+  uint32 max_fan_out = 2 [(buf.validate.field).uint32.gt = 0];
+  uint32 max_entities_read = 3 [(buf.validate.field).uint32.gt = 0];
+  uint64 max_bytes_read = 4 [(buf.validate.field).uint64.gt = 0];
+  uint32 max_backend_requests = 5 [(buf.validate.field).uint32.gt = 0];
+  uint64 max_evaluation_cost = 6 [(buf.validate.field).uint64.gt = 0];
+}
+
+// RelationshipResolveRequest asks for one bounded, typed closure. Policy
+// cannot supply a traversal program: it may only select the starting entity,
+// the accepted relation names, and the operator-supplied limits.
+message RelationshipResolveRequest {
+  EntityReference subject = 1 [(buf.validate.field).required = true];
+  repeated string relations = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 128}}
+  }];
+  RelationshipLimits limits = 3 [(buf.validate.field).required = true];
+  string required_revision = 4 [(buf.validate.field).string.max_bytes = 256];
+  bool require_fresh = 5;
+}
+
+// RelationshipSet is the immutable, bounded policy input produced by a
+// resolver. Revision identifies the exact backend snapshot used by a decision.
+message RelationshipSet {
+  string revision = 1;
+  repeated EntityReference entities = 2;
+  repeated RelationshipEdge edges = 3;
+  uint64 evaluation_cost = 4;
+}
+
+// AuthorizationUseBoundary names operations where previously established
+// membership must be checked again. In particular, session creation and
+// workload submission do not permanently authorize later tool calls or steps.
+enum AuthorizationUseBoundary {
+  AUTHORIZATION_USE_BOUNDARY_UNSPECIFIED = 0;
+  AUTHORIZATION_USE_BOUNDARY_MCP_TOOL_CALL = 1;
+  AUTHORIZATION_USE_BOUNDARY_DURABLE_STEP = 2;
+  AUTHORIZATION_USE_BOUNDARY_CREDENTIAL_USE = 3;
+  AUTHORIZATION_USE_BOUNDARY_SECRET_READ = 4;
+  AUTHORIZATION_USE_BOUNDARY_SIGNAL_DELIVERY = 5;
+}

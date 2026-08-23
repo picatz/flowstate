@@ -22,6 +22,140 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// EntityKind is the closed vocabulary of objects that may participate in the
+// authorization relationship graph. Authentication claims are deliberately
+// not entities: callers must first be mapped to one of these stable references.
+type EntityKind int32
+
+const (
+	EntityKind_ENTITY_KIND_UNSPECIFIED        EntityKind = 0
+	EntityKind_ENTITY_KIND_PRINCIPAL          EntityKind = 1
+	EntityKind_ENTITY_KIND_AGENT              EntityKind = 2
+	EntityKind_ENTITY_KIND_GROUP              EntityKind = 3
+	EntityKind_ENTITY_KIND_TENANT             EntityKind = 4
+	EntityKind_ENTITY_KIND_TEAM               EntityKind = 5
+	EntityKind_ENTITY_KIND_WORKLOAD           EntityKind = 6
+	EntityKind_ENTITY_KIND_SERVICE            EntityKind = 7
+	EntityKind_ENTITY_KIND_PLUGIN             EntityKind = 8
+	EntityKind_ENTITY_KIND_PROTECTED_RESOURCE EntityKind = 9
+)
+
+// Enum value maps for EntityKind.
+var (
+	EntityKind_name = map[int32]string{
+		0: "ENTITY_KIND_UNSPECIFIED",
+		1: "ENTITY_KIND_PRINCIPAL",
+		2: "ENTITY_KIND_AGENT",
+		3: "ENTITY_KIND_GROUP",
+		4: "ENTITY_KIND_TENANT",
+		5: "ENTITY_KIND_TEAM",
+		6: "ENTITY_KIND_WORKLOAD",
+		7: "ENTITY_KIND_SERVICE",
+		8: "ENTITY_KIND_PLUGIN",
+		9: "ENTITY_KIND_PROTECTED_RESOURCE",
+	}
+	EntityKind_value = map[string]int32{
+		"ENTITY_KIND_UNSPECIFIED":        0,
+		"ENTITY_KIND_PRINCIPAL":          1,
+		"ENTITY_KIND_AGENT":              2,
+		"ENTITY_KIND_GROUP":              3,
+		"ENTITY_KIND_TENANT":             4,
+		"ENTITY_KIND_TEAM":               5,
+		"ENTITY_KIND_WORKLOAD":           6,
+		"ENTITY_KIND_SERVICE":            7,
+		"ENTITY_KIND_PLUGIN":             8,
+		"ENTITY_KIND_PROTECTED_RESOURCE": 9,
+	}
+)
+
+func (x EntityKind) Enum() *EntityKind {
+	p := new(EntityKind)
+	*p = x
+	return p
+}
+
+func (x EntityKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (EntityKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[0].Descriptor()
+}
+
+func (EntityKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[0]
+}
+
+func (x EntityKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use EntityKind.Descriptor instead.
+func (EntityKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
+// AuthorizationUseBoundary names operations where previously established
+// membership must be checked again. In particular, session creation and
+// workload submission do not permanently authorize later tool calls or steps.
+type AuthorizationUseBoundary int32
+
+const (
+	AuthorizationUseBoundary_AUTHORIZATION_USE_BOUNDARY_UNSPECIFIED     AuthorizationUseBoundary = 0
+	AuthorizationUseBoundary_AUTHORIZATION_USE_BOUNDARY_MCP_TOOL_CALL   AuthorizationUseBoundary = 1
+	AuthorizationUseBoundary_AUTHORIZATION_USE_BOUNDARY_DURABLE_STEP    AuthorizationUseBoundary = 2
+	AuthorizationUseBoundary_AUTHORIZATION_USE_BOUNDARY_CREDENTIAL_USE  AuthorizationUseBoundary = 3
+	AuthorizationUseBoundary_AUTHORIZATION_USE_BOUNDARY_SECRET_READ     AuthorizationUseBoundary = 4
+	AuthorizationUseBoundary_AUTHORIZATION_USE_BOUNDARY_SIGNAL_DELIVERY AuthorizationUseBoundary = 5
+)
+
+// Enum value maps for AuthorizationUseBoundary.
+var (
+	AuthorizationUseBoundary_name = map[int32]string{
+		0: "AUTHORIZATION_USE_BOUNDARY_UNSPECIFIED",
+		1: "AUTHORIZATION_USE_BOUNDARY_MCP_TOOL_CALL",
+		2: "AUTHORIZATION_USE_BOUNDARY_DURABLE_STEP",
+		3: "AUTHORIZATION_USE_BOUNDARY_CREDENTIAL_USE",
+		4: "AUTHORIZATION_USE_BOUNDARY_SECRET_READ",
+		5: "AUTHORIZATION_USE_BOUNDARY_SIGNAL_DELIVERY",
+	}
+	AuthorizationUseBoundary_value = map[string]int32{
+		"AUTHORIZATION_USE_BOUNDARY_UNSPECIFIED":     0,
+		"AUTHORIZATION_USE_BOUNDARY_MCP_TOOL_CALL":   1,
+		"AUTHORIZATION_USE_BOUNDARY_DURABLE_STEP":    2,
+		"AUTHORIZATION_USE_BOUNDARY_CREDENTIAL_USE":  3,
+		"AUTHORIZATION_USE_BOUNDARY_SECRET_READ":     4,
+		"AUTHORIZATION_USE_BOUNDARY_SIGNAL_DELIVERY": 5,
+	}
+)
+
+func (x AuthorizationUseBoundary) Enum() *AuthorizationUseBoundary {
+	p := new(AuthorizationUseBoundary)
+	*p = x
+	return p
+}
+
+func (x AuthorizationUseBoundary) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AuthorizationUseBoundary) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[1].Descriptor()
+}
+
+func (AuthorizationUseBoundary) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[1]
+}
+
+func (x AuthorizationUseBoundary) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AuthorizationUseBoundary.Descriptor instead.
+func (AuthorizationUseBoundary) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
 // required subset of previously produced outputs for the remaining steps.
@@ -170,6 +304,366 @@ func (x *WorkloadIdentity) GetDeployment() string {
 	return ""
 }
 
+// EntityReference is a stable, tenant-qualified authorization object name.
+// It belongs in policy inputs and audit records, never in request context.
+type EntityReference struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenant        string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Kind          EntityKind             `protobuf:"varint,2,opt,name=kind,proto3,enum=flowstate.v1.EntityKind" json:"kind,omitempty"`
+	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EntityReference) Reset() {
+	*x = EntityReference{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EntityReference) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EntityReference) ProtoMessage() {}
+
+func (x *EntityReference) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EntityReference.ProtoReflect.Descriptor instead.
+func (*EntityReference) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *EntityReference) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *EntityReference) GetKind() EntityKind {
+	if x != nil {
+		return x.Kind
+	}
+	return EntityKind_ENTITY_KIND_UNSPECIFIED
+}
+
+func (x *EntityReference) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// RelationshipEdge is one revisioned fact. Relation uses a small built-in
+// vocabulary (member_of, owns, operates, parent_of, delegated_by) or a
+// resource-specific role prefixed with "role:" (for example role:deployer).
+type RelationshipEdge struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Subject       *EntityReference       `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
+	Relation      string                 `protobuf:"bytes,2,opt,name=relation,proto3" json:"relation,omitempty"`
+	Resource      *EntityReference       `protobuf:"bytes,3,opt,name=resource,proto3" json:"resource,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelationshipEdge) Reset() {
+	*x = RelationshipEdge{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelationshipEdge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelationshipEdge) ProtoMessage() {}
+
+func (x *RelationshipEdge) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelationshipEdge.ProtoReflect.Descriptor instead.
+func (*RelationshipEdge) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *RelationshipEdge) GetSubject() *EntityReference {
+	if x != nil {
+		return x.Subject
+	}
+	return nil
+}
+
+func (x *RelationshipEdge) GetRelation() string {
+	if x != nil {
+		return x.Relation
+	}
+	return ""
+}
+
+func (x *RelationshipEdge) GetResource() *EntityReference {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+// RelationshipLimits independently bound every dimension a graph backend can
+// make expensive. Zero is invalid; callers must make every budget explicit.
+type RelationshipLimits struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	MaxDepth           uint32                 `protobuf:"varint,1,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	MaxFanOut          uint32                 `protobuf:"varint,2,opt,name=max_fan_out,json=maxFanOut,proto3" json:"max_fan_out,omitempty"`
+	MaxEntitiesRead    uint32                 `protobuf:"varint,3,opt,name=max_entities_read,json=maxEntitiesRead,proto3" json:"max_entities_read,omitempty"`
+	MaxBytesRead       uint64                 `protobuf:"varint,4,opt,name=max_bytes_read,json=maxBytesRead,proto3" json:"max_bytes_read,omitempty"`
+	MaxBackendRequests uint32                 `protobuf:"varint,5,opt,name=max_backend_requests,json=maxBackendRequests,proto3" json:"max_backend_requests,omitempty"`
+	MaxEvaluationCost  uint64                 `protobuf:"varint,6,opt,name=max_evaluation_cost,json=maxEvaluationCost,proto3" json:"max_evaluation_cost,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *RelationshipLimits) Reset() {
+	*x = RelationshipLimits{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelationshipLimits) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelationshipLimits) ProtoMessage() {}
+
+func (x *RelationshipLimits) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelationshipLimits.ProtoReflect.Descriptor instead.
+func (*RelationshipLimits) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *RelationshipLimits) GetMaxDepth() uint32 {
+	if x != nil {
+		return x.MaxDepth
+	}
+	return 0
+}
+
+func (x *RelationshipLimits) GetMaxFanOut() uint32 {
+	if x != nil {
+		return x.MaxFanOut
+	}
+	return 0
+}
+
+func (x *RelationshipLimits) GetMaxEntitiesRead() uint32 {
+	if x != nil {
+		return x.MaxEntitiesRead
+	}
+	return 0
+}
+
+func (x *RelationshipLimits) GetMaxBytesRead() uint64 {
+	if x != nil {
+		return x.MaxBytesRead
+	}
+	return 0
+}
+
+func (x *RelationshipLimits) GetMaxBackendRequests() uint32 {
+	if x != nil {
+		return x.MaxBackendRequests
+	}
+	return 0
+}
+
+func (x *RelationshipLimits) GetMaxEvaluationCost() uint64 {
+	if x != nil {
+		return x.MaxEvaluationCost
+	}
+	return 0
+}
+
+// RelationshipResolveRequest asks for one bounded, typed closure. Policy
+// cannot supply a traversal program: it may only select the starting entity,
+// the accepted relation names, and the operator-supplied limits.
+type RelationshipResolveRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Subject          *EntityReference       `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
+	Relations        []string               `protobuf:"bytes,2,rep,name=relations,proto3" json:"relations,omitempty"`
+	Limits           *RelationshipLimits    `protobuf:"bytes,3,opt,name=limits,proto3" json:"limits,omitempty"`
+	RequiredRevision string                 `protobuf:"bytes,4,opt,name=required_revision,json=requiredRevision,proto3" json:"required_revision,omitempty"`
+	RequireFresh     bool                   `protobuf:"varint,5,opt,name=require_fresh,json=requireFresh,proto3" json:"require_fresh,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *RelationshipResolveRequest) Reset() {
+	*x = RelationshipResolveRequest{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelationshipResolveRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelationshipResolveRequest) ProtoMessage() {}
+
+func (x *RelationshipResolveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelationshipResolveRequest.ProtoReflect.Descriptor instead.
+func (*RelationshipResolveRequest) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RelationshipResolveRequest) GetSubject() *EntityReference {
+	if x != nil {
+		return x.Subject
+	}
+	return nil
+}
+
+func (x *RelationshipResolveRequest) GetRelations() []string {
+	if x != nil {
+		return x.Relations
+	}
+	return nil
+}
+
+func (x *RelationshipResolveRequest) GetLimits() *RelationshipLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+func (x *RelationshipResolveRequest) GetRequiredRevision() string {
+	if x != nil {
+		return x.RequiredRevision
+	}
+	return ""
+}
+
+func (x *RelationshipResolveRequest) GetRequireFresh() bool {
+	if x != nil {
+		return x.RequireFresh
+	}
+	return false
+}
+
+// RelationshipSet is the immutable, bounded policy input produced by a
+// resolver. Revision identifies the exact backend snapshot used by a decision.
+type RelationshipSet struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Revision       string                 `protobuf:"bytes,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	Entities       []*EntityReference     `protobuf:"bytes,2,rep,name=entities,proto3" json:"entities,omitempty"`
+	Edges          []*RelationshipEdge    `protobuf:"bytes,3,rep,name=edges,proto3" json:"edges,omitempty"`
+	EvaluationCost uint64                 `protobuf:"varint,4,opt,name=evaluation_cost,json=evaluationCost,proto3" json:"evaluation_cost,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RelationshipSet) Reset() {
+	*x = RelationshipSet{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelationshipSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelationshipSet) ProtoMessage() {}
+
+func (x *RelationshipSet) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelationshipSet.ProtoReflect.Descriptor instead.
+func (*RelationshipSet) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RelationshipSet) GetRevision() string {
+	if x != nil {
+		return x.Revision
+	}
+	return ""
+}
+
+func (x *RelationshipSet) GetEntities() []*EntityReference {
+	if x != nil {
+		return x.Entities
+	}
+	return nil
+}
+
+func (x *RelationshipSet) GetEdges() []*RelationshipEdge {
+	if x != nil {
+		return x.Edges
+	}
+	return nil
+}
+
+func (x *RelationshipSet) GetEvaluationCost() uint64 {
+	if x != nil {
+		return x.EvaluationCost
+	}
+	return 0
+}
+
 var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
@@ -185,7 +679,56 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"deployment\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xac\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8b\x01\n" +
+	"\x0fEntityReference\x12\"\n" +
+	"\x06tenant\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x01R\x06tenant\x128\n" +
+	"\x04kind\x18\x02 \x01(\x0e2\x18.flowstate.v1.EntityKindB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x1a\n" +
+	"\x02id\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x04R\x02id\"\xbe\x01\n" +
+	"\x10RelationshipEdge\x12?\n" +
+	"\asubject\x18\x01 \x01(\v2\x1d.flowstate.v1.EntityReferenceB\x06\xbaH\x03\xc8\x01\x01R\asubject\x12&\n" +
+	"\brelation\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x01R\brelation\x12A\n" +
+	"\bresource\x18\x03 \x01(\v2\x1d.flowstate.v1.EntityReferenceB\x06\xbaH\x03\xc8\x01\x01R\bresource\"\xbb\x02\n" +
+	"\x12RelationshipLimits\x12$\n" +
+	"\tmax_depth\x18\x01 \x01(\rB\a\xbaH\x04*\x02 \x00R\bmaxDepth\x12'\n" +
+	"\vmax_fan_out\x18\x02 \x01(\rB\a\xbaH\x04*\x02 \x00R\tmaxFanOut\x123\n" +
+	"\x11max_entities_read\x18\x03 \x01(\rB\a\xbaH\x04*\x02 \x00R\x0fmaxEntitiesRead\x12-\n" +
+	"\x0emax_bytes_read\x18\x04 \x01(\x04B\a\xbaH\x042\x02 \x00R\fmaxBytesRead\x129\n" +
+	"\x14max_backend_requests\x18\x05 \x01(\rB\a\xbaH\x04*\x02 \x00R\x12maxBackendRequests\x127\n" +
+	"\x13max_evaluation_cost\x18\x06 \x01(\x04B\a\xbaH\x042\x02 \x00R\x11maxEvaluationCost\"\xb0\x02\n" +
+	"\x1aRelationshipResolveRequest\x12?\n" +
+	"\asubject\x18\x01 \x01(\v2\x1d.flowstate.v1.EntityReferenceB\x06\xbaH\x03\xc8\x01\x01R\asubject\x123\n" +
+	"\trelations\x18\x02 \x03(\tB\x15\xbaH\x12\x92\x01\x0f\b\x01\x10 \x18\x01\"\ar\x05 \x01(\x80\x01R\trelations\x12@\n" +
+	"\x06limits\x18\x03 \x01(\v2 .flowstate.v1.RelationshipLimitsB\x06\xbaH\x03\xc8\x01\x01R\x06limits\x125\n" +
+	"\x11required_revision\x18\x04 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x10requiredRevision\x12#\n" +
+	"\rrequire_fresh\x18\x05 \x01(\bR\frequireFresh\"\xc7\x01\n" +
+	"\x0fRelationshipSet\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\tR\brevision\x129\n" +
+	"\bentities\x18\x02 \x03(\v2\x1d.flowstate.v1.EntityReferenceR\bentities\x124\n" +
+	"\x05edges\x18\x03 \x03(\v2\x1e.flowstate.v1.RelationshipEdgeR\x05edges\x12'\n" +
+	"\x0fevaluation_cost\x18\x04 \x01(\x04R\x0eevaluationCost*\x8f\x02\n" +
+	"\n" +
+	"EntityKind\x12\x1b\n" +
+	"\x17ENTITY_KIND_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15ENTITY_KIND_PRINCIPAL\x10\x01\x12\x15\n" +
+	"\x11ENTITY_KIND_AGENT\x10\x02\x12\x15\n" +
+	"\x11ENTITY_KIND_GROUP\x10\x03\x12\x16\n" +
+	"\x12ENTITY_KIND_TENANT\x10\x04\x12\x14\n" +
+	"\x10ENTITY_KIND_TEAM\x10\x05\x12\x18\n" +
+	"\x14ENTITY_KIND_WORKLOAD\x10\x06\x12\x17\n" +
+	"\x13ENTITY_KIND_SERVICE\x10\a\x12\x16\n" +
+	"\x12ENTITY_KIND_PLUGIN\x10\b\x12\"\n" +
+	"\x1eENTITY_KIND_PROTECTED_RESOURCE\x10\t*\xac\x02\n" +
+	"\x18AuthorizationUseBoundary\x12*\n" +
+	"&AUTHORIZATION_USE_BOUNDARY_UNSPECIFIED\x10\x00\x12,\n" +
+	"(AUTHORIZATION_USE_BOUNDARY_MCP_TOOL_CALL\x10\x01\x12+\n" +
+	"'AUTHORIZATION_USE_BOUNDARY_DURABLE_STEP\x10\x02\x12-\n" +
+	")AUTHORIZATION_USE_BOUNDARY_CREDENTIAL_USE\x10\x03\x12*\n" +
+	"&AUTHORIZATION_USE_BOUNDARY_SECRET_READ\x10\x04\x12.\n" +
+	"*AUTHORIZATION_USE_BOUNDARY_SIGNAL_DELIVERY\x10\x05B\xac\x01\n" +
 	"\x10com.flowstate.v1B\rIdentityProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -200,18 +743,33 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_identity_proto_rawDescData
 }
 
-var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_flowstate_v1_identity_proto_goTypes = []any{
-	(*WorkloadIdentity)(nil), // 0: flowstate.v1.WorkloadIdentity
-	nil,                      // 1: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(EntityKind)(0),                    // 0: flowstate.v1.EntityKind
+	(AuthorizationUseBoundary)(0),      // 1: flowstate.v1.AuthorizationUseBoundary
+	(*WorkloadIdentity)(nil),           // 2: flowstate.v1.WorkloadIdentity
+	(*EntityReference)(nil),            // 3: flowstate.v1.EntityReference
+	(*RelationshipEdge)(nil),           // 4: flowstate.v1.RelationshipEdge
+	(*RelationshipLimits)(nil),         // 5: flowstate.v1.RelationshipLimits
+	(*RelationshipResolveRequest)(nil), // 6: flowstate.v1.RelationshipResolveRequest
+	(*RelationshipSet)(nil),            // 7: flowstate.v1.RelationshipSet
+	nil,                                // 8: flowstate.v1.WorkloadIdentity.ClaimsEntry
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
-	1, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	8, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	0, // 1: flowstate.v1.EntityReference.kind:type_name -> flowstate.v1.EntityKind
+	3, // 2: flowstate.v1.RelationshipEdge.subject:type_name -> flowstate.v1.EntityReference
+	3, // 3: flowstate.v1.RelationshipEdge.resource:type_name -> flowstate.v1.EntityReference
+	3, // 4: flowstate.v1.RelationshipResolveRequest.subject:type_name -> flowstate.v1.EntityReference
+	5, // 5: flowstate.v1.RelationshipResolveRequest.limits:type_name -> flowstate.v1.RelationshipLimits
+	3, // 6: flowstate.v1.RelationshipSet.entities:type_name -> flowstate.v1.EntityReference
+	4, // 7: flowstate.v1.RelationshipSet.edges:type_name -> flowstate.v1.RelationshipEdge
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -224,13 +782,14 @@ func file_flowstate_v1_identity_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   2,
+			NumEnums:      2,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_identity_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_identity_proto_depIdxs,
+		EnumInfos:         file_flowstate_v1_identity_proto_enumTypes,
 		MessageInfos:      file_flowstate_v1_identity_proto_msgTypes,
 	}.Build()
 	File_flowstate_v1_identity_proto = out.File
