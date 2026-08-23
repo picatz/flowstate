@@ -57,6 +57,11 @@ tests:
           patch: "--- a/x\n+++ b/x\n"
           final_message: narrowed the failure to one assertion
           output_tokens: 812
+          # The real task always reports this - it is a plain bool in its
+          # outputs - so a stub that omitted it would be answering with a
+          # shape codex.exec cannot produce, and the step reading it would
+          # fail on a missing key rather than on anything real.
+          truncated: false
       # The push, answering with the sha this attempt produced. The `where:`
       # reads the base the attempt was computed against, so an `apply` that
       # ignored the carried state and pushed against something else would not
@@ -113,6 +118,7 @@ tests:
           patch: "--- a/x\n+++ b/x\n"
           final_message: another guess
           output_tokens: 640
+          truncated: false
       - task: git.commit_push
         returns:
           sha: '${"sha-%d".format([prior.n + 1])}'
@@ -158,6 +164,7 @@ tests:
           patch: "--- a/x\n+++ b/x\n"
           final_message: another guess
           output_tokens: 640
+          truncated: false
       - task: git.commit_push
         returns:
           sha: '${"sha-%d".format([prior.n + 1])}'
@@ -249,3 +256,47 @@ tests:
         fix_ref: sha-0
         handed_off: false
         taken_over: false
+
+  - name: a patch truncated by the output budget is never committed
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 1h
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      # The turn produced more than its output budget allowed, so what came back
+      # is a prefix of a unified diff and the task says so. Committing it would
+      # apply some hunks of the agent's change and call it the whole thing.
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n"
+          final_message: the change is larger than the budget
+          output_tokens: 4096
+          truncated: true
+      # Deliberately no git.commit_push stub: reaching it would be the bug, and
+      # with no stub a run that got there fails loudly on the missing stub rather
+      # than quietly pushing a partial patch.
+      - task: http
+        returns:
+          passed: false
+          output: "FAIL TestCheckout/expired_card"
+    expect:
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      # Nothing was written and nothing was verified: the attempt ended at the
+      # truncation check, spent the budget, and asked a person.
+      skipped: [apply, verify]
+      outputs:
+        attempts: 1
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true

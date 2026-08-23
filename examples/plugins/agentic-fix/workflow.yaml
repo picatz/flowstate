@@ -146,13 +146,20 @@ steps:
         # try it is (this one puts it in the commit message) has nowhere else to
         # get the number.
         "n": 0
+      # Guarded because an attempt whose patch came back truncated skips both
+      # `apply` and `verify` (see `usable` in the body), and a skipped step has
+      # no outputs to read — an unguarded `steps.apply.sha` would fail evaluating
+      # a name that is not there. Such a pass carries the previous values
+      # forward: nothing was written, so nothing about the base changed.
       update:
-        failure: ${steps.verify.output}
-        base: ${steps.apply.sha}
+        failure: '${has(steps.verify) ? steps.verify.output : prior.failure}'
+        base: '${has(steps.apply) ? steps.apply.sha : prior.base}'
         "n": ${prior.n + 1}
       # Checked after the body, which is what makes an attempt always happen and
-      # lets the condition read the verification that attempt produced.
-      until: ${steps.verify.passed}
+      # lets the condition read the verification that attempt produced. An
+      # attempt that produced no verification has not passed, which is what
+      # spends the budget and reaches the human handoff.
+      until: ${has(steps.verify) && steps.verify.passed}
       # One try. A ceiling rather than a hope — `until:` is a promise this loop
       # cannot keep on its own, since nothing here can make a model eventually
       # succeed — and one rather than five because a second attempt cannot work
@@ -208,8 +215,23 @@ steps:
             # README's worker environment section says what to export.
             sandbox_mode: SANDBOX_MODE_WORKSPACE_WRITE
             working_context: ${inputs.workspace}
+        # Whether what the turn produced is safe to commit at all. `codex.exec`
+        # spends one output budget across the final message, the patch and the
+        # events, in that order, and truncates what does not fit — reporting
+        # `truncated: true` rather than failing. A truncated patch is a *prefix*
+        # of a unified diff, and a prefix is not a smaller change: it is some
+        # hunks of one. Committing it would apply part of the agent's work and
+        # then hand the result to CI as though it were the whole of it — a wrong
+        # answer, not a degraded one. So this pass produces nothing to land, and
+        # the attempt ends without a verification, which spends the budget and
+        # asks a person. Raising `max_output_bytes` is the fix for a repository
+        # whose real patches are large; ignoring the flag is not.
+        - id: usable
+          value: ${!steps.propose.truncated}
         - id: apply
           description: The patch as a commit on the agent branch, compare-and-swapped against the tree it was computed on.
+          # Skipped when the patch came back truncated: see `usable` above.
+          if: ${steps.usable.value}
           # `base_ref:` is the carried `base`, never the branch's current tip.
           # The task compare-and-swaps the push against exactly this value, so a
           # concurrent write to the same branch is refused rather than silently
@@ -226,6 +248,10 @@ steps:
             url: ${inputs.repo}
         - id: verify
           description: Run the suite at the sha this attempt actually wrote.
+          # Nothing was written when the patch was unusable, so there is nothing
+          # to verify — and a `verify` reading `steps.apply.sha` on a skipped
+          # `apply` would fail evaluating a name that is not there.
+          if: ${steps.usable.value}
           # Bound to content rather than to a movable name. Calling this with
           # `${inputs.branch}` would verify whatever the branch points at when
           # CI gets around to it, which on the sixth attempt is not necessarily
@@ -278,7 +304,7 @@ steps:
   # so there is no attempt result to read). Named here so `fix_ref` below is a
   # single conditional rather than one nested inside another.
   - id: fixed_sha
-    value: "${(steps.attempted.value && has(steps.attempt.results)) ? steps.attempt.results[steps.spent.value - 1].apply.sha : steps.base_sha.value}"
+    value: "${(steps.attempted.value && has(steps.attempt.results) && has(steps.attempt.results[steps.spent.value - 1].apply)) ? steps.attempt.results[steps.spent.value - 1].apply.sha : steps.base_sha.value}"
 
   # The human in the loop, as a step. Reached only when the attempts did not
   # produce a passing suite, and fail-closed: a gate nobody answers within a day
