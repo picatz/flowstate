@@ -283,10 +283,10 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	// downstream service reads alongside it. Registered globally because that
 	// is where otelconnect reads it from — on a client to inject, on the server
 	// to extract — so one registration closes both halves of the hop.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+	otel.SetTextMapPropagator(telemetryPolicy{next: propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
-	))
+	)})
 
 	handler := opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{
 		Meter: meterProvider.Meter("temporal-sdk"),
