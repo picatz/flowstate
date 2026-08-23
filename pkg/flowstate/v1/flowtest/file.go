@@ -1340,6 +1340,9 @@ func checkDefaults(d *Defaults) error {
 	if len(d.Stubs) > MaxDefaultStubs {
 		return fmt.Errorf("defaults declares %d stubs, more than the limit of %d", len(d.Stubs), MaxDefaultStubs)
 	}
+	if err := checkNoExpressions("defaults.workflow", d.Workflow, 0); err != nil {
+		return err
+	}
 	for name, v := range d.Inputs {
 		if err := checkNoExpressions("defaults.inputs."+name, v, 0); err != nil {
 			return err

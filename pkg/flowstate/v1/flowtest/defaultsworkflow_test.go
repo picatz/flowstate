@@ -99,6 +99,26 @@ tests:
 	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
 }
 
+// TestADefaultWorkflowMayNotHoldAnExpression: `defaults:` is a fixture, so
+// `defaults.workflow:` takes the same expression refusal every other default
+// field does — otherwise `${inputs.target}` loads as a literal path and fails
+// later with a file-open error that names nothing an author can act on.
+func TestADefaultWorkflowMayNotHoldAnExpression(t *testing.T) {
+	t.Parallel()
+
+	_, err := flowtest.Load(writeInline(t, t.TempDir(), `
+defaults:
+  workflow: ${inputs.target}
+tests:
+  - name: never gets this far
+    expect:
+      ran: [x]
+`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "defaults.workflow")
+	require.Contains(t, err.Error(), "may not hold an expression")
+}
+
 // TestNoWorkflowAnywhereIsStillRefused: the default is a value, not a
 // loosening — a file with neither spelling keeps the refusal a case with no
 // workflow has always earned.
