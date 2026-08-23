@@ -67,7 +67,7 @@ func TestOneSentenceForAServerThatDidNotAnswer(t *testing.T) {
 		"refusedList":         refusedList(server, unavailable()).Error(),
 		"refusedSchedule":     refusedSchedule("describing", "nightly", server, unavailable()).Error(),
 		"refusedScheduleList": refusedScheduleList(server, unavailable()).Error(),
-		"refusedStart":        refusedStart("../../examples/hello-world/workflow.yaml", "hello-world", nil, server, unavailable()).Error(),
+		"refusedStart":        refusedStart("../../examples/hello-world/workflow.yaml", "hello-world", nil, false, server, unavailable()).Error(),
 	}
 
 	want := answers["refusedList"]
@@ -173,7 +173,7 @@ func TestOnlyRunShapedVerbsOfferLocalRehearsal(t *testing.T) {
 func TestTheWayOutLeadsWithTheDevStack(t *testing.T) {
 	t.Parallel()
 
-	report := reportOf(t, refusedStart("pipeline/workflow.yaml", "pipeline", nil,
+	report := reportOf(t, refusedStart("pipeline/workflow.yaml", "pipeline", nil, false,
 		serverFlags{address: "localhost:9233"}, unavailable()))
 
 	assert.Contains(t, report, "NEXT",
@@ -288,8 +288,28 @@ func TestTheSuggestedRunCarriesItsInputs(t *testing.T) {
 		serverFlags{address: "localhost:9233"},
 		"deploy.yaml",
 		[]string{"--input-file=inputs.json", "--input=region=eu-west-1"},
+		false,
 		unavailable(),
 	))
 	assert.Contains(t, rendered, "flow run deploy.yaml --input-file=inputs.json --input=region=eu-west-1")
 	assert.Contains(t, rendered, "flow run local deploy.yaml --input-file=inputs.json --input=region=eu-west-1")
+	assert.NotContains(t, rendered, "were withheld here",
+		"nothing was redacted, so the offer must read as runnable")
+}
+
+// TestTheSuggestedRunSaysWhatItWithheld is the other half of that: once a
+// sensitive input has been replaced by its marker the command is no longer the
+// invocation that failed, and an offer that does not say so is worse than one
+// that admits it — for a string input, pasting it starts a different workload
+// rather than failing.
+func TestTheSuggestedRunSaysWhatItWithheld(t *testing.T) {
+	rendered := reportOf(t, unreachableServerWithArguments(
+		serverFlags{address: "localhost:9233"},
+		"deploy.yaml",
+		[]string{`--input='token=[redacted: token]'`},
+		true,
+		unavailable(),
+	))
+	assert.Contains(t, rendered, "were withheld here")
+	assert.Contains(t, rendered, "flow run deploy.yaml --input='token=[redacted: token]'")
 }
