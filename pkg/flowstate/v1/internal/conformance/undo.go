@@ -670,19 +670,31 @@ func joins(id, base, token, step string) *v1.Node {
 // parameter. What every case does share is that the run is parked on a long wait
 // when it happens, so the cancellation lands at a known point rather than racing
 // the steps.
-// What this corpus deliberately does not cover, and cannot without a new hook:
-// a cancellation that arrives while the *last* step is in flight and that step
-// then succeeds anyway. Every case here parks, so the cancellation lands at a
-// known point and the run is certainly not mid-step.
 //
-// That other window is real — the durable driver's WaitForCancellation exists to
-// let an activity win that race — and it is not expressible here, because the
-// two drivers disagree about whether a step can survive a cancellation at all.
-// Durably it can, by design. Locally a cancelled context fails the step's own
-// request, so the same shape produces a *failed* last step, which compensates
-// through the ordinary path and is indistinguishable from the case under test.
-// Distinguishing them needs the driver to supply "cancel once the last step has
-// completed", which is a third timing alongside the two this type documents.
+// # The window this corpus does not cover, and which half of it is the problem
+//
+// A cancellation that arrives while the *last* step is in flight, where that step
+// then succeeds anyway. Every case here parks, so the cancellation lands at a known
+// point and the run is certainly not mid-step. The window is real — the durable
+// driver's WaitForCancellation exists precisely to let an activity win that race —
+// and both drivers guard it, so what is missing is a case rather than a behaviour.
+//
+// The local half of it *is* covered, in `pkg/flowstate/v1`'s own
+// TestRunWorkflowUndoOnLateCancellation. What makes it stageable there is that a
+// `log:` step does not consult its context: it succeeds on a cancelled one, which
+// is the same thing an activity winning the race does, and the stop can be landed
+// inside it through the logger the run was given. So it is not true that a
+// cancelled local run can only produce a *failed* last step; that is true of the
+// steps that do I/O, which is every step these cases use.
+//
+// The durable half is the one that needs a new hook. Temporal's test environment
+// delivers a cancellation either during an activity — where the activity is
+// cancelled, the step fails, and the run leaves through the ordinary failure path,
+// which is a different case — or after the workflow has closed, where there is
+// nothing left to decide. Neither is the window, so a durable arm added today would
+// assert something other than what the local one asserts, and a shared case whose
+// two drivers are answering different questions is worse than an absent one. That
+// is the third timing this type's doc means, and it is a follow-up.
 type UndoCancellationCase struct {
 	// Name of the case, used for test identification.
 	Name string
