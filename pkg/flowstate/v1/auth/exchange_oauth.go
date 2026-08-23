@@ -375,6 +375,15 @@ func validateExchangeRequest(cfg TokenExchangeConfig) error {
 	if _, err := canonicalScopeList(cfg.Scopes); err != nil {
 		return fmt.Errorf("invalid scopes: %v", err)
 	}
+	// The two target selectors are alternatives — [TokenExchangeConfig.Resource]
+	// says so — and each was validated here while nothing refused the pair, so a
+	// config naming both sent both parameters: an ambiguous authority request
+	// this strict profile exists to keep off the wire. A deployment giving both
+	// has not said which it wants; refused at load, where every other
+	// contradiction in this package is refused.
+	if cfg.TargetAudience != "" && cfg.Resource != "" {
+		return fmt.Errorf("target_audience and resource are alternatives naming one target; set exactly one")
+	}
 	if cfg.TargetAudience != "" && !canonicalOpaqueValue(cfg.TargetAudience) {
 		return fmt.Errorf("invalid target audience")
 	}
@@ -466,6 +475,55 @@ func canonicalOpaqueValue(value string) bool {
 	return value == strings.TrimSpace(value) && value != "" && !strings.ContainsAny(value, "\x00\r\n\t")
 }
 
+// jwtShaped reports whether a token has a JWT's compact shape. RFC 7519
+// permits both serializations: three dot-separated base64url segments for a
+// JWS, five for a JWE — an identity provider that encrypts its tokens issues
+// the five-segment form, and refusing it here would reject a token the
+// authorization server validates fine. Deliberately a shape check and not a
+// parse — validating the delegator's token is the server's job, and a stricter
+// check would refuse tokens the server accepts. What it refuses is the
+// opposite mistake: an opaque blob declared as a JWT, which would make the
+// exchange a question this profile never meant to ask.
+//
+// The per-position emptiness rules are the serializations' own: a JWS-borne
+// JWT needs its header and claims, while its signature may be empty (an
+// unsecured JWT); a JWE needs its header and ciphertext, while the encrypted
+// key may be empty (direct encryption) and so, for some algorithms, may the IV
+// and tag.
+//
+// Bounded before it reads: the token came from a Delegator callback — an
+// external session or identity provider's answer — and [maxTokenBytes] is the
+// same bound the verifier applies before parsing anything (verifier.go), so a
+// token this refuses is one no other door here would read either. The bound is
+// what makes the split's allocation the operator's constant rather than the
+// peer's choice.
+func jwtShaped(token string) bool {
+	if len(token) > maxTokenBytes {
+		return false
+	}
+	segments := strings.Split(token, ".")
+	switch len(segments) {
+	case 3: // JWS compact: header.claims.signature
+		if segments[0] == "" || segments[1] == "" {
+			return false
+		}
+	case 5: // JWE compact: header.encrypted-key.iv.ciphertext.tag
+		if segments[0] == "" || segments[3] == "" {
+			return false
+		}
+	default:
+		return false
+	}
+	for _, segment := range segments {
+		for _, c := range segment {
+			if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // delegate rewrites form into RFC 8693's delegation shape: the delegator's
 // token becomes the subject, and the Flowstate assertion — which arrived as the
 // subject — moves to actor_token.
@@ -493,6 +551,15 @@ func (e *tokenExchanger) delegate(ctx context.Context, form url.Values, assertio
 	if tokenType != tokenTypeJWT {
 		return fmt.Errorf("%w: %s: delegator token type %q is outside the supported RFC 8693 profile",
 			ErrExchangeFailed, e.name, truncate(tokenType, 96))
+	}
+
+	// The declared type is a claim; this checks the value keeps it. A blob that
+	// is not three dot-separated base64url segments sent as a JWT subject token
+	// makes the authorization server's answer about something other than what
+	// this profile said it was asking with. The token itself never enters the
+	// diagnostic — it is a credential.
+	if !jwtShaped(delegatorToken) {
+		return fmt.Errorf("%w: %s: delegator token is declared a JWT but is not one", ErrExchangeFailed, e.name)
 	}
 
 	form.Set("subject_token", delegatorToken)

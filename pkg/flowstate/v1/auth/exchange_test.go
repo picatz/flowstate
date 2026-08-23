@@ -888,6 +888,17 @@ func TestExchangerRejectsUnprotectedEndpoints(t *testing.T) {
 	// have to mint an assertion that any relying party would accept.
 	_, err = auth.NewTokenExchanger(auth.TokenExchangeConfig{TokenURL: "https://as.example.com/token"})
 	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+
+	// The two target selectors are alternatives naming one target; a config
+	// setting both has not said which authority it wants, and the pair is
+	// refused at load rather than sent as an ambiguous request.
+	_, err = auth.NewTokenExchanger(auth.TokenExchangeConfig{
+		TokenURL:       "https://as.example.com/token",
+		Audience:       "a",
+		TargetAudience: "https://api.partner.example.com",
+		Resource:       "https://resource.example.com/api",
+	})
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
 }
 
 // TestCredentialNeverRevealsItself checks the property that makes the
