@@ -96,10 +96,57 @@ const telemetryFlushTimeout = 5 * time.Second
 // collector and whose traces do not — and it must not be told it configured
 // nothing.
 func telemetryConfigured() bool {
-	return os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != "" ||
-		os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") != ""
+	c, _ := telemetryConfigFromEnv()
+	return c.traces || c.metrics || c.logs
+}
+
+// telemetryConfig is the resolved, per-signal switchboard.  An explicitly
+// selected OTLP exporter is enabled even without an endpoint (the exporter then
+// uses its standard localhost default); an endpoint enables an otherwise
+// unspecified signal, and "none" always wins over either endpoint.
+type telemetryConfig struct {
+	traces, metrics, logs bool
+}
+
+func telemetryConfigFromEnv() (telemetryConfig, error) {
+	general := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
+	resolve := func(signal, exporter string, set, endpoint bool) (bool, error) {
+		if set && exporter != "" {
+			switch exporter {
+			case "none":
+				return false, nil
+			case "otlp":
+				return true, nil
+			default:
+				return false, fmt.Errorf("%s=%q is unsupported (use otlp or none)", signal, exporter)
+			}
+		}
+		return general || endpoint, nil
+	}
+
+	var c telemetryConfig
+	var err error
+	tracesExporter, tracesSet := os.LookupEnv("OTEL_TRACES_EXPORTER")
+	if c.traces, err = resolve("OTEL_TRACES_EXPORTER", tracesExporter, tracesSet, os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""); err != nil {
+		return c, err
+	}
+	metricsExporter, metricsSet := os.LookupEnv("OTEL_METRICS_EXPORTER")
+	if c.metrics, err = resolve("OTEL_METRICS_EXPORTER", metricsExporter, metricsSet, os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") != ""); err != nil {
+		return c, err
+	}
+	logsExporter, logsSet := os.LookupEnv("OTEL_LOGS_EXPORTER")
+	if c.logs, err = resolve("OTEL_LOGS_EXPORTER", logsExporter, logsSet, os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") != ""); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+// telemetryPropagationEnabled is deliberately not an alias for trace export.
+// Metrics and, especially, correlated logs still need an incoming trace ID to
+// cross Connect, Temporal, and plugin boundaries when local spans are not sent.
+func telemetryPropagationEnabled() bool {
+	c, _ := telemetryConfigFromEnv()
+	return c.traces || c.metrics || c.logs
 }
 
 // instanceID is service.instance.id: which copy of flowstate this is, stable
@@ -220,7 +267,11 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 // Prefer [startTelemetry] to calling this directly: the globals it sets are
 // process-wide, and so is the flush that has to reach them.
 func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Context), error) {
-	if !telemetryConfigured() {
+	config, err := telemetryConfigFromEnv()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !config.traces && !config.metrics && !config.logs {
 		// Nil handler means the Temporal SDK keeps its no-op default, and the
 		// no-op global providers keep otelconnect silent. No propagator is
 		// registered either: an unconfigured binary must not start writing
@@ -234,39 +285,39 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		return nil, nil, err
 	}
 
-	traceExporter, err := otlptracehttp.New(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("configuring the trace exporter: %w", err)
+	var tracerProvider *sdktrace.TracerProvider
+	if config.traces {
+		exporter, err := otlptracehttp.New(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configuring the trace exporter: %w", err)
+		}
+		tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+		otel.SetTracerProvider(tracerProvider)
 	}
-
-	metricExporter, err := otlpmetrichttp.New(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("configuring the metric exporter: %w", err)
+	var meterProvider *sdkmetric.MeterProvider
+	var handler client.MetricsHandler
+	if config.metrics {
+		exporter, err := otlpmetrichttp.New(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configuring the metric exporter: %w", err)
+		}
+		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
+		otel.SetMeterProvider(meterProvider)
+		handler = opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{Meter: meterProvider.Meter("temporal-sdk")})
 	}
-
-	logExporter, err := otlploghttp.New(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("configuring the log exporter: %w", err)
+	var loggerProvider *sdklog.LoggerProvider
+	if config.logs {
+		exporter, err := otlploghttp.New(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("configuring the log exporter: %w", err)
+		}
+		loggerProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
+		logglobal.SetLoggerProvider(loggerProvider)
 	}
-
-	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(traceExporter),
-		sdktrace.WithResource(res),
-	)
-	meterProvider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
-		sdkmetric.WithResource(res),
-	)
-	loggerProvider := sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
-		sdklog.WithResource(res),
-	)
 
 	// The globals, because that is where otelconnect looks. It was installed
 	// against the global providers all along; this is the half that makes the
 	// installation mean something.
-	otel.SetTracerProvider(tracerProvider)
-	otel.SetMeterProvider(meterProvider)
 
 	// Logs have a global of their own, in their own package, because the log API
 	// is still pre-stable and lives outside go.opentelemetry.io/otel. Registered
@@ -275,7 +326,6 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	// pkg/flowstate/v1/engine — reaches an exporter only through this global.
 	// Unset, it is a no-op that discards, which is what keeps that bridge free
 	// in a binary nobody configured.
-	logglobal.SetLoggerProvider(loggerProvider)
 
 	// W3C trace context plus baggage, the composite everything else in the
 	// ecosystem defaults to. Trace context is what carries the span across the
@@ -288,10 +338,6 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		propagation.Baggage{},
 	))
 
-	handler := opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{
-		Meter: meterProvider.Meter("temporal-sdk"),
-	})
-
 	var once sync.Once
 	shutdown := func(ctx context.Context) {
 		// Flush rather than abandon: the spans and points most worth having are
@@ -302,13 +348,19 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		// twice is at best wasted work and at worst an error report about
 		// something that already succeeded.
 		once.Do(func() {
-			_ = tracerProvider.Shutdown(ctx)
-			_ = meterProvider.Shutdown(ctx)
+			if tracerProvider != nil {
+				_ = tracerProvider.Shutdown(ctx)
+			}
+			if meterProvider != nil {
+				_ = meterProvider.Shutdown(ctx)
+			}
 			// Logs batch exactly as spans do, so the last lines a process writes
 			// — which are the ones saying why it is leaving — are precisely the
 			// ones an unflushed provider drops. This is the same flush, not a
 			// second path: every exit already reaches here.
-			_ = loggerProvider.Shutdown(ctx)
+			if loggerProvider != nil {
+				_ = loggerProvider.Shutdown(ctx)
+			}
 		})
 	}
 
@@ -375,7 +427,8 @@ const telemetryScope = "github.com/picatz/flowstate/cmd/flow"
 // the otelconnect interceptor and the Temporal tracing interceptor both have,
 // and cheaper to avoid than to document.
 func telemetryLogHandler(next slog.Handler) slog.Handler {
-	if !telemetryConfigured() {
+	c, _ := telemetryConfigFromEnv()
+	if !c.logs {
 		return next
 	}
 
@@ -428,7 +481,7 @@ func telemetryLogHandler(next slog.Handler) slog.Handler {
 // client half gives: the command somebody asked for is `flow worker`, not `flow
 // worker with tracing`.
 func temporalTracingInterceptor() interceptor.Interceptor {
-	if !telemetryConfigured() {
+	if !telemetryPropagationEnabled() {
 		return nil
 	}
 

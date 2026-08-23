@@ -475,8 +475,26 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
-			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
+			purpose: "The fallback OTLP endpoint for every enabled signal. A signal-specific endpoint overrides it; its signal's `OTEL_*_EXPORTER=none` disables that signal even when this is set.",
 			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
+		},
+		{
+			name:    "OTEL_TRACES_EXPORTER",
+			value:   "unset",
+			purpose: "Select the trace exporter (`otlp`) or disable trace export (`none`). When unset, a general or trace-specific OTLP endpoint enables it. Propagation remains available for enabled metrics or correlated logs even when trace export is disabled.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_METRICS_EXPORTER",
+			value:   "unset",
+			purpose: "Select the metrics exporter (`otlp`) or disable metrics (`none`). When unset, a general or metrics-specific OTLP endpoint enables it.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_LOGS_EXPORTER",
+			value:   "unset",
+			purpose: "Select the log exporter (`otlp`) or disable log export (`none`). When unset, a general or logs-specific OTLP endpoint enables it; stderr logging is never disabled.",
+			read:    "cmd/flow/telemetry.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",

@@ -109,6 +109,9 @@ func telemetryOff(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	t.Setenv("OTEL_TRACES_EXPORTER", "")
+	t.Setenv("OTEL_METRICS_EXPORTER", "")
+	t.Setenv("OTEL_LOGS_EXPORTER", "")
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
 }
@@ -149,6 +152,37 @@ func TestTelemetryIsConfiguredBySignalSpecificEndpoints(t *testing.T) {
 
 			assert.Equal(t, test.want, telemetryConfigured(),
 				"%s decides whether an exporter is built at all", test.variable)
+		})
+	}
+}
+
+func TestTelemetrySignalEnvironmentMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name                            string
+		endpoint, traces, metrics, logs string
+		want                            telemetryConfig
+		wantPropagation                 bool
+	}{
+		{name: "all disabled", endpoint: "http://collector", traces: "none", metrics: "none", logs: "none"},
+		{name: "general endpoint", endpoint: "http://collector", want: telemetryConfig{true, true, true}, wantPropagation: true},
+		{name: "traces only", traces: "otlp", metrics: "none", logs: "none", want: telemetryConfig{traces: true}, wantPropagation: true},
+		{name: "metrics only", traces: "none", metrics: "otlp", logs: "none", want: telemetryConfig{metrics: true}, wantPropagation: true},
+		{name: "logs only", traces: "none", metrics: "none", logs: "otlp", want: telemetryConfig{logs: true}, wantPropagation: true},
+		{name: "general with traces disabled", endpoint: "http://collector", traces: "none", want: telemetryConfig{metrics: true, logs: true}, wantPropagation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			telemetryOff(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", test.endpoint)
+			t.Setenv("OTEL_TRACES_EXPORTER", test.traces)
+			t.Setenv("OTEL_METRICS_EXPORTER", test.metrics)
+			t.Setenv("OTEL_LOGS_EXPORTER", test.logs)
+
+			got, err := telemetryConfigFromEnv()
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+			assert.Equal(t, test.wantPropagation, telemetryPropagationEnabled())
+			base := slog.NewTextHandler(io.Discard, nil)
+			assert.Equal(t, test.want.logs, telemetryLogHandler(base) != base)
 		})
 	}
 }
