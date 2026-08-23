@@ -954,7 +954,17 @@ const sensitiveMarker = "[redacted]"
 // prevents. [sensitiveNativeValues] is where that line is drawn, and
 // [minSensitiveSubstringRunes] is where it is argued.
 func redactSensitiveSubstrings(rendered string, substrings []string) string {
-	for _, s := range substrings {
+	// Longest first, always: two sensitive strings may overlap — `abcd` and
+	// `abcdef` — and replacing the shorter first splits the longer into
+	// `[redacted]ef`, which its own replacement then never matches: a partial
+	// leak decided by map iteration order (Codex, #1052). Sorted here, at the
+	// one replacement site, so every caller — the stub diagnostics and the
+	// transcript alike — gets the deterministic, covering order.
+	ordered := make([]string, len(substrings))
+	copy(ordered, substrings)
+	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
+
+	for _, s := range ordered {
 		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
 	}
 	return rendered

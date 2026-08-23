@@ -58,6 +58,44 @@ func TestFailureTextIsWithheldWhenTheSetCouldNotBeBuilt(t *testing.T) {
 	assert.Contains(t, text, "[failure withheld")
 }
 
+// TestByteBudgetLatchesLikeTheEventBound pins round eight's P2 on #1052: an
+// account that kept recording after dropping an event would carry a hole in
+// its middle while claiming the run "continued unrecorded" — once either
+// bound trips, nothing further is recorded, so the account is always a
+// truncated prefix.
+func TestByteBudgetLatchesLikeTheEventBound(t *testing.T) {
+	t.Parallel()
+
+	r := newRunRecorder(v1.NewVirtualClock(epoch))
+	r.StepFinished("first", &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+		"blob": v1.NewLiteral(strings.Repeat("x", maxTranscriptOutputBytes)),
+	}}, nil, false)
+	require.True(t, r.bytesFull)
+	before := len(r.events)
+
+	r.StepSkipped("later")
+	r.StepFinished("small", &v1.Node_Outputs{}, nil, false)
+	require.Equal(t, before, len(r.events),
+		"nothing records past a tripped bound; a hole mid-account would belie the truncation line")
+}
+
+// TestOverlappingSensitiveSubstringsRedactWhole pins round eight's P1: with
+// secrets `abcd` and `abcdef`, replacing the shorter first splits the longer
+// into `[redacted]ef` — a partial leak decided by map iteration order. The
+// replacement site orders longest-first, whatever order the set arrives in.
+func TestOverlappingSensitiveSubstringsRedactWhole(t *testing.T) {
+	t.Parallel()
+
+	for _, order := range [][]string{
+		{"abcd", "abcdef"},
+		{"abcdef", "abcd"},
+	} {
+		got := redactSensitiveSubstrings("token abcdef here", order)
+		require.Equal(t, "token [redacted] here", got,
+			"order %v must not leak a suffix of the longer secret", order)
+	}
+}
+
 // TestShortDurationKeepsSubMillisecondTime pins the round-six timing finding:
 // `sleep: 500us` is legal, and a timing account that rendered it as 0s would
 // report that no virtual time passed.

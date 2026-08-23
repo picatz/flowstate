@@ -229,6 +229,13 @@ func (r *runRecorder) record(event transcriptEvent) {
 }
 
 func (r *runRecorder) recordLocked(event transcriptEvent) {
+	// Both bounds latch: an account that kept recording after dropping an
+	// event would carry a hole in its middle while the truncation line says
+	// the run "continued unrecorded" — a truncated *prefix* is the only
+	// honest shape a bounded account has (Codex, #1052).
+	if r.eventsFull || r.bytesFull {
+		return
+	}
 	if len(r.events) >= maxTranscriptEvents {
 		r.eventsFull = true
 		return
