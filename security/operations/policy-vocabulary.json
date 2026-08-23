@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "actions": [
+    "flowstate.admin.shutdown",
+    "flowstate.credentials.acquire",
+    "flowstate.plugins.describe",
+    "flowstate.plugins.execute",
+    "flowstate.plugins.health",
+    "flowstate.plugins.resolve_secret",
+    "flowstate.schedules.create_schedule",
+    "flowstate.schedules.delete_schedule",
+    "flowstate.schedules.describe_schedule",
+    "flowstate.schedules.list_schedules",
+    "flowstate.schedules.pause_schedule",
+    "flowstate.schedules.resume_schedule",
+    "flowstate.schedules.trigger_schedule",
+    "flowstate.secrets.resolve",
+    "flowstate.workflows.cancel",
+    "flowstate.workflows.compile",
+    "flowstate.workflows.get",
+    "flowstate.workflows.get_catalog",
+    "flowstate.workflows.list",
+    "flowstate.workflows.run",
+    "flowstate.workflows.signal",
+    "flowstate.workflows.signal_with_start",
+    "flowstate.workflows.terminate",
+    "flowstate.workflows.validate",
+    "flowstate.workflows.webhook_deliver"
+  ]
+}

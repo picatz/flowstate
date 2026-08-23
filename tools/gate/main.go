@@ -247,6 +247,13 @@ func run() error {
 	// miss a caller two hops away, and the build is the cheapest leg here.
 	g.leg("build", "always", command("go", "build", "./..."))
 
+	// The privileged-operation registry is an executable inventory: descriptor-derived
+	// surfaces may not become reachable without an action, resource, enforcement and audit path.
+	g.leg("operation-registry", "always",
+		command("go", "run", "./tools/operationregistry"),
+		command("go", "run", "./tools/operationregistry", "-generate"),
+		command("git", "diff", "--exit-code", "--", "security/operations/policy-vocabulary.json", "docs/reference/privileged-operations.md"))
+
 	// Always: gofmt on the changed files (CI fails on any drift under ./cmd
 	// and ./pkg; the gate holds every changed file to it).
 	g.gofmtLeg(p.goFiles)

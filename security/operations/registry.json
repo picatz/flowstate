@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "audit_event": "flowstate.authorization.decision",
+  "operations": [
+    {
+      "operation": "flowstate.v1.WorkflowService/Run",
+      "action": "flowstate.workflows.run",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:run"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/Get",
+      "action": "flowstate.workflows.get",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:get"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/Signal",
+      "action": "flowstate.workflows.signal",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:signal"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/SignalWithStart",
+      "action": "flowstate.workflows.signal_with_start",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/List",
+      "action": "flowstate.workflows.list",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:list"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/Cancel",
+      "action": "flowstate.workflows.cancel",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:cancel"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/Terminate",
+      "action": "flowstate.workflows.terminate",
+      "resource_constructor": "workflowFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:terminate"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/Validate",
+      "action": "flowstate.workflows.validate",
+      "resource_constructor": "deploymentFromPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:validate"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/Compile",
+      "action": "flowstate.workflows.compile",
+      "resource_constructor": "deploymentFromPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:compile"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/GetCatalog",
+      "action": "flowstate.workflows.get_catalog",
+      "resource_constructor": "deploymentFromPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:tasks"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/CreateSchedule",
+      "action": "flowstate.schedules.create_schedule",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule create"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/ListSchedules",
+      "action": "flowstate.schedules.list_schedules",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule list"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/DescribeSchedule",
+      "action": "flowstate.schedules.describe_schedule",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule describe"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/DeleteSchedule",
+      "action": "flowstate.schedules.delete_schedule",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule delete"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/PauseSchedule",
+      "action": "flowstate.schedules.pause_schedule",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule pause"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/ResumeSchedule",
+      "action": "flowstate.schedules.resume_schedule",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule resume"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "flowstate.v1.WorkflowService/TriggerSchedule",
+      "action": "flowstate.schedules.trigger_schedule",
+      "resource_constructor": "scheduleFromRequestAndPrincipal",
+      "enforcement_point": "cmd/flow authentication middleware -> server.FlowstateServer.identityFor",
+      "audit_event": "flowstate.authorization.decision",
+      "surfaces": [
+        "connect",
+        "mcp",
+        "cli:schedule trigger"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "webhook/deliver",
+      "action": "flowstate.workflows.webhook_deliver",
+      "resource_constructor": "webhookWorkflowFromRouteAndVerifiedDelivery",
+      "enforcement_point": "server.WebhookReceiver.ServeHTTP",
+      "audit_event": "flowstate.webhook.delivery",
+      "surfaces": [
+        "webhook:/webhooks/"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "secrets/resolve",
+      "action": "flowstate.secrets.resolve",
+      "resource_constructor": "secretReferenceFromTaskRuntime",
+      "enforcement_point": "auth.SecretPolicy.Authorize",
+      "audit_event": "flowstate.secret.authorization",
+      "surfaces": [
+        "secret-provider:env",
+        "secret-provider:file",
+        "secret-provider:keychain",
+        "secret-provider:onepassword",
+        "secret-provider:command",
+        "secret-provider:vault"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "credentials/acquire",
+      "action": "flowstate.credentials.acquire",
+      "resource_constructor": "credentialTargetFromTaskRuntime",
+      "enforcement_point": "auth.Broker.Authorize",
+      "audit_event": "flowstate.credential.authorization",
+      "surfaces": [
+        "credential-target",
+        "credential-source:env",
+        "credential-source:file",
+        "credential-source:github-actions",
+        "credential-source:gitlab",
+        "credential-source:terraform-cloud"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "plugin.v1.PluginService/Describe",
+      "action": "flowstate.plugins.describe",
+      "resource_constructor": "pluginProcessFromPinnedImage",
+      "enforcement_point": "plugin.Host principal-preserving process boundary",
+      "audit_event": "flowstate.plugin.describe",
+      "surfaces": [
+        "plugin-connect",
+        "internal-admin"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "plugin.v1.PluginService/Health",
+      "action": "flowstate.plugins.health",
+      "resource_constructor": "pluginProcessFromPinnedImage",
+      "enforcement_point": "plugin.Host principal-preserving process boundary",
+      "audit_event": "flowstate.plugin.health",
+      "surfaces": [
+        "plugin-connect",
+        "internal-admin"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "plugin.v1.PluginService/Resolve",
+      "action": "flowstate.plugins.resolve_secret",
+      "resource_constructor": "pluginSecretFromCallerAndReference",
+      "enforcement_point": "plugin.secretService.Resolve",
+      "audit_event": "flowstate.plugin.secret.authorization",
+      "surfaces": [
+        "plugin-connect"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "plugin.v1.PluginService/Execute",
+      "action": "flowstate.plugins.execute",
+      "resource_constructor": "pluginTaskFromPinnedDescriptor",
+      "enforcement_point": "engine.PluginExecutor.Execute",
+      "audit_event": "flowstate.plugin.execute",
+      "surfaces": [
+        "plugin-connect",
+        "worker"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "plugin.v1.PluginService/ExecuteStream",
+      "action": "flowstate.plugins.execute",
+      "resource_constructor": "pluginTaskFromPinnedDescriptor",
+      "enforcement_point": "engine.PluginExecutor.Execute",
+      "audit_event": "flowstate.plugin.execute",
+      "surfaces": [
+        "plugin-connect",
+        "worker"
+      ],
+      "status": "active"
+    },
+    {
+      "operation": "internal/server.shutdown",
+      "action": "flowstate.admin.shutdown",
+      "resource_constructor": "deploymentFromProcess",
+      "enforcement_point": "server.FlowstateServer.Shutdown caller boundary",
+      "audit_event": "flowstate.admin.shutdown",
+      "surfaces": [
+        "internal-admin"
+      ],
+      "status": "active"
+    }
+  ]
+}
