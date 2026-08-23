@@ -75,7 +75,11 @@ import (
 // Returns nextPage and nextSkip alongside truncated: the position a further
 // call would need to resume this exact walk, valid only when truncated is
 // true. Both are 0 when truncated is false, since there is nothing left to
-// resume.
+// resume. nextSkip is always less than perPage, and therefore less than
+// maxPerPage - a response carrying more entries than perPage asked for is
+// clamped to perPage below, which is what makes that an invariant
+// decodePageCursor (cursor.go) is entitled to refuse a forged cursor
+// against, rather than a hope about the peer's own manners.
 func paginateBounded[T any, S proto.Message](
 	ctx context.Context,
 	startPage, startSkip, perPage, maxItems, maxRequests, maxResultBytes int,
@@ -94,6 +98,45 @@ func paginateBounded[T any, S proto.Message](
 			return nil, false, 0, 0, err
 		}
 
+		// How many entries land in one response is the peer's choice, and
+		// every position this walk hands back is denominated in the perPage
+		// it asked for: the next page it requests is addressed as
+		// (page-1)*perPage, and nextSkip is an index inside a page that
+		// size. A response carrying more than perPage entries is therefore
+		// an unbounded input of exactly the shape CLAUDE.md's own List
+		// lesson names - a loop whose progress is measured in units the far
+		// side decides has to bound the far side too, not merely count its
+		// own round trips. github.com caps per_page at maxPerPage, but
+		// base_url can point this plugin at a GitHub Enterprise or any other
+		// peer that does not honour it, and an over-delivered page walks
+		// straight into a nextSkip past the largest page this task ever
+		// requests - a position decodePageCursor then refuses as one this
+		// plugin could not have emitted, leaving a truncated walk with no
+		// way to resume at all. Clamping here is what keeps that from being
+		// possible, rather than teaching the decoder to accept positions the
+		// encoder should never have produced.
+		//
+		// The cost, stated rather than left for a reader to discover:
+		// against a peer whose own page size really is larger than the one
+		// requested, entries past perPage in each response are not returned
+		// by this walk. That is the same conservative direction the skip
+		// clamp below takes, and the only self-consistent one - a
+		// page-number API addresses entries by (page-1)*perPage, so keeping
+		// a response to the size that arithmetic assumes is what makes a
+		// resumed call land where the previous one stopped. Trusting the
+		// extra entries instead re-emits every one of them from the next
+		// page against a peer that does honour the requested offset, which
+		// is a duplicate rather than a gap and no more correct.
+		//
+		// perPage is positive for every production caller (min(maxPerPage,
+		// maxResults+1), and clampMaxResults refuses a non-positive
+		// max_results), so the guard on it is the same defense in depth the
+		// lower clamp on startSkip below is: this helper must not turn a
+		// number it was handed into a slice bound without checking it first.
+		if perPage > 0 && len(got) > perPage {
+			got = got[:perPage]
+		}
+
 		// startSkip only ever applies to startPage itself - the one page a
 		// resumed call's cursor named as partially consumed. Every later
 		// page this same call walks starts fresh at index 0. Clamped to
@@ -103,11 +146,14 @@ func paginateBounded[T any, S proto.Message](
 		// treating that as "this page is now fully consumed" is the
 		// conservative reading - never re-emitting an entry already
 		// returned, at the cost of possibly missing one that moved earlier.
+		// The lower clamp is defense in depth: cursor decoding rejects a
+		// negative or overflowing skip, but this helper must not turn an
+		// invalid value from any future caller into a negative slice index.
 		// See cursor.go's own doc comment for why this is the one gap even
 		// a stable sort order does not close.
 		skip := 0
 		if requests == 0 {
-			skip = min(startSkip, len(got))
+			skip = max(0, min(startSkip, len(got)))
 		}
 
 		for i := skip; i < len(got); i++ {

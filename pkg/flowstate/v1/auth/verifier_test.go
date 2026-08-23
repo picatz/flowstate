@@ -857,6 +857,37 @@ func TestOIDCVerifierPrime(t *testing.T) {
 	require.Equal(t, 1, jwks, "verification should use the primed keys")
 }
 
+// TestOIDCVerifierIgnoresMTLSIssuers checks that the certificate-only half of
+// a mixed trust policy never becomes a bearer-token issuer or an OIDC discovery
+// target, even when its operator-chosen label happens to look like a URL.
+//
+// The label here is a live test issuer's URL, which is the only arrangement
+// that can tell the two failure modes apart: a label that resolves to nothing
+// makes Prime error and would look like a pass for the wrong reason. Every
+// assertion is therefore a negative one — nothing was fetched, and the token
+// that label mints is not trusted.
+func TestOIDCVerifierIgnoresMTLSIssuers(t *testing.T) {
+	issuer := newTestIssuer(t)
+	verifier := newVerifier(t, auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:         "mesh",
+		Kind:         auth.IssuerKindMTLS,
+		Issuer:       issuer.URL(),
+		ClientCAFile: newTestCA(t, "test-ca").clientCAFile(t),
+		SubjectFrom:  auth.SubjectFromURISAN,
+	}}})
+
+	// Priming is where the unwanted egress would happen, so it is checked
+	// before anything else has a chance to fetch on demand.
+	require.NoError(t, verifier.Prime(t.Context()), "priming must not treat an mTLS label as a discovery target")
+	require.Zero(t, issuer.Requests().Discovery, "Prime must not fetch discovery for a kind: mtls entry")
+	require.Zero(t, issuer.Requests().JWKS, "Prime must not fetch a key set for a kind: mtls entry")
+
+	_, err := verifier.Verify(t.Context(), issuer.MintToken(nil, authtest.WithoutAudience()))
+	require.ErrorIs(t, err, auth.ErrUntrustedIssuer, "a kind: mtls label must not admit a bearer token")
+	require.Zero(t, issuer.Requests().Discovery, "a rejected issuer must not have been fetched on demand either")
+	require.Zero(t, issuer.Requests().JWKS, "a rejected issuer must not have been fetched on demand either")
+}
+
 // TestOIDCVerifierConcurrent checks that many simultaneous first requests share
 // one key set fetch rather than each starting their own, and that the verifier
 // holds up under the race detector.
