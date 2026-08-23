@@ -50,11 +50,15 @@ const (
 // relative to its issuer URL. It is fixed by OpenID Connect Discovery.
 const DiscoveryPath = "/.well-known/openid-configuration"
 
-// reservedClaims are the claims an [Issuer] sets itself. A carried claim may not
-// use one of these names: a workload whose submitting token contained a claim
-// called "sub" must not be able to choose the subject of the assertion Flowstate
-// mints for it.
-var reservedClaims = []string{
+// builtInClaimNames is the single declaration of the claims an [Issuer] mints
+// itself and advertises through discovery. A carried claim may not use one of
+// these names: a workload whose submitting token contained a claim called "sub"
+// must not be able to choose the subject of the assertion Flowstate mints for it.
+//
+// ClaimRun is included even though an assertion without a run reference omits it:
+// claims_supported describes claims the issuer can return, not claims every token
+// is required to contain.
+var builtInClaimNames = []string{
 	jwt.Issuer, jwt.Subject, jwt.Audience,
 	jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
 	ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
@@ -721,7 +725,7 @@ func validateDeclaredClaims(names []string) ([]string, error) {
 		case len(name) > MaxCarriedClaimNameBytes:
 			return nil, fmt.Errorf("%w: declared claim name %q is %d bytes, and at most %d are allowed",
 				ErrInvalidPolicy, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
-		case slices.Contains(reservedClaims, name):
+		case slices.Contains(builtInClaimNames, name):
 			// Refused rather than ignored: a carried claim of this name can
 			// never be minted, whatever the declaration says, and a
 			// declaration that silently never applies is worse than none.
@@ -971,7 +975,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 	// where a claim becomes a signed statement.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
 		switch {
-		case slices.Contains(reservedClaims, name):
+		case slices.Contains(builtInClaimNames, name):
 			return Assertion{}, fmt.Errorf("%w: carried claim %q collides with a reserved claim", ErrInvalidIdentity, name)
 		case !slices.Contains(i.declared, name):
 			// The name, never the value: this error travels wherever the
