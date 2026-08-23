@@ -105,7 +105,7 @@ tests:
 // here rather than merely asserted, must never actually reach the network to
 // find that out. Loopback is explicitly allowed on the registered `http`
 // task for the duration of this test (the same exemption
-// pkg/flowstate/v1/tests states for itself), which is what makes "zero
+// pkg/flowstate/v1/internal/conformance states for itself), which is what makes "zero
 // connections" evidence of the fix rather than of the ordinary egress
 // policy: with loopback allowed, a real dial to the listener below would
 // succeed if flow test ever let the real task run.

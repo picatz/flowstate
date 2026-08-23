@@ -60,3 +60,35 @@ func PartialTranscript(accumulated *Workflow_StepOutputs) *Workflow_StepOutputs 
 
 	return out
 }
+
+// StepFailureRecord is a failure that carries the account its own step's
+// transcript entry keeps in place of the bare `error` text: the iterations an
+// exhausted loop ran ([LoopExhaustedError]), or the arm a switch had already
+// selected when its body failed ([SwitchBodyError]).
+//
+// Both drivers ask for it by *direct* type assertion at the one site each records
+// a failed step — the local driver's failureRecord, the durable driver's failedAt
+// — and never through an unwrap chain. That is the containment [LoopExhaustedError]
+// spells out: the account belongs to the entry of the step that owns it, and the
+// same failure propagating out of a call or an enclosing for_each is an ordinary
+// failure at that level.
+//
+// One interface rather than a list of assertions per driver, because the list is
+// the thing that would drift: a third container that owns an account would
+// otherwise be added to one driver and forgotten in the other, which is invariant
+// 3's failure in its usual clothes.
+//
+// The rendered failure text is passed *in* rather than derived here, for the
+// reason [FailedStepOutputs] takes one too: a failure reaches the durable driver
+// wrapped in that engine's own words and reaches the local driver bare, so only
+// each driver can shed its own envelope. An account that rendered its own text
+// would record `engine: flowstate run failed: …` durably and the plain sentence
+// locally — one value with one meaning, written down twice, which is the shape
+// every driver disagreement found so far has had.
+type StepFailureRecord interface {
+	error
+
+	// Record is the outputs to store under the failing step's own id, given the
+	// failure text its driver rendered.
+	Record(text string) *Node_Outputs
+}

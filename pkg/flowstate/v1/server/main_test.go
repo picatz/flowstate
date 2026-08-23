@@ -25,6 +25,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // One Temporal server for the package, and a Temporal namespace per test.
@@ -118,6 +119,25 @@ func runPackageTests(m *testing.M) (int, error) {
 	return m.Run(), nil
 }
 
+// mustNew is [server.New] for a test whose subject is not the construction.
+//
+// [server.New] reports an error because a [server.Option] can refuse — see
+// [server.WithNamespace], which checks the namespace grammar every
+// tenant-scoped derivation in that package assumes. A test that means "a server
+// configured like this" should stop at the construction with the option's own
+// message rather than nil-panic several lines later on something unrelated.
+//
+// A test whose subject *is* the refusal calls [server.New] directly and asserts
+// on the error; see TestNewRefusesANamespaceOutsideTheGrammar.
+func mustNew(t testing.TB, temporal client.Client, opts ...server.Option) *server.FlowstateServer {
+	t.Helper()
+
+	s, err := server.New(temporal, opts...)
+	require.NoError(t, err)
+
+	return s
+}
+
 // newTemporalNamespace registers a Temporal namespace for one test and returns a
 // client bound to it, along with its name.
 //
@@ -207,7 +227,7 @@ func startWorker(t *testing.T, temporal client.Client) {
 //
 // One such test exists: the run that grows until it cannot be carried forward
 // raises the deadlock budget, for the reason
-// [tests.BoundaryDeadlockDetectionTimeout] gives. Keeping the option at the call
+// [conformance.BoundaryDeadlockDetectionTimeout] gives. Keeping the option at the call
 // site rather than in the shared helper is the point, so that a worker with a
 // budget nobody deploys is visibly the exception it is.
 func startWorkerWithOptions(t *testing.T, temporal client.Client, options worker.Options) {

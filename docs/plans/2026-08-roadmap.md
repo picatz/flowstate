@@ -1,5 +1,22 @@
 # Flowstate — One-Week Plan (2026-08-03 → 2026-08-09): bugs, features, examples, tests, docs
 
+> [!NOTE]
+> **Internal process, not product documentation.** This file is part of
+> `docs/plans/`: how agent work is dispatched here, and what past waves
+> measured. Nothing in it describes Flowstate to someone using it — the map of
+> the documentation that does is [docs/README.md](../README.md).
+
+> [!WARNING]
+> **Superseded (2026-08-23).** This is the roadmap as it stood in early
+> August, kept as a record of what was decided then — the tree has moved past
+> it, and several of its claims are now false of the code. Its headline gap,
+> "there is no `flow test`", closed when #155 shipped, and the testing surface
+> now has its own issue slate (#922–#937 and #477); "nothing heartbeats"
+> predates `engine/heartbeat.go`. Read the tree and the open issues for
+> current state, never this file (#937 is the correction record). The live
+> process docs are [factory.md](factory.md) and
+> [orchestration.md](orchestration.md).
+
 ## Status: executed, then continued (2026-08-03)
 
 The week's plan shipped as PR #123 — thirty-one commits, each a green stopping
@@ -167,7 +184,7 @@ Eleven traced, code-verified defects. Fix order within each package follows the 
 4. **MEDIUM-LOW — `value.go:310-317`**: nested block scalars skip the `fenceError` interpolation check — `${...}` inside a block scalar in a mapping ships as literal text with zero diagnostic ("silently doing nothing gives the author no reason to doubt the file").
 5. **LOW — `fix.go:1646-1656` (+ `rootResponseScalar` :1573)**: fence located by code-point column into a byte-indexed line; defeats the comment's stated protection against rewriting a fence in a same-line comment.
 
-### Z2. Engine / driver agreement (owner: v1 + engine packages; shared tests in `pkg/flowstate/v1/tests`)
+### Z2. Engine / driver agreement (owner: v1 + engine packages; shared tests in `pkg/flowstate/v1/internal/conformance`)
 6. **HIGH — `eval.go:739-742` vs `execute.go:150-153`**: a step-`vars:` failure bypasses `continue_on_error` locally (whole run aborts) but is tolerated durably. Rehearsal stricter than production — invariant 3 violation. Small fix; wants a shared-corpus case: tolerated *non-task* failure at the *outermost* step.
 7. **HIGH — error-text divergence**: durable prefixes `step "<id>": ` at the failure point (`execute.go:244,256`, `engine/wait.go`), local only on the propagating path (`eval.go:747-749`) — `${steps.<id>.error}` differs across drivers for any non-TaskError at the tolerating step itself. `ErrorTextCases`/`NestedErrorTextCases` miss exactly this direction.
 8. **HIGH — `workflow.go:578-581`**: Continue-As-New compaction walker ignores CEL **map-key** expressions (`Expr_CreateStruct_Entry.map_key`), so a `steps.<id>` reference in key position is pruned — the resumed segment fails a step that already succeeded. Durable-only, invisible to examples CI (local driver never compacts).

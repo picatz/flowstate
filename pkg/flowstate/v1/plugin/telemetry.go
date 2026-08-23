@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"connectrpc.com/connect"
@@ -39,12 +40,16 @@ func newTelemetry(cfg Config) telemetry {
 		mp = otel.GetMeterProvider()
 	}
 	m := mp.Meter(instrumentationName)
-	d, _ := m.Float64Histogram("flowstate.plugin.operation.duration", metric.WithUnit("s"))
-	c, _ := m.Int64Counter("flowstate.plugin.calls")
-	h, _ := m.Int64Counter("flowstate.plugin.health.checks")
-	r, _ := m.Int64Counter("flowstate.plugin.restarts")
-	lf, _ := m.Int64Counter("flowstate.plugin.launch.failures")
-	pe, _ := m.Int64Counter("flowstate.plugin.protocol.errors")
+	// The names come from [metricschema], which declares every instrument this
+	// repository creates alongside the attribute keys each may carry. They were
+	// string literals here until #526's first slice, which is one file listing
+	// what the system emits and six literals listing it again.
+	d, _ := m.Float64Histogram(metricschema.InstrumentPluginOperationDuration, metric.WithUnit("s"))
+	c, _ := m.Int64Counter(metricschema.InstrumentPluginCalls)
+	h, _ := m.Int64Counter(metricschema.InstrumentPluginHealthChecks)
+	r, _ := m.Int64Counter(metricschema.InstrumentPluginRestarts)
+	lf, _ := m.Int64Counter(metricschema.InstrumentPluginLaunchFailures)
+	pe, _ := m.Int64Counter(metricschema.InstrumentPluginProtocolErrors)
 	return telemetry{tp.Tracer(instrumentationName), m, d, c, h, r, lf, pe}
 }
 
@@ -70,9 +75,9 @@ func (t telemetry) start(ctx context.Context, operation, plugin, task string) (c
 	ctx, span := t.tracer.Start(ctx, "flowstate.plugin."+operation, trace.WithAttributes(attrs...))
 	started := time.Now()
 	return ctx, span, func(err error) {
-		outcome := "success"
+		outcome := metricschema.OutcomeSuccess
 		if err != nil {
-			outcome = "error"
+			outcome = metricschema.OutcomeError
 			span.SetStatus(codes.Error, "plugin operation failed")
 		}
 		// The metric carries the same attributes as the span, filtered
@@ -93,30 +98,79 @@ func (t telemetry) start(ctx context.Context, operation, plugin, task string) (c
 // baggage header. Only the two bounded, non-secret names created by the host
 // cross the boundary; caller baggage, credentials, scopes, and secret values do
 // not.
+//
+// This has to be a full [connect.Interceptor], not a
+// [connect.UnaryInterceptorFunc]: the latter's WrapStreamingClient is a
+// documented no-op, the identical gap [authInterceptor] in transport.go was
+// fixed for. CAPABILITY_TASK_PROGRESS routes every task call through
+// ExecuteStream now, so a plugin call built this way would silently carry no
+// trace-context or baggage header at all — no span linkage host to plugin,
+// and [sdk.Tracer] and [sdk.Logger] returning their empty defaults inside
+// every task's Fn.
 func propagationInterceptor(plugin, task string) connect.Interceptor {
+	return &propagationClientInterceptor{plugin: plugin, task: task}
+}
+
+// propagationClientInterceptor injects trace-context and filtered baggage
+// headers on every request this plugin's client makes, unary or streaming.
+type propagationClientInterceptor struct {
+	plugin, task string
+}
+
+// headers builds the header set to inject, from whatever span context ctx
+// carries — same construction the unary path used before this type existed.
+func (p *propagationClientInterceptor) headers(ctx context.Context) http.Header {
 	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			// Only the two names this constructor was handed cross the
-			// boundary. Context baggage is deliberately not consulted, even
-			// under the reserved keys: a caller who can seed baggage would
-			// otherwise choose what this host asserts about itself, and a
-			// credential or an unbounded value under a trusted name is the
-			// exact leak the filter exists to stop.
-			members := make([]baggage.Member, 0, 2)
-			values := map[string]string{"flowstate.plugin.name": plugin, "flowstate.task.name": task}
-			for k, v := range values {
-				if v != "" {
-					if m, err := baggage.NewMember(k, v); err == nil {
-						members = append(members, m)
-					}
-				}
+
+	// Only the two names this interceptor was built with cross the boundary.
+	// Context baggage is deliberately not consulted, even under the reserved
+	// keys: a caller who can seed baggage would otherwise choose what this
+	// host asserts about itself, and a credential or an unbounded value under
+	// a trusted name is the exact leak the filter exists to stop.
+	members := make([]baggage.Member, 0, 2)
+	values := map[string]string{"flowstate.plugin.name": p.plugin, "flowstate.task.name": p.task}
+	for k, v := range values {
+		if v != "" {
+			if m, err := baggage.NewMember(k, v); err == nil {
+				members = append(members, m)
 			}
-			bg, _ := baggage.New(members...)
-			prop.Inject(baggage.ContextWithBaggage(ctx, bg), propagation.HeaderCarrier(req.Header()))
-			return next(ctx, req)
 		}
-	})
+	}
+	bg, _ := baggage.New(members...)
+
+	header := http.Header{}
+	prop.Inject(baggage.ContextWithBaggage(ctx, bg), propagation.HeaderCarrier(header))
+	return header
+}
+
+func (p *propagationClientInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		for k, vs := range p.headers(ctx) {
+			for _, v := range vs {
+				req.Header().Add(k, v)
+			}
+		}
+		return next(ctx, req)
+	}
+}
+
+func (p *propagationClientInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		for k, vs := range p.headers(ctx) {
+			for _, v := range vs {
+				conn.RequestHeader().Add(k, v)
+			}
+		}
+		return conn
+	}
+}
+
+// WrapStreamingHandler is a no-op: this interceptor is only ever installed on
+// a client (see [newClients]), and a plugin's client never serves as a
+// streaming handler.
+func (p *propagationClientInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
 }
 
 func telemetryBaggage(ctx context.Context, plugin, task string) context.Context {

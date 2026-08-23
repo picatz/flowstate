@@ -46,26 +46,35 @@ func copiedPlugin(t *testing.T, mode string) (dir, path string) {
 }
 
 // swapBinary replaces path with different bytes that still run the same way.
-//
-// Trailing bytes appended to an executable change its digest and nothing else
-// about it, which is exactly the case the digest exists to catch: a build that
-// describes itself identically. Written beside and renamed over, because a file
-// currently being executed cannot be written to in place.
 func swapBinary(t *testing.T, path string) {
 	t.Helper()
 
-	binary, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading the plugin binary: %v", err)
-	}
-
-	next := path + ".next"
-	if err := os.WriteFile(next, append(binary, []byte("\n# a different build\n")...), 0o755); err != nil {
-		t.Fatalf("writing the replacement binary: %v", err)
-	}
-	if err := os.Rename(next, path); err != nil {
+	if err := replaceBinary(path); err != nil {
 		t.Fatalf("replacing the plugin binary: %v", err)
 	}
+}
+
+// replaceBinary rebinds path to different bytes, the way an in-place upgrade
+// does: written beside and renamed over, which is atomic and is what a file
+// currently being executed requires.
+//
+// It returns an error rather than failing a test, because it is called from the
+// launch's own goroutine as well as from tests.
+func replaceBinary(path string) error {
+	binary, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	// Trailing bytes change the digest and nothing else about the program, which
+	// keeps the replacement a working plugin: the point is a swap the manifest
+	// cannot give away, not a swap that fails to launch.
+	next := path + ".next"
+	if err := os.WriteFile(next, append(binary, []byte("\n# a different build\n")...), 0o755); err != nil {
+		return err
+	}
+
+	return os.Rename(next, path)
 }
 
 // TestCatalogDigestIsTheLaunchedBytes covers the read-after-the-fact bug: the

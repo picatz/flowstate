@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestRehearsalSignalCasesLocally is the local driver's half of #349's shared
@@ -22,7 +22,7 @@ import (
 func TestRehearsalSignalCasesLocally(t *testing.T) {
 	t.Parallel()
 
-	tests.AssertRehearsalSignalCases(t, func(t testing.TB, c tests.RehearsalSignalCase) error {
+	conformance.AssertRehearsalSignalCases(t, func(t testing.TB, c conformance.RehearsalSignalCase) error {
 		signals := v1.NewPolicedLocalSignals(
 			map[string]*v1.SignalPolicy{c.SignalName: c.Policy}, c.Starter, true)
 

@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // runPluginsInto executes `flow plugins` with the given flags and captures both
@@ -252,4 +256,55 @@ func TestTheLanguageServerFailsLoudlyWhenAPluginWillNotStart(t *testing.T) {
 			"which is the silent half-configured state this is meant to prevent")
 	assert.Contains(t, err.Error(), "ghost",
 		"the failure does not name the plugin that was not there")
+}
+
+// TestPluginCatalogRendersTheClaimsWithSecurityWeight is #712: needs_scope and
+// secret_inputs change what a plugin task can see and receive, and neither
+// appeared anywhere `flow plugins` printed. An operator deciding whether to trust
+// a plugin had to read its source to find out.
+//
+// Checked in the words the issue asked for, because the two lines are the whole
+// deliverable — a field that reached the wire and never reached a sentence an
+// operator reads would repeat the bug one layer up.
+func TestPluginCatalogRendersTheClaimsWithSecurityWeight(t *testing.T) {
+	t.Parallel()
+
+	catalog := &v1.PluginCatalog{
+		Plugins: []*v1.PluginDescription{
+			{
+				Name: "git",
+				Path: "/usr/local/bin/flowstate-plugin-git",
+				Tasks: []*v1.TaskDescription{
+					{
+						Name:         "commit_push",
+						Summary:      "writes a commit to a branch",
+						SecretInputs: []string{"token"},
+						NeedsScope:   false,
+					},
+					{
+						Name:       "quiet_task",
+						Summary:    "asks for nothing extra",
+						NeedsScope: false,
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	surface := ui.Plain(&out, &bytes.Buffer{})
+
+	require.NoError(t, writePluginCatalog(surface, catalog))
+
+	rendered := out.String()
+	assert.Contains(t, rendered, "accepts a secret in: token",
+		"commit_push declares secret_inputs and the rendering does not say so")
+	assert.Contains(t, rendered, "receives prior step outputs: no",
+		"commit_push does not need scope and the rendering does not say so")
+
+	// The negative direction: a task that declares neither claim gets no
+	// "accepts a secret in" line at all, and its scope line reads "no".
+	quietSection := rendered[strings.Index(rendered, "quiet_task"):]
+	assert.NotContains(t, quietSection, "accepts a secret in:",
+		"quiet_task declares no secret_inputs and the rendering invented one")
 }

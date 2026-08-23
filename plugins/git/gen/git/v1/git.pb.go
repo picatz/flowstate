@@ -1115,7 +1115,7 @@ var File_git_v1_git_proto protoreflect.FileDescriptor
 
 const file_git_v1_git_proto_rawDesc = "" +
 	"\n" +
-	"\x10git/v1/git.proto\x12\x06git.v1\x1a\x1cflowstate/v1/flowstate.proto\"\x81\x01\n" +
+	"\x10git/v1/git.proto\x12\x06git.v1\x1a\x18flowstate/v1/value.proto\"\x81\x01\n" +
 	"\x0eLsRemoteInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
 	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12)\n" +

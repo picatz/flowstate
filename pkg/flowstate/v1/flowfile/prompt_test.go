@@ -183,3 +183,35 @@ func TestAPromptReachingASensitiveInputIsRefusedAtItsOwnLine(t *testing.T) {
 	assert.Contains(t, refusal.Error(), "salary")
 	assert.Equal(t, "approval", refusal.Step)
 }
+
+func TestAPromptReachingASensitiveInputThroughAStepVarIsRefused(t *testing.T) {
+	t.Parallel()
+
+	src := strings.Join([]string{
+		"edition: v2026.3",
+		"name: asking",
+		"inputs:",
+		"  token:",
+		"    type: string",
+		"    sensitive: true",
+		"steps:",
+		"  - id: approval",
+		"    vars:",
+		`      question: '${"approve " + inputs.token}'`,
+		"    wait_for_signal:",
+		"      name: deploy-approved",
+		"      prompt: ${question}",
+		"",
+	}, "\n")
+
+	ds, err := flowfile.ValidateSource([]byte(src))
+	require.NoError(t, err)
+	assert.Condition(t, func() bool {
+		for _, d := range ds {
+			if d.Code == v1.DiagnosticCodeSensitiveInPrompt {
+				return true
+			}
+		}
+		return false
+	}, "a step var hid a prompt's reach into a sensitive input: %v", ds)
+}

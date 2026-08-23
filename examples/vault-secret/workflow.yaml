@@ -1,6 +1,5 @@
 edition: v2026.3
 name: vault-secret
-
 steps:
   # A vault: reference names a path within the configured KV v2 mount, and
   # optionally a field after "#". The worker resolves it inside the activity that
@@ -8,6 +7,6 @@ steps:
   # ever sees the value.
   - id: health
     http:
-      url: https://api.example.com/status/200
-      bearer: ${secret('vault:apps/api#token')}
+      bearer: "${secret('vault:apps/api#token')}"
       expect: ${response.status_code == 200}
+      url: https://api.example.com/status/200

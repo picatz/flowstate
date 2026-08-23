@@ -48,6 +48,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"strings"
@@ -57,11 +58,31 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
+// schemaProse is this plugin's own schema, built with its comments kept.
+//
+// The descriptor compiled into gen/example/v1/example.pb.go has none: protoc
+// strips SourceCodeInfo from what a .pb.go embeds, so the sentences written over
+// GreetInputs' fields in example.proto are simply not present in this process at
+// run time. `buf build --exclude-imports` is what keeps them, and handing the
+// result to the SDK is what puts them in the descriptors this plugin's manifest
+// already ships — so an author hovering `name:` in a Flowfile reads "Name is who
+// to greet." exactly as they would over a built-in task's input (#723).
+//
+// Rebuilt by the same `buf build` line of `make check` (and of the gate's proto
+// leg) that rebuilds the engine's own artifact, and pinned by the same `git diff
+// --exit-code` that pins the engine's own artifact: a checked-in descriptor set
+// that disagrees with the schema it describes is a set of sentences about a file
+// that has moved on.
+//
+//go:embed schema.descriptorset.binpb
+var schemaProse []byte
+
 func main() {
 	sdk.Main(sdk.Plugin{
 		Name:        "example",
 		Version:     "0.1.0",
 		Description: "Resolves example: secrets and greets people.",
+		SchemaProse: schemaProse,
 
 		Secrets: &sdk.Secrets{
 			Schemes: []string{"example"},

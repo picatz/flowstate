@@ -91,7 +91,14 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	// one arriving at a worker that has none: an unregistered activity fails with
 	// "unknown activity type", which is a true refusal for the wrong reason and
 	// reads as a broken worker rather than as a rollout that is half done.
-	w.RegisterActivity(CheckPlugins)
+	//
+	// On the receiver, and named explicitly, for both of the reasons the two
+	// authorized activities above are: the answer it gives is this worker's
+	// rather than the process's (#777), and pinning the name is what keeps that
+	// move invisible to history. The SDK would otherwise derive `CheckPlugins-fm`
+	// from a method value, and a history that says `CheckPlugins` would replay
+	// against a worker answering to a name nothing ever scheduled.
+	w.RegisterActivityWithOptions(authorized.CheckPlugins, activity.RegisterOptions{Name: checkPluginsActivity})
 
 	// Registered so a run started before scopes existed can still complete. It has
 	// no callers in current code and is not dead: history written by an older
