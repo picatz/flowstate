@@ -23,11 +23,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	logglobal "go.opentelemetry.io/otel/log/global"
 	noopLog "go.opentelemetry.io/otel/log/noop"
 	noopMetric "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	noopTrace "go.opentelemetry.io/otel/trace/noop"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -625,6 +627,29 @@ func TestTemporalTracingInterceptorServesBothSides(t *testing.T) {
 
 	var _ interceptor.ClientInterceptor = tracing
 	var _ interceptor.WorkerInterceptor = tracing
+}
+
+// TestTemporalSpanErrorsAreContained covers the SDK-created outer span, not
+// only the flowstate.task span inside it. Temporal finishes that outer span
+// with the ApplicationError returned by an activity, whose message must remain
+// detailed for workflow semantics but must not cross the telemetry boundary.
+func TestTemporalSpanErrorsAreContained(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	span := startSanitizedTemporalSpan(t.Context(), provider.Tracer("test"), "RunActivity:Task")
+
+	secret := "upstream rejected credential s3cr3t-material-that-must-never-be-exported"
+	span.RecordError(errors.New(secret))
+	span.SetStatus(codes.Error, secret)
+	span.End()
+
+	ended := recorder.Ended()
+	require.Len(t, ended, 1)
+	rendered := fmt.Sprintf("%v", ended[0])
+	assert.NotContains(t, rendered, secret)
+	assert.Contains(t, rendered, temporalSpanErrorDescription)
+	assert.Equal(t, codes.Error, ended[0].Status().Code)
+	assert.Equal(t, temporalSpanErrorDescription, ended[0].Status().Description)
 }
 
 // The third signal.

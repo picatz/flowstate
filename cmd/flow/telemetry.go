@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -25,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/opentelemetry"
 	"go.temporal.io/sdk/interceptor"
@@ -424,17 +426,55 @@ func telemetryLogHandler(next slog.Handler) slog.Handler {
 // A warning rather than a refusal when it cannot be built, for the reason the
 // client half gives: the command somebody asked for is `flow worker`, not `flow
 // worker with tracing`.
+const temporalSpanErrorDescription = "operation failed"
+
+// sanitizedTemporalSpan keeps errors observed by Temporal's generic tracing
+// interceptor from becoming an export path for activity inputs. Task activity
+// errors deliberately retain their full text for workflow semantics, and the
+// interceptor otherwise copies that text into both an exception event and the
+// span status. The first-party flowstate.task span records the safe, useful
+// classification separately.
+type sanitizedTemporalSpan struct {
+	trace.Span
+}
+
+func (s sanitizedTemporalSpan) RecordError(err error, options ...trace.EventOption) {
+	if err == nil {
+		return
+	}
+
+	s.Span.RecordError(errors.New(temporalSpanErrorDescription), options...)
+}
+
+func (s sanitizedTemporalSpan) SetStatus(code codes.Code, description string) {
+	if code == codes.Error {
+		description = temporalSpanErrorDescription
+	}
+	s.Span.SetStatus(code, description)
+}
+
+func startSanitizedTemporalSpan(
+	ctx context.Context,
+	tracer trace.Tracer,
+	name string,
+	options ...trace.SpanStartOption,
+) trace.Span {
+	_, span := tracer.Start(ctx, name, options...)
+	return sanitizedTemporalSpan{Span: span}
+}
+
 func temporalTracingInterceptor() interceptor.Interceptor {
 	if !telemetryConfigured() {
 		return nil
 	}
 
-	// The zero options on purpose. Tracer comes from the global provider this
-	// package has already configured, and the propagator defaults to W3C trace
-	// context plus baggage — the same composite [initTelemetry] registers
-	// globally, so the header Temporal carries and the header otelconnect
-	// injects speak the same format.
-	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{})
+	// Tracer comes from the global provider this package has already configured,
+	// and the propagator defaults to W3C trace context plus baggage — the same
+	// composite [initTelemetry] registers globally. Span creation is wrapped so
+	// the SDK cannot export the full text of an activity failure.
+	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{
+		SpanStarter: startSanitizedTemporalSpan,
+	})
 	if err != nil {
 		log.Printf("WARNING: telemetry is configured but the Temporal tracing interceptor "+
 			"could not be built, so workflow and activity spans will not join the caller's "+
