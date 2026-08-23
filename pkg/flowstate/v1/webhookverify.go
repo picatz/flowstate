@@ -153,11 +153,14 @@ func VerifyWebhookDelivery(trigger *WebhookTrigger, keys map[string]secrets.Secr
 // from the signed one for reasons nobody can see.
 func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte) error {
 	supplied := webhookHeader(headers, WebhookSignatureHeader)
+	// Compute the digest before inspecting the attacker-controlled header. An
+	// unrouted request spends this same body-sized work under a decoy key; an
+	// early return here would therefore reveal that this route exists.
+	expected := signHMACSHA256(key, body)
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", WebhookSignatureHeader)
 	}
 
-	expected := signHMACSHA256(key, body)
 	for _, candidate := range splitSignatures(strings.TrimPrefix(supplied, hmacPrefix)) {
 		digest, err := hex.DecodeString(candidate)
 		if err != nil {
@@ -180,9 +183,6 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 // hash — which is why this is written down once here rather than configured.
 func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, now time.Time) error {
 	supplied := webhookHeader(headers, StripeSignatureHeader)
-	if supplied == "" {
-		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
-	}
 
 	var (
 		timestamp  string
@@ -203,12 +203,30 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 		}
 	}
 
+	seconds, secondsErr := strconv.ParseInt(timestamp, 10, 64)
+	signingTimestamp := timestamp
+	if secondsErr == nil {
+		signingTimestamp = strconv.FormatInt(seconds, 10)
+	}
+
+	// Spend the body-sized authentication work before any header-shape refusal.
+	// Unknown routes do the same under a decoy key, so a missing or malformed
+	// header must not turn a configured Stripe route into a timing oracle.
+	signed := make([]byte, 0, len(signingTimestamp)+1+len(body))
+	signed = append(signed, signingTimestamp...)
+	signed = append(signed, '.')
+	signed = append(signed, body...)
+	expected := signHMACSHA256(key, signed)
+
+	if supplied == "" {
+		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
+	}
+
 	if timestamp == "" || len(signatures) == 0 {
 		return fmt.Errorf("the %s header is not `t=<unix seconds>,v1=<hex>`", StripeSignatureHeader)
 	}
 
-	seconds, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
+	if secondsErr != nil {
 		return fmt.Errorf("the %s header's timestamp is not a whole number of seconds", StripeSignatureHeader)
 	}
 
@@ -226,16 +244,9 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 			StripeSignatureHeader, skew.Round(time.Second), WebhookReplayWindow)
 	}
 
-	// The signed payload Stripe documents: the timestamp, a period, then the raw
-	// body. Built from the *parsed* seconds rather than from the header's text so
-	// that a padded or oddly-spelled timestamp cannot make the payload something
-	// other than what the window was checked against.
-	signed := make([]byte, 0, len(timestamp)+1+len(body))
-	signed = append(signed, strconv.FormatInt(seconds, 10)...)
-	signed = append(signed, '.')
-	signed = append(signed, body...)
-
-	expected := signHMACSHA256(key, signed)
+	// signingTimestamp was built from the parsed seconds rather than from the
+	// header's text so that a padded or oddly-spelled timestamp cannot make the
+	// payload something other than what the window was checked against.
 	for _, candidate := range signatures {
 		digest, err := hex.DecodeString(candidate)
 		if err != nil {
