@@ -1,0 +1,46 @@
+syntax = "proto3";
+package flowstate.v1;
+option go_package = "flowstatev1";
+
+// AuthorizationRequest is the canonical, credential-free input to authorization.
+message AuthorizationRequest {
+  Principal principal = 1;
+  string action = 2;
+  string resource = 3;
+  map<string,string> context = 4;
+  repeated AttestedFact facts = 5;
+  repeated Delegation delegation = 6;
+}
+message Principal {
+  string subject = 1;
+  string issuer = 2;
+  string tenant = 3;
+  string audience = 4;
+  string proof_key = 5;
+  repeated string actor_chain = 6;
+}
+message AttestedFact { string name = 1; string value = 2; bool attested = 3; }
+message Delegation { string delegator = 1; string delegate = 2; repeated string actions = 3; repeated string resources = 4; }
+enum AuthorizationEffect { AUTHORIZATION_EFFECT_UNSPECIFIED = 0; AUTHORIZATION_EFFECT_ALLOW = 1; AUTHORIZATION_EFFECT_DENY = 2; }
+message AuthorizationRule {
+  AuthorizationEffect effect = 1;
+  repeated string subjects = 2;
+  repeated string issuers = 3;
+  repeated string tenants = 4;
+  repeated string audiences = 5;
+  repeated string actions = 6;
+  repeated string resources = 7;
+  repeated string proof_keys = 8;
+  repeated string actor_chains = 9;
+  map<string,string> context = 10;
+  map<string,string> attested_facts = 11;
+  string relation = 12;
+}
+message AuthorizationPolicyLayer { repeated AuthorizationRule rules = 1; }
+message AuthorizationPolicy {
+  repeated AuthorizationPolicyLayer grants = 1;
+  repeated AuthorizationPolicyLayer boundaries = 2;
+  repeated Relationship relationships = 3;
+}
+message Relationship { string subject = 1; string relation = 2; string resource = 3; }
+message AuthorizationDecision { bool allowed = 1; bool explicit_deny = 2; string reason = 3; }
