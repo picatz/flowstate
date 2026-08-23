@@ -12,10 +12,21 @@ import (
 // (issue #929) is the first reader — without a second, parallel bookkeeping of
 // facts the engine already decides.
 //
-// It is deliberately an account, not a control surface: an observer cannot
-// pause, reorder, or change anything, and the engine never waits on one. The
+// It is deliberately an account, not a control surface: an observer returns
+// nothing, so it cannot pause, reorder, or change what the run does. The
 // step-debugger design (issue #928) builds its record-and-replay on this same
 // stream precisely because it is read-only — recording is safe to leave on.
+//
+// What it can still cost is time and a panic, because the callbacks are
+// synchronous and run on the step's own goroutine (below). This type is
+// exported, so the implementation may be an embedder's rather than this
+// repository's, and an account of the work must never be the reason the work
+// does not happen — the same rule [telemetryResource] states for a resource
+// detector whose entropy source is unavailable. A panic in an observer is
+// therefore recovered and dropped rather than unwinding a run that was
+// otherwise succeeding. Time is not recovered from and deliberately so: a
+// callback that blocks forever is a bug in the observer that a silent timeout
+// would hide, and this driver has no clock of its own to bound it against.
 //
 // # Local driver only, like [Scheduler]
 //
@@ -73,20 +84,34 @@ func RunObserverFromContext(ctx context.Context) RunObserver {
 // observeStepFinished, observeStepSkipped and observeWaitStarted are the
 // engine's call sites' spelling: nil-safe, so the hot path pays one context
 // lookup and nothing else when no harness is listening.
+// observeSafely runs one observer callback, dropping a panic it raises.
+//
+// The recover is the whole of the isolation, and it is here rather than at
+// each call site so that no future observation point can forget it. See
+// [RunObserver] for why an account may not take down the run it describes;
+// the value is discarded rather than logged because this package has no
+// logger of its own on this path, and the alternative — a diagnostic emitted
+// from inside a diagnostic — is how one bad observer becomes two problems.
+func observeSafely(call func()) {
+	defer func() { _ = recover() }()
+
+	call()
+}
+
 func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, err error, tolerated bool) {
 	if observer := RunObserverFromContext(ctx); observer != nil {
-		observer.StepFinished(id, outputs, err, tolerated)
+		observeSafely(func() { observer.StepFinished(id, outputs, err, tolerated) })
 	}
 }
 
 func observeStepSkipped(ctx context.Context, id string) {
 	if observer := RunObserverFromContext(ctx); observer != nil {
-		observer.StepSkipped(id)
+		observeSafely(func() { observer.StepSkipped(id) })
 	}
 }
 
 func observeWaitStarted(ctx context.Context, id, signal string, timeout time.Duration, bounded bool) {
 	if observer := RunObserverFromContext(ctx); observer != nil {
-		observer.WaitStarted(id, signal, timeout, bounded)
+		observeSafely(func() { observer.WaitStarted(id, signal, timeout, bounded) })
 	}
 }
