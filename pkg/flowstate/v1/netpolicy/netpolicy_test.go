@@ -706,6 +706,18 @@ func Test_Policy_Client_proxy(t *testing.T) {
 		requireDenied(t, err, ReasonAddress, "denied network 127.0.0.2/32")
 	})
 
+	t.Run("connection rules see the target address", func(t *testing.T) {
+		policy, err := New(
+			WithAllowLoopback(),
+			WithDenyRules(`ip == "127.0.0.2"`),
+			WithProxy(proxyFor),
+		)
+		require.NoError(t, err)
+
+		_, err = get(t, policy, "http://127.0.0.2:9/")
+		requireDenied(t, err, ReasonDenyRule, `ip == "127.0.0.2"`)
+	})
+
 	t.Run("a target that cannot be resolved is refused", func(t *testing.T) {
 		policy, err := New(WithAllowLoopback(), WithProxy(proxyFor))
 		require.NoError(t, err)

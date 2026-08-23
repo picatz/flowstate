@@ -427,7 +427,17 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 	}
 
 	for _, addr := range addrs {
-		if err := p.CheckAddr(netip.AddrPortFrom(addr, port)); err != nil {
+		addrPort := netip.AddrPortFrom(addr, port)
+		if err := p.CheckAddr(addrPort); err != nil {
+			return err
+		}
+		if err := p.connRules.evaluate(req.Context(), target, map[string]any{
+			"scheme":   strings.ToLower(req.URL.Scheme),
+			"host":     ruleHost(req.URL),
+			"port":     int64(port),
+			"ip":       normalize(addrPort.Addr()).String(),
+			"identity": identityFromContext(req.Context()),
+		}); err != nil {
 			return err
 		}
 	}
