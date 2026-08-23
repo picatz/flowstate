@@ -10,6 +10,7 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -21,6 +22,279 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
+
+// PrincipalKind is part of a principal's identity, rather than an attribute.
+// A human and a workload minted the same subject by one issuer are not the same
+// authority.
+type PrincipalKind int32
+
+const (
+	PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED PrincipalKind = 0
+	PrincipalKind_PRINCIPAL_KIND_HUMAN       PrincipalKind = 1
+	PrincipalKind_PRINCIPAL_KIND_WORKLOAD    PrincipalKind = 2
+	PrincipalKind_PRINCIPAL_KIND_SERVICE     PrincipalKind = 3
+	PrincipalKind_PRINCIPAL_KIND_GROUP       PrincipalKind = 4
+)
+
+// Enum value maps for PrincipalKind.
+var (
+	PrincipalKind_name = map[int32]string{
+		0: "PRINCIPAL_KIND_UNSPECIFIED",
+		1: "PRINCIPAL_KIND_HUMAN",
+		2: "PRINCIPAL_KIND_WORKLOAD",
+		3: "PRINCIPAL_KIND_SERVICE",
+		4: "PRINCIPAL_KIND_GROUP",
+	}
+	PrincipalKind_value = map[string]int32{
+		"PRINCIPAL_KIND_UNSPECIFIED": 0,
+		"PRINCIPAL_KIND_HUMAN":       1,
+		"PRINCIPAL_KIND_WORKLOAD":    2,
+		"PRINCIPAL_KIND_SERVICE":     3,
+		"PRINCIPAL_KIND_GROUP":       4,
+	}
+)
+
+func (x PrincipalKind) Enum() *PrincipalKind {
+	p := new(PrincipalKind)
+	*p = x
+	return p
+}
+
+func (x PrincipalKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PrincipalKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_identity_proto_enumTypes[0].Descriptor()
+}
+
+func (PrincipalKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_identity_proto_enumTypes[0]
+}
+
+func (x PrincipalKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PrincipalKind.Descriptor instead.
+func (PrincipalKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
+// CanonicalIdentity contains only issuer-controlled, immutable identity
+// components. Display names, email addresses, repository paths, client names,
+// and provider aliases belong in attributes and MUST NOT be copied here.
+type CanonicalIdentity struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Issuer  string                 `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	Subject string                 `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	Tenant  string                 `protobuf:"bytes,3,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Kind    PrincipalKind          `protobuf:"varint,4,opt,name=kind,proto3,enum=flowstate.v1.PrincipalKind" json:"kind,omitempty"`
+	// Attributes are searchable presentation data, never identity or authority.
+	Attributes    map[string]string `protobuf:"bytes,5,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CanonicalIdentity) Reset() {
+	*x = CanonicalIdentity{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CanonicalIdentity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CanonicalIdentity) ProtoMessage() {}
+
+func (x *CanonicalIdentity) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CanonicalIdentity.ProtoReflect.Descriptor instead.
+func (*CanonicalIdentity) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *CanonicalIdentity) GetIssuer() string {
+	if x != nil {
+		return x.Issuer
+	}
+	return ""
+}
+
+func (x *CanonicalIdentity) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *CanonicalIdentity) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *CanonicalIdentity) GetKind() PrincipalKind {
+	if x != nil {
+		return x.Kind
+	}
+	return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
+}
+
+func (x *CanonicalIdentity) GetAttributes() map[string]string {
+	if x != nil {
+		return x.Attributes
+	}
+	return nil
+}
+
+// IdentityAliasMigration is the durable, reviewable authority for changing an
+// identity key. It is admitted only after its signature or administrator
+// approval is verified; the fields themselves are evidence, not self-approval.
+type IdentityAliasMigration struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Id                       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	OldIdentity              *CanonicalIdentity     `protobuf:"bytes,2,opt,name=old_identity,json=oldIdentity,proto3" json:"old_identity,omitempty"`
+	NewIdentity              *CanonicalIdentity     `protobuf:"bytes,3,opt,name=new_identity,json=newIdentity,proto3" json:"new_identity,omitempty"`
+	IssuerEvidence           []byte                 `protobuf:"bytes,4,opt,name=issuer_evidence,json=issuerEvidence,proto3" json:"issuer_evidence,omitempty"`
+	EffectiveTime            *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=effective_time,json=effectiveTime,proto3" json:"effective_time,omitempty"`
+	AffectedTenants          []string               `protobuf:"bytes,6,rep,name=affected_tenants,json=affectedTenants,proto3" json:"affected_tenants,omitempty"`
+	AffectedResources        []string               `protobuf:"bytes,7,rep,name=affected_resources,json=affectedResources,proto3" json:"affected_resources,omitempty"`
+	ApprovedBy               string                 `protobuf:"bytes,8,opt,name=approved_by,json=approvedBy,proto3" json:"approved_by,omitempty"`
+	ApprovalReference        string                 `protobuf:"bytes,9,opt,name=approval_reference,json=approvalReference,proto3" json:"approval_reference,omitempty"`
+	Signature                []byte                 `protobuf:"bytes,10,opt,name=signature,proto3" json:"signature,omitempty"`
+	RollbackDeadline         *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=rollback_deadline,json=rollbackDeadline,proto3" json:"rollback_deadline,omitempty"`
+	RollbackRequiresApproval bool                   `protobuf:"varint,12,opt,name=rollback_requires_approval,json=rollbackRequiresApproval,proto3" json:"rollback_requires_approval,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
+func (x *IdentityAliasMigration) Reset() {
+	*x = IdentityAliasMigration{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IdentityAliasMigration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IdentityAliasMigration) ProtoMessage() {}
+
+func (x *IdentityAliasMigration) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IdentityAliasMigration.ProtoReflect.Descriptor instead.
+func (*IdentityAliasMigration) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *IdentityAliasMigration) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *IdentityAliasMigration) GetOldIdentity() *CanonicalIdentity {
+	if x != nil {
+		return x.OldIdentity
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetNewIdentity() *CanonicalIdentity {
+	if x != nil {
+		return x.NewIdentity
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetIssuerEvidence() []byte {
+	if x != nil {
+		return x.IssuerEvidence
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetEffectiveTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.EffectiveTime
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetAffectedTenants() []string {
+	if x != nil {
+		return x.AffectedTenants
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetAffectedResources() []string {
+	if x != nil {
+		return x.AffectedResources
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetApprovedBy() string {
+	if x != nil {
+		return x.ApprovedBy
+	}
+	return ""
+}
+
+func (x *IdentityAliasMigration) GetApprovalReference() string {
+	if x != nil {
+		return x.ApprovalReference
+	}
+	return ""
+}
+
+func (x *IdentityAliasMigration) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetRollbackDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RollbackDeadline
+	}
+	return nil
+}
+
+func (x *IdentityAliasMigration) GetRollbackRequiresApproval() bool {
+	if x != nil {
+		return x.RollbackRequiresApproval
+	}
+	return false
+}
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
@@ -107,7 +381,7 @@ type WorkloadIdentity struct {
 
 func (x *WorkloadIdentity) Reset() {
 	*x = WorkloadIdentity{}
-	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -119,7 +393,7 @@ func (x *WorkloadIdentity) String() string {
 func (*WorkloadIdentity) ProtoMessage() {}
 
 func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -132,7 +406,7 @@ func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadIdentity.ProtoReflect.Descriptor instead.
 func (*WorkloadIdentity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *WorkloadIdentity) GetSubject() string {
@@ -174,7 +448,38 @@ var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x9b\x02\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe8\x02\n" +
+	"\x11CanonicalIdentity\x12\"\n" +
+	"\x06issuer\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x10R\x06issuer\x12$\n" +
+	"\asubject\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x10R\asubject\x12\"\n" +
+	"\x06tenant\x18\x03 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\x06tenant\x12;\n" +
+	"\x04kind\x18\x04 \x01(\x0e2\x1b.flowstate.v1.PrincipalKindB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12i\n" +
+	"\n" +
+	"attributes\x18\x05 \x03(\v2/.flowstate.v1.CanonicalIdentity.AttributesEntryB\x18\xbaH\x15\x9a\x01\x12\x10 \"\ar\x05 \x01(\x80\x01*\x05r\x03(\x80\bR\n" +
+	"attributes\x1a=\n" +
+	"\x0fAttributesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe8\x05\n" +
+	"\x16IdentityAliasMigration\x12\x1a\n" +
+	"\x02id\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\x02R\x02id\x12J\n" +
+	"\fold_identity\x18\x02 \x01(\v2\x1f.flowstate.v1.CanonicalIdentityB\x06\xbaH\x03\xc8\x01\x01R\voldIdentity\x12J\n" +
+	"\fnew_identity\x18\x03 \x01(\v2\x1f.flowstate.v1.CanonicalIdentityB\x06\xbaH\x03\xc8\x01\x01R\vnewIdentity\x124\n" +
+	"\x0fissuer_evidence\x18\x04 \x01(\fB\v\xbaH\bz\x06\x10\x01\x18\x80\x80\x04R\x0eissuerEvidence\x12I\n" +
+	"\x0eeffective_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampB\x06\xbaH\x03\xc8\x01\x01R\reffectiveTime\x12A\n" +
+	"\x10affected_tenants\x18\x06 \x03(\tB\x16\xbaH\x13\x92\x01\x10\b\x01\x10\x80\x01\x18\x01\"\ar\x05 \x01(\x80\x02R\x0faffectedTenants\x12C\n" +
+	"\x12affected_resources\x18\a \x03(\tB\x14\xbaH\x11\x92\x01\x0e\x10\x80\b\x18\x01\"\ar\x05 \x01(\x80\x10R\x11affectedResources\x12)\n" +
+	"\vapproved_by\x18\b \x01(\tB\b\xbaH\x05r\x03(\x80\x04R\n" +
+	"approvedBy\x127\n" +
+	"\x12approval_reference\x18\t \x01(\tB\b\xbaH\x05r\x03(\x80\x10R\x11approvalReference\x12&\n" +
+	"\tsignature\x18\n" +
+	" \x01(\fB\b\xbaH\x05z\x03\x18\x80@R\tsignature\x12G\n" +
+	"\x11rollback_deadline\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\x10rollbackDeadline\x12<\n" +
+	"\x1arollback_requires_approval\x18\f \x01(\bR\x18rollbackRequiresApproval\"\x9b\x02\n" +
 	"\x10WorkloadIdentity\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
 	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
@@ -185,7 +490,13 @@ const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"deployment\x1a9\n" +
 	"\vClaimsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xac\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x9c\x01\n" +
+	"\rPrincipalKind\x12\x1e\n" +
+	"\x1aPRINCIPAL_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14PRINCIPAL_KIND_HUMAN\x10\x01\x12\x1b\n" +
+	"\x17PRINCIPAL_KIND_WORKLOAD\x10\x02\x12\x1a\n" +
+	"\x16PRINCIPAL_KIND_SERVICE\x10\x03\x12\x18\n" +
+	"\x14PRINCIPAL_KIND_GROUP\x10\x04B\xac\x01\n" +
 	"\x10com.flowstate.v1B\rIdentityProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
@@ -200,18 +511,30 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_identity_proto_rawDescData
 }
 
-var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_flowstate_v1_identity_proto_goTypes = []any{
-	(*WorkloadIdentity)(nil), // 0: flowstate.v1.WorkloadIdentity
-	nil,                      // 1: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(PrincipalKind)(0),             // 0: flowstate.v1.PrincipalKind
+	(*CanonicalIdentity)(nil),      // 1: flowstate.v1.CanonicalIdentity
+	(*IdentityAliasMigration)(nil), // 2: flowstate.v1.IdentityAliasMigration
+	(*WorkloadIdentity)(nil),       // 3: flowstate.v1.WorkloadIdentity
+	nil,                            // 4: flowstate.v1.CanonicalIdentity.AttributesEntry
+	nil,                            // 5: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(*timestamppb.Timestamp)(nil),  // 6: google.protobuf.Timestamp
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
-	1, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // 0: flowstate.v1.CanonicalIdentity.kind:type_name -> flowstate.v1.PrincipalKind
+	4, // 1: flowstate.v1.CanonicalIdentity.attributes:type_name -> flowstate.v1.CanonicalIdentity.AttributesEntry
+	1, // 2: flowstate.v1.IdentityAliasMigration.old_identity:type_name -> flowstate.v1.CanonicalIdentity
+	1, // 3: flowstate.v1.IdentityAliasMigration.new_identity:type_name -> flowstate.v1.CanonicalIdentity
+	6, // 4: flowstate.v1.IdentityAliasMigration.effective_time:type_name -> google.protobuf.Timestamp
+	6, // 5: flowstate.v1.IdentityAliasMigration.rollback_deadline:type_name -> google.protobuf.Timestamp
+	5, // 6: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -224,13 +547,14 @@ func file_flowstate_v1_identity_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   2,
+			NumEnums:      1,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_flowstate_v1_identity_proto_goTypes,
 		DependencyIndexes: file_flowstate_v1_identity_proto_depIdxs,
+		EnumInfos:         file_flowstate_v1_identity_proto_enumTypes,
 		MessageInfos:      file_flowstate_v1_identity_proto_msgTypes,
 	}.Build()
 	File_flowstate_v1_identity_proto = out.File

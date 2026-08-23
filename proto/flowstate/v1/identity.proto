@@ -3,8 +3,99 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
 
 option go_package = "flowstatev1";
+
+// PrincipalKind is part of a principal's identity, rather than an attribute.
+// A human and a workload minted the same subject by one issuer are not the same
+// authority.
+enum PrincipalKind {
+  PRINCIPAL_KIND_UNSPECIFIED = 0;
+  PRINCIPAL_KIND_HUMAN = 1;
+  PRINCIPAL_KIND_WORKLOAD = 2;
+  PRINCIPAL_KIND_SERVICE = 3;
+  PRINCIPAL_KIND_GROUP = 4;
+}
+
+// CanonicalIdentity contains only issuer-controlled, immutable identity
+// components. Display names, email addresses, repository paths, client names,
+// and provider aliases belong in attributes and MUST NOT be copied here.
+message CanonicalIdentity {
+  string issuer = 1 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 2048
+  }];
+  string subject = 2 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 2048
+  }];
+  string tenant = 3 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  PrincipalKind kind = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+
+  // Attributes are searchable presentation data, never identity or authority.
+  map<string, string> attributes = 5 [(buf.validate.field).map = {
+    max_pairs: 32
+    keys: {
+      string: {
+        min_bytes: 1
+        max_bytes: 128
+      }
+    }
+    values: {
+      string: {max_bytes: 1024}
+    }
+  }];
+}
+
+// IdentityAliasMigration is the durable, reviewable authority for changing an
+// identity key. It is admitted only after its signature or administrator
+// approval is verified; the fields themselves are evidence, not self-approval.
+message IdentityAliasMigration {
+  string id = 1 [(buf.validate.field).string = {
+    min_bytes: 1
+    max_bytes: 256
+  }];
+  CanonicalIdentity old_identity = 2 [(buf.validate.field).required = true];
+  CanonicalIdentity new_identity = 3 [(buf.validate.field).required = true];
+  bytes issuer_evidence = 4 [(buf.validate.field).bytes = {
+    min_len: 1
+    max_len: 65536
+  }];
+  google.protobuf.Timestamp effective_time = 5 [(buf.validate.field).required = true];
+  repeated string affected_tenants = 6 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 128
+    unique: true
+    items: {
+      string: {
+        min_bytes: 1
+        max_bytes: 256
+      }
+    }
+  }];
+  repeated string affected_resources = 7 [(buf.validate.field).repeated = {
+    max_items: 1024
+    unique: true
+    items: {
+      string: {
+        min_bytes: 1
+        max_bytes: 2048
+      }
+    }
+  }];
+  string approved_by = 8 [(buf.validate.field).string = {max_bytes: 512}];
+  string approval_reference = 9 [(buf.validate.field).string = {max_bytes: 2048}];
+  bytes signature = 10 [(buf.validate.field).bytes = {max_len: 8192}];
+  google.protobuf.Timestamp rollback_deadline = 11;
+  bool rollback_requires_approval = 12;
+}
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
 // It allows the workflow to continue-as-new while carrying only the minimal
@@ -69,7 +160,9 @@ message WorkloadIdentity {
         max_bytes: 128
       }
     }
-    values: {string: {max_bytes: 1024}}
+    values: {
+      string: {max_bytes: 1024}
+    }
   }];
 
   // Namespace is the tenant, and it is the boundary every authorization decision
