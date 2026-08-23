@@ -13,6 +13,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -165,6 +166,10 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	if err != nil {
 		return nil, nil, err
 	}
+	policy, err := loadTelemetryPolicy()
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading telemetry policy: %w", err)
+	}
 
 	traceExporter, err := otlptracehttp.New(ctx)
 	if err != nil {
@@ -184,6 +189,7 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
+		sdktrace.WithSampler(policy.sampler),
 	)
 	meterProvider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)),
@@ -215,10 +221,10 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 	// downstream service reads alongside it. Registered globally because that
 	// is where otelconnect reads it from — on a client to inject, on the server
 	// to extract — so one registration closes both halves of the hop.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	otel.SetTextMapPropagator(policyPropagator{
+		delegate: propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
+		policy:   policy,
+	})
 
 	handler := opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{
 		Meter: meterProvider.Meter("temporal-sdk"),
@@ -246,6 +252,23 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 
 	return handler, shutdown, nil
 }
+
+// policyPropagator applies the same baggage policy on both sides of every hop.
+// Trace context is never rewritten, which preserves the parent's sampling bit
+// across Connect, Temporal, and plugin RPCs.
+type policyPropagator struct {
+	delegate propagation.TextMapPropagator
+	policy   telemetryPolicy
+}
+
+func (p policyPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	p.delegate.Inject(baggage.ContextWithBaggage(ctx, p.policy.filterBaggage(baggage.FromContext(ctx))), carrier)
+}
+func (p policyPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	ctx = p.delegate.Extract(ctx, carrier)
+	return baggage.ContextWithBaggage(ctx, p.policy.filterBaggage(baggage.FromContext(ctx)))
+}
+func (p policyPropagator) Fields() []string { return p.delegate.Fields() }
 
 // The third signal, and the two honest limits on it.
 //

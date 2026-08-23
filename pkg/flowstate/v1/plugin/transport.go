@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
+	"go.opentelemetry.io/otel"
 
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -98,6 +100,14 @@ func newClients(socketPath, token string, maxResponseBytes int) *clients {
 		// without limit.
 		connect.WithReadMaxBytes(maxResponseBytes),
 		connect.WithInterceptors(authInterceptor(token)),
+	}
+	// The host-to-plugin hop participates in the same trace when a process has
+	// installed a propagator. With telemetry disabled the global propagator has
+	// no fields, so no interceptor and no headers are added.
+	if len(otel.GetTextMapPropagator().Fields()) != 0 {
+		if tracing, err := otelconnect.NewInterceptor(); err == nil {
+			opts = append(opts, connect.WithInterceptors(tracing))
+		}
 	}
 
 	return &clients{

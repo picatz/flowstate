@@ -828,6 +828,25 @@ func documentedEnvironmentVariables() []environmentVariable {
 			family:  true,
 		},
 		{
+			name:    "OTEL_TRACES_SAMPLER",
+			value:   "parentbased_always_on",
+			purpose: "Standard OpenTelemetry head sampler. Flowstate supports always_on/off, traceidratio, and their parentbased forms.",
+			read:    "cmd/flow/telemetry_policy.go",
+		},
+		{
+			name:    "OTEL_TRACES_SAMPLER_ARG",
+			value:   "1",
+			purpose: "Root sampling ratio from 0 to 1 for a traceidratio sampler.",
+			read:    "cmd/flow/telemetry_policy.go",
+		},
+		{
+			name:    "FLOWSTATE_TELEMETRY_*",
+			value:   "see docs/TELEMETRY.md",
+			purpose: "Flowstate domain policy for baggage, attribute allowlisting, redaction, execution-event detail and audit sinks; transport configuration remains under standard OTEL_* variables.",
+			read:    "cmd/flow/telemetry_policy.go",
+			family:  true,
+		},
+		{
 			name:  "FLOWSTATE_TASK_QUEUE_PREFIX",
 			value: "unset",
 			purpose: "Default for `--task-queue-prefix` on both `flow server` and `flow worker`: route each " +

@@ -7,6 +7,8 @@ import (
 
 	"connectrpc.com/authn"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // serverHandler routes the server's HTTP surface, deciding what authentication
@@ -78,5 +80,28 @@ func serverHandler(logger *slog.Logger, verifier auth.Verifier, broker *auth.Bro
 		mux.Handle(issuer.JWKSPath(), issuer.Handler())
 	}
 
-	return mux
+	return inboundBaggageBoundary(mux)
+}
+
+// inboundBaggageBoundary is the HTTP trust boundary. It sanitizes the wire
+// representation before otelconnect or application middleware can observe it;
+// an unconfigured process is returned byte-for-byte to its former behavior.
+func inboundBaggageBoundary(next http.Handler) http.Handler {
+	if !telemetryConfigured() {
+		return next
+	}
+	policy, err := loadTelemetryPolicy()
+	if err != nil {
+		// Startup validates the same policy. This branch only covers an
+		// environment mutated after startup and fails closed by dropping baggage.
+		policy = telemetryPolicy{}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		carrier := propagation.HeaderCarrier(r.Header)
+		ctx := propagation.Baggage{}.Extract(r.Context(), carrier)
+		filtered := policy.filterBaggage(baggage.FromContext(ctx))
+		r.Header.Del("Baggage")
+		propagation.Baggage{}.Inject(baggage.ContextWithBaggage(r.Context(), filtered), carrier)
+		next.ServeHTTP(w, r)
+	})
 }
