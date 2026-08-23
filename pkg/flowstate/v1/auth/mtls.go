@@ -61,6 +61,10 @@ const (
 	// IssuerKindMTLS admits a caller whose client certificate crypto/tls has
 	// already verified against [TrustedIssuer.ClientCAFile].
 	IssuerKindMTLS = "mtls"
+
+	// IssuerKindSPIFFE admits X.509-SVIDs by their verified spiffe:// URI SAN
+	// and applies an explicit trust-domain, ID-pattern, and tenant mapping.
+	IssuerKindSPIFFE = "spiffe"
 )
 
 // The SAN fields [TrustedIssuer.SubjectFrom] may name. There is deliberately
@@ -142,7 +146,7 @@ func NewMTLSVerifier(policy Policy) (*MTLSVerifier, error) {
 	var entries []mtlsEntry
 
 	for _, issuer := range policy.Issuers {
-		if issuer.kind() != IssuerKindMTLS {
+		if issuer.kind() != IssuerKindMTLS && issuer.kind() != IssuerKindSPIFFE {
 			continue
 		}
 
@@ -199,7 +203,15 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 			continue
 		}
 
-		subject, err := subjectFromLeaf(leaf, entry.issuer.SubjectFrom)
+		var subject string
+		var claims map[string]any
+		var err error
+		if entry.issuer.kind() == IssuerKindSPIFFE {
+			subject, claims, err = spiffePrincipalClaims(leaf, entry.issuer)
+		} else {
+			subject, err = subjectFromLeaf(leaf, entry.issuer.SubjectFrom)
+			claims = map[string]any{"subject": subject}
+		}
 		if err != nil {
 			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.issuer.Name, err))
 			continue
@@ -208,8 +220,6 @@ func (v *MTLSVerifier) VerifyPeer(ctx context.Context, chains [][]*x509.Certific
 		// The only claim a certificate-derived Principal carries: the SAN
 		// [TrustedIssuer.SubjectFrom] named. Require rules read it exactly
 		// the way an OIDC rule reads a verified token claim.
-		claims := map[string]any{"subject": subject}
-
 		if err := entry.issuer.admitsPeer(claims); err != nil {
 			failures = append(failures, fmt.Errorf("trusted issuer %q: %w", entry.issuer.Name, err))
 			continue

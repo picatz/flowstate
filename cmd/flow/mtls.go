@@ -197,7 +197,7 @@ func firstMTLSIssuer(policy *auth.Policy) (string, bool) {
 		return "", false
 	}
 	for _, issuer := range policy.Issuers {
-		if issuer.Kind == auth.IssuerKindMTLS {
+		if issuer.Kind == auth.IssuerKindMTLS || issuer.Kind == auth.IssuerKindSPIFFE {
 			return issuer.Name, true
 		}
 	}

@@ -223,6 +223,25 @@ type TrustedIssuer struct {
 	// named first.
 	SubjectFrom string `json:"subject_from,omitempty" yaml:"subject_from,omitempty"`
 
+	// TrustDomain makes this entry a first-class SPIFFE trust profile. It is
+	// matched exactly against the host of a verified spiffe:// URI SAN.
+	TrustDomain string `json:"trust_domain,omitempty" yaml:"trust_domain,omitempty"`
+
+	// AllowedSPIFFEIDs is a non-empty allowlist of path.Match patterns over the
+	// complete, canonical SPIFFE ID. Trusting a bundle alone never admits a
+	// workload.
+	AllowedSPIFFEIDs []string `json:"allowed_spiffe_ids,omitempty" yaml:"allowed_spiffe_ids,omitempty"`
+
+	// FederatedTrustDomains names additional SPIFFE trust domains whose bundle
+	// may authenticate this profile. Identity mapping still uses the entry's
+	// fixed Namespace, so federation cannot select another tenant.
+	FederatedTrustDomains []string `json:"federated_trust_domains,omitempty" yaml:"federated_trust_domains,omitempty"`
+
+	// JWTSVIDAudiences is the exact audience allowlist for JWT-SVIDs accepted at
+	// non-mTLS boundaries. JWT-SVIDs are never workload credentials and must not
+	// be placed in workflow inputs or history.
+	JWTSVIDAudiences []string `json:"jwt_svid_audiences,omitempty" yaml:"jwt_svid_audiences,omitempty"`
+
 	// Audiences are the audience values Flowstate accepts from this issuer. A
 	// token is rejected unless its "aud" claim contains at least one of them.
 	// At least one is required.
@@ -659,12 +678,14 @@ func (t TrustedIssuer) validate() error {
 	}
 
 	switch t.kind() {
+	case IssuerKindSPIFFE:
+		return t.validateSPIFFE()
 	case IssuerKindMTLS:
 		return t.validateMTLS()
 	case IssuerKindOIDC:
 		return t.validateOIDC()
 	default:
-		return fmt.Errorf("kind %q is not supported: use %q (the default) or %q", t.Kind, IssuerKindOIDC, IssuerKindMTLS)
+		return fmt.Errorf("kind %q is not supported: use %q (the default), %q, or %q", t.Kind, IssuerKindOIDC, IssuerKindMTLS, IssuerKindSPIFFE)
 	}
 }
 
@@ -672,6 +693,9 @@ func (t TrustedIssuer) validate() error {
 // refuses the mTLS-only fields, so a mistyped kind: cannot leave a
 // client_ca_file silently ignored.
 func (t TrustedIssuer) validateOIDC() error {
+	if t.TrustDomain != "" || len(t.AllowedSPIFFEIDs) != 0 || len(t.FederatedTrustDomains) != 0 || len(t.JWTSVIDAudiences) != 0 {
+		return fmt.Errorf("SPIFFE fields are only meaningful for kind: %s entries", IssuerKindSPIFFE)
+	}
 	if t.ClientCAFile != "" {
 		return fmt.Errorf("client_ca_file is only meaningful for kind: %s entries", IssuerKindMTLS)
 	}
@@ -733,6 +757,9 @@ func (t TrustedIssuer) validateOIDC() error {
 // that set one would have it silently ignored otherwise, which is exactly the
 // class of mistake CLAUDE.md's "one value, written down twice" warns about.
 func (t TrustedIssuer) validateMTLS() error {
+	if t.TrustDomain != "" || len(t.AllowedSPIFFEIDs) != 0 || len(t.FederatedTrustDomains) != 0 || len(t.JWTSVIDAudiences) != 0 {
+		return fmt.Errorf("SPIFFE fields are only meaningful for kind: %s entries", IssuerKindSPIFFE)
+	}
 	if t.Issuer == "" {
 		return fmt.Errorf("issuer is required: this deployment's own name for the trusted CA, not a value read from the certificate")
 	}
@@ -790,6 +817,52 @@ func (t TrustedIssuer) validateMTLS() error {
 	}
 
 	return nil
+}
+
+func (t TrustedIssuer) validateSPIFFE() error {
+	if t.Issuer == "" {
+		return fmt.Errorf("issuer is required")
+	}
+	if t.ClientCAFile == "" {
+		return fmt.Errorf("client_ca_file is required for kind: %s", IssuerKindSPIFFE)
+	}
+	if err := validateTrustDomain(t.TrustDomain); err != nil {
+		return err
+	}
+	if len(t.AllowedSPIFFEIDs) == 0 {
+		return fmt.Errorf("allowed_spiffe_ids requires at least one pattern: possession of any certificate from a trust domain is not permission")
+	}
+	for i, pattern := range t.AllowedSPIFFEIDs {
+		if err := validateSPIFFEPattern(pattern, t.TrustDomain, t.FederatedTrustDomains); err != nil {
+			return fmt.Errorf("allowed_spiffe_ids[%d]: %w", i, err)
+		}
+	}
+	for i, domain := range t.FederatedTrustDomains {
+		if err := validateTrustDomain(domain); err != nil {
+			return fmt.Errorf("federated_trust_domains[%d]: %w", i, err)
+		}
+	}
+	for i, audience := range t.JWTSVIDAudiences {
+		if audience == "" {
+			return fmt.Errorf("jwt_svid_audiences[%d] is empty", i)
+		}
+	}
+	if t.SubjectFrom != "" {
+		return fmt.Errorf("subject_from is fixed to uri_san for kind: %s", IssuerKindSPIFFE)
+	}
+	if len(t.Audiences) != 0 || len(t.Algorithms) != 0 || t.JWKSURL != "" || t.MaxTokenAge != 0 {
+		return fmt.Errorf("OIDC token fields are not meaningful for kind: %s entries", IssuerKindSPIFFE)
+	}
+	if t.Namespace == "" {
+		return fmt.Errorf("namespace is required for kind: %s: trust-domain-to-tenant mapping must be explicit", IssuerKindSPIFFE)
+	}
+	if t.NamespaceClaim != "" || t.NamespaceMap != nil {
+		return fmt.Errorf("namespace_claim and namespace_map are not supported for kind: %s", IssuerKindSPIFFE)
+	}
+	if err := t.validateNamespaceFields(); err != nil {
+		return err
+	}
+	return t.validateRequire()
 }
 
 // validateRequire checks the claim rules common to every kind.

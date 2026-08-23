@@ -1035,3 +1035,50 @@ start** with neither — see
 A deployment that discovers this at its first production rollout, rather than
 while reading a deployment guide, has already had a worse morning than
 necessary.
+
+## SPIFFE trust profiles
+
+SPIFFE is configured in the same issuer list as OIDC and conventional mTLS:
+
+```yaml
+issuers:
+  - name: payments-spiffe
+    kind: spiffe
+    issuer: spiffe-prod
+    client_ca_file: /run/spire/bundle.pem
+    trust_domain: prod.example
+    namespace: payments
+    allowed_spiffe_ids:
+      - spiffe://prod.example/ns/payments/sa/flowstate
+      - spiffe://prod.example/ns/payments/sa/caller-*
+    federated_trust_domains: [partner.example]
+    jwt_svid_audiences: [https://flowstate.example]
+```
+
+The leaf must contain exactly one canonical `spiffe://` URI SAN. The trust
+domain is matched exactly, the complete ID must match an allowlist pattern,
+and `namespace` is the explicit profile-to-tenant mapping. Path pairs such as
+`/ns/payments/sa/worker` become normalized claims
+`spiffe.selector.ns=payments` and `spiffe.selector.sa=worker`; the subject is
+the complete canonical SPIFFE ID. Federated domains are denied unless named
+and still map to this profile's tenant. Certificate possession therefore only
+establishes a principal; the ordinary PARC policy makes the permission decision.
+
+Replace bundles atomically and rolling-restart listeners. Overlap old and new
+roots during rotation, then remove the old root after short-lived SVIDs chaining
+to it expire. A partial, unreadable, empty, expired, or wrong-domain
+bundle/SVID never causes fallback to bearer or anonymous authentication.
+
+Outbound callers use `auth.WorkloadAPITLSConfig` from the activity-side
+transport. Its callback asks the Workload API source at every TLS handshake, so
+X.509-SVID rotation is automatic and an unavailable agent fails the call. The
+source and TLS signer own the private key; workflows receive neither it nor the
+Workload API socket credential. This applies to Flowstate-to-Flowstate and
+external calls.
+
+JWT-SVIDs are limited to explicitly configured `jwt_svid_audiences` and remain
+in the activity-side transport, never workflow inputs, outputs, memo, search
+attributes, errors, or history. For DPoP or certificate-bound access tokens,
+the activity retains the DPoP key or X.509-SVID signer and binds the token to
+that same key. Binding is additional proof, not a replacement for the SPIFFE
+ID allowlist, tenant mapping, audience check, or PARC authorization.
