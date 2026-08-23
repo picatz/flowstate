@@ -16,8 +16,8 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // exampleSecretProvider always resolves to "example-token", whatever name was
@@ -122,7 +122,7 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
-		if tests.ReachesTheNetwork(wf.GetSteps()) {
+		if conformance.ReachesTheNetwork(wf.GetSteps()) {
 			continue
 		}
 
@@ -135,8 +135,8 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		// outcome — the wait reports `timed_out` and the run carries on down the
 		// branch the file wrote for that. So those do run here, unattended, which is
 		// the only way this corpus covers a wait at all on this driver.
-		gateLapses := tests.LapsesWithin(wf.GetSteps(), unattendedGateBudget)
-		if tests.WaitsForASignal(wf.GetSteps()) && !gateLapses {
+		gateLapses := conformance.LapsesWithin(wf.GetSteps(), unattendedGateBudget)
+		if conformance.WaitsForASignal(wf.GetSteps()) && !gateLapses {
 			continue
 		}
 
@@ -144,7 +144,7 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 		// `flow run local --input-file` takes, and the only answer either harness
 		// has to what an example requires. An example this cannot start fails
 		// naming that file rather than being skipped.
-		inputs, err := tests.BindExampleInputs(t, wf, path)
+		inputs, err := conformance.BindExampleInputs(t, wf, path)
 		require.NoError(t, err, "%s cannot be started", name)
 
 		ran++
@@ -235,14 +235,14 @@ func TestEveryOfflineExampleRuns(t *testing.T) {
 // Nothing runs until every one of its requests is pointed at the stand-in. An
 // example this cannot point is refused rather than run, because running it would
 // reach the real host — which makes the suite depend on somebody else's service
-// and fails outright with no egress. See [tests.PointAtStandIn] for why that is a
+// and fails outright with no egress. See [conformance.PointAtStandIn] for why that is a
 // refusal and not a fallback.
 func TestEveryNetworkedExampleRuns(t *testing.T) {
 	// Not parallel: the loopback exemption swaps a process-global registry entry
 	// and restores it on cleanup, so two top-level tests holding one at once would
 	// have the first one's restore land while the second still runs. Subtests may
 	// still be parallel — cleanup waits for them.
-	base, unserved := tests.NewExamplesHTTPServer(t)
+	base, unserved := conformance.NewExamplesHTTPServer(t)
 	secretStore, err := secrets.NewStore(exampleSecretProviders()...)
 	require.NoError(t, err)
 	secretPolicy, err := (auth.SecretAccessPolicy{Allow: []string{"true"}}).Compile()
@@ -260,14 +260,14 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		wf, _, err := flowfile.ParseFile(path)
 		require.NoError(t, err, "%s does not compile", name)
 
-		if !tests.ReachesTheNetwork(wf.GetSteps()) {
+		if !conformance.ReachesTheNetwork(wf.GetSteps()) {
 			continue
 		}
-		if tests.WaitsForASignal(wf.GetSteps()) {
+		if conformance.WaitsForASignal(wf.GetSteps()) {
 			continue
 		}
 
-		inputs, err := tests.BindExampleInputs(t, wf, path)
+		inputs, err := conformance.BindExampleInputs(t, wf, path)
 		require.NoError(t, err, "%s cannot be started", name)
 
 		ran++
@@ -276,7 +276,7 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		// example runs. A step it cannot point is not a step to run anyway: it would
 		// reach the real host, which makes the suite depend on somebody else's
 		// service being up and fails outright on a machine with no egress.
-		require.Empty(t, tests.PointAtStandIn(wf.GetSteps(), base),
+		require.Empty(t, conformance.PointAtStandIn(wf.GetSteps(), base),
 			"%s has an http step this test cannot point at the stand-in, so running it would "+
 				"reach the real host; give the step a literal url, or teach PointAtStandIn the shape it uses", name)
 
@@ -295,12 +295,12 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 
 			// An example whose point is a run that does not succeed. One of them,
 			// and the classification is shared with the durable harness so the two
-			// cannot disagree about which — see [tests.ExampleFailure].
+			// cannot disagree about which — see [conformance.ExampleFailure].
 			//
 			// What is asserted is that it failed *and* what the failure says, because
 			// "it failed" is satisfied by an example that broke for some other reason
 			// entirely, which is exactly how this kind of entry rots.
-			if want, fails := tests.ExampleFailure(name); fails {
+			if want, fails := conformance.ExampleFailure(name); fails {
 				require.Error(t, err, "%s is meant to fail and did not", name)
 				require.Contains(t, err.Error(), want,
 					"%s failed, but not in the way it exists to demonstrate", name)
@@ -323,8 +323,8 @@ func TestEveryNetworkedExampleRuns(t *testing.T) {
 		// An example's default arguments are one path through it; a variant is
 		// another, reached only by overriding an input the defaults leave alone
 		// — order-fulfillment's compensation is the case this exists for, since
-		// nothing about the default run ever fails. See [tests.ExampleVariants].
-		for _, variant := range tests.ExampleVariants(name) {
+		// nothing about the default run ever fails. See [conformance.ExampleVariants].
+		for _, variant := range conformance.ExampleVariants(name) {
 			variantInputs := variant.WithOverrides(inputs)
 
 			// Cloned rather than shared with the primary run above: both run in

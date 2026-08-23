@@ -125,10 +125,50 @@ const HandshakeVersion = 1
 // come back meaning something new.
 const Version1 = 1
 
-// Version2 is the current version of the plugin protocol: the services defined
+// Version2 was the second version of the plugin protocol: the services defined
 // in proto/flowstate/plugin/v1/plugin.proto, served over Connect on a Unix
-// socket, with every route under `/flowstate.plugin.v1.`.
+// socket, with every route under `/flowstate.plugin.v1.`. It is no longer
+// served.
+//
+// The routes are unchanged from it. What ended version 2 is the other half of
+// what a plugin and host agree on: the descriptor exchange. A plugin ships
+// descriptors for its own messages and omits every file the engine is known to
+// have, deriving that set by walking flowstate's schema. Splitting
+// flowstate/v1/flowstate.proto into twelve files (#658) changed that set on
+// both sides at once, and neither side can read the other's:
+//
+//   - a version 2 plugin imports flowstate/v1/flowstate.proto and does not ship
+//     it, and a host built after the split does not have that path;
+//   - a plugin built after the split imports flowstate/v1/value.proto and does
+//     not ship it, and a version 2 host does not have that path either.
+//
+// So the incompatibility runs in both directions, and neither is expressible as
+// a route that is missing — it is the *contents* of a manifest that stopped
+// being mutually readable.
+//
+// Retired rather than deleted, for the reason [Version1] is: a number that
+// meant something else must never come back meaning something new.
 const Version2 = 2
+
+// Version3 is the current version of the plugin protocol: the same services and
+// routes as [Version2], with the descriptor exchange speaking the twelve-file
+// flowstate/v1 schema rather than the single flowstate/v1/flowstate.proto.
+//
+// The number moves because the compatibility it asserts stopped being true.
+// Nothing in the route table changed, and it would have been easy to leave the
+// version at 2 on that basis — which is exactly the quiet failure [Version1]'s
+// doc describes, arriving one step later. Both sides negotiate 2, the handshake
+// succeeds, the plugin loads, and the *first* task manifest fails to
+// reconstruct with an error about an import path. The operator has been told
+// everything is fine and then handed a descriptor problem, deep in a launch,
+// for what is really a "these two builds cannot work together".
+//
+// Moving the number turns that into one refusal at startup, in terms of the
+// thing that actually changed, from whichever side is older — and the older
+// side refuses using code that already shipped, which is the only way to reach
+// a host that predates this change. A version that does not move across a
+// breaking change is a version that is lying.
+const Version3 = 3
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -149,11 +189,17 @@ const NetworkUnix = "unix"
 // highest preference last is not implied — [Negotiate] picks the highest common
 // version.
 //
-// [Version1] is absent because it is not served. A plugin built against it finds
-// no version in common and refuses at startup with a message naming both sides,
-// which is the failure this list exists to produce: one clear refusal before
-// anything runs, rather than a request to a route nobody answers.
-func HostVersions() []int { return []int{Version2} }
+// [Version1] and [Version2] are absent because they are not served. A plugin
+// built against either finds no version in common and refuses at startup with a
+// message naming both sides, which is the failure this list exists to produce:
+// one clear refusal before anything runs, rather than a request to a route
+// nobody answers — or, for version 2, a manifest nobody can reconstruct.
+//
+// Version 2 is left out rather than offered alongside 3 deliberately. Offering
+// it would let a version 2 plugin negotiate successfully and fail later at
+// descriptor linking, which is precisely the failure the bump exists to
+// prevent. A version that cannot work must not be offered.
+func HostVersions() []int { return []int{Version3} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {

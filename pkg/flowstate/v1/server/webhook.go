@@ -58,8 +58,11 @@ import (
 // [v1.DefaultCostLimit], applied inside [v1.BindWebhookTriggerInputs] through the
 // same [v1.Scope] every other evaluation in this system uses. How many candidate
 // signatures one header offers is bounded in [v1.VerifyWebhookDelivery]. And how
-// large a header may be is [http.Server.MaxHeaderBytes], which belongs to whoever
-// runs the server.
+// large the headers may be is [http.Server.MaxHeaderBytes], while how *many* of
+// them there are is [http.Server.MaxHeaderValueCount] — separate bounds because a
+// sender picks the ratio between them, one enormous value and thirty thousand
+// tiny ones costing the same bytes and wildly different numbers of map entries.
+// Both belong to whoever runs the server, and `flow server` sets both.
 //
 // # What a refusal says
 //
@@ -346,6 +349,33 @@ func (s *FlowstateServer) NewWebhookReceiver(
 		if err := receiver.register(ctx, workflow, resolver); err != nil {
 			return nil, err
 		}
+	}
+
+	// Trust is granted only once every workflow in this call has been fully
+	// admitted, in a second pass rather than interleaved with the loop above.
+	// A constructor that mutates the server-wide trusted set as it goes and
+	// then returns an error on a later workflow leaves that set holding
+	// entries a failed call never actually served — this deployment's own
+	// `Run`/`SignalWithStart`/`CreateSchedule` would then substitute a
+	// specification for a workflow no webhook route exists for, on the
+	// strength of a receiver that was never created.
+	//
+	// A workflow served for webhook deliveries is deployment-owned in the
+	// same sense a `--webhook` Flowfile always is: an operator chose to
+	// serve it, at this deployment, under this name and this namespace.
+	// Registering it here is what makes its `manual:` policy binding on
+	// `Run`/`SignalWithStart`/`CreateSchedule` too — without this, a caller
+	// who names the same workflow but submits their own copy authorizes
+	// against whatever restriction *they* wrote, not the one this
+	// deployment configured. Scoped by the same namespace the receiver
+	// itself was just scoped by, so two tenants that both configure a
+	// workflow named alike cannot substitute one for the other's.
+	//
+	// It refuses rather than replaces when this deployment already trusts a
+	// different specification under one of these names: see
+	// [FlowstateServer.registerTrustedWorkflows].
+	if err := s.registerTrustedWorkflows(namespace, workflows); err != nil {
+		return nil, err
 	}
 
 	return receiver, nil

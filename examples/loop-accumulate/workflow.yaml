@@ -18,7 +18,6 @@ description: A bounded loop that folds a running total across iterations, carryi
 # that could run forever is one whose runaway the engine must be able to stop, and
 # hitting the ceiling is a distinct failure rather than a silent stop (see the
 # `loop-accumulate-runaway` case in workflow.test.yaml, which proves it).
-
 inputs:
   # The counter's stop value. A default makes it optional, so the offline example
   # run and `flow test`'s happy path both get 5 without supplying anything — while a
@@ -28,7 +27,6 @@ inputs:
     type: int
     default: 5
     description: the value the counter must reach for the loop to stop
-
 steps:
   - id: countup
     description: Count from 1, folding a running sum, until the counter reaches the target.
@@ -40,13 +38,13 @@ steps:
       # the way a shaped `outputs:` is written: these positions hold values, so
       # the numbers are numbers and need no fence.
       init:
-        n: 1
+        "n": 1
         sum: 0
       # How it changes each iteration: advance the counter, fold the current term
       # into the sum. Evaluated after the body, so it can read the body's outputs
       # as well as the current `acc`.
       update:
-        n: ${acc.n + 1}
+        "n": ${acc.n + 1}
         sum: ${acc.sum + acc.n}
       # Stop once the counter reaches the target. Checked after the body.
       until: ${acc.n >= inputs.target}
@@ -54,17 +52,14 @@ steps:
       steps:
         - id: term
           log:
-            message: ${'n=%d, running sum so far=%d'.format([acc.n, acc.sum])}
-
+            message: ${"n=%d, running sum so far=%d".format([acc.n, acc.sum])}
 outputs:
   iterations:
     value: ${steps.countup.results.size()}
     description: how many times the body ran
-
   final_n:
     value: ${steps.countup.state.n}
     description: the counter's value when the loop stopped
-
   final_sum:
     value: ${steps.countup.state.sum}
     description: the running sum at the moment the loop stopped (1+2+3+4, since the sum folds the term *before* each iteration's counter)

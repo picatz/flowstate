@@ -37,6 +37,16 @@ import (
 // A deployment that does not federate outward has no broker, and then nothing is
 // mounted unauthenticated at all.
 //
+// # Why the protected-resource route only exists when configured
+//
+// picatz/flowstate#558's RFC 9728 document is the same shape as the discovery
+// document above: public, fetched before any credential exists, and mounted
+// here for that reason. It differs in one way — an unconfigured deployment
+// gets no route at all rather than an empty document, because an empty RFC
+// 9728 document is not a meaningful answer to "what does this resource
+// require", and a 404 says "this deployment has not configured that" more
+// honestly than a document with nothing in it would.
+//
 // # Why rejections are logged here
 //
 // The error an unauthenticated caller receives deliberately says very little, so
@@ -62,7 +72,7 @@ import (
 // per-route wrapping exists to keep.
 func serverHandler(
 	logger *slog.Logger, verifier auth.Verifier, peerVerifier auth.PeerVerifier, broker *auth.Broker,
-	rpc http.Handler, webhooks *server.WebhookReceiver,
+	rpc http.Handler, webhooks *server.WebhookReceiver, protectedResource *auth.ProtectedResource,
 ) http.Handler {
 	authenticatorOpts := []auth.AuthenticatorOption{
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
@@ -77,6 +87,13 @@ func serverHandler(
 	// identity on builds the exact same Authenticator this line always built.
 	if peerVerifier != nil {
 		authenticatorOpts = append(authenticatorOpts, auth.WithPeerVerifier(peerVerifier))
+	}
+	// protectedResource is nil unless --protected-resource was given (see
+	// cmd/flow/protectedresource.go's resolveProtectedResource): every
+	// deployment that never configures one builds the exact same Authenticator
+	// this line always built, and its 401 challenge is unchanged.
+	if protectedResource != nil {
+		authenticatorOpts = append(authenticatorOpts, auth.WithProtectedResource(protectedResource))
 	}
 
 	authenticated := authn.NewMiddleware(auth.NewAuthenticator(verifier, authenticatorOpts...).Authenticate)
@@ -105,6 +122,17 @@ func serverHandler(
 		issuer := broker.Issuer()
 		mux.Handle(auth.DiscoveryPath, issuer.Handler())
 		mux.Handle(issuer.JWKSPath(), issuer.Handler())
+	}
+
+	// Unconfigured (protectedResource nil) mounts nothing: see this function's
+	// doc, "why the protected-resource route only exists when configured".
+	// Mounted at protectedResource.Path(), not the bare
+	// [auth.ProtectedResourceMetadataPath] constant: RFC 9728 section 3.1
+	// inserts the well-known component before the resource's own path, so a
+	// deployment whose resource carries a path (the common case) is served
+	// under that path, not the origin alone — see [auth.ProtectedResource.Path].
+	if protectedResource != nil {
+		mux.Handle(protectedResource.Path(), protectedResource.Handler())
 	}
 
 	return mux

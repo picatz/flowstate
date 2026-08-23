@@ -35,7 +35,10 @@ const (
 	// It carries the same four fields, under the same names and with the same
 	// meanings, that an egress rule and a task-shape rule already see — subject,
 	// issuer, namespace, claims — so a clause about the caller is portable across
-	// every policy surface this system has (#548).
+	// every policy surface this system has (#548). "Same meaning" includes an
+	// unset namespace: it stays the empty string here, exactly as the other
+	// three surfaces render it, rather than substituting [defaultComponent] the
+	// way [workload.Namespace] does for subject composition (#568).
 	//
 	// This is deliberately *not* an alias for [attrWorkload]. The first attempt at
 	// unifying the vocabulary made it one, and that was worse than the split it
@@ -84,6 +87,21 @@ type callerIdentity struct {
 	// honestly — this is a token Flowstate received rather than one it minted.
 	Issuer string `cel:"issuer"`
 
+	// Namespace is the caller's namespace exactly as attested, empty when none
+	// was set — the raw value, not [defaultComponent].
+	//
+	// [workload.Namespace] substitutes the placeholder because a minted subject
+	// must always have the same number of components (#568's issue explains why
+	// that reasoning belongs to [WorkloadIdentity.SubjectFor] and nowhere else).
+	// This field has no such constraint: it is compared against operator-written
+	// CEL on the same footing as netpolicy's and taskpolicy's `identity.namespace`,
+	// which both carry the raw value. Defaulting it here and not there made one
+	// name — `identity.namespace` — mean two different things depending on which
+	// policy surface evaluated it: a `deny: identity.namespace == "_default"` rule
+	// wired to secrets never matched the identical unnamespaced caller on egress or
+	// task-shape policy, and the reverse rule wired the other way. Keep this raw so
+	// a clause about the caller's namespace is portable, the same promise this
+	// type's own doc comment already makes for its other three fields.
 	Namespace string `cel:"namespace"`
 
 	// Claims are the caller's claims. Reading an absent one is an error and an
@@ -325,9 +343,10 @@ func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentit
 		attrAudience: audience,
 		// Two principals, deliberately distinct. See [attrIdentity].
 		attrIdentity: callerIdentity{
-			Subject:   identity.Subject,
-			Issuer:    identity.Issuer,
-			Namespace: orDefault(identity.Namespace),
+			Subject: identity.Subject,
+			Issuer:  identity.Issuer,
+			// Raw, deliberately not orDefault: see [callerIdentity.Namespace].
+			Namespace: identity.Namespace,
 			Claims:    claims,
 		},
 		attrWorkload: who,

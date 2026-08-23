@@ -271,6 +271,13 @@ func IteratorName(loop *ForEach) string {
 //   - The run's step budget suspends into a fresh segment rather than refusing,
 //     so it paces a runaway rather than stopping one.
 //
+// One neighbour bounds a different axis of the same loop:
+// [MaxAtomicBlockActivities] caps the items × body product of a `for_each`
+// that runs as one suspension-opaque stretch — declared `max_parallel:`, or
+// reached inside concurrent or otherwise unsuspendable work — where the
+// pacing the step budget provides (and the cost math below assumes) does not
+// exist.
+//
 // The resource here is the length of a list an expression computed, so that is
 // what this bounds, per CLAUDE.md's rule about bounding the resource whose size
 // the far side chooses rather than one it merely correlates with.

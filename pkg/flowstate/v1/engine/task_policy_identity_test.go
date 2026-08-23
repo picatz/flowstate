@@ -15,7 +15,7 @@ import (
 // case named in the issue's own design record — "codex denied outside the
 // platform team" — against a *real* attested identity, which only the
 // durable driver can carry through to a task dispatch (see
-// [tests.TaskPolicyCases]' own doc for why the shared, both-drivers case set
+// [conformance.TaskPolicyCases]' own doc for why the shared, both-drivers case set
 // deliberately stays on `task` alone: the local driver's [v1.Scope.identity]
 // is always empty, by design, for every local run — [flowstatev1_test
 // .TestRunIdentityShapeLocal] pins that same fact for `run.identity`).
@@ -77,9 +77,9 @@ func TestTaskPolicyIdentityNamespaceDenial(t *testing.T) {
 		// participates in its own policing" and invariant 7's echo (no
 		// credential resolves for a denied call; here, no activity dispatches
 		// for one either).
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 		env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow(),

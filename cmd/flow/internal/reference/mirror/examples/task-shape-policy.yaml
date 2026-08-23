@@ -1,9 +1,6 @@
 edition: v2026.3
 name: task-shape-policy
-description: >-
-  A step the author has already weakened to `if: true`, refused anyway by a
-  deployment-side task-shape policy the author cannot see or edit (#187).
-
+description: "A step the author has already weakened to `if: true`, refused anyway by a deployment-side task-shape policy the author cannot see or edit (#187)."
 # This is #206 gap 3, closed the way `examples/approval-gate`'s own header says it
 # has to be: "Binding that requires policy the workflow's own author does not
 # control at all — deployment-side task-shape policy (#187)."

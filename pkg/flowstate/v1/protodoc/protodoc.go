@@ -1,6 +1,6 @@
 // Package protodoc reads the prose the schema already carries.
 //
-// The comments in proto/flowstate/v1/flowstate.proto describe the same things
+// The comments in proto/flowstate/v1/*.proto describe the same things
 // several Go surfaces describe again in their own words: the MCP tool table,
 // LSP hover, the generated reference. A sentence written twice is a sentence
 // that can disagree with itself, and the copy beside the code is the one that

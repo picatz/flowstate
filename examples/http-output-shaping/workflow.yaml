@@ -34,17 +34,16 @@ steps:
   - id: web
     http:
       method: GET
-      url: https://httpbin.org/json
       # One name per line, each value an ordinary expression position: ${...}
       # marks a CEL expression, as everywhere else in a Flowfile, and a bare
       # string would be a literal. This is the same shaping a `wait_for_signal:`
       # writes, spelled the same way — and because the names are written down,
       # `${steps.web.titel}` below is a diagnostic rather than an empty value.
       outputs:
+        source: ${vars.source}
         status: ${response.status_code}
         title: ${json_parse(response.body)["slideshow"]["title"]}
-        source: ${vars.source}
-
+      url: https://httpbin.org/json
   - id: report
     log:
       message: ${"got %d for %s from %s".format([steps.web.status, steps.web.title, steps.web.source])}

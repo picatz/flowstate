@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+	"github.com/picatz/flowstate/internal/covbuild"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
@@ -44,6 +48,10 @@ func TestTheMCPServerTakesThePluginFlags(t *testing.T) {
 // directory named the way pkg/flowstate/v1/plugin/discover.go requires, so
 // the wiring test below points a real host at a real plugin rather than
 // merely asserting the flag's existence.
+//
+// Once per test process, for the reason [buildFlowBinary] is one: the directory
+// is read-only to every caller, and relinking it per test was repetition the
+// package paid for in wall clock.
 func buildExamplePluginDir(t *testing.T) string {
 	t.Helper()
 
@@ -51,15 +59,51 @@ func buildExamplePluginDir(t *testing.T) string {
 		t.Skip("building the example plugin is slow; the flag wiring is covered without it")
 	}
 
-	dir := t.TempDir()
-	bin := filepath.Join(dir, plugin.BinaryPrefix+"example")
-
-	cmd := exec.Command("go", "build", "-o", bin,
-		"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example")
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "building the example plugin: %s", out)
+	dir, err := builtExamplePluginDir()
+	require.NoError(t, err, "building the example plugin")
 
 	return dir
+}
+
+// builtExamplePluginDir compiles the example plugin once for the test binary,
+// into a directory of its own, mirroring [buildFlowBinary]'s once-per-process
+// shape (#832): five subprocess tests want this plugin and the artifact is
+// identical every time.
+//
+// Its own directory, not beside the `flow` binary, because a plugin search path
+// is a directory the host scans: everything in it named flowstate-plugin-<name>
+// is something it will launch, and the tests that hand this path to
+// `--plugin-dir` mean exactly one plugin by it. [removeExamplePluginDir] takes
+// it away from [TestMain], the only scope that outlives every test's Cleanup.
+var builtExamplePluginDir = sync.OnceValues(func() (string, error) {
+	dir, err := os.MkdirTemp("", "flow-example-plugin")
+	if err != nil {
+		return "", err
+	}
+	examplePluginDir = dir
+
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", filepath.Join(dir, plugin.BinaryPrefix+"example"),
+		"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example")
+
+	if out, err := exec.Command("go", args...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("go build: %w\n%s", err, out)
+	}
+
+	return dir, nil
+})
+
+// examplePluginDir is where [builtExamplePluginDir] compiled, held so
+// [removeExamplePluginDir] can clean it up without asking the OnceValues to run.
+var examplePluginDir string
+
+// removeExamplePluginDir deletes what [builtExamplePluginDir] compiled, called
+// from [TestMain] beside [removeFlowBinary] and for the identical reason: a
+// directory shared by every test in the run outlives all their Cleanups.
+func removeExamplePluginDir() {
+	if examplePluginDir != "" {
+		_ = os.RemoveAll(examplePluginDir)
+	}
 }
 
 // mcpCatalogText asks flowstate_get_catalog over a real MCP session and

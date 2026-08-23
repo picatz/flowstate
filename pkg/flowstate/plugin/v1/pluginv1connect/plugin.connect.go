@@ -45,6 +45,9 @@ const (
 	SecretServiceResolveProcedure = "/flowstate.plugin.v1.SecretService/Resolve"
 	// TaskServiceExecuteProcedure is the fully-qualified name of the TaskService's Execute RPC.
 	TaskServiceExecuteProcedure = "/flowstate.plugin.v1.TaskService/Execute"
+	// TaskServiceExecuteStreamProcedure is the fully-qualified name of the TaskService's ExecuteStream
+	// RPC.
+	TaskServiceExecuteStreamProcedure = "/flowstate.plugin.v1.TaskService/ExecuteStream"
 )
 
 // PluginServiceClient is a client for the flowstate.plugin.v1.PluginService service.
@@ -232,6 +235,35 @@ func (UnimplementedSecretServiceHandler) Resolve(context.Context, *connect.Reque
 // TaskServiceClient is a client for the flowstate.plugin.v1.TaskService service.
 type TaskServiceClient interface {
 	Execute(context.Context, *connect.Request[v1.ExecuteRequest]) (*connect.Response[v1.ExecuteResponse], error)
+	// ExecuteStream is Execute, plus the phases a plugin passes through while it
+	// runs: the host reads a stream of zero or more TaskProgress messages
+	// followed by exactly one terminal ExecuteResponse, rather than waiting on
+	// one response for the call's whole duration.
+	//
+	// The host calls this only for a plugin that advertised
+	// CAPABILITY_TASK_PROGRESS, and calls Execute, unary, for one that did not
+	// — see that capability's own doc comment for why the choice is made once,
+	// from the manifest, rather than discovered by dialing this RPC and reading
+	// whatever error comes back.
+	//
+	// # Why a second RPC rather than changing Execute
+	//
+	// Adding an RPC is additive — a plugin that never advertises
+	// CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
+	// this at all. Changing Execute itself to stream would be the opposite:
+	// every plugin that only implements the old shape — in this repository's
+	// own three other plugin modules or in any language a third party wrote
+	// one in — would stop answering the call the engine makes to run its tasks
+	// at all. That is the same "a break here is every plugin in the wild"
+	// reasoning CLAUDE.md already gives for `buf breaking`, applied to a
+	// change that check cannot see: it lints message and field compatibility,
+	// not whether an RPC's streaming type changed.
+	//
+	// Best-effort, like the progress report it exists to carry: a plugin that
+	// never calls ReportProgress sends only the terminal message, which reads
+	// to the host exactly as it always has — one fixed phase for the call's
+	// whole duration.
+	ExecuteStream(context.Context, *connect.Request[v1.ExecuteStreamRequest]) (*connect.ServerStreamForClient[v1.ExecuteStreamResponse], error)
 }
 
 // NewTaskServiceClient constructs a client for the flowstate.plugin.v1.TaskService service. By
@@ -251,12 +283,19 @@ func NewTaskServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(taskServiceMethods.ByName("Execute")),
 			connect.WithClientOptions(opts...),
 		),
+		executeStream: connect.NewClient[v1.ExecuteStreamRequest, v1.ExecuteStreamResponse](
+			httpClient,
+			baseURL+TaskServiceExecuteStreamProcedure,
+			connect.WithSchema(taskServiceMethods.ByName("ExecuteStream")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // taskServiceClient implements TaskServiceClient.
 type taskServiceClient struct {
-	execute *connect.Client[v1.ExecuteRequest, v1.ExecuteResponse]
+	execute       *connect.Client[v1.ExecuteRequest, v1.ExecuteResponse]
+	executeStream *connect.Client[v1.ExecuteStreamRequest, v1.ExecuteStreamResponse]
 }
 
 // Execute calls flowstate.plugin.v1.TaskService.Execute.
@@ -264,9 +303,43 @@ func (c *taskServiceClient) Execute(ctx context.Context, req *connect.Request[v1
 	return c.execute.CallUnary(ctx, req)
 }
 
+// ExecuteStream calls flowstate.plugin.v1.TaskService.ExecuteStream.
+func (c *taskServiceClient) ExecuteStream(ctx context.Context, req *connect.Request[v1.ExecuteStreamRequest]) (*connect.ServerStreamForClient[v1.ExecuteStreamResponse], error) {
+	return c.executeStream.CallServerStream(ctx, req)
+}
+
 // TaskServiceHandler is an implementation of the flowstate.plugin.v1.TaskService service.
 type TaskServiceHandler interface {
 	Execute(context.Context, *connect.Request[v1.ExecuteRequest]) (*connect.Response[v1.ExecuteResponse], error)
+	// ExecuteStream is Execute, plus the phases a plugin passes through while it
+	// runs: the host reads a stream of zero or more TaskProgress messages
+	// followed by exactly one terminal ExecuteResponse, rather than waiting on
+	// one response for the call's whole duration.
+	//
+	// The host calls this only for a plugin that advertised
+	// CAPABILITY_TASK_PROGRESS, and calls Execute, unary, for one that did not
+	// — see that capability's own doc comment for why the choice is made once,
+	// from the manifest, rather than discovered by dialing this RPC and reading
+	// whatever error comes back.
+	//
+	// # Why a second RPC rather than changing Execute
+	//
+	// Adding an RPC is additive — a plugin that never advertises
+	// CAPABILITY_TASK_PROGRESS is simply never asked, so it need not implement
+	// this at all. Changing Execute itself to stream would be the opposite:
+	// every plugin that only implements the old shape — in this repository's
+	// own three other plugin modules or in any language a third party wrote
+	// one in — would stop answering the call the engine makes to run its tasks
+	// at all. That is the same "a break here is every plugin in the wild"
+	// reasoning CLAUDE.md already gives for `buf breaking`, applied to a
+	// change that check cannot see: it lints message and field compatibility,
+	// not whether an RPC's streaming type changed.
+	//
+	// Best-effort, like the progress report it exists to carry: a plugin that
+	// never calls ReportProgress sends only the terminal message, which reads
+	// to the host exactly as it always has — one fixed phase for the call's
+	// whole duration.
+	ExecuteStream(context.Context, *connect.Request[v1.ExecuteStreamRequest], *connect.ServerStream[v1.ExecuteStreamResponse]) error
 }
 
 // NewTaskServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -282,10 +355,18 @@ func NewTaskServiceHandler(svc TaskServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(taskServiceMethods.ByName("Execute")),
 		connect.WithHandlerOptions(opts...),
 	)
+	taskServiceExecuteStreamHandler := connect.NewServerStreamHandler(
+		TaskServiceExecuteStreamProcedure,
+		svc.ExecuteStream,
+		connect.WithSchema(taskServiceMethods.ByName("ExecuteStream")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.plugin.v1.TaskService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case TaskServiceExecuteProcedure:
 			taskServiceExecuteHandler.ServeHTTP(w, r)
+		case TaskServiceExecuteStreamProcedure:
+			taskServiceExecuteStreamHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -297,4 +378,8 @@ type UnimplementedTaskServiceHandler struct{}
 
 func (UnimplementedTaskServiceHandler) Execute(context.Context, *connect.Request[v1.ExecuteRequest]) (*connect.Response[v1.ExecuteResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.plugin.v1.TaskService.Execute is not implemented"))
+}
+
+func (UnimplementedTaskServiceHandler) ExecuteStream(context.Context, *connect.Request[v1.ExecuteStreamRequest], *connect.ServerStream[v1.ExecuteStreamResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.plugin.v1.TaskService.ExecuteStream is not implemented"))
 }
