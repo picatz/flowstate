@@ -35,6 +35,22 @@ import (
 // Sign is called on the path of a mint request and is given that request's
 // context, so a remote implementation inherits its deadline and cancellation
 // rather than blocking a caller who has already given up.
+//
+// # Sign must be safe for concurrent use
+//
+// An [Issuer] is safe for concurrent use and mints in parallel: [Issuer.Mint]
+// takes the issuer's *read* lock precisely so that concurrent mints sign at the
+// same time, which means concurrent calls into one Signer, and nothing between
+// here and there serializes them.
+//
+// That is deliberate rather than an oversight. Serializing every signature
+// inside Flowstate would make one round trip to a KMS the rate limit for the
+// whole process, and a KMS answers concurrent requests perfectly well. An
+// implementation whose transport cannot — an HSM adapter holding a single
+// mutable session is the usual one — owns that: guard the session with a mutex,
+// or hand each call its own from a pool. The obligation sits with the adapter
+// because only the adapter knows whether its transport has one session or many,
+// and how many are affordable.
 type Signer interface {
 	// KeyID returns the id this signer's public half is published under, and
 	// which every assertion it signs carries in its "kid" header.
@@ -101,15 +117,54 @@ func NewProviderSigningKey(ctx context.Context, signer Signer, public crypto.Pub
 			ErrInvalidPolicy, truncate(id, 64), truncate(string(declared), 32), algorithm)
 	}
 
-	if err := provePossession(ctx, signer, id, algorithm, public); err != nil {
+	// The size bound is applied by wrapping the method value once, here, so
+	// that the proof below and every mint afterwards go through the same
+	// checked function. See [boundedSign].
+	sign := boundedSign(signer, id)
+
+	if err := provePossession(ctx, sign, id, algorithm, public); err != nil {
 		return SigningKey{}, err
 	}
 
 	// signer.Sign is a method value: the receiver, and whatever the
 	// implementation holds behind it, is captured rather than stored in a
 	// field. fmt reaches a func field as an address and no further, which is
-	// the same containment the closure in [NewSigningKey] gets.
-	return SigningKey{id: id, algorithm: algorithm, published: published, signer: signer.Sign}, nil
+	// the same containment the closure in [NewSigningKey] gets. Wrapping it in
+	// a closure keeps that property: a closure's captured variables are no more
+	// reachable by reflection than a bound receiver is.
+	return SigningKey{id: id, algorithm: algorithm, published: published, signer: sign}, nil
+}
+
+// boundedSign is [Signer.Sign] with the size of its answer bounded.
+//
+// The bound belongs here rather than at a call site because a signer is a
+// remote service, and how large its answer is is the far side's choice on
+// *every* call rather than only the first. Checking it in the start-up proof
+// alone bounds a provider that was well behaved when the configuration loaded
+// and nothing after that: a provider later compromised, or upgraded into a
+// regression, returns a token of whatever size it likes and [Issuer.Mint] hands
+// it on as a successful assertion. Wrapping the method value once means no
+// later call can reach the signer without passing the check — the same reason
+// this repository puts the response cap on the [http.RoundTripper] rather than
+// on an RPC library's option.
+//
+// [maxTokenBytes] is the limit [OIDCVerifier.Verify] applies to a token
+// arriving from outside, because this is the same kind of value from the same
+// kind of place: something another process chose the size of.
+func boundedSign(signer Signer, id string) func(context.Context, jwt.ClaimsSet) (string, error) {
+	return func(ctx context.Context, claims jwt.ClaimsSet) (string, error) {
+		raw, err := signer.Sign(ctx, claims)
+		if err != nil {
+			return "", err
+		}
+
+		if len(raw) > maxTokenBytes {
+			return "", fmt.Errorf("%w: signer %q returned %d bytes, over the %d byte limit",
+				ErrMalformedToken, truncate(id, 64), len(raw), maxTokenBytes)
+		}
+
+		return raw, nil
+	}
 }
 
 // proofClaim is the only claim the start-up proof of possession carries.
@@ -123,19 +178,16 @@ const proofClaim = "flowstate.proof_of_possession"
 
 // provePossession asks the signer for one signature and checks it against the
 // public key that would be published for it.
-func provePossession(ctx context.Context, signer Signer, id string, algorithm jwa.Algorithm, public crypto.PublicKey) error {
-	raw, err := signer.Sign(ctx, jwt.ClaimsSet{proofClaim: true})
+//
+// It is handed the bounded signing function rather than the [Signer], so what
+// it parses has already been through the same size check every mint applies —
+// one check, on one path, rather than a start-up copy of it that a later call
+// does not reach. See [boundedSign].
+func provePossession(ctx context.Context, sign func(context.Context, jwt.ClaimsSet) (string, error), id string, algorithm jwa.Algorithm, public crypto.PublicKey) error {
+	raw, err := sign(ctx, jwt.ClaimsSet{proofClaim: true})
 	if err != nil {
 		return fmt.Errorf("%w: signer %q could not sign the start-up proof of possession: %w",
 			ErrInvalidPolicy, truncate(id, 64), err)
-	}
-
-	// A signer is a remote service, so its answer is bounded before it is
-	// parsed, by the same limit [OIDCVerifier.Verify] applies to a token
-	// arriving from outside.
-	if len(raw) > maxTokenBytes {
-		return fmt.Errorf("%w: signer %q returned %d bytes, over the %d byte limit",
-			ErrInvalidPolicy, truncate(id, 64), len(raw), maxTokenBytes)
 	}
 
 	token, err := jwt.Parse(raw)
