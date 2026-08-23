@@ -800,7 +800,7 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 	// posture in one line, and the same one `flow server --insecure-no-auth`
 	// installs.
 	httpServer := &http.Server{
-		Handler: serverHandler(infraLogger(), auth.InsecureAnonymousVerifier(), nil, nil, rpcMux, nil, nil),
+		Handler: serverHandler(infraLogger(), auth.InsecureAnonymousVerifier(), nil, nil, "", rpcMux, nil, nil),
 
 		// The same timeouts `flow server` sets, for the same reason: Go's zero
 		// values mean no timeout at all, and a dev stack on loopback still has a
