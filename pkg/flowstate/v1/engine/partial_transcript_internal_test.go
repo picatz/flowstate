@@ -133,8 +133,8 @@ func TestRunWorkflowLoopExhaustionAcrossCAN(t *testing.T) {
 				testSuite := &testsuite.WorkflowTestSuite{}
 				env := testSuite.NewTestWorkflowEnvironment()
 				env.RegisterWorkflow(exhaustionSpanningProbe)
-				env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(Task)
-				env.OnActivity(TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScope)
+				env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskV2)
+				env.OnActivity(TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScopeV2)
 				env.OnActivity(WorkflowVars, mock.Anything, mock.Anything).Return(WorkflowVars)
 
 				env.ExecuteWorkflow(exhaustionSpanningProbe, state)
@@ -199,8 +199,8 @@ func TestRunWorkflowLoopExhaustionTranscript(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(partialTranscriptProbe)
-			env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(Task)
-			env.OnActivity(TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScope)
+			env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskV2)
+			env.OnActivity(TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScopeV2)
 			env.OnActivity(WorkflowVars, mock.Anything, mock.Anything).Return(WorkflowVars)
 
 			env.ExecuteWorkflow(partialTranscriptProbe, &v1.RunState{Workflow: test.Workflow})
@@ -232,8 +232,8 @@ func TestRunWorkflowPartialTranscript(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(partialTranscriptProbe)
-			env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(Task)
-			env.OnActivity(TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScope)
+			env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskV2)
+			env.OnActivity(TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(TaskInScopeV2)
 			env.OnActivity(WorkflowVars, mock.Anything, mock.Anything).Return(WorkflowVars)
 
 			env.ExecuteWorkflow(partialTranscriptProbe, &v1.RunState{Workflow: test.Workflow})

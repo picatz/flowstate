@@ -95,7 +95,7 @@ func TestMockedRetryableFailureDrivesTheRealRetryPolicy(t *testing.T) {
 	env.RegisterWorkflow(engine.Run)
 
 	var attempts atomic.Int32
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
 			if attempts.Add(1) <= wantFailures {
 				return nil, temporal.NewApplicationErrorWithOptions(
@@ -164,7 +164,7 @@ func TestMockedRetriesReachTheMaximumRetryInterval(t *testing.T) {
 	env.RegisterWorkflow(engine.Run)
 
 	var attempts atomic.Int32
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
 			if attempts.Add(1) <= wantFailures {
 				return nil, temporal.NewApplicationErrorWithOptions(
@@ -208,7 +208,7 @@ func TestMockedPersistentRetryableFailureStopsAtMaxAttempts(t *testing.T) {
 	env.RegisterWorkflow(engine.Run)
 
 	var attempts atomic.Int32
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
 			attempts.Add(1)
 			return nil, temporal.NewApplicationErrorWithOptions(
@@ -248,7 +248,7 @@ func TestMockedNonRetryableFailureStopsAfterOneAttempt(t *testing.T) {
 	env.RegisterWorkflow(engine.Run)
 
 	var attempts atomic.Int32
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+	env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(func(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
 			attempts.Add(1)
 			return nil, temporal.NewApplicationErrorWithOptions(

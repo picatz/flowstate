@@ -152,6 +152,12 @@ func (a taskActivities) TaskAuthorized(ctx context.Context, task *v1.Task, ident
 	return out, activityError(task.GetName(), err, continueOnError)
 }
 
+// TaskAuthorizedV2 gives newly scheduled authorized work a versioned activity
+// name while the historical TaskAuthorized handler remains replayable.
+func (a taskActivities) TaskAuthorizedV2(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+	return a.TaskAuthorized(ctx, task, identity, workflowName, runID, stepID, continueOnError)
+}
+
 func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
 	out, err := observeTask(ctx, task, stepID, func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
 		// See [TaskAuthorized]'s identical check, this arm's sibling on the
@@ -170,4 +176,10 @@ func (a taskActivities) TaskInScopeAuthorized(ctx context.Context, task *v1.Task
 	})
 
 	return out, activityError(task.GetName(), err, continueOnError)
+}
+
+// TaskInScopeAuthorizedV2 is the versioned name used by newly scheduled
+// authorized, scope-carrying work.
+func (a taskActivities) TaskInScopeAuthorizedV2(ctx context.Context, task *v1.Task, scope *v1.Scope, identity *v1.WorkloadIdentity, workflowName, runID, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+	return a.TaskInScopeAuthorized(ctx, task, scope, identity, workflowName, runID, stepID, continueOnError)
 }

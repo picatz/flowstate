@@ -77,6 +77,8 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 
 	w.RegisterActivity(Task)
 	w.RegisterActivity(TaskInScope)
+	w.RegisterActivity(TaskV2)
+	w.RegisterActivity(TaskInScopeV2)
 	configured := TaskRuntimeConfig{}
 	if len(runtime) > 0 {
 		configured = runtime[0]
@@ -84,6 +86,8 @@ func Register(w worker.Registry, runtime ...TaskRuntimeConfig) {
 	authorized := taskActivities{configured: configured}
 	w.RegisterActivityWithOptions(authorized.TaskAuthorized, activity.RegisterOptions{Name: "TaskAuthorized"})
 	w.RegisterActivityWithOptions(authorized.TaskInScopeAuthorized, activity.RegisterOptions{Name: "TaskInScopeAuthorized"})
+	w.RegisterActivityWithOptions(authorized.TaskAuthorizedV2, activity.RegisterOptions{Name: "TaskAuthorizedV2"})
+	w.RegisterActivityWithOptions(authorized.TaskInScopeAuthorizedV2, activity.RegisterOptions{Name: "TaskInScopeAuthorizedV2"})
 	w.RegisterActivity(WorkflowVars)
 
 	// The worker's admission check. Registered here and not conditionally on a

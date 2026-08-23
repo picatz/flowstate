@@ -126,11 +126,22 @@ func checkTaskDispatchPolicy(ctx context.Context, span trace.Span, task *v1.Task
 // activity returns — see [activityError]'s own doc for why that is a
 // heuristic and not a correctness signal.
 func Task(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, continueOnError bool) (*v1.Node_Outputs, error) {
+	return runTaskActivity(ctx, task, identity, "", continueOnError)
+}
+
+// TaskV2 is the activity entry point for newly scheduled, pre-resolved tasks.
+// Task remains registered with its historical signature for replay; this
+// version adds the step identity required by attempt-level tracing.
+func TaskV2(ctx context.Context, in *v1.Task, identity *v1.WorkloadIdentity, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+	return runTaskActivity(ctx, in, identity, stepID, continueOnError)
+}
+
+func runTaskActivity(ctx context.Context, task *v1.Task, identity *v1.WorkloadIdentity, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
 	// The whole activity runs inside the observation, so that every way out —
 	// a policy refusal, a task failure, and a panic that returns nothing at all
 	// — is recorded once and recorded honestly. See [v1.ObserveTask] for why it
 	// takes the work rather than handing back a function to defer.
-	out, err := observeTask(ctx, task, "", func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
+	out, err := observeTask(ctx, task, stepID, func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
 		// The deployment's task-shape policy (#187), checked once per activity
 		// entry — the durable driver's half of "once per dispatch," matching
 		// where the local driver checks, above its own retry loop
@@ -220,7 +231,17 @@ func TaskWithPrev(ctx context.Context, task *v1.Task, prev *v1.Workflow_StepOutp
 // continueOnError carries the step's `continue_on_error:` across the activity
 // boundary the same way it does on [Task] — see that parameter's doc.
 func TaskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, continueOnError bool) (*v1.Node_Outputs, error) {
-	out, err := observeTask(ctx, task, "", func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
+	return taskInScope(ctx, task, scope, "", continueOnError)
+}
+
+// TaskInScopeV2 is the activity entry point for newly scheduled scope-carrying
+// tasks. The legacy entry point remains available to recorded histories.
+func TaskInScopeV2(ctx context.Context, task *v1.Task, scope *v1.Scope, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+	return taskInScope(ctx, task, scope, stepID, continueOnError)
+}
+
+func taskInScope(ctx context.Context, task *v1.Task, scope *v1.Scope, stepID string, continueOnError bool) (*v1.Node_Outputs, error) {
+	out, err := observeTask(ctx, task, stepID, func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
 		// The deployment's task-shape policy (#187), checked once per activity
 		// entry against the run's real attested identity — this entry point is
 		// the one that carries a [v1.Scope], so unlike [Task]/[TaskWithPrev]

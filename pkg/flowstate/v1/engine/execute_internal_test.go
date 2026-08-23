@@ -60,7 +60,7 @@ func TestRunUndoTaskNamesUndoBudgetExpiry(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(probe)
-	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+	env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, _ *v1.Task, _ *v1.WorkloadIdentity, _ bool) (*v1.Node_Outputs, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -104,7 +104,7 @@ func TestRunUndoTaskDoesNotNameUndoBudgetExpiryForAnOrdinaryFailure(t *testing.T
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(probe)
-	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+	env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(context.Context, *v1.Task, *v1.WorkloadIdentity, bool) (*v1.Node_Outputs, error) {
 			return nil, activityError("log", v1.NewTaskError("log", v1.ErrorKindInvalidInput, errors.New("bad input")), false)
 		})
@@ -191,7 +191,7 @@ func TestRunTaskTimeoutNamesDeclaredBudget(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(runTaskProbe)
-	env.OnActivity(Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(hangingTaskActivity)
+	env.OnActivity(TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(hangingTaskActivity)
 
 	env.ExecuteWorkflow(runTaskProbe, node)
 	require.True(t, env.IsWorkflowCompleted(), "the probe workflow never finished")

@@ -173,17 +173,9 @@ func TaskSpanName(taskName string) string {
 // omitted rather than written blank. An empty attribute is worse than a missing
 // one: it reads as a step whose id is the empty string.
 //
-// # What is deliberately not here: the attempt
-//
-// [SpanAttributeAttempt] is written by the durable driver alone, from
-// `activity.GetInfo`, and the local driver leaves it absent even though its own
-// retry loop is counting. The number means "which attempt at this activity is
-// this", a fact the substrate owns and preserves across a worker crash; the
-// local loop's counter is an in-process integer that a crash discards along with
-// the run. Writing the same key for the second thing would make a trace claim
-// substrate knowledge nobody has, and absence beats fabrication — a query
-// filtering on `flowstate.attempt > 1` gets durable retries and no local
-// impostors.
+// The caller adds [SpanAttributeAttempt], because the attempt counter belongs to
+// the execution driver: Temporal supplies it durably and the local retry loop
+// supplies the rehearsal's corresponding number.
 func StartTaskSpan(ctx context.Context, task *Task, stepID string) (context.Context, trace.Span) {
 	ctx, span := otel.GetTracerProvider().Tracer(taskTracerName).Start(ctx,
 		TaskSpanName(task.GetName()), trace.WithSpanKind(trace.SpanKindInternal))

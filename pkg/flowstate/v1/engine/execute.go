@@ -967,19 +967,19 @@ func (e *executor) dispatch(
 ) error {
 	if scope != nil {
 		if needsAuthority {
-			return workflow.ExecuteActivity(ctx, "TaskInScopeAuthorized", resolved, scope,
+			return workflow.ExecuteActivity(ctx, "TaskInScopeAuthorizedV2", resolved, scope,
 				e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 		}
 
-		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope, continueOnError).Get(ctx, out)
+		return workflow.ExecuteActivity(ctx, TaskInScopeV2, resolved, scope, stepID, continueOnError).Get(ctx, out)
 	}
 
 	if needsAuthority {
-		return workflow.ExecuteActivity(ctx, "TaskAuthorized", resolved,
+		return workflow.ExecuteActivity(ctx, "TaskAuthorizedV2", resolved,
 			e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 	}
 
-	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity, continueOnError).Get(ctx, out)
+	return workflow.ExecuteActivity(ctx, TaskV2, resolved, e.identity, stepID, continueOnError).Get(ctx, out)
 }
 
 // runUndoTask runs one registered compensation as an activity.

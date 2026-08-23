@@ -95,8 +95,8 @@ func TestRunWorkflowLoopResultsAcrossCAN(t *testing.T) {
 				testSuite := &testsuite.WorkflowTestSuite{}
 				env := testSuite.NewTestWorkflowEnvironment()
 				env.RegisterWorkflow(engine.Run)
-				env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-				env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+				env.OnActivity(engine.TaskV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskV2)
+				env.OnActivity(engine.TaskInScopeV2, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScopeV2)
 				env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 				env.ExecuteWorkflow(engine.Run, state)
