@@ -10,6 +10,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+	flowtests "github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -256,19 +257,24 @@ func TestTaskSpanNamesTheSecretReferenceAndNeverTheSecret(t *testing.T) {
 // something useful, and it does not say the secret.
 func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 	recorder := recordSpans(t)
-
-	const taskName = "traced-secret-failing-task"
-	registerSecretReadingTask(t, taskName, true)
+	flowtests.RegisterTraceContainmentTask(t)
+	store, policy := flowtests.TraceContainmentAuthority(t)
+	runtime, err := engine.NewTaskRuntimeConfig(store, policy, nil)
+	require.NoError(t, err)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	engine.Register(env, tracedSecretRuntime(t))
-	env.ExecuteWorkflow(engine.Run, secretReadingWorkflow(taskName))
+	engine.Register(env, runtime)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{
+		Workflow: flowtests.TraceContainmentWorkflow(),
+		Inputs:   flowtests.TraceContainmentInputs(),
+		Identity: &v1.WorkloadIdentity{Subject: "trace-caller", Issuer: "https://issuer.example", Namespace: "trace-tenant"},
+	})
 	require.Error(t, env.GetWorkflowError(), "the task fails on purpose")
 
 	var described bool
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
-		if stub.Name != "flowstate.task/"+taskName {
+		if stub.Name != v1.TaskSpanName(flowtests.ContainmentTaskName) {
 			continue
 		}
 
@@ -282,7 +288,7 @@ func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 	}
 	require.True(t, described, "no span covered the failing task; recorded: %v", spanNames(recorder))
 
-	requireNoSecretInSpans(t, recorder, theSecret)
+	flowtests.AssertTraceContainment(t, recorder, v1.TaskSpanName(flowtests.ContainmentTaskName))
 }
 
 // TestNoSpansWithoutATracerProvider is invariant 8 at this layer: a worker in a
