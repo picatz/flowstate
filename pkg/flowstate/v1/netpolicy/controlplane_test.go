@@ -272,6 +272,39 @@ func Test_controlPlane_proxyCannotBypassReservation(t *testing.T) {
 	requireDenied(t, err, ReasonControlPlane, "reserved")
 }
 
+// Test_controlPlane_proxyStillRequiresRunIdentity is the second refusal the
+// reservation makes, taken through the same proxied path.
+//
+// The test above covers the undeclared capability, where the answer is a flat
+// refusal that never reads the request. This one covers the deployment that
+// actually turned self-administration on: there the address is permitted and the
+// question becomes whose authority the request carries, which is decided from
+// the request context rather than from the address. Both refusals live behind
+// checkResolvedAddr, and only one of them was reachable from a test.
+func Test_controlPlane_proxyStillRequiresRunIdentity(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("an anonymous control-plane request reached the proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	proxyFor := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+
+	const controlPlane = "127.0.0.1:9"
+	policy, err := New(
+		WithAllowLoopback(),
+		WithControlPlane(controlPlane),
+		WithSelfAdministration(),
+		WithProxy(proxyFor),
+	)
+	require.NoError(t, err)
+
+	_, err = get(t, policy, "http://"+controlPlane+"/")
+	requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
+}
+
 // Test_controlPlane_grantsOnlyTheDeclaredAddress covers the other half of "not a
 // side effect of debugging against localhost": the capability permits the control
 // plane and nothing else.
