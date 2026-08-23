@@ -6,6 +6,17 @@
 > measured. Nothing in it describes Flowstate to someone using it — the map of
 > the documentation that does is [docs/README.md](../README.md).
 
+> [!WARNING]
+> **Superseded (2026-08-23).** This is the roadmap as it stood in early
+> August, kept as a record of what was decided then — the tree has moved past
+> it, and several of its claims are now false of the code. Its headline gap,
+> "there is no `flow test`", closed when #155 shipped, and the testing surface
+> now has its own issue slate (#922–#937 and #477); "nothing heartbeats"
+> predates `engine/heartbeat.go`. Read the tree and the open issues for
+> current state, never this file (#937 is the correction record). The live
+> process docs are [factory.md](factory.md) and
+> [orchestration.md](orchestration.md).
+
 ## Status: executed, then continued (2026-08-03)
 
 The week's plan shipped as PR #123 — thirty-one commits, each a green stopping
