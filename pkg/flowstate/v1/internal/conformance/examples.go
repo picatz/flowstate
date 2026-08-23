@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,8 +20,10 @@ import (
 
 	"github.com/google/cel-go/cel"
 	celpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // The corpus in `examples/` is run by two harnesses now, one per driver, and this
@@ -312,6 +316,59 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 	// signal to the address the request body carried.
 	mux.HandleFunc("/reviews", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
+	})
+
+	// federation-flow-to-flow: the peer deployment's Get RPC. Two things this
+	// handler does that a bare echo would not, because the example claims both.
+	//
+	// It refuses an unauthenticated request — the whole point of that example is
+	// that the step reaches the peer carrying an assertion the worker minted and
+	// applied, so a stand-in that answered 200 to anything would let it pass with
+	// `credential:` removed. It cannot *verify* the assertion (it holds none of
+	// this deployment's keys — pkg/flowstate/v1/auth's own
+	// TestFlowstateToFlowstateFederation is where verification is proven), but
+	// requiring that a bearer was presented at all is the half a fixture holds.
+	//
+	// And it decodes the body as a real [v1.GetRequest] and rejects one that is
+	// not shaped like one, exactly as a Connect handler would — so the example
+	// cannot get away with a body a real peer would answer 400 to. It answers a
+	// [v1.GetResponse] in canonical proto-JSON, which is why the workflow reads
+	// the status back under the camelCase field name the wire carries.
+	mux.HandleFunc("/flowstate.v1.WorkflowService/Get", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			w.WriteHeader(http.StatusUnauthorized)
+
+			return
+		}
+
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+		var request v1.GetRequest
+		if err := protojson.Unmarshal(raw, &request); err != nil || request.GetWorkflowId() == "" {
+			// A real Connect handler rejects a body that is not a GetRequest, so
+			// this one must too, or the example would pass on a shape that 400s.
+			w.WriteHeader(http.StatusBadRequest)
+
+			return
+		}
+
+		response, err := protojson.Marshal(&v1.GetResponse{
+			WorkflowId: request.GetWorkflowId(),
+			RunId:      "1a1e5a9e-2b6c-4a4d-8f0e-3b9c2d7e5f01",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+			Kind:       &v1.GetResponse_Outputs{Outputs: &v1.Workflow_StepOutputs{}},
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(response)
 	})
 
 	// enterprise-fund-transfer: a debit or a credit, with which account in the
@@ -1169,3 +1226,59 @@ var exampleVariants = map[string][]ExampleVariant{
 func ExampleVariants(name string) []ExampleVariant {
 	return exampleVariants[name]
 }
+
+// ExamplesBroker builds the credential broker the `examples/` corpus needs,
+// with every target any example's `credential:` input names.
+//
+// It lives here for the same reason the stand-in above does. Two harnesses run
+// this corpus, one per driver, and each used to build its own broker: the local
+// one in examples_run_test.go, the durable one through a
+// [Authority.Broker] configured with a single target. An example added against
+// a target only one of them registered would then fail on one driver and pass
+// on the other — a disagreement the harness manufactured rather than one the
+// drivers had. One list, read by both.
+//
+// The `assertion` target takes no double, unlike the exchanging one beside it:
+// an assertion exchanger reaches nothing, so the real one is the cheap one, and
+// what a run applies here is an assertion this fixture issuer actually signed.
+func ExamplesBroker(tb testing.TB) *auth.Broker {
+	tb.Helper()
+
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		tb.Fatalf("generating examples signing key: %v", err)
+	}
+	key, err := auth.NewSigningKey("examples", private)
+	if err != nil {
+		tb.Fatalf("building examples signing key: %v", err)
+	}
+	issuer, err := auth.NewIssuer("https://flowstate.example", key)
+	if err != nil {
+		tb.Fatalf("building examples issuer: %v", err)
+	}
+
+	// federation-flow-to-flow: the peer deployment, reached by presenting the
+	// assertion itself.
+	peer, err := auth.NewAssertionExchanger(auth.AssertionConfig{
+		Audience: "https://flowstate.peer.example.com",
+	})
+	if err != nil {
+		tb.Fatalf("building examples assertion exchanger: %v", err)
+	}
+
+	broker, err := auth.NewBroker(issuer,
+		// http-federated: a partner reached by exchanging the assertion.
+		auth.WithTarget("partner-api", fixtureExchanger{token: ExamplesJITToken}),
+		auth.WithTarget("peer-flowstate", peer),
+		auth.WithAssumeAllowRules("true"))
+	if err != nil {
+		tb.Fatalf("building examples broker: %v", err)
+	}
+
+	return broker
+}
+
+// ExamplesJITToken is the bearer material the exchanging fixture target hands
+// back, named so a harness asserting on it and the harness producing it cannot
+// drift apart.
+const ExamplesJITToken = "example-jit-token"
