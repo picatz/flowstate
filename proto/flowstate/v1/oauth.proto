@@ -1,0 +1,324 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+
+option go_package = "flowstatev1";
+
+// OAuthConfiguration is the complete, non-secret OAuth/OIDC and workload
+// identity federation contract. It is safe to persist in workflow history.
+// Credentials and key material are intentionally not representable here.
+message OAuthConfiguration {
+  repeated AuthorizationServer authorization_servers = 1 [(buf.validate.field).repeated = {max_items: 64}];
+  repeated ProtectedResource protected_resources = 2 [(buf.validate.field).repeated = {max_items: 128}];
+  repeated GrantProfile grant_profiles = 3 [(buf.validate.field).repeated = {max_items: 64}];
+  repeated PolicyReference policies = 4 [(buf.validate.field).repeated = {max_items: 64}];
+  TelemetryPrivacyClass telemetry_privacy = 5 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  // Names of deployment-owned fields that a lower layer may replace. Every
+  // other collection is intersected and every requirement is strengthened.
+  repeated DelegableField delegable_fields = 6 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+}
+
+message AuthorizationServer {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+  }];
+  string issuer = 2 [(buf.validate.field).string = {
+    uri: true
+    max_len: 2048
+  }];
+  string authorization_server = 3 [(buf.validate.field).string = {
+    uri: true
+    max_len: 2048
+  }];
+  MetadataLocation metadata = 4 [(buf.validate.field).required = true];
+  repeated ProtocolRevision revisions = 5 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 16
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  EndpointTrustRule endpoint_trust = 6 [(buf.validate.field).required = true];
+  CacheBounds cache = 7 [(buf.validate.field).required = true];
+}
+
+message ProtectedResource {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+  }];
+  string resource = 2 [(buf.validate.field).string = {
+    uri: true
+    max_len: 2048
+  }];
+  MetadataLocation metadata = 3 [(buf.validate.field).required = true];
+  repeated string authorization_servers = 4 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 128
+      }
+    }
+  }];
+  repeated string scopes = 5 [(buf.validate.field).repeated = {
+    max_items: 128
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+  }];
+  repeated string authorization_detail_types = 6 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+  }];
+  ProofRequirement proof = 7 [(buf.validate.field).enum = {defined_only: true}];
+  AssuranceRequirement assurance = 8;
+  TelemetryPrivacyClass telemetry_privacy = 9 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+}
+
+message MetadataLocation {
+  oneof location {
+    option (buf.validate.oneof).required = true;
+    string discovery_url = 1 [(buf.validate.field).string = {
+      uri: true
+      max_len: 2048
+    }];
+    string static_document_ref = 2 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 256
+    }];
+  }
+}
+
+message GrantProfile {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+  }];
+  GrantType grant = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  repeated ProtocolRevision revisions = 3 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 16
+    unique: true
+    items: {
+      enum: {
+        defined_only: true
+        not_in: [0]
+      }
+    }
+  }];
+  repeated string audiences = 4 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 2048
+      }
+    }
+  }];
+  repeated string resources = 5 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {
+        uri: true
+        max_len: 2048
+      }
+    }
+  }];
+  repeated string scopes = 6 [(buf.validate.field).repeated = {
+    max_items: 128
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+  }];
+  repeated string authorization_detail_types = 7 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+  }];
+  string client_id = 8 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  string client_authentication_method_ref = 9 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  ProofRequirement proof = 10 [(buf.validate.field).enum = {defined_only: true}];
+  AssuranceRequirement assurance = 11;
+  bool require_par = 12;
+  bool require_jar = 13;
+  repeated PolicyReference policies = 14 [(buf.validate.field).repeated = {max_items: 32}];
+}
+
+message AssuranceRequirement {
+  repeated string acr_values = 1 [(buf.validate.field).repeated = {
+    max_items: 32
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+  }];
+  uint32 minimum_authentication_age_seconds = 2 [(buf.validate.field).uint32 = {lte: 86400}];
+  bool require_step_up = 3;
+}
+
+message EndpointTrustRule {
+  bool require_https = 1;
+  bool require_same_origin = 2;
+  repeated string allowed_origins = 3 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+    items: {
+      string: {
+        uri: true
+        max_len: 2048
+      }
+    }
+  }];
+  repeated string pinned_ca_refs = 4 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+    items: {
+      string: {
+        min_len: 1
+        max_len: 256
+      }
+    }
+  }];
+}
+
+message CacheBounds {
+  google.protobuf.Duration maximum_age = 1 [(buf.validate.field).duration = {
+    gt: {}
+    lte: {seconds: 86400}
+  }];
+  google.protobuf.Duration stale_if_error = 2 [(buf.validate.field).duration = {
+    gte: {}
+    lte: {seconds: 3600}
+  }];
+  google.protobuf.Duration clock_skew = 3 [(buf.validate.field).duration = {
+    gte: {}
+    lte: {seconds: 300}
+  }];
+}
+
+message PolicyReference {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  string revision = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+// SecretReference identifies material resolved only by the boundary using it.
+// It names a value but can never contain that value.
+message SecretReference {
+  string provider = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 512
+  }];
+  optional string version = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+enum ProtocolRevision {
+  PROTOCOL_REVISION_UNSPECIFIED = 0;
+  PROTOCOL_REVISION_OAUTH_2_0 = 1;
+  PROTOCOL_REVISION_OAUTH_2_1 = 2;
+  PROTOCOL_REVISION_OIDC_1_0 = 3;
+  PROTOCOL_REVISION_RFC_8693 = 4;
+  PROTOCOL_REVISION_RFC_8707 = 5;
+  PROTOCOL_REVISION_RFC_9126 = 6;
+  PROTOCOL_REVISION_RFC_9101 = 7;
+  PROTOCOL_REVISION_RFC_9449 = 8;
+  PROTOCOL_REVISION_RFC_9728 = 9;
+}
+enum GrantType {
+  GRANT_TYPE_UNSPECIFIED = 0;
+  GRANT_TYPE_AUTHORIZATION_CODE = 1;
+  GRANT_TYPE_CLIENT_CREDENTIALS = 2;
+  GRANT_TYPE_TOKEN_EXCHANGE = 3;
+  GRANT_TYPE_JWT_BEARER = 4;
+}
+enum ProofRequirement {
+  PROOF_REQUIREMENT_UNSPECIFIED = 0;
+  PROOF_REQUIREMENT_NONE = 1;
+  PROOF_REQUIREMENT_DPOP = 2;
+  PROOF_REQUIREMENT_MTLS = 3;
+}
+enum TelemetryPrivacyClass {
+  TELEMETRY_PRIVACY_CLASS_UNSPECIFIED = 0;
+  TELEMETRY_PRIVACY_CLASS_PUBLIC = 1;
+  TELEMETRY_PRIVACY_CLASS_INTERNAL = 2;
+  TELEMETRY_PRIVACY_CLASS_SENSITIVE_METADATA = 3;
+}
+enum DelegableField {
+  DELEGABLE_FIELD_UNSPECIFIED = 0;
+  DELEGABLE_FIELD_TELEMETRY_PRIVACY = 1;
+  DELEGABLE_FIELD_METADATA_LOCATION = 2;
+}
