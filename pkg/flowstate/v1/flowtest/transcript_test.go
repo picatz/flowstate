@@ -413,6 +413,57 @@ tests:
 	assert.Contains(t, text, "[redacted]")
 }
 
+// TestTranscriptRedactsASensitiveStructsKeys pins round four's P1 on #1052,
+// fixed in the one shared walk ([sensitiveNativeValues]) so the stub
+// diagnostics gain it too: a `sensitive: true` struct may carry its material
+// in the map *keys* — account ids — and a walk that only enqueued what they
+// map to let a stub echo a key in the clear.
+func TestTranscriptRedactsASensitiveStructsKeys(t *testing.T) {
+	t.Parallel()
+
+	const material = "leak-key-9931"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: keyed-secret
+inputs:
+  creds:
+    type: struct
+    required: true
+    sensitive: true
+steps:
+  - id: use
+    log:
+      message: using
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: a stub echoes a sensitive struct's key
+    workflow: ./workflow.yaml
+    inputs:
+      creds:
+        `+material+`: some-value
+    stubs:
+      - task: log
+        returns:
+          echo: `+material+`
+    expect:
+      ran: [use]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	require.NotContains(t, text, material,
+		"a sensitive struct's keys are part of the declared value and must redact like its values")
+	assert.Contains(t, text, "[redacted]")
+}
+
 // TestTranscriptClearsAStaleStubAttribution pins round three's other finding:
 // a retried step whose first attempt a times: stub answered, and whose final
 // attempt nothing did, must not render that stub's identity beside a failure

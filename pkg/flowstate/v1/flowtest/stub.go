@@ -869,8 +869,14 @@ func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sens
 					out.substrings = append(out.substrings, value)
 				}
 			case map[string]any:
-				for _, child := range value {
-					pending = append(pending, node{value: child})
+				// Keys are descendants too: sensitivity belongs to the whole
+				// declared value, and a map whose *keys* carry the material —
+				// account ids, say — leaks through a walk that only enqueues
+				// what they map to (Codex, #1052). A key rides the queue as
+				// any string descendant does, so the substring floor and the
+				// descendant bound apply to it unchanged.
+				for name, child := range value {
+					pending = append(pending, node{value: name}, node{value: child})
 				}
 			case []any:
 				for _, child := range value {
