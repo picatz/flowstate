@@ -2978,6 +2978,8 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	keysCmd.GroupID = "development"
 	jwtCmd.GroupID = "development"
 	versionCmd.GroupID = "development"
+	authCmd := newAuthCommand()
+	authCmd.GroupID = "infrastructure"
 
 	// Add commands to root.
 	rootCmd.AddCommand(runCmd)
@@ -3057,6 +3059,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(authCmd)
 
 	// The whole stack in one command, under `server` because that is where
 	// somebody looking for a server looks. Everything it is lives in

@@ -485,6 +485,14 @@ binary's own command tree, with which environment variable feeds each flag's def
 | `flow worker` | Start a Temporal worker, which is what actually executes steps. |
 | `flow server` | Start the Flowstate API server that accepts workflows. |
 | `flow server dev` | Start the whole stack in one command on loopback: Temporal, the server, and a worker. Ephemeral unless `--db`, and every insecure posture it takes is stated at start-up. |
+| `flow auth` | Inspect and rehearse authentication configuration without accepting or printing tokens. |
+| `flow auth doctor` | Statically validate issuer, audience, grant, tenant, key-retention, and policy relationships. |
+| `flow auth metadata` | Describe configured issuer and key-publication metadata relationships without fetching credentials. |
+| `flow auth explain` | Explain authentication findings and name the exact configuration field to remediate. |
+| `flow auth rehearse` | Run negative authentication scenarios against a hermetic local fixture using explicitly unattested rehearsal identities. |
+| `flow auth capabilities` | Report the authentication capabilities represented by a policy. |
+| `flow auth policy` | Inspect authentication policy decisions. |
+| `flow auth policy test` | Test policy completeness and relationships without obtaining credentials. |
 | `flow lsp` | Serve the Flowfile language server over stdin and stdout, for editor diagnostics. |
 | `flow mcp` | Serve the control plane to an AI agent over stdin and stdout. See [flow mcp](docs/CLI.md#flow-mcp-the-same-surface-for-an-agent). |
 | `flow mcp serve` | Serve a reduced control plane over HTTP as an OAuth 2.1 protected resource, requiring an audience-bound bearer token from a configured identity provider. See [MCP over HTTP, authorized](docs/MCP_AUTHORIZATION.md). |

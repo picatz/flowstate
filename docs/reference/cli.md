@@ -79,6 +79,138 @@ flow audit -o json examples/ | jq '.totals'
 |---|---|---|---|---|
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 
+## `flow auth`
+
+Inspect and rehearse authentication configuration
+
+```
+flow auth [command]
+```
+
+## `flow auth capabilities`
+
+Report authentication capabilities and requirements
+
+```
+flow auth capabilities [flags]
+```
+
+Examples:
+
+```sh
+flow auth capabilities --policy auth.yaml --output json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--output <string>` | `string` | `text` | — | rendering: text or json |
+| `--policy <string>` | `string` | — | — | authentication policy YAML or JSON (required) |
+
+## `flow auth doctor`
+
+Statically validate authentication configuration
+
+```
+flow auth doctor [flags]
+```
+
+Examples:
+
+```sh
+flow auth doctor --policy auth.yaml --output json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--output <string>` | `string` | `text` | — | rendering: text or json |
+| `--policy <string>` | `string` | — | — | authentication policy YAML or JSON (required) |
+
+## `flow auth explain`
+
+Explain authentication configuration and remediations
+
+```
+flow auth explain [flags]
+```
+
+Examples:
+
+```sh
+flow auth explain --policy auth.yaml --output json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--output <string>` | `string` | `text` | — | rendering: text or json |
+| `--policy <string>` | `string` | — | — | authentication policy YAML or JSON (required) |
+
+## `flow auth metadata`
+
+Describe configured issuers and metadata relationships
+
+```
+flow auth metadata [flags]
+```
+
+Examples:
+
+```sh
+flow auth metadata --policy auth.yaml --output json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--output <string>` | `string` | `text` | — | rendering: text or json |
+| `--policy <string>` | `string` | — | — | authentication policy YAML or JSON (required) |
+
+## `flow auth policy`
+
+Inspect authentication policy decisions
+
+```
+flow auth policy [command]
+```
+
+## `flow auth policy test`
+
+Test policy completeness without obtaining credentials
+
+```
+flow auth policy test [flags]
+```
+
+Examples:
+
+```sh
+flow auth test --policy auth.yaml --output json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--output <string>` | `string` | `text` | — | rendering: text or json |
+| `--policy <string>` | `string` | — | — | authentication policy YAML or JSON (required) |
+
+## `flow auth rehearse`
+
+Rehearse authentication failures against a hermetic local fixture
+
+```
+flow auth rehearse [flags]
+```
+
+Exercise a local in-process issuer, authorization-server, and resource-server model. No external issuer is contacted and every generated identity is explicitly unattested. Tokens and assertions are never printed.
+
+Examples:
+
+```sh
+flow auth rehearse --policy auth.yaml --output json
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--output <string>` | `string` | `text` | — | rendering: text or json |
+| `--policy <string>` | `string` | — | — | authentication policy YAML or JSON (required) |
+
 ## `flow breaking`
 
 Report workflows whose declared inputs or outputs broke a contract
