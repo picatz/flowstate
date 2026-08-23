@@ -209,7 +209,7 @@ func AssertHTTPSpan(tb testing.TB, server *TracedHTTPServer, recorder *tracetest
 	// And the containment, in the direction that can fail: rendered through the
 	// %v family over every span, not checked against the one attribute somebody
 	// remembered.
-	for _, rendered := range renderedSpans(recorder) {
+	for _, rendered := range RenderedSpans(recorder) {
 		if strings.Contains(rendered, HTTPSpanQuerySecret) {
 			tb.Fatalf("a credential from the request URL reached a span, which is exported to a collector")
 		}
@@ -250,12 +250,21 @@ func spanNames(recorder *tracetest.SpanRecorder) []string {
 	return names
 }
 
-// renderedSpans renders every recorded span through the %v family — over the
-// batch, over each span, and over a struct holding one — which is the
-// containment shape CLAUDE.md names rather than the containment value: `fmt`
-// reaching a value through an unexported field prints the fields instead of
-// calling any accessor.
-func renderedSpans(recorder *tracetest.SpanRecorder) []string {
+// RenderedSpans renders every recorded span through the containment shapes
+// CLAUDE.md names rather than through the containment value: the four verbs
+// `%v`, `%+v`, `%#v` and `%s`, over the batch, over each span, and over a
+// struct holding those through an *unexported* field — which is the whole
+// point, because `fmt` cannot call a method on a value it reaches that way and
+// prints the fields instead. A redacting String() protects a value printed
+// directly and does nothing one level down.
+//
+// The `%s` shapes are over [spanText] rather than over [tracetest.SpanStub],
+// which is not a decision about coverage: a SpanStub is mostly ints and
+// timestamps, so `go vet` rejects the verb against it and what it would print
+// is `%!s(int=0)` beside the strings the other three verbs already printed.
+// spanText is the string-shaped part of the same span, reached through
+// unexported fields, which is where `%s` means something.
+func RenderedSpans(recorder *tracetest.SpanRecorder) []string {
 	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
 
 	type wrapper struct {
@@ -272,8 +281,15 @@ func renderedSpans(recorder *tracetest.SpanRecorder) []string {
 	if len(stubs) > 0 {
 		w := wrapper{one: stubs[0], batch: stubs}
 		rendered = append(rendered,
-			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w))
+			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w),
+			fmt.Sprintf("%v", []wrapper{w}), fmt.Sprintf("%+v", []wrapper{w}),
+			fmt.Sprintf("%#v", []wrapper{w}))
 	}
+
+	texts := spanTexts(stubs)
+	rendered = append(rendered,
+		fmt.Sprintf("%v", texts), fmt.Sprintf("%+v", texts),
+		fmt.Sprintf("%#v", texts), fmt.Sprintf("%s", texts))
 
 	for _, stub := range stubs {
 		rendered = append(rendered,
@@ -294,5 +310,42 @@ func renderedSpans(recorder *tracetest.SpanRecorder) []string {
 		}
 	}
 
+	for _, text := range texts {
+		rendered = append(rendered,
+			fmt.Sprintf("%v", text), fmt.Sprintf("%+v", text),
+			fmt.Sprintf("%#v", text), fmt.Sprintf("%s", text))
+	}
+
 	return rendered
+}
+
+// spanText is everything a span says in words, held through unexported fields.
+//
+// Unexported deliberately: this is the arrangement a redacting formatter cannot
+// survive, so it is the arrangement the containment assertions have to check.
+type spanText struct {
+	name        string
+	description string
+	attributes  []string
+	events      []string
+}
+
+// spanTexts reduces recorded spans to their [spanText].
+func spanTexts(stubs []tracetest.SpanStub) []spanText {
+	texts := make([]spanText, 0, len(stubs))
+	for _, stub := range stubs {
+		text := spanText{name: stub.Name, description: stub.Status.Description}
+		for _, attr := range stub.Attributes {
+			text.attributes = append(text.attributes, string(attr.Key)+"="+attr.Value.String())
+		}
+		for _, event := range stub.Events {
+			text.events = append(text.events, event.Name)
+			for _, attr := range event.Attributes {
+				text.events = append(text.events, string(attr.Key)+"="+attr.Value.String())
+			}
+		}
+		texts = append(texts, text)
+	}
+
+	return texts
 }

@@ -150,6 +150,24 @@ Two things, both already-familiar shapes rather than new machinery:
   not at the bare prefix, and that exact URL is what the `WWW-Authenticate`
   challenge names.
 
+The audience identifiers are intentionally not interchangeable. Connect RPC uses
+`--rpc-resource` / `FLOWSTATE_RPC_RESOURCE`; remote MCP uses
+`--protected-resource` / `FLOWSTATE_PROTECTED_RESOURCE`; and a future ordinary
+HTTP surface must receive a third identifier. Listing both RPC and MCP URIs in
+one `TrustedIssuer.audiences` entry establishes issuer trust for both, but each
+handler still requires its own exact audience. An MCP token therefore cannot be
+replayed against Connect RPC, or vice versa. `flow server` also requires its RPC
+resource at startup — whenever its trust policy has a `kind: oidc` issuer to
+bind one to — unless the migration-only `--allow-issuer-wide-audiences` flag
+explicitly restores the older issuer-wide behavior.
+
+Because they are not interchangeable, the challenge is not either. A 401 from
+Connect RPC carries `resource_metadata` naming the protected-resource document
+only when that document describes the RPC surface's own resource; where the two
+differ, it is omitted rather than pointed at the other surface, since a client
+that followed it would ask its authorization server for the MCP audience and
+come back with a token Connect RPC refuses.
+
 With both in place, the wire exchange in the diagram above is the whole of
 what a compliant MCP client needs from *flowstate* — no flowstate-specific
 client library, and no credential flowstate itself hands out. One step may

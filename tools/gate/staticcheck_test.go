@@ -139,7 +139,7 @@ func TestTheStaticcheckLegAndJobShareATrigger(t *testing.T) {
 			if !ok {
 				t.Fatal("no CI decision for the staticcheck job")
 			}
-			if leg := scopedLegRuns(buildPlan(tc.changed), tc.affected); leg != job.Run {
+			if leg := scopedLegRuns(resolvedBase, buildPlan(tc.changed), tc.affected); leg != job.Run {
 				t.Errorf("the local leg %s but the CI job %s (%s);\n"+
 					"a leg that skips where the job runs is the gap #879 reported, one level down",
 					ranOrSkipped(leg), ranOrSkipped(job.Run), job.Why)
@@ -161,11 +161,11 @@ func TestAForcedStaticcheckLegAnalysesTheWholeModule(t *testing.T) {
 	for _, tc := range forcingCases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := buildPlan(tc.changed)
-			if !scopedLegRuns(p, tc.affected) {
+			if !scopedLegRuns(resolvedBase, p, tc.affected) {
 				return // asserted by the trigger test above
 			}
 
-			why := forcedWide(p)
+			why := forcedWide(resolvedBase, p)
 			if tc.wide && why == "" {
 				t.Fatalf("nothing forces this diff wide, but CI analyses ./... for it;\n"+
 					"the leg would analyse only %v, and a finding anywhere else passes here and fails there", tc.affected)

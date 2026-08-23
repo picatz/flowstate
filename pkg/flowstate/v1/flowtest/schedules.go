@@ -101,6 +101,33 @@ type ScheduleDivergence struct {
 	Seeded       string
 }
 
+// Report renders this exploration as the schema message the machine report
+// carries ([v1.ScheduleExploration]), so `flow test -o json` emits it through
+// protojson like every other part of the report rather than through a second,
+// hand-shaped encoder that could disagree with the first — the same reasoning
+// as [Coverage.Report], which this mirrors (issue #931).
+func (s *ScheduleReport) Report() *v1.ScheduleExploration {
+	report := &v1.ScheduleExploration{
+		Schedules: int32(s.Schedules),
+		Cases:     int32(s.Cases),
+		Decisions: int32(s.Decisions),
+		Truncated: s.Truncated,
+	}
+
+	if d := s.Divergence; d != nil {
+		report.Divergence = &v1.ScheduleDivergenceReport{
+			Case:         d.Case,
+			Seed:         d.Seed,
+			Decisions:    int32(d.Decisions),
+			Truncated:    d.Truncated,
+			WrittenOrder: d.WrittenOrder,
+			Seeded:       d.Seeded,
+		}
+	}
+
+	return report
+}
+
 // scheduleAccumulator runs each of a file's cases under the schedules a budget
 // describes and keeps what the whole file's exploration found.
 //

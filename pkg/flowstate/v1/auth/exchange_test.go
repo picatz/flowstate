@@ -415,7 +415,12 @@ func TestAWSExchanger(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
-	expiry := referenceTime.Add(time.Hour).UTC()
+	// Fifteen minutes because that is the session STS is being asked for: with no
+	// Duration configured the exchanger takes the AWS minimum, and an expiration
+	// outside the session that was requested is now refused. Configuring an hour
+	// here instead would pass just as well and would stop this test being the one
+	// place the default duration is pinned.
+	expiry := referenceTime.Add(15 * time.Minute).UTC()
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		w.Header().Set("Content-Type", "text/xml")
@@ -452,7 +457,8 @@ func TestAWSExchanger(t *testing.T) {
 	require.Equal(t, "AssumeRoleWithWebIdentity", sent.form.Get("Action"))
 	require.Equal(t, "arn:aws:iam::123456789012:role/flowstate", sent.form.Get("RoleArn"))
 	require.Equal(t, assertion.Token(), sent.form.Get("WebIdentityToken"))
-	require.Equal(t, "900", sent.form.Get("DurationSeconds"))
+	require.Equal(t, "900", sent.form.Get("DurationSeconds"),
+		"an unconfigured duration is the AWS minimum, because a step needs a credential for one step")
 
 	// The session name is what appears in CloudTrail, so it has to be derived from
 	// the workload and legal for AWS at the same time.

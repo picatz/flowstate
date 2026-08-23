@@ -67,11 +67,7 @@ func (i *Issuer) Discovery() DiscoveryDocument {
 		// listed a second time: an issuer that advertises a claim it would
 		// refuse to sign, or signs one it never advertised, is describing an
 		// assertion that does not exist.
-		ClaimsSupported: append([]string{
-			"iss", "sub", "aud", "exp", "nbf", "iat", "jti",
-			ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
-			ClaimOnBehalfOf, ClaimOnBehalfOfIssuer,
-		}, i.DeclaredClaims()...),
+		ClaimsSupported: append(slices.Clone(builtInClaimNames), i.DeclaredClaims()...),
 		ScopesSupported: []string{"openid"},
 	}
 }
