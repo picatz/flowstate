@@ -48,15 +48,21 @@ import (
 
 // temporalTracing builds the SDK tracing interceptor these tests install.
 //
-// The zero-value options on purpose, matching `cmd/flow/telemetry.go:440` — the
-// tracer comes from the global provider, which is the one
-// [conformance.RecordSpans] just installed, and the propagator defaults to the
-// same W3C composite the binary registers globally. A test that configured this
-// differently from the binary would be verifying a deployment nobody runs.
+// The options match what `cmd/flow`'s worker and client build, which is the
+// point: the tracer comes from the global provider, which is the one
+// [conformance.RecordSpans] just installed, the propagator defaults to the same
+// W3C composite the binary registers globally, and the span starter is the same
+// [v1.SanitizedTemporalSpanStarter] the binary installs. A test that configured
+// this differently from the binary would be verifying a deployment nobody runs
+// — which is why the starter is named from `pkg/flowstate/v1` rather than
+// written out here, so the two cannot drift apart while this comment goes on
+// claiming they have not.
 func temporalTracing(tb testing.TB) interceptor.Interceptor {
 	tb.Helper()
 
-	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{})
+	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{
+		SpanStarter: v1.SanitizedTemporalSpanStarter,
+	})
 	require.NoError(tb, err)
 
 	return tracing

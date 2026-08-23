@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ import (
 	noopTrace "go.opentelemetry.io/otel/trace/noop"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	"go.temporal.io/sdk/contrib/opentelemetry"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -629,27 +631,107 @@ func TestTemporalTracingInterceptorServesBothSides(t *testing.T) {
 	var _ interceptor.WorkerInterceptor = tracing
 }
 
-// TestTemporalSpanErrorsAreContained covers the SDK-created outer span, not
-// only the flowstate.task span inside it. Temporal finishes that outer span
-// with the ApplicationError returned by an activity, whose message must remain
-// detailed for workflow semantics but must not cross the telemetry boundary.
+// renderedTemporalSpans renders every recorded span through the %v family — over
+// the batch, over each span, and over a struct holding one — which are the
+// containment shapes CLAUDE.md names, because `fmt` reaching a value through an
+// unexported field prints the fields rather than calling any accessor.
+//
+// Copied in shape from netpolicy's renderedSpans rather than imported: that one
+// is an unexported helper in its own package's tests, and the alternative is
+// exporting a test helper across a package boundary to save a screen of code.
+func renderedTemporalSpans(recorder *tracetest.SpanRecorder) []string {
+	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
+
+	type wrapper struct {
+		one   tracetest.SpanStub
+		batch []tracetest.SpanStub
+	}
+
+	rendered := []string{
+		fmt.Sprintf("%v", stubs),
+		fmt.Sprintf("%+v", stubs),
+		fmt.Sprintf("%#v", stubs),
+	}
+
+	if len(stubs) > 0 {
+		w := wrapper{one: stubs[0], batch: stubs}
+		rendered = append(rendered,
+			fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w))
+	}
+
+	for _, stub := range stubs {
+		rendered = append(rendered,
+			fmt.Sprintf("%v", stub),
+			fmt.Sprintf("%+v", stub),
+			fmt.Sprintf("%#v", stub),
+			stub.Name,
+			stub.Status.Description,
+		)
+
+		for _, attr := range stub.Attributes {
+			rendered = append(rendered, string(attr.Key), attr.Value.String(),
+				fmt.Sprintf("%v", attr), fmt.Sprintf("%+v", attr), fmt.Sprintf("%#v", attr))
+		}
+
+		for _, event := range stub.Events {
+			rendered = append(rendered, event.Name, fmt.Sprintf("%+v", event), fmt.Sprintf("%#v", event))
+		}
+
+		for _, link := range stub.Links {
+			rendered = append(rendered, fmt.Sprintf("%+v", link), fmt.Sprintf("%#v", link))
+		}
+	}
+
+	return rendered
+}
+
+// TestTemporalSpanErrorsAreContained covers the SDK-created outer span, not only
+// the flowstate.task span inside it. Temporal finishes that outer span with the
+// error an activity returned, whose text must stay detailed for workflow
+// semantics — `${steps.<id>.error}` is rendered from it — and must not cross the
+// telemetry boundary, because a span is read by a collector rather than by
+// somebody holding the run.
+//
+// It goes through the SDK's own tracer and Finish rather than calling the span
+// starter directly, which is the whole point: calling the starter would prove
+// that a wrapper wraps, and say nothing about whether the interceptor installs
+// it or whether Finish reaches the span some other way. This is the path the
+// leak actually took.
 func TestTemporalSpanErrorsAreContained(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-	span := startSanitizedTemporalSpan(t.Context(), provider.Tracer("test"), "RunActivity:Task")
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
-	secret := "upstream rejected credential s3cr3t-material-that-must-never-be-exported"
-	span.RecordError(errors.New(secret))
-	span.SetStatus(codes.Error, secret)
-	span.End()
+	tracer, err := opentelemetry.NewTracer(opentelemetry.TracerOptions{
+		Tracer:      provider.Tracer("test"),
+		SpanStarter: v1.SanitizedTemporalSpanStarter,
+	})
+	require.NoError(t, err)
+
+	span, err := tracer.StartSpan(&interceptor.TracerStartSpanOptions{
+		Operation: "RunActivity",
+		Name:      "Task",
+		Time:      time.Now(),
+	})
+	require.NoError(t, err)
+
+	const secret = "upstream rejected credential s3cr3t-material-that-must-never-be-exported"
+	span.Finish(&interceptor.TracerFinishSpanOptions{Error: errors.New(secret)})
 
 	ended := recorder.Ended()
 	require.Len(t, ended, 1)
-	rendered := fmt.Sprintf("%v", ended[0])
-	assert.NotContains(t, rendered, secret)
-	assert.Contains(t, rendered, temporalSpanErrorDescription)
+
+	for _, rendered := range renderedTemporalSpans(recorder) {
+		require.NotContains(t, rendered, secret,
+			"a task's error text reached a span, which is exported to a collector")
+	}
+
+	// The positive half: the span still reports that the operation failed, so
+	// sanitizing is not the same as going dark. An operator sees a failed span
+	// and reads the run for the reason.
 	assert.Equal(t, codes.Error, ended[0].Status().Code)
-	assert.Equal(t, temporalSpanErrorDescription, ended[0].Status().Description)
+	assert.Equal(t, v1.TemporalSpanErrorDescription, ended[0].Status().Description)
+	assert.Empty(t, ended[0].Events(), "RecordError writes an error's own message into an exception event")
 }
 
 // The third signal.
