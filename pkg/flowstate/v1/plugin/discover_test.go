@@ -80,13 +80,27 @@ func TestDiscoverRefusesUnsafeSearchPath(t *testing.T) {
 		if !errors.Is(err, ErrSearchPath) {
 			t.Fatalf("Discover error = %v, want one wrapping %v", err, ErrSearchPath)
 		}
-		if !strings.Contains(err.Error(), "writable by any user") {
+		if !strings.Contains(err.Error(), "writable by another user") {
 			t.Errorf("error = %q, want it to say why", err.Error())
 		}
 
 		// And the escape hatch works, for the single-user image it exists for.
 		if _, err := Discover(Config{SearchPath: []string{dir}, AllowInsecureSearchPath: true}); err != nil {
 			t.Errorf("Discover with AllowInsecureSearchPath: %v", err)
+		}
+	})
+
+	t.Run("group-writable directory", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o775); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		_, err := Discover(Config{SearchPath: []string{dir}})
+		if !errors.Is(err, ErrSearchPath) {
+			t.Fatalf("Discover error = %v, want one wrapping %v", err, ErrSearchPath)
 		}
 	})
 
@@ -103,6 +117,24 @@ func TestDiscoverRefusesUnsafeSearchPath(t *testing.T) {
 		// mode, so the file would come out 0755 and the test would pass without
 		// testing anything.
 		if err := os.Chmod(path, 0o777); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+
+		_, err := Discover(Config{SearchPath: []string{dir}})
+		if !errors.Is(err, ErrSearchPath) {
+			t.Fatalf("Discover error = %v, want one wrapping %v", err, ErrSearchPath)
+		}
+	})
+
+	t.Run("group-writable binary", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, BinaryPrefix+"group-loose")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("writing the binary: %v", err)
+		}
+		if err := os.Chmod(path, 0o775); err != nil {
 			t.Fatalf("chmod: %v", err)
 		}
 

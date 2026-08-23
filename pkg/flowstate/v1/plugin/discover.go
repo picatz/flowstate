@@ -72,7 +72,7 @@ func Discover(cfg Config) ([]Found, error) {
 			continue
 		}
 
-		if err := checkWritableByOthers(info.Mode(), dir, cfg.AllowInsecureSearchPath); err != nil {
+		if err := checkWritableByOthers(info, dir, cfg.AllowInsecureSearchPath); err != nil {
 			return nil, err
 		}
 
@@ -108,7 +108,7 @@ func Discover(cfg Config) ([]Found, error) {
 				continue
 			}
 
-			if err := checkWritableByOthers(info.Mode(), path, cfg.AllowInsecureSearchPath); err != nil {
+			if err := checkWritableByOthers(info, path, cfg.AllowInsecureSearchPath); err != nil {
 				return nil, err
 			}
 
@@ -164,13 +164,18 @@ func pluginName(fileName string) (string, bool) {
 // equivalent to code execution here. The sticky bit does not redeem a
 // world-writable directory: it stops one user deleting another's files, and does
 // nothing to stop anyone adding a flowstate-plugin-anything of their own.
-func checkWritableByOthers(mode fs.FileMode, path string, allow bool) error {
-	if allow || mode.Perm()&0o002 == 0 {
+func checkWritableByOthers(info fs.FileInfo, path string, allow bool) error {
+	if allow {
+		return nil
+	}
+
+	mode := info.Mode()
+	if mode.Perm()&0o022 == 0 && ownedByTrustedUser(info) {
 		return nil
 	}
 
 	return fmt.Errorf(
-		"%w: %q is writable by any user (mode %#o), which means any user chooses what this worker executes; fix its permissions, or set AllowInsecureSearchPath if this is a single-user image",
+		"%w: %q is not owned by the worker or root, or is writable by another user (mode %#o), which means another user may choose what this worker executes; fix its ownership and permissions, or set AllowInsecureSearchPath if this is a single-user image",
 		ErrSearchPath, path, mode.Perm(),
 	)
 }
