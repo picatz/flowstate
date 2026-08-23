@@ -93,12 +93,16 @@ func lateCancellationWorkflow(name, base, message string, undo bool) *v1.Workflo
 	return &v1.Workflow{
 		Name:    name,
 		Profile: v1.CurrentProfile,
-		// Declared so that the outputs claim below is a claim about something: a
-		// run with no declared outputs makes "outputs were not evaluated"
-		// vacuously true. This one resolves trivially on a completed run, so its
-		// absence from a cancelled run's transcript can only be the guard.
+		// Declared so that the outputs claim below is a claim about something —
+		// and observable through the *error*, not the transcript, because
+		// [v1.PartialTranscript] never carries run outputs whatever happened, so
+		// a transcript assertion would stay green through the exact regression
+		// under test. This expression fails loudly if it is ever evaluated:
+		// `said` is a word, so `int()` on it errors, and a run that reached its
+		// outputs before honouring the stop stops reading as cancelled — which
+		// the ErrorIs assertion below turns into a named failure.
 		DeclaredOutputs: []*v1.OutputDeclaration{
-			{Name: "said", Value: v1.NewExpr("steps.first.said")},
+			{Name: "said", Value: v1.NewExpr("int(steps.first.said)")},
 		},
 		Steps: []*v1.Node{
 			first,
@@ -184,12 +188,19 @@ func TestRunWorkflowUndoOnLateCancellation(t *testing.T) {
 					"the cancellation does not carry the account of what was compensated")
 			}
 
-			// The workflow declares an output that every completed run resolves,
-			// so an empty RunOutputs here is the guard's doing and nothing
-			// else's: a regression that evaluated declared outputs before
-			// honouring the stop would populate it and fail this line.
+			// The declared output above errors when evaluated, so a cancelled
+			// run's error mentioning it means the outputs ran before the stop
+			// was honoured — the ErrorIs above already failed in that world, and
+			// this names the mechanism rather than leaving a bare mismatch.
+			require.NotContains(t, err.Error(), "said",
+				"the cancelled run's error carries the declared output's own failure, so outputs were evaluated after the stop")
+
+			// Belt to the braces above: [v1.PartialTranscript] strips run
+			// outputs unconditionally, so this can never fail on its own — it
+			// documents the transcript contract rather than detecting the
+			// regression, which the error assertions carry.
 			require.Nil(t, transcript.GetRunOutputs(),
-				"a cancelled run's transcript carried run outputs, so the declared outputs were evaluated after the stop")
+				"a partial transcript is documented to carry no run outputs")
 
 			require.Equal(t, test.recorded, recorded(),
 				"the effects that happened, and their order, are not what stopping this run should have produced")
