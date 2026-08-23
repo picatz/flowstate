@@ -156,6 +156,27 @@ func TestOverlappingSensitiveSubstringsRedactWhole(t *testing.T) {
 	}
 }
 
+// TestIntersectingSensitiveSubstringsRedactWhole pins round fourteen's P1:
+// two secrets that intersect without containment — `ABCDE` and `CDEFG`
+// across derived text `ABCDEFG` — leak a fragment under sequential
+// replacement in either order. The union of matches has no order to get
+// wrong; self-overlapping matches are covered by the same union.
+func TestIntersectingSensitiveSubstringsRedactWhole(t *testing.T) {
+	t.Parallel()
+
+	for _, order := range [][]string{
+		{"ABCDE", "CDEFG"},
+		{"CDEFG", "ABCDE"},
+	} {
+		got := redactSensitiveSubstrings("xx ABCDEFG yy", order)
+		require.Equal(t, "xx [redacted] yy", got,
+			"order %v must not leak either secret's fragment", order)
+	}
+
+	require.Equal(t, "[redacted]", redactSensitiveSubstrings("aaa", []string{"aa"}),
+		"self-overlapping matches all enter the union")
+}
+
 // TestSuiteTranscriptBudgetDropsWithASentence pins round thirteen's P1:
 // per-case bounds do not compose, so the suite doles a whole-run budget out
 // in case order, and an account past it becomes the one line explaining the

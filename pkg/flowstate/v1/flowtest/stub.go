@@ -963,20 +963,60 @@ const sensitiveMarker = "[redacted]"
 // prevents. [sensitiveNativeValues] is where that line is drawn, and
 // [minSensitiveSubstringRunes] is where it is argued.
 func redactSensitiveSubstrings(rendered string, substrings []string) string {
-	// Longest first, always: two sensitive strings may overlap — `abcd` and
-	// `abcdef` — and replacing the shorter first splits the longer into
-	// `[redacted]ef`, which its own replacement then never matches: a partial
-	// leak decided by map iteration order (Codex, #1052). Sorted here, at the
-	// one replacement site, so every caller — the stub diagnostics and the
-	// transcript alike — gets the deterministic, covering order.
-	ordered := make([]string, len(substrings))
-	copy(ordered, substrings)
-	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
-
-	for _, s := range ordered {
-		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
+	// Every match of every sensitive string is found against the ORIGINAL
+	// text, the intervals merged, and the merged spans spliced out in one
+	// pass. Sequential ReplaceAll cannot be ordered into correctness: with
+	// containment (`abcd` in `abcdef`) the shorter-first order splits the
+	// longer into `[redacted]ef`, and with intersection (`ABCDE` and `CDEFG`
+	// across `ABCDEFG`) *either* order leaves the other's fragment exposed —
+	// both partial leaks, the second one whatever you sort by (Codex, #1052).
+	// A union of matches has no order to get wrong. One site, so the stub
+	// diagnostics and the transcript share the answer.
+	type span struct{ start, end int }
+	var spans []span
+	for _, s := range substrings {
+		if s == "" {
+			continue
+		}
+		for from := 0; from <= len(rendered)-len(s); {
+			i := strings.Index(rendered[from:], s)
+			if i < 0 {
+				break
+			}
+			start := from + i
+			spans = append(spans, span{start: start, end: start + len(s)})
+			// Advance one byte, not one match length: self-overlapping
+			// matches ("aa" across "aaa") must all enter the union.
+			from = start + 1
+		}
 	}
-	return rendered
+	if len(spans) == 0 {
+		return rendered
+	}
+
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+
+	var b strings.Builder
+	prev := 0
+	current := spans[0]
+	flush := func() {
+		b.WriteString(rendered[prev:current.start])
+		b.WriteString(sensitiveMarker)
+		prev = current.end
+	}
+	for _, sp := range spans[1:] {
+		if sp.start <= current.end {
+			if sp.end > current.end {
+				current.end = sp.end
+			}
+			continue
+		}
+		flush()
+		current = sp
+	}
+	flush()
+	b.WriteString(rendered[prev:])
+	return b.String()
 }
 
 // truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting
