@@ -191,7 +191,7 @@ func AssertTaskSpans(tb testing.TB, recorder *tracetest.SpanRecorder, outputs *v
 	// %v family over the whole batch, each span, and a struct holding one —
 	// which is the shape CLAUDE.md names, because `fmt` reaching a value through
 	// an unexported field prints the fields instead of calling any accessor.
-	for _, rendered := range renderedSpans(recorder) {
+	for _, rendered := range RenderedSpans(recorder) {
 		if strings.Contains(rendered, TaskSpanSecret) {
 			tb.Fatalf("an input value reached a span, which is exported to a collector")
 		}
