@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"math"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/common"
 	"github.com/google/cel-go/common/types"
@@ -102,7 +103,24 @@ import (
 // `DefaultCostLimit / StringTraversalCostFactor` characters — about ten
 // million — however it spells the arithmetic.
 //
-// Three costs this design accepts, stated rather than discovered later:
+// # The one call whose product is not a string
+//
+// Pricing strings, bytes and the bytes entering a list covers the vocabulary
+// with a single exception, and an exception in a bound is a hole: `json_parse`
+// turns text into a *tree*, and neither arm above can see it. A decoded object
+// is a map, which the result switch declines, so cel-go charged it 1; a decoded
+// array is a list, charged for the bytes entering it, and the only argument to
+// json_parse is a string, so that charge is 0 and floors to 1. Either way
+// `lists.range(100000).map(i, json_parse(body))` bought a hundred thousand
+// retained decoded documents for about a tenth of the budget.
+//
+// It is the one call charged for two things at once, because it moves two
+// resources a document's shape sets the ratio between: the text it scanned and
+// the tree it produced. [decodedChars] measures the second, and
+// [byteCostEstimator.CallCost] says why the greater of the two is what is
+// charged.
+//
+// Four costs this design accepts, stated rather than discovered later:
 //
 //   - Sizes are in code points, not bytes, because `types.String.Size` counts
 //     runes (common/types/string.go:179). A worst-case UTF-8 string is
@@ -121,6 +139,11 @@ import (
 //     `join` on that list is a 2 GB materialisation of a 5 MiB value. Charging
 //     the accumulation is what makes the refusal land before it, and
 //     over-charging aliases is the price of being early rather than sorry.
+//   - A json_parse is charged after its document is decoded, because an
+//     estimator runs after the call it prices. What bounds that single decode
+//     is that the text had to exist first — admitted under an input byte bound,
+//     or built by an expression this budget already charged. The repetition is
+//     the part an expression chooses, and the repetition is what this refuses.
 type byteCostEstimator struct{}
 
 // evaluationCostEstimator is the estimator every [Evaluator] installs. It holds
@@ -135,52 +158,52 @@ var evaluationCostEstimator interpreter.ActualCostEstimator = byteCostEstimator{
 func (byteCostEstimator) CallCost(function, overloadID string, args []ref.Val, result ref.Val) *uint64 {
 	var chars int64
 
-	// json_parse is the one call here priced by what it was *handed* rather than
-	// by what it produced, and it has to be: it returns a map or a list of
-	// decoded values, which the switch below declines to price, so cel-go's
-	// default charged it 1 unit however many bytes it decoded. A workflow that
-	// can put a response body into an activation could then decode it once per
-	// iteration of a comprehension for about 13 units an iteration — the
-	// unbounded-repetition shape this whole file exists to close, on the one
-	// function whose work is most obviously linear in its input.
+	// json_parse is the one call here that neither of the arms below can price,
+	// and it is priced by *two* measurements because it moves two resources that
+	// are not proportional to one another. It returns a map or a list of decoded
+	// values, which the switch below declines, so cel-go's default charged it 1
+	// unit however many bytes it decoded. A workflow that can put a response
+	// body into an activation could then decode it once per iteration of a
+	// comprehension for about 13 units an iteration — the unbounded-repetition
+	// shape this whole file exists to close, on the one function whose work is
+	// most obviously linear in its input.
 	//
-	// Charging the input at the same factor as every other traversal keeps the
-	// bound statable in the same sentence: an evaluation may decode roughly
+	// The input is the decoder's *work*: bytes scanned, charged at the same
+	// factor as every other traversal, which keeps the bound statable in the
+	// same sentence as the rest — an evaluation may decode roughly
 	// DefaultCostLimit / StringTraversalCostFactor characters of JSON, about ten
-	// million, however it spells the arithmetic. At the default budget that is
-	// nine or ten passes over a full default-size HTTP response body, and it
-	// refuses before the eleventh rather than after it.
+	// million, however it spells the arithmetic.
 	//
-	// The residual, stated rather than left to be discovered: a decoded value is
-	// larger in memory than the bytes it came from, sometimes by a lot, and
-	// nothing charges the decoded representation itself. What is bounded here is
-	// the input an evaluation may feed to the decoder, which is the multiplier
-	// the workflow controls; the per-value size is bounded where the value was
-	// admitted (a response body, a webhook payload, a specification), which is
-	// where a limit an operator can raise belongs.
+	// The decoded tree is the decoder's *product*, and it is not the same
+	// number, because JSON decoding amplifies: `[1,1,1,…]` spends two bytes of
+	// text per element and produces a boxed float64 behind an interface header,
+	// an order of magnitude more memory than the text it was read from. Charging
+	// the input alone would price a 20 KB body's ten thousand retained nodes at
+	// 2,000 units, so a comprehension could hold a hundred of those trees inside
+	// the default budget. See [decodedChars].
+	//
+	// Neither measurement dominates the other — a whitespace-padded document is
+	// all work and little product, a dense one the reverse — so the charge is the
+	// greater of the two. Charging their sum would double-count the ordinary
+	// document where they largely agree, and this file's unit is meant to stay
+	// readable as "characters this evaluation moved".
 	if function == jsonParseFunction && len(args) == 1 {
 		if chars = sizeOf(args[0]); chars < 0 {
 			return nil
 		}
-
-		cost := uint64(math.Ceil(float64(chars) * common.StringTraversalCostFactor))
-		if cost < 1 {
-			cost = 1
+		chars = max(chars, decodedChars(result))
+	} else {
+		switch result.Type() {
+		case types.StringType, types.BytesType:
+			chars = sizeOf(result)
+		case types.ListType:
+			// See [accumulatedChars]: a list is charged for the bytes *entering*
+			// it, which is what makes the charge land before the allocation that
+			// the bytes eventually fund.
+			chars = accumulatedChars(args)
+		default:
+			return nil
 		}
-
-		return &cost
-	}
-
-	switch result.Type() {
-	case types.StringType, types.BytesType:
-		chars = sizeOf(result)
-	case types.ListType:
-		// See [accumulatedChars]: a list is charged for the bytes *entering*
-		// it, which is what makes the charge land before the allocation that
-		// the bytes eventually fund.
-		chars = accumulatedChars(args)
-	default:
-		return nil
 	}
 
 	if chars < 0 {
@@ -268,6 +291,83 @@ func accumulatedChars(args []ref.Val) int64 {
 		return 0
 	}
 	return smallest
+}
+
+// jsonNodeChars is what one decoded JSON node costs, denominated in the
+// characters this budget is spent in.
+//
+// A decoded document is a tree of `any`: every element of a `[]any`, every
+// value in a `map[string]any` and every scalar inside them occupies at least
+// one interface header — 16 bytes on a 64-bit machine — before whatever it
+// points at. 16 is that number, charged as though it were 16 characters, which
+// keeps the whole budget in one unit rather than introducing a second.
+const jsonNodeChars = 16
+
+// jsonWalkNodeLimit bounds how much of a decoded document is weighed.
+//
+// The walk is O(nodes) and a decoded document has fewer nodes than its text has
+// bytes, so weighing costs a fraction of the decode that already happened — but
+// it is still work an expression can ask for once per iteration, and this file
+// refuses to build an accounting mechanism that is itself an amplifier. At the
+// limit the charge is already 16,777,216 characters, or 1,677,722 units against
+// a default budget of 1,000,000: a document big enough to stop the walk has
+// already been refused, so the walk stops. A deployment that raises
+// [Limits.Cost] above that is charged the limit rather than the true size,
+// which is a floor and is stated here rather than discovered.
+const jsonWalkNodeLimit = 1 << 20
+
+// decodedChars returns the characters a json_parse call's *product* is charged
+// for: the size of the tree it built.
+//
+// This is the half of json_parse's price that the input length cannot express.
+// Decoding amplifies, so the two numbers are not proportional — see
+// [byteCostEstimator.CallCost] for why the greater of them is what is charged.
+//
+// # What this does not fix, stated rather than discovered
+//
+// An estimator runs after the call it prices, so the charge for a *single*
+// json_parse lands after that document has been decoded. What bounds that one
+// decode is that the text had to exist first: it is either an activation value
+// admitted under its own byte bound (an HTTP response body, a webhook payload)
+// or a string this budget already paid for building. There is no arrangement
+// where an expression conjures a large input to json_parse cheaply, which is
+// why the multiplication — the part an expression *can* choose — is where the
+// bound belongs, exactly as it does for `join`.
+//
+// Sizes are in code points for the same reason the rest of the file uses them:
+// one unit for the whole budget beats a truer number in a second unit.
+func decodedChars(result ref.Val) int64 {
+	// The native value behind the adapter cel-go wrapped: json_parse hands
+	// json.Unmarshal's `any` to [types.DefaultTypeAdapter], and Value returns
+	// it unchanged, so this walks the decoded document itself rather than
+	// materialising CEL values for every node of it.
+	stack := []any{result.Value()}
+
+	var chars, nodes int64
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		chars += jsonNodeChars
+		nodes++
+		if nodes >= jsonWalkNodeLimit {
+			break
+		}
+
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, value := range typed {
+				chars += int64(utf8.RuneCountInString(key))
+				stack = append(stack, value)
+			}
+		case []any:
+			stack = append(stack, typed...)
+		case string:
+			chars += int64(utf8.RuneCountInString(typed))
+		}
+	}
+
+	return chars
 }
 
 // sizeOf returns the size a value reports, or -1 when it does not report one.

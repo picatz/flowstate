@@ -2,7 +2,9 @@ package flowstatev1
 
 import (
 	"context"
+	"fmt"
 
+	"strconv"
 	"strings"
 	"testing"
 
@@ -404,4 +406,159 @@ func TestCELCostRefusesRepeatedJSONParseBeforeItDecodes(t *testing.T) {
 
 	require.Error(t, err, "a hundred decodes of a fifty-thousand-character body must not fit in a budget four of them exhaust")
 	require.Contains(t, err.Error(), "cost limit")
+}
+
+// jsonArrayDocument returns the text of a JSON array of `elements` ones — the
+// densest ordinary shape a JSON document has, and the reason charging the input
+// length would not do. Two bytes of text ("1,") decode to a boxed float64
+// behind an interface header, so the tree costs an order of magnitude more
+// memory than the text it was read from.
+func jsonArrayDocument(elements int) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := range elements {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('1')
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// jsonObjectDocument returns the text of a JSON object of `keys` entries, which
+// decodes to a map — the result type the estimator used to decline outright.
+func jsonObjectDocument(keys int) string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%q:1", "k"+strconv.Itoa(i))
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// evalOverJSONDocument evaluates expr through [Evaluator.Eval] — a parsed AST
+// under exactly the limits both drivers install — with `body` bound to a JSON
+// document and `items` to a list of the given length.
+//
+// Parsed rather than compiled for the reason [celCostTestEnv] gives, and it is
+// the whole point here: the first attempt at this bound keyed on json_parse's
+// *overload IDs*, which the checker resolves and this path never has, so it
+// priced nothing at all while its own test passed.
+func evalOverJSONDocument(t *testing.T, expr, document string, itemCount int) error {
+	t.Helper()
+
+	env, ast := celCostTestEnv(t, expr)
+
+	items := make([]any, itemCount)
+	for i := range items {
+		items[i] = int64(i)
+	}
+
+	_, err := DefaultEvaluator().Eval(context.Background(), env, ast,
+		map[string]any{"body": document, "items": items})
+	return err
+}
+
+// costOfParsingDocument returns what one `json_parse(body)` is charged, under
+// the estimator the evaluator installs.
+func costOfParsingDocument(t *testing.T, document string) uint64 {
+	t.Helper()
+
+	env, ast := celCostTestEnv(t, `json_parse(body)`)
+
+	prg, err := env.Program(ast, cel.CostLimit(DefaultCostLimit), cel.CostTracking(evaluationCostEstimator))
+	require.NoError(t, err)
+
+	_, details, err := prg.ContextEval(context.Background(),
+		map[string]any{"body": document, "items": []any{}})
+	require.NoError(t, err)
+	require.NotNil(t, details.ActualCost())
+
+	return *details.ActualCost()
+}
+
+// TestCELCostPricesTheTreeJSONParseDecoded is this file's rule applied to the
+// one call whose product is not a string.
+//
+// json_parse turns text into a tree of `any`, and until [decodedChars] existed
+// neither arm of the estimator could see it: a decoded object is a map, which
+// the result switch declined, leaving cel-go to charge 1; a decoded array is a
+// list, charged for the bytes *entering* it, and json_parse's only argument is
+// a string, so that charge was 0 and floored to 1. Either way a parse cost one
+// unit whatever it decoded.
+//
+// The three subtests are one expression and one budget with only the data
+// varying, which is what makes them able to tell working pricing from absent
+// pricing. The refused case is not refused by the comprehension's own
+// arithmetic — the control below it runs the identical expression over the
+// identical number of items and passes.
+func TestCELCostPricesTheTreeJSONParseDecoded(t *testing.T) {
+	// A ~20 KB response body. Nothing about it is hostile on its own; every
+	// deployment admits bodies far larger than this.
+	document := jsonArrayDocument(10_000)
+
+	t.Run("one parse of an admitted-size document is allowed", func(t *testing.T) {
+		err := evalOverJSONDocument(t, `json_parse(body)[0]`, document, 0)
+		require.NoError(t, err,
+			"parsing one admitted-size body once is what json_parse is for; refusing it would make this "+
+				"a smaller input limit rather than a bound on the multiplication")
+	})
+
+	t.Run("the same document parsed once per item is refused", func(t *testing.T) {
+		err := evalOverJSONDocument(t, `items.map(i, json_parse(body))`, document, 1_000)
+		require.Error(t, err,
+			"retaining a thousand decoded copies of a 10,000-element document is the amplification this "+
+				"budget exists to refuse; before json_parse was priced it cost about 1 unit per parse")
+		require.ErrorContains(t, err, "cost limit exceeded",
+			"the refusal must come from the cost budget rather than from a deadline or an allocator "+
+				"giving up")
+	})
+
+	t.Run("the same expression over a small document is allowed", func(t *testing.T) {
+		// The control, and the reason the subtest above proves anything. Same
+		// expression, same item count, same budget: only the size of the
+		// decoded tree differs. Without it, a comprehension that exhausts the
+		// budget through its own arithmetic reads exactly like working pricing.
+		err := evalOverJSONDocument(t, `items.map(i, json_parse(body))`, jsonArrayDocument(3), 1_000)
+		require.NoError(t, err,
+			"a thousand parses of a three-element document is ordinary data shaping; if this is refused "+
+				"the refusal above is the comprehension's own cost and says nothing about json_parse")
+	})
+}
+
+// TestCELCostChargesJSONParseForWhatItDecoded pins the mechanism the test above
+// depends on, so a failure says which half broke, and pins it in the direction
+// the first attempt at this bound got wrong.
+//
+// Both result shapes are asserted because they failed differently: an object
+// decodes to a map, which the estimator declined and cel-go charged 1, and an
+// array decodes to a list, whose bytes-entering charge is 0 for a call taking a
+// single string argument.
+func TestCELCostChargesJSONParseForWhatItDecoded(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		document string
+	}{
+		{"an array decodes to a list", jsonArrayDocument(10_000)},
+		{"an object decodes to a map", jsonObjectDocument(10_000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			large := costOfParsingDocument(t, tc.document)
+			small := costOfParsingDocument(t, `[1]`)
+
+			require.Greater(t, large, uint64(10_000),
+				"a 10,000-node document must be charged for its 10,000 nodes; %d units means the call was "+
+					"priced as a single operation, which is the defect — an overload-ID-keyed estimator "+
+					"scores exactly this way on the parsed ASTs flowstate evaluates", large)
+
+			require.Greater(t, large, small*1_000,
+				"the charge must track the size of the decoded tree: a 10,000-node document cost %d and a "+
+					"one-node document cost %d, which is not a size-aware price", large, small)
+		})
+	}
 }
