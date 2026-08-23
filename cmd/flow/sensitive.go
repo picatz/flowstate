@@ -122,6 +122,28 @@ func sensitiveOutputNames(workflow *v1.Workflow) map[string]bool {
 	return names
 }
 
+// sensitiveTranscriptNames reports whether any declaration can put private data
+// into the step transcript. Inputs matter here as well as outputs: loop and
+// for_each failure records carry their bound input under `item`, even when the
+// workflow declares no run outputs. The map's names are otherwise immaterial;
+// [redactStepValues] deliberately withholds the whole transcript once it is
+// non-empty. As with [sensitiveOutputNames], nil means there is no specification
+// to consult and therefore selects the fail-closed path.
+func sensitiveTranscriptNames(workflow *v1.Workflow) map[string]bool {
+	names := sensitiveOutputNames(workflow)
+	if names == nil {
+		return nil
+	}
+
+	for _, declared := range workflow.GetDeclaredInputs() {
+		if declared.GetSensitive() {
+			names[declared.GetName()] = true
+		}
+	}
+
+	return names
+}
+
 // redactRunOutputsValues returns values with every entry this call site cannot
 // vouch for replaced by [redactedValue].
 //
@@ -289,11 +311,12 @@ func redactStepOutputs(outputs *v1.Workflow_StepOutputs, sensitive map[string]bo
 // message), and both must see the redacted answer rather than one of them racing
 // ahead of a mutation to the original.
 func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal bool) *v1.GetResponse {
-	if response == nil || response.GetRunOutputs() == nil || reveal {
+	if response == nil || reveal || (response.GetRunOutputs() == nil && response.GetOutputs() == nil) {
 		return response
 	}
 
-	sensitive := sensitiveOutputNames(workflow)
+	sensitiveOutputs := sensitiveOutputNames(workflow)
+	sensitiveTranscript := sensitiveTranscriptNames(workflow)
 
 	clone, ok := proto.Clone(response).(*v1.GetResponse)
 	if !ok {
@@ -310,7 +333,7 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 		}
 	}
 
-	clone.RunOutputs = redactRunOutputs(clone.RunOutputs, sensitive, false)
+	clone.RunOutputs = redactRunOutputs(clone.RunOutputs, sensitiveOutputs, false)
 
 	// [v1.GetResponse.Starter] passes through untouched, deliberately, and it is
 	// worth saying so rather than leaving it to the absence of a line.
@@ -331,8 +354,8 @@ func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal b
 	// field that exists to be compared and cannot be.
 
 	if outs, ok := clone.Kind.(*v1.GetResponse_Outputs); ok && outs.Outputs != nil {
-		outs.Outputs.RunOutputs = redactRunOutputs(outs.Outputs.RunOutputs, sensitive, false)
-		outs.Outputs = redactStepOutputs(outs.Outputs, sensitive, false)
+		outs.Outputs.RunOutputs = redactRunOutputs(outs.Outputs.RunOutputs, sensitiveOutputs, false)
+		outs.Outputs = redactStepOutputs(outs.Outputs, sensitiveTranscript, false)
 	}
 
 	return clone

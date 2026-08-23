@@ -140,6 +140,38 @@ func TestRedactGetResponseNilAndEmptyPassThrough(t *testing.T) {
 	require.Same(t, response, redactGetResponse(response, nil, false))
 }
 
+// TestRedactGetResponseRedactsSensitiveInputInTranscriptWithoutRunOutputs
+// reproduces the loop-failure disclosure: a tolerated for_each failure records
+// its bound item in the transcript, while a workflow with no declared outputs
+// legitimately has nil RunOutputs. Redaction must not use that nil field as a
+// reason to skip the transcript.
+func TestRedactGetResponseRedactsSensitiveInputInTranscriptWithoutRunOutputs(t *testing.T) {
+	workflow := &v1.Workflow{
+		DeclaredInputs: []*v1.InputDeclaration{{Name: "customers", Sensitive: true}},
+	}
+	response := &v1.GetResponse{
+		Kind: &v1.GetResponse_Outputs{
+			Outputs: &v1.Workflow_StepOutputs{
+				StepValues: map[string]*v1.Node_Outputs{
+					"process": {NamedValues: map[string]*v1.Value{
+						"results": v1.NewLiteral(secretString),
+					}},
+				},
+			},
+		},
+	}
+
+	redacted := redactGetResponse(response, workflow, false)
+
+	require.Nil(t, redacted.GetRunOutputs(), "redaction must not fabricate run outputs")
+	result := redacted.GetOutputs().GetStepValues()["process"].GetNamedValues()["results"].GetLiteral().GetStringValue()
+	require.NotEqual(t, secretString, result)
+	require.Contains(t, result, "redacted")
+	require.Equal(t, secretString,
+		response.GetOutputs().GetStepValues()["process"].GetNamedValues()["results"].GetLiteral().GetStringValue(),
+		"redaction must not mutate the response shared by another renderer")
+}
+
 // TestRedactedMarkerIsHonestAndUnmistakable checks requirement 4: the marker must
 // not look like a value the workload could have produced, and it must name what
 // was withheld.
