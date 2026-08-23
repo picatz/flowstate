@@ -47,8 +47,13 @@ func TestProtectedResourceMetadataSupportsBoundedConditionalCaching(t *testing.T
 	pr.Handler().ServeHTTP(response, request)
 	require.Equal(t, http.StatusOK, response.Code)
 	require.Equal(t, "public, max-age=300, must-revalidate", response.Header().Get("Cache-Control"))
-	require.Equal(t, pr.Digest(), response.Header().Get("Flowstate-Resource-Digest"))
-	require.Equal(t, "1", response.Header().Get("Flowstate-Policy-Revision"))
+	// Neither the policy digest nor a defaulted revision is served. Both used
+	// to be, and both were wrong for reasons the other tests in this file
+	// state: the digest covers private policy and this route is
+	// unauthenticated, and a revision nobody configured is a constant
+	// presented as a measurement.
+	require.Empty(t, response.Header().Get("Flowstate-Resource-Digest"))
+	require.Empty(t, response.Header().Get("Flowstate-Policy-Revision"))
 	etag := response.Header().Get("ETag")
 	require.NotEmpty(t, etag)
 
@@ -471,4 +476,128 @@ func TestWithProtectedResourceChallengeIgnoresForgedHost(t *testing.T) {
 	require.Contains(t, challenge, `resource_metadata="https://flowstate.example.com`+auth.ProtectedResourceMetadataPath+"/mcp"+`"`,
 		"a forged Host header changed the advertised metadata URL")
 	require.NotContains(t, challenge, "attacker.example.com")
+}
+
+// fetchMetadata serves one GET through the protected-resource handler and
+// returns the response, so a test can assert on what an anonymous client
+// actually receives rather than on what the constructor computed.
+func fetchMetadata(t *testing.T, pr *auth.ProtectedResource, ifNoneMatch string) *http.Response {
+	t.Helper()
+
+	request := httptest.NewRequest(http.MethodGet, "https://flowstate.example.com"+pr.Path(), nil)
+	if ifNoneMatch != "" {
+		request.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	recorder := httptest.NewRecorder()
+	pr.Handler().ServeHTTP(recorder, request)
+
+	return recorder.Result()
+}
+
+// TestTheServedValidatorRevealsNothingAboutThePolicy is the property that
+// decides where this ETag may come from.
+//
+// [auth.ProtectedResource.Digest] deliberately covers the complete effective
+// descriptor — trust policy, claim mappings, tenancy, federation, secret
+// boundaries — so a deployment can tell two workers apart when the public
+// document is identical. This route is the unauthenticated discovery document,
+// documented as having no authentication because a client fetches it before it
+// holds any token. Publishing that digest on it hands an anonymous fetcher an
+// offline oracle: guess a claim mapping, hash the candidate, compare — free and
+// unobservable, because the guessing happens after a single request.
+//
+// So the test is the pair. A policy-only change must move the digest, because
+// that is what the digest is for, and must NOT move anything the handler
+// serves, because none of it is that caller's business.
+func TestTheServedValidatorRevealsNothingAboutThePolicy(t *testing.T) {
+	policy := protectedResourcePolicy()
+	config := auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://issuer.example.com"},
+	}
+
+	before, err := auth.NewProtectedResource(config, policy)
+	require.NoError(t, err)
+
+	changed := *policy
+	changed.Issuers = append([]auth.TrustedIssuer(nil), policy.Issuers...)
+	changed.Issuers[0].Role = "read-only"
+	after, err := auth.NewProtectedResource(config, &changed)
+	require.NoError(t, err)
+
+	require.NotEqual(t, before.Digest(), after.Digest(),
+		"a policy-only change did not move the descriptor digest, so the digest is not covering the policy")
+
+	first, second := fetchMetadata(t, before, ""), fetchMetadata(t, after, "")
+
+	require.Equal(t, first.Header.Get("ETag"), second.Header.Get("ETag"),
+		"the served ETag moved when only private policy changed, so it is a hash of the policy and an anonymous "+
+			"client can confirm guesses about it offline")
+
+	// And the digest must not reach the response by any other header either.
+	for name, values := range first.Header {
+		for _, value := range values {
+			require.NotContains(t, value, before.Digest(),
+				"the policy digest is published to unauthenticated clients under %q", name)
+		}
+	}
+}
+
+// TestConditionalRequestsFollowRFC9110 covers the three If-None-Match
+// spellings a string comparison gets wrong. Each costs a client its cache on a
+// route every client polls: a spurious 200 with the whole document behind it.
+func TestConditionalRequestsFollowRFC9110(t *testing.T) {
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://issuer.example.com"},
+	}, protectedResourcePolicy())
+	require.NoError(t, err)
+
+	etag := fetchMetadata(t, pr, "").Header.Get("ETag")
+	require.NotEmpty(t, etag)
+
+	for name, header := range map[string]string{
+		"the exact tag":                 etag,
+		"a wildcard":                    "*",
+		"a list the tag is last in":     `"sha256-0000", ` + etag,
+		"a list the tag is first in":    etag + `, "sha256-0000"`,
+		"the weak form of the tag":      "W/" + etag,
+		"a list carrying the weak form": `"sha256-0000", W/` + etag,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, http.StatusNotModified, fetchMetadata(t, pr, header).StatusCode)
+		})
+	}
+
+	for name, header := range map[string]string{
+		"a tag that does not match": `"sha256-0000"`,
+		"a list with no match":      `"sha256-0000", "sha256-1111"`,
+		"an empty header":           "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, http.StatusOK, fetchMetadata(t, pr, header).StatusCode)
+		})
+	}
+}
+
+// TestThePolicyRevisionHeaderIsAbsentUntilSomebodySetsOne: the header claims a
+// fact about the deployment's policy generation, and defaulting it to 1 made
+// that claim in every deployment that never set one — a constant presented as
+// a measurement.
+func TestThePolicyRevisionHeaderIsAbsentUntilSomebodySetsOne(t *testing.T) {
+	base := auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://issuer.example.com"},
+	}
+
+	unset, err := auth.NewProtectedResource(base, protectedResourcePolicy())
+	require.NoError(t, err)
+	require.Empty(t, fetchMetadata(t, unset, "").Header.Get("Flowstate-Policy-Revision"),
+		"a deployment that set no revision still announced one")
+
+	configured := base
+	configured.Revision = 7
+	set, err := auth.NewProtectedResource(configured, protectedResourcePolicy())
+	require.NoError(t, err)
+	require.Equal(t, "7", fetchMetadata(t, set, "").Header.Get("Flowstate-Policy-Revision"))
 }
