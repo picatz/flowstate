@@ -413,6 +413,10 @@ type oversizedSigner struct {
 
 	padAfter int
 
+	// padTo, when set, pads to exactly that many bytes rather than to
+	// comfortably over the limit, so a test can sit on the boundary itself.
+	padTo int
+
 	mu    sync.Mutex
 	calls int
 }
@@ -428,7 +432,13 @@ func (p *oversizedSigner) Sign(ctx context.Context, claims jwt.ClaimsSet) (strin
 	pad := p.calls > p.padAfter
 	p.mu.Unlock()
 
-	if pad {
+	switch {
+	case pad && p.padTo > 0:
+		if len(raw) > p.padTo {
+			return "", fmt.Errorf("test signer cannot pad a %d byte token down to %d", len(raw), p.padTo)
+		}
+		raw += strings.Repeat("A", p.padTo-len(raw))
+	case pad:
 		raw += strings.Repeat("A", 64<<10)
 	}
 
@@ -553,4 +563,48 @@ func TestProviderSigningKeyIsCalledConcurrently(t *testing.T) {
 		require.NoError(t, <-errs,
 			"an issuer mints concurrently, so its signer is called concurrently; nothing here may serialize that")
 	}
+}
+
+// TestMaxSignatureBytesIsTheSizeActuallyRefused ties the number an
+// implementation is told to cap its reads at to the number this process
+// actually refuses.
+//
+// The two have to be one value, because they are one contract written on both
+// sides of a boundary this repository does not compile: [auth.MaxSignatureBytes]
+// is what an adapter author reads and bounds their transport with, and the check
+// in boundedSign is what happens when they get it wrong. If the refusal drifted
+// above the published number, every compliant adapter would still be correct and
+// the backstop would have quietly stopped backstopping; if it drifted below,
+// a compliant adapter's largest legal answer would be refused at the mint.
+//
+// So the boundary itself is asserted from both sides: exactly the limit passes,
+// one byte more does not.
+func TestMaxSignatureBytesIsTheSizeActuallyRefused(t *testing.T) {
+	mintThrough := func(t *testing.T, size int) error {
+		t.Helper()
+
+		provider, public := newFakeProvider(t, "kms-boundary")
+
+		// One good signature for the proof of possession, then a token of
+		// exactly the size under test.
+		key, err := auth.NewProviderSigningKey(t.Context(),
+			&oversizedSigner{fakeProvider: provider, padAfter: 1, padTo: size}, public)
+		require.NoError(t, err)
+
+		issuer, err := auth.NewIssuer("https://flowstate.example", key,
+			auth.WithDeclaredClaims("repository"))
+		require.NoError(t, err)
+
+		_, err = issuer.Mint(t.Context(), testIdentity(), testStepRef(), "https://as.example.com")
+		return err
+	}
+
+	t.Run("exactly the limit is accepted", func(t *testing.T) {
+		require.NoError(t, mintThrough(t, auth.MaxSignatureBytes),
+			"an adapter that capped its read at exactly the published limit must not have its largest legal answer refused")
+	})
+
+	t.Run("one byte over is refused", func(t *testing.T) {
+		require.ErrorIs(t, mintThrough(t, auth.MaxSignatureBytes+1), auth.ErrMalformedToken)
+	})
 }
