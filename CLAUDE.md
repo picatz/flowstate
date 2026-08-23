@@ -126,7 +126,9 @@ holds a generated mirror of the document and `TestTheMirrorMatchesTheRepository`
 fails on drift; the gate's docs leg runs this for you. And generated files
 (`*.pb.go`, `docs/reference/`, the reference mirror, the descriptorset) are
 never edited directly: edit the source they derive from and regenerate. The
-hooks under `tools/hooks/` enforce both at edit time.
+helper programs under `tools/hooks/` can check both when invoked from trusted,
+user-local editor configuration; the repository does not automatically run
+code from the mutable checkout.
 
 ### `make check`: the full rehearsal
 
