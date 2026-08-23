@@ -5,9 +5,9 @@
 An expression is written wherever a value belongs — a `vars:` binding, a task
 input, an `if:`, a `wait_until:` — and every position reaches the same
 dialect: [CEL](https://cel.dev)'s own language plus the extension libraries
-this build's language *profile* admits. `docs/DSL.md` describes the grammar —
-what a Flowfile may contain; this describes the language an expression inside
-one may call.
+this build's language *profile* admits. [`docs/DSL.md`](../DSL.md) describes
+the grammar — what a Flowfile may contain; this describes the language an
+expression inside one may call.
 
 ## Profiles
 
@@ -29,75 +29,102 @@ form, because cel-go does not report one — `math.greatest(1, 2)` is declared
 as `greatest`, and `[3,1,2].sortBy(v, v)` as `sortBy`, and nothing about either
 name says whether it is written on a namespace or on a value.
 
-| Library | Name | Kind | Example |
-|---|---|---|---|
-| `bindings` | `bind` | macro | `cel.bind(x, 2, x + 1)` |
-| `comprehensions` | `existsOne` | macro | `[1, 2].existsOne(i, v, v > 1)` |
-| `comprehensions` | `transformList` | macro | `[1, 2].transformList(i, v, v * 2)` |
-| `comprehensions` | `transformMap` | macro | `{'a': 1}.transformMap(k, v, v * 10)` |
-| `comprehensions` | `transformMapEntry` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` |
-| `encoders` | `base64.decode` | function | — |
-| `encoders` | `base64.encode` | function | — |
-| `encoders` | `json.encode` | function | — |
-| `json` | `json_parse` | function | — |
-| `lists` | `distinct` | function | — |
-| `lists` | `flatten` | function | — |
-| `lists` | `lists.range` | function | — |
-| `lists` | `reverse` | function | — |
-| `lists` | `slice` | function | — |
-| `lists` | `sort` | function | — |
-| `lists` | `sortBy` | macro | `[3, 1, 2].sortBy(v, v)` |
-| `math` | `greatest` | macro | `math.greatest(1, 2)` |
-| `math` | `least` | macro | `math.least(3, 4)` |
-| `math` | `math.abs` | function | — |
-| `math` | `math.bitAnd` | function | — |
-| `math` | `math.bitNot` | function | — |
-| `math` | `math.bitOr` | function | — |
-| `math` | `math.bitShiftLeft` | function | — |
-| `math` | `math.bitShiftRight` | function | — |
-| `math` | `math.bitXor` | function | — |
-| `math` | `math.ceil` | function | — |
-| `math` | `math.floor` | function | — |
-| `math` | `math.isFinite` | function | — |
-| `math` | `math.isInf` | function | — |
-| `math` | `math.isNaN` | function | — |
-| `math` | `math.round` | function | — |
-| `math` | `math.sign` | function | — |
-| `math` | `math.sqrt` | function | — |
-| `math` | `math.trunc` | function | — |
-| `optional` | `first` | function | — |
-| `optional` | `hasValue` | function | — |
-| `optional` | `last` | function | — |
-| `optional` | `optFlatMap` | macro | `optional.of(2).optFlatMap(v, optional.of(v * 3))` |
-| `optional` | `optMap` | macro | `optional.of(2).optMap(v, v * 3)` |
-| `optional` | `optional.none` | function | — |
-| `optional` | `optional.of` | function | — |
-| `optional` | `optional.ofNonZeroValue` | function | — |
-| `optional` | `optional.unwrap` | function | — |
-| `optional` | `or` | function | — |
-| `optional` | `orValue` | function | — |
-| `optional` | `unwrapOpt` | function | — |
-| `optional` | `value` | function | — |
-| `protos` | `getExt` | macro | — |
-| `protos` | `hasExt` | macro | — |
-| `regex` | `regex.extract` | function | — |
-| `regex` | `regex.extractAll` | function | — |
-| `regex` | `regex.replace` | function | — |
-| `sets` | `sets.contains` | function | — |
-| `sets` | `sets.equivalent` | function | — |
-| `sets` | `sets.intersects` | function | — |
-| `strings` | `charAt` | function | — |
-| `strings` | `format` | function | — |
-| `strings` | `indexOf` | function | — |
-| `strings` | `join` | function | — |
-| `strings` | `lastIndexOf` | function | — |
-| `strings` | `lowerAscii` | function | — |
-| `strings` | `replace` | function | — |
-| `strings` | `split` | function | — |
-| `strings` | `strings.quote` | function | — |
-| `strings` | `substring` | function | — |
-| `strings` | `trim` | function | — |
-| `strings` | `upperAscii` | function | — |
+`Signature` is the same call form for an ordinary function: argument order,
+arity, and — like `Example` — whether it is written on a namespace or a value,
+one entry per overload. It is not written down the way `Example` is; cel-go's
+own compiled environment answers this for a function even though it cannot for
+a macro, so this column is derived from it directly.
+
+| Library | Name | Kind | Example | Signature |
+|---|---|---|---|---|
+| `bindings` | `bind` | macro | `cel.bind(x, 2, x + 1)` | — |
+| `comprehensions` | `existsOne` | macro | `[1, 2].existsOne(i, v, v > 1)` | — |
+| `comprehensions` | `transformList` | macro | `[1, 2].transformList(i, v, v * 2)` | — |
+| `comprehensions` | `transformMap` | macro | `{'a': 1}.transformMap(k, v, v * 10)` | — |
+| `comprehensions` | `transformMapEntry` | macro | `{'a': 1}.transformMapEntry(k, v, {k: v * 2})` | — |
+| `encoders` | `base64.decode` | function | — | `base64.decode(string) -> bytes` |
+| `encoders` | `base64.encode` | function | — | `base64.encode(bytes) -> string` |
+| `encoders` | `json.encode` | function | — | `json.encode(dyn) -> string` |
+| `json` | `json_parse` | function | — | `json_parse(bytes) -> dyn`<br>`json_parse(string) -> dyn` |
+| `lists` | `distinct` | function | — | `list(<T>).distinct() -> list(<T>)` |
+| `lists` | `flatten` | function | — | `list(dyn).flatten(int) -> list(dyn)`<br>`list(list(<T>)).flatten() -> list(<T>)` |
+| `lists` | `lists.range` | function | — | `lists.range(int) -> list(int)` |
+| `lists` | `reverse` | function | — | `list(<T>).reverse() -> list(<T>)`<br>`string.reverse() -> string` |
+| `lists` | `slice` | function | — | `list(<T>).slice(int, int) -> list(<T>)` |
+| `lists` | `sort` | function | — | `list(bool).sort() -> list(bool)`<br>`list(bytes).sort() -> list(bytes)`<br>`list(double).sort() -> list(double)`<br>`list(google.protobuf.Duration).sort() -> list(google.protobuf.Duration)`<br>`list(google.protobuf.Timestamp).sort() -> list(google.protobuf.Timestamp)`<br>`list(int).sort() -> list(int)`<br>`list(string).sort() -> list(string)`<br>`list(uint).sort() -> list(uint)` |
+| `lists` | `sortBy` | macro | `[3, 1, 2].sortBy(v, v)` | — |
+| `math` | `greatest` | macro | `math.greatest(1, 2)` | — |
+| `math` | `least` | macro | `math.least(3, 4)` | — |
+| `math` | `math.abs` | function | — | `math.abs(double) -> double`<br>`math.abs(int) -> int`<br>`math.abs(uint) -> uint` |
+| `math` | `math.bitAnd` | function | — | `math.bitAnd(int, int) -> int`<br>`math.bitAnd(uint, uint) -> uint` |
+| `math` | `math.bitNot` | function | — | `math.bitNot(int) -> int`<br>`math.bitNot(uint) -> uint` |
+| `math` | `math.bitOr` | function | — | `math.bitOr(int, int) -> int`<br>`math.bitOr(uint, uint) -> uint` |
+| `math` | `math.bitShiftLeft` | function | — | `math.bitShiftLeft(int, int) -> int`<br>`math.bitShiftLeft(uint, int) -> uint` |
+| `math` | `math.bitShiftRight` | function | — | `math.bitShiftRight(int, int) -> int`<br>`math.bitShiftRight(uint, int) -> uint` |
+| `math` | `math.bitXor` | function | — | `math.bitXor(int, int) -> int`<br>`math.bitXor(uint, uint) -> uint` |
+| `math` | `math.ceil` | function | — | `math.ceil(double) -> double` |
+| `math` | `math.floor` | function | — | `math.floor(double) -> double` |
+| `math` | `math.isFinite` | function | — | `math.isFinite(double) -> bool` |
+| `math` | `math.isInf` | function | — | `math.isInf(double) -> bool` |
+| `math` | `math.isNaN` | function | — | `math.isNaN(double) -> bool` |
+| `math` | `math.round` | function | — | `math.round(double) -> double` |
+| `math` | `math.sign` | function | — | `math.sign(double) -> double`<br>`math.sign(int) -> int`<br>`math.sign(uint) -> uint` |
+| `math` | `math.sqrt` | function | — | `math.sqrt(double) -> double`<br>`math.sqrt(int) -> double`<br>`math.sqrt(uint) -> double` |
+| `math` | `math.trunc` | function | — | `math.trunc(double) -> double` |
+| `optional` | `first` | function | — | `list(<V>).first() -> optional_type(<V>)` |
+| `optional` | `hasValue` | function | — | `optional_type(<V>).hasValue() -> bool` |
+| `optional` | `last` | function | — | `list(<V>).last() -> optional_type(<V>)` |
+| `optional` | `optFlatMap` | macro | `optional.of(2).optFlatMap(v, optional.of(v * 3))` | — |
+| `optional` | `optMap` | macro | `optional.of(2).optMap(v, v * 3)` | — |
+| `optional` | `optional.none` | function | — | `optional.none() -> optional_type(<V>)` |
+| `optional` | `optional.of` | function | — | `optional.of(<V>) -> optional_type(<V>)` |
+| `optional` | `optional.ofNonZeroValue` | function | — | `optional.ofNonZeroValue(<V>) -> optional_type(<V>)` |
+| `optional` | `optional.unwrap` | function | — | `optional.unwrap(list(optional_type(<V>))) -> list(<V>)` |
+| `optional` | `or` | function | — | `optional_type(<V>).or(optional_type(<V>)) -> optional_type(<V>)` |
+| `optional` | `orValue` | function | — | `optional_type(<V>).orValue(<V>) -> <V>` |
+| `optional` | `unwrapOpt` | function | — | `list(optional_type(<V>)).unwrapOpt() -> list(<V>)` |
+| `optional` | `value` | function | — | `optional_type(<V>).value() -> <V>` |
+| `protos` | `getExt` | macro | — | — |
+| `protos` | `hasExt` | macro | — | — |
+| `regex` | `regex.extract` | function | — | `regex.extract(string, string) -> optional_type(string)` |
+| `regex` | `regex.extractAll` | function | — | `regex.extractAll(string, string) -> list(string)` |
+| `regex` | `regex.replace` | function | — | `regex.replace(string, string, string) -> string`<br>`regex.replace(string, string, string, int) -> string` |
+| `sets` | `sets.contains` | function | — | `sets.contains(list(<T>), list(<T>)) -> bool` |
+| `sets` | `sets.equivalent` | function | — | `sets.equivalent(list(<T>), list(<T>)) -> bool` |
+| `sets` | `sets.intersects` | function | — | `sets.intersects(list(<T>), list(<T>)) -> bool` |
+| `strings` | `charAt` | function | — | `string.charAt(int) -> string` |
+| `strings` | `format` | function | — | `string.format(list(dyn)) -> string` |
+| `strings` | `indexOf` | function | — | `string.indexOf(string) -> int`<br>`string.indexOf(string, int) -> int` |
+| `strings` | `join` | function | — | `list(string).join() -> string`<br>`list(string).join(string) -> string` |
+| `strings` | `lastIndexOf` | function | — | `string.lastIndexOf(string) -> int`<br>`string.lastIndexOf(string, int) -> int` |
+| `strings` | `lowerAscii` | function | — | `string.lowerAscii() -> string` |
+| `strings` | `replace` | function | — | `string.replace(string, string) -> string`<br>`string.replace(string, string, int) -> string` |
+| `strings` | `split` | function | — | `string.split(string) -> list(string)`<br>`string.split(string, int) -> list(string)` |
+| `strings` | `strings.quote` | function | — | `strings.quote(string) -> string` |
+| `strings` | `substring` | function | — | `string.substring(int) -> string`<br>`string.substring(int, int) -> string` |
+| `strings` | `trim` | function | — | `string.trim() -> string` |
+| `strings` | `upperAscii` | function | — | `string.upperAscii() -> string` |
+
+## Limits
+
+An expression evaluates against a **cost budget**, not a time budget:
+`DefaultCostLimit` (1,000,000) is what a single evaluation may spend before it aborts, in
+abstract units roughly proportional to the work performed rather than
+wall-clock time or bytes read. This is what stands between a workflow
+author and a pathological expression, so it applies to a `vars:` binding, a
+task input, an `if:` — anywhere on this page — and not only to a `cel` step.
+
+It matters most for the Idioms section below. A `.filter().map()` chain
+costs nothing beyond the work it does per element, and is still charged per
+element: run over a response whose size this build does not bound, it
+accumulates cost across every item the chain touches, so an expression that
+works against a small fixture can still exceed the budget against production
+data. An expression that exceeds the budget fails whatever evaluation it is
+written in, the same as any other evaluation error: a step-scoped expression
+(a task input, an `if:`, a step's own `vars:`) fails that step, while a
+workflow-level `vars:` binding fails the run before any step starts, and a
+run-output expression fails it after every step has finished — there is no
+step for either of those to fail. The worker is never at risk, only the run.
 
 ## Durations and `now`
 

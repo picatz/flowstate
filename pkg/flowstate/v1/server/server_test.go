@@ -19,7 +19,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/picatz/jose/pkg/jwk"
@@ -140,7 +139,7 @@ func TestFlowstateServer(t *testing.T) {
 	otelInterceptor, err := otelconnect.NewInterceptor()
 	require.NoError(t, err)
 
-	flowstateServer := server.New(temporal)
+	flowstateServer := mustNew(t, temporal)
 
 	mux := http.NewServeMux()
 	mux.Handle(

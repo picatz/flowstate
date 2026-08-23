@@ -48,6 +48,16 @@ func (m mapper) TemporalNamespaces() []string {
 	return namespaces
 }
 
+func (m mapper) FlowstateNamespaces(temporalNamespace string) []string {
+	var namespaces []string
+	for namespace, mapped := range m.mapping {
+		if mapped == temporalNamespace {
+			namespaces = append(namespaces, namespace)
+		}
+	}
+	return namespaces
+}
+
 // newPooledServer returns a Flowstate server routing through a pool that maps the
 // named Flowstate namespaces onto this test's own Temporal namespace.
 //
@@ -68,11 +78,11 @@ func newPooledServer(t *testing.T, callerNamespace string, routed ...string) *se
 	pool, err := temporalclient.NewPool(t.Context(), temporalclient.Config{
 		Address:   devServer.FrontendHostPort(),
 		Namespace: namespace,
-	}, mapper{mapping: mapping})
+	}, mapper{mapping: mapping}, nil)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 
-	return server.New(temporal,
+	return mustNew(t, temporal,
 		server.WithNamespace(callerNamespace),
 		server.WithNamespacePool(pool),
 	)

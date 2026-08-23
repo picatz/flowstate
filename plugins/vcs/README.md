@@ -33,18 +33,35 @@ Both tasks accept a `token` input, always as a secret reference -
 `${secret('vcs:some-name')}` - never a literal. Unset means an
 unauthenticated request, which works for any public repository.
 
-A reference's *name* is ignored; this plugin resolves the one credential its
-own environment names:
+A credential is selected by two things, and only one of them is written in
+the Flowfile. The *name* is what a reference carries: `${secret('vcs:token')}`
+is scheme `vcs`, name `token`, and a reference has no third part — the form is
+`scheme:name`. The *namespace* is the tenant the requesting workload belongs
+to; a workflow cannot name it, choose it, or change it.
+
+Both segments are lowercase ASCII letters, digits and hyphens — anything else
+is refused rather than rewritten — and each is encoded into the variable name
+by upcasing it and turning every hyphen into an underscore. The namespace's
+*encoded* length is written in front, which is what preserves the boundary
+between the two halves. The default namespace encodes to the empty string, so
+its length is zero and the segment between the separators is empty:
 
 ```
-VCS_SECRET_<NAME>=<https-password>
+VCS_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME>=<https-password>
+# ${secret('vcs:acme-org')}, run in the default namespace:
+VCS_SECRET_0__ACME_ORG=<https-password>
+# the same reference, run by a caller the server placed in tenant team-a:
+VCS_SECRET_6_TEAM_A_ACME_ORG=<https-password>
 ```
 
-where `<NAME>` is the reference's own name, uppercased. `${secret('vcs:acme-org')}`
-reads `VCS_SECRET_ACME_ORG`. The value is used as the password half of HTTP
-Basic auth against the repository's remote - the same shape GitHub, GitLab,
-and Gitea all accept for a token over HTTPS, which is why this plugin's
-scheme is not named after any one forge.
+The value is used as the password half of HTTP Basic auth against the
+repository's remote - the same shape GitHub, GitLab, and Gitea all accept for
+a token over HTTPS, which is why this plugin's scheme is not named after any
+one forge. (See "A plugin task has no access to the caller's namespace or
+identity" below: `vcs.log` and `vcs.diff` resolve through `tokenFromValue`,
+which always looks up the default namespace today, so the namespaced form
+above applies once that gap closes rather than to either task as currently
+wired.)
 
 ## Design decisions and the arguments for them
 

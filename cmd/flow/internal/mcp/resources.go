@@ -63,7 +63,7 @@ const (
 // answer from, passed in rather than constructed here for the reason this
 // repository states most often: two constructions are two catalogs, and the one
 // an agent reads would eventually stop being the one it is validated against.
-func addResources(srv *mcp.Server, local *server.FlowstateServer) {
+func addResources(srv *mcp.Server, local *server.FlowstateServer, deps Deps) {
 	srv.AddResource(&mcp.Resource{
 		URI:      DSLResourceURI,
 		Name:     "flowfile-dsl-reference",
@@ -75,7 +75,7 @@ func addResources(srv *mcp.Server, local *server.FlowstateServer) {
 			"parallel blocks, waits, secrets, and the reasoning behind each rule. Read this before " +
 			"authoring a workflow. It is compiled into this binary, so it describes the engine you " +
 			"are about to call rather than whatever is checked out nearby.",
-	}, mcpDSLResourceHandler())
+	}, wrapResourceHandler(deps, DSLResourceURI, mcpDSLResourceHandler()))
 
 	srv.AddResource(&mcp.Resource{
 		URI:      CatalogResourceURI,
@@ -86,7 +86,7 @@ func addResources(srv *mcp.Server, local *server.FlowstateServer) {
 			"with its typed inputs and outputs, and every CEL function an expression may call. The " +
 			"same answer flowstate_get_catalog gives, without spending a tool call. Read it as a " +
 			"resource when you are about to author, and call the tool when you need it mid-reasoning.",
-	}, mcpCatalogResourceHandler(local))
+	}, wrapResourceHandler(deps, CatalogResourceURI, mcpCatalogResourceHandler(local)))
 
 	// The template is what tells a client the *shape* of an example URI; the
 	// concrete resources below are what let it discover the names without
@@ -101,7 +101,7 @@ func addResources(srv *mcp.Server, local *server.FlowstateServer) {
 			"directory name: flowstate://docs/examples/hello-world, flowstate://docs/examples/" +
 			"http-json. Each is a complete Flowfile that CI runs, so it is a working reference " +
 			"rather than a fragment. The names are listed as resources of their own.",
-	}, mcpExampleResourceHandler())
+	}, wrapResourceHandler(deps, ExampleTemplate, mcpExampleResourceHandler()))
 
 	for _, name := range reference.ExampleNames() {
 		content, ok := reference.Example(name)
@@ -117,9 +117,26 @@ func addResources(srv *mcp.Server, local *server.FlowstateServer) {
 			MIMEType: YAMLMIME,
 			Size:     int64(len(content)),
 			Description: fmt.Sprintf("The %s example: a complete, CI-run Flowfile you can read as a "+
-				"reference or adapt. Execute it as-is with flowstate_run_local to see what it does.", name),
-		}, mcpExampleResourceHandler())
+				"reference or adapt. %s", name, exampleUseNote(deps)),
+		}, wrapResourceHandler(deps, ExamplePrefix+name, mcpExampleResourceHandler()))
 	}
+}
+
+// exampleUseNote says what a reader of an example can do with it *on this
+// surface*, which differs between the two.
+//
+// The full surface serves flowstate_run_local and the reduced one
+// deliberately does not (see cmd/flow/mcpserve.go), so the stdio sentence —
+// "execute it as-is with flowstate_run_local" — would send a model at a tool
+// that is not there. A description is the only account of a surface a model
+// reads, and one naming an absent tool is a diagnostic that lies. Reported by
+// Codex on picatz/flowstate#807.
+func exampleUseNote(deps Deps) string {
+	if deps.reduced {
+		return "Rehearse it with flowstate_test, which runs it against stubs and reaches nothing."
+	}
+
+	return "Execute it as-is with flowstate_run_local to see what it does."
 }
 
 // mcpDSLResourceHandler serves the language reference, whole.

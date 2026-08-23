@@ -47,10 +47,12 @@
 // Every one of these is a configuration error that would otherwise become a
 // runtime surprise:
 //
-//   - A search path entry that is relative, or world-writable. A plugin
-//     directory is arbitrary code execution; a directory anyone can write to is
-//     arbitrary code execution by anyone. See [Config.AllowInsecureSearchPath]
-//     for the escape hatch and what it costs.
+//   - A search path entry that is relative, or writable by anyone other than
+//     its owner — group-writable as well as world-writable. A plugin directory
+//     is arbitrary code execution; a directory anyone can write to is arbitrary
+//     code execution by anyone, and a group is a list of users this process does
+//     not curate. See [Config.AllowInsecureSearchPath] for the escape hatch and
+//     what it costs.
 //   - A binary that does not handshake within [Config.HandshakeTimeout]. It is
 //     killed rather than waited on.
 //   - A handshake naming a protocol version the host did not offer, or an
@@ -64,6 +66,13 @@
 //   - A scheme not in [Config.PermittedSchemes], when that is set. A deployment
 //     that lists what it permits gets exactly that and nothing a newly dropped-in
 //     binary adds.
+//   - A binary whose digest is not the one [Config.PinnedDigests] declared for
+//     the name it answers to. Refused before the process is started, so nothing
+//     the plugin says about itself is part of the decision. Digest pinning is
+//     admission of *bytes*: it says these exact bytes and is deliberately silent
+//     about provenance — who built them, and whether anyone vouches for them.
+//     Whether a handshake should carry a signature instead, and what a
+//     deployment would trust to verify one, is open (#146).
 //
 // # The handshake, end to end
 //
@@ -132,7 +141,7 @@
 // Use the SDK in [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk],
 // which does the handshake, the socket, the server, the token check, and the
 // signal handling, so that a plugin is a manifest and its implementations. The
-// worked example under examples/flowstate-plugin-example advertises both
+// worked example under pkg/flowstate/v1/plugin/examples/flowstate-plugin-example advertises both
 // capabilities. A plugin in another language implements what is described above;
 // the format is documented here so it can be, and the SDK is a convenience
 // rather than a requirement.

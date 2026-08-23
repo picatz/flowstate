@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -234,29 +235,20 @@ func Test_controlPlane_withRunIdentity(t *testing.T) {
 	})
 }
 
-func Test_controlPlane_checksEveryRequest(t *testing.T) {
-	server, addr := controlPlaneServer(t)
-
-	policy, err := New(WithControlPlane(addr), WithSelfAdministration())
-	require.NoError(t, err)
-
-	request := func(ctx context.Context) (*http.Response, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
-		require.NoError(t, err)
-		return policy.Client().Do(req)
-	}
-
-	ctx := WithRunIdentity(t.Context(), &runIdentity{namespace: "team-a"})
-	resp, err := request(ctx)
-	require.NoError(t, err)
-	_, err = io.Copy(io.Discard, resp.Body)
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-
-	_, err = request(t.Context())
-	requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
-}
-
+// Test_controlPlane_proxyCannotBypassReservation is the direction CheckAddr
+// cannot answer.
+//
+// With a proxy configured the dialer connects to the proxy, so controlDial never
+// sees the control plane's address and the reservation there never fires. The
+// proxied path resolved the target itself and asked CheckAddr, which decides an
+// address *category* and knows nothing about p.cfg.controlPlane — so a policy
+// that permits loopback for local development, which is the posture the control
+// plane's own doc says it exists to protect, let a workflow reach the reserved
+// address with no identity check.
+//
+// The proxy fails the test if it is ever reached, rather than the test only
+// asserting an error: a refusal produced for some other reason would look
+// identical from the caller's side.
 func Test_controlPlane_proxyCannotBypassReservation(t *testing.T) {
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("a denied control-plane request reached the proxy")
@@ -402,4 +394,57 @@ func Test_controlPlane_addressForms(t *testing.T) {
 
 	_, err = get(t, policy, server.URL)
 	requireDenied(t, err, ReasonControlPlane, "reserved")
+}
+
+// Test_controlPlane_identityIsRecheckedAcrossRequests is the connection-reuse
+// direction for self-administration, and it is the same defect the CEL
+// connection rules had: [Policy.checkControlPlane] reads the run identity off
+// the *request's* context, but it runs in the dialer, which a reused connection
+// never enters.
+//
+// So a request carrying an identity opens the connection, and a request
+// carrying none rides it straight to the control plane — acting with the
+// worker's authority instead of the run's, which is the exact substitution the
+// missing-identity denial exists to prevent. This policy declares no CEL rules,
+// which is what made it slip past a no-reuse condition keyed only on those.
+//
+// Asserted in the negative direction, and by connection count as well as by the
+// error: a denial that arrives after the request already reached the control
+// plane is not a denial.
+func Test_controlPlane_identityIsRecheckedAcrossRequests(t *testing.T) {
+	var connections atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "control plane")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	addr := server.Listener.Addr().String()
+
+	policy, err := New(WithAllowLoopback(), WithControlPlane(addr), WithSelfAdministration())
+	require.NoError(t, err)
+
+	ctx := WithRunIdentity(t.Context(), &runIdentity{namespace: "team-a", subject: "workflow/deploy"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+
+	resp, err := policy.Client().Do(req)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, int64(1), connections.Load())
+
+	// No run identity on this one. It must be refused rather than carried by the
+	// connection the identity-carrying request established.
+	anonymous, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+
+	_, err = policy.Client().Do(anonymous)
+	requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
+	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the control plane")
 }

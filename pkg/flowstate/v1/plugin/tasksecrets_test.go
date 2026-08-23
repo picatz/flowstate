@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -170,6 +171,46 @@ func TestScrubPluginOutputsRedactsRegisteredValues(t *testing.T) {
 	assert.Contains(t, rendered, secrets.Redacted)
 }
 
+// TestScrubPluginOutputsRedactsEveryValueVariant covers the response shapes
+// outside Value.literal. These are wire-valid plugin outputs too, and every
+// string they hold must be scrubbed before the output reaches workflow
+// history.
+func TestScrubPluginOutputsRedactsEveryValueVariant(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-in-a-non-literal-value"
+
+	scrubber := secrets.NewScrubber()
+	scrubber.AddValue(material)
+
+	outputs := &flowstatev1.Node_Outputs{NamedValues: map[string]*flowstatev1.Value{
+		"expression": {
+			Kind: &flowstatev1.Value_Expr{Expr: &expr.ParsedExpr{Expr: &expr.Expr{
+				ExprKind: &expr.Expr_ConstExpr{ConstExpr: &expr.Constant{
+					ConstantKind: &expr.Constant_StringValue{StringValue: material},
+				}},
+			}}},
+		},
+		"error": {
+			Kind: &flowstatev1.Value_Error_{Error: &flowstatev1.Value_Error{
+				Message: "backend reflected " + material,
+				Code:    flowstatev1.Value_Error_CODE_INTERNAL,
+			}},
+		},
+		"structure": flowstatev1.NewStructureMap(map[string]*flowstatev1.Value{
+			"key-" + material: flowstatev1.NewStructureList(
+				flowstatev1.NewLiteral("nested " + material),
+			),
+		}),
+	}}
+
+	require.NoError(t, scrubPluginOutputs(scrubber, outputs))
+
+	rendered := outputs.String()
+	assert.NotContains(t, rendered, material)
+	assert.Contains(t, rendered, secrets.Redacted)
+}
+
 // TestPluginTaskResolvesAndScrubsHostSecret runs the whole path a workflow
 // takes: [Plugin.taskDef]'s Fn, over the real RPC transport, to a plugin that
 // declared "message" as a secret input and echoes back what it received.
@@ -263,4 +304,34 @@ func TestAcceptedPluginSecretInputsHelpNamesEveryDeclaredInput(t *testing.T) {
 
 	help := acceptedPluginSecretInputsHelp([]string{"token", "credential"})
 	assert.True(t, strings.Contains(help, "credential") && strings.Contains(help, "token"))
+}
+
+// TestScrubPluginOutputsRefusesCollidingScrubbedMapKeys covers the one case
+// where scrubbing a map cannot be done faithfully: two distinct keys that
+// redact to the same text. Writing both back drops one, and which one survives
+// follows protobuf's deliberately unspecified map iteration order — so the same
+// plugin response could scrub to one output locally and another durably, which
+// is the drivers disagreeing about a value.
+//
+// The refusal is asserted rather than the surviving entry, because there is no
+// correct surviving entry to assert.
+func TestScrubPluginOutputsRefusesCollidingScrubbedMapKeys(t *testing.T) {
+	t.Parallel()
+
+	const material = "host-secret-used-as-a-map-key"
+
+	scrubber := secrets.NewScrubber()
+	scrubber.AddValue(material)
+
+	outputs := &flowstatev1.Node_Outputs{NamedValues: map[string]*flowstatev1.Value{
+		"structure": flowstatev1.NewStructureMap(map[string]*flowstatev1.Value{
+			material:         flowstatev1.NewLiteral("one"),
+			secrets.Redacted: flowstatev1.NewLiteral("two"),
+		}),
+	}}
+
+	err := scrubPluginOutputs(scrubber, outputs)
+	require.Error(t, err, "a map whose keys collide once scrubbed must be refused, not silently reduced")
+	assert.Contains(t, err.Error(), "redact to the same key")
+	assert.NotContains(t, err.Error(), material, "the refusal must not itself leak the material")
 }

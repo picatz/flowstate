@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -134,16 +132,13 @@ func TestCobraUsageErrorsMatchIsUsageError(t *testing.T) {
 		{"missing required flag", []string{"keys", "generate"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			root := newRootCommand()
-			root.SilenceUsage = true
-			root.SilenceErrors = true
+			// Cobra's own entry point rather than the CLI's: the subject here
+			// is the parser's wording, and the report [execute] would draw
+			// around it is noise between that and the assertion. Silenced for
+			// the same reason [execute] silences both.
+			res := flowRun{Args: test.args, Cobra: true, Silence: true}.run(t)
 
-			var out, errOut strings.Builder
-			root.SetOut(&out)
-			root.SetErr(&errOut)
-			root.SetArgs(test.args)
-
-			err := root.Execute()
+			err := res.Err
 			require.Error(t, err, "expected cobra to refuse this command line")
 
 			assert.True(t, isUsageError(err),
@@ -151,7 +146,7 @@ func TestCobraUsageErrorsMatchIsUsageError(t *testing.T) {
 					"the report loses its \"Try `flow --help`\" advice and the exit code drops from 2 to 1 together",
 				test.args, err.Error())
 
-			assert.Equal(t, exitCodeUsage, exitCodeFor(err),
+			assert.Equal(t, exitCodeUsage, res.ExitCode,
 				"a command line cobra itself refused did not exit with the usage status")
 		})
 	}
@@ -209,46 +204,18 @@ func TestCobraFlagGroupErrorsMatchIsUsageError(t *testing.T) {
 			cmd := newGroupedCommand()
 			test.setup(cmd)
 
-			var out, errOut strings.Builder
-			cmd.SetOut(&out)
-			cmd.SetErr(&errOut)
-			cmd.SetArgs(test.args)
+			res := runCommand(t, cmd, test.args...)
 
-			err := cmd.Execute()
-			require.Error(t, err, "expected cobra to refuse this flag combination")
+			require.Error(t, res.Err, "expected cobra to refuse this flag combination")
 
-			assert.True(t, isUsageError(err),
+			assert.True(t, isUsageError(res.Err),
 				"cobra's flag-group wording no longer matches isUsageError's prefixes: %q",
-				err.Error())
+				res.Err.Error())
 
-			assert.Equal(t, exitCodeUsage, exitCodeFor(err),
+			assert.Equal(t, exitCodeUsage, res.ExitCode,
 				"a flag-group violation did not exit with the usage status")
 		})
 	}
-}
-
-// buildFlowBinary compiles this package into a temporary directory once per test
-// run and returns the path, so the golden exit-code tests below exercise the real
-// process boundary — os.Exit and all — rather than exitCodeFor in isolation.
-//
-// Skipped under -short: compiling a binary is the one thing in this package that
-// is not free, and the unit-level tests above already pin the classification
-// exitCodeFor performs.
-func buildFlowBinary(t *testing.T) string {
-	t.Helper()
-
-	if testing.Short() {
-		t.Skip("building the flow binary is slow; the classification is covered without it")
-	}
-
-	bin := filepath.Join(t.TempDir(), "flow")
-
-	cmd := exec.Command("go", "build", "-o", bin, ".")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building flow for the golden exit-code tests: %v\n%s", err, out)
-	}
-
-	return bin
 }
 
 // TestExitCodeGoldenPaths runs the actual built binary through the three branches
@@ -258,12 +225,10 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 	bin := buildFlowBinary(t)
 
 	t.Run("a usage error exits 2", func(t *testing.T) {
-		cmd := exec.Command(bin, "--this-flag-does-not-exist")
-		err := cmd.Run()
+		res := runFlowBinary(t, bin, "--this-flag-does-not-exist")
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "an unknown flag did not fail the process: %v", err)
-		assert.Equal(t, exitCodeUsage, exitErr.ExitCode(),
+		require.Error(t, res.Err, "an unknown flag did not fail the process")
+		assert.Equal(t, exitCodeUsage, res.ExitCode,
 			"an unknown flag did not exit with the invocation-error status")
 	})
 
@@ -271,12 +236,10 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "broken.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(brokenWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "validate", path)
-		err := cmd.Run()
+		res := runFlowBinary(t, bin, "validate", path)
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "a broken workflow did not fail the process: %v", err)
-		assert.Equal(t, exitCodeFailure, exitErr.ExitCode(),
+		require.Error(t, res.Err, "a broken workflow did not fail the process")
+		assert.Equal(t, exitCodeFailure, res.ExitCode,
 			"a diagnostic finding did not exit with the ordinary-failure status")
 	})
 
@@ -284,10 +247,9 @@ func TestExitCodeGoldenPaths(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "fine.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "validate", path)
-		err := cmd.Run()
+		res := runFlowBinary(t, bin, "validate", path)
 
-		assert.NoError(t, err, "a valid workflow did not exit zero")
+		assert.NoError(t, res.Err, "a valid workflow did not exit zero")
 	})
 }
 
@@ -303,46 +265,42 @@ func TestSuggestionsAppearForNearMissesAndNotForGarbage(t *testing.T) {
 	bin := buildFlowBinary(t)
 
 	t.Run("a near-miss command gets a ranked suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "lst")
-		out, err := cmd.CombinedOutput()
+		res := runFlowBinary(t, bin, "lst")
+		out := res.Output()
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "an unknown command did not fail the process: %v", err)
-		assert.Equal(t, exitCodeUsage, exitErr.ExitCode())
-		assert.Contains(t, string(out), "did you mean `flow list`",
+		require.Error(t, res.Err, "an unknown command did not fail the process")
+		assert.Equal(t, exitCodeUsage, res.ExitCode)
+		assert.Contains(t, out, "did you mean `flow list`",
 			"no ranked suggestion for a one-edit-away command:\n%s", out)
-		assert.NotContains(t, string(out), "Did you mean this?",
+		assert.NotContains(t, out, "Did you mean this?",
 			"cobra's own unranked suggestion block leaked through DisableSuggestions:\n%s", out)
 	})
 
 	t.Run("a command sharing nothing with the tree gets no suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "zzzzzqqqq123")
-		out, err := cmd.CombinedOutput()
+		res := runFlowBinary(t, bin, "zzzzzqqqq123")
+		out := res.Output()
 
-		_, ok := err.(*exec.ExitError)
-		require.True(t, ok, "an unknown command did not fail the process")
-		assert.NotContains(t, string(out), "did you mean",
+		require.Error(t, res.Err, "an unknown command did not fail the process")
+		assert.NotContains(t, out, "did you mean",
 			"a garbage command line was offered an invented suggestion:\n%s", out)
 	})
 
 	t.Run("a near-miss flag gets a ranked suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "list", "--adress", "x")
-		out, err := cmd.CombinedOutput()
+		res := runFlowBinary(t, bin, "list", "--adress", "x")
+		out := res.Output()
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "an unknown flag did not fail the process: %v", err)
-		assert.Equal(t, exitCodeUsage, exitErr.ExitCode())
-		assert.Contains(t, string(out), "did you mean `--address`?",
+		require.Error(t, res.Err, "an unknown flag did not fail the process")
+		assert.Equal(t, exitCodeUsage, res.ExitCode)
+		assert.Contains(t, out, "did you mean `--address`?",
 			"no ranked suggestion for a one-edit-away flag:\n%s", out)
 	})
 
 	t.Run("a flag sharing nothing with the command's flag set gets no suggestion", func(t *testing.T) {
-		cmd := exec.Command(bin, "list", "--zzzzzqqqq123", "x")
-		out, err := cmd.CombinedOutput()
+		res := runFlowBinary(t, bin, "list", "--zzzzzqqqq123", "x")
+		out := res.Output()
 
-		_, ok := err.(*exec.ExitError)
-		require.True(t, ok, "an unknown flag did not fail the process")
-		assert.NotContains(t, string(out), "did you mean",
+		require.Error(t, res.Err, "an unknown flag did not fail the process")
+		assert.NotContains(t, out, "did you mean",
 			"a garbage flag was offered an invented suggestion:\n%s", out)
 	})
 }
@@ -366,12 +324,10 @@ func TestExitCodeGoldenPathsForSelfValidatedFlags(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "fine.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "fmt", "-o", "yaml", path)
-		err := cmd.Run()
+		res := runFlowBinary(t, bin, "fmt", "-o", "yaml", path)
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "an --output value this build does not accept did not fail the process: %v", err)
-		assert.Equal(t, exitCodeUsage, exitErr.ExitCode(),
+		require.Error(t, res.Err, "an --output value this build does not accept did not fail the process")
+		assert.Equal(t, exitCodeUsage, res.ExitCode,
 			"a flag rejected by the command's own validation did not exit with the invocation-error status")
 	})
 
@@ -379,12 +335,10 @@ func TestExitCodeGoldenPathsForSelfValidatedFlags(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "fine.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(cleanWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "fix", "--stdout", "--check", path)
-		err := cmd.Run()
+		res := runFlowBinary(t, bin, "fix", "--stdout", "--check", path)
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "asking for two conflicting flags did not fail the process: %v", err)
-		assert.Equal(t, exitCodeUsage, exitErr.ExitCode(),
+		require.Error(t, res.Err, "asking for two conflicting flags did not fail the process")
+		assert.Equal(t, exitCodeUsage, res.ExitCode,
 			"a flag conflict the command itself refused did not exit with the invocation-error status")
 	})
 
@@ -395,12 +349,10 @@ func TestExitCodeGoldenPathsForSelfValidatedFlags(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "broken.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(brokenWorkflow), 0o600))
 
-		cmd := exec.Command(bin, "validate", "-o", "json", path)
-		err := cmd.Run()
+		res := runFlowBinary(t, bin, "validate", "-o", "json", path)
 
-		exitErr, ok := err.(*exec.ExitError)
-		require.True(t, ok, "a broken workflow did not fail the process: %v", err)
-		assert.Equal(t, exitCodeFailure, exitErr.ExitCode(),
+		require.Error(t, res.Err, "a broken workflow did not fail the process")
+		assert.Equal(t, exitCodeFailure, res.ExitCode,
 			"a file-content finding was classified as an invocation error")
 	})
 }

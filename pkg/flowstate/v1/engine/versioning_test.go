@@ -13,7 +13,6 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
@@ -146,17 +145,7 @@ func TestRegisterPinsTheInterpreter(t *testing.T) {
 func TestAPinnedRunTakesTheCurrentVersionAtContinueAsNew(t *testing.T) {
 	t.Parallel()
 
-	if testing.Short() {
-		t.Skip("skipping: starts a real Temporal dev server; CI runs the full suite")
-	}
-
-	devServer, err := testsuite.StartDevServer(t.Context(), testsuite.DevServerOptions{
-		ClientOptions: &client.Options{},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = devServer.Stop() })
-
-	temporal := devServer.Client()
+	temporal := newTemporalNamespace(t)
 
 	const (
 		deployment = "flowstate-versioning-test"

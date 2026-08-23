@@ -35,9 +35,11 @@ import (
 // verified. See mtls.go's package doc for why that is the seam and not a
 // widened [Verifier] signature.
 type Authenticator struct {
-	verifier     Verifier
-	peerVerifier PeerVerifier
-	observe      func(context.Context, *http.Request, error)
+	verifier                     Verifier
+	peerVerifier                 PeerVerifier
+	observe                      func(context.Context, *http.Request, error)
+	protectedResourceMetadataURL string
+	expectedResource             string
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -72,6 +74,77 @@ func WithFailureObserver(observe func(ctx context.Context, req *http.Request, er
 func WithPeerVerifier(p PeerVerifier) AuthenticatorOption {
 	return func(a *Authenticator) {
 		a.peerVerifier = p
+	}
+}
+
+// WithProtectedResource makes a 401 challenge this Authenticator issues carry
+// a "resource_metadata" parameter naming pr's RFC 9728 metadata URL, per the
+// MCP specification's requirement that the challenge point a client at the
+// document before it holds any credential.
+//
+// The URL always comes from pr, which is itself built from configuration —
+// never from the request this Authenticator is rejecting. A forged Host
+// header on the request cannot change what this challenge advertises.
+//
+// A nil pr, or the option omitted entirely, leaves the challenge exactly as
+// it reads without this option: "Bearer error=\"invalid_token\"" and nothing
+// more, byte-identical to every deployment that has not configured a
+// protected resource.
+func WithProtectedResource(pr *ProtectedResource) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.protectedResourceMetadataURL = pr.MetadataURL()
+	}
+}
+
+// WithExpectedResource narrows what a verified token may be spent on here: the
+// token's "aud" must name resource, the canonical resource URI (RFC 8707
+// section 2) this RPC surface identifies as, or the request is refused.
+//
+// It is the check [MCPTokenVerifier] has always performed against
+// [ProtectedResource.Resource], available to the Connect surface for the first
+// time. The two surfaces are otherwise the same deployment behind the same
+// trust policy, and a [TrustedIssuer] entry lists every audience that issuer
+// may mint for — so a deployment whose entry accepts both its RPC audience and
+// its MCP resource lets a token minted for one be spent at the other. The
+// entry's list admits a token to the deployment; this admits it to this
+// surface.
+//
+// # Why this is opt-in, and what flips it later
+//
+// Unset (the default) is unnarrowed: every deployment that does not configure
+// one builds the exact same Authenticator this constructor always built, and
+// no token that verifies today starts failing. That is the cost, stated
+// plainly — an RPC surface is narrowed only when an operator says so, and
+// until then the trust policy's audience list is the whole of the check.
+//
+// It is the right default only because of what is true today: nothing mints an
+// RPC token carrying this deployment's resource URI. `--protected-resource` is
+// optional on `flow server` (required only on `flow mcp serve`, whose surface
+// *is* the resource), the RFC 9728 document a deployment may serve is
+// advertisement rather than enforcement, and clients ask their authorization
+// server for whatever audience they were configured with. Narrowing by default
+// would refuse every one of those tokens on upgrade, which is a fail-closed
+// posture bought by an outage.
+//
+// What flips it: once `flow server` grows a flag that turns this on and
+// deployments have run with it, the default can invert — narrow
+// whenever a protected resource is configured at all, since a deployment that
+// named its resource has said what its tokens should be minted for. That flag
+// is deliberately not in this change; see the pull request's follow-up note,
+// and #890 for why a serving-surface setting is named after the thing it
+// configures rather than after the check it performs.
+//
+// An empty resource is ignored, so a caller threading through an unset
+// configuration value gets the unnarrowed default rather than a surface that
+// refuses everyone.
+//
+// Only bearer tokens are narrowed. A client certificate carries no audience,
+// so a request authenticated by [WithPeerVerifier] alone is unaffected; a
+// request carrying both is refused unless the token also names this resource,
+// which is the same "both must verify and agree" rule that path already has.
+func WithExpectedResource(resource string) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.expectedResource = resource
 	}
 }
 
@@ -135,6 +208,37 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		tokenErr = fmt.Errorf("%w: verifier returned no identity", ErrNoToken)
 	}
 
+	// Refused here, on the Principal the Verifier returned, and not only inside
+	// [OIDCVerifier.Verify]. That is the seam where the repository's own
+	// verifier performs this refusal, but an Authenticator holds *any*
+	// [Verifier] — a custom implementation that returns a non-zero Principal
+	// carrying a delegation claim would otherwise be admitted here while the
+	// MCP surface refused the same Principal (mcpverifier.go runs the same
+	// helper for exactly this reason). Checking it at the surface as well as in
+	// the default verifier is what keeps the two surfaces symmetric for every
+	// Verifier rather than only for [OIDCVerifier], which is the whole point of
+	// the change this belongs to. Recorded as a token failure, not returned, so
+	// the mTLS paths below treat it as any other invalid token.
+	if tokenErr == nil {
+		if err := refuseDelegationClaims(tokenPrincipal.Claims); err != nil {
+			tokenErr = err
+		}
+	}
+
+	// Recorded as a token failure rather than returned here, so that the mTLS
+	// paths below treat a token for the wrong resource exactly as they treat
+	// any other invalid token: no fallback to the certificate, and no
+	// precedence rule invented for this one check. See [WithExpectedResource]
+	// for why an unset resource narrows nothing.
+	if tokenErr == nil && a.expectedResource != "" && !tokenPrincipal.HasAudience(a.expectedResource) {
+		// The resource is not named in the error: a caller holding a token for
+		// some other service learns its audience was wrong, and does not learn
+		// this deployment's resource identifier from a failure — that is
+		// published in the RFC 9728 document the challenge points at, which is
+		// where a client is meant to read it.
+		tokenErr = fmt.Errorf("%w: the token's audience does not name this resource", ErrInvalidAudience)
+	}
+
 	// req.TLS.VerifiedChains is set by crypto/tls itself, only once the peer's
 	// certificate has been verified against the listener's ClientCAs — nothing
 	// here re-verifies it or reads req.TLS.PeerCertificates instead. No peer
@@ -147,7 +251,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, tokenErr)
 			}
-			return nil, unauthenticated(tokenErr)
+			return nil, a.unauthenticated(tokenErr)
 		}
 		return tokenPrincipal, nil
 	}
@@ -160,7 +264,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		if a.observe != nil {
 			a.observe(ctx, req, peerErr)
 		}
-		return nil, unauthenticated(peerErr)
+		return nil, a.unauthenticated(peerErr)
 	}
 
 	if rawToken != "" {
@@ -173,7 +277,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, tokenErr)
 			}
-			return nil, unauthenticated(tokenErr)
+			return nil, a.unauthenticated(tokenErr)
 		}
 		if tokenPrincipal.ID() != peerPrincipal.ID() {
 			err := fmt.Errorf("%w: certificate names %q, token names %q",
@@ -181,7 +285,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 			if a.observe != nil {
 				a.observe(ctx, req, err)
 			}
-			return nil, unauthenticated(err)
+			return nil, a.unauthenticated(err)
 		}
 	}
 
@@ -191,9 +295,19 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 // unauthenticated renders a verification failure as the error a caller sees: the
 // RFC 6750 challenge that tells a client its token is the problem, and a short
 // reason that describes the failure without describing the trust policy.
-func unauthenticated(cause error) error {
+//
+// When a.protectedResourceMetadataURL is set, the challenge carries a
+// "resource_metadata" parameter naming it, per the MCP specification — see
+// [WithProtectedResource]. Deliberately no "scope" parameter: D1 in
+// picatz/flowstate#567 defers the action/scope vocabulary, and this
+// deployment has not defined one to name here.
+func (a *Authenticator) unauthenticated(cause error) error {
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New(publicReason(cause)))
-	err.Meta().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+	challenge := `Bearer error="invalid_token"`
+	if a.protectedResourceMetadataURL != "" {
+		challenge += fmt.Sprintf(`, resource_metadata=%q`, a.protectedResourceMetadataURL)
+	}
+	err.Meta().Set("WWW-Authenticate", challenge)
 	return err
 }
 

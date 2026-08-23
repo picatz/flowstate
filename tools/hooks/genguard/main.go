@@ -15,6 +15,7 @@
 //	docs/reference/                    <- the registry, cobra tree, MCP table; make docs
 //	cmd/flow/internal/reference/mirror <- docs/DSL.md and examples/; go generate
 //	pkg/flowstate/v1/protodoc/*.binpb  <- the schema; buf build
+//	…-example/schema.descriptorset.binpb <- that plugin's schema; buf build
 //
 // Only the mirror under cmd/flow/internal/reference is generated;
 // reference.go, reference_test.go and sync.go beside it are source and stay
@@ -85,6 +86,15 @@ func generated(rel string) string {
 
 	case rel == "cmd/flow/internal/reference/mirror" || strings.HasPrefix(rel, "cmd/flow/internal/reference/mirror/"):
 		return fmt.Sprintf("%s is a generated mirror. Edit docs/DSL.md (or the example workflow it mirrors under examples/), then run `go generate ./cmd/flow/internal/reference`.", rel)
+
+	// The example plugin's own descriptor set, which is the same artifact for
+	// a plugin's schema rather than the engine's: it is what carries that
+	// plugin's field comments to an editor (#723). Its own case rather than a
+	// widened one above, because the source to edit and the command that
+	// rebuilds it are both different, and a refusal naming the wrong .proto is
+	// a refusal that sends somebody to the wrong file.
+	case rel == "pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb":
+		return fmt.Sprintf("%s is the descriptor set `buf build` writes so the example plugin's own comments travel with its task descriptors. Edit proto/example/v1/example.proto beside it, then run `go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/proto`.", rel)
 
 	case strings.HasPrefix(rel, "pkg/flowstate/v1/protodoc/") && strings.HasSuffix(rel, ".binpb"):
 		return fmt.Sprintf("%s is the descriptor set `buf build` writes so the schema's comments travel with it. Edit the .proto under proto/flowstate/v1/ that declares the type, then run `go run github.com/bufbuild/buf/cmd/buf@v1.72.0 build --exclude-imports -o pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb`.", rel)

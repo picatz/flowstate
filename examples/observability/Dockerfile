@@ -10,7 +10,7 @@
 # Pinned to the toolchain go.mod selects. CLAUDE.md's CI-parity list pins
 # GOTOOLCHAIN for the same reason: a build that silently picks a different
 # toolchain than the one the tree was tested against is a difference nobody chose.
-FROM golang:1.26.5-alpine AS build
+FROM golang:1.27.0-alpine AS build
 
 WORKDIR /src
 

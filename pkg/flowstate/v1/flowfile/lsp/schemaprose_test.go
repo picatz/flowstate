@@ -174,20 +174,19 @@ func TestWaitResultCompletionAndHoverAgree(t *testing.T) {
 	}
 }
 
-// TestATaskWithNoSchemaProseStillHovers is the fail-closed half: a task whose
-// message this build's schema does not describe (a plugin's, an embedder's) has
-// no sentence to inherit, and hover must render one paragraph fewer rather than a
-// placeholder or a panic.
-func TestATaskWithNoSchemaProseStillHovers(t *testing.T) {
-	t.Parallel()
+// standInInputs is the shape a plugin's descriptor arrives in: a message this
+// build's schema has never heard of, reconstructed from bytes rather than
+// borrowed from the registry.
+//
+// Built here rather than borrowed deliberately — every message this repository
+// declares is in protodoc's artifact, so borrowing one would quietly test the
+// documented path again. The comment is a parameter because the two tests below
+// are the two answers a plugin can give: one that shipped a descriptor set built
+// with source info retained, and one that shipped none.
+func standInInputs(t *testing.T, comment string) protoreflect.MessageDescriptor {
+	t.Helper()
 
-	assert.Empty(t, fieldDoc(nil))
-
-	// A descriptor built here rather than borrowed: every message this repository
-	// declares is in protodoc's artifact, so borrowing one would quietly test the
-	// documented path again. This is the shape a plugin's arrives in, minus the
-	// source info a plugin has no obligation to ship.
-	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+	fdp := &descriptorpb.FileDescriptorProto{
 		Name:    proto.String("standin/v1/standin.proto"),
 		Package: proto.String("standin.v1"),
 		Syntax:  proto.String("proto3"),
@@ -200,10 +199,70 @@ func TestATaskWithNoSchemaProseStillHovers(t *testing.T) {
 				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 			}},
 		}},
-	}, nil)
+	}
+
+	if comment != "" {
+		// The path addresses the declaration the comment belongs to the way a
+		// .proto compiler records it: message_type (field 4) 0, field (field 2)
+		// 0. Spelled out rather than borrowed from a helper, because a location
+		// addressing the wrong declaration is the failure this whole mechanism
+		// has to avoid, and a test that cannot express one cannot show it is
+		// avoided.
+		fdp.SourceCodeInfo = &descriptorpb.SourceCodeInfo{
+			Location: []*descriptorpb.SourceCodeInfo_Location{{
+				Path:            []int32{4, 0, 2, 0},
+				Span:            []int32{1, 0, 1},
+				LeadingComments: proto.String(" " + comment + "\n"),
+			}},
+		}
+	}
+
+	file, err := protodesc.NewFile(fdp, nil)
 	require.NoError(t, err)
 
-	md := file.Messages().Get(0)
+	return file.Messages().Get(0)
+}
+
+// TestAPluginsOwnProseReachesHover is the direction #723 opened: a plugin that
+// ships a descriptor set built with source info retained documents its inputs
+// exactly the way a built-in task does.
+//
+// The comment is the plugin author's, from their own .proto, and nothing in this
+// build's schema describes the field — so this is the branch [fieldDoc] takes
+// before it asks protodoc's artifact, and the one that had nothing to find for
+// as long as the SDK sent the compiled-in descriptor protoc had stripped.
+func TestAPluginsOwnProseReachesHover(t *testing.T) {
+	t.Parallel()
+
+	const comment = "Greeting overrides the default \"Hello\"."
+
+	md := standInInputs(t, comment)
+	fd := findField(md, "greeting")
+	require.NotNil(t, fd)
+
+	_, known := protodoc.Comment(fd.FullName())
+	require.False(t, known,
+		"this build's schema now describes %s, so nothing below distinguishes the plugin's own prose from ours", fd.FullName())
+
+	assert.Equal(t, comment, fieldDoc(fd),
+		"the sentence hover renders is the plugin author's, byte for byte")
+
+	got := inputDoc(v1.TaskDef{Name: "stand-in", Inputs: md}, "greeting", fd)
+	assert.Contains(t, got, "**`greeting`** · `string`")
+	assert.Contains(t, got, comment)
+}
+
+// TestATaskWithNoSchemaProseStillHovers is the fail-closed half, and since #723
+// it pins a documented fallback rather than the only behaviour there is: a plugin
+// shipping no descriptor set — every plugin built before [sdk.Plugin.SchemaProse]
+// existed, and every one that declines it since — has no sentence to inherit, and
+// hover must render one paragraph fewer rather than a placeholder or a panic.
+func TestATaskWithNoSchemaProseStillHovers(t *testing.T) {
+	t.Parallel()
+
+	assert.Empty(t, fieldDoc(nil))
+
+	md := standInInputs(t, "")
 	fd := findField(md, "greeting")
 	require.NotNil(t, fd)
 	assert.Empty(t, fieldDoc(fd), "nothing describes this field, and an invented sentence would be worse than none")

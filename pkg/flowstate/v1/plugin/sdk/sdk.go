@@ -28,6 +28,10 @@
 //		})
 //	}
 //
+// resolve and greet's own bodies aren't shown here; see
+// [github.com/picatz/flowstate/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example]
+// for the worked example this is drawn from, including both.
+//
 // The manifest the engine sees is derived from that value, which is what keeps a
 // plugin from advertising something it did not implement: capabilities come from
 // which fields are set, schemes from the resolver, and each task's input and
@@ -80,9 +84,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
-	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -130,6 +131,46 @@ type Plugin struct {
 
 	// Tasks are the tasks this plugin provides.
 	Tasks []Task
+
+	// SchemaProse, when set, is a descriptor set of this plugin's own .proto
+	// files built with source info retained, so the comments an author wrote on
+	// their task's fields reach an editor's hover and the engine's
+	// documentation.
+	//
+	// It is opt-in, and a plugin that sets nothing here behaves exactly as every
+	// plugin did before it existed: shape, types, required-ness and protovalidate
+	// bounds all still travel, and only the per-field explanatory paragraph is
+	// absent (#723). The reason it cannot be derived is protoc's: the descriptor
+	// compiled into a .pb.go has SourceCodeInfo stripped, so a comment simply is
+	// not present in this process at run time however well the .proto was
+	// written. `buf build` is what keeps it, and this is where the artifact it
+	// writes is handed over:
+	//
+	//	//go:embed schema.descriptorset.binpb
+	//	var schemaProse []byte
+	//
+	//	sdk.Main(sdk.Plugin{
+	//		// ...
+	//		SchemaProse: schemaProse,
+	//	})
+	//
+	// with the artifact built beside the generated code, from the same .proto:
+	//
+	//	buf build --exclude-imports -o schema.descriptorset.binpb proto
+	//
+	// --exclude-imports for the reason the engine's own artifact uses it: the
+	// comments worth carrying are the ones this plugin wrote, and carrying
+	// protobuf's and protovalidate's as well would multiply the bytes to
+	// document files nobody asks about.
+	//
+	// The prose is attached to the descriptors the manifest already carried
+	// rather than sent beside them, so nothing new crosses the boundary. It is
+	// documentation and never a source of truth about a type: a file whose
+	// declarations have drifted from the ones this binary compiled in has its
+	// comments dropped, because a sentence attached to the wrong field is worse
+	// than no sentence. Bytes that are not a descriptor set at all fail at
+	// startup, where an author sees them.
+	SchemaProse []byte
 
 	// Health reports whether the plugin can serve. Leaving it nil reports
 	// serving always, which is right for a plugin with nothing to be unable to
@@ -241,11 +282,13 @@ type Task struct {
 	// before anything objected.
 	//
 	// Declared here, carried in the manifest, and honoured by whatever registry
-	// holds the task. It is *not* yet enforced by `flow validate`, and that is
-	// worth knowing before relying on it: the validator reads the default task
-	// registry and nothing shipped registers a plugin's tasks there, so a Flowfile
-	// naming one is told the task is unknown. Declaring this is necessary and not
-	// on its own sufficient.
+	// holds the task. `flow validate` enforces it for a plugin task exactly when
+	// it has been told about the plugin: the check reads the default task registry
+	// through [github.com/picatz/flowstate/pkg/flowstate/v1.MustBeExpression], and
+	// `--plugin-dir` is what registers a launched plugin's tasks there (#724,
+	// #710). Without it the validator has not been told the task exists, so a
+	// Flowfile naming one is told the task is unknown and this declaration is
+	// never consulted — inert because nothing asked, rather than unimplemented.
 	ExpressionInputs []string
 
 	// NeedsScope reports whether the task must receive prior step outputs and
@@ -699,10 +742,26 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 		manifest.Schemes = slices.Clone(p.Secrets.Schemes)
 	}
 
+	// Read once for the whole manifest rather than once per task: it is one
+	// artifact describing one schema, and parsing it per task would report the
+	// same malformed set as many times as the plugin has tasks.
+	prose, err := flowstatev1.ParseDescriptorProse(p.SchemaProse)
+	if err != nil {
+		return nil, fmt.Errorf("sdk: SchemaProse: %w", err)
+	}
+
 	if len(p.Tasks) > 0 {
-		manifest.Capabilities = append(manifest.Capabilities, pluginv1.Capability_CAPABILITY_TASKS)
+		manifest.Capabilities = append(manifest.Capabilities,
+			pluginv1.Capability_CAPABILITY_TASKS,
+			// This package's own taskService always implements ExecuteStream
+			// (see its own method below), so every plugin built with this SDK
+			// can advertise the capability unconditionally — there is no
+			// author-facing switch to get wrong or forget, the same way an
+			// author cannot under-advertise CAPABILITY_TASKS itself.
+			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
+		)
 		for _, task := range p.Tasks {
-			entry, err := task.manifest()
+			entry, err := task.manifest(prose)
 			if err != nil {
 				return nil, err
 			}
@@ -719,17 +778,17 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 
 // manifest builds the engine's description of one task, including the serialized
 // descriptors that let it validate a workflow using the task.
-func (t Task) manifest() (*pluginv1.TaskManifest, error) {
+func (t Task) manifest(prose *flowstatev1.DescriptorProse) (*pluginv1.TaskManifest, error) {
 	if t.Fn == nil {
 		return nil, fmt.Errorf("sdk: task %q has no Fn", t.Name)
 	}
 
-	inputDescriptor, inputMessage, err := describeMessage(t.Input)
+	inputDescriptor, inputMessage, err := describeMessage(t.Input, prose)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: task %q input: %w", t.Name, err)
 	}
 
-	outputDescriptor, outputMessage, err := describeMessage(t.Output)
+	outputDescriptor, outputMessage, err := describeMessage(t.Output, prose)
 	if err != nil {
 		return nil, fmt.Errorf("sdk: task %q output: %w", t.Name, err)
 	}
@@ -752,99 +811,40 @@ func (t Task) manifest() (*pluginv1.TaskManifest, error) {
 // describeMessage serializes a message's file descriptor and everything it
 // imports that the engine does not already have.
 //
-// Dependencies the engine is known to have are left out deliberately, and the
-// set of those is derived rather than listed: it is the transitive imports of
-// flowstate's own schema files, which any engine that can talk to a plugin has
-// compiled in. That keeps a descriptor small — a task whose input references a
-// flowstate type would otherwise carry protobuf's, protovalidate's, and CEL's
-// descriptors along with it — without hardcoding an assumption about the engine
-// that could quietly stop being true.
-func describeMessage(msg proto.Message) ([]byte, string, error) {
+// The serialization itself is [flowstatev1.MessageDescriptorBytes], which is the
+// one implementation of it. A host now ships a task's descriptors to a reader
+// that cannot launch a plugin exactly as a plugin ships them to a host — see
+// TaskDescription.input_descriptor in catalog.proto (#710) — and two
+// serializations of one fact is how the two would come to disagree about a task
+// that is meant to be indistinguishable from a built-in.
+//
+// What is local to this side is the one extra file named below. Dependencies the
+// engine is known to have are left out deliberately, and the set of those is
+// derived rather than listed: it is the transitive imports of flowstate's own
+// schema files, which MessageDescriptorBytes leaves out for every caller — plus
+// plugin.proto, which an engine that can talk to a plugin necessarily has and a
+// reader of a catalog does not, so it is named here rather than there. That
+// keeps a descriptor small — a task whose input references a flowstate type
+// would otherwise carry protobuf's, protovalidate's, and CEL's descriptors along
+// with it — without hardcoding an assumption about the engine that could quietly
+// stop being true.
+// The comments those descriptors carry are the plugin author's own, taken from
+// [Plugin.SchemaProse] and attached here rather than sent beside the bytes: a
+// descriptor set has always been able to carry SourceCodeInfo, and what was
+// missing was any comment to put in it, since the compiled-in descriptor this
+// reads had them stripped by protoc (#723). A nil prose leaves the bytes exactly
+// as they were before that field existed.
+func describeMessage(msg proto.Message, prose *flowstatev1.DescriptorProse) ([]byte, string, error) {
 	if msg == nil {
 		return nil, "", nil
 	}
 
-	descriptor := msg.ProtoReflect().Descriptor()
-	fullName := string(descriptor.FullName())
-
-	set := &descriptorpb.FileDescriptorSet{}
-	seen := make(map[string]struct{})
-	provided := hostProvidedFiles()
-
-	var collect func(file protoreflect.FileDescriptor)
-	collect = func(file protoreflect.FileDescriptor) {
-		path := file.Path()
-		if _, done := seen[path]; done {
-			return
-		}
-		seen[path] = struct{}{}
-
-		if _, known := provided[path]; known {
-			return
-		}
-
-		imports := file.Imports()
-		for i := range imports.Len() {
-			collect(imports.Get(i).FileDescriptor)
-		}
-
-		set.File = append(set.File, protodesc.ToFileDescriptorProto(file))
-	}
-
-	collect(descriptor.ParentFile())
-
-	if len(set.File) == 0 {
-		// Every file this message needs is one the engine already has, so there
-		// is nothing to send but the name.
-		return nil, fullName, nil
-	}
-
-	raw, err := proto.Marshal(set)
-	if err != nil {
-		return nil, "", fmt.Errorf("serializing the descriptor of %s: %w", fullName, err)
-	}
-
-	return raw, fullName, nil
+	return flowstatev1.MessageDescriptorBytesWithProse(
+		msg.ProtoReflect().Descriptor(),
+		prose,
+		pluginv1.File_flowstate_plugin_v1_plugin_proto,
+	)
 }
-
-// hostProvidedFiles returns the descriptor paths any Flowstate engine has,
-// computed as the transitive imports of flowstate's own schema.
-var hostProvidedFiles = sync.OnceValue(func() map[string]struct{} {
-	provided := make(map[string]struct{})
-
-	var walk func(file protoreflect.FileDescriptor)
-	walk = func(file protoreflect.FileDescriptor) {
-		if _, done := provided[file.Path()]; done {
-			return
-		}
-		provided[file.Path()] = struct{}{}
-
-		imports := file.Imports()
-		for i := range imports.Len() {
-			walk(imports.Get(i).FileDescriptor)
-		}
-	}
-
-	// Every file of flowstate's schema, not merely the ones plugin.proto
-	// imports: the engine links the whole generated package, so the set it has
-	// is the whole schema. This list is the twelve files flowstate/v1 is
-	// spelled in; a thirteenth belongs here the day it exists.
-	walk(flowstatev1.File_flowstate_v1_catalog_proto)
-	walk(flowstatev1.File_flowstate_v1_diagnostics_proto)
-	walk(flowstatev1.File_flowstate_v1_identity_proto)
-	walk(flowstatev1.File_flowstate_v1_reports_proto)
-	walk(flowstatev1.File_flowstate_v1_run_proto)
-	walk(flowstatev1.File_flowstate_v1_schedule_proto)
-	walk(flowstatev1.File_flowstate_v1_service_proto)
-	walk(flowstatev1.File_flowstate_v1_signal_proto)
-	walk(flowstatev1.File_flowstate_v1_task_proto)
-	walk(flowstatev1.File_flowstate_v1_trigger_proto)
-	walk(flowstatev1.File_flowstate_v1_value_proto)
-	walk(flowstatev1.File_flowstate_v1_workflow_proto)
-	walk(pluginv1.File_flowstate_plugin_v1_plugin_proto)
-
-	return provided
-})
 
 // handler builds the HTTP handler serving this plugin's services.
 func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, cfg options) (http.Handler, error) {
@@ -885,23 +885,58 @@ func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, 
 	return mux, nil
 }
 
-// requireToken refuses a request that does not carry the per-launch secret.
+// requireToken refuses a request that does not carry the per-launch secret,
+// whether it arrives through a unary or a streaming RPC.
+//
+// This has to be a full [connect.Interceptor], not a
+// [connect.UnaryInterceptorFunc]: the latter's WrapStreamingHandler is a
+// documented no-op, which is precisely how ExecuteStream shipped with no
+// authentication on this side either — a caller who could reach the socket
+// could invoke it, with any identity it cared to claim in the request, and
+// nothing here noticed. See authInterceptor in the plugin package
+// (transport.go) for the client-side half of the same mistake.
 //
 // The socket's directory is what keeps other users out; this is what keeps
 // anything that reaches the socket anyway from acting as the host. The
 // comparison is constant time because the alternative leaks the token one byte
 // at a time to whatever can retry.
 func requireToken(token func() string) connect.Interceptor {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			presented := req.Header().Get(protocol.TokenHeader)
-			if subtle.ConstantTimeCompare([]byte(presented), []byte(token())) != 1 {
-				return nil, connect.NewError(connect.CodePermissionDenied, errors.New(
-					"this plugin serves only the worker that launched it"))
-			}
-			return next(ctx, req)
+	return &tokenServerInterceptor{token: token}
+}
+
+// tokenServerInterceptor rejects any request, unary or streaming, that does
+// not present the per-launch token.
+type tokenServerInterceptor struct{ token func() string }
+
+func (t *tokenServerInterceptor) authorized(presented string) bool {
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(t.token())) == 1
+}
+
+func (t *tokenServerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if !t.authorized(req.Header().Get(protocol.TokenHeader)) {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New(
+				"this plugin serves only the worker that launched it"))
 		}
-	})
+		return next(ctx, req)
+	}
+}
+
+// WrapStreamingClient is a no-op: this interceptor is only ever installed on
+// a handler (see [Plugin.handler]), and a plugin never calls itself as a
+// streaming client.
+func (t *tokenServerInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (t *tokenServerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if !t.authorized(conn.RequestHeader().Get(protocol.TokenHeader)) {
+			return connect.NewError(connect.CodePermissionDenied, errors.New(
+				"this plugin serves only the worker that launched it"))
+		}
+		return next(ctx, conn)
+	}
 }
 
 // pluginService implements the capability handshake every plugin must serve.
@@ -999,12 +1034,10 @@ type taskService struct {
 
 // Execute runs a task.
 func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1.ExecuteRequest]) (*connect.Response[pluginv1.ExecuteResponse], error) {
-	name := req.Msg.GetTask().GetName()
-
-	task, ok := s.tasks[name]
+	task, ok := s.tasks[req.Msg.GetTask().GetName()]
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
-			"this plugin does not provide task %q", truncate(name, 64)))
+			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
 	}
 
 	// Installed on every call, whether or not the request named an identity:
@@ -1018,6 +1051,111 @@ func (s *taskService) Execute(ctx context.Context, req *connect.Request[pluginv1
 	}
 
 	return connect.NewResponse(&pluginv1.ExecuteResponse{Outputs: outputs}), nil
+}
+
+// ExecuteStream runs a task exactly as Execute does, plus relaying the task's
+// own [flowstatev1.ReportProgress] calls to the host as they happen, rather
+// than only once the task is done.
+//
+// The relay is installed on ctx before Fn ever runs. Nothing here assumes Fn
+// calls it from only one goroutine — a [context.Context] is explicitly safe
+// for concurrent use, and so is [flowstatev1.ReportProgress], so a task that
+// fans work out across goroutines and reports from more than one of them is
+// working within the contract both already promise. A connect stream's Send
+// is not safe for concurrent use, so a mutex here is what makes this
+// handler's own promise — every report reaches the host, each one sent
+// whole and in the order its call to ReportProgress returned — true under
+// that contract rather than only under the common case of a task that
+// happens to report from a single goroutine.
+func (s *taskService) ExecuteStream(
+	ctx context.Context,
+	req *connect.Request[pluginv1.ExecuteStreamRequest],
+	stream *connect.ServerStream[pluginv1.ExecuteStreamResponse],
+) error {
+	task, ok := s.tasks[req.Msg.GetTask().GetName()]
+	if !ok {
+		return connect.NewError(connect.CodeUnimplemented, fmt.Errorf(
+			"this plugin does not provide task %q", truncate(req.Msg.GetTask().GetName(), 64)))
+	}
+
+	ctx = contextWithCaller(ctx, req.Msg.GetIdentity(), req.Msg.GetNamespace())
+
+	// Guards every Send on this stream, progress and terminal alike, and the
+	// sendErr short-circuit beside it — both are shared state a reporter
+	// invoked from more than one goroutine would otherwise touch without
+	// synchronization.
+	var (
+		mu      sync.Mutex
+		sendErr error
+	)
+	ctx = flowstatev1.ContextWithProgress(ctx, func(phase flowstatev1.Phase) {
+		wireVal, ok := phaseToWire(phase)
+		if !ok {
+			// Nothing outside this package can construct a flowstatev1.Phase
+			// that phaseToWire does not recognize — see that function's own
+			// doc comment — so this branch exists for the day a phase is
+			// added to progress.go and this mapping is not updated beside
+			// it, and it fails silent rather than sending a zero value the
+			// host would have to guess the meaning of.
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if sendErr != nil {
+			// A send has already failed once; the connection is gone, and
+			// every report after that would fail the identical way for the
+			// identical reason. Reporting progress must never be able to
+			// make a task retry or fail on its own — see ReportProgress's own
+			// doc comment — so this is silently dropped rather than
+			// escalated.
+			return
+		}
+		sendErr = stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Progress{
+				Progress: &pluginv1.TaskProgress{Phase: wireVal},
+			},
+		})
+	})
+
+	outputs, err := task.Fn(ctx, req.Msg.GetTask().GetInputs(), req.Msg.GetScope())
+	if err != nil {
+		return asConnectError(err)
+	}
+
+	// Fn has returned, so no goroutine it started should still be calling the
+	// reporter — but taking the same lock here, rather than sending directly,
+	// means a task that violates that (a leaked goroutine still reporting)
+	// cannot interleave a torn write with this one either.
+	mu.Lock()
+	defer mu.Unlock()
+
+	return stream.Send(&pluginv1.ExecuteStreamResponse{
+		Message: &pluginv1.ExecuteStreamResponse_Response{
+			Response: &pluginv1.ExecuteResponse{Outputs: outputs},
+		},
+	})
+}
+
+// phaseToWire maps a task's [flowstatev1.Phase] onto the plugin protocol's
+// own closed vocabulary, reporting false for a phase this SDK build predates
+// — which cannot happen for anything compiled against the same module, and
+// is handled rather than assumed away because a phase is a value, not a
+// literal, and this function must never guess at one it does not recognize.
+// See plugin.proto's TaskPhase for why the two enumerations must keep naming
+// the same set.
+func phaseToWire(phase flowstatev1.Phase) (pluginv1.TaskPhase, bool) {
+	switch phase {
+	case flowstatev1.PhaseRequesting:
+		return pluginv1.TaskPhase_TASK_PHASE_REQUESTING, true
+	case flowstatev1.PhaseReadingResponse:
+		return pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE, true
+	case flowstatev1.PhaseCallingPlugin:
+		return pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN, true
+	default:
+		return pluginv1.TaskPhase_TASK_PHASE_UNSPECIFIED, false
+	}
 }
 
 // truncate bounds text on its way into a response or an error.

@@ -25,12 +25,21 @@ have to. Prefer it even where `v1` could do the same thing more directly.
 ```go
 import (
 	"context"
+	"log"
 
 	"github.com/picatz/flowstate/pkg/flowstate/embed"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"go.temporal.io/sdk/worker"
 )
 
-// 1. Register a custom task.
+// 1. Register a custom task. No Input/Output message is given here, which is
+// [embed.Task]'s nil-descriptor escape hatch: `flow validate`, a language
+// server, and generated reference docs can then check and document nothing
+// about this task's shape beyond its name. That is a reasonable trade-off for
+// a task used in one program by its own author, and the wrong choice for a
+// task anyone else will write a step against — see
+// examples/embedding/main.go's registerGreetTask for a task that takes it.
 tasks := embed.NewTasks()
 tasks.Register(embed.Task{
 	Name: "greet",
@@ -48,18 +57,26 @@ if err != nil {
 }
 defer uninstall()
 
-// 2. Compile a Flowfile from bytes.
+// 2. Compile a Flowfile from bytes. data is the Flowfile's contents,
+// however the embedding program obtained them — go:embed, os.ReadFile, ...
 workflow, diags, err := embed.Compile(data)
 
 // 3. Run it locally.
+ctx := context.Background()
 outputs, err := embed.RunLocal(ctx, workflow, embed.RunOptions{
 	Inputs: map[string]any{"name": "world"},
 	Tasks:  tasks,
 })
 
 // 4. Or run it durably, against a Temporal worker the program owns.
+// temporalClient is a *client.Client the embedding program dialed itself.
 err = embed.RunDurable(worker.New(temporalClient, engine.RunTaskQueueName, worker.Options{}), tasks)
 ```
+
+`data` and `temporalClient` are elided above — they are the two values an
+embedding program supplies from its own setup, not something this package
+provides. [examples/embedding](../examples/embedding) is the runnable version
+with both filled in.
 
 ## Compile vs. validate
 
