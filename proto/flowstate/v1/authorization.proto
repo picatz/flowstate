@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// AuthorizationRequest is Flowstate's versioned, protocol-independent PARC
+// (principal, action, resource, constraints) authorization vocabulary. It is
+// safe to persist and expose to CEL: OAuth JSON is decoded into this closed
+// shape rather than being passed through as an untyped value.
+message AuthorizationRequest {
+  uint32 schema_version = 1 [(buf.validate.field).uint32 = {const: 1}];
+  repeated AuthorizationIntent intents = 2 [(buf.validate.field).repeated = {max_items: 64}];
+}
+
+message AuthorizationIntent {
+  string action = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 128}];
+  AuthorizationResource resource = 2 [(buf.validate.field).required = true];
+  AuthorizationConstraints constraints = 3;
+}
+
+message AuthorizationResource {
+  // URI is an absolute, canonical resource URI without a fragment.
+  string uri = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 2048}];
+  // Identifier is an optional resource-local identifier, never a credential.
+  string identifier = 2 [(buf.validate.field).string.max_bytes = 256];
+}
+
+// AuthorizationConstraints is deliberately closed and bounded. New constraint
+// kinds require a schema-version change; arbitrary OAuth extension JSON never
+// reaches policy evaluation.
+message AuthorizationConstraints {
+  repeated string methods = 1 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 32}}
+  }];
+  repeated string path_prefixes = 2 [(buf.validate.field).repeated = {
+    max_items: 32
+    unique: true
+    items: {string: {min_bytes: 1, max_bytes: 512}}
+  }];
+}
