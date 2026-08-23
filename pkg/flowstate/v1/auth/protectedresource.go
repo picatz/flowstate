@@ -158,6 +158,49 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 	}, nil
 }
 
+// ValidateResourceAudience validates a serving surface's canonical resource
+// identifier and proves that the loaded trust policy can admit a token minted
+// for it. It is shared by surfaces which do not publish RFC 9728 metadata but
+// still bind bearer tokens to a resource using [WithExpectedResource].
+//
+// The audience half is [issuerAcceptsResourceAsAudience] with the issuer
+// identity left out: that one answers "does *this* advertised authorization
+// server accept the resource", because a document that names an authorization
+// server has to be right about that particular one, and this answers "does
+// anybody", because a surface that publishes no document has no authorization
+// server to be right about. Both read the same [bearerIssuers] filter, so
+// neither can start counting an entry the other does not — a kind: mtls entry
+// is skipped by both, and cannot satisfy either, since
+// [TrustedIssuer.validateMTLS] refuses it an `audiences` list at all.
+//
+// A policy that admits no bearer tokens is therefore always an error here,
+// never a silent pass: see [AdmitsBearerTokens] for the question a caller asks
+// *before* this one, to decide whether a resource is required in the first
+// place.
+func ValidateResourceAudience(resource string, policy *Policy) error {
+	if _, err := validateResourceURI(resource); err != nil {
+		return err
+	}
+
+	if !AdmitsBearerTokens(policy) {
+		return fmt.Errorf("resource: %q cannot be required, because the loaded auth policy trusts no "+
+			"issuer that mints bearer tokens: a kind: mtls entry admits a caller by client certificate, "+
+			"which carries no audience claim for this resource to be checked against. Add a kind: oidc "+
+			"entry listing %q among its audiences, or leave the resource unset — a certificate-only "+
+			"deployment has no token whose audience this would narrow", resource, resource)
+	}
+
+	if slices.ContainsFunc(bearerIssuers(policy), func(entry TrustedIssuer) bool {
+		return slices.Contains(entry.Audiences, resource)
+	}) {
+		return nil
+	}
+
+	return fmt.Errorf("resource: %q is not among any trusted issuer's accepted audiences; add it to at "+
+		"least one kind: oidc issuers[].audiences entry, or a token minted for it would be refused by "+
+		"this deployment's own verifier before any surface checked its audience", resource)
+}
+
 // Resource is the canonical resource identifier this document advertises —
 // [ProtectedResourceConfig.Resource], validated. It is the exact string every
 // accepted token's "aud" claim must carry (RFC 8707 section 2), which is what
@@ -343,24 +386,14 @@ func validateResourceURI(raw string) (*url.URL, error) {
 // several roles), so this is "any entry accepts it", matching how
 // [TrustedIssuer.admits] is tried in order until one succeeds.
 //
-// kind: mtls entries are skipped: their Issuer is an operator-chosen label,
-// never a URL, and is never comparable to an authorization server
-// identifier. A nil policy trusts nobody, so it accepts nothing — the same
-// fail-closed default [Policy] documents everywhere else.
+// kind: mtls entries are skipped — by [bearerIssuers], which is where that
+// filter is written down for every caller that only asks about the policy:
+// their Issuer is an operator-chosen label, never a URL, and is never
+// comparable to an authorization server identifier. A nil policy trusts
+// nobody, so it accepts nothing — the same fail-closed default [Policy]
+// documents everywhere else.
 func issuerAcceptsResourceAsAudience(policy *Policy, issuer, resource string) bool {
-	if policy == nil {
-		return false
-	}
-	for _, entry := range policy.Issuers {
-		if entry.kind() != IssuerKindOIDC {
-			continue
-		}
-		if entry.Issuer != issuer {
-			continue
-		}
-		if slices.Contains(entry.Audiences, resource) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(bearerIssuers(policy), func(entry TrustedIssuer) bool {
+		return entry.Issuer == issuer && slices.Contains(entry.Audiences, resource)
+	})
 }

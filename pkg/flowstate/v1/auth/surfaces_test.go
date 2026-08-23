@@ -203,6 +203,38 @@ func TestAuthenticatorAdmitsATokenNamingTheExpectedResource(t *testing.T) {
 	require.Equal(t, "alice@example.com", principal.Subject)
 }
 
+// TestSurfaceResourcesAreMutuallyExclusive holds each surface's token up to
+// both verifiers. The TrustedIssuer intentionally lists both audiences.
+func TestSurfaceResourcesAreMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	issuer, verifier := mcpTestVerifier(t)
+	for _, test := range []struct {
+		name, audience string
+		rpcOK, mcpOK   bool
+	}{
+		{name: "Connect RPC token", audience: mcpOtherResource, rpcOK: true},
+		{name: "remote MCP token", audience: mcpResource, mcpOK: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			token := issuer.MintToken(nil, authtest.WithSubject("alice@example.com"), authtest.WithAudience(test.audience))
+			identity, rpcErr := auth.NewAuthenticator(verifier, auth.WithExpectedResource(mcpOtherResource)).Authenticate(t.Context(), rpcRequest(t, token))
+			if test.rpcOK {
+				require.NoError(t, rpcErr)
+				require.NotNil(t, identity)
+			} else {
+				requireRPCRefused(t, identity, rpcErr)
+			}
+			info, mcpErr := auth.MCPTokenVerifier(verifier, mcpResource)(t.Context(), token, nil)
+			if test.mcpOK {
+				require.NoError(t, mcpErr)
+				require.NotNil(t, info)
+			} else {
+				requireRefused(t, info, mcpErr)
+			}
+		})
+	}
+}
+
 // TestAuthenticatorWithEmptyExpectedResourceNarrowsNothing pins the
 // fail-*open* half of an otherwise fail-closed option, which is deliberate and
 // therefore has to be stated: a caller threading an unset configuration value
@@ -312,5 +344,117 @@ func TestAuthenticatorRefusesADelegatedPrincipalFromAnyVerifier(t *testing.T) {
 			require.ErrorContains(t, err, `"`+claim+`"`)
 			require.ErrorIs(t, observed, auth.ErrDelegatedToken, "observed: %v", observed)
 		})
+	}
+}
+
+// TestANarrowedRPCChallengeDoesNotAdvertiseTheOtherSurfacesDocument is the
+// join of the two options, which is where the defect lived: each half was
+// right on its own, and a deployment setting both — the configuration
+// docs/DEPLOYMENT.md recommends — got a challenge instructing a client to go
+// and mint precisely the audience the surface had just been told to refuse.
+//
+// The three cases are one authenticator with one setting changed, because the
+// claim is about the *relationship* between the two values rather than about
+// either one. Reported by Codex on picatz/flowstate#1007.
+func TestANarrowedRPCChallengeDoesNotAdvertiseTheOtherSurfacesDocument(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	const document = `resource_metadata="https://flowstate.example.com` + auth.ProtectedResourceMetadataPath + `/mcp"`
+
+	for _, test := range []struct {
+		name       string
+		expected   string
+		advertises bool
+	}{
+		{
+			// The surface admits only its own audience, and the document
+			// describes another. Following it produces a token this surface
+			// refuses, so a discovery-driven client would loop.
+			name:     "narrowed to a different resource",
+			expected: "https://flowstate.example.com/rpc",
+		},
+		{
+			// The document describes this very surface, so the instruction is
+			// good and withholding it would cost discovery for nothing.
+			name:       "narrowed to the resource the document describes",
+			expected:   "https://flowstate.example.com/mcp",
+			advertises: true,
+		},
+		{
+			// Unnarrowed: the migration window, and every deployment from
+			// before per-surface binding existed. Every audience the trust
+			// policy lists is spendable here, the advertised one among them,
+			// so the challenge reads exactly as it always did.
+			name:       "unnarrowed",
+			advertises: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			authenticator := auth.NewAuthenticator(nil,
+				auth.WithProtectedResource(pr), auth.WithExpectedResource(test.expected))
+			server := serveAuthenticated(t, authenticator)
+
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				server.URL+"/flowstate.v1.WorkflowService/Run", nil)
+			require.NoError(t, err)
+
+			response, err := http.DefaultClient.Do(request)
+			require.NoError(t, err)
+			defer response.Body.Close()
+
+			require.Equal(t, http.StatusUnauthorized, response.StatusCode)
+			challenge := response.Header.Get("WWW-Authenticate")
+			require.Contains(t, challenge, `error="invalid_token"`,
+				"every challenge still says the token is the problem")
+
+			if test.advertises {
+				require.Contains(t, challenge, document)
+				return
+			}
+
+			require.NotContains(t, challenge, document,
+				"the challenge sent a client to mint the one audience this surface refuses")
+			require.NotContains(t, challenge, "resource_metadata=",
+				"a narrowed surface names no document rather than a different one")
+		})
+	}
+}
+
+// TestTheOptionsCommuteForTheChallenge pins that the decision is made from
+// both recorded values at request time rather than by whichever option ran
+// last, because [auth.NewAuthenticator] applies them in the order it is given
+// and a caller chooses that order.
+func TestTheOptionsCommuteForTheChallenge(t *testing.T) {
+	t.Parallel()
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"))
+	require.NoError(t, err)
+
+	for _, opts := range [][]auth.AuthenticatorOption{
+		{auth.WithProtectedResource(pr), auth.WithExpectedResource("https://flowstate.example.com/rpc")},
+		{auth.WithExpectedResource("https://flowstate.example.com/rpc"), auth.WithProtectedResource(pr)},
+	} {
+		server := serveAuthenticated(t, auth.NewAuthenticator(nil, opts...))
+
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			server.URL+"/flowstate.v1.WorkflowService/Run", nil)
+		require.NoError(t, err)
+
+		response, err := http.DefaultClient.Do(request)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+
+		require.NotContains(t, response.Header.Get("WWW-Authenticate"), "resource_metadata=")
 	}
 }
