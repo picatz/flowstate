@@ -90,6 +90,27 @@ func lateCancellationWorkflow(name, base, message string, undo bool) *v1.Workflo
 		}}
 	}
 
+	// The step the stop lands inside carries its own undo when the case has
+	// undos at all, and that placement is the point: its registration happens
+	// after the step succeeded, which is after the cancellation fired, so it
+	// exercises [v1.UndoRegistrationFor] on a cancelled context — the
+	// `context.WithoutCancel` half of the guard. Its input is an expression, so
+	// registration has to *evaluate* on that context rather than merely copy.
+	stop := &v1.Node{
+		Id: "stop",
+		Kind: &v1.Node_Task{Task: &v1.Task{
+			Name:   "log",
+			Inputs: map[string]*v1.Value{"message": v1.NewLiteral(message)},
+		}},
+	}
+
+	if undo {
+		stop.Undo = &v1.Compensation{Task: &v1.Task{
+			Name:   "http",
+			Inputs: map[string]*v1.Value{"url": v1.NewExpr(`"` + base + `/do/undo-stop-" + steps.first.said`)},
+		}}
+	}
+
 	return &v1.Workflow{
 		Name:    name,
 		Profile: v1.CurrentProfile,
@@ -104,16 +125,7 @@ func lateCancellationWorkflow(name, base, message string, undo bool) *v1.Workflo
 		DeclaredOutputs: []*v1.OutputDeclaration{
 			{Name: "said", Value: v1.NewExpr("int(steps.first.said)")},
 		},
-		Steps: []*v1.Node{
-			first,
-			{
-				Id: "stop",
-				Kind: &v1.Node_Task{Task: &v1.Task{
-					Name:   "log",
-					Inputs: map[string]*v1.Value{"message": v1.NewLiteral(message)},
-				}},
-			},
-		},
+		Steps: []*v1.Node{first, stop},
 	}
 }
 
@@ -145,8 +157,8 @@ func TestRunWorkflowUndoOnLateCancellation(t *testing.T) {
 			// closed COMPLETED over a resource nobody was coming back for.
 			name:     "a stop landing as the last step succeeds still takes the run back",
 			undo:     true,
-			summary:  `; compensation ran in reverse order: undid "first"`,
-			recorded: []string{"a", "undo-a"},
+			summary:  `; compensation ran in reverse order: undid "stop", undid "first"`,
+			recorded: []string{"a", "undo-stop-a", "undo-a"},
 		},
 		{
 			// The blast radius, asserted rather than left to be discovered. The
