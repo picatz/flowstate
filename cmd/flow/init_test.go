@@ -164,6 +164,28 @@ func TestInitWritesNothingWhenItRefuses(t *testing.T) {
 		"init refused and still wrote %s, leaving a half-scaffolded directory", scaffoldWorkflow)
 }
 
+// TestWriteScaffoldFileRefusesALateSymlink pins the atomic half of the
+// no-overwrite promise. runInit checks both destinations before writing either,
+// but a directory entry can appear after that check; the create itself must
+// therefore refuse an existing symlink rather than follow it and truncate its
+// target.
+func TestWriteScaffoldFileRefusesALateSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	const mine = "mine, and not to be replaced\n"
+	require.NoError(t, os.WriteFile(victim, []byte(mine), 0o644))
+
+	path := filepath.Join(dir, scaffoldWorkflow)
+	require.NoError(t, os.Symlink(victim, path))
+
+	err := writeScaffoldFile(path, []byte("replacement\n"))
+	require.Error(t, err)
+
+	data, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	assert.Equal(t, mine, string(data), "the scaffold write followed an existing symlink")
+}
+
 // TestInitCreatesTheDirectory covers the invocation a newcomer actually types
 // — `flow init my-thing` for a directory that does not exist yet — which is the
 // one `cargo new` and `terraform init` set the expectation for.

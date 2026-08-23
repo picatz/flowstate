@@ -146,7 +146,7 @@ func runInit(cmd *cobra.Command, dir string, opts initOptions) error {
 
 	for _, f := range files {
 		path := filepath.Join(dir, f.name)
-		if err := os.WriteFile(path, []byte(f.contents), 0o644); err != nil {
+		if err := writeScaffoldFile(path, []byte(f.contents)); err != nil {
 			return fmt.Errorf("error writing %s: %w", path, err)
 		}
 	}
@@ -155,6 +155,24 @@ func runInit(cmd *cobra.Command, dir string, opts initOptions) error {
 	printScaffold(surface, dir, files, note)
 
 	return nil
+}
+
+// writeScaffoldFile creates path without following or replacing anything that
+// appeared after runInit's initial checks. The checks keep the command's
+// all-paths-before-any-write behaviour, while O_EXCL makes the no-overwrite
+// promise authoritative at the write itself rather than relying on a racy
+// observation of the directory.
+func writeScaffoldFile(path string, contents []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.Write(contents); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // printScaffold reports what was written and what to type next.
