@@ -220,6 +220,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/protectedresource.go",
 		},
 		{
+			name:    "FLOWSTATE_RPC_RESOURCE",
+			value:   "unset",
+			purpose: "Default for `--rpc-resource` on `flow server`: the canonical Connect RPC resource URI required in every bearer token's `aud` claim. Required whenever `--auth-policy` trusts a `kind: oidc` issuer, unless the migration-only `--allow-issuer-wide-audiences` flag explicitly restores the older issuer-wide behavior; a policy of nothing but `kind: mtls` entries mints no token to bind and needs neither flag. Distinct from the remote MCP protected resource and from any future HTTP surface.",
+			read:    "cmd/flow/rpcresource.go",
+		},
+		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
 			value:   "unset",
 			purpose: "Default for `--secret-command`: the argv of the command that resolves `command:` secrets, `$PATH`-list-separated (the executable first). `{{name}}` and, with `--secret-command-namespaced`, `{{namespace}}` are substituted literally into one argument, never through a shell.",

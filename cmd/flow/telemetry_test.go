@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	logglobal "go.opentelemetry.io/otel/log/global"
 	noopLog "go.opentelemetry.io/otel/log/noop"
@@ -1327,11 +1328,19 @@ func TestAFailedSignalPublishesNothingAndLeavesNothingRunning(t *testing.T) {
 // A banner is read as the truth about what the process is doing, so both are
 // pinned: a collector named for a deployment sending nothing, and silence from
 // one holding an open exporter.
+//
+// The signal-specific endpoints are set as well as the general one, because the
+// same disagreement has a quieter third shape that "is telemetry on at all"
+// does not catch: telemetry is genuinely on, and the endpoint named belongs to a
+// signal that was switched off. Reading the four endpoints in a fixed order is
+// what produces it, so the cases below put a disabled signal's endpoint ahead of
+// an enabled signal's and require the enabled one.
 func TestTheDevBannerNamesTelemetryExactlyWhenItIsOn(t *testing.T) {
 	for _, test := range []struct {
-		name                            string
-		endpoint, traces, metrics, logs string
-		want                            string
+		name                                                    string
+		endpoint, tracesEndpoint, metricsEndpoint, logsEndpoint string
+		traces, metrics, logs                                   string
+		want                                                    string
 	}{
 		{name: "nothing configured"},
 		{name: "a general endpoint", endpoint: "http://collector:4318", want: "http://collector:4318"},
@@ -1351,10 +1360,46 @@ func TestTheDevBannerNamesTelemetryExactlyWhenItIsOn(t *testing.T) {
 			traces:   "none", metrics: "none",
 			want: "http://collector:4318",
 		},
+		{
+			// The finding itself: the traces collector is named while traces are
+			// the one signal not being sent to it.
+			name:           "a disabled signal's endpoint ahead of an enabled one",
+			tracesEndpoint: "http://traces:4318", traces: "none",
+			metricsEndpoint: "http://metrics:4318", metrics: "otlp",
+			want: "http://metrics:4318",
+		},
+		{
+			// And the same shape with nothing but a general endpoint to fall back
+			// on: the enabled signal has no endpoint of its own, so the general one
+			// is what it is going to — not the disabled signal's collector.
+			name:           "an enabled signal falling back to the general endpoint",
+			endpoint:       "http://collector:4318",
+			tracesEndpoint: "http://traces:4318", traces: "none",
+			want: "http://collector:4318",
+		},
+		{
+			// A signal's own endpoint wins over the general one for that signal,
+			// which is how the SDK resolves it.
+			name:           "a signal's own endpoint beside a general one",
+			endpoint:       "http://collector:4318",
+			tracesEndpoint: "http://traces:4318",
+			want:           "http://traces:4318",
+		},
+		{
+			// Fail closed, and for the same reason [telemetryConfigured] does: the
+			// process refuses to start on this, so a banner naming a collector
+			// would be describing a run that is not going to happen.
+			name:     "a malformed selector",
+			endpoint: "http://collector:4318",
+			metrics:  "bogus",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			telemetryOff(t)
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", test.endpoint)
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", test.tracesEndpoint)
+			t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", test.metricsEndpoint)
+			t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", test.logsEndpoint)
 			t.Setenv("OTEL_TRACES_EXPORTER", test.traces)
 			t.Setenv("OTEL_METRICS_EXPORTER", test.metrics)
 			t.Setenv("OTEL_LOGS_EXPORTER", test.logs)
@@ -1362,4 +1407,105 @@ func TestTheDevBannerNamesTelemetryExactlyWhenItIsOn(t *testing.T) {
 			assert.Equal(t, test.want, devOTLPEndpoint())
 		})
 	}
+}
+
+// TestAMalformedSelectorReadsAsUnconfiguredWhicheverSignalItNames is the
+// fail-closed claim in [telemetryConfigured]'s own doc comment, asserted for
+// every signal rather than for the first one resolved.
+//
+// [telemetryConfigFromEnv] returns what it had resolved before the bad selector
+// alongside the error, so a malformed OTEL_METRICS_EXPORTER or
+// OTEL_LOGS_EXPORTER comes back as {traces: true} with an error. A predicate
+// that discarded the error would answer "configured" for those two and
+// "unconfigured" only for OTEL_TRACES_EXPORTER — and this predicate is what
+// switches the global propagator on, so an unparsed setting must never be the
+// reason a process starts writing traceparent onto other people's requests.
+func TestAMalformedSelectorReadsAsUnconfiguredWhicheverSignalItNames(t *testing.T) {
+	for _, signal := range []string{"OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER"} {
+		t.Run(signal, func(t *testing.T) {
+			telemetryOff(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+			t.Setenv(signal, "bogus")
+
+			assert.False(t, telemetryConfigured(),
+				"%s=bogus is refused by initTelemetry; this must not report telemetry as on", signal)
+
+			_, _, err := initTelemetry(t.Context())
+			require.Error(t, err, "the operator has to find out from somewhere")
+			require.ErrorContains(t, err, signal, "the diagnostic must name the variable")
+			require.ErrorContains(t, err, "bogus", "and the value the operator wrote")
+		})
+	}
+}
+
+// TestACallersBaggageNeverReachesTheTemporalHeader is the one door where a
+// peer's own bytes reached durable storage, closed and pinned.
+//
+// The path it walks is the real one, in the order the process walks it. An
+// authenticated caller sends a `Baggage` header; otelconnect extracts it into
+// the RPC handler's context, because the global propagator this file registers
+// is trace context plus baggage; the handler calls Temporal on that context;
+// and the tracing interceptor's tracer reads `baggage.FromContext` and marshals
+// what it finds into the workflow header — which is history. So the assertion
+// is on the map that becomes that header, produced by the SDK's own
+// SpanFromContext and MarshalSpan rather than by a stand-in, because it is
+// those two functions that consult the option.
+//
+// And it takes [temporalTracerOptions] rather than writing the options out, for
+// the same reason [TestTemporalSpanErrorsAreContained] does: written out,
+// deleting DisableBaggage from what the worker builds would leave this test
+// green while the leak came back. The wiring is the fix, so the wiring is what
+// is under the assertion.
+//
+// The positive half matters as much. Disabling baggage must not disable
+// propagation: `traceparent` still has to cross, or a run stops being
+// followable from the command that started it, which is the whole point of
+// configuring any of this.
+func TestACallersBaggageNeverReachesTheTemporalHeader(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	options := temporalTracerOptions()
+	options.Tracer = provider.Tracer("test")
+
+	tracer, err := opentelemetry.NewTracer(options)
+	require.NoError(t, err)
+
+	// What an authenticated caller chose, in the shape otelconnect would have
+	// left in the handler's context: a key and a value both of the caller's
+	// choosing, distinctive enough that a substring search cannot match either
+	// by accident.
+	const secretKey = "caller-chosen-key-4f2a"
+	const secretValue = "caller-chosen-payload-that-must-never-reach-history-9d13"
+	member, err := baggage.NewMember(secretKey, secretValue)
+	require.NoError(t, err)
+	bag, err := baggage.New(member)
+	require.NoError(t, err)
+
+	ctx, span := provider.Tracer("test").Start(context.Background(), "inbound rpc")
+	defer span.End()
+	ctx = baggage.ContextWithBaggage(ctx, bag)
+
+	// The two calls the interceptor makes on the way to the header: read the
+	// span out of the handler's context, then marshal it into the map Temporal
+	// persists.
+	fromContext := tracer.SpanFromContext(ctx)
+	require.NotNil(t, fromContext, "the handler context carries a valid span")
+
+	header, err := tracer.MarshalSpan(fromContext)
+	require.NoError(t, err)
+
+	for key, value := range header {
+		assert.NotContains(t, key, secretKey, "a caller's baggage key became a Temporal header field")
+		assert.NotContains(t, value, secretKey,
+			"a caller's baggage key reached the Temporal header under %q, and the header is workflow history", key)
+		assert.NotContains(t, value, secretValue,
+			"a caller's baggage value reached the Temporal header under %q, and the header is workflow history", key)
+	}
+	assert.NotContains(t, header, "baggage", "a baggage header is written into workflow history at all")
+
+	// Trace context still crosses. Refusing the arbitrary-payload half must not
+	// cost the fixed-shape half, which is what makes a run followable at all.
+	assert.NotEmpty(t, header["traceparent"],
+		"trace context stopped crossing, so a run no longer joins the command that started it")
 }
