@@ -52,11 +52,28 @@ var exampleCorpusGlobs = []string{
 // constructsWithoutAnExample is the allowlist this test reads: language
 // constructs the corpus is permitted not to demonstrate.
 //
-// Like [examplesWithoutTestFile] it is a list of decisions, never of gaps: an
-// entry has to say why no Flowfile in the corpus can show the thing off, and
-// "nobody has written one yet" is not such a reason — it is the finding this
-// test exists to report.
-var constructsWithoutAnExample = map[string]string{}
+// Like [examplesWithoutTestFile] it is a list of decisions, never of silence. An
+// entry is one of exactly two things, and it has to say which:
+//
+//   - a construct no Flowfile in this corpus *can* demonstrate, with the reason;
+//   - a real gap somebody has written down and tracked, naming the issue.
+//
+// The second kind is what this list gained when the derivation started walking
+// the whole workflow message graph rather than three hand-picked messages: the
+// seven below are constructs the language has and the portfolio has never shown,
+// which is precisely the finding this test exists to produce. They are recorded
+// rather than papered over, and filling them is portfolio work with its own
+// issue — not something to jam into an unrelated example so that a list goes
+// quiet.
+var constructsWithoutAnExample = map[string]string{
+	"input.values":                 "an enum-constrained input (`values:`); no example declares one — tracked in #969",
+	"manual.denied":                "the deny half of a `manual:` trigger's principal rules; `trigger-context` shows `allowed_principals` only — tracked in #969",
+	"schedule.every":               "the interval spelling of a schedule; `scheduled-report` uses `cron:` — tracked in #969",
+	"schedule.start_at":            "a schedule's activation window start — tracked in #969",
+	"schedule.end_at":              "a schedule's activation window end — tracked in #969",
+	"signal_policy_rule.subject":   "a signals rule matching an exact subject; the enterprise examples gate on `claims:` — tracked in #969",
+	"signal_policy_rule.namespace": "a signals rule matching a namespace — tracked in #969",
+}
 
 // The required set is derived from the schema three ways: the two `kind` oneofs
 // (a node kind, a wait kind), the task registry, and — the part #901's review
@@ -148,6 +165,21 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.Switch{}, "switch", blockFieldExclusions},
 		{&v1.Call{}, "call", nil},
 		{&v1.RetryPolicy{}, "retry", nil},
+
+		// The author-facing messages the graph walk found sitting outside the
+		// hand-kept list — the finding that motivated deriving the message set
+		// rather than listing it.
+		{&v1.InputDeclaration{}, "input", nil},
+		{&v1.OutputDeclaration{}, "output", nil},
+		{&v1.Triggers{}, "triggers", nil},
+		{&v1.WebhookTrigger{}, "webhook", nil},
+		{&v1.ManualTrigger{}, "manual", nil},
+		{&v1.ScheduleTrigger{}, "schedule", nil},
+		{&v1.SignalPolicy{}, "signal_policy", nil},
+		{&v1.SignalPolicyRule{}, "signal_policy_rule", nil},
+		{&v1.Signal{}, "signal", nil},
+		{&v1.Switch_Case{}, "switch_case", blockFieldExclusions},
+		{&v1.Switch_Default{}, "switch_default", blockFieldExclusions},
 	} {
 		name, s := spec(entry.msg, entry.prefix, entry.exclude)
 		specs[name] = s
@@ -160,6 +192,130 @@ func writableSpecFor(name protoreflect.FullName) (messageWritableSpec, bool) {
 	spec, ok := writableSpecs()[name]
 
 	return spec, ok
+}
+
+// messagesOutsideTheCharter are the messages reachable from [v1.Workflow] whose
+// fields no example is responsible for, each against the reason why.
+//
+// It is the other half of [writableSpecs], and the two together have to account
+// for *every* message the walk below reaches — an unclassified one fails
+// [TestCharterClassifiesEveryReachableMessage] rather than being skipped, which
+// is what stops a new author-facing message from landing outside the check. That
+// inversion is the point: a list of what to include silently ignores what it has
+// not heard of, and a list of what to exclude cannot.
+var messagesOutsideTheCharter = map[protoreflect.FullName]string{
+
+	"flowstate.v1.Value":             "the universal value wrapper: every expression and literal in the language is one, so its own fields are the encoding rather than a construct an example demonstrates",
+	"flowstate.v1.Task":              "a task's identity is its name, and the charter requires an example per registered task through the registry pass; its `inputs` map is the task's own schema rather than a language construct",
+	"flowstate.v1.Compensation":      "a container holding one task; `node.undo` is the construct and the task inside it is required through the registry pass",
+	"flowstate.v1.ResolvedPlugin":    "written by the control plane at submit, never by an author",
+	"flowstate.v1.PluginRequirement": "a `plugins:` block is only expressible under examples/plugins/, which this corpus excludes because those files name tasks a stock `flow` cannot resolve",
+
+	// Encoding rather than language: the Value wrapper's own internals.
+	"flowstate.v1.Value.Structure":      "part of the value encoding",
+	"flowstate.v1.Value.Structure.Map":  "part of the value encoding",
+	"flowstate.v1.Value.Structure.List": "part of the value encoding",
+	"flowstate.v1.Value.Error":          "how a failed evaluation is carried, produced by the engine rather than typed by an author",
+
+	// A secret is written as a secret() call inside an expression, so what an
+	// example demonstrates is the call, not this message's fields.
+	"flowstate.v1.SecretRef": "the author-facing spelling is the secret() call inside an expression, not this message",
+
+	// A parallel branch holds only a body, and the block itself is already
+	// required through the kind oneof.
+	"flowstate.v1.Parallel.Branch": "a branch is its body; node.parallel is the construct",
+
+	// The calendar sub-messages are the cron grammar inside a schedule trigger
+	// rather than separate constructs; scheduled-report shows the whole trigger.
+	"flowstate.v1.ScheduleTrigger.Calendar":       "the cron grammar inside a schedule trigger, demonstrated as part of it",
+	"flowstate.v1.ScheduleTrigger.Calendar.Range": "the same",
+}
+
+// reachableFromWorkflow walks the descriptor graph from [v1.Workflow] and
+// returns every message it can reach through a field, itself included.
+//
+// Derived rather than listed, which is the whole of Codex's follow-up finding on
+// #901: a hand-kept table of messages goes stale exactly as a hand-kept table of
+// fields did, and the messages an author types are precisely the ones a
+// `Workflow` can hold.
+func reachableFromWorkflow() map[protoreflect.FullName]protoreflect.MessageDescriptor {
+	seen := map[protoreflect.FullName]protoreflect.MessageDescriptor{}
+
+	var walk func(protoreflect.MessageDescriptor)
+	walk = func(desc protoreflect.MessageDescriptor) {
+		if _, ok := seen[desc.FullName()]; ok {
+			return
+		}
+		seen[desc.FullName()] = desc
+
+		fields := desc.Fields()
+		for i := range fields.Len() {
+			field := fields.Get(i)
+			if field.IsMap() {
+				if field.MapValue().Kind() == protoreflect.MessageKind {
+					walk(field.MapValue().Message())
+				}
+
+				continue
+			}
+			if msg := field.Message(); msg != nil {
+				walk(msg)
+			}
+		}
+	}
+	walk((&v1.Workflow{}).ProtoReflect().Descriptor())
+
+	return seen
+}
+
+// TestCharterClassifiesEveryReachableMessage is the derivation's own guard: every
+// message a workflow can hold is either one the charter requires examples for, or
+// one written down as outside it, with a reason. Neither list may quietly not
+// mention a message.
+func TestCharterClassifiesEveryReachableMessage(t *testing.T) {
+	t.Parallel()
+
+	specs := writableSpecs()
+	unclassified := []string{}
+
+	for name := range reachableFromWorkflow() {
+		// Anything outside this repository's own schema is not this language's
+		// surface: the well-known types, and the CEL AST a compiled expression
+		// carries. A rule rather than eighteen entries, so a CEL library bump
+		// that adds a message does not need a line here.
+		if !strings.HasPrefix(string(name), "flowstate.v1.") {
+			continue
+		}
+
+		_, required := specs[name]
+		reason, excluded := messagesOutsideTheCharter[name]
+		switch {
+		case required && excluded:
+			t.Errorf("%s is both required and excluded; it can only be one", name)
+		case excluded:
+			assert.NotEmpty(t, reason,
+				"%s is excluded with no reason; an entry must be a decision, not a gap", name)
+		case !required:
+			unclassified = append(unclassified, string(name))
+		}
+	}
+	sort.Strings(unclassified)
+
+	assert.Empty(t, unclassified,
+		"these messages are reachable from a Workflow and the charter says nothing about them (%s); "+
+			"either add one to writableSpecs so its fields need an example, or to "+
+			"messagesOutsideTheCharter with the reason no example is responsible for it",
+		unclassified)
+
+	// An exclusion for something no longer reachable is a decision about nothing.
+	reachable := reachableFromWorkflow()
+	for name := range messagesOutsideTheCharter {
+		_, ok := reachable[name]
+		if !strings.HasPrefix(string(name), "flowstate.v1.") {
+			continue
+		}
+		assert.True(t, ok, "%s is excluded but is not reachable from a Workflow; remove the entry", name)
+	}
 }
 
 // writableRequired adds every non-excluded, non-oneof field of one message to
@@ -210,14 +366,12 @@ func TestEveryLanguageConstructHasAnExample(t *testing.T) {
 				demonstrated[construct] = name
 			}
 		}
-		for _, node := range wf.GetSteps() {
-			walkConstructs(node.ProtoReflect(), report)
-		}
-		// Workflow-level writable constructs — `inputs:`, `outputs:`,
-		// `triggers:`, `signals:`, `vars:` — live on the Workflow message, which
-		// the node walk never reaches, so they are reported here from the same
-		// spec the required set is derived from.
-		reportWritableFields(wf.ProtoReflect(), report)
+		// From the Workflow itself rather than from its steps: `triggers:`,
+		// `inputs:` and `outputs:` hang off the workflow message, and their own
+		// sub-messages (a webhook's `verify:`, a schedule's `cron:`) hang off
+		// those — none of which a walk that started at a node would ever reach.
+		// The recursion covers the steps on its way through.
+		walkConstructs(wf.ProtoReflect(), report)
 	}
 
 	// What has to be covered, asked of the schema and the registry rather than
