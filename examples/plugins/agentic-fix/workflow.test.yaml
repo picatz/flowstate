@@ -269,11 +269,15 @@ tests:
       # asked for, no commit is pushed, nothing is verified again. Their stubs are
       # deliberately absent, so a regression that ran the loop anyway would fail
       # loudly on a missing stub rather than quietly mutate a green branch.
+      # No `output` key at all, which is what a CI that has nothing to report
+      # plausibly answers with. `type(x)` evaluates x, so a missing key is an
+      # error rather than a type - without the `has()` guard in run-tests.yaml
+      # this case would fail permanently on the very first call, before the loop
+      # or the handoff could run.
       - task: http
         where: "inputs.json.ref == 'sha-0'"
         returns:
           passed: true
-          output: ""
     expect:
       ran: [tip, base_sha, failing, attempted, unresolved, spent, fixed_sha, report]
       # `attempt` never runs (the build is good), so neither does the gate.

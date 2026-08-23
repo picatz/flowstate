@@ -41,14 +41,25 @@ steps:
       # be *written back* to the world; here it only decides whether to keep
       # trying.)
       outputs:
-        output: '${(type(response.json.output) == type("")) ? response.json.output : ""}'
-        passed: ${type(response.json.passed) == type(true) && response.json.passed}
+        # `has()` before `type()`, because `type(x)` evaluates x first and a
+        # missing key is an *error*, not a type. A passing suite that omits
+        # `output` entirely would otherwise fail this step permanently on the
+        # very first call - before the repair loop or the human handoff could
+        # run. Presence, then shape, then the value; anything short of all three
+        # reads as "no pass", which is the safe direction.
+        output: '${(has(response.json.output) && type(response.json.output) == type("")) ? response.json.output : ""}'
+        passed: ${has(response.json.passed) && type(response.json.passed) == type(true) && response.json.passed}
       parse_json: true
       url: https://ci.internal.example.com/test-runs
 outputs:
   passed:
-    value: ${steps.suite.passed}
+    value: ${has(steps.suite.passed) && steps.suite.passed}
     description: whether the suite passed at that commit
   output:
-    value: ${steps.suite.output}
+    # Guarded for the same reason the step's own shaping is: a step's outputs are
+    # whatever it actually produced, and a run reporting no output has no key
+    # here to read. Declaring the absence as an empty string keeps a caller that
+    # builds a prompt from it working, and keeps this workflow's contract - two
+    # outputs, always present - true rather than aspirational.
+    value: '${has(steps.suite.output) ? steps.suite.output : ""}'
     description: what a failing run printed, which is what the next attempt's prompt is built from

@@ -201,9 +201,16 @@ steps:
             # not) and the shape is checked in the body, where a bad reading can
             # do something better than fail: see `readable` below.
             method: GET
+            # Presence-guarded for the reason run-tests.yaml's outputs are:
+            # `type(x)` evaluates x, and a control plane that omitted a field
+            # would fail this step on a missing key rather than reaching
+            # `readable` below. The substitutes are chosen to *fail* that check -
+            # a negative count and a non-boolean - so an incomplete body takes
+            # the same path as a malformed one: this pass decides nothing and the
+            # next resync reads again.
             outputs:
-              replicas: ${response.json.replicas}
-              retired: ${response.json.retired}
+              replicas: "${has(response.json.replicas) ? response.json.replicas : -1}"
+              retired: '${has(response.json.retired) ? response.json.retired : "absent"}'
             parse_json: true
             query: '${{"name": inputs.target}}'
             url: https://control-plane.internal.example.com/workloads/status
@@ -305,8 +312,20 @@ steps:
             json: '${{"name": inputs.target, "replicas": steps.next_desired.value}}'
             method: POST
             outputs:
-              accepted: ${response.json.accepted}
-            parse_json: true
+              status: ${response.status_code}
+            # No `parse_json:` and no body read. Nothing needs one -
+            # `passes_that_acted` counts whether this step *ran* - and requiring
+            # a JSON field would fail the step on a 204 No Content or any
+            # empty-bodied 2xx, which is a perfectly ordinary answer to "scale to
+            # 7". That failure would land *after* the change had been applied,
+            # which is the worst possible moment to invent one.
+            #
+            # `outputs:` is still shaped, though, and to a single deterministic
+            # field. Left unshaped, an http step records its whole response -
+            # body and headers - and the `Date` header is wall-clock, so the two
+            # drivers would carry different `results` across a Continue-As-New
+            # for a write they had both performed identically. The cross-driver
+            # harness caught exactly that.
             # A POST whose outcome is unknown - it reached the control plane and
             # the answer was lost - is not retried by default, because doing an
             # operation twice is usually worse than reporting a failure. Here it
