@@ -9,15 +9,53 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+	nooptrace "go.opentelemetry.io/otel/trace/noop"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
+
+type countingTracerProvider struct {
+	trace.TracerProvider
+	calls atomic.Int64
+}
+
+func (p *countingTracerProvider) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+	p.calls.Add(1)
+	return p.TracerProvider.Tracer(name, options...)
+}
+
+// TestDisabledLocalTelemetryIsAZeroAllocationNoop pins only what
+// [localTelemetry] guarantees: without an endpoint it returns its input
+// unchanged, produces no handle, and never asks the global tracer provider for
+// an instrument. The workflow itself has separate zero-config coverage.
+func TestDisabledLocalTelemetryIsAZeroAllocationNoop(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	provider := &countingTracerProvider{TracerProvider: nooptrace.NewTracerProvider()}
+	otel.SetTracerProvider(provider)
+	ctx := t.Context()
+
+	allocations := testing.AllocsPerRun(100, func() {
+		got, handler, err := localTelemetry(ctx)
+		require.NoError(t, err)
+		require.Same(t, ctx, got)
+		require.Nil(t, handler)
+	})
+
+	require.Zero(t, allocations, "disabled local telemetry allocated")
+	require.Zero(t, provider.calls.Load(),
+		"disabled local telemetry consulted the global tracer provider")
+}
 
 // What this file is for, and why the tests beside it were not enough.
 //

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -81,7 +82,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// Nothing is flushed here. [main] calls [flushTelemetry] after every command
 	// returns, precisely because a command that lives for a second is shorter
 	// than a batch exporter's window — which is this command exactly.
-	if _, err := startTelemetry(cmd.Context()); err != nil {
+	if _, _, err := localTelemetry(cmd.Context()); err != nil {
 		log.Printf("WARNING: telemetry is configured but could not be started, "+
 			"so this run emits no trace: %v", err)
 	}
@@ -262,6 +263,21 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// localTelemetry starts the process telemetry used by a local run.
+//
+// When no endpoint is configured it returns the caller's context and a nil
+// handler without entering the process-wide telemetry initializer. In
+// particular, the disabled path does not consult or replace an OpenTelemetry
+// global provider.
+func localTelemetry(ctx context.Context) (context.Context, client.MetricsHandler, error) {
+	if !telemetryConfigured() {
+		return ctx, nil, nil
+	}
+
+	handler, err := startTelemetry(ctx)
+	return ctx, handler, err
 }
 
 // localRun is a finished local run in the shape the schema already has for one.
