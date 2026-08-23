@@ -9,11 +9,11 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestRunAddressShapeDurable checks the durable half of the shared assertion in
-// [tests.AssertRunAddressShape]: a durable run reports the workflow id it is
+// [conformance.AssertRunAddressShape]: a durable run reports the workflow id it is
 // addressed by — the id `flow signal` and `flow get` take — and a run id that
 // identifies which execution of it this is. The local half is
 // [flowstatev1_test.TestRunAddressShapeLocal].
@@ -26,10 +26,10 @@ func TestRunAddressShapeDurable(t *testing.T) {
 	env := suite.NewTestWorkflowEnvironment()
 
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
-		Workflow: tests.RunAddressWorkflow(),
+		Workflow: conformance.RunAddressWorkflow(),
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
@@ -43,7 +43,7 @@ func TestRunAddressShapeDurable(t *testing.T) {
 	// because the test environment leaves FirstRunID unset and engine.runAddress
 	// falls back — see its doc, and TestRunAddressPrefersFirstRunID below for the
 	// half of that rule the test environment cannot exercise.
-	tests.AssertRunAddressShape(t, &outputs, "default-test-workflow-id", "default-test-run-id")
+	conformance.AssertRunAddressShape(t, &outputs, "default-test-workflow-id", "default-test-run-id")
 }
 
 // TestRunAddressPrefersFirstRunID pins the choice engine.runAddress exists to

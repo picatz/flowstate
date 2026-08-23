@@ -39,7 +39,7 @@ func TestSearchAttributesAreRegisteredIdempotentlyAndProjected(t *testing.T) {
 	require.NoError(t, server.EnsureSearchAttributesRegistered(t.Context(), temporal, namespace),
 		"registering the same search attributes twice must be a no-op, not an error")
 
-	flowstateServer := server.New(temporal, server.WithSearchAttributesRegistered())
+	flowstateServer := mustNew(t, temporal, server.WithSearchAttributesRegistered())
 
 	const workflowName = "search-attribute-probe"
 

@@ -46,10 +46,8 @@ description: Pages a repository's entire commit history to exhaustion with a bou
 # v1 does not, because a major version is a different contract.
 plugins:
   git: v0.1.0
-
 vars:
   repo: https://github.com/octocat/Hello-World.git
-
 steps:
   - id: pages
     description: Fetch pages until git.log reports the history is no longer truncated.
@@ -57,7 +55,7 @@ steps:
       # The carried state is the cursor. It starts empty — a fresh walk — and each
       # iteration replaces it with the page's own next_cursor.
       as: cursor
-      init: ${''}
+      init: ${""}
       update: ${steps.page.next_cursor}
       # Stop once a page comes back not truncated: that page is the last one.
       until: ${!steps.page.truncated}
@@ -66,21 +64,18 @@ steps:
       steps:
         - id: page
           git.log:
-            url: ${vars.repo}
-            max_commits: 2
             # Empty on the first iteration (a fresh walk); the previous page's
             # next_cursor on every one after.
             cursor: ${cursor}
-
+            max_commits: 2
+            url: ${vars.repo}
 outputs:
   page_count:
     value: ${steps.pages.results.size()}
     description: how many pages it took to reach the end of the history
-
   all_shas:
     value: ${steps.pages.results.map(p, p.page.commits.map(c, c.sha)).flatten()}
     description: every commit sha across every page, in walk order
-
   every_commit_once:
     value: ${steps.pages.results.map(p, p.page.commits.map(c, c.sha)).flatten().size() == steps.pages.results.map(p, p.page.commits.map(c, c.sha)).flatten().distinct().size()}
     description: true when no commit was returned by two different pages — the exhaustive walk reached each exactly once

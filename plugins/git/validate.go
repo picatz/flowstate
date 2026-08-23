@@ -98,6 +98,23 @@ const (
 	maxLogMessageBytes      = 4096
 	maxTotalLogMessageBytes = 256 << 10 // 256 KiB
 
+	// Identity fields and parent lists come from the same attacker-chosen
+	// commit object as its message, but are independent resources: bounding
+	// message text does not bound either of them. Refuse a commit rather than
+	// copying metadata beyond any one limit, and also bound the aggregate
+	// metadata across an otherwise-valid page.
+	//
+	// The two per-commit limits are enforced at different points, because they
+	// bound resources spent at different points. An identity is spent when it
+	// is copied into the response, which is [logMetadataBytes]. A parent list
+	// is spent when the walk *expands* it onto its own stack, which happens in
+	// [multiRootCommitIter.Next] before any of this is reached - so that is
+	// where the count is refused, and a check any later would be reading a
+	// list already paid for.
+	maxLogIdentityBytes      = 1024
+	maxLogParents            = 64
+	maxTotalLogMetadataBytes = 256 << 10 // 256 KiB
+
 	// maxLogPathBytes bounds git.log's optional path filter before it is
 	// used to build a PathFilter closure - the same "bound before the real
 	// use sees it" reasoning validateRevision documents.

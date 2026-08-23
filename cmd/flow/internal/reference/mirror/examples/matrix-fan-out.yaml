@@ -22,31 +22,17 @@
 #   flow run local examples/matrix-fan-out/workflow.yaml -o json | jq .runOutputs
 edition: v2026.3
 name: matrix-fan-out
-
 vars:
-  # The axes. Each is an ordinary list, so an axis grows by editing one line.
-  os: ${['linux', 'darwin', 'windows']}
-  arch: ${['amd64', 'arm64']}
+  arch: ${["amd64", "arm64"]}
 
   # The combinations that are not built. Kept beside the axes rather than buried
   # in the filter below, so the exclusions read as a list of decisions with a
   # place to put a comment.
   #
   # windows/arm64: no runner for it yet.
-  excluded: ${['windows/arm64']}
-
-outputs:
-  # Counting the loop's own `results` rather than re-deriving the product here:
-  # this is how many targets were actually built, which is the number worth
-  # promising a caller.
-  targets_built:
-    value: ${size(steps.build.results)}
-    description: how many matrix targets this run built
-
-  summary:
-    value: built ${size(steps.build.results)} of ${size(vars.os) * size(vars.arch)} combinations
-    description: what the run did, in one sentence
-
+  excluded: ${["windows/arm64"]}
+  # The axes. Each is an ordinary list, so an axis grows by editing one line.
+  os: ${["linux", "darwin", "windows"]}
 steps:
   # `items:` is the whole matrix idiom, in one expression:
   #
@@ -60,7 +46,7 @@ steps:
   # and still record an entry in `results`.
   - id: build
     for_each:
-      items: "${vars.os.map(o, vars.arch.map(a, {'os': o, 'arch': a})).flatten().filter(t, !(t.os + '/' + t.arch in vars.excluded))}"
+      items: '${vars.os.map(o, vars.arch.map(a, {"os": o, "arch": a})).flatten().filter(t, !(t.os + "/" + t.arch in vars.excluded))}'
       as: target
       # Concurrency is bounded separately from the trip count, and the two answer
       # different questions: this one is how many run at once, the ceiling is how
@@ -69,10 +55,27 @@ steps:
       steps:
         - id: compile
           log:
-            message: building ${target.os}/${target.arch}
+            message: ${"building " + string(target.os) + "/" + string(target.arch)}
 
   # `results` outlives the block, so the count is readable from here. Five, not
   # six: the excluded combination never became an item.
+  #
+  # Counted once here rather than at each of the three places that report it -
+  # the `report` line below and both `outputs:` above - so a later change to
+  # what counts as built cannot land in two of the three (docs/STYLE.md R5,
+  # `flow lint`).
+  - id: built_count
+    value: ${size(steps.build.results)}
   - id: report
     log:
-      message: built ${size(steps.build.results)} target(s)
+      message: ${"built " + string(steps.built_count.value) + " target(s)"}
+outputs:
+  # Counting the loop's own `results` rather than re-deriving the product here:
+  # this is how many targets were actually built, which is the number worth
+  # promising a caller.
+  targets_built:
+    value: ${steps.built_count.value}
+    description: how many matrix targets this run built
+  summary:
+    value: ${"built " + string(steps.built_count.value) + " of " + string(size(vars.os) * size(vars.arch)) + " combinations"}
+    description: what the run did, in one sentence

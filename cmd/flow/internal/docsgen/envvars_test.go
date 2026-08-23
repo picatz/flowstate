@@ -105,10 +105,17 @@ var exemptSourceDirs = []string{
 // FLOWSTATE_TOKEN, is a literal one call site up in cmd/flow/credentials.go
 // and is documented there; a caller of the package with a different name
 // documents its own choice.
+// pkg/flowstate/v1/credentialsource/static.go is the shared body of the gitlab
+// and terraform-cloud sources, and reads whichever variable the source it is
+// serving was built with — FLOWSTATE_ID_TOKEN or the `id_tokens:` key a GitLab
+// job author chose, TFC_WORKLOAD_IDENTITY_TOKEN or its tagged form. Every one
+// of those names is a literal in gitlab.go or terraform_cloud.go, documented
+// there, and this file is the single read site they all funnel through.
 var exemptDynamicReads = map[string]bool{
-	"pkg/flowstate/v1/secrets/env.go":          true,
-	"cmd/flow/internal/docsgen/cli.go":         true,
-	"pkg/flowstate/v1/credentialsource/env.go": true,
+	"pkg/flowstate/v1/secrets/env.go":             true,
+	"cmd/flow/internal/docsgen/cli.go":            true,
+	"pkg/flowstate/v1/credentialsource/env.go":    true,
+	"pkg/flowstate/v1/credentialsource/static.go": true,
 }
 
 // exemptExternalReadLocations are documented read sites outside the cmd/ and

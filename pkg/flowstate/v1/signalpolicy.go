@@ -38,12 +38,15 @@ import (
 // policies, beyond what protovalidate's per-field rules already catch (rule
 // counts, string lengths, the subject pattern).
 //
-// Two things only protovalidate cannot see, because they are facts about a
-// *set* rather than about one field: a policy for a signal name the workflow
-// never waits for (almost always a misspelling — the name that was meant is
-// the one `wait_for_signal:` actually uses), and a rule that matches every
-// sender because nothing on it was set (which defeats the point of writing a
-// rule, and reads as a mistake rather than an intentional wide-open policy).
+// Three cross-field facts protovalidate cannot see are checked here. A policy
+// for a signal name the workflow never waits for, which is almost always a
+// misspelling — the name that was meant is the one `wait_for_signal:` actually
+// uses. A rule that matches every sender because nothing on it was set, which
+// defeats the point of writing a rule and reads as a mistake rather than as an
+// intentional wide-open policy. And `subject_from`, which may not be combined
+// with a literal `subject:` and may not stand unnarrowed — see
+// [CheckSignalPolicyShape] for what counts as narrowing it, and for why
+// `namespace:` does not.
 func CheckSignalPolicies(wf *Workflow) error {
 	declared := wf.GetSignals()
 	if len(declared) == 0 {
@@ -93,6 +96,30 @@ func CheckSignalPolicies(wf *Workflow) error {
 // corruption, not a legitimately declared policy, and must be denied rather
 // than misread as "no policy" (see lifecycle.go's `signalPolicies`).
 //
+// # What narrows a subject_from, and why a namespace does not
+//
+// A rule's `subject_from` resolves against the run's own inputs, which
+// whoever started the run chose. On its own it therefore authorizes the
+// starter to write their own qualified subject into the policy that is
+// supposed to govern *them* — self-approval, spelled as a gate. So a rule
+// setting it must carry something the run's inputs cannot reach: `claims:`,
+// which are attested on the sender's own token, or the policy-level
+// `distinct_from_starter: true`, which refuses the starter by comparison
+// with the recorded starter rather than by matching at all.
+//
+// `namespace:` is deliberately *not* one of them, and this is the part worth
+// stating rather than leaving to be rediscovered. A namespace on a rule is
+// compared against the sender's own namespace — but no sender with a
+// different one can reach this check in the first place:
+// `FlowstateServer.Signal` reaches `authorizeSignal` only through
+// `authorizeRun`, which refuses any caller whose namespace is not the one
+// recorded on the run, and the namespace recorded on a run is the starter's.
+// So `namespace:` set to the run's own tenant restates a constraint that
+// already held, and set to anything else makes the rule unmatchable. Either
+// way it narrows the set of senders by nothing, and accepting it as
+// narrowing would let exactly the shape this check exists to refuse through
+// while reading, in the file, as though it had been addressed.
+//
 // # requireResolvedSubjects, and the two shapes this function is asked about
 //
 // This function has exactly two callers, and they ask about two different
@@ -130,11 +157,6 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSu
 						"sender — which defeats the point of a policy; give it a subject:, a namespace:, "+
 						"or claims:, or remove the rule", name, i)
 			}
-			if subject := rule.GetSubject(); subject != "" && !LooksLikeQualifiedSubject(subject) {
-				return fmt.Errorf(
-					"signals[%q].allow[%d].subject %q is not \"<issuer>#<subject>\"; a bare subject is "+
-						"refused because a subject is only unique within its issuer", name, i, subject)
-			}
 			if requireResolvedSubjects && rule.GetSubjectFrom() != nil {
 				return fmt.Errorf(
 					"signals[%q].allow[%d].subject is still an unresolved expression; a policy read back "+
@@ -142,19 +164,58 @@ func CheckSignalPolicyShape(declared map[string]*SignalPolicy, requireResolvedSu
 						"before this policy is frozen, so a populated subject_from here is not a policy "+
 						"this server would have written", name, i)
 			}
+			// Before the shape rules below, deliberately. On the decoded side an
+			// unresolved expression is the finding, and reporting it as an
+			// unnarrowed rule instead would name a fault in the author's file
+			// for something no file did.
+			if rule.GetSubject() != "" && rule.GetSubjectFrom() != nil {
+				return fmt.Errorf(
+					"signals[%q].allow[%d] sets both subject and subject_from; choose either a literal "+
+						"subject or an expression, not both", name, i)
+			}
+			if rule.GetSubjectFrom() != nil && !SubjectFromIsNarrowed(policy, rule) {
+				return fmt.Errorf(
+					"signals[%q].allow[%d].subject_from resolves to whatever the run's inputs say, so "+
+						"alone it lets whoever started the run name themselves as their own approver; "+
+						"add claims: to the rule, or distinct_from_starter: true to the policy. A "+
+						"namespace: does not narrow this — every sender that reaches the check is "+
+						"already in the run's own namespace",
+					name, i)
+			}
+			if subject := rule.GetSubject(); subject != "" && !LooksLikeQualifiedSubject(subject) {
+				return fmt.Errorf(
+					"signals[%q].allow[%d].subject %q is not \"<issuer>#<subject>\"; a bare subject is "+
+						"refused because a subject is only unique within its issuer", name, i, subject)
+			}
 		}
 	}
 
 	return nil
 }
 
+// SubjectFromIsNarrowed reports whether a rule setting `subject_from` also
+// carries something the run's own inputs cannot reach.
+//
+// Exported, and called rather than restated, because two places have to agree
+// about it: this package refuses a policy at submit, and the Flowfile compiler
+// reports the same fault in an author's editor with a position attached. A
+// validator laxer than the server tells an author their file is fine and then
+// has the submission refused; a validator stricter than the server refuses a
+// file that would have worked. Both are the "one value, written down twice"
+// failure CLAUDE.md names, so it is written down once.
+//
+// See [CheckSignalPolicyShape] for what each of the two constraints buys, and
+// for why `namespace:` is not one of them.
+func SubjectFromIsNarrowed(policy *SignalPolicy, rule *SignalPolicyRule) bool {
+	return len(rule.GetClaims()) > 0 || policy.GetDistinctFromStarter()
+}
+
 // ruleMatchesEverySender reports whether a rule has nothing on it to check —
 // the shape that would authorize any sender at all. subject_from counts as a
 // constraint here even though its content is not yet known: it will resolve
-// to a subject before this policy is ever enforced, so a rule that sets it
-// (with nothing else) is narrower than "matches every sender" even though it
-// is not yet narrower than anything in particular — the narrowing check that
-// answers "narrower than what" is the Flowfile compiler's, not this one's.
+// to a subject before this policy is ever enforced. CheckSignalPolicyShape
+// separately requires that expression to be narrowed by something the run's
+// inputs cannot reach — see its own doc comment.
 func ruleMatchesEverySender(rule *SignalPolicyRule) bool {
 	return rule.GetSubject() == "" && rule.GetSubjectFrom() == nil &&
 		rule.GetNamespace() == "" && len(rule.GetClaims()) == 0

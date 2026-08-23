@@ -13,7 +13,7 @@ steps:
   # expression that produced it.
   - id: shout
     vars:
-      loud: ${regex.replace(vars.greeting.upperAscii(), 'HELLO', 'HI')}
+      loud: ${regex.replace(vars.greeting.upperAscii(), "HELLO", "HI")}
     log:
       message: ${loud}
 
@@ -22,7 +22,7 @@ steps:
   # a condition was evaluated without extension libraries while a step could
   # name its own, and a condition has no key to name anything with.
   - id: confirm
-    if: ${vars.greeting.startsWith('hel')}
+    if: ${vars.greeting.startsWith("hel")}
     log:
       message: ${vars.greeting.lowerAscii()}
 
@@ -38,7 +38,7 @@ steps:
   # it as a call to something nothing declares.
   - id: order
     vars:
-      first: ${['zeta', 'alpha', 'mu'].sortBy(name, name)[0]}
+      first: ${["zeta", "alpha", "mu"].sortBy(name, name)[0]}
     log:
       message: ${first}
 
@@ -47,22 +47,22 @@ steps:
   # the read, where `has(x.y) && x.y` spelled the path twice with a guard in
   # front. `has()` stays for the question it still answers: presence itself.
   - id: prefs
-    value: "${{'volume': 7}}"
+    value: '${{"volume": 7}}'
 
   # `.?` in a step's own `vars:` and in its `if:`. `volume` was recorded above,
   # so the read finds it; `muted` never was, so the read resolves to `orValue`'s
   # false and the comparison lets the step run.
   - id: tuned
+    if: ${steps.prefs.value.?muted.orValue(false) == false}
     vars:
       level: ${string(steps.prefs.value.?volume.orValue(0))}
-    if: ${steps.prefs.value.?muted.orValue(false) == false}
     log:
       message: ${level}
 
   # `.?` in `items:`: a list the value may not carry, iterated as its fallback.
   - id: announce
     for_each:
-      items: ${steps.prefs.value.?stations.orValue(['default'])}
+      items: ${steps.prefs.value.?stations.orValue(["default"])}
       as: station
       steps:
         - id: name_station

@@ -17,7 +17,6 @@ description: A review-triage pass over a public repository using the "github" pl
 # Every task here accepts an unset token and works exactly the same against
 # a public repository - see workflow.yaml's own comment on why, and this
 # plugin's README, "Authentication," for the private-repository case.
-
 vars:
   owner: golang
   repo: go
@@ -27,47 +26,47 @@ vars:
   # standard library ships a "crypto" tree, so this is a fragment its pull
   # requests plausibly touch without being tied to any one PR's identity.
   sensitive_path_fragment: crypto
-
 steps:
   - id: open_prs
     github.pull_request_list:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
-      state: open
       max_results: 5
       # No token: a public repository's pull requests are readable
       # unauthenticated, at a much lower rate limit - see workflow.yaml.
-
-  - id: pr_files
-    github.pull_request_files:
       owner: ${vars.owner}
       repo: ${vars.repo}
+      state: open
+
+  # The pull request this file goes on to name three times - here, in the log
+  # line, and in an output. Bound once, so the "whatever is actually open right
+  # now" choice is made in one place (docs/STYLE.md R5, `flow lint`).
+  - id: newest_pr
+    value: ${steps.open_prs.pull_requests[0]}
+  - id: pr_files
+    github.pull_request_files:
+      max_results: 100
       # Bound to the most recently created open pull request
       # github.pull_request_list just found - github.pull_request_list's
       # own default sort, GitHub's "created", descending - rather than a
       # number this file hard-codes, so the audit chain is "whatever is
       # actually open right now," not one pull request frozen in time.
-      number: ${steps.open_prs.pull_requests[0].number}
-      max_results: 100
-
-  - id: open_issues
-    github.issue_list:
+      number: ${steps.newest_pr.value.number}
       owner: ${vars.owner}
       repo: ${vars.repo}
-      state: open
+  - id: open_issues
+    github.issue_list:
+      direction: asc
       max_results: 5
+      owner: ${vars.owner}
+      repo: ${vars.repo}
       # Ascending by creation time, explicitly - GitHub's own default for
       # this endpoint is "created" descending (newest first), which would
       # make element zero the newest match, not the oldest this file's own
       # outputs claim it to be. direction: asc is what actually earns the
       # name "oldest" below.
       sort: created
-      direction: asc
-
+      state: open
   - id: issue_detail
     github.issue_get:
-      owner: ${vars.owner}
-      repo: ${vars.repo}
       # The audit chain's other half: github.issue_list found which issues
       # are open; github.issue_get reads the one at the front of that
       # queue in full - body included, which a listing deliberately leaves
@@ -83,28 +82,24 @@ steps:
       # comment (github.proto) for the endpoint quirk this filter exists
       # to correct for.
       number: ${steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number}
-
+      owner: ${vars.owner}
+      repo: ${vars.repo}
   - id: announce
     log:
-      message: "${'%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")'.format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.open_prs.pull_requests[0].number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}"
-
+      message: '${"%s/%s - %d open pull request(s) seen, most recent is #%d touching %d file(s); %d open issue(s) seen, oldest of them is #%d (\"%s\")".format([vars.owner, vars.repo, steps.open_prs.pull_requests.size(), steps.newest_pr.value.number, steps.pr_files.files.size(), steps.open_issues.issues.filter(i, !i.is_pull_request).size(), steps.open_issues.issues.filter(i, !i.is_pull_request)[0].number, steps.issue_detail.title])}'
 outputs:
   most_recent_open_pull_request:
-    value: ${steps.open_prs.pull_requests[0].number}
+    value: ${steps.newest_pr.value.number}
     description: the most recently created open pull request github.pull_request_list found (see PullRequestListOutputs.truncated for whether more than max_results are actually open)
-
   touches_a_sensitive_path:
     value: ${steps.pr_files.files.exists(f, f.filename.contains(vars.sensitive_path_fragment))}
     description: whether that pull request's own files (github.pull_request_files - filenames and line counts, no diff content read) include a path matching sensitive_path_fragment - the review-triage question this task exists to answer before any diff is ever read
-
   open_issue_count:
     value: ${steps.open_issues.issues.filter(i, !i.is_pull_request).size()}
     description: how many open issues (pull requests excluded - see issue_detail's own comment on why) github.issue_list found, capped at max_results (see IssueListOutputs.truncated for whether more exist)
-
   oldest_open_issue_title:
     value: ${steps.issue_detail.title}
     description: the full title of the oldest open issue among the listing above (github.issue_list's own sort/direction inputs, set to created/asc - see that step's comment), read in full via github.issue_get - the single-record detail a listing's own summary leaves out
-
   oldest_open_issue_is_actually_a_pull_request:
     value: ${steps.issue_detail.is_pull_request}
     description: GitHub answers issues and pull requests through the same endpoint - always false here, since issue_detail's own number is chosen by filtering pull requests out first (see that step's comment); kept as an explicit sanity check on that filter rather than an assumption

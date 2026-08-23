@@ -155,7 +155,7 @@ func TestComputePatchRefusesAnUnprovableDelta(t *testing.T) {
 		{"could not be observed", workspaceBaseline{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			patch, got, truncated := computePatch(context.Background(), t.TempDir(), true, tc.baseline, files)
+			patch, got, truncated := computePatch(context.Background(), "", nil, t.TempDir(), true, tc.baseline, files)
 			if patch != "" {
 				t.Errorf("a workspace %s produced a patch: %q", tc.name, patch)
 			}

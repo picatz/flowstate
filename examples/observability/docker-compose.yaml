@@ -14,7 +14,8 @@
 #                                           ▼
 #                                     otel-collector ──▶ tempo       (traces)
 #                                           ├──────────▶ prometheus  (metrics, scraped)
-#                                           └──────────▶ loki        (logs)
+#                                           ├──────────▶ loki        (logs)
+#                                           └──────────▶ clickhouse  (logs + traces)
 #                                                          ▼
 #                                                       grafana
 #
@@ -105,7 +106,7 @@ services:
     # is what pushes the last spans, points and log records.
     # Arguments only: the image's ENTRYPOINT is already `flow`.
     command: [
-      "server", "--address=temporal:7233",
+      "server", "--temporal-address=temporal:7233",
       "--insecure-no-auth", "--tls-terminated-upstream", "--verbose",
     ]
     ports:
@@ -124,7 +125,7 @@ services:
     # constantly and there are no workloads to protect, which is what makes
     # accepting the exposure honest here and dishonest anywhere else. README.md
     # shows the two flags that pin it instead.
-    command: ["worker", "--address=temporal:7233", "--allow-unversioned-interpreter", "--verbose"]
+    command: ["worker", "--temporal-address=temporal:7233", "--allow-unversioned-interpreter", "--verbose"]
 
   # ----------------------------------------------------------------- Temporal
 
@@ -178,8 +179,47 @@ services:
       - "127.0.0.1:4318:4318" # OTLP/HTTP — what `flow` speaks
       - "127.0.0.1:8889:8889" # the Prometheus exporter, published for debugging
     depends_on:
-      - tempo
-      - loki
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+
+  # --------------------------------------------------------------- ClickHouse
+
+  # A second, columnar destination for the same OTLP stream. It is deliberately
+  # beside (not in place of) LGTM: changing backends is a collector routing
+  # decision and never an instrumentation change in Flowstate.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8.3.66
+    container_name: clickhouse
+    environment:
+      CLICKHOUSE_DB: otel
+      # Also what makes `default` reachable from the collector and Grafana, which
+      # is worth writing down because it reads like an unrelated setting. The
+      # image's entrypoint writes a `users.d/default-user.xml` that pins a
+      # passwordless `default` to ::1 and 127.0.0.1 — a healthcheck run by
+      # `clickhouse-client` inside the container passes, and every cross-container
+      # client fails — *unless* a user, a password, or this variable is set, in
+      # which case it writes the user with `<networks><ip>::/0</ip></networks>`
+      # instead. So this lab's ClickHouse is reachable across the compose network
+      # with no password, deliberately: the only published port is the loopback
+      # binding below, 9000 is not published at all, and a lab whose whole purpose
+      # is to be torn down after looking at a trace has nothing to protect. If a
+      # port here is ever bound to anything but 127.0.0.1, this stops being true
+      # and the user needs a password before that change lands, not after.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "127.0.0.1:8123:8123" # HTTP query API
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
 
   # ------------------------------------------------------------------- Tempo
 
@@ -261,6 +301,9 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
+      # Pinned rather than "latest": provisioning a datasource must be
+      # reproducible, and Grafana installs this before it starts serving.
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource 4.11.2
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/etc/grafana/dashboards:ro
@@ -271,6 +314,7 @@ services:
       - tempo
       - loki
       - prometheus
+      - clickhouse
 
 volumes:
   temporal-data:
@@ -278,3 +322,4 @@ volumes:
   loki-data:
   prometheus-data:
   grafana-data:
+  clickhouse-data:

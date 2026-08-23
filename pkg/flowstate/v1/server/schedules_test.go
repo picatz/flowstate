@@ -1,16 +1,19 @@
 package server_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // scheduledWorkflow is a workload that finishes on its own, which is what makes it
@@ -127,6 +130,22 @@ func TestAScheduleIsCreatedDescribedFiredAndDeleted(t *testing.T) {
 
 			return workflowID != ""
 		}, 60*time.Second, 200*time.Millisecond, "the schedule never took an action")
+		// Derived from the same two inputs the server derived it from, and checked
+		// as a *prefix*: Temporal appends the scheduled time to keep firings
+		// distinct, so the claim is that a firing's workflow id begins with this
+		// tenant's schedule id — not merely that the string turns up somewhere in
+		// it, which a suffix, an infix, or a wrapping in some other id would
+		// satisfy just as well.
+		scheduleID := server.ScheduleIDForTest(teamANamespace, "nightly-report")
+		require.True(t, strings.HasPrefix(workflowID, scheduleID),
+			"a scheduled run's workflow id %q is not derived from its tenant's schedule id %q", workflowID, scheduleID)
+
+		// And the tenant half spelled out, because the assertion above is built
+		// from the same function the server used: a derivation that stopped
+		// scoping by tenant altogether would agree with itself and pass. This is
+		// the one place the encoding is written down twice on purpose.
+		require.True(t, strings.HasPrefix(workflowID, "flowstate-schedule-"+teamANamespace+"_"),
+			"a scheduled run's workflow id %q is not scoped to its tenant", workflowID)
 
 		// The run it started is an ordinary run of this tenant's — addressable by
 		// `flow get`, listed by `flow list`, authorized by the same memo. A firing
@@ -279,6 +298,121 @@ func TestAnotherTenantCannotReachASchedule(t *testing.T) {
 		assert.True(t, described.Msg.GetSchedule().GetPaused(), "a refused resume resumed it anyway")
 		assert.Zero(t, described.Msg.GetSchedule().GetNumActions(), "a refused trigger fired it anyway")
 	})
+}
+
+// TestTwoTenantsSchedulesOfOneNameCannotCollide is the property the tenant-scoped
+// id exists for, asserted in the direction that can actually fail.
+//
+// TestAScheduleIsCreatedDescribedFiredAndDeleted asserts that team A's schedule
+// derives an id carrying team A — the positive direction, which an encoding that
+// had stopped separating tenants entirely would also satisfy, since every tenant's
+// id would carry every tenant's name. What makes this a tenancy test is the other
+// direction: two tenants who both call their schedule `nightly-report` — and they
+// will, because a person chooses that name — must land on ids that cannot be one
+// another's, and no name team A is free to choose may derive team B's id.
+//
+// That last clause is the env secret provider's bug asked about this encoding.
+// There, `prefix + NAMESPACE + "_" + name` let three tenants resolve to one
+// variable because every character legal in a namespace was legal in a name. Here
+// the same concatenation is safe *only* because [auth.ValidateNamespace] forbids
+// an underscore in a namespace, so the separator cannot be forged from the name
+// side and cannot be reached across from the namespace side. The unit-level
+// version of this is TestScheduleIDsAreUnambiguous; this is the same claim about
+// the ids two real tenants' schedules actually occupy in a real cluster.
+func TestTwoTenantsSchedulesOfOneNameCannotCollide(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	const name = "nightly-report"
+
+	for tenant, tenantServer := range map[string]*server.FlowstateServer{
+		teamANamespace: fixture.teamA,
+		teamBNamespace: fixture.teamB,
+	} {
+		_, err := tenantServer.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+			Workflow: scheduledWorkflow(name),
+			Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+			Paused:   true,
+		}))
+		require.NoError(t, err, "%s could not create a schedule of a name another tenant had taken", tenant)
+	}
+
+	idA := server.ScheduleIDForTest(teamANamespace, name)
+	idB := server.ScheduleIDForTest(teamBNamespace, name)
+
+	require.NotEqual(t, idA, idB, "two tenants' schedules of one name derive one id")
+	assert.NotContains(t, idA, teamBNamespace, "a tenant's schedule id names another tenant")
+	assert.NotContains(t, idB, teamANamespace, "a tenant's schedule id names another tenant")
+
+	// A cannot reach B, whatever it calls its own schedule. Each candidate is a
+	// name team A is free to choose that spells some part of team B's half of the
+	// id, which is exactly how the env provider's tenants collided.
+	for _, candidate := range []string{
+		name,
+		teamBNamespace + "_" + name,
+		"_" + teamBNamespace + "_" + name,
+		"_" + name,
+		idB,
+	} {
+		assert.NotEqual(t, idB, server.ScheduleIDForTest(teamANamespace, candidate),
+			"%q derived %q's schedule id from %q's namespace", candidate, teamBNamespace, teamANamespace)
+	}
+
+	// And the cluster holds two schedules rather than one shared one — the claim
+	// above is about the derivation, this is about what it actually created. A
+	// collision would show up here as a single id.
+	//
+	// Listed rather than described, because a description is asked for by name
+	// and would answer from the same derivation this is checking. Temporal's
+	// schedule listing is served from visibility and lags a create, hence the
+	// wait; the assertion that reports what was actually found runs afterwards,
+	// on the test's own goroutine, since a `require` inside a polled condition
+	// is a `FailNow` from somewhere it cannot stop the test.
+	//
+	// scheduleIDs reads only ids this deployment created — the Temporal
+	// namespace belongs to this test, but the prefix is what the server's own
+	// listing scopes by, so the count below cannot be thrown off by anything
+	// else that appears there.
+	scheduleIDs := func() []string {
+		var ids []string
+
+		list, err := fixture.temporal.ScheduleClient().List(t.Context(), client.ScheduleListOptions{})
+		if err != nil {
+			return nil
+		}
+		for list.HasNext() {
+			entry, err := list.Next()
+			if err != nil {
+				return nil
+			}
+			if strings.HasPrefix(entry.ID, "flowstate-schedule-") {
+				ids = append(ids, entry.ID)
+			}
+		}
+
+		return ids
+	}
+
+	require.Eventually(t, func() bool {
+		return len(scheduleIDs()) == 2
+	}, 30*time.Second, 200*time.Millisecond,
+		"the cluster does not hold two schedules, one per tenant")
+	require.ElementsMatch(t, []string{idA, idB}, scheduleIDs(),
+		"two tenants' schedules of one name did not land on one id each")
+
+	// Each is its owner's and no one else's, asked through the RPC surface rather
+	// than the id: a listing is what a tenant is actually shown.
+	for tenant, tenantServer := range map[string]*server.FlowstateServer{
+		teamANamespace: fixture.teamA,
+		teamBNamespace: fixture.teamB,
+	} {
+		listed, err := tenantServer.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
+		require.NoError(t, err)
+		require.Len(t, listed.Msg.GetSchedules(), 1,
+			"%s was shown a schedule that is not its own", tenant)
+		assert.Equal(t, name, listed.Msg.GetSchedules()[0].GetName())
+	}
 }
 
 // TestCreateRefusesWhatMustNotFireAtThreeInTheMorning covers the fail-closed half.
@@ -568,4 +702,72 @@ func TestABackfillBeyondItsBoundsIsRefusedByTheServer(t *testing.T) {
 	listed, err := fixture.teamA.ListSchedules(t.Context(), connect.NewRequest(&v1.ListSchedulesRequest{}))
 	require.NoError(t, err)
 	assert.Empty(t, listed.Msg.GetSchedules(), "a refused creation left a schedule behind")
+}
+
+// trustedScheduledWorkflow and attackerScheduledWorkflow share a name and a
+// cadence, and differ only in what their one step produces — which is exactly
+// what lets [TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne] tell
+// which specification actually ran.
+func trustedScheduledWorkflow(name string) *v1.Workflow {
+	wf := scheduledWorkflow(name)
+	wf.Steps = []*v1.Node{{Id: "report", Kind: &v1.Node_Value{Value: v1.NewLiteral("trusted")}}}
+	return wf
+}
+
+func attackerScheduledWorkflow(name string) *v1.Workflow {
+	wf := scheduledWorkflow(name)
+	wf.Steps = []*v1.Node{{Id: "report", Kind: &v1.Node_Value{Value: v1.NewLiteral("attacker")}}}
+	return wf
+}
+
+// TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne is CreateSchedule's
+// half of the trust boundary [server.WithTrustedWorkflows] establishes: a
+// caller naming a registered workflow must have their submission replaced by the
+// deployment's own copy, the same as [FlowstateServer.Run] and
+// [FlowstateServer.SignalWithStart] already are. Without it, a caller could
+// register a schedule trigger on their own copy of a trusted, `manual: denied`
+// workflow and have this handler create — and eventually fire — the
+// caller-controlled specification under the trusted name.
+func TestCreateScheduleExecutesTheTrustedCopyNotTheSubmittedOne(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	trusted := trustedScheduledWorkflow("rotate-keys")
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", trusted))
+
+	created, err := flowstate.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
+		// The caller's own copy: same name, same cadence, a step that would
+		// prove the caller's specification ran rather than the deployment's.
+		Workflow: attackerScheduledWorkflow("rotate-keys"),
+		Inputs:   map[string]*v1.Value{"attempts": v1.NewLiteral(int64(1))},
+		Paused:   true,
+	}))
+	require.NoError(t, err)
+	require.Equal(t, "rotate-keys", created.Msg.GetSchedule().GetName())
+
+	_, err = flowstate.TriggerSchedule(t.Context(),
+		connect.NewRequest(&v1.TriggerScheduleRequest{Name: "rotate-keys"}))
+	require.NoError(t, err)
+
+	var workflowID string
+	require.Eventually(t, func() bool {
+		described, err := flowstate.DescribeSchedule(t.Context(),
+			connect.NewRequest(&v1.DescribeScheduleRequest{Name: "rotate-keys"}))
+		if err != nil || len(described.Msg.GetSchedule().GetRecentRuns()) == 0 {
+			return false
+		}
+		workflowID = described.Msg.GetSchedule().GetRecentRuns()[0].GetWorkflowId()
+		return workflowID != ""
+	}, 60*time.Second, 200*time.Millisecond, "the schedule never took an action")
+
+	var out v1.Workflow_StepOutputs
+	require.Eventually(t, func() bool {
+		return temporal.GetWorkflow(t.Context(), workflowID, "").Get(t.Context(), &out) == nil
+	}, 60*time.Second, 200*time.Millisecond, "the run the schedule started never completed")
+
+	assert.Equal(t, "trusted",
+		out.GetStepValues()["report"].GetNamedValues()[v1.ValueOutput].GetLiteral().GetStringValue(),
+		"CreateSchedule executed the caller's submitted copy instead of the deployment's trusted one")
 }

@@ -42,7 +42,7 @@ var sharedValidator = sync.OnceValues(func() (protovalidate.Validator, error) {
 // Validate reports whether m satisfies the validation rules declared for it in
 // the Protobuf schema.
 //
-// The rules live in proto/flowstate/v1/flowstate.proto as protovalidate
+// The rules live in proto/flowstate/v1/*.proto as protovalidate
 // options, spelled (buf.validate.field) and (buf.validate.oneof). The url field
 // of Task.HTTP.Inputs, for example, declares string.uri, and its method field
 // declares a pattern matching the HTTP verbs the task accepts. Those options are

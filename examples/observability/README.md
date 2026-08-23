@@ -21,12 +21,13 @@ exists so the claim can be checked rather than asserted.
 | Tempo | `grafana/tempo:2.9.0` | Traces | <http://127.0.0.1:3200> (API) |
 | Loki | `grafana/loki:3.6.0` | Logs | <http://127.0.0.1:3100> (API) |
 | Prometheus | `prom/prometheus:v3.7.0` | Metrics | <http://127.0.0.1:9090> |
-| OTel Collector | `otel/opentelemetry-collector-contrib:0.140.0` | The fan-in for all three signals | <http://127.0.0.1:4318> (OTLP/HTTP) |
+| OTel Collector | `otel/opentelemetry-collector-contrib:0.140.0` | The vendor-neutral fan-in for all three signals | <http://127.0.0.1:4318> (OTLP/HTTP) |
+| ClickHouse | `clickhouse/clickhouse-server:25.8.3.66` | Columnar logs and traces, beside LGTM | <http://127.0.0.1:8123> (query API) |
 | Temporal | `temporalio/admin-tools:1.29.0-tctl-1.18.6-cli-1.5.0` | `temporal server start-dev` — frontend and UI | <http://127.0.0.1:8233> (UI) |
 | Flowstate server | built from this repo | The control plane `flow run` talks to | <http://127.0.0.1:9233> |
 | Flowstate worker | the same image | Where workflows and steps actually execute | — |
 
-Eight services, seven of them things you did not write. Two decisions are worth
+Nine long-running services, seven of them things you did not write. Two decisions are worth
 knowing before you read the compose file:
 
 **Temporal is `start-dev`, not `auto-setup`.** The `admin-tools` image carries the
@@ -40,6 +41,75 @@ a cluster that is not the one anybody develops against.
 received at `:8889` and Prometheus scrapes it. A scrape target that is briefly
 unreachable is a gap in a graph; a push pipeline that is briefly unreachable is
 backpressure into the process being observed.
+
+## One instrumentation, two storage examples
+
+Flowstate does not contain a ClickHouse, Loki, Tempo, Prometheus, or Grafana
+client. It emits OTLP. The collector fans the same logs to Loki and ClickHouse,
+and the same traces to Tempo and ClickHouse; metrics remain in Prometheus because
+its pull model and PromQL are the clearest operational example. Remove either
+exporter and **nothing in the application changes**. This is the practical
+meaning of avoiding backend lock-in, rather than a claim that every backend has
+identical storage or query semantics.
+
+ClickHouse earns its place here for high-volume, high-cardinality investigation:
+column pruning, compression, and explicit TTLs make cost visible. The demo keeps
+only 24 hours and batches before inserting. A production deployment should use a
+database and user dedicated to telemetry, a non-empty secret delivered outside
+compose, TLS, replicated tables, storage policies, quotas, and separate databases
+or row policies per trust boundary. A `tenant.id` column is useful for filtering;
+it is **not isolation** if a caller can issue arbitrary SQL. Flowstate's strongest
+tenant boundary remains separate Temporal namespaces and worker credentials, and
+the observability store must be partitioned to match that boundary.
+
+In Grafana Explore, choose **ClickHouse** and use its Logs or Traces query builder.
+The contrib collector creates and owns `otel_logs` and `otel_traces`; the fixed
+datasource uid and explicit defaults keep provisioning reproducible. Tempo/Loki
+remain the dashboard defaults so this addition proves portability without
+silently changing the existing walkthrough.
+
+### Signal taxonomy (and the honest profiles boundary)
+
+| Signal | Semantic role | Demo destinations | Cardinality rule |
+| --- | --- | --- | --- |
+| Metrics | Alert and aggregate | Prometheus | Never put run, workflow, trace, span, user, or tenant IDs in metric attributes. |
+| Logs | Explain discrete decisions | Loki + ClickHouse | IDs are structured fields; retention and tenant access are enforced at storage. |
+| Traces | Follow one request/run/step | Tempo + ClickHouse | Run and workflow IDs belong here; sample deliberately at sustained volume. |
+| Profiles | Explain CPU/allocation cost | Not emitted yet | Profiles can contain code and values; do not pretend a continuously profiling SDK is OTLP portability. |
+
+OpenTelemetry Profiles is not treated as production-ready by this example yet.
+Adding a vendor-specific profiling agent just to fill a Grafana panel would
+contradict the backend-neutral claim and expand the data-exfiltration surface.
+When the Go OTel SDK and collector provide a stable profiles pipeline, it should
+join the same receiver with an explicit collection interval, tenant attributes,
+redaction review, and bounded retention. Until then, use a separately governed
+Pyroscope deployment if continuous profiling is worth that operational choice,
+or capture bounded Go profiles during an incident. Empty architecture boxes are
+better than a misleading green demo.
+
+### Docker-backed contract test
+
+The opt-in Go integration test uses the Moby client directly (no shelling out to
+`docker`) to pull and start the pinned ClickHouse image, publish a random
+loopback port, create a production-shaped tenant/event table, and prove both
+trace correlation and tenant-scoped queries. It also proves an unscoped query
+can see both tenants: a regression guard against documenting a filter as a
+security boundary.
+
+It gives that container a password generated for the run, which is what makes it
+reachable at all: the image pins a passwordless `default` user to loopback
+*inside* the container, and the test connects through a published port, so its
+requests arrive from the bridge gateway. A credential is the fix for that; opening
+the passwordless user to every network is not, and the difference matters more
+here than in the compose lab, since a test runs on whatever machine CI gave it.
+
+```console
+$ GOMEMLIMIT=1GiB go test -tags=integration -timeout 120s ./examples/observability
+```
+
+The test skips only when no Docker-compatible daemon is reachable. Image pull is
+bounded by the command timeout; containers are labeled and always removed by
+test cleanup.
 
 ## Insecure by design
 
@@ -96,7 +166,7 @@ you will rebuild this image constantly. It would be dishonest anywhere else. The
 alternative is two flags, and the lab works exactly as well with them:
 
 ```yaml
-    command: ["worker", "--address=temporal:7233", "--deployment-name=flowstate", "--build-id=lab-1", "--verbose"]
+    command: ["worker", "--temporal-address=temporal:7233", "--deployment-name=flowstate", "--build-id=lab-1", "--verbose"]
 ```
 
 Bump `--build-id` whenever you rebuild, and watch runs stay pinned to the version
@@ -194,7 +264,7 @@ Three things about that command line:
 It prints the run's identity before it starts following it:
 
 ```
-started flowstate-workflow-8b1f… ; come back to it with `flow watch flowstate-workflow-8b1f…`
+started workflow observability; come back to it with `flow watch flowstate-workflow-8b1f…`
 ```
 
 Copy that workflow id. It is the string that joins the two worlds.
@@ -275,9 +345,11 @@ the workflow id was the only real key.
 
 The server's and worker's **own** lines carry no trace id, and cannot: a worker
 saying it is starting up is not inside anybody's request. Find those by service
-and time. A `log:` step in `flow run local` carries none either — the local driver
-makes no RPC and opens no span, so there is no trace for the line to belong to,
-though the record is still exported.
+and time. A `log:` step in `flow run local` **does** carry one now: the local
+driver opens the same `flowstate.task/<name>` span the worker does, so a
+rehearsal's lines join a rehearsal's trace the same way. It did not until #523's
+gap 3 closed, which is why an older run of this lab shows local lines with an
+empty TraceID.
 
 The workflow id still works as a key and is still the string that joins Grafana to
 the Temporal UI. It is no longer the only one.
