@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,6 +37,14 @@ type documentedCommand struct {
 	// spelled them as flags or as environment variables.
 	flags      rpcResourceFlags
 	policyPath string
+
+	// insecure reports --insecure-no-auth: the one way a server starts
+	// without a trust policy.
+	insecure bool
+
+	// subcommand reports `flow server <verb>` — `dev`, today — which is a
+	// different command with its own authentication and none of these rules.
+	subcommand bool
 
 	// certificateOnly reports that [certificateOnlyMarker] appeared in the
 	// comment block introducing this invocation.
@@ -107,14 +116,30 @@ type documentedCommand struct {
 // rules above, since an environment variable is a flag's default rather than a
 // different requirement.
 //
-// The four counts are each asserted non-zero: a walk that stopped reading any
+// # A server with no policy has said something too
+//
+// `authVerifier` (cmd/flow/main.go) refuses a server that names neither
+// --auth-policy nor --insecure-no-auth: anonymous access is a flag an operator
+// asks for, never a fallback for a policy that is missing. An earlier version
+// of this walk read "no --auth-policy" as "no requirement", which let eight
+// `flow server &` lines across the plugin and operations walkthroughs stay
+// broken — they refuse to start with "no authentication configured" — while
+// this test reported green over them. Also reported by Codex on
+// picatz/flowstate#1053. A command with no policy must therefore say
+// --insecure-no-auth, and the walkthroughs now do.
+//
+// What remains genuinely unchecked is one thing and it is named:
+// `flow server dev`, a different command with its own authentication, skipped
+// on the subcommand rather than on the absence of a flag.
+//
+// The five counts are each asserted non-zero: a walk that stopped reading any
 // one kind would otherwise pass by finding nothing.
 func TestDocumentedServerInvocationsStart(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join("..", "..")
 
-	var resolved, flagsOnly, certificateOnly, envConfigured int
+	var resolved, flagsOnly, certificateOnly, envConfigured, anonymous int
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -138,11 +163,25 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 		invocations := append(serverCommandsIn(string(data)), envConfiguredServersIn(string(data))...)
 		for _, documented := range invocations {
 			flags, policyPath := documented.flags, documented.policyPath
+
+			if documented.subcommand {
+				// `flow server dev`: a different command, and the only
+				// invocation this walk deliberately says nothing about.
+				continue
+			}
+
 			if policyPath == "" {
-				// --insecure-no-auth, or a server started with no trust
-				// policy at all: resolveRPCResource has nothing to load and
-				// nothing to require. Not a skipped check — there is no
-				// requirement here to check.
+				// authVerifier (cmd/flow/main.go) refuses a server that names
+				// neither, before anything is served: anonymous access is not
+				// a fallback for a missing policy, it is a flag. So "no
+				// policy" is only half an answer, and the other half decides
+				// whether this is a rehearsal or a broken walkthrough.
+				require.Truef(t, documented.insecure,
+					"%s documents a `flow server` with neither --auth-policy nor --insecure-no-auth, which "+
+						"refuses to start: \"no authentication configured\". A local walkthrough says "+
+						"--insecure-no-auth and a deployment names a policy; there is no third answer:"+
+						"\n\t%s\n", path, documented.text)
+				anonymous++
 				continue
 			}
 
@@ -194,7 +233,7 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 				certificateOnly++
 			}
 
-			_, err = resolveRPCResource(flags, authFlags{policyPath: policyPath}, &policy)
+			_, err = resolveRPCResource(flags, authFlags{policyPath: policyPath, insecure: documented.insecure}, &policy)
 			require.NoErrorf(t, err, "%s documents a `flow server` that cannot start:\n\t%s\n", path, documented.text)
 			resolved++
 			if documented.envConfigured {
@@ -216,6 +255,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 	require.NotZero(t, envConfigured, "no documented server invocation was configured through an environment "+
 		"file; a systemd-style recipe spells the same requirement as variables rather than flags, and one that "+
 		"stopped being recognized here would be unstartable with every counter unchanged")
+	require.NotZero(t, anonymous, "no documented server invocation asked for anonymous access; every local "+
+		"walkthrough having grown a trust policy would be news, and a walk that stopped seeing them would look "+
+		"exactly the same from here")
 }
 
 // serverCommandsIn returns every `flow server ...` command line in a Markdown
@@ -276,12 +318,14 @@ func serverCommandsIn(document string) []documentedCommand {
 // above it, to what the check needs.
 func shellCommand(command, preceding string) documentedCommand {
 	text := strings.Join(strings.Fields(command), " ")
-	flags, policyPath := parseServerCommand(text)
+	flags, policyPath, insecure, subcommand := parseServerCommand(text)
 
 	return documentedCommand{
 		text:            text,
 		flags:           flags,
 		policyPath:      policyPath,
+		insecure:        insecure,
+		subcommand:      subcommand,
 		certificateOnly: strings.Contains(strings.ToLower(preceding), certificateOnlyMarker),
 	}
 }
@@ -433,6 +477,30 @@ func parseServiceUnit(body []string) (struct {
 	return parsed, parsed.execStart != ""
 }
 
+// isShellOperator reports whether a field ends the command rather than
+// continuing it.
+func isShellOperator(field string) bool {
+	switch field {
+	case "&", "&&", "|", "||", ";":
+		return true
+	}
+	return false
+}
+
+// isVerb reports whether a field is a cobra subcommand name rather than a flag,
+// a path, a shell operator or an argument.
+func isVerb(field string) bool {
+	if field == "" || field[0] < 'a' || field[0] > 'z' {
+		return false
+	}
+	for _, r := range field {
+		if (r < 'a' || r > 'z') && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 // backtickedPath reads a line that is nothing but one backticked path, with or
 // without a trailing colon — how these documents label the file a fence holds.
 func backtickedPath(line string) (string, bool) {
@@ -450,13 +518,31 @@ func backtickedPath(line string) (string, bool) {
 // parseServerCommand reads the flags resolveRPCResource looks at off one
 // command line, returning the --auth-policy path separately because it is what
 // decides whether there is a policy to load at all.
-func parseServerCommand(command string) (rpcResourceFlags, string) {
+func parseServerCommand(command string) (rpcResourceFlags, string, bool, bool) {
 	var (
 		flags      rpcResourceFlags
 		policyPath string
+		insecure   bool
 	)
 
 	fields := strings.Fields(command)
+
+	// A walkthrough backgrounds its server (`flow server --insecure-no-auth &`)
+	// and sometimes chains onto it, so the command ends at the first shell
+	// operator. Reading "&" as an argument is not a cosmetic slip: it looked
+	// like a subcommand below, which skipped every backgrounded server in the
+	// repository — the exact recipes this round is about.
+	if end := slices.IndexFunc(fields, isShellOperator); end >= 0 {
+		fields = fields[:end]
+	}
+
+	// `flow server dev` is a different command — its own flags, its own
+	// authentication — and nothing here applies to it. A verb, specifically:
+	// anything else in that position is an argument to `flow server` itself.
+	if len(fields) > 2 && isVerb(fields[2]) {
+		return flags, "", false, true
+	}
+
 	for i, field := range fields {
 		next := func() string {
 			if i+1 < len(fields) {
@@ -471,8 +557,10 @@ func parseServerCommand(command string) (rpcResourceFlags, string) {
 			flags.resource = next()
 		case "--allow-issuer-wide-audiences":
 			flags.allowIssuerWideAudiences = true
+		case "--insecure-no-auth":
+			insecure = true
 		}
 	}
 
-	return flags, policyPath
+	return flags, policyPath, insecure, false
 }

@@ -23,9 +23,14 @@ $ mkdir -p ./plugins
 $ go -C plugins/github build -o ../../plugins/flowstate-plugin-github .
 $ flow plugins --plugin-dir ./plugins
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/github/workflow.yaml
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 This makes a real, unauthenticated request to the GitHub API - it will fail
 without internet access, and against a low, shared rate limit if run

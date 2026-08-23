@@ -68,9 +68,14 @@ Then the durable path, which is what production uses:
 
 ```console
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins --auth-policy auth.yaml &
-$ flow server &
+$ flow server --insecure-no-auth &
 $ flow run examples/plugins/greet/workflow.yaml
 ```
+
+`--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
+the server authenticates every caller as anonymous, which is only ever right on
+a machine nobody else can reach. A real one passes `--auth-policy` instead, plus
+`--rpc-resource` when that policy trusts an issuer minting bearer tokens.
 
 ## Why this is not `examples/<name>/workflow.yaml`
 
