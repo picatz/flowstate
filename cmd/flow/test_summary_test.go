@@ -1,12 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
 // The whole-run summary line (#936): a text-mode run ends with one line a
@@ -80,6 +87,62 @@ func TestSummaryCountsCoverageGapsOnlyWhenOptedIn(t *testing.T) {
 	required, err := runFlowTest(t, "--coverage-required", dir)
 	require.Error(t, err)
 	assert.Contains(t, required, "1 coverage gap · 1 file · 1 case · 1 passed")
+}
+
+// TestSummaryCountsPromotedWarningsOnlyUnderTheFlag pins the Codex finding on
+// this PR: `--fail-on-warning` makes a warning decide the exit code while
+// every case still reports passed, and a summary counting only failed cases
+// would read `1 passed` in green immediately above a non-zero exit — the one
+// lie the line exists to prevent. Under the flag the count leads; without it,
+// nothing about warnings joins the line, because then they decide nothing.
+func TestSummaryCountsPromotedWarningsOnlyUnderTheFlag(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(scheduleStraightWorkflow), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`edition: v2026.3
+tests:
+  - name: carries an idle stub
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+      - task: http
+        returns: {}
+    expect:
+      ran: [only]
+`), 0o600))
+
+	promoted, err := runFlowTest(t, "--fail-on-warning", dir)
+	require.Error(t, err, "a promoted warning must fail the command")
+	assert.Contains(t, promoted, "1 case failed on warnings · 1 file · 1 case · 1 passed")
+
+	plain, err := runFlowTest(t, dir)
+	require.NoError(t, err)
+	assert.NotContains(t, plain, "failed on warnings",
+		"without the flag a warning decides nothing, so the line must not count it")
+}
+
+// TestSummaryCountsAScheduleDivergence: the other exit-code reason the
+// summary used to omit. Rendered directly — a real divergence needs a
+// schedule-sensitive workflow this fixture set deliberately does not have —
+// against a result whose every case passed, the exact shape the finding
+// names.
+func TestSummaryCountsAScheduleDivergence(t *testing.T) {
+	results := []testFileResult{{
+		report: &v1.TestReport{
+			File:  "suite.test.yaml",
+			Cases: []*v1.TestCase{{Name: "a case", Passed: true}},
+		},
+		schedules: &flowtest.ScheduleReport{
+			Schedules:  4,
+			Cases:      1,
+			Decisions:  2,
+			Divergence: &flowtest.ScheduleDivergence{Case: "a case", Seed: 7},
+		},
+	}}
+
+	var out bytes.Buffer
+	printSummary(&out, ui.Plain(io.Discard, io.Discard).Theme, results, false, false, false, time.Second)
+	assert.Contains(t, out.String(), "1 schedule divergence · 1 file · 1 case · 1 passed")
 }
 
 // TestSummaryIsAbsentFromMachineStdout: `-o json` stdout is the document and

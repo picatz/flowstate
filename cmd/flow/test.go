@@ -302,7 +302,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			return err
 		}
 	} else {
-		printSummary(surface.Out, surface.Theme, results, coverageRequired, runPattern != "", time.Since(started))
+		printSummary(surface.Out, surface.Theme, results, coverageRequired, failOnWarning, runPattern != "", time.Since(started))
 	}
 
 	if anyFailed {
@@ -315,17 +315,22 @@ func runTest(cmd *cobra.Command, paths []string) error {
 // many files and cases ran, how many passed, and the wall time — so a CI log
 // ends with a total rather than mid-list, and a person reads one line instead
 // of scanning backward for red. What decides the exit code leads the line and
-// renders in the danger style: failed cases, refused files, and — only when
-// `--coverage-required` opted them in — coverage gaps and stale records.
+// renders in the danger style — every reason [testFileResult.failed] can
+// answer true, because a summary reading green above a non-zero exit would be
+// the one lie this line exists to prevent: failed cases, refused files,
+// warnings where `--fail-on-warning` promoted them, schedule divergences, and
+// — only when `--coverage-required` opted them in — coverage gaps and stale
+// records. The two flag-gated counts appear only under their flag, on the
+// package doc's rule: the color, and the count, are the claim.
 //
 // Text mode only: the machine formats carry every one of these counts
-// structurally in `cases[]` and `coverage[]`, so stdout's JSON is untouched.
-// Wall time is wall-clock, the "is the suite still fast" number, never a
-// reading of virtual time — [v1.TestCase]'s own duration field states that
-// distinction.
-func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, coverageRequired, filterActive bool, elapsed time.Duration) {
+// structurally in `cases[]`, `coverage[]` and `schedules`, so stdout's JSON
+// is untouched. Wall time is wall-clock, the "is the suite still fast"
+// number, never a reading of virtual time — [v1.TestCase]'s own duration
+// field states that distinction.
+func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, coverageRequired, failOnWarning, filterActive bool, elapsed time.Duration) {
 	files, cases, passed, failed, refused := len(results), 0, 0, 0, 0
-	gaps, stale, filtered := 0, 0, 0
+	gaps, stale, filtered, warned, diverged := 0, 0, 0, 0, 0
 	for _, r := range results {
 		if r.report.GetRefused() != "" {
 			refused++
@@ -337,8 +342,14 @@ func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, cover
 			} else {
 				failed++
 			}
+			if failOnWarning && len(c.GetWarnings()) > 0 {
+				warned++
+			}
 		}
 		filtered += r.filtered
+		if r.schedules != nil && r.schedules.Divergence != nil {
+			diverged++
+		}
 		if coverageRequired {
 			for _, cov := range r.coverage {
 				gaps += len(cov.Gaps()) + len(cov.ArmGaps())
@@ -353,6 +364,17 @@ func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, cover
 	}
 	if refused > 0 {
 		parts = append(parts, theme.Danger.Render(count(refused, "file refused", "files refused")))
+	}
+	// Counted only under `--fail-on-warning`: without it a warning does not
+	// decide the exit code, and a danger-styled count of it here would be the
+	// inverse of the lie this line prevents. The cases themselves still say
+	// `passed` — a promoted warning fails the run, not the case's
+	// expectations, which is exactly what this wording draws apart.
+	if warned > 0 {
+		parts = append(parts, theme.Danger.Render(count(warned, "case failed on warnings", "cases failed on warnings")))
+	}
+	if diverged > 0 {
+		parts = append(parts, theme.Danger.Render(count(diverged, "schedule divergence", "schedule divergences")))
 	}
 	if gaps > 0 {
 		parts = append(parts, theme.Danger.Render(count(gaps, "coverage gap", "coverage gaps")))
