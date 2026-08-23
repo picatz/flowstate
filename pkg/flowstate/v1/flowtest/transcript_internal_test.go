@@ -1,6 +1,7 @@
 package flowtest
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,45 @@ func TestByteBudgetLatchesLikeTheEventBound(t *testing.T) {
 	r.StepFinished("small", &v1.Node_Outputs{}, nil, false)
 	require.Equal(t, before, len(r.events),
 		"nothing records past a tripped bound; a hole mid-account would belie the truncation line")
+}
+
+// TestFailureTextCountsAgainstTheByteBudget pins round nine's first P1: a
+// tolerated failure's message is a string the event retains just as surely
+// as cloned outputs, and a budget counting only protobuf bytes let repeated
+// large messages hold gigabytes under an 8 MiB label.
+func TestFailureTextCountsAgainstTheByteBudget(t *testing.T) {
+	t.Parallel()
+
+	r := newRunRecorder(v1.NewVirtualClock(epoch))
+	huge := errors.New(strings.Repeat("e", 1<<20))
+	for i := 0; i < 32; i++ {
+		r.StepFinished("shrugged", nil, huge, true)
+	}
+
+	require.True(t, r.bytesFull, "retained failure strings must trip the same budget outputs do")
+	require.Less(t, len(r.events), 32)
+}
+
+// TestShortSensitiveKeyRedactsInKeyPosition pins round nine's second P1: a
+// sensitive struct key below the substring floor ("zq") still redacts where
+// it is rendered as a key, by exact match — the floor exists to stop global
+// shredding, not to exempt key positions.
+func TestShortSensitiveKeyRedactsInKeyPosition(t *testing.T) {
+	t.Parallel()
+
+	sensitive := sensitiveInputs{values: []any{"zq"}}
+	text, _ := stepOutcomeText(transcriptEvent{
+		kind: eventStepFinished,
+		step: "use",
+		outputs: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+			"zq":   v1.NewLiteral("ok"),
+			"kept": v1.NewLiteral("visible"),
+		}},
+	}, sensitive, map[string]switchFact{})
+
+	require.NotContains(t, text, "zq")
+	require.Contains(t, text, `[redacted]: "ok"`)
+	require.Contains(t, text, `kept: "visible"`)
 }
 
 // TestOverlappingSensitiveSubstringsRedactWhole pins round eight's P1: with

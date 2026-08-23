@@ -240,8 +240,19 @@ func (r *runRecorder) recordLocked(event transcriptEvent) {
 		r.eventsFull = true
 		return
 	}
+	// Every retained allocation counts, not only the protobuf outputs: a
+	// tolerated failure's message and a scripted payload are strings this
+	// event holds just as surely, and a budget that counts one kind of byte
+	// while another accumulates freely is the bounded-in-name-only shape the
+	// budget exists to refuse (Codex, #1052).
+	size := len(event.failure)
 	if event.outputs != nil {
-		size := proto.Size(event.outputs)
+		size += proto.Size(event.outputs)
+	}
+	if event.payload != nil {
+		size += len(fmt.Sprint(event.payload))
+	}
+	if size > 0 {
 		if r.outputBytes+size > maxTranscriptOutputBytes {
 			r.bytesFull = true
 			return
@@ -503,7 +514,7 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs, switches map[
 
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+redactedValueText(named[name], sensitive))
+		parts = append(parts, redactedKeyText(name, sensitive)+": "+redactedValueText(named[name], sensitive))
 	}
 	return "-> " + capRunes(redactSensitiveSubstrings(strings.Join(parts, ", "), sensitive.substrings), 120), ToneInfo
 }
@@ -565,9 +576,23 @@ func redactedGoValue(payload map[string]any, sensitive sensitiveInputs) string {
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+redactedScalarText(payload[name], sensitive))
+		parts = append(parts, redactedKeyText(name, sensitive)+": "+redactedScalarText(payload[name], sensitive))
 	}
 	return capRunes(redactSensitiveSubstrings("{"+strings.Join(parts, ", ")+"}", sensitive.substrings), 120)
+}
+
+// redactedKeyText redacts a rendered map key that IS a sensitive value, by
+// exact match against the same set [isSensitiveValue] compares — the
+// key-position answer for a sensitive string too short for the substring
+// floor (Codex, #1052): a struct key like `pin` is below the floor because
+// replacing every three-rune occurrence globally would shred the line, but a
+// whole key exactly equal to sensitive material is not a substring question
+// at all.
+func redactedKeyText(name string, sensitive sensitiveInputs) string {
+	if sensitive.withholdAll || isSensitiveValue(name, sensitive.values) {
+		return sensitiveMarker
+	}
+	return name
 }
 
 // redactedScalarText is the one spelling of "a value, safe to print": the
