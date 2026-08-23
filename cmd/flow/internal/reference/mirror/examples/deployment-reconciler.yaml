@@ -121,6 +121,14 @@ steps:
       init:
         desired: ${inputs.desired_replicas}
         passes: 0
+        # A wake counter beside the reconcile counter, because the two answer
+        # different questions and only `passes` drives the budget: this one
+        # advances on every trip, including the ones whose reading was unusable.
+        # It is what a body step can key on to tell "the first wake" from "the
+        # first reconcile" - the example's own test file does exactly that - and
+        # the run reports the same quantity from `results` (see `wakeups` in
+        # `outputs:`, which counts the stopping iteration this cannot).
+        wakeups: 0
       # The desired count carried forward is whatever this pass settled on:
       # `next_desired` below, which is the validated signal value on a pass that
       # received one and the unchanged current value on every other pass. A pass
@@ -129,7 +137,10 @@ steps:
       # may have moved even when the desired side did not.
       update:
         desired: ${steps.next_desired.value}
-        passes: ${goal.passes + 1}
+        # Counts reconcile passes, so an unreadable one does not advance it - the
+        # same rule `until:` applies to the budget.
+        passes: '${steps.readable.value ? (goal.passes + 1) : goal.passes}'
+        wakeups: ${goal.wakeups + 1}
       # What ends a reconciler is being told the workload is retired — or, for a
       # deliberately finite watch, spending the `max_passes` budget its caller
       # asked for. Converging is not a stopping condition either way: a workload
@@ -141,7 +152,20 @@ steps:
       # evaluated), so `+ 1` is what this pass makes — a `max_passes` of 1 stops
       # after one reconcile. The budget arm is skipped entirely when `max_passes`
       # is 0, which is the watch-until-retired default.
-      until: ${steps.retiring.value || inputs.max_passes > 0 && goal.passes + 1 >= inputs.max_passes}
+      #
+      # A pass that could not read the world does not count against the budget,
+      # and that is the honest reading of what `max_passes` promises: N
+      # *reconcile* passes, not N attempts at one. Without the `readable` term a
+      # `max_passes: 1` run whose single observation came back garbled would end
+      # SUCCESSFULLY having reconciled nothing - a scheduled reconcile reporting
+      # success on an answer it never understood, which is worse than either
+      # failing or looking again. Watch-until-retired mode is unaffected; it was
+      # going to keep waiting anyway.
+      #
+      # `retiring` implies `readable` (see that step), so both arms require a
+      # reading that made sense, and a run that finishes at all has made at least
+      # one.
+      until: ${steps.retiring.value || inputs.max_passes > 0 && steps.readable.value && goal.passes + 1 >= inputs.max_passes}
       # A ceiling on the total passes one run may make, and it is cumulative for
       # the life of the run rather than per Continue-As-New segment: the engine
       # carries the iteration index across every segment seam (engine's runLoop
@@ -348,7 +372,7 @@ steps:
             retry_on_unknown_outcome: true
             url: https://control-plane.internal.example.com/workloads/scale
   - id: observations
-    value: ${steps.reconcile.results.map(p, p.observed.replicas)}
+    value: ${steps.reconcile.results.filter(p, p.readable.value).map(p, p.observed.replicas)}
 
   # How many reconcile passes actually observed, named once for the two outputs
   # that ask.
@@ -358,6 +382,13 @@ outputs:
   passes:
     value: ${steps.pass_count.value}
     description: how many reconcile passes ran; every pass reads the control plane, including the one that finds the workload retired
+  wakeups:
+    # From `results`, not from the carried counter, and the difference is a real
+    # property of the language rather than a preference: `update:` is skipped on
+    # the iteration where `until:` holds, so `goal.wakeups` never counts the pass
+    # that ended the run. One entry per iteration is what `results` already is.
+    value: ${steps.reconcile.results.size()}
+    description: how many times this run woke - a spec change or a resync interval - which exceeds `passes` exactly when the control plane answered something this reconciler could not read
   passes_that_acted:
     value: ${steps.reconcile.results.filter(p, has(p.converge)).size()}
     description: how many of those passes found drift and wrote to the control plane — the rest observed a converged workload and did nothing, which is the state a healthy reconciler spends most of its life in

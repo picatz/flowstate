@@ -70,6 +70,7 @@ tests:
       ran: [opened, reconcile, observations, pass_count]
       outputs:
         passes: 3
+        wakeups: 3
         # Exactly one wrote. The second observed a converged workload and the
         # third found it retired.
         passes_that_acted: 1
@@ -116,6 +117,7 @@ tests:
       ran: [opened, reconcile, observations, pass_count]
       outputs:
         passes: 3
+        wakeups: 3
         passes_that_acted: 1
         final_desired_replicas: 7
         final_observed_replicas: 7
@@ -147,6 +149,7 @@ tests:
       skipped: [converge]
       outputs:
         passes: 2
+        wakeups: 2
         passes_that_acted: 0
         final_desired_replicas: 3
         final_observed_replicas: 3
@@ -182,6 +185,7 @@ tests:
       skipped: [converge]
       outputs:
         passes: 1
+        wakeups: 1
         passes_that_acted: 0
         # The queued spec change was consumed but never adopted: a retiring pass
         # does not take a new desired count.
@@ -220,6 +224,7 @@ tests:
       skipped: [converge]
       outputs:
         passes: 2
+        wakeups: 2
         passes_that_acted: 0
         final_desired_replicas: 5
         final_observed_replicas: 5
@@ -256,6 +261,7 @@ tests:
       skipped: [converge]
       outputs:
         passes: 2
+        wakeups: 2
         passes_that_acted: 0
         final_desired_replicas: 5
         final_observed_replicas: 5
@@ -280,6 +286,7 @@ tests:
       ran: [opened, reconcile, observations, pass_count]
       outputs:
         passes: 1
+        wakeups: 1
         passes_that_acted: 1
         final_desired_replicas: 5
         final_observed_replicas: 2
@@ -333,6 +340,7 @@ tests:
       ran: [opened, reconcile, observations, pass_count]
       outputs:
         passes: 3
+        wakeups: 3
         passes_that_acted: 1
         # Adopted, and carried as an int rather than as 7.0.
         final_desired_replicas: 7
@@ -369,6 +377,7 @@ tests:
       skipped: [converge]
       outputs:
         passes: 2
+        wakeups: 2
         passes_that_acted: 0
         # Unchanged: the fraction was refused, so the reconciler is still
         # responsible for 5.
@@ -407,6 +416,7 @@ tests:
       skipped: [converge]
       outputs:
         passes: 2
+        wakeups: 2
         passes_that_acted: 0
         final_desired_replicas: 5
         final_observed_replicas: 5
@@ -421,8 +431,11 @@ tests:
       # must not end here: a garbled answer is a reason to look again, not a
       # reason to stop watching. So this pass decides nothing - it does not
       # retire and it does not write - and the next resync reads again.
+      # Keyed on `wakeups`, not `passes`: an unreadable pass deliberately does
+      # not advance the reconcile counter, so a stub keyed on `passes == 0` would
+      # answer unreadably forever.
       - step: observed
-        where: goal.passes == 0
+        where: goal.wakeups == 0
         returns:
           replicas: 2
           retired: "false"
@@ -436,8 +449,48 @@ tests:
       ran: [opened, reconcile, observations, pass_count]
       skipped: [converge]
       outputs:
-        # Two passes: the unreadable one, then the one that read a retirement.
-        passes: 2
+        # One reconcile pass, two wakes: the unreadable trip does not count as a
+        # reconcile, which is what keeps a bounded watch honest - a
+        # `max_passes: 1` run cannot report success having never understood an
+        # answer.
+        passes: 1
+        wakeups: 2
         passes_that_acted: 0
         final_desired_replicas: 5
         final_observed_replicas: 5
+
+  - name: a bounded one-pass run does not spend its budget on a reading it could not use
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # The case that decides what `max_passes` promises. The first wake reads a
+    # control plane answering nonsense; if that spent the budget, this run would
+    # finish SUCCESSFULLY having reconciled nothing - a scheduled reconcile
+    # reporting success on an answer it never understood. Instead the unreadable
+    # trip does not count, the next wake reads properly, corrects the drift, and
+    # *that* pass ends the run.
+    stubs:
+      - step: observed
+        where: goal.wakeups == 0
+        returns:
+          replicas: 2
+          retired: "not-a-bool"
+      - step: observed
+        returns:
+          replicas: 2
+          retired: false
+      - step: converge
+        where: inputs.json.replicas == 5
+        returns:
+          status: 200
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # Exactly the one reconcile the caller asked for, out of two wakes.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 2
