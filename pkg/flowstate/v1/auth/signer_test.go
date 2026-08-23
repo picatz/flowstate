@@ -7,7 +7,10 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
@@ -399,5 +402,155 @@ func TestProviderSigningKeyDoesNotLeakThroughContainingStructs(t *testing.T) {
 			require.NotContains(t, rendered, fmt.Sprintf("%v", raw),
 				"%s leaked the provider's private scalar:\n%s", name, rendered)
 		})
+	}
+}
+
+// oversizedSigner answers correctly until the call after padAfter, and then
+// returns a token of whatever size it likes: a provider that regressed, or was
+// compromised, some time after the deployment loaded.
+type oversizedSigner struct {
+	*fakeProvider
+
+	padAfter int
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *oversizedSigner) Sign(ctx context.Context, claims jwt.ClaimsSet) (string, error) {
+	raw, err := p.fakeProvider.Sign(ctx, claims)
+	if err != nil {
+		return "", err
+	}
+
+	p.mu.Lock()
+	p.calls++
+	pad := p.calls > p.padAfter
+	p.mu.Unlock()
+
+	if pad {
+		raw += strings.Repeat("A", 64<<10)
+	}
+
+	return raw, nil
+}
+
+// TestProviderSigningKeyBoundsEverySignature is a bound-*placement* test rather
+// than a bound test.
+//
+// The size of a signer's answer is the far side's choice on every call, so a
+// check written into the start-up proof bounds a provider that was well behaved
+// when the configuration loaded and nothing afterwards — and afterwards is
+// where a compromise or a regression lives. Both ends are asserted here for
+// that reason: the first call, and a later one.
+func TestProviderSigningKeyBoundsEverySignature(t *testing.T) {
+	t.Run("at construction", func(t *testing.T) {
+		provider, public := newFakeProvider(t, "kms-oversized-at-startup")
+
+		_, err := auth.NewProviderSigningKey(t.Context(), &oversizedSigner{fakeProvider: provider}, public)
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy,
+			"a provider that cannot be configured is a start-up error")
+		require.ErrorIs(t, err, auth.ErrMalformedToken,
+			"and the reason it cannot be configured has to survive into the error")
+	})
+
+	t.Run("at a later mint", func(t *testing.T) {
+		provider, public := newFakeProvider(t, "kms-oversized-later")
+
+		// One good signature — the proof of possession — and then not.
+		key, err := auth.NewProviderSigningKey(t.Context(),
+			&oversizedSigner{fakeProvider: provider, padAfter: 1}, public)
+		require.NoError(t, err)
+
+		issuer, err := auth.NewIssuer("https://flowstate.example", key,
+			auth.WithDeclaredClaims("repository"))
+		require.NoError(t, err)
+
+		_, err = issuer.Mint(t.Context(), testIdentity(), testStepRef(), "https://as.example.com")
+		require.ErrorIs(t, err, auth.ErrMalformedToken,
+			"a bound that only covers the start-up proof is one a provider passes once and then ignores")
+	})
+}
+
+// concurrentSigner refuses to answer until several of its calls are in flight
+// at once, which is a claim about the caller rather than about itself: if
+// anything between [auth.Issuer.Mint] and here serialized signatures, the
+// second call would wait for the first and no call would ever be released.
+type concurrentSigner struct {
+	*fakeProvider
+
+	want int
+
+	mu       sync.Mutex
+	armed    bool
+	inFlight int
+	together chan struct{}
+}
+
+func (p *concurrentSigner) arm() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.armed = true
+}
+
+func (p *concurrentSigner) Sign(ctx context.Context, claims jwt.ClaimsSet) (string, error) {
+	p.mu.Lock()
+	armed := p.armed
+	if armed {
+		p.inFlight++
+		if p.inFlight == p.want {
+			close(p.together)
+		}
+	}
+	p.mu.Unlock()
+
+	if armed {
+		select {
+		case <-p.together:
+		case <-time.After(30 * time.Second):
+			return "", fmt.Errorf("only saw fewer than %d signatures in flight at once", p.want)
+		}
+	}
+
+	return p.fakeProvider.Sign(ctx, claims)
+}
+
+// TestProviderSigningKeyIsCalledConcurrently pins the contract [auth.Signer]'s
+// doc comment states: mints run in parallel, so an implementation must be safe
+// for concurrent use.
+//
+// It is worth asserting rather than asserting in prose alone. Mint holds the
+// issuer's *read* lock across the signature, which is what allows the
+// concurrency — a later change to a write lock, or any serialization added
+// between Mint and the signer, would be invisible to every other test in this
+// package and would quietly turn one KMS round trip into the whole process's
+// rate limit. Here it deadlocks this test instead.
+func TestProviderSigningKeyIsCalledConcurrently(t *testing.T) {
+	const mints = 4
+
+	base, public := newFakeProvider(t, "kms-concurrent")
+	provider := &concurrentSigner{fakeProvider: base, want: mints, together: make(chan struct{})}
+
+	// Armed only after the start-up proof, which is one call on its own and
+	// would otherwise wait for companions that do not exist yet.
+	key, err := auth.NewProviderSigningKey(t.Context(), provider, public)
+	require.NoError(t, err)
+	provider.arm()
+
+	issuer, err := auth.NewIssuer("https://flowstate.example", key,
+		auth.WithDeclaredClaims("repository"))
+	require.NoError(t, err)
+
+	errs := make(chan error, mints)
+	for range mints {
+		go func() {
+			_, err := issuer.Mint(context.Background(), testIdentity(), testStepRef(), "https://as.example.com")
+			errs <- err
+		}()
+	}
+
+	for range mints {
+		require.NoError(t, <-errs,
+			"an issuer mints concurrently, so its signer is called concurrently; nothing here may serialize that")
 	}
 }
