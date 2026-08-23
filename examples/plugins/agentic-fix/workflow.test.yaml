@@ -236,7 +236,6 @@ tests:
     expect:
       ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
       # `apply` and `verify` never happen: the attempt died before either.
-      skipped: [apply, verify]
       outputs:
         # Zero, and truthfully so: no attempt finished, so the loop has no
         # account of any to publish. A file that read `results` unguarded would
@@ -333,8 +332,56 @@ tests:
       ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
       # Nothing was written and nothing was verified: the attempt ended at the
       # truncation check, spent the budget, and asked a person.
-      skipped: [apply, verify]
       outputs:
+        attempts: 1
+        fixed: false
+        fix_ref: ""
+        handed_off: true
+        taken_over: true
+
+  - name: a CI answering unintelligibly reads as no pass, not as the end of the run
+    workflow: ./workflow.yaml
+    secrets:
+      env:OPENAI_API_KEY: not-a-real-key
+      git:token: not-a-real-token
+    signals:
+      - name: human-review
+        at: 1h
+        payload:
+          taken_over: true
+    stubs:
+      - step: tip
+        returns:
+          refs:
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
+            - name: refs/heads/agent/fix
+              sha: sha-0
+      - task: codex.exec
+        returns:
+          patch: "--- a/x\n+++ b/x\n"
+          final_message: a guess
+          output_tokens: 640
+          truncated: false
+      - task: git.commit_push
+        returns:
+          sha: '${"sha-%d".format([prior.n + 1])}'
+      # A `response:` stub rather than `returns:`, so the callee's real
+      # `parse_json:` and `outputs:` shaping run against this body (#925). A 200
+      # carrying a proxy's error page is rejected by `parse_json` before any
+      # guarded expression is evaluated, and permanently - so without the
+      # tolerated read in run-tests.yaml this would end the run on the very first
+      # call, before the loop or the gate.
+      - task: http
+        response:
+          status_code: 200
+          body: "<html>502 Bad Gateway</html>"
+    expect:
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      outputs:
+        # The unintelligible answer read as "not passing", so the agent got its
+        # attempt and the budget ran out into the human handoff - the ordinary
+        # unfixed path, reached without the run ever failing outright.
         attempts: 1
         fixed: false
         fix_ref: ""

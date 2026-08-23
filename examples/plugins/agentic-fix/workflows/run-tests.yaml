@@ -22,6 +22,16 @@ steps:
   - id: suite
     description: Ask CI for a run at this commit and wait for its verdict.
     timeout: 15m
+    # A CI that answers unintelligibly has not said the suite passed, and that is
+    # all this workflow needs to conclude. `parse_json:` rejects a 2xx carrying a
+    # truncated body or a proxy's HTML error page *before* any `outputs:`
+    # expression runs, and permanently, so neither the shaping below nor a retry
+    # can catch it - without this line the very first call would end the caller's
+    # run outright, before its repair loop or its human handoff could happen.
+    # Tolerated, the step produces no outputs, the guards below read that absence
+    # as `passed: false`, and the caller does what it does with any failing
+    # suite.
+    continue_on_error: true
     http:
       json: '${{"ref": inputs.ref}}'
       method: POST

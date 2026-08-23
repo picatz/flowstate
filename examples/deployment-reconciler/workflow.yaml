@@ -211,6 +211,17 @@ steps:
             interval: 1s
             backoff: 2.0
             max_interval: 10s
+          # A read that fails is an unreadable pass, not the end of the
+          # reconciler - and this is the layer *below* every guard on the
+          # outputs. `parse_json:` rejects a 2xx carrying a truncated body or a
+          # proxy's HTML error page before any `outputs:` expression runs, and it
+          # does so as InvalidInput, which is permanent: the retry below cannot
+          # help, and without this line the run ends there. Tolerating the
+          # failure routes it where a garbled-but-parseable answer already goes -
+          # `readable` says no, the pass decides nothing, and the next resync
+          # reads again. A control plane broken for good still ends the run, at
+          # the loop's own ceiling, which is the bound that exists for that.
+          continue_on_error: true
           http:
             # No `expect:` on this read, deliberately, and the reason is a real
             # constraint rather than an oversight. An `expect:` expression
@@ -246,7 +257,11 @@ steps:
             query: '${{"name": inputs.target}}'
             url: https://control-plane.internal.example.com/workloads/status
 
-        # Whether this pass got an answer it can actually use. An HTTP response is
+        # Whether this pass got an answer it can actually use - including whether
+        # it got one at all. A tolerated failure on the read above (an
+        # unparseable body, a transport error that outlived its retries) leaves
+        # that step with no outputs, so presence comes before every other check
+        # here. An HTTP response is
         # untyped, and every step below treats `replicas` as a count and
         # `retired` as a boolean; a control plane answering `{"retired": "false"}`
         # or `{"replicas": 2.5}` would otherwise reach a boolean operator or a
@@ -264,8 +279,9 @@ steps:
         # reason to end a run whose whole claim is that it keeps watching.
         - id: readable
           value: |-
-            ${(type(steps.observed.replicas) == type(0) || type(steps.observed.replicas) == type(0.0) &&
-            steps.observed.replicas >= 0.0 && steps.observed.replicas <= 100000.0 && steps.observed.replicas == double(int(steps.observed.replicas))) &&
+            ${has(steps.observed.replicas) && has(steps.observed.retired) && (type(steps.observed.replicas) == type(0) ||
+            type(steps.observed.replicas) == type(0.0) && steps.observed.replicas >= 0.0 &&
+            steps.observed.replicas <= 100000.0 && steps.observed.replicas == double(int(steps.observed.replicas))) &&
             steps.observed.replicas >= 0 && type(steps.observed.retired) == type(true)}
 
         # Retirement is a fact about the workload, not about the event that woke

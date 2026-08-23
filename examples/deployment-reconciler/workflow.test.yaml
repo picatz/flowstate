@@ -146,7 +146,6 @@ tests:
           accepted: true
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         passes: 2
         wakeups: 2
@@ -182,7 +181,6 @@ tests:
       # workload.
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         passes: 1
         wakeups: 1
@@ -221,7 +219,6 @@ tests:
           accepted: true
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         passes: 2
         wakeups: 2
@@ -258,7 +255,6 @@ tests:
           accepted: true
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         passes: 2
         wakeups: 2
@@ -374,7 +370,6 @@ tests:
           accepted: true
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         passes: 2
         wakeups: 2
@@ -413,7 +408,6 @@ tests:
           accepted: true
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         passes: 2
         wakeups: 2
@@ -447,7 +441,6 @@ tests:
       # to it, so reaching the scale request fails the case loudly.
     expect:
       ran: [opened, reconcile, observations, pass_count]
-      skipped: [converge]
       outputs:
         # One reconcile pass, two wakes: the unreadable trip does not count as a
         # reconcile, which is what keeps a bounded watch honest - a
@@ -494,3 +487,77 @@ tests:
         passes_that_acted: 1
         final_desired_replicas: 5
         final_observed_replicas: 2
+
+  - name: a 2xx carrying unparseable json is an unreadable pass, not the end of the run
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # A `response:` stub rather than `returns:`, so the http task's own
+    # `parse_json:` and `outputs:` shaping run for real against this body (#925).
+    # That is the only way to reach this failure: it happens *below* every guard
+    # the outputs carry - `parse_json` rejects the body before an `outputs:`
+    # expression is evaluated at all, and does so permanently, so the step's own
+    # retries cannot help either.
+    stubs:
+      # A proxy's error page with a 200 on it, which is the shape that bites in
+      # production. Tolerated, so it becomes an unreadable pass.
+      - step: observed
+        where: goal.wakeups == 0
+        response:
+          status_code: 200
+          body: "<html>gateway timeout</html>"
+      # The control plane recovers, and this pass is the one that reconciles.
+      - step: observed
+        response:
+          status_code: 200
+          body:
+            replicas: 2
+            retired: false
+      - step: converge
+        where: inputs.json.replicas == 5
+        response:
+          status_code: 204
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # The unparseable trip did not spend the budget, and did not write.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 2
+
+  - name: a body that is not an object at all is an unreadable pass
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # The root-guard case, which used to be unreachable: a stub supplied shaped
+    # outputs, so the `outputs:` expressions never ran. With `response:` (#925)
+    # they run for real, and this is what `[]` does to
+    # `type(response.json) == type({})` - answers false rather than erroring, so
+    # the substituted values make the pass unreadable instead of failing it.
+    stubs:
+      - step: observed
+        where: goal.wakeups == 0
+        response:
+          status_code: 200
+          body: []
+      - step: observed
+        response:
+          status_code: 200
+          body:
+            replicas: 5
+            retired: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        # One readable pass - the retirement - and the `[]` trip spent nothing.
+        passes: 1
+        wakeups: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
