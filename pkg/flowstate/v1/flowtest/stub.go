@@ -540,50 +540,169 @@ type stubVerdict struct {
 // (CLAUDE.md, "bound anything that consumes untrusted input").
 const maxUnmatchedStubValueLen = 200
 
+// sensitiveInputs is the redaction set one unmatched-stub diagnostic is
+// rendered against: what [unmatchedStubError] must not print, plus whether
+// that set could be built at all.
+//
+// The two lists are deliberately different sizes. values is compared with
+// [reflect.DeepEqual] against every node of the invocation, so it holds each
+// sensitive input's whole value *and* every value nested within it.
+// substrings is the textual backstop [redactSensitiveSubstrings] applies to
+// the rendered line, which is a far blunter instrument — a string replaced
+// everywhere it occurs — so it holds a narrower set; the walk in
+// [sensitiveNativeValues] decides which strings earn a place in it.
+//
+// withholdAll is the fail-closed answer: when the set could not be built
+// completely, no input can be shown to be safe, so every input on the
+// invocation is withheld. [sensitiveNativeValues] documents the two ways that
+// happens.
+type sensitiveInputs struct {
+	values      []any
+	substrings  []string
+	withholdAll bool
+}
+
+// minSensitiveSubstringRunes is the shortest *descendant* string
+// [redactSensitiveSubstrings] will replace textually. A one-rune leaf is not
+// a redaction, it is a shredder: replacing every `a` in the rendered line
+// with the marker destroys the diagnostic while protecting nothing
+// [isSensitiveValue] has not already caught by comparing that leaf on its
+// own. A declared input's own value is exempt from this floor — it is the
+// thing `sensitive:` names, and `"Bearer " + inputs.token` is precisely the
+// shape the backstop exists for.
+const minSensitiveSubstringRunes = 2
+
+// maxSensitiveDescendants bounds how many values one invocation's redaction
+// set may hold, counting both what the walk below has collected and what it
+// still has queued. The queue is counted because it is memory the same input
+// controls: bounding only the result would leave a wide, shallow value free
+// to push millions of entries onto the stack on the way to a bounded answer,
+// which is the "bounding one resource does not bound another" failure
+// CLAUDE.md names.
+//
+// A workflow input may legitimately carry maxListElements = 10,000 elements
+// (pkg/flowstate/v1/constraints.go), and every entry in the set costs one
+// [reflect.DeepEqual] per node of the invocation in [redactSensitiveTree]
+// plus, for a string, a full [strings.ReplaceAll] pass over the rendered
+// value. 1024 sits far above any real credential — a token, a key pair, a
+// small object of headers — and far below where building a *failure* message
+// costs more than the run it is reporting on.
+//
+// Blowing the bound is not a reason to redact less: [sensitiveNativeValues]
+// answers withholdAll, so an input too large to enumerate withholds the whole
+// invocation rather than printing the part of it the walk never reached. That
+// is one mechanism serving two of CLAUDE.md's rules at once — bound the
+// resource the attacker controls, and deny when you cannot decide.
+const maxSensitiveDescendants = 1024
+
 // sensitiveNativeValues returns, as native Go values comparable with
-// [reflect.DeepEqual], the run's own values and every value nested within each
-// workflow input sensitiveNames marks: the values [unmatchedStubError] must not print even
-// when they reach a task's inputs under a different name, since `sensitive:`
-// is a property of the value's origin, not of whatever a step chose to call
-// it. Returns nil when there is nothing to redact, which is the common case
-// and costs one nil map read per invocation.
-func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) []any {
+// [reflect.DeepEqual], every value the run's own `sensitive:` inputs carry:
+// each such input's whole value and every value nested within it. These are
+// what [unmatchedStubError] must not print even when they reach a task's
+// inputs under a different name, since `sensitive:` is a property of the
+// value's origin, not of whatever a step chose to call it.
+//
+// The descendants are in there because a sensitive declaration can itself be
+// structured. A `creds:` input marked `sensitive: true` and read as
+// `${inputs.creds.token}` puts a leaf into the invocation that is not
+// [reflect.DeepEqual] to anything the scope holds, so a set of whole values
+// alone prints that credential in the clear — and [redactSensitiveSubstrings]
+// does not save it either, since the whole value there is a map rather than a
+// string. Returns the zero value when there is nothing to redact, which is
+// the common case and costs one nil map read per invocation.
+//
+// # The cost of matching by value, and why it is still the right rule
+//
+// This matches by *content*, with no provenance: nothing in
+// [invocationNativeInputs] records which declaration a native value came
+// from, so a descendant that happens to equal an unrelated input's value
+// redacts that input too. Sensitive `creds: {enabled: false}` puts `false`
+// into the set, and an ordinary `follow_redirects: false` on the same
+// invocation then renders as `[redacted: follow_redirects]` — hiding one of
+// the discriminating fields this diagnostic exists to show (Codex, #956).
+//
+// That cost is real, and it is chosen for the same reason cmd/flow's
+// redactStepValues chooses the same trade at greater length. The precise
+// alternative is to trace each value back to the declaration it came from,
+// and a trace catches only what it can see: a sensitive leaf that reaches the
+// invocation through a step's `vars:`, through another step's output, or
+// concatenated into a larger string has no path back to `inputs.creds` at
+// all. Such a rule would print those in the clear while implying that it
+// traces sensitive data — a mechanism that looks precise and is not, which is
+// worse than one that is honestly blunt, because a reader trusts the one that
+// looks precise (CLAUDE.md, "fail closed").
+//
+// So the blunt rule stays and its cost is written down here, rather than
+// being rediscovered by whoever next wonders why an unrelated `false` came
+// back redacted.
+func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sensitiveInputs {
 	if len(sensitiveNames) == 0 {
-		return nil
+		return sensitiveInputs{}
 	}
 
-	var values []any
+	// node carries whether a queued value is the declared input itself rather
+	// than something nested inside it, which only the substring floor above
+	// cares about.
+	type node struct {
+		value any
+		root  bool
+	}
+
+	var out sensitiveInputs
 	for name, v := range scope.GetInputs() {
 		if !sensitiveNames[name] {
 			continue
 		}
+
+		// A sensitive input this cannot read is withheld whole, and takes
+		// every other input on the invocation with it. Skipping it — which is
+		// what a `continue` here does — drops it out of the redaction set
+		// silently, so *nothing* about that input is redacted anywhere in the
+		// diagnostic: an allow-on-error in the one function whose job is to
+		// deny (CLAUDE.md, "fail closed": a component that allows when it
+		// cannot decide will eventually allow everything).
 		lit := v.GetLiteral()
 		if lit == nil {
-			continue
+			return sensitiveInputs{withholdAll: true}
 		}
 		native, err := literalToGo(lit)
 		if err != nil {
-			continue
+			return sensitiveInputs{withholdAll: true}
 		}
-		// Sensitivity belongs to the declared input's origin, so it follows every
-		// descendant when a task selects one field or list element from a
-		// structured value. Keep the container too: a task may carry it whole.
-		pending := []any{native}
+
+		// Sensitivity belongs to the declared input's origin, so it follows
+		// every descendant when a task selects one field or one list element
+		// out of a structured value. The container is kept as well: a task may
+		// carry it whole.
+		pending := []node{{value: native, root: true}}
 		for len(pending) > 0 {
-			value := pending[len(pending)-1]
+			if len(out.values)+len(pending) > maxSensitiveDescendants {
+				return sensitiveInputs{withholdAll: true}
+			}
+
+			n := pending[len(pending)-1]
 			pending = pending[:len(pending)-1]
-			values = append(values, value)
-			switch value := value.(type) {
+			out.values = append(out.values, n.value)
+
+			switch value := n.value.(type) {
+			case string:
+				// "" is excluded whatever its origin: replacing it inserts
+				// the marker between every rune of the rendered line.
+				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
+					out.substrings = append(out.substrings, value)
+				}
 			case map[string]any:
 				for _, child := range value {
-					pending = append(pending, child)
+					pending = append(pending, node{value: child})
 				}
 			case []any:
-				pending = append(pending, value...)
+				for _, child := range value {
+					pending = append(pending, node{value: child})
+				}
 			}
 		}
 	}
-	return values
+	return out
 }
 
 // isSensitiveValue reports whether v is one of the run's own sensitive-input
@@ -642,15 +761,17 @@ const sensitiveMarker = "[redacted]"
 // reaches the invocation as part of a larger string rather than as the whole
 // value or a map/list leaf: `"Bearer " + inputs.token` renders as one
 // string, which [redactSensitiveTree] cannot see into because nothing about
-// the concatenated result equals the token on its own. Every sensitive
-// string value's exact text is replaced wherever it occurs in rendered, so
-// the credential cannot survive by being wrapped in unrelated characters.
-func redactSensitiveSubstrings(rendered string, sensitiveValues []any) string {
-	for _, sv := range sensitiveValues {
-		s, ok := sv.(string)
-		if !ok || s == "" {
-			continue
-		}
+// the concatenated result equals the token on its own. Each sensitive
+// string's exact text is replaced wherever it occurs in rendered, so the
+// credential cannot survive by being wrapped in unrelated characters.
+//
+// It reads [sensitiveInputs.substrings] rather than the full value set on
+// purpose: this replacement is textual and unanchored, so a string short
+// enough to occur by accident does more damage to the diagnostic than it
+// prevents. [sensitiveNativeValues] is where that line is drawn, and
+// [minSensitiveSubstringRunes] is where it is argued.
+func redactSensitiveSubstrings(rendered string, substrings []string) string {
+	for _, s := range substrings {
 		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
 	}
 	return rendered
@@ -681,12 +802,15 @@ func truncateRuneSafe(rendered string, max int) string {
 // the clear, at the top level, nested inside a structure, or concatenated
 // into a larger string; see [invocationNativeInputs]'s doc for why that
 // distinction has to survive past evaluation and into anything printed.
-func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues []any) string {
-	if isSecret || isSensitiveValue(v, sensitiveValues) {
+func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitive sensitiveInputs) string {
+	// sensitive.withholdAll is the fail-closed case: the redaction set could
+	// not be built completely, so no input can be shown to be safe and every
+	// one of them is withheld — see [sensitiveNativeValues].
+	if isSecret || sensitive.withholdAll || isSensitiveValue(v, sensitive.values) {
 		return fmt.Sprintf("[redacted: %s]", name)
 	}
 
-	redacted := redactSensitiveTree(v, sensitiveValues)
+	redacted := redactSensitiveTree(v, sensitive.values)
 
 	var rendered string
 	if s, ok := redacted.(string); ok {
@@ -695,7 +819,7 @@ func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues
 		rendered = fmt.Sprintf("%v", redacted)
 	}
 
-	rendered = redactSensitiveSubstrings(rendered, sensitiveValues)
+	rendered = redactSensitiveSubstrings(rendered, sensitive.substrings)
 
 	return truncateRuneSafe(rendered, maxUnmatchedStubValueLen)
 }
@@ -705,7 +829,7 @@ func formatUnmatchedStubValue(name string, v any, isSecret bool, sensitiveValues
 // CLAUDE.md requires it, and every tried stub's `where:` beside whether it
 // matched, so an author can see why in the failure output instead of having
 // to reason it out from the workflow (#386, "diagnostics are a feature").
-func unmatchedStubError(name string, declared int, native map[string]any, secretNames map[string]bool, sensitiveValues []any, verdicts []stubVerdict) error {
+func unmatchedStubError(name string, declared int, native map[string]any, secretNames map[string]bool, sensitive sensitiveInputs, verdicts []stubVerdict) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "flow test: task %q was invoked with no matching stub (%d stub(s) declared for it); "+
 		"add a stub with no `where:` to answer every invocation, or one whose `where:` matches these inputs\n",
@@ -722,8 +846,17 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	} else {
 		b.WriteString("  invocation carried:\n")
 		for _, n := range names {
-			fmt.Fprintf(&b, "    %s: %s\n", n, formatUnmatchedStubValue(n, native[n], secretNames[n], sensitiveValues))
+			fmt.Fprintf(&b, "    %s: %s\n", n, formatUnmatchedStubValue(n, native[n], secretNames[n], sensitive))
 		}
+	}
+
+	// Every input came back redacted for a reason the reader cannot otherwise
+	// see: say which one, so an author staring at a diagnostic that shows
+	// nothing knows it is a refusal rather than a bug (CLAUDE.md,
+	// "diagnostics are a feature").
+	if sensitive.withholdAll {
+		b.WriteString("  (every input above is withheld: this run's sensitive inputs could not be enumerated, " +
+			"so nothing on this invocation can be shown to be safe to print)\n")
 	}
 
 	if len(verdicts) == 0 {

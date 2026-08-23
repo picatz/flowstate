@@ -350,10 +350,19 @@ tests:
 	require.True(t, found, "expected an expect.failed diagnostic redacting the nested sensitive value; got %v", c.GetFailures())
 }
 
-// A sensitive declaration can itself be structured. Selecting a leaf from it
-// must preserve the declaration's sensitivity even though that scalar is not
-// DeepEqual to the whole value stored in the run scope.
-func TestUnmatchedStubRedactsALeafOfASensitiveStructuredInput(t *testing.T) {
+// TestUnmatchedStubRedactsALeafSelectedFromASensitiveDeclaration runs the
+// *opposite* direction from the two tests above it, which is why the name is
+// this long: there, a sensitive scalar sits inside a structured *task input*;
+// here the sensitive *declaration itself* is structured and the task selects
+// one leaf out of it.
+//
+// That direction is the one a set of whole values cannot catch. `creds:` is
+// what the workflow marked `sensitive:`, and `${inputs.creds.token}` puts a
+// bare string on the invocation that is DeepEqual to nothing in the run scope
+// — the scope holds the map. The substring backstop does not save it either,
+// because the sensitive value there is a map rather than a string. Only a
+// walk of the declaration's descendants sees it.
+func TestUnmatchedStubRedactsALeafSelectedFromASensitiveDeclaration(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -401,6 +410,75 @@ tests:
 		}
 	}
 	require.Fail(t, "expected an expect.failed diagnostic", "%v", c.GetFailures())
+}
+
+// TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate
+// is the bound's behaviour seen from a Flowfile, which is the only place it
+// matters: a sensitive input with more descendants than
+// maxSensitiveDescendants cannot be enumerated, so the diagnostic withholds
+// every input rather than printing the part of the input the walk never
+// reached. The url below is an ordinary, non-sensitive value that would print
+// in the clear on any other unmatched invocation; here it does not.
+func TestUnmatchedStubWithholdsEverythingWhenASensitiveInputIsTooLargeToEnumerate(t *testing.T) {
+	t.Parallel()
+
+	// Comfortably past the 1024-descendant bound, and still far below the
+	// 10,000 elements a workflow input is allowed to carry — the point being
+	// that a legal input can reach this.
+	var bulk strings.Builder
+	for i := range 1100 {
+		fmt.Fprintf(&bulk, "\n        - element-%d", i)
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: bulk-credentials
+inputs:
+  bulk:
+    type: list
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: an unenumerable sensitive input withholds the whole invocation
+    workflow: ./workflow.yaml
+    inputs:
+      bulk:`+bulk.String()+`
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+
+	found := false
+	for _, f := range c.GetFailures() {
+		if f.GetField() != "expect.failed" {
+			continue
+		}
+		msg := f.GetMessage()
+		require.NotContains(t, msg, "element-7", "no part of the sensitive input may print")
+		require.NotContains(t, msg, "https://example.invalid/probe",
+			"an unrelated input is withheld too: nothing here can be shown to be safe")
+		require.Contains(t, msg, "[redacted: url]")
+		require.Contains(t, msg, "could not be enumerated", "the refusal says why the invocation is blank")
+		found = true
+	}
+	require.True(t, found, "expected an expect.failed diagnostic withholding every input; got %v", c.GetFailures())
 }
 
 // TestUnmatchedStubRedactsASensitiveValueInsideAList is the same nested-leaf
