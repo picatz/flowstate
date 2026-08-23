@@ -287,13 +287,13 @@ func runGitTest(t *testing.T, dir string, args ...string) {
 func runBreakingCLI(t *testing.T, dir string, args ...string) (string, error) {
 	t.Helper()
 	t.Chdir(dir)
-	root := newRootCommand()
-	var out strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs(append([]string{"breaking"}, args...))
-	err := root.Execute()
-	return out.String(), err
+
+	res := runFlow(t, append([]string{"breaking"}, args...)...)
+
+	// Both streams, merged: this command's report and its findings are read
+	// together here, and the split is pinned where it is the subject (see
+	// runlocal_test.go).
+	return res.Output(), res.Err
 }
 
 // TestBreakingCommandCleanAndBreaking drives the whole command end to end: a

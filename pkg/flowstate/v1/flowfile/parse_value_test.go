@@ -183,7 +183,7 @@ steps:
 // a reference to a step that has not run is an unresolved reference, not an empty
 // value.
 //
-// The engine half of this is a shared driver case ([tests.ValueCases]); this is
+// The engine half of this is a shared driver case ([conformance.ValueCases]); this is
 // the half that says so before the run.
 func TestValueSkippedThenReferencedIsUnresolved(t *testing.T) {
 	t.Parallel()

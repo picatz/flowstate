@@ -109,6 +109,25 @@
 // Every denial is a [*DenyError] wrapping [ErrDenied], and names both what was
 // denied and which rule or category denied it. Callers report a policy decision
 // distinctly from a network failure with errors.Is(err, [ErrDenied]).
+//
+// # Tracing
+//
+// The client a policy hands out opens one CLIENT span per request — covering
+// the whole exchange, up to the response body being read or closed, since a
+// response is not over when its headers arrive — and injects W3C trace context
+// onto the request, so a call a workflow makes is correlatable from
+// both sides: this process's trace shows the hop, and the service on the other
+// end can parent its own span under it. Nothing is configured for this — the
+// tracer comes from the globally installed provider, and with none installed
+// nothing is recorded and no header is written: the no-op tracer's span context
+// is invalid, and an invalid span context injects nothing.
+//
+// A span says the shape of the call and never its content: the method, the
+// scheme, the host and port dialed, and the status returned. The URL is not
+// recorded in any form, because every part of one can carry a credential — a
+// token in the query, a secret path segment in a webhook URL, a password in
+// userinfo — and a span is exported to a collector that is not tenant-scoped.
+// [tracingRoundTripper] has the whole rule and the reasoning behind it.
 package netpolicy
 
 import (
@@ -184,10 +203,10 @@ func New(opts ...Option) (*Policy, error) {
 }
 
 // Client returns an http.Client that enforces p. Every returned client shares one
-// transport, and so one connection pool, but each is a distinct value: a caller
-// that reassigns Transport or CheckRedirect on the client it was handed disables
-// the policy only for itself, and cannot disable it for other tasks holding the
-// same [Policy].
+// transport (and its connection pool when reuse is safe), but each is a distinct
+// value: a caller that reassigns Transport or CheckRedirect on the client it was
+// handed disables the policy only for itself, and cannot disable it for other
+// tasks holding the same [Policy].
 //
 // Requests made with it are checked before they are sent, again in the dialer for
 // every address connected to, and again for every redirect hop. Response bodies
@@ -232,13 +251,35 @@ func (p *Policy) newClient() *http.Client {
 	transport.MaxIdleConnsPerHost = 8
 	transport.MaxConnsPerHost = 32
 	transport.MaxResponseHeaderBytes = DefaultMaxResponseHeaderBytes
+	// Connection-scoped rules are evaluated by the dialer. Do not let a later
+	// request bypass that evaluation by reusing a connection established for a
+	// different request (and potentially a different workload identity).
+	//
+	// Self-administration is the same hazard wearing different clothes and has to
+	// be named separately, because it is decided at dial time too without being a
+	// CEL rule: [Policy.checkControlPlane] reads the run identity off the
+	// *request's* context, so a request carrying one could open a connection to
+	// the control plane that a later request carrying none then reuses — never
+	// entering controlDial, and so never meeting the denial that exists precisely
+	// to stop a workflow acting with the worker's authority.
+	//
+	// Without self-administration the control-plane answer is a flat refusal that
+	// does not read the request at all, so no connection to one can exist to be
+	// reused, and reuse stays safe.
+	transport.DisableKeepAlives = !p.connRules.empty() || p.cfg.selfAdministration
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
 	}
 
 	return &http.Client{
-		Transport:     &roundTripper{policy: p, next: transport},
+		// Tracing wraps the policy rather than the other way around, so the span
+		// covers the policy's answer as well as the peer's — a denial is an
+		// outcome of the request, and a refused request that produced no span at
+		// all would be the one an operator most wants to find. See
+		// [tracingRoundTripper] for what a span may say, which is much less than
+		// it knows.
+		Transport:     &tracingRoundTripper{next: &roundTripper{policy: p, next: transport}},
 		CheckRedirect: p.checkRedirect,
 		Timeout:       p.cfg.timeout,
 	}

@@ -34,11 +34,15 @@ import (
 // # The fail-closed case this schema forces
 //
 // Whether a named value is sensitive is a fact about the *workflow specification*
-// that produced it — [v1.Workflow.DeclaredOutputs] — and that specification travels
-// with the caller only when the caller just submitted it: `flow run`, `flow run
-// local`, and the `flowstate_run_local` MCP tool all hold the parsed [*v1.Workflow]
-// they started the run with, so redaction there is precise — only what the file
-// itself marked `sensitive: true` is withheld, and nothing else changes.
+// that produced it — [v1.Workflow.DeclaredOutputs] — and it is the specification
+// that *executed*, which is not always the one a caller submitted. `flow run
+// local` and the `flowstate_run_local` MCP tool run the parsed [*v1.Workflow] in
+// this same process, so there is no gap between the two and redaction is precise:
+// only what the file itself marked `sensitive: true` is withheld. `flow run` sends
+// its copy to a deployment that may hold one of its own under that name and run
+// that instead, so it redacts precisely only against a server attestation that the
+// two are the same specification, and falls back to the fail-closed case below
+// otherwise — see [executedSpecification].
 //
 // `flow get <id>`, `flow watch <id>`, and the generic per-RPC MCP tools (a
 // `flowstate_get` call, or `flow watch` polling on a later, separate invocation)
@@ -120,6 +124,67 @@ func sensitiveOutputNames(workflow *v1.Workflow) map[string]bool {
 	}
 
 	return names
+}
+
+// executedSpecification is the specification a follow may redact against: the one
+// this process submitted, when the server attested that it is also the one that
+// ran, and nil — the fail-closed case every function above already handles —
+// otherwise.
+//
+// # The gap this closes (#734)
+//
+// A deployment may register its own copy of a workflow under a name a caller
+// submits, and the server then executes the *registered* copy: that substitution
+// is what makes `manual: denied` authorization policy rather than caller input
+// (see the server's trustedWorkflow). `flow run` parsed a file, submitted it, and
+// then redacted the run's outputs against that file — the copy it *sent*, which in
+// exactly the case the substitution exists for is not the copy that ran. An output
+// the deployment's copy marks `sensitive: true` and the submitted copy does not was
+// printed in the clear, with no `--reveal-sensitive` typed, because the local file
+// said it was ordinary.
+//
+// Holding a specification is therefore not sufficient grounds to redact against it.
+// The grounds are the server saying that the specification held is the one that
+// ran, which is what [v1.RunResponse.RanSubmittedSpecification] answers — and
+// answers false both for a substitution and for a server too old to have an
+// opinion, since a client cannot tell a deliberate silence from an absent one and
+// must not treat either as assent.
+//
+// The cost is stated rather than hidden: a run whose specification *was*
+// substituted loses the precise view, and every declared output is withheld
+// instead of only the sensitive ones. That is the same answer `flow watch <id>`
+// has always given for a run it did not start, for the same reason — nothing
+// present can say which names are sensitive — and the alternative is printing a
+// value the deployment declared secret.
+func executedSpecification(submitted *v1.Workflow, started *v1.RunResponse) *v1.Workflow {
+	if !started.RanSubmittedSpecification() {
+		return nil
+	}
+
+	return submitted
+}
+
+// noteUnattestedSpecification says why a follow is about to withhold outputs it
+// would ordinarily have shown, once, before the view starts.
+//
+// Without it the degraded view is indistinguishable from a bug: an author who
+// wrote a file declaring one sensitive output among five sees all five withheld
+// and has nothing on screen connecting that to a specification they did not
+// write.
+//
+// It names both readings, because the client genuinely cannot tell them apart —
+// a deployment-owned copy ran instead of this file, or the server is older than
+// the attestation — and picking one would be this command asserting something it
+// does not know. Either way the consequence is the same and is the part an author
+// has to act on.
+//
+// stderr, and once per invocation, for the reasons [noteRevealedSensitiveValues]
+// gives.
+func noteUnattestedSpecification(surface *ui.UI) {
+	fmt.Fprintf(surface.Err, "%s the server did not confirm this run executes the file submitted — a "+
+		"deployment-owned copy may have replaced it, or the server predates the attestation — so every "+
+		"declared output is withheld rather than guessed at\n",
+		surface.ErrTheme.Pill(ui.ToneWarning, "unattested"))
 }
 
 // redactRunOutputsValues returns values with every entry this call site cannot

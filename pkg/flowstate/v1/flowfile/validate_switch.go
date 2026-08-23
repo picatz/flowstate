@@ -80,7 +80,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	for i, c := range sw.GetCases() {
 		values := c.GetValues()
 		for j, value := range values {
-			field := switchCaseField(i, len(values), j)
+			field := SwitchCaseField(i, len(values), j)
 
 			literal, ok := value.GetKind().(*v1.Value_Literal)
 			if !ok {
@@ -96,7 +96,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 			}
 
 			lit := literal.Literal
-			text := switchLiteralText(lit)
+			text := SwitchLiteralText(lit)
 
 			if _, isNull := lit.GetKind().(*expr.Value_NullValue); isNull || lit.GetKind() == nil {
 				ds = append(ds, Diagnostic{
@@ -297,9 +297,16 @@ func switchStepNodes(sw *v1.Switch) []*v1.Node {
 	return nodes
 }
 
-// switchCaseField addresses one case literal the way its position was recorded:
+// SwitchCaseField addresses one case literal the way its position was recorded:
 // the whole `case:` key for a scalar, the element for a list entry.
-func switchCaseField(caseIndex, valueCount, valueIndex int) string {
+//
+// Exported because a second reader needs the same address for the same reason
+// this one does. `flow test`'s switch-arm coverage (issue #801) reports an arm
+// no test case took, and an arm has no identity a reader can resolve except the
+// position it was written at — so it asks [Positions.Locate] for exactly the
+// path this builds. Two spellings of one path is a drift waiting for the first
+// time the recorded shape changes.
+func SwitchCaseField(caseIndex, valueCount, valueIndex int) string {
 	field := "cases[" + strconv.Itoa(caseIndex) + "].case"
 	if valueCount > 1 {
 		field += "[" + strconv.Itoa(valueIndex) + "]"
@@ -307,31 +314,35 @@ func switchCaseField(caseIndex, valueCount, valueIndex int) string {
 	return field
 }
 
-// switchDomain reports the set of values a switch's discriminant can produce,
-// where that is a property of the file.
+// maxSwitchDomainDepth bounds how many `steps.<id>.<name>` hops
+// [totalStringLeaves] follows when a leaf turns out to be another step's
+// output rather than a literal (#674).
 //
-// The inferable tiers today: the discriminant is `${steps.<id>.<name>}`, and
-// either the step is a `wait_for_signal:` shaping `<name>` in its `outputs:`,
-// or the step is a `value:` step and `<name>` is [v1.ValueOutput] — the only
-// name a `value:` step ever produces. Either way, the shaping expression must
-// be conditionals over string literals all the way down (through the
-// `optMap`/`optFlatMap`/`orValue` optional idioms `totalStringLeaves` and
-// `optionalLeaves` also recognize) — the approval gate's optional chain, or
-// `examples/optional-dispatch`'s named `outcome`. Enum-typed
-// workflow inputs extend this tier when they land. A `must:` constraint is
-// deliberately *not* mined for a domain: a constraint expression is not a
-// type. A `value:` step holding a literal rather than an expression is
-// deliberately refused too — a switch over a constant is degenerate, and
-// inventing a singleton domain would fire the exhaustiveness checks on a file
-// whose real mistake is the dispatch itself.
-func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
-	parsed := value.GetExpr()
-	if parsed == nil {
-		return nil, false
-	}
+// The document's own step ordering already makes this terminate on its own: a
+// scope only ever holds steps declared earlier (validate.go's refScope grows
+// forward, never backward), so a discriminant cannot chain back to itself and
+// the walk cannot cycle. The bound exists anyway, for the reason CLAUDE.md
+// gives for every reader of untrusted input rather than because a cycle is
+// reachable here: the resource an author's own editing controls — how many
+// times they decompose one dispatch — is nesting depth, so that is what gets
+// bounded, the same way maxAuditResolveDepth bounds resolveMacros's tree walk
+// a few calls downstream of this one. Eight hops is far beyond any dispatch
+// the style charter's nesting-depth rule would tolerate in the first place;
+// a real chain that long is not a decomposition anyone would write by hand.
+const maxSwitchDomainDepth = 8
 
+// resolveStepOutputExpr reports the macro-resolved shaping expression behind
+// a `steps.<id>.<name>` select — the discriminant itself, in switchDomain's
+// call, or a leaf that turned out to be another step's output, in
+// totalStringLeaves's recursive one. Both need the identical resolution: the
+// step this switch's *scope* actually names (#323, not a first match against
+// the whole file), the one output of it that carries a written [v1.NamedOutput.Source]
+// (a wait's shaped output, or a `value:` step's one output — see [v1.OutputNames]),
+// and that expression with `optMap`/`optFlatMap` macro-expanded back into the
+// call an author wrote (see [resolveMacros]).
+func resolveStepOutputExpr(e *expr.Expr, enclosing refScope) (*expr.Expr, bool) {
 	// `steps.<id>.<name>` and nothing else: a select of a select of the root.
-	outer := parsed.GetExpr().GetSelectExpr()
+	outer := e.GetSelectExpr()
 	inner := outer.GetOperand().GetSelectExpr()
 	if outer == nil || inner == nil || outer.GetTestOnly() || inner.GetTestOnly() {
 		return nil, false
@@ -378,9 +389,43 @@ func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
 	// `steps.<id>.<name>` above contains no macros, so it is read from the raw
 	// AST unchanged; only the shaping expression needs this.
 	written := resolveMacros(shaped.GetExpr().GetExpr(), shaped.GetExpr().GetSourceInfo().GetMacroCalls(), 0)
+	return written, true
+}
+
+// switchDomain reports the set of values a switch's discriminant can produce,
+// where that is a property of the file.
+//
+// The inferable tiers today: the discriminant is `${steps.<id>.<name>}`, and
+// either the step is a `wait_for_signal:` shaping `<name>` in its `outputs:`,
+// or the step is a `value:` step and `<name>` is [v1.ValueOutput] — the only
+// name a `value:` step ever produces. Either way, the shaping expression must
+// be conditionals over string literals all the way down (through the
+// `optMap`/`optFlatMap`/`orValue` optional idioms `totalStringLeaves` and
+// `optionalLeaves` also recognize), where a leaf may itself be another
+// `steps.<id>.<name>` reference resolved the same way, up to
+// [maxSwitchDomainDepth] hops deep (#674) — the approval gate's optional
+// chain, `examples/optional-dispatch`'s named `outcome`, or a discriminant an
+// author decomposed into a chain of `value:` steps to hold nesting depth down
+// per the style charter, without losing the domain the decomposition read
+// from. Enum-typed workflow inputs extend this tier when they land. A `must:`
+// constraint is deliberately *not* mined for a domain: a constraint
+// expression is not a type. A `value:` step holding a literal rather than an
+// expression is deliberately refused too — a switch over a constant is
+// degenerate, and inventing a singleton domain would fire the exhaustiveness
+// checks on a file whose real mistake is the dispatch itself.
+func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
+	parsed := value.GetExpr()
+	if parsed == nil {
+		return nil, false
+	}
+
+	written, ok := resolveStepOutputExpr(parsed.GetExpr(), enclosing)
+	if !ok {
+		return nil, false
+	}
 
 	var leaves []string
-	if !totalStringLeaves(written, &leaves) {
+	if !totalStringLeaves(written, enclosing, 0, &leaves) {
 		return nil, false
 	}
 
@@ -413,7 +458,14 @@ func switchDomain(value *v1.Value, enclosing refScope) ([]string, bool) {
 // e must already be resolved through [resolveMacros] — see [switchDomain] — so
 // that `optMap`/`optFlatMap` appear as the calls an author wrote rather than as
 // the comprehensions cel-go expands them into.
-func totalStringLeaves(e *expr.Expr, into *[]string) bool {
+//
+// enclosing and depth exist for exactly one case: a leaf that is itself a
+// `steps.<id>.<name>` select rather than a literal, which happens when a
+// discriminant's shaping expression was decomposed into its own step (#674).
+// That leaf is followed through [resolveStepOutputExpr] and walked in turn,
+// bounded by [maxSwitchDomainDepth] hops. Every other case ignores both
+// parameters and only threads them through its recursive calls.
+func totalStringLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]string) bool {
 	switch {
 	case e.GetCallExpr() != nil:
 		call := e.GetCallExpr()
@@ -422,7 +474,8 @@ func totalStringLeaves(e *expr.Expr, into *[]string) bool {
 		// two result branches contribute values; the condition itself decides
 		// which, and can be anything.
 		if call.GetFunction() == "_?_:_" && call.GetTarget() == nil && len(call.GetArgs()) == 3 {
-			return totalStringLeaves(call.GetArgs()[1], into) && totalStringLeaves(call.GetArgs()[2], into)
+			return totalStringLeaves(call.GetArgs()[1], enclosing, depth, into) &&
+				totalStringLeaves(call.GetArgs()[2], enclosing, depth, into)
 		}
 
 		// `<optional>.orValue(<string>)`: the one idiom that discharges
@@ -430,7 +483,8 @@ func totalStringLeaves(e *expr.Expr, into *[]string) bool {
 		// switch's own domain enumerates in the order the expression reads —
 		// the optional chain's values, then the fallback.
 		if call.GetFunction() == "orValue" && call.GetTarget() != nil && len(call.GetArgs()) == 1 {
-			return optionalLeaves(call.GetTarget(), into) && totalStringLeaves(call.GetArgs()[0], into)
+			return optionalLeaves(call.GetTarget(), enclosing, depth, into) &&
+				totalStringLeaves(call.GetArgs()[0], enclosing, depth, into)
 		}
 
 		return false
@@ -442,6 +496,22 @@ func totalStringLeaves(e *expr.Expr, into *[]string) bool {
 		}
 		*into = append(*into, s.StringValue)
 		return true
+
+	case e.GetSelectExpr() != nil:
+		// A leaf naming another step's output: `steps.<id>.<name>` in leaf
+		// position rather than at the discriminant. Follow it exactly as
+		// switchDomain follows the discriminant itself, one hop deeper and
+		// bounded the same way — see [maxSwitchDomainDepth]. Anything that
+		// is not that exact shape (a field select off something else, e.g.)
+		// falls through resolveStepOutputExpr's own checks and reports false.
+		if depth >= maxSwitchDomainDepth {
+			return false
+		}
+		written, ok := resolveStepOutputExpr(e, enclosing)
+		if !ok {
+			return false
+		}
+		return totalStringLeaves(written, enclosing, depth+1, into)
 
 	default:
 		return false
@@ -469,7 +539,13 @@ func totalStringLeaves(e *expr.Expr, into *[]string) bool {
 //   - `or()` / `hasValue()` — `or()` combines two optionals without producing
 //     a value at all, and `hasValue()` produces a bool, never a string; neither
 //     belongs in leaf position.
-func optionalLeaves(e *expr.Expr, into *[]string) bool {
+//
+// enclosing and depth are threaded through purely so the mutual recursion with
+// [totalStringLeaves] can pass them along to that function's `optMap`/
+// `optFlatMap` bodies — this function adds no `steps.<id>.<name>` case of its
+// own, because a step's declared output is always a total value; the
+// decomposition case #674 adds belongs at the total tier, not here.
+func optionalLeaves(e *expr.Expr, enclosing refScope, depth int, into *[]string) bool {
 	switch {
 	case e.GetCallExpr() != nil:
 		call := e.GetCallExpr()
@@ -481,19 +557,20 @@ func optionalLeaves(e *expr.Expr, into *[]string) bool {
 		// (`optMap(v, v)`) hits an ident in leaf position of totalStringLeaves
 		// and correctly returns false.
 		if call.GetFunction() == "optMap" && call.GetTarget() != nil && len(call.GetArgs()) == 2 {
-			return totalStringLeaves(call.GetArgs()[1], into)
+			return totalStringLeaves(call.GetArgs()[1], enclosing, depth, into)
 		}
 
 		// `<optional>.optFlatMap(v, body)`: the body is itself optional-typed,
 		// unlike optMap's, so it is walked with this function rather than
 		// [totalStringLeaves].
 		if call.GetFunction() == "optFlatMap" && call.GetTarget() != nil && len(call.GetArgs()) == 2 {
-			return optionalLeaves(call.GetArgs()[1], into)
+			return optionalLeaves(call.GetArgs()[1], enclosing, depth, into)
 		}
 
 		// A conditional choosing between two optional-typed branches.
 		if call.GetFunction() == "_?_:_" && call.GetTarget() == nil && len(call.GetArgs()) == 3 {
-			return optionalLeaves(call.GetArgs()[1], into) && optionalLeaves(call.GetArgs()[2], into)
+			return optionalLeaves(call.GetArgs()[1], enclosing, depth, into) &&
+				optionalLeaves(call.GetArgs()[2], enclosing, depth, into)
 		}
 
 		return false
@@ -550,9 +627,15 @@ func looksLikeRange(s string) bool {
 	return false
 }
 
-// switchLiteralText renders a case literal for a message the way an author
-// wrote it: strings quoted, everything else as its value.
-func switchLiteralText(lit *expr.Value) string {
+// SwitchLiteralText renders a case literal for a message the way an author wrote
+// it: strings quoted, everything else as its value.
+//
+// Exported alongside [SwitchCaseField], and for the same reason: `flow test`'s
+// switch-arm coverage names the arm it is reporting, and an arm is named by its
+// literal. A `case "synchronize"` in a coverage line and a `case "synchronize"`
+// in a validator diagnostic are the same sentence about the same thing, so they
+// are rendered by the same function.
+func SwitchLiteralText(lit *expr.Value) string {
 	switch kind := lit.GetKind().(type) {
 	case *expr.Value_StringValue:
 		return strconv.Quote(kind.StringValue)

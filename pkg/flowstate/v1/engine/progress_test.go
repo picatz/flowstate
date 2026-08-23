@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkpb "go.temporal.io/api/sdk/v1"
 	"go.temporal.io/sdk/testsuite"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -235,4 +236,127 @@ func TestProgressKeepsTheStepThatContainsConcurrentWork(t *testing.T) {
 	assert.Equal(t, []string{"fanout"}, during.GetPath(),
 		"the step containing the concurrent work was dropped from the position, "+
 			"leaving only the loop around it")
+}
+
+// workflowMetadataQuery is the SDK's own built-in query name for
+// [workflow.SetCurrentDetails]'s value — exported as a constant only inside
+// `go.temporal.io/sdk/internal`, which this module cannot import, so it is
+// repeated here as the literal `go.temporal.io/api/sdk/v1.WorkflowMetadata`'s
+// doc comment names it.
+const workflowMetadataQuery = "__temporal_workflow_metadata"
+
+// askCurrentDetailsDuring is [askDuring]'s counterpart for
+// [workflow.SetCurrentDetails]'s value, reached through the SDK's own
+// `__temporal_workflow_metadata` query rather than [engine.ProgressQuery].
+func askCurrentDetailsDuring(t *testing.T, env *testsuite.TestWorkflowEnvironment, after time.Duration) (*string, *error) {
+	t.Helper()
+
+	var got string
+	var asked bool
+	var queryErr error
+
+	env.RegisterDelayedCallback(func() {
+		encoded, err := env.QueryWorkflow(workflowMetadataQuery)
+		if queryErr = err; err != nil {
+			return
+		}
+		var meta sdkpb.WorkflowMetadata
+		if queryErr = encoded.Get(&meta); queryErr != nil {
+			return
+		}
+		got = meta.GetCurrentDetails()
+		asked = true
+	}, after)
+
+	t.Cleanup(func() {
+		if queryErr == nil && !asked {
+			t.Error("the query never ran, so this test asserted on an empty answer")
+		}
+	})
+
+	return &got, &queryErr
+}
+
+// TestCurrentDetailsIsNotClearedByConcurrentWork is
+// [TestProgressKeepsTheStepThatContainsConcurrentWork]'s exact case, asked of
+// [workflow.SetCurrentDetails] instead of [engine.ProgressQuery] — the finding
+// on #755: a parallel branch's executor deliberately carries `progress: nil`
+// (see the field's own doc comment in execute.go), and an earlier version of
+// this call site invoked SetCurrentDetails unconditionally, so a nil-progress
+// executor's empty currentDetailsMarkdown() overwrote the *parent* run's
+// still-accurate details for as long as the concurrent branches ran —
+// permanently, if the parallel block was the run's last step, since nothing
+// ran afterward to set it back.
+//
+// The two mechanisms must agree here exactly as they already do in
+// [TestProgressKeepsTheStepThatContainsConcurrentWork]: `outer` remains the
+// answer while `fanout`'s branches are the ones actually in flight, because
+// neither branch's executor may call SetCurrentDetails at all.
+func TestCurrentDetailsIsNotClearedByConcurrentWork(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	during, queryErr := askCurrentDetailsDuring(t, env, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "fanout-inside-a-loop-details",
+		Steps: []*v1.Node{{
+			Id: "outer",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
+				Items:    v1.NewLiteralList("only"),
+				Iterator: "item",
+				Body: []*v1.Node{{
+					Id: "fanout",
+					Kind: &v1.Node_Parallel{Parallel: &v1.Parallel{
+						Branches: []*v1.Parallel_Branch{
+							{Steps: []*v1.Node{sleepStep("left", time.Hour)}},
+							{Steps: []*v1.Node{sleepStep("right", time.Hour)}},
+						},
+					}},
+				}},
+			}},
+		}},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.NoError(t, *queryErr, "the run did not answer its current details")
+
+	assert.Equal(t, "On step `outer` > `fanout`", *during,
+		"a concurrent branch's executor overwrote the parent run's current details "+
+			"with its own empty position instead of leaving it alone")
+}
+
+// TestARunningRunsCurrentDetailsSaysWhichStepItIsOn is
+// [TestARunningRunSaysWhichStepItIsOn]'s exact case, asked of
+// [workflow.SetCurrentDetails] instead of [engine.ProgressQuery] — the
+// baseline this package's SetCurrentDetails support has to clear before the
+// concurrency case below means anything. Reaching this needed
+// [executor.detailsCtx]: `workflow.SetCurrentDetails` called through the
+// engine's ordinary execution context (already forked away from the SDK's
+// own root WorkflowOptions by `withSignalDeliveryCompat`'s
+// `workflow.WithDataConverter`) wrote a copy the built-in
+// `__temporal_workflow_metadata` query never read back, so this query
+// answered empty until the call was moved onto the pre-fork context captured
+// once at the top of `runWorkflow`.
+func TestARunningRunsCurrentDetailsSaysWhichStepItIsOn(t *testing.T) {
+	t.Parallel()
+
+	env := newWaitEnv(t)
+	during, queryErr := askCurrentDetailsDuring(t, env, 30*time.Second)
+
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "one-step-at-a-time-details",
+		Steps: []*v1.Node{
+			logStep("first", "1"),
+			sleepStep("pause", time.Hour),
+			logStep("last", "2"),
+		},
+	}})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.NoError(t, *queryErr, "the run did not answer its current details")
+	assert.Equal(t, "On step `pause`", *during,
+		"SetCurrentDetails did not reflect the step a run was waiting on")
 }

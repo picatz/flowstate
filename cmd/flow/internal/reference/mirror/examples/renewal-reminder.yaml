@@ -53,19 +53,14 @@
 # Quickstart)
 edition: v2026.3
 name: renewal-reminder
-description: >-
-  Nudges a customer every billing period until they renew or cancel — the
-  periodic work is what a lapsed wait does, and the signal is what stops it.
-
+description: Nudges a customer every billing period until they renew or cancel — the periodic work is what a lapsed wait does, and the signal is what stops it.
 vars:
   customer: acme
-
 steps:
   - id: opened
     description: A step before the loop, so a run that suspends before its first deadline still has something to have carried across the handover.
     log:
       message: watching acme's subscription for a renewal decision
-
   - id: reminders
     description: One billing period per iteration, retired by the customer deciding rather than by exhausting max_iterations.
     loop:
@@ -117,8 +112,7 @@ steps:
           log:
             # Quoted because of YAML rather than because of the expression: a
             # plain scalar cannot contain a colon followed by a space.
-            message: 'reminder ${sent + 1} for ${vars.customer}: the subscription renews soon'
-
+            message: '${"reminder " + string(sent + 1) + " for " + string(vars.customer) + ": the subscription renews soon"}'
 outputs:
   reminders_sent:
     value: ${steps.reminders.state}

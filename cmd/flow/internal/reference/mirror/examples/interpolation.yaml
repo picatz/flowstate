@@ -27,7 +27,7 @@ steps:
   # which says the same thing with the words and the values interleaved by hand.
   - id: announce
     log:
-      message: ${vars.requester} requests deploying ${inputs.version} to ${inputs.environment}
+      message: ${string(vars.requester) + " requests deploying " + string(inputs.version) + " to " + string(inputs.environment)}
 
   # Every fence is rendered with CEL's own `string()`, so a number, a boolean
   # and a duration all read the way `string()` renders them. `format()` remains
@@ -35,16 +35,13 @@ steps:
   # is what nearly every message actually wants.
   - id: kinds
     log:
-      message: attempt ${1 + 1}, forced ${false}, budget ${duration('90s')}
+      message: ${"attempt " + string(1 + 1) + ", forced " + string(false) + ", budget " + string(duration("90s"))}
 
   # A block scalar interpolates identically — the fence rule belongs to the
   # value, not to the quoting style it was written in.
   - id: summary
     log:
-      message: >-
-        deploying ${inputs.version}
-        to ${inputs.environment}
-
+      message: ${"deploying " + string(inputs.version) + " to " + string(inputs.environment)}
   # `$${` is a literal `${`. It is needed only by a file that wants to *show*
   # the syntax, since a value holding a literal `${` was refused before
   # interpolation existed, so nothing older can contain one.
@@ -64,11 +61,9 @@ steps:
   # not the text "7". Only a value mixing text with an expression becomes text.
   - id: attempts
     value: ${7}
-
   - id: report
     log:
-      message: budget ${steps.attempts.value} attempts
-
+      message: ${"budget " + string(steps.attempts.value) + " attempts"}
 outputs:
   attempts:
     value: ${steps.attempts.value}

@@ -11,26 +11,25 @@ name: step-vars
 # See ../workflow-vars for the ambient half.
 vars:
   environment: staging
-
 steps:
   # The plain use: name an intermediate value so the expression that needs it reads as
   # a sentence rather than as an assembly of three others.
   - id: describe
     vars:
+      stamp: ${string(2026)}
       # A step's var may read everything in scope where the step is written — the
       # workflow's vars, and any step that has already run.
-      subject: ${'release for ' + vars.environment}
-      stamp: ${string(2026)}
+      subject: ${"release for " + vars.environment}
     log:
       # Bare, because these are bound right here. Nothing else in the file can see
       # them, which is what makes `subject` a safe name to use twice in one workflow.
-      message: ${subject + ' (' + stamp + ')'}
+      message: ${subject + " (" + stamp + ")"}
 
   # The same name again, in a different step, meaning something else. This is legal
   # precisely because a step's vars do not escape it.
   - id: describe_rollback
     vars:
-      subject: ${'rollback for ' + vars.environment}
+      subject: ${"rollback for " + vars.environment}
     log:
       message: ${subject}
 
@@ -38,8 +37,10 @@ steps:
   # loop can name what it is iterating and what it is decorating in one place.
   - id: fan_out
     vars:
-      hosts: [alpha, beta]
-      suffix: ${'.' + vars.environment + '.internal'}
+      hosts:
+        - alpha
+        - beta
+      suffix: ${"." + vars.environment + ".internal"}
     for_each:
       items: ${hosts}
       as: host

@@ -32,6 +32,29 @@ func requireDenied(t *testing.T, err error, reason Reason, detail string) {
 	require.Contains(t, denied.Error(), detail)
 }
 
+// stdlibTransport unwraps a policy's client down to the standard library
+// transport underneath it, asserting the layering on the way through.
+//
+// The order is part of the design rather than an accident: tracing is outermost
+// so that a request the policy refuses still produces a span, and the policy
+// sits directly above the transport so nothing can reach the dialer without
+// being checked. A test that reached the transport by any route would not notice
+// the layers being reordered.
+func stdlibTransport(t *testing.T, client *http.Client) *http.Transport {
+	t.Helper()
+
+	traced, ok := client.Transport.(*tracingRoundTripper)
+	require.True(t, ok, "tracing is the outermost round tripper")
+
+	checked, ok := traced.next.(*roundTripper)
+	require.True(t, ok, "the policy sits directly above the transport")
+
+	transport, ok := checked.next.(*http.Transport)
+	require.True(t, ok)
+
+	return transport
+}
+
 // testServer starts an HTTP server on loopback that serves body, and returns the
 // server with its port.
 func testServer(t *testing.T, body string) (*httptest.Server, int) {
@@ -376,11 +399,7 @@ func Test_New_defaults(t *testing.T) {
 	// installed for every other caller in the process.
 	require.NotSame(t, http.DefaultTransport, client.Transport)
 
-	rt, ok := client.Transport.(*roundTripper)
-	require.True(t, ok)
-
-	transport, ok := rt.next.(*http.Transport)
-	require.True(t, ok)
+	transport := stdlibTransport(t, client)
 	require.Nil(t, transport.Proxy, "proxies are disabled by default")
 	require.Equal(t, DefaultTLSHandshakeTimeout, transport.TLSHandshakeTimeout)
 	require.Equal(t, DefaultResponseHeaderTimeout, transport.ResponseHeaderTimeout)
@@ -579,7 +598,7 @@ func Test_options_transportSettings(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	transport := policy.Client().Transport.(*roundTripper).next.(*http.Transport)
+	transport := stdlibTransport(t, policy.Client())
 	require.Equal(t, 4*time.Second, transport.TLSHandshakeTimeout)
 	require.Equal(t, 5*time.Second, transport.ResponseHeaderTimeout)
 	require.NotNil(t, transport.Proxy, "the proxy opt-in installs a proxy function")
@@ -589,7 +608,7 @@ func Test_options_transportSettings(t *testing.T) {
 	// A custom proxy function is used as given.
 	custom, err := New(WithProxy(func(*http.Request) (*url.URL, error) { return nil, nil }))
 	require.NoError(t, err)
-	require.NotNil(t, custom.Client().Transport.(*roundTripper).next.(*http.Transport).Proxy)
+	require.NotNil(t, stdlibTransport(t, custom.Client()).Proxy)
 }
 
 func Test_Policy_Client_tls(t *testing.T) {
@@ -644,7 +663,7 @@ func Test_Policy_Client_tls(t *testing.T) {
 		policy, err := New(WithMinTLSVersion(tls.VersionTLS13))
 		require.NoError(t, err)
 
-		transport := policy.Client().Transport.(*roundTripper).next.(*http.Transport)
+		transport := stdlibTransport(t, policy.Client())
 		require.Equal(t, uint16(tls.VersionTLS13), transport.TLSClientConfig.MinVersion)
 		require.False(t, transport.TLSClientConfig.InsecureSkipVerify, "verification is never skipped")
 	})

@@ -152,6 +152,25 @@ type TaskDef struct {
 	// tasks can compose with the same target catalog.
 	CredentialInputs []string
 
+	// SecretInputs names the inputs a plugin task accepts a *host* secret
+	// reference through — a Flowfile writes `${secret('vault:prod/api#token')}`,
+	// and a name here is what tells the host it may resolve that reference into
+	// this input before the request crosses into the plugin process, rather
+	// than refusing it. See TaskManifest.secret_inputs in plugin/v1 for the wire
+	// form and the full reasoning; only [Plugin.taskDef] populates this today.
+	//
+	// Deliberately not the same list as [TaskDef.AuthorityInputs] or
+	// [TaskDef.NestedSecretInputs] — see the note on AuthorityInputs for why a
+	// plugin task's secret inputs are not folded into either: enforcement reads
+	// this list where the wire actually carries it (the manifest, closed over in
+	// the plugin's task function), and reads AuthorityInputs and
+	// NestedSecretInputs for a built-in task's own secret-accepting inputs.
+	// This field exists so a *description* of the task — DescribeTask, the
+	// catalog, `flow plugins` — has something to read: before it, a plugin's
+	// claim to receive a host secret was enforced but invisible everywhere a
+	// reviewer or an operator would look for it (#712).
+	SecretInputs []string
+
 	// ShapesOutputs declares that this task evaluates its [ShapingInput] as a
 	// replacement for the outputs it declares.
 	//
@@ -297,7 +316,7 @@ type TaskDef struct {
 // in flight — the activity's own unknown-task error, which names the task and
 // lists what the run's registry offers ([TaskNamesIn]).
 //
-// And a blanket `true` would damage precisely that report. `tests.ErrorKindCases`
+// And a blanket `true` would damage precisely that report. `conformance.ErrorKindCases`
 // makes "unknown task is [ErrorKindUnknownTask]" a contract both drivers keep, on
 // the stated grounds that it is permanent; routing an unknown task to an arm a
 // worker may not have registered turns it into a retryable

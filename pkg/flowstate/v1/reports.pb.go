@@ -115,7 +115,22 @@ type FixReport struct {
 	// whether the file is finished: a comment mentioning a step that has moved, for
 	// instance. Distinct from Refusals for the reason `flow fix` draws that line
 	// itself: a caller must not fail a build on one of these.
-	Notes         []*Diagnostic `protobuf:"bytes,5,rep,name=notes,proto3" json:"notes,omitempty"`
+	Notes []*Diagnostic `protobuf:"bytes,5,rep,name=notes,proto3" json:"notes,omitempty"`
+	// StalePins are the `digest:` pins in this file that the run invalidated: this
+	// file calls another one the same run rewrote, and the pin it holds names the
+	// bytes that file had before. Positioned at the pin.
+	//
+	// Reported rather than re-stamped. A pin is the caller saying which bytes it
+	// read, so a rewriter that quietly wrote a new one would be authorizing bytes
+	// nobody has looked at — turning a security check off in the course of running
+	// a migration, which is the one thing `flow fix` refuses to do everywhere else.
+	// Each entry names the digest to adopt, so adopting one is a paste rather than
+	// a calculation.
+	//
+	// Distinct from Notes because a caller must fail on one: the run has left this
+	// file's call refusing to compile, and `flow fix . && git commit` must not
+	// succeed on a tree in that state.
+	StalePins     []*Diagnostic `protobuf:"bytes,6,rep,name=stale_pins,json=stalePins,proto3" json:"stale_pins,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -181,6 +196,13 @@ func (x *FixReport) GetRefusals() []*Diagnostic {
 func (x *FixReport) GetNotes() []*Diagnostic {
 	if x != nil {
 		return x.Notes
+	}
+	return nil
+}
+
+func (x *FixReport) GetStalePins() []*Diagnostic {
+	if x != nil {
+		return x.StalePins
 	}
 	return nil
 }
@@ -580,7 +602,17 @@ type CoverageReport struct {
 	// statement about the suite, so it fails `--coverage-required` the same way
 	// an unrecorded gap does. Each entry is a sentence naming the step and what
 	// is wrong.
-	Stale         []string `protobuf:"bytes,8,rep,name=stale,proto3" json:"stale,omitempty"`
+	Stale []string `protobuf:"bytes,8,rep,name=stale,proto3" json:"stale,omitempty"`
+	// Arms is every arm of every `switch:` step in the workflow, and whether any
+	// test case took it (issue #801).
+	//
+	// A second coverage unit beside the step one rather than more entries in it,
+	// because an arm is not a step and counting it as one would make StepsTotal a
+	// number about two different things. An arm can also be empty — `steps: []` is
+	// how a switch writes down deliberately ignoring a value — which is precisely
+	// what the step universe cannot see: an empty body contributes no step ids, so
+	// no suite could ever fail to cover it.
+	Arms          []*SwitchArmCoverage `protobuf:"bytes,9,rep,name=arms,proto3" json:"arms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -671,6 +703,136 @@ func (x *CoverageReport) GetStale() []string {
 	return nil
 }
 
+func (x *CoverageReport) GetArms() []*SwitchArmCoverage {
+	if x != nil {
+		return x.Arms
+	}
+	return nil
+}
+
+// SwitchArmCoverage is one arm of one `switch:` step — one `case:` literal, or
+// the `default:` — and whether any test case took it.
+//
+// Read from the transcript rather than inferred from what ran: a switch records
+// which literal matched under `case` (SwitchCaseOutput), so the harness reads the
+// arm that was taken instead of deducing it from the body steps that happened to
+// appear. That is issue #420's own stated measurement rule for switches, and it
+// is what makes an empty arm, and one member of a multi-literal `case: [a, b]`,
+// measurable at all.
+type SwitchArmCoverage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Arm is the coverage key: `<step>:case[<i>]` for a case holding one literal,
+	// `<step>:case[<i>][<j>]` for member j of a case listing several, and
+	// `<step>:default` for the default. It is what a file names under
+	// `coverage.allow_unreached` to record an arm it cannot reach.
+	Arm string `protobuf:"bytes,1,opt,name=arm,proto3" json:"arm,omitempty"`
+	// Step is the id of the `switch:` step this arm belongs to.
+	Step string `protobuf:"bytes,2,opt,name=step,proto3" json:"step,omitempty"`
+	// Label is the arm as an author reads it: `case "synchronize"`, `case 3`, or
+	// `default`.
+	Label string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	// Reached reports whether any test case took this arm.
+	Reached bool `protobuf:"varint,4,opt,name=reached,proto3" json:"reached,omitempty"`
+	// Reason is what the file recorded for this arm under
+	// `coverage.allow_unreached`, and is empty when it recorded none. A reason is
+	// only meaningful on an arm no case reached, where it makes that arm an
+	// accepted residual rather than a gap.
+	Reason string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Line is where the arm was written, 1-based, or zero when the workflow was
+	// not parsed from a file that recorded positions — a workflow submitted as
+	// bytes has no source to point at.
+	//
+	// Carried here and not beside Unreached, which names steps: a step id is an
+	// identity every other surface already resolves, and an arm's is not. There is
+	// no way to find `on_event:case[2]` in a file except by the position that says
+	// where it is.
+	Line int32 `protobuf:"varint,6,opt,name=line,proto3" json:"line,omitempty"`
+	// Column is the 1-based column the arm was written at, or zero when only the
+	// line is known or no position was recorded.
+	Column        int32 `protobuf:"varint,7,opt,name=column,proto3" json:"column,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SwitchArmCoverage) Reset() {
+	*x = SwitchArmCoverage{}
+	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SwitchArmCoverage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SwitchArmCoverage) ProtoMessage() {}
+
+func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SwitchArmCoverage.ProtoReflect.Descriptor instead.
+func (*SwitchArmCoverage) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SwitchArmCoverage) GetArm() string {
+	if x != nil {
+		return x.Arm
+	}
+	return ""
+}
+
+func (x *SwitchArmCoverage) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *SwitchArmCoverage) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *SwitchArmCoverage) GetReached() bool {
+	if x != nil {
+		return x.Reached
+	}
+	return false
+}
+
+func (x *SwitchArmCoverage) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *SwitchArmCoverage) GetLine() int32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *SwitchArmCoverage) GetColumn() int32 {
+	if x != nil {
+		return x.Column
+	}
+	return 0
+}
+
 // TestReports is what `flow test` produced, across every file it discovered,
 // on the same reasoning as [FixReports].
 type TestReports struct {
@@ -684,7 +846,7 @@ type TestReports struct {
 
 func (x *TestReports) Reset() {
 	*x = TestReports{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -696,7 +858,7 @@ func (x *TestReports) String() string {
 func (*TestReports) ProtoMessage() {}
 
 func (x *TestReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -709,7 +871,7 @@ func (x *TestReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestReports.ProtoReflect.Descriptor instead.
 func (*TestReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TestReports) GetFiles() []*TestReport {
@@ -726,13 +888,15 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\x1aflowstate/v1/reports.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1eflowstate/v1/diagnostics.proto\x1a\x1egoogle/protobuf/duration.proto\"A\n" +
 	"\tFixChange\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12 \n" +
-	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\"\xda\x01\n" +
+	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\"\x93\x02\n" +
 	"\tFixReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12\x18\n" +
 	"\achanged\x18\x02 \x01(\bR\achanged\x121\n" +
 	"\achanges\x18\x03 \x03(\v2\x17.flowstate.v1.FixChangeR\achanges\x124\n" +
 	"\brefusals\x18\x04 \x03(\v2\x18.flowstate.v1.DiagnosticR\brefusals\x12.\n" +
-	"\x05notes\x18\x05 \x03(\v2\x18.flowstate.v1.DiagnosticR\x05notes\"w\n" +
+	"\x05notes\x18\x05 \x03(\v2\x18.flowstate.v1.DiagnosticR\x05notes\x127\n" +
+	"\n" +
+	"stale_pins\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\tstalePins\"w\n" +
 	"\tFmtReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12\x18\n" +
 	"\achanged\x18\x02 \x01(\bR\achanged\x124\n" +
@@ -754,7 +918,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12,\n" +
 	"\x05cases\x18\x02 \x03(\v2\x16.flowstate.v1.TestCaseR\x05cases\x12\x18\n" +
 	"\arefused\x18\x03 \x01(\tR\arefused\x128\n" +
-	"\bcoverage\x18\x04 \x03(\v2\x1c.flowstate.v1.CoverageReportR\bcoverage\"\xd9\x02\n" +
+	"\bcoverage\x18\x04 \x03(\v2\x1c.flowstate.v1.CoverageReportR\bcoverage\"\x8e\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +
@@ -764,10 +928,19 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\tunreached\x18\x05 \x03(\tR\tunreached\x12\x12\n" +
 	"\x04gaps\x18\x06 \x03(\tR\x04gaps\x12F\n" +
 	"\baccepted\x18\a \x03(\v2*.flowstate.v1.CoverageReport.AcceptedEntryR\baccepted\x12\x14\n" +
-	"\x05stale\x18\b \x03(\tR\x05stale\x1a;\n" +
+	"\x05stale\x18\b \x03(\tR\x05stale\x123\n" +
+	"\x04arms\x18\t \x03(\v2\x1f.flowstate.v1.SwitchArmCoverageR\x04arms\x1a;\n" +
 	"\rAcceptedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"=\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xad\x01\n" +
+	"\x11SwitchArmCoverage\x12\x10\n" +
+	"\x03arm\x18\x01 \x01(\tR\x03arm\x12\x12\n" +
+	"\x04step\x18\x02 \x01(\tR\x04step\x12\x14\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\x12\x18\n" +
+	"\areached\x18\x04 \x01(\bR\areached\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\x12\x12\n" +
+	"\x04line\x18\x06 \x01(\x05R\x04line\x12\x16\n" +
+	"\x06column\x18\a \x01(\x05R\x06column\"=\n" +
 	"\vTestReports\x12.\n" +
 	"\x05files\x18\x01 \x03(\v2\x18.flowstate.v1.TestReportR\x05filesB\xab\x01\n" +
 	"\x10com.flowstate.v1B\fReportsProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
@@ -784,7 +957,7 @@ func file_flowstate_v1_reports_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_reports_proto_rawDescData
 }
 
-var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*FixChange)(nil),           // 0: flowstate.v1.FixChange
 	(*FixReport)(nil),           // 1: flowstate.v1.FixReport
@@ -794,29 +967,32 @@ var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*TestCase)(nil),            // 5: flowstate.v1.TestCase
 	(*TestReport)(nil),          // 6: flowstate.v1.TestReport
 	(*CoverageReport)(nil),      // 7: flowstate.v1.CoverageReport
-	(*TestReports)(nil),         // 8: flowstate.v1.TestReports
-	nil,                         // 9: flowstate.v1.CoverageReport.AcceptedEntry
-	(*Diagnostic)(nil),          // 10: flowstate.v1.Diagnostic
-	(*durationpb.Duration)(nil), // 11: google.protobuf.Duration
+	(*SwitchArmCoverage)(nil),   // 8: flowstate.v1.SwitchArmCoverage
+	(*TestReports)(nil),         // 9: flowstate.v1.TestReports
+	nil,                         // 10: flowstate.v1.CoverageReport.AcceptedEntry
+	(*Diagnostic)(nil),          // 11: flowstate.v1.Diagnostic
+	(*durationpb.Duration)(nil), // 12: google.protobuf.Duration
 }
 var file_flowstate_v1_reports_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
-	10, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
-	10, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	10, // 3: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
-	1,  // 4: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
-	2,  // 5: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	10, // 6: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	11, // 7: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	5,  // 8: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	7,  // 9: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
-	9,  // 10: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
-	6,  // 11: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	11, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
+	11, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
+	11, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
+	11, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	1,  // 5: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
+	2,  // 6: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
+	11, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	12, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	5,  // 9: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
+	7,  // 10: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
+	10, // 11: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
+	8,  // 12: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
+	6,  // 13: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_reports_proto_init() }
@@ -831,7 +1007,7 @@ func file_flowstate_v1_reports_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_reports_proto_rawDesc), len(file_flowstate_v1_reports_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

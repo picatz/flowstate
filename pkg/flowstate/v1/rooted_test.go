@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // Rooting the ambient half of the namespace — `steps.<id>.<output>` rather than a
@@ -42,7 +42,7 @@ func TestRootedAndBareReferencesBothResolve(t *testing.T) {
 	// Not parallel: the loopback exemption below swaps a process-global registry
 	// entry and restores it when the test ends, so two top-level tests holding one
 	// at once would have the first one's restore land while the second still runs.
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	cases := map[string]string{
 		"rooted":                          `steps.a.result == "hello"`,
@@ -75,7 +75,7 @@ func TestRootedAndBareReferencesBothResolve(t *testing.T) {
 // TestStepsRootReachesEveryStep covers the shape a prefix match would miss.
 func TestStepsRootReachesEveryStep(t *testing.T) {
 	// Not parallel, for the reason given above.
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	wf := &v1.Workflow{
 		Name: "rooted",
@@ -101,7 +101,7 @@ func TestStepsRootReachesEveryStep(t *testing.T) {
 // root is answered only when no step claims the name.
 func TestAStepNamedStepsStillWins(t *testing.T) {
 	// Not parallel, for the reason given above.
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	wf := &v1.Workflow{
 		Name: "shadowed",

@@ -48,7 +48,7 @@ func TestReportedStarterReadsWhatTheCurrentWriterRecords(t *testing.T) {
 
 	starter := v1types.QualifiedSubject("https://issuer.example.com", "requester@example.com")
 
-	assert.Equal(t, starter, New(nil).reportedStarter(memoWithStarterValue(t, starter)),
+	assert.Equal(t, starter, mustNew(t, nil).reportedStarter(memoWithStarterValue(t, starter)),
 		"a run whose memo records a starter reported something else, so a surface comparing this "+
 			"against a signal policy rule would compare the wrong string")
 }
@@ -75,10 +75,10 @@ func TestReportedStarterOnARunPredatingTheKeyReportsNothing(t *testing.T) {
 		},
 	}
 
-	assert.Empty(t, New(nil).reportedStarter(old),
+	assert.Empty(t, mustNew(t, nil).reportedStarter(old),
 		"a run started before the starter memo key existed reported a starter, so this build "+
 			"invented one for a run that never recorded it")
-	assert.False(t, v1types.LooksLikeQualifiedSubject(New(nil).reportedStarter(old)),
+	assert.False(t, v1types.LooksLikeQualifiedSubject(mustNew(t, nil).reportedStarter(old)),
 		"the answer for a run with no recorded starter has the shape of a subject a policy rule "+
 			"would accept")
 }
@@ -103,7 +103,7 @@ func TestReportedStarterOnAnUnreadableMemoReportsNothing(t *testing.T) {
 		},
 	}
 
-	assert.Empty(t, New(nil).reportedStarter(corrupt),
+	assert.Empty(t, mustNew(t, nil).reportedStarter(corrupt),
 		"a memo whose starter entry could not be decoded produced a starter anyway")
 }
 
@@ -122,6 +122,6 @@ func TestReportedStarterOnAnUnauthenticatedSubmissionReportsNothing(t *testing.T
 
 	recorded := starterMemoEntry(&v1types.WorkloadIdentity{})[starterMemoKey].(string)
 
-	assert.Empty(t, New(nil).reportedStarter(memoWithStarterValue(t, recorded)),
+	assert.Empty(t, mustNew(t, nil).reportedStarter(memoWithStarterValue(t, recorded)),
 		"a run submitted by nobody reported %q as its starter", recorded)
 }

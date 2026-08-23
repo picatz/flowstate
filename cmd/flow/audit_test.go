@@ -25,17 +25,13 @@ const corpus = "../../examples/"
 func auditJSON(t *testing.T, args ...string) auditReport {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"audit", "-o", "json"}, args...))
+	res := runFlow(t, append([]string{"audit", "-o", "json"}, args...)...)
 
-	require.NoError(t, root.Execute(), "audit should not fail on a corpus that compiles")
+	require.NoError(t, res.Err, "audit should not fail on a corpus that compiles")
 
 	var report auditReport
-	require.NoError(t, json.Unmarshal([]byte(out.String()), &report),
-		"the machine format should be JSON a program can read: %s", out.String())
+	require.NoError(t, json.Unmarshal([]byte(res.Stdout), &report),
+		"the machine format should be JSON a program can read: %s", res.Stdout)
 
 	return report
 }
@@ -85,7 +81,15 @@ func requireNoFinding(t *testing.T, report auditReport, path, want string) {
 		return
 	}
 
-	t.Fatalf("%s is not in the report at all", path)
+	// A file with nothing repeated twice or more is not in the report at all,
+	// which is the strongest possible pass for this assertion rather than a
+	// failure — `examples/enterprise-incident-response` reached exactly that
+	// state in #646's corpus slice. The reason the absence is still checked is
+	// the typo: a `path` naming no file in the corpus would otherwise assert
+	// nothing forever, so the file has to exist even when the report omits it.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s is neither in the report nor on disk: %v", path, err)
+	}
 }
 
 // siteLines is the lines a finding's occurrences sit on, in report order.
@@ -253,23 +257,16 @@ func TestAuditOnboardingAndAccessReviewSweptClean(t *testing.T) {
 // finding is a measurement, so it must not change what the process reports to
 // whatever ran it.
 func TestAuditIsNotALinter(t *testing.T) {
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs([]string{"audit", corpus})
+	res := runFlow(t, "audit", corpus)
 
-	require.NoError(t, root.Execute(),
+	require.NoError(t, res.Err,
 		"a corpus full of findings must still exit zero; nonzero is reserved for a file that could not be read")
-	require.Contains(t, out.String(), "None of this is a defect",
+	require.Contains(t, res.Stdout, "None of this is a defect",
 		"the human output must say what it is not, since every other verb reading a Flowfile reports defects")
 
 	// A path that does not exist is the failure this verb does have.
-	broken := newRootCommand()
-	broken.SetOut(&strings.Builder{})
-	broken.SetErr(&strings.Builder{})
-	broken.SetArgs([]string{"audit", corpus + "no-such-workflow-here.yaml"})
-	require.Error(t, broken.Execute(), "an unreadable path is a real error and must not exit zero")
+	broken := runFlow(t, "audit", corpus+"no-such-workflow-here.yaml")
+	require.Error(t, broken.Err, "an unreadable path is a real error and must not exit zero")
 }
 
 // TestAuditSkipsTrivialRepetition keeps the noise floor where the design put it.
@@ -344,14 +341,10 @@ steps:
       message: two
 `)
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs([]string{"audit", "-o", "jsonl", path})
-	require.NoError(t, root.Execute(), errOut.String())
+	res := runFlow(t, "audit", "-o", "jsonl", path)
+	require.NoError(t, res.Err, res.Stderr)
 
-	stdout := out.String()
+	stdout := res.Stdout
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
 	require.Len(t, lines, 1, "jsonl wrote more than one line for the one audit report:\n%s", stdout)
 	require.True(t, json.Valid([]byte(lines[0])), "the line is not a single JSON value: %q", lines[0])

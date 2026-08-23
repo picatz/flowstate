@@ -376,7 +376,22 @@ flow list --all --filter 'finished && close_time - start_time > duration("1h")'
 # Only one workload's runs. WorkflowType can't answer this: every run's is
 # "Run", the one interpreter workflow, so name is the workflow's own declared
 # name instead, and it is empty for a run older than this field.
-flow list --all --filter 'name == "nightly-etl"'`,
+flow list --all --filter 'name == "nightly-etl"'
+
+# One team's runs, by the labels the Flowfile declares. Guard the index: a run
+# carrying no labels has no such key, and indexing one that is absent is an
+# error, exactly as close_time is null above.
+flow list --all --filter '"team" in labels && labels["team"] == "payments"'
+
+# Which runs nobody labelled with an owner. This is why labels binds to an empty
+# map rather than to null: the negative question has to be askable.
+flow list --all --filter '!("team" in labels)'
+
+# A bad build shipped: everything still running on the version it pinned.
+flow list --all --filter 'worker_version == "flowstate.417" && status == "RUNNING"'
+
+# What one person started, as the qualified issuer#subject the server recorded:
+flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 	}
 
 	addOutputFlag(listCmd)
@@ -386,8 +401,12 @@ flow list --all --filter 'name == "nightly-etl"'`,
 
 	listCmd.Flags().String("filter", "",
 		"keep only the runs a CEL expression answers yes about, over `workflow_id`, "+
-			"`run_id`, `status`, `start_time`, `close_time`, `finished`, and `name` "+
-			"(the workflow's own declared name, empty for a run older than this field); "+
+			"`run_id`, `status`, `start_time`, `close_time`, `finished`, `name` "+
+			"(the workflow's own declared name, empty for a run older than this field), "+
+			"`labels` (the workflow's declared labels, a map: guard an index with "+
+			`"team" in labels), `+"`starter` (the qualified issuer#subject who submitted "+
+			"it), and `worker_version` (the Worker Deployment version the run is pinned "+
+			"to, empty where versioning is off); "+
 			`for example status == "FAILED"`)
 	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped")

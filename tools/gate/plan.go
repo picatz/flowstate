@@ -3,6 +3,7 @@ package main
 import (
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -19,6 +20,16 @@ const flowtestPkg = modulePath + "/pkg/flowstate/v1/flowtest"
 // cmdFlowPkg is the CLI whose binary generates docs/reference/: when it is
 // affected, its output can have moved. See needsDocs.
 const cmdFlowPkg = modulePath + "/cmd/flow"
+
+// The example plugin's schema and the descriptor set built from it, which is
+// how that plugin's field comments reach an editor's hover (#723). Both are
+// named here rather than at their two use sites, so the trigger and the
+// command it runs cannot come to disagree about where the artifact lives.
+const (
+	examplePluginDir      = "pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/"
+	examplePluginProtoDir = examplePluginDir + "proto/"
+	examplePluginProse    = examplePluginDir + "schema.descriptorset.binpb"
+)
 
 // plan is what the changed-file list alone decides: which conditional legs
 // fire, which files gofmt checks, and which directories feed the
@@ -39,10 +50,59 @@ type plan struct {
 	// itself moved and every package is treated as affected.
 	moduleWide bool
 
+	// ciWide means a file changed that decides what the verification tiers
+	// themselves do: a workflow, the Makefile, this gate's own source, or
+	// the fuzz target list every tier reads.
+	// A plan cannot reason about the effect of a change to the thing
+	// computing the plan, so CI runs everything. It is deliberately
+	// separate from moduleWide: that one widens the *affected package set*
+	// and is a fact about the Go build graph, while this one widens the
+	// *job set* and is a fact about the harness. A workflow edit affects no
+	// Go package at all, which is exactly why it needs its own answer.
+	ciWide bool
+
 	// Conditional legs, keyed on changed paths.
 	proto    bool // buf lint/breaking/generate + descriptorset pin
 	docs     bool // reference mirror + generated docs drift
 	examples bool // flow fix --check, flow test, flow breaking
+
+	// repoTestData means a repository-level file some test reads with
+	// os.ReadFile, rather than imports, changed: README.md, AGENTS.md, or
+	// any Markdown under docs/. None is a Go source file and none is under
+	// examples/, so nothing above puts any of them in front of the import
+	// graph or the #589 data-dependency seeding — but
+	// cmd/flow/commands_test.go reads README.md's command table,
+	// pkg/flowstate/v1/flowfile/readme_test.go compiles the Flowfiles
+	// embedded in README.md and docs/ARCHITECTURE.md,
+	// pkg/flowstate/v1/agentsmd_test.go reads AGENTS.md, and
+	// cmd/flow/docs_test.go reads and validates every file under
+	// docs/reference/. A change to any of them can make the test that reads
+	// it fail or go stale without moving a single Go file, the same shape
+	// #589 already named for examples/, one file further out than that fix
+	// reached.
+	//
+	// It covers docs/ as a whole rather than the two pages named above
+	// because the documentation set now has a test about the *set*:
+	// cmd/flow/docsindex_test.go fails when a document under docs/ is
+	// added, renamed or removed without docs/README.md moving with it
+	// (#708). Every Markdown file in that tree is therefore test data, and
+	// enumerating the ones that happen to be read today is how this rule
+	// would go stale the next time a page is added.
+	//
+	// It widens ciDecisions' testRun — the CI job wide enough to run all of
+	// these — and, since #820's review, seeds the local tier's affected set
+	// as well, through the packages repoDataRoots names. It has no leg of
+	// its own in either tier.
+	repoTestData bool
+
+	// repoDataRoots names which of those roots this diff actually touched
+	// ("docs", "README.md", "AGENTS.md"), so the local tier can seed the
+	// packages that read *those* rather than every package that reads any
+	// of them. Without it a docs/DEPLOYMENT.md edit would pull in
+	// pkg/flowstate/v1 because its tests read AGENTS.md — true, unrelated,
+	// and expensive, since most of the module imports it. Sorted and
+	// deduplicated; empty exactly when repoTestData is false.
+	repoDataRoots []string
 
 	// appearance means the diff could move a recorded golden: styled
 	// output and help text live in cmd/flow, and the goldens embed a
@@ -80,6 +140,7 @@ func buildPlan(changed []string) plan {
 	p := plan{reasons: map[string]string{}}
 	dirSeen := map[string]bool{}
 	pluginSeen := map[string]bool{}
+	rootSeen := map[string]bool{}
 
 	reason := func(leg, path string) {
 		if _, ok := p.reasons[leg]; !ok {
@@ -89,6 +150,23 @@ func buildPlan(changed []string) plan {
 
 	for _, f := range changed {
 		f = path.Clean(f)
+
+		// The harness files decide what runs. Noted before anything else
+		// and without `continue`, because a workflow change is also an
+		// ordinary file change: tools/gate/ci.go is a Go file in a Go
+		// package, and the gate's own tests should still run for it.
+		//
+		// tools/fuzztargets is in this set because it *is* CI
+		// configuration: targets.txt decides which targets the smoke tier
+		// runs, which the deep tier runs, and which packages reach the
+		// fuzz job at all. Promoting a deep-only target to smoke changes
+		// nothing about any Go package, so without this the diff that
+		// reconfigures the fuzz job would skip it (#857).
+		if strings.HasPrefix(f, ".github/workflows/") || f == "Makefile" ||
+			strings.HasPrefix(f, "tools/gate/") || strings.HasPrefix(f, "tools/fuzztargets/") {
+			p.ciWide = true
+			reason("ci", f)
+		}
 
 		// The module files move the whole graph.
 		if f == "go.mod" || f == "go.sum" {
@@ -142,6 +220,23 @@ func buildPlan(changed []string) plan {
 			reason("docs", f)
 		}
 
+		// The example plugin's own schema, which is a second
+		// descriptor-set artifact under the same pin and for the same
+		// reason: it is what carries that plugin's field comments to an
+		// editor (#723), and one built from a .proto that has moved on
+		// is a set of sentences about a file that no longer exists. It
+		// rides the proto leg rather than gaining one of its own —
+		// there is one answer to "a schema in this repository changed",
+		// and two legs would be two places to keep it.
+		// The artifact itself is a trigger as well as its source, because a
+		// diff-only pin over a file nothing in this run rebuilt proves nothing:
+		// the leg has to re-derive it from the .proto to have an opinion about
+		// whether what is committed is what that .proto produces.
+		if strings.HasPrefix(f, examplePluginProtoDir) || f == examplePluginProse {
+			p.proto = true
+			reason("proto", f)
+		}
+
 		// The derived-docs surfaces: docs/DSL.md and the example
 		// workflows feed the reference mirror (`go generate
 		// ./cmd/flow/internal/reference`); the cobra tree, the MCP tool
@@ -168,6 +263,18 @@ func buildPlan(changed []string) plan {
 		case path.Dir(f) == "pkg/flowstate/v1" && strings.HasSuffix(f, ".go"):
 			p.docs = true
 			reason("docs", f)
+		}
+
+		// Repository-level files read directly by tests rather than
+		// imported, the same #589 shape examples/ has — see
+		// p.repoTestData's doc.
+		if root := repoDataRoot(f); root != "" {
+			p.repoTestData = true
+			reason("test", f)
+			if !rootSeen[root] {
+				rootSeen[root] = true
+				p.repoDataRoots = append(p.repoDataRoots, root)
+			}
 		}
 
 		if strings.HasPrefix(f, "examples/") {
@@ -200,6 +307,7 @@ func buildPlan(changed []string) plan {
 	sort.Strings(p.fileDirs)
 	sort.Strings(p.examplePluginNames)
 	sort.Strings(p.plugins)
+	sort.Strings(p.repoDataRoots)
 	return p
 }
 
@@ -229,6 +337,28 @@ func resolveDirs(dirs []string, pkgByDir map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hasUnresolvedGoDir reports whether any of goFiles' own directories is
+// missing from byDir — a changed .go file whose package `go list` cannot find
+// on the tree as it was checked out.
+//
+// Deliberately narrower than [resolveDirs]: that function walks upward from a
+// changed path looking for the nearest package ancestor, which is right for a
+// file under testdata/ but wrong for asking whether *this exact directory* is
+// still a package. A .go file's own directory has to be its package's
+// directory — Go does not let one recurse into a subdirectory — so a direct,
+// non-walking lookup is what actually answers "did this file's package
+// disappear," most often because this diff deleted the last source file a
+// directory had. See the caller in analyse() for why that case is treated the
+// same conservative way p.moduleWide already is.
+func hasUnresolvedGoDir(goFiles []string, byDir map[string]string) bool {
+	for _, f := range goFiles {
+		if _, ok := byDir[path.Dir(f)]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // pkgMeta is the slice of `go list -json` this gate reads.
@@ -281,23 +411,12 @@ func affectedPackages(pkgs []pkgMeta, changed map[string]bool) []string {
 	var out []string
 	for i := range pkgs {
 		p := &pkgs[i]
-		hit := reaches(p.ImportPath)
-		if !hit {
-			for _, t := range p.TestImports {
-				if reaches(t) {
-					hit = true
-					break
-				}
-			}
-		}
-		if !hit {
-			for _, t := range p.XTestImports {
-				if reaches(t) {
-					hit = true
-					break
-				}
-			}
-		}
+		// || short-circuits in the order written, so a package whose own
+		// path reaches a change is never asked about its test imports —
+		// the same work the `break`s here used to save.
+		hit := reaches(p.ImportPath) ||
+			slices.ContainsFunc(p.TestImports, reaches) ||
+			slices.ContainsFunc(p.XTestImports, reaches)
 		if hit {
 			out = append(out, p.ImportPath)
 		}
@@ -310,6 +429,20 @@ func affectedPackages(pkgs []pkgMeta, changed map[string]bool) []string {
 // package, whose ordering claims get the dedicated `-cpu=1 -count=20` leg.
 func needsOrdering(affected []string) bool {
 	return contains(affected, flowtestPkg)
+}
+
+// needsStyle reports whether the affected set reaches the cmd/flow package,
+// which is what decides the style lint over examples/ as well.
+//
+// The same package question needsDocs asks, and it is a separate function
+// because the two legs answer different questions that happen to share a
+// trigger today: `flow lint` runs the binary, so its real source set is that
+// binary's dependency closure — a check added under
+// pkg/flowstate/v1/flowfile moves what the leg reports without touching a
+// single file under examples/, and a path rule naming examples/ alone would
+// skip the leg on precisely the diff that changed the rules.
+func needsStyle(affected []string) bool {
+	return contains(affected, cmdFlowPkg)
 }
 
 // needsDocs reports whether the affected set reaches the cmd/flow package.
@@ -371,9 +504,85 @@ var exampleDataDepPattern = regexp.MustCompile(`"(\.\./)*examples(/|")`)
 // diff, so it cannot turn an unrelated change into "everything affected" —
 // see TestExampleDataDepPackagesIsNotEveryPackage.
 func exampleDataDepPackages(testSrc map[string][]byte) []string {
+	return dataDepPackages(testSrc, exampleDataDepPattern)
+}
+
+// repoDataRoot reports which repository-level data root a changed path belongs
+// to, or "" for a path that is not test data of this kind. The three roots are
+// the ones p.repoTestData's doc lists; docs/ is a tree, the other two are
+// single files.
+func repoDataRoot(f string) string {
+	switch {
+	case f == "README.md", f == "AGENTS.md":
+		return f
+	case strings.HasPrefix(f, "docs/") && strings.HasSuffix(f, ".md"):
+		return "docs"
+	default:
+		return ""
+	}
+}
+
+// repoDataDepPattern builds the literal matcher for the roots a diff actually
+// touched. Same anchoring rule as exampleDataDepPattern, and for the same
+// reason — a literal that *opens* onto a root (allowing only "../" segments
+// climbing back to the repository root) is a test reading it, while the same
+// word in the middle of another path, or in a doc comment, is not.
+//
+// The literal shapes it has to cover are the ones in the tree today:
+// cmd/flow/docsindex_test.go's `const docsDir = "../../docs"`,
+// cmd/flow/docs_test.go's `"../../docs/reference"`, and the README.md and
+// AGENTS.md paths cmd/flow/commands_test.go,
+// pkg/flowstate/v1/flowfile/readme_test.go and
+// pkg/flowstate/v1/agentsmd_test.go open.
+//
+// It is per-root rather than one fixed pattern because the roots have very
+// different blast radii: pkg/flowstate/v1's tests read AGENTS.md, and most of
+// this module imports that package, so folding AGENTS.md's readers into a
+// docs-only diff would turn a documentation edit into a near-full run for a
+// dependency it does not have.
+//
+// This is the seeding half of what p.repoTestData already did for CI. Before
+// #708's docs index there was nothing under docs/ whose *content* a test
+// asserted about beyond docs/reference/, so widening CI's test job was
+// enough. TestTheDocsIndexListsEveryDocument changed that: a diff adding
+// docs/guides/thing.md and not listing it in docs/README.md fails that test,
+// maps to no Go package at all, and so — without this — reached no local gate
+// leg, leaving the author to find out from CI what the pre-push gate exists
+// to tell them.
+func repoDataDepPattern(roots []string) *regexp.Regexp {
+	alternatives := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "docs" {
+			// A tree: "docs" itself (the bare segment handed to
+			// filepath.Join) or anything under it.
+			alternatives = append(alternatives, `docs(/|")`)
+			continue
+		}
+
+		alternatives = append(alternatives, regexp.QuoteMeta(root)+`"`)
+	}
+
+	return regexp.MustCompile(`"(\.\./)*(` + strings.Join(alternatives, "|") + `)`)
+}
+
+// repoDataDepPackages reports which of testSrc's packages read the
+// repository-level data roots this diff touched. Like exampleDataDepPackages it
+// only ever runs on a diff the plan already flagged, so it cannot widen an
+// unrelated change — see TestRepoDataDepPackagesIsNotEveryPackage.
+func repoDataDepPackages(testSrc map[string][]byte, roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+
+	return dataDepPackages(testSrc, repoDataDepPattern(roots))
+}
+
+// dataDepPackages is the shared loop: every package in testSrc whose test
+// sources match pat, sorted so the notice a gate prints is stable.
+func dataDepPackages(testSrc map[string][]byte, pat *regexp.Regexp) []string {
 	var out []string
 	for ip, src := range testSrc {
-		if exampleDataDepPattern.Match(src) {
+		if pat.Match(src) {
 			out = append(out, ip)
 		}
 	}
@@ -410,10 +619,5 @@ func pluginSkipNotices(p plan, moduleExists func(mod string) bool) []string {
 }
 
 func contains(paths []string, want string) bool {
-	for _, ip := range paths {
-		if ip == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(paths, want)
 }

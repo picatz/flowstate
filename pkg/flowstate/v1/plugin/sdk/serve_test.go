@@ -182,6 +182,94 @@ func TestServeAuthenticatesTheHost(t *testing.T) {
 	}
 }
 
+// TestServeAuthenticatesTheHostOnExecuteStream checks that ExecuteStream, a
+// streaming RPC, is authenticated exactly as every unary one is.
+//
+// requireToken used to be installed as a connect.UnaryInterceptorFunc, whose
+// WrapStreamingHandler is a documented no-op — so this route ran with no
+// per-launch-token check at all: any process that could reach the socket
+// could invoke a task, supplying whatever identity and namespace it liked in
+// the request, with no token at all. This is the streaming twin of
+// TestServeAuthenticatesTheHost, over TaskService.ExecuteStream instead of
+// PluginService.Describe.
+func TestServeAuthenticatesTheHostOnExecuteStream(t *testing.T) {
+	const token = "the-per-launch-token"
+
+	socket := startTestPlugin(t, token)
+
+	tests := []struct {
+		name      string
+		presented string
+		wantOK    bool
+	}{
+		{name: "the right token", presented: token, wantOK: true},
+		{name: "no token", presented: "", wantOK: false},
+		{name: "the wrong token", presented: "guessed", wantOK: false},
+		{name: "a prefix of the token", presented: token[:5], wantOK: false},
+		{name: "the token with something appended", presented: token + "x", wantOK: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// No interceptor here: connect.UnaryInterceptorFunc's
+			// WrapStreamingClient is a documented no-op, so an interceptor
+			// built that way — the same shape the plugin package's own
+			// client used before this fix — would silently never attach the
+			// header to this call. Setting it directly on the request proves
+			// the fix at the handler, independent of how a client happens to
+			// be built.
+			client := pluginv1connect.NewTaskServiceClient(unixClient(socket), "http://plugin.invalid")
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+
+			req := connect.NewRequest(&pluginv1.ExecuteStreamRequest{
+				Task: &flowstatev1.Task{Name: "testplug_noop"},
+			})
+			if test.presented != "" {
+				req.Header().Set(protocol.TokenHeader, test.presented)
+			}
+
+			stream, err := client.ExecuteStream(ctx, req)
+
+			if !test.wantOK {
+				// A streaming call reports its handler's error on the first
+				// Receive, not on the call that opens the stream: connect
+				// builds the ServerStreamForClient before the handler side
+				// has run at all.
+				if err != nil {
+					t.Fatalf("ExecuteStream: %v", err)
+				}
+				if stream.Receive() {
+					t.Fatal("the plugin streamed a message for a request that did not authenticate")
+				}
+				if connect.CodeOf(stream.Err()) != connect.CodePermissionDenied {
+					t.Errorf("code = %v, want permission denied", connect.CodeOf(stream.Err()))
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("ExecuteStream: %v", err)
+			}
+			defer stream.Close()
+
+			var gotResponse bool
+			for stream.Receive() {
+				if stream.Msg().GetResponse() != nil {
+					gotResponse = true
+				}
+			}
+			if err := stream.Err(); err != nil {
+				t.Fatalf("stream: %v", err)
+			}
+			if !gotResponse {
+				t.Error("the stream ended without a terminal response")
+			}
+		})
+	}
+}
+
 // TestServeAnnouncesOnceThenLeavesStdoutAlone checks the promise that makes the
 // handshake reliable: one line on stdout, and nothing after it.
 func TestServeAnnouncesOnceThenLeavesStdoutAlone(t *testing.T) {
