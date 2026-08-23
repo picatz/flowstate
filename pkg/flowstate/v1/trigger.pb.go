@@ -145,11 +145,13 @@ type Triggers struct {
 	// construct as [Call.arguments], checked against the same signature, so N
 	// sources are N callers instead of a keyed sub-language nobody asked for.
 	//
-	// Inert exactly as `schedule` is. Nothing in `Run` reads this, both execution
-	// drivers ignore it, and no HTTP endpoint in this repository serves a
-	// delivery yet: what a file declares here is checked by `flow validate` and
-	// replayed offline by `flow test`. See [WebhookTrigger] for what the receiver
-	// will be handed when it lands.
+	// Inert exactly as `schedule` is on the run path: nothing in `Run` reads
+	// this, and both execution drivers ignore it. The server's webhook receiver
+	// is what acts on it — serving deliveries and verifying each one against the
+	// schemes declared here, through [v1.VerifyWebhookDelivery] — while
+	// `flow validate` checks the declaration and `flow test` replays stored
+	// deliveries against it offline. See [WebhookTrigger] for what the receiver
+	// is handed.
 	Webhooks []*WebhookTrigger `protobuf:"bytes,2,rep,name=webhooks,proto3" json:"webhooks,omitempty"`
 	// Manual narrows the start that already works, and is the one entry in this
 	// message that does not enable anything.
