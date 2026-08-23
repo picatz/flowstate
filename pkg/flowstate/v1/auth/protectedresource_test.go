@@ -252,11 +252,8 @@ func TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudie
 	require.ErrorContains(t, err, "https://flowstate.example.com/mcp")
 }
 
-// TestProtectedResourceDocumentOmitsScopesSupported pins D1's deferral
-// (picatz/flowstate#567): this slice defines no action/scope vocabulary, so
-// the document must not carry the key at all — not an empty list, which
-// would itself be a claim ("this resource supports zero scopes").
-func TestProtectedResourceDocumentOmitsScopesSupported(t *testing.T) {
+// TestProtectedResourceDocumentPublishesScopesSupported pins the public OAuth vocabulary to the shared action model.
+func TestProtectedResourceDocumentPublishesScopesSupported(t *testing.T) {
 	t.Parallel()
 
 	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
@@ -278,8 +275,11 @@ func TestProtectedResourceDocumentOmitsScopesSupported(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(body, &raw))
 
-	require.NotContains(t, raw, "scopes_supported",
-		"the document must omit scopes_supported entirely, not carry an empty list")
+	want := make([]any, len(auth.SupportedScopes()))
+	for i, scope := range auth.SupportedScopes() {
+		want[i] = scope
+	}
+	require.Equal(t, want, raw["scopes_supported"])
 	require.Equal(t, "https://flowstate.example.com/mcp", raw["resource"])
 	require.Equal(t, []any{"https://trusted.example.com"}, raw["authorization_servers"])
 }

@@ -1,0 +1,13 @@
+{
+  "issuer": "https://issuer.example.com",
+  "authorization_endpoint": "https://issuer.example.com/authorize",
+  "token_endpoint": "https://issuer.example.com/token",
+  "pushed_authorization_request_endpoint": "https://issuer.example.com/par",
+  "device_authorization_endpoint": "https://issuer.example.com/device",
+  "registration_endpoint": "https://issuer.example.com/register",
+  "code_challenge_methods_supported": ["S256"],
+  "dpop_signing_alg_values_supported": ["ES256"],
+  "grant_types_supported": ["authorization_code", "urn:ietf:params:oauth:grant-type:token-exchange", "urn:ietf:params:oauth:grant-type:device_code"],
+  "token_endpoint_auth_methods_supported": ["none", "private_key_jwt", "tls_client_auth"],
+  "mtls_endpoint_aliases": {"token_endpoint": "https://mtls.issuer.example.com/token"}
+}

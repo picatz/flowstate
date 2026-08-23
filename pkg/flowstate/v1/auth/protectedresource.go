@@ -58,11 +58,6 @@ type ProtectedResourceConfig struct {
 // ProtectedResource serves RFC 9728 protected resource metadata for one
 // configured resource, and carries the metadata URL an [Authenticator]'s
 // 401 challenge points a caller at.
-//
-// Per D1's deferral (picatz/flowstate#567), the metadata document omits
-// "scopes_supported" entirely: this slice does not define a scope
-// vocabulary, and a document that named scopes here would need renaming the
-// day one exists.
 type ProtectedResource struct {
 	resource     string
 	resourcePath string
@@ -134,7 +129,7 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		Resource:               cfg.Resource,
 		AuthorizationServers:   cfg.AuthorizationServers,
 		BearerMethodsSupported: []string{"header"},
-		// ScopesSupported deliberately omitted: see [ProtectedResource]'s doc.
+		ScopesSupported:        SupportedScopes(),
 	}
 
 	// The resource's own path, kept for the same reason the metadata path is

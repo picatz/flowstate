@@ -10,8 +10,8 @@ this deployment deliberately does not do yet.
 
 It assumes the design recorded on [#558](https://github.com/picatz/flowstate/issues/558)
 and sequenced on [#567](https://github.com/picatz/flowstate/issues/567), and
-describes S7a of that sequence: a token-gated HTTP MCP surface with no scope
-vocabulary and no delegation claims accepted. Read those issues for the
+describes a token-gated HTTP MCP surface with a shared scope vocabulary and no
+delegation claims accepted. Read those issues for the
 reasoning; this page is the operator-facing result.
 
 The surface is `flow mcp serve` — its own verb, not a flag on `flow mcp`.
@@ -45,7 +45,7 @@ sequenceDiagram
     A->>F: MCP request, no token
     F-->>A: 401 + WWW-Authenticate:<br/>resource_metadata="https://.../.well-known/oauth-protected-resource"
     A->>F: GET /.well-known/oauth-protected-resource
-    F-->>A: { resource, authorization_servers, bearer_methods_supported }
+    F-->>A: { resource, authorization_servers, scopes_supported, bearer_methods_supported }
     A->>AS: GET metadata (RFC 8414, or OpenID Connect Discovery)
     AS-->>A: authorization_endpoint, token_endpoint
     A->>AS: authorization code + PKCE (S256) + resource=<the MCP server's URI>
@@ -214,16 +214,12 @@ says plainly what it is missing.
   issued. Every one of those stays the operator's identity provider's job. If
   a deployment has no IdP, HTTP MCP is not available to it today —
   `--insecure-no-auth` covers loopback development only.
-- **No scope vocabulary yet.** `scopes_supported` is not advertised, and no
-  `401`/`403` challenge names a `scope` parameter. This is deferred by
-  omission rather than half-specified: the action/scope vocabulary is one
-  decision shared across the policy surface, the protected-resource metadata,
-  and MCP's own step-up challenges (#567's D1), and until that decision is
-  made, this surface names none of it rather than shipping a spelling that
-  would have to migrate later. Authorization here is coarse — a caller with a
-  verified, audience-bound token from a trusted issuer may call every tool
-  the trust policy's claim rules and role admit — the same granularity every
-  other authenticated Connect RPC already has.
+- **Scopes are actions, not another policy model.** The protected-resource
+  document publishes stable `flowstate:<action>` values derived from the same
+  authorization actions policy evaluates. A 401 precisely names
+  `invalid_token`; a denial may name the required scope only after the caller
+  is known and disclosure cannot reveal a hidden resource. DPoP-bound requests
+  receive `DPoP` challenges and bearer requests receive `Bearer`.
 - **No delegation.** A token carrying an RFC 8693 `act` or `may_act` claim —
   the shape an agent acting for a human produces — is refused outright, not
   silently accepted as the bare subject and not stripped down to one. Refusal
@@ -236,10 +232,12 @@ says plainly what it is missing.
   `on_behalf_of` on the schema (#567's S3, gated on the D2 naming decision)
   and RFC 8693 `actor_token` support in the existing token exchanger (S8);
   neither has landed.
-- **No dynamic client registration and no Client ID Metadata Documents.** A
-  resource server needs neither — client registration is an authorization
-  server's obligation, and flowstate is not one. Revisit only alongside the
-  authorization-server work above, if it is ever taken on.
+- **Client registration remains the authorization server's job.** Clients may
+  use a pre-registered identifier, dynamic registration only where the provider
+  explicitly enables it, or an HTTPS Client ID Metadata Document. Documents are
+  fetched without redirects through the public-network SSRF policy, with DNS/IP
+  checks at connection time, strict JSON content type and byte bounds, exact
+  redirect-URI matching, bounded caching, and no stale-on-error fallback.
 - **A reduced tool list, by absence rather than by a flag.** Two groups are
   not registered on this surface at all, so a model does not see them and
   there is no flag that turns either on:
@@ -284,3 +282,26 @@ What it is not, yet, is a principal that can say *whose* agent it is — that is
 exactly the delegation gap named above, and it is why an approval ceremony
 that depends on knowing a human authorized it should not be built on this
 surface until that gap closes.
+
+## Human, headless-agent, and workload sequences
+
+A **human client** discovers the resource and authorization-server documents,
+selects authorization code, requires PKCE `S256`, uses PAR when advertised, and
+opens the authorization endpoint in the user's browser. It sends the exact same
+`redirect_uri`, code verifier, resource indicator, and requested Flowstate scopes
+at the token endpoint. A provider advertising DPoP binds both requests and the
+resource call to the same proof key.
+
+A **headless agent** prefers the device authorization grant when the provider
+advertises its endpoint. The agent displays the verification URI and user code,
+polls within the server's interval, and requests an audience-bound token. If the
+provider lacks device authorization, an operator must provision a pre-registered
+non-browser client; silently falling back to an embedded password is not allowed.
+
+A **workload** has no human browser. It uses a pre-registered confidential client
+(`private_key_jwt` or mTLS), or RFC 8693 token exchange when advertised. When mTLS
+endpoint aliases are published it uses those aliases as a unit, never mixing a
+regular endpoint with an mTLS credential. Dynamic registration is used only under
+an explicit operator/provider opt-in. In every sequence metadata is discovery,
+not authority: unsupported PKCE, client authentication, PAR, DPoP, device flow,
+or token exchange causes that flow to stop rather than downgrade.

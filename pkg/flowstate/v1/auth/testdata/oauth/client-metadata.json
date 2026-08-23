@@ -1,0 +1,8 @@
+{
+  "client_id": "https://client.example.com/oauth/client.json",
+  "client_name": "Flowstate interoperability client",
+  "redirect_uris": ["https://client.example.com/oauth/callback"],
+  "grant_types": ["authorization_code"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

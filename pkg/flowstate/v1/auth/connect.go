@@ -303,10 +303,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 // deployment has not defined one to name here.
 func (a *Authenticator) unauthenticated(cause error) error {
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New(publicReason(cause)))
-	challenge := `Bearer error="invalid_token"`
-	if a.protectedResourceMetadataURL != "" {
-		challenge += fmt.Sprintf(`, resource_metadata=%q`, a.protectedResourceMetadataURL)
-	}
+	challenge := OAuthChallenge(false, "invalid_token", a.protectedResourceMetadataURL, "")
 	err.Meta().Set("WWW-Authenticate", challenge)
 	return err
 }

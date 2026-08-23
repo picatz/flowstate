@@ -1,0 +1,8 @@
+{
+  "pre_registered": {"client_id": "flowstate-cli", "pkce": "S256"},
+  "metadata_document": {"client_id": "https://client.example.com/oauth/client.json", "redirect_uri": "https://client.example.com/oauth/callback"},
+  "dynamic_registration": {"enabled": true, "registration_endpoint_required": true},
+  "par_provider": {"required": true},
+  "downgrades_refused": ["plain", "redirect_uri_prefix_match", "par_to_query", "S256_to_plain", "dpop_to_bearer"],
+  "ssrf_refused": ["loopback", "private", "link_local", "cloud_metadata", "dns_rebinding", "redirect"]
+}

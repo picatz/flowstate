@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strings"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 )
@@ -50,10 +51,10 @@ import (
 //   - Expiration is the token's own "exp". A token without one is refused:
 //     the middleware would refuse it too unless AllowMissingExpiration were
 //     set, and this says so in the verifier where the reason is legible.
-//   - Scopes is deliberately nil, and no caller of this sets
-//     [mcpauth.RequireBearerTokenOptions.Scopes]. #567's D1 defers the
-//     scope vocabulary by omission: a challenge that named a scope would name
-//     a spelling that has to migrate the day that decision lands.
+//   - Scopes carries the verified token's standard `scope` or `scp` claim. The
+//     resource metadata publishes the same stable vocabulary derived from the
+//     shared authorization actions, so SDK scope enforcement and policy use
+//     one spelling.
 //   - Extra is deliberately nil. It travels to tool handlers through the
 //     request context, and nothing on this surface authorizes per claim yet
 //     (that is S7b); carrying a verified claims map into a surface that does
@@ -128,8 +129,30 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 		return &mcpauth.TokenInfo{
 			Expiration: principal.ExpiresAt,
 			UserID:     MCPSessionUserID(principal),
+			Scopes:     principalOAuthScopes(principal),
 		}, nil
 	}
+}
+
+func principalOAuthScopes(principal Principal) []string {
+	value, ok := principal.Claims["scope"]
+	if !ok {
+		value = principal.Claims["scp"]
+	}
+	var scopes []string
+	switch value := value.(type) {
+	case string:
+		scopes = strings.Fields(value)
+	case []string:
+		scopes = append(scopes, value...)
+	case []any:
+		for _, item := range value {
+			if scope, ok := item.(string); ok {
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+	return scopes
 }
 
 // MCPSessionUserID is the value [MCPTokenVerifier] puts in
