@@ -64,11 +64,21 @@ type RunObserver interface {
 	// the reason `expect.skipped` claims are otherwise checked by absence.
 	StepSkipped(id string)
 
-	// WaitStarted reports a wait the moment it parks: the signal name it
-	// waits for, or "" for a plain timer (`sleep:`/`wait_until:`), with the
-	// resolved timeout. bounded is false for a signal wait with no timeout —
-	// a wait that only a delivery can end. A wait that resolves without
-	// parking (a non-positive duration) reports nothing.
+	// WaitStarted reports a wait at the moment the driver commits to
+	// waiting: the signal name it waits for, or "" for a plain timer
+	// (`sleep:`/`wait_until:`), with the resolved timeout. bounded is false
+	// for a signal wait with no timeout — a wait that only a delivery can
+	// end. A wait that resolves without parking reports nothing: a
+	// non-positive duration, or a delivery already in hand where the
+	// [SignalWaiter] can report one preflight — which [LocalSignals], the
+	// waiter every `flow test` case runs under, always can.
+	//
+	// The boundary of that claim is the waiter's, not this contract's: a
+	// custom [SignalWaiter] holding a buffered delivery this driver cannot
+	// see may answer the instant after this fires, and then the "wait" it
+	// reported ended at once — the same boundary the local wait announcement
+	// beside it has always had, since neither can ask a waiter what it will
+	// do without an interface for asking.
 	WaitStarted(id string, signal string, timeout time.Duration, bounded bool)
 }
 
