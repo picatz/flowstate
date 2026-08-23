@@ -624,6 +624,23 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		recorder.sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
 	}
 
+	// The case's own `secrets:` plaintext joins the set (Codex, #1052):
+	// [resolveSecretInputs] exposes those values to stub expressions, so a
+	// stub can echo one into a step's outputs, and the rule is absolute — a
+	// resolved secret never prints, whatever path it took (CLAUDE.md,
+	// "secrets never enter workflow history"). Both lists, the pair every
+	// declared sensitive value gets: the value comparison catches the whole,
+	// the substring backstop catches "Bearer " + secret. An empty value is
+	// skipped — replacing the empty string would mark every position in
+	// every line while protecting nothing.
+	for _, value := range test.Secrets {
+		if value == "" {
+			continue
+		}
+		recorder.sensitive.values = append(recorder.sensitive.values, value)
+		recorder.sensitive.substrings = append(recorder.sensitive.substrings, value)
+	}
+
 	// Who this case runs as, for the one question a starter answers locally:
 	// what `distinct_from_starter:` compares a scripted `sender:` against.
 	// [Test.Starter] names it, the way `flow run local --as-subject` names it
@@ -906,18 +923,13 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
-			// Recorded on the outcome, not the attempt: [v1.LocalSignals.DeliverFrom]
-			// refuses a sender a declared signal policy denies, and refuses past
-			// the queue's bound — and a policy denial is precisely the outcome a
-			// case scripting a sender needs to see, so an account that reported
-			// it as delivered would be a false transcript in exactly the runs
-			// that need debugging (Codex, #1052). Either way the moment recorded
-			// is the send's, on the clock the run waits against.
-			if err := signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender); err != nil {
-				recorder.signalRefused(j.name, err.Error())
-				return
-			}
-			recorder.signalDelivered(j.name, j.payload, j.senderSubject)
+			// The send and its record are one atomic decision, and the record
+			// is honest about the outcome — delivered, or refused by a
+			// declared signal policy or the queue's bound. See
+			// [runRecorder.deliverRecorded] for why both halves matter.
+			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, func() error {
+				return signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+			})
 		}(j)
 	}
 

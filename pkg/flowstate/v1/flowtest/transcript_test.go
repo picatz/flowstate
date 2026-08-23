@@ -102,6 +102,66 @@ tests:
 	assert.Contains(t, text, `took case "high"`, "the switch line reads as the decision, not as two opaque outputs")
 	assert.Contains(t, text, "t=0s", "the run starts at the virtual epoch")
 	assert.Contains(t, text, "t=5m", "the delivery and what it unblocked happen at the scripted moment")
+
+	// Causal order, deterministically (Codex, #1052): the delivery is
+	// recorded under the recorder's lock around the send itself, so the wait
+	// it wakes can never record its completion first — the account always
+	// reads delivery, then what it unblocked.
+	delivery := strings.Index(text, "signal ship-approved")
+	unblocked := strings.Index(text, "-> approved: true")
+	require.GreaterOrEqual(t, delivery, 0)
+	require.GreaterOrEqual(t, unblocked, 0)
+	assert.Less(t, delivery, unblocked,
+		"the delivery must appear before the completion it caused")
+}
+
+// TestTranscriptRedactsTestDeclaredSecrets pins the P1 on #1052's second
+// round: a case's own `secrets:` plaintext reaches stub expressions
+// ([resolveSecretInputs] resolves it precisely so `where:` and `returns:` can
+// read it), so a stub echoing `${inputs.bearer}` puts the material into a
+// step's outputs — and the transcript's redaction set used to hold only
+// `sensitive:` workflow inputs. A resolved secret never prints, whatever path
+// it took.
+func TestTranscriptRedactsTestDeclaredSecrets(t *testing.T) {
+	t.Parallel()
+
+	const material = "leak-me-not-0451"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: bearer-request
+steps:
+  - id: call
+    http:
+      url: https://api.example.com/status
+      bearer: ${secret('env:TOKEN')}
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the stub echoes the resolved secret
+    workflow: ./workflow.yaml
+    secrets:
+      env:TOKEN: `+material+`
+    stubs:
+      - task: http
+        returns:
+          status_code: 200
+          seen: ${inputs.bearer}
+    expect:
+      ran: [call]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	require.NotContains(t, text, material,
+		"a resolved secret must never render in the account, whatever path it took")
+	assert.Contains(t, text, "[redacted]")
 }
 
 // TestTranscriptRedactsSensitiveValues: a value that originates in a
