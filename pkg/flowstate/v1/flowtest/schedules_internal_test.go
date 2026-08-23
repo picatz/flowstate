@@ -41,7 +41,7 @@ type fakeCase struct {
 // back a transcript naming it, so the accumulator has something to disagree
 // about.
 func (f *fakeCase) run(transcriptFor func(scheduler v1.Scheduler) string) caseRun {
-	return func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
+	return func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
 		scheduler := v1.SchedulerFromContext(ctx)
 		f.runs++
 		if seeded, ok := scheduler.(*v1.SeededScheduler); ok {
@@ -59,6 +59,7 @@ func (f *fakeCase) run(transcriptFor func(scheduler v1.Scheduler) string) caseRu
 					}}},
 				}},
 			}},
+			nil,
 			nil
 	}
 }
@@ -74,7 +75,7 @@ func TestNoSeedsRunsEachCaseExactlyOnce(t *testing.T) {
 	accumulator := newScheduleAccumulator(dst.Budget{})
 	fake := &fakeCase{name: "a case"}
 
-	result, spec, transcript := accumulator.run(t.Context(), fake.run(steady))
+	result, spec, transcript, _ := accumulator.run(t.Context(), fake.run(steady))
 
 	assert.Equal(t, 1, fake.runs, "a run with no seeds must run each case exactly once")
 	require.NotNil(t, result)
@@ -121,7 +122,7 @@ func TestADivergenceNamesTheFirstFailingSeed(t *testing.T) {
 	// Every seeded schedule disagrees with written order, so the first one — seed
 	// 1 — is the one that must be reported. A later seed being named would mean
 	// the search kept walking past a failure it had already found.
-	_, _, transcript := accumulator.run(t.Context(), fake.run(func(scheduler v1.Scheduler) string {
+	_, _, transcript, _ := accumulator.run(t.Context(), fake.run(func(scheduler v1.Scheduler) string {
 		if scheduler == v1.WrittenOrder {
 			return "written"
 		}

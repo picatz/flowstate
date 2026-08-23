@@ -469,6 +469,18 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 
 		activation := stubActivation(ctx, scope, native)
 
+		// The transcript's share of an answer (#929 slice 2): which matcher
+		// answered, serving which step — the same numbering every stub
+		// diagnostic uses, recorded so a failing case's account can say
+		// `stub 2 (step: build)` beside what the step produced. Nil outside
+		// `flow test`'s own runs, where nothing records.
+		recordAnswer := func(m *compiledStub) {
+			if recorder := runRecorderFromContext(ctx); recorder != nil {
+				serving, _ := v1.TaskStepFromContext(ctx)
+				recorder.stubAnswered(name, m.ordinal, m.step, serving)
+			}
+		}
+
 		// The scan and its bookkeeping are one atomic decision: two parallel
 		// branches invoking this task concurrently must not both read a
 		// matcher's state between one another's updates. See [stubbedTask.mu].
@@ -531,6 +543,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 				if m.times > 0 {
 					m.remaining--
 				}
+				recordAnswer(m)
 				kind := v1.ErrorKind(m.fails.Kind)
 				if kind == "" {
 					kind = v1.ErrorKindUpstream
@@ -542,6 +555,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			if m.times > 0 {
 				m.remaining--
 			}
+			recordAnswer(m)
 
 			// A `response:` answer hands the resolved fields to the task's own
 			// raw-response evaluation ([v1.TaskDef.StubResponseFn], resolved
@@ -562,6 +576,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			}
 
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
+		}
+
+		// An invocation nothing answered clears any attribution an earlier
+		// attempt of the same step recorded — see [runRecorder.stubUnmatched].
+		if recorder := runRecorderFromContext(ctx); recorder != nil {
+			serving, _ := v1.TaskStepFromContext(ctx)
+			recorder.stubUnmatched(serving)
 		}
 
 		// A where: that failed to evaluate is a broken expression, the same
@@ -847,9 +868,30 @@ func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sens
 				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, value)
 				}
+			case int64, uint64, float64, bool:
+				// A non-string scalar's canonical text joins the backstop:
+				// `${string(inputs.pin)}` turns the number into a string the
+				// typed equality can never see (Codex, #1052). fmt.Sprint is
+				// the spelling both CEL's string() of an int and this
+				// package's own rendering produce; a reformatted spelling
+				// (padding, precision) is past what a substring set can
+				// enumerate, which is the boundary the withholdAll rule
+				// already draws for sets that cannot be built at all. The
+				// floor and root exemption apply exactly as for a string
+				// descendant.
+				text := fmt.Sprint(value)
+				if n.root || utf8.RuneCountInString(text) >= minSensitiveSubstringRunes {
+					out.substrings = append(out.substrings, text)
+				}
 			case map[string]any:
-				for _, child := range value {
-					pending = append(pending, node{value: child})
+				// Keys are descendants too: sensitivity belongs to the whole
+				// declared value, and a map whose *keys* carry the material —
+				// account ids, say — leaks through a walk that only enqueues
+				// what they map to (Codex, #1052). A key rides the queue as
+				// any string descendant does, so the substring floor and the
+				// descendant bound apply to it unchanged.
+				for name, child := range value {
+					pending = append(pending, node{value: name}, node{value: child})
 				}
 			case []any:
 				for _, child := range value {
@@ -893,6 +935,15 @@ func redactSensitiveTree(v any, sensitiveValues []any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, e := range t {
+			// Keys redact by exact match at every depth, not only where a
+			// renderer happens to print one at the top level: a sensitive
+			// struct's key — including one below the substring floor — is as
+			// much the material as the value it maps to (Codex, #1052). Two
+			// sensitive keys folding into one marker entry lose a pair, which
+			// is the redaction doing its job, not a collision to avoid.
+			if isSensitiveValue(k, sensitiveValues) {
+				k = sensitiveMarker
+			}
 			out[k] = redactSensitiveTree(e, sensitiveValues)
 		}
 		return out
@@ -927,10 +978,60 @@ const sensitiveMarker = "[redacted]"
 // prevents. [sensitiveNativeValues] is where that line is drawn, and
 // [minSensitiveSubstringRunes] is where it is argued.
 func redactSensitiveSubstrings(rendered string, substrings []string) string {
+	// Every match of every sensitive string is found against the ORIGINAL
+	// text, the intervals merged, and the merged spans spliced out in one
+	// pass. Sequential ReplaceAll cannot be ordered into correctness: with
+	// containment (`abcd` in `abcdef`) the shorter-first order splits the
+	// longer into `[redacted]ef`, and with intersection (`ABCDE` and `CDEFG`
+	// across `ABCDEFG`) *either* order leaves the other's fragment exposed —
+	// both partial leaks, the second one whatever you sort by (Codex, #1052).
+	// A union of matches has no order to get wrong. One site, so the stub
+	// diagnostics and the transcript share the answer.
+	type span struct{ start, end int }
+	var spans []span
 	for _, s := range substrings {
-		rendered = strings.ReplaceAll(rendered, s, sensitiveMarker)
+		if s == "" {
+			continue
+		}
+		for from := 0; from <= len(rendered)-len(s); {
+			i := strings.Index(rendered[from:], s)
+			if i < 0 {
+				break
+			}
+			start := from + i
+			spans = append(spans, span{start: start, end: start + len(s)})
+			// Advance one byte, not one match length: self-overlapping
+			// matches ("aa" across "aaa") must all enter the union.
+			from = start + 1
+		}
 	}
-	return rendered
+	if len(spans) == 0 {
+		return rendered
+	}
+
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+
+	var b strings.Builder
+	prev := 0
+	current := spans[0]
+	flush := func() {
+		b.WriteString(rendered[prev:current.start])
+		b.WriteString(sensitiveMarker)
+		prev = current.end
+	}
+	for _, sp := range spans[1:] {
+		if sp.start <= current.end {
+			if sp.end > current.end {
+				current.end = sp.end
+			}
+			continue
+		}
+		flush()
+		current = sp
+	}
+	flush()
+	b.WriteString(rendered[prev:])
+	return b.String()
 }
 
 // truncateRuneSafe elides rendered past [maxUnmatchedStubValueLen], cutting

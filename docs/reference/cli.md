@@ -1604,6 +1604,8 @@ A `switch:` is measured a second way, per arm rather than per step, because an a
 
 A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name the workflow does not have refuses the case before it runs, with a suggestion — a claim about a step that does not exist would otherwise pass vacuously forever. A stub the case declared and the run never answered through is reported as a warning: a fact about the case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle in cases that never invoke its task.
 
+A failing case prints its transcript beneath the unmet expectation: what each step produced and when virtual time moved, which stub answered it, each scripted signal with its sender, and the `switch:` arm taken — the account the expectation was judged against, with every value passing through the same redaction the stub diagnostics apply. `-v` prints every case's transcript, passing or not.
+
 `--run <pattern>` runs only the cases whose name matches the regular expression, the way `go test -run` does, and says how many cases it filtered out — beside the file and on the summary line — so a green over a subset never reads as the file's green. `--coverage-required` is refused alongside it: coverage is a property of the whole suite, and a filtered subset's gaps are not the suite's.
 
 `--output json` or `--output jsonl` reports what ran as a schema message instead of text, and carries the coverage sets under a `coverage` key so CI annotates rather than parses prose.

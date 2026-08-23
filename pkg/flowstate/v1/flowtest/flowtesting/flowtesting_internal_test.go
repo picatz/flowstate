@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -40,6 +41,9 @@ func (r *recorder) Fatalf(format string, args ...any) {
 }
 func (r *recorder) Logf(format string, args ...any) {
 	r.logs = append(r.logs, fmt.Sprintf(format, args...))
+}
+func (r *recorder) Log(args ...any) {
+	r.logs = append(r.logs, fmt.Sprint(args...))
 }
 func (r *recorder) Context() context.Context { return context.Background() }
 
@@ -315,6 +319,12 @@ tests:
 	runCase(r, file, path, config{dir: filepath.Dir(path)}, "fails on an output")
 	require.NotEmpty(t, r.errors, "the failing case must fail the subtest that ran it")
 	require.Contains(t, r.errors[0], "expect.outputs")
+
+	// The transcript travels the log channel (#929 slice 2): go test shows
+	// logs on failure and under -v, which is the CLI's own rule for it.
+	transcript := strings.Join(r.logs, "\n")
+	require.Contains(t, transcript, "t=0s")
+	require.Contains(t, transcript, "hello")
 
 	green := &recorder{}
 	runCase(green, file, path, config{dir: filepath.Dir(path)}, "passes")
