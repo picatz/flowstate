@@ -14,6 +14,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/ext"
+	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -51,6 +52,12 @@ const DefaultCostLimit uint64 = 1_000_000
 // must be non-zero for context cancellation to take effect at all.
 const DefaultInterruptCheckFrequency uint = 256
 
+// MaxJSONParseBytes bounds one value decoded by json_parse. It matches the
+// largest specification and default HTTP response body, the two places JSON
+// supplied by a workflow can originate, while making the allocation performed
+// inside the CEL function finite before json.Unmarshal is entered.
+const MaxJSONParseBytes = 1 << 20
+
 // Limits bound a single CEL evaluation.
 //
 // The zero value is not useful; call [DefaultLimits] and adjust from there, so
@@ -76,7 +83,11 @@ func DefaultLimits() Limits {
 
 // programOptions returns the CEL program options that enforce l.
 func (l Limits) programOptions() []cel.ProgramOption {
-	var opts []cel.ProgramOption
+	// CEL otherwise assigns extension functions a constant call cost. JSON
+	// decoding is linear in its input, so charge its bytes against the same
+	// per-evaluation budget that bounds comprehensions. Repeated json_parse calls
+	// can therefore consume at most Cost bytes in aggregate.
+	opts := []cel.ProgramOption{cel.CostTracking(jsonParseCostEstimator{})}
 	if l.Cost > 0 {
 		// CostLimit implies OptTrackCost.
 		opts = append(opts, cel.CostLimit(l.Cost))
@@ -86,6 +97,26 @@ func (l Limits) programOptions() []cel.ProgramOption {
 	}
 	return opts
 }
+
+type jsonParseCostEstimator struct{}
+
+func (jsonParseCostEstimator) CallCost(_ string, overloadID string, args []ref.Val, _ ref.Val) *uint64 {
+	if (overloadID != "json_parse_string" && overloadID != "json_parse_bytes") || len(args) != 1 {
+		return nil
+	}
+	var cost uint64
+	switch value := args[0].Value().(type) {
+	case string:
+		cost = uint64(len(value))
+	case []byte:
+		cost = uint64(len(value))
+	default:
+		return nil
+	}
+	return &cost
+}
+
+var _ interpreter.ActualCostEstimator = jsonParseCostEstimator{}
 
 // An Evaluator compiles and evaluates CEL expressions under a fixed set of
 // limits, caching the environments it builds.
@@ -494,6 +525,9 @@ func buildEnv(libs []string) (*cel.Env, error) {
 // task for every response shape.
 func jsonLibrary() cel.EnvOption {
 	parse := func(data []byte) ref.Val {
+		if len(data) > MaxJSONParseBytes {
+			return types.NewErr("json_parse: input exceeds %d bytes", MaxJSONParseBytes)
+		}
 		var out any
 		if err := json.Unmarshal(data, &out); err != nil {
 			return types.NewErr("json_parse: %v", err)
