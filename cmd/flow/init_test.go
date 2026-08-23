@@ -126,6 +126,59 @@ func TestInitWritesNothingWhenItRefuses(t *testing.T) {
 		"init refused and still wrote %s, leaving a half-scaffolded directory", scaffoldWorkflow)
 }
 
+// TestReserveScaffoldFilesRefusesALateSymlink pins the atomic half of the
+// no-overwrite promise. runInit checks both destinations before writing either,
+// but a directory entry can appear after that check; the create itself must
+// therefore refuse an existing symlink rather than follow it and truncate its
+// target.
+//
+// The assertion is the negative direction — the victim's bytes are unchanged —
+// because a test that only checks the error would pass just as happily against
+// a create that followed the link and then failed for some other reason.
+func TestReserveScaffoldFilesRefusesALateSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	const mine = "mine, and not to be replaced\n"
+	require.NoError(t, os.WriteFile(victim, []byte(mine), 0o644))
+
+	require.NoError(t, os.Symlink(victim, filepath.Join(dir, scaffoldWorkflow)))
+
+	_, err := reserveScaffoldFiles(dir, []scaffoldFile{
+		{name: scaffoldWorkflow, contents: "replacement\n"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "never overwrites",
+		"a late collision lost the refusal the preflight words for the same case")
+
+	data, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	assert.Equal(t, mine, string(data), "the scaffold write followed an existing symlink")
+}
+
+// TestReserveScaffoldFilesLeavesNothingWhenTheSecondPathCollides pins the other
+// half of the same promise, and the half the exclusive create is what makes
+// reachable: two files land or neither does.
+//
+// runInit's preflight cannot keep that on its own, because the collision this
+// test plants arrives after it. Reserving both destinations before writing
+// either is what keeps it, so the assertion is that the *first* path is gone
+// again — not merely that the call failed.
+func TestReserveScaffoldFilesLeavesNothingWhenTheSecondPathCollides(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, scaffoldTest), []byte("planted\n"), 0o644))
+
+	_, err := reserveScaffoldFiles(dir, []scaffoldFile{
+		{name: scaffoldWorkflow, contents: starterWorkflow("example")},
+		{name: scaffoldTest, contents: starterTest()},
+	})
+	require.Error(t, err)
+
+	_, err = os.Lstat(filepath.Join(dir, scaffoldWorkflow))
+	assert.True(t, os.IsNotExist(err),
+		"a collision on %s left %s behind, half-scaffolding the directory",
+		scaffoldTest, scaffoldWorkflow)
+}
+
 // TestInitCreatesTheDirectory covers the invocation a newcomer actually types
 // — `flow init my-thing` for a directory that does not exist yet — which is the
 // one `cargo new` and `terraform init` set the expectation for.

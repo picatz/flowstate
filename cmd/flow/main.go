@@ -795,7 +795,8 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	started, err := client.Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason}))
 	if err != nil {
-		return refusedStart(args[0], workflow.GetName(), runArgumentFlags(cmd), server, err)
+		arguments, redacted := runArgumentFlags(cmd, workflow)
+		return refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
 	}
 
 	workflowID := started.Msg.GetWorkflowId()
