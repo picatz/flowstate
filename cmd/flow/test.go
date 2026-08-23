@@ -234,8 +234,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// honesty line — how many schedules ran, and how many scheduling
 			// decisions they actually made — is still somewhere a person or a CI
 			// log can see it. A `--seeds` run whose exploration was silent would
-			// be a green nobody could check. Phase A adds no schema field for
-			// this (issue #800), so this is where it lives.
+			// be a green nobody could check. The document carries the same
+			// account in its `schedules` schema field ([v1.ScheduleExploration],
+			// issue #931), attached by flowtest's runSuite; this prose is the
+			// person-facing half, not the only copy.
 			printSchedules(surface.Err, surface.ErrTheme, report, schedules)
 		}
 

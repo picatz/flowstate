@@ -157,6 +157,12 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	for _, c := range out.Coverage {
 		report.Coverage = append(report.Coverage, c.Report())
 	}
+	// The schedule account rides the same way (issue #931's other half):
+	// unset when nothing explored, so a report from a default run is the
+	// document it always was.
+	if out.Schedules != nil {
+		report.Schedules = out.Schedules.Report()
+	}
 	return out
 }
 
