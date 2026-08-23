@@ -53,7 +53,7 @@ func validWorkflow() *v1.Workflow {
 }
 
 // TestValidate checks messages against the rules declared as buf.validate
-// options in proto/flowstate/v1/flowstate.proto.
+// options in proto/flowstate/v1/*.proto.
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name string

@@ -1,0 +1,2 @@
+proto: buf, built from source by the lint step.
+See README.md beside this file for why this file exists.

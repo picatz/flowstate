@@ -9,12 +9,28 @@ import (
 )
 
 func describedPlugin(name, version, schema string) *v1.PluginDescription {
-	return &v1.PluginDescription{Name: name, Version: version, ProtocolVersion: 2, TaskSchemaDigest: schema, DistributionDigest: "sha256:binary"}
+	return &v1.PluginDescription{
+		Name: name, Version: version, ProtocolVersion: 2,
+		TaskSchemaDigest: schema, DistributionDigest: "sha256:binary", ClaimsDigest: "sha256:claims",
+	}
 }
 
-// catalogOf is a deployment holding exactly these plugins.
+// catalogOf is a deployment holding exactly these plugins, reporting the
+// current build's claims schema version — what a real catalog from this
+// commit's Host.Catalog() actually reports, and what resolveOne now requires
+// before it will mint a new pin (#763 review: a new pin left at the zero
+// value would permanently exempt that run's replay guard from the version
+// check). Tests exercising a specific other version, including zero to
+// simulate a pre-#763 catalog, use [catalogWithClaimsSchemaVersion] instead.
 func catalogOf(plugins ...*v1.PluginDescription) *v1.PluginCatalog {
-	return &v1.PluginCatalog{Plugins: plugins}
+	return &v1.PluginCatalog{Plugins: plugins, ClaimsSchemaVersion: v1.CurrentClaimsSchemaVersion}
+}
+
+// catalogWithClaimsSchemaVersion is catalogOf with a specific claims schema
+// version asserted instead of the current build's, for tests that need one
+// other than today's default — including zero, a pre-#763 catalog's shape.
+func catalogWithClaimsSchemaVersion(version uint32, plugins ...*v1.PluginDescription) *v1.PluginCatalog {
+	return &v1.PluginCatalog{Plugins: plugins, ClaimsSchemaVersion: version}
 }
 
 // requires is a workflow declaring one requirement and nothing else.
@@ -334,4 +350,153 @@ func TestPluginWalksAreBounded(t *testing.T) {
 
 	_, err := v1.PinnedPlugins(deep)
 	require.ErrorContains(t, err, "past what a specification is checked to")
+}
+
+// TestReplayGuardAcceptsALegacyPinWithNoClaimsDigest is #763's P1: an
+// in-flight durable run pinned before ClaimsDigest existed carries an empty
+// one, and a worker on this commit must accept it for an otherwise-unchanged
+// plugin rather than refusing the run — the old-writer/new-reader direction,
+// not just new-writer/new-reader.
+//
+// Built by hand rather than through ResolvePlugins, because that is exactly
+// the point: ResolvePlugins today always produces a ClaimsDigest (see
+// pinOf), so the only way to get the shape an old pin actually has is to
+// construct it directly, the way protojson.Unmarshal would reading it back
+// out of a workflow history recorded before this field existed.
+func TestReplayGuardAcceptsALegacyPinWithNoClaimsDigest(t *testing.T) {
+	t.Parallel()
+
+	legacyPin := []*v1.ResolvedPlugin{{
+		Name: "slack", Version: "v2.1.0", ProtocolVersion: 2,
+		TaskSchemaDigest:   "sha256:schema",
+		DistributionDigest: "sha256:binary",
+		// ClaimsDigest deliberately unset: this is what a pin recorded before
+		// #712's ClaimsDigest field existed decodes as.
+	}}
+
+	// The worker's live catalog: same descriptors, same distribution — an
+	// unchanged plugin — but it now reports a ClaimsDigest, because every
+	// worker built from this commit computes one.
+	worker := catalogOf(describedPlugin("slack", "v2.1.0", "sha256:schema"))
+
+	require.NoError(t, v1.CheckPluginsAvailable(legacyPin, worker),
+		"a run pinned before ClaimsDigest existed was refused by a worker reporting one for an unchanged plugin")
+}
+
+// TestReplayGuardStillRefusesAClaimsDigestMismatchOnANewPin is the positive
+// direction beside it: once a pin has recorded a claims digest, the guard
+// enforces it exactly like every other field in the tuple.
+func TestReplayGuardStillRefusesAClaimsDigestMismatchOnANewPin(t *testing.T) {
+	t.Parallel()
+
+	wf := requires("slack", "v2.1.0")
+	require.NoError(t, v1.ResolvePlugins(wf, catalogOf(describedPlugin("slack", "v2.1.0", "sha256:schema"))))
+
+	worker := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{
+		Name: "slack", Version: "v2.1.0", ProtocolVersion: 2,
+		TaskSchemaDigest: "sha256:schema", DistributionDigest: "sha256:binary",
+		ClaimsDigest: "sha256:different-claims",
+	}}}
+
+	err := v1.CheckResolvedPlugins(wf, worker)
+	require.ErrorContains(t, err, "claims digest",
+		"the run was pinned with a claims digest and a worker reporting a different one was not refused")
+}
+
+// TestResolvePluginsPinsClaimsSchemaVersion is the P1 a Codex review on #763
+// named: ClaimsDigest hashes only the claim fields' values, not which schema
+// version they were computed under, so a run pinned under one version and a
+// worker computing byte-identical values under a later version — one that is
+// allowed to redefine what an existing field *means*, not only add one — must
+// still be told apart. This is the write side: resolving against a catalog
+// asserting a version pins that version onto the run.
+func TestResolvePluginsPinsClaimsSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	wf := requires("slack", "v2.1.0")
+	require.NoError(t, v1.ResolvePlugins(wf,
+		catalogWithClaimsSchemaVersion(1, describedPlugin("slack", "v2.1.0", "sha256:schema"))))
+
+	require.Equal(t, uint32(1), wf.GetResolvedPlugins()[0].GetClaimsSchemaVersion(),
+		"resolving against a catalog with a claims schema version did not pin it onto the run")
+}
+
+// TestResolvePluginsRefusesAnUnknownClaimsSchemaVersion is the Codex finding
+// on #763's own version-pinning fix: sameResolvedPlugin's leniency for a zero
+// ClaimsSchemaVersion exists for a pin made before this field existed, not
+// for one resolveOne mints today. A new pin left at zero (or at a version
+// this build did not compute its ClaimsDigest under) would permanently
+// exempt that run's replay guard from the check
+// TestReplayGuardStillRefusesAClaimsSchemaVersionMismatchOnANewPin proves
+// exists — so resolveOne must refuse to create one rather than pin it and
+// leave the check silently inert for that run's whole lifetime.
+func TestResolvePluginsRefusesAnUnknownClaimsSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	wf := requires("slack", "v2.1.0")
+	err := v1.ResolvePlugins(wf, catalogWithClaimsSchemaVersion(0, describedPlugin("slack", "v2.1.0", "sha256:schema")))
+	require.ErrorContains(t, err, "claims schema version",
+		"a catalog reporting an unknown (zero) claims schema version was resolved into a new pin "+
+			"instead of being refused, which would leave that run's replay guard permanently unable "+
+			"to check claims schema version")
+
+	// A future version this build was not compiled to understand is refused
+	// identically — TaskDescriptionClaimsKnown's own reasoning (#763, both
+	// rounds) applies here too: reading is not the only side that must know
+	// what a version means, minting a pin under a version this build cannot
+	// interpret is exactly as unsafe.
+	err = v1.ResolvePlugins(requires("slack", "v2.1.0"),
+		catalogWithClaimsSchemaVersion(v1.CurrentClaimsSchemaVersion+1, describedPlugin("slack", "v2.1.0", "sha256:schema")))
+	require.ErrorContains(t, err, "claims schema version")
+}
+
+// TestReplayGuardAcceptsALegacyPinWithNoClaimsSchemaVersion is the same
+// old-writer/new-reader case as
+// [TestReplayGuardAcceptsALegacyPinWithNoClaimsDigest], for the version field
+// alongside it: a run pinned before ClaimsSchemaVersion existed carries zero,
+// and a worker on this commit must accept that for an otherwise-unchanged
+// plugin rather than refusing the run.
+func TestReplayGuardAcceptsALegacyPinWithNoClaimsSchemaVersion(t *testing.T) {
+	t.Parallel()
+
+	legacyPin := []*v1.ResolvedPlugin{{
+		Name: "slack", Version: "v2.1.0", ProtocolVersion: 2,
+		TaskSchemaDigest:   "sha256:schema",
+		DistributionDigest: "sha256:binary",
+		ClaimsDigest:       "sha256:claims",
+		// ClaimsSchemaVersion deliberately unset: this is what a pin recorded
+		// before this field existed decodes as.
+	}}
+
+	worker := catalogWithClaimsSchemaVersion(1, describedPlugin("slack", "v2.1.0", "sha256:schema"))
+
+	require.NoError(t, v1.CheckPluginsAvailable(legacyPin, worker),
+		"a run pinned before ClaimsSchemaVersion existed was refused by a worker reporting one for an unchanged plugin")
+}
+
+// TestReplayGuardStillRefusesAClaimsSchemaVersionMismatchOnANewPin is the
+// positive direction beside it, and the finding's actual payload: a run
+// pinned under one schema version must be refused by a worker on a different
+// one, even when every other field of the tuple — including ClaimsDigest —
+// matches exactly, because that is precisely the case a schema-version
+// redefinition produces: identical serialized claim values, different
+// meaning.
+func TestReplayGuardStillRefusesAClaimsSchemaVersionMismatchOnANewPin(t *testing.T) {
+	t.Parallel()
+
+	wf := requires("slack", "v2.1.0")
+	require.NoError(t, v1.ResolvePlugins(wf,
+		catalogWithClaimsSchemaVersion(1, describedPlugin("slack", "v2.1.0", "sha256:schema"))))
+
+	// The worker's live catalog: identical descriptors and identical
+	// ClaimsDigest — describedPlugin always writes "sha256:claims" — but a
+	// newer claims schema version, the shape a meaning-redefining bump takes.
+	worker := catalogWithClaimsSchemaVersion(2, describedPlugin("slack", "v2.1.0", "sha256:schema"))
+
+	err := v1.CheckResolvedPlugins(wf, worker)
+	require.ErrorContains(t, err, "claims schema version",
+		"the run was pinned to claims schema version 1 and a worker reporting version 2 with an "+
+			"identical claims digest was not refused; a digest match alone cannot tell two schema "+
+			"versions apart when a version bump redefines a field's meaning without changing its "+
+			"serialized value")
 }

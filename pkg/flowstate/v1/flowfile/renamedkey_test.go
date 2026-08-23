@@ -294,39 +294,13 @@ steps:
 // one forward — are the two places a rewriter can do the most damage with the least
 // visible diff.
 
-// TestFixDoesNotStampOverAMergedEdition is the fail-closed direction.
-//
-// A merge key names nothing itself and brings in whatever it points at, which may be an
-// edition. The stamp decided one was absent by scanning direct keys only — and a direct
-// key beats a merged one, so a document declaring a grammar this build *refuses* came
-// back declaring one it compiles. A future-edition file silently downgraded by the
-// command that exists to keep files honest.
-//
-// Not stamping is the whole fix: bringing a merged edition forward would mean editing an
-// anchor that may be shared with other keys or other documents, so finding one means
-// leaving the file alone and letting `flow validate` speak.
-func TestFixDoesNotStampOverAMergedEdition(t *testing.T) {
-	t.Parallel()
-
-	src := `meta: &m
-  edition: v2099.1
-<<: *m
-name: t
-steps:
-  - id: a
-    log:
-      message: hi
-`
-
-	result, err := flowfile.Fix([]byte(src))
-	require.NoError(t, err)
-	require.Equal(t, src, string(result.Source),
-		"an edition arriving through a merge key was stamped over, which downgrades the file")
-
-	// And the file is still one this build refuses, which is the property the stamp
-	// was quietly undoing.
-	require.Contains(t, diagnose(t, string(result.Source)), "v2099.1")
-}
+// An edition arriving through a merge key once had its own fail-closed test: the
+// stamp scanned direct keys only, and a direct key beats a merged one, so a file
+// declaring a future edition through `<<:` could be silently downgraded. The
+// grammar is now a strict subset of YAML that refuses merge keys outright (#653),
+// so `flow fix` refuses such a file before any edition is read — the file is
+// still left byte for byte alone, which is what that test protected, but for the
+// broader reason. See TestFixRefusesStrictYAML.
 
 // TestFixLeavesAFileAloneWhenItCannotSeeWhatIsMerged covers the answer to "cannot tell".
 //

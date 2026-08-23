@@ -1,9 +1,10 @@
 package server_test
 
 import (
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"testing"
 	"time"
+
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
@@ -42,7 +43,7 @@ import (
 func TestWaitSurvivesAWorkerRestart(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 
-	flowstate := server.New(temporal, server.WithNamespace("team-a"))
+	flowstate := mustNew(t, temporal, server.WithNamespace("team-a"))
 
 	// newWorker starts a worker and returns a function that stops it, so the test
 	// can take the compute away and put different compute back.

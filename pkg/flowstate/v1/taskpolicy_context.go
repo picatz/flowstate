@@ -2,7 +2,10 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
 )
 
 // defaultTaskPolicy is the process-wide task-shape policy, installed once by
@@ -101,9 +104,55 @@ func TaskPolicyIn(ctx context.Context) *TaskPolicy {
 // between retries of the same step, so evaluating this once is not an
 // optimization so much as it is the accurate description of what the policy
 // governs: one dispatch, one decision.
-func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentity) error {
-	if err := TaskPolicyIn(ctx).Check(ctx, task, identity); err != nil {
-		return NewTaskError(task, ErrorKindPolicyDenied, err)
+//
+// local is [Scope.GetLocal] — true for any local-driver entry point's own
+// rehearsal (`flow run local`, `flow test`, `flow task run`, ...), never
+// for the durable driver (see engine/workflow.go's varsScope, "Never Local:
+// the durable driver always has a server in front of it"). It reaches
+// nothing here but [TaskPolicyDeniedError.Local]: the
+// decision above — which policy governs, which rule matches, allow versus
+// deny — is made by [TaskPolicy.Check] before this ever runs, entirely from
+// task and identity. This parameter is set on the resulting error, if any,
+// strictly *after* that decision, so it has no path to become the thing
+// #652 warns about — a value that exists to be informational and ends up
+// load-bearing. See [TestLocalOnlyChangesTheMessageNotTheDecision].
+//
+// identity is used twice below, and the second use is under the identical
+// constraint: [TaskPolicy.Check] evaluates the rules against it, and then
+// [TaskPolicyDeniedError.Identity] records a rendering of it for the
+// message — set on the error strictly after the decision, never consulted
+// by anything that decides.
+func CheckTaskPolicy(ctx context.Context, task string, identity *WorkloadIdentity, local bool) error {
+	err := TaskPolicyIn(ctx).Check(ctx, task, identity)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	if denied, ok := errors.AsType[*TaskPolicyDeniedError](err); ok {
+		denied.Local = local
+
+		// Provenance, recorded here for the same reason and under the same
+		// constraint as Local: after the decision, read by nothing but the
+		// message. This is the one place both drivers pass through with the
+		// identity in hand — [TaskPolicy.Check] has it, but builds its
+		// denial several frames down in [taskPolicyRuleSet.evaluate], which
+		// knows about rules and not about who they were evaluated for — so
+		// recording it here is what makes a local and a durable denial
+		// describe the identity in the same words.
+		denied.Identity = describePolicyIdentity(identity)
+	}
+
+	// One refusal, counted once, from the check both drivers share — so
+	// "everything is being refused" is a rate an operator can see rather than
+	// a pattern in a log file. The task's *name* and the surface, never the
+	// refusal's sentence: see [RecordPolicyDenial]. The driver is read from
+	// the same `local` this function already receives, so the label cannot
+	// disagree with the error's own Local field.
+	driver := metricschema.DriverDurable
+	if local {
+		driver = metricschema.DriverLocal
+	}
+	RecordPolicyDenial(ctx, metricschema.SurfaceTaskDispatch, task, driver)
+
+	return NewTaskError(task, ErrorKindPolicyDenied, err)
 }

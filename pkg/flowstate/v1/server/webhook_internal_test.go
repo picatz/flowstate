@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,7 +64,7 @@ func servedWorkflow() *v1.Workflow {
 func TestADeliveryPastTheConcurrencyBoundIsShed(t *testing.T) {
 	t.Parallel()
 
-	receiver, err := New(nil).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, nil).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{servedWorkflow()}, oneKeyStore(t), WithWebhookConcurrency(1))
 	require.NoError(t, err)
 
@@ -112,4 +113,44 @@ func TestAWorkflowIdSeparatesWhatMustNotShareARun(t *testing.T) {
 	// the namespace.
 	assert.NotContains(t, webhookWorkflowID("team-a", "order-webhook", "storefront", "t=1,v1=deadbeef"),
 		"deadbeef", "the raw idempotency key was interpolated into the run's id")
+}
+
+// TestWithoutTraceHeadersStripsOnlyTraceContext is #903's containment fix for
+// the delivery-facing header map: the trace context headers a sender chose must
+// not reach `event.headers`, where a Flowfile could map one into an input and
+// land it in RunState and history, while every other header — a signature
+// header above all — must survive untouched.
+//
+// The negative direction is the point, in the shape CLAUDE.md's tenancy section
+// names: it is not enough that a signature header comes through; the trace
+// headers must be *gone*, and the input map must be left unmutated because the
+// same flattened map is what verification reads.
+func TestWithoutTraceHeadersStripsOnlyTraceContext(t *testing.T) {
+	t.Parallel()
+
+	original := map[string]string{
+		"traceparent":           "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"tracestate":            "acme=peer-chosen-vendor-state",
+		"x-flowstate-signature": "t=1,v1=deadbeef",
+		"stripe-signature":      "t=1,v1=cafef00d",
+		"content-type":          "application/json",
+		"x-custom":              "a header a workflow may legitimately read",
+	}
+
+	// A clone taken first, so a mutation of the caller's map is detectable.
+	before := maps.Clone(original)
+
+	got := withoutTraceHeaders(original)
+
+	require.Equal(t, before, original, "withoutTraceHeaders mutated the map it was given, which verification also reads")
+
+	for _, gone := range []string{"traceparent", "tracestate"} {
+		_, present := got[gone]
+		require.False(t, present, "%s survived into the delivery-facing headers, where a Flowfile could map it into history", gone)
+	}
+
+	for _, kept := range []string{"x-flowstate-signature", "stripe-signature", "content-type", "x-custom"} {
+		require.Equal(t, original[kept], got[kept],
+			"%s was stripped, but only trace context headers should be — a signature header shape (x-*) must survive", kept)
+	}
 }

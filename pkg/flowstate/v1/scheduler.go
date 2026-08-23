@@ -137,7 +137,7 @@ func (adversarialOrder) Interleave(SchedulePoint, string) bool { return true }
 // seed involved.
 //
 // Both defects #477 slice 0 found are pinned that way — see
-// [pkg/flowstate/v1/tests.AsyncUnwindCases], which both drivers run, and the
+// [pkg/flowstate/v1/internal/conformance.AsyncUnwindCases], which both drivers run, and the
 // local driver runs a second time under this scheduler.
 var AdversarialOrder Scheduler = adversarialOrder{}
 

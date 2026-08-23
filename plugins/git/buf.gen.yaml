@@ -1,20 +1,20 @@
 version: v1
 # See plugins/vcs/buf.gen.yaml for the full argument; this file is that one
 # with "vcs" spelled "git". managed mode's only job is telling buf what
-# flowstate/v1/flowstate.proto's go_package is, so it can resolve the import
+# flowstate/v1/value.proto's go_package is, so it can resolve the import
 # our own git.proto makes - this plugin never generates code for that file.
 managed:
   enabled: true
   override:
     GO_PACKAGE:
-      flowstate/v1/flowstate.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
+      flowstate/v1/value.proto: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
 # Generated with the locally installed protoc-gen-go, no network needed.
 #
 # # Regenerating
 #
 # buf refuses a workspace directory that reaches outside the directory it was
 # invoked against, and this plugin's proto needs the root repository's
-# proto/flowstate/v1/flowstate.proto beside its own. Borrow the root's
+# proto/flowstate/v1/value.proto beside its own. Borrow the root's
 # buf.work.yaml for the duration of one command, from the repository root:
 #
 #   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11

@@ -56,13 +56,8 @@ func writeCoverageFixture(t *testing.T, extra string) string {
 // command error, through the real command so the flag plumbing is under test.
 func runFlowTest(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"test"}, args...))
-	err := root.Execute()
-	return out.String(), err
+	res := runFlow(t, append([]string{"test"}, args...)...)
+	return res.Stdout, res.Err
 }
 
 // TestFlowTestPrintsCoverageAsAResult is #420's reported-not-failed posture: a

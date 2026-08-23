@@ -29,15 +29,9 @@ import (
 func validateOutput(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"validate"}, args...))
+	res := runFlow(t, append([]string{"validate"}, args...)...)
 
-	err := root.Execute()
-
-	return out.String(), err
+	return res.Stdout, res.Err
 }
 
 // writeWorkflow puts a Flowfile in a temporary directory and returns its path.

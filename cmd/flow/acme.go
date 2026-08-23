@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -442,19 +441,7 @@ func checkACMECacheDir(path string) error {
 		return fmt.Errorf("--tls-acme-cache %s is not a directory", path)
 	}
 
-	// See cmd/flow/keys.go's identical carve-out: Windows has no POSIX
-	// permission bits, so Perm() there reflects nothing this check could act
-	// on, and enforcing it would refuse every directory rather than an
-	// actually-too-open one.
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("--tls-acme-cache %s has mode %s; this must be readable and "+
-			"writable by its owner only (0700) because it holds an ACME account key and "+
-			"issued certificates' private keys", path, info.Mode().Perm())
-	}
-	return nil
+	return checkACMECacheDirSecurity(path, info)
 }
 
 // primeACMECertificates obtains (or renews) a certificate for every

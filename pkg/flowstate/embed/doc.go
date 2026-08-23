@@ -43,5 +43,13 @@
 // system this package embeds, and each is its own curation problem for a
 // later slice rather than something bolted onto this one.
 //
+// # See also
+//
+// [docs/EMBEDDING.md] walks through the four things above end to end, and
+// [examples/embedding] is the runnable version of that walkthrough, including
+// the durable path.
+//
 // [pkg/flowstate/v1]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1
+// [docs/EMBEDDING.md]: https://github.com/picatz/flowstate/blob/main/docs/EMBEDDING.md
+// [examples/embedding]: https://github.com/picatz/flowstate/tree/main/examples/embedding
 package embed
