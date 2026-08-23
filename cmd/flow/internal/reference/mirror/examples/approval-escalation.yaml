@@ -108,7 +108,6 @@ inputs:
     description: who this run asks first — narrows the first `signals:` rule for this run
     example: sre-lead@example.com
     must: this.matches(r'^[^@]+@[^@]+$')
-
   backup_approver:
     type: string
     required: true
@@ -154,7 +153,6 @@ steps:
     description: A step before the loop, so a run that suspends before its first deadline still has something to have carried across the handover.
     log:
       message: '${"%s requested %s, and needs an approval".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.change])}'
-
   - id: chase
     description: One ask per iteration, each followed by a cadence-long wait for an answer, retired by somebody deciding or by the ask budget running out.
     loop:
@@ -198,14 +196,13 @@ steps:
           if: ${asks == vars.asks_before_escalation}
           log:
             level: warn
-            message: '${"%s has not answered after %d asks; escalating to %s".format([inputs.primary_approver, asks, inputs.backup_approver])}'
+            message: ${"%s has not answered after %d asks; escalating to %s".format([inputs.primary_approver, asks, inputs.backup_approver])}
 
         # Who this ask goes to, named once as its own step rather than
         # recomputed in the ask and in the prompt. Before the threshold it is
         # the primary; from the threshold on, the backup.
         - id: recipient
-          value: '${(asks >= vars.asks_before_escalation) ? inputs.backup_approver : inputs.primary_approver}'
-
+          value: "${(asks >= vars.asks_before_escalation) ? inputs.backup_approver : inputs.primary_approver}"
         - id: ask
           log:
             message: '${"ask %d of %d to %s: approve %s".format([asks + 1, vars.ask_budget, steps.recipient.value, inputs.change])}'
@@ -220,9 +217,15 @@ steps:
         - id: gate
           wait_for_signal:
             name: approval-decision
-            prompt: '${"Approve %s? (ask %d of %d, addressed to %s)".format([inputs.change, asks + 1, vars.ask_budget, steps.recipient.value])}'
+            prompt: ${"Approve %s? (ask %d of %d, addressed to %s)".format([inputs.change, asks + 1, vars.ask_budget, steps.recipient.value])}
             timeout: 1h
             outputs:
+              # Re-exposed deliberately: `outputs:` replaces what the wait
+              # produces, so `sender` is gone unless a line puts it back. It is
+              # read below as evidence for the audit trail — who the server
+              # attested, not who a payload claimed — never as a gate, since
+              # `signals:` already refused everyone else.
+              sender: ${sender}
               # The gate stated once, on the step that produced the data, in
               # the scope where the wait's own result exists — the same shaping
               # `approval-gate` uses, and the same three states for the same
@@ -231,12 +234,6 @@ steps:
               # `undecided`, which is exactly the condition `until:` above
               # reads to decide whether there is still a chase to run.
               verdict: '${payload.?approved.optMap(approved, approved ? "approved" : "rejected").orValue("undecided")}'
-              # Re-exposed deliberately: `outputs:` replaces what the wait
-              # produces, so `sender` is gone unless a line puts it back. It is
-              # read below as evidence for the audit trail — who the server
-              # attested, not who a payload claimed — never as a gate, since
-              # `signals:` already refused everyone else.
-              sender: ${sender}
 
   # How many asks went out, and how many of those were reminders — named once
   # here and read back everywhere below, rather than restated at each reader
@@ -285,7 +282,7 @@ steps:
           steps:
             - id: apply
               log:
-                message: '${"%s approved %s after %d reminders".format([steps.approver.value, inputs.change, steps.reminders.value])}'
+                message: ${"%s approved %s after %d reminders".format([steps.approver.value, inputs.change, steps.reminders.value])}
         - case: rejected
           steps:
             - id: decline
@@ -296,7 +293,7 @@ steps:
             - id: auto_reject
               log:
                 level: warn
-                message: '${"nobody decided %s in %d asks; rejecting it".format([inputs.change, vars.ask_budget])}'
+                message: ${"nobody decided %s in %d asks; rejecting it".format([inputs.change, vars.ask_budget])}
 outputs:
   # This cannot disagree with the branch that ran: `settle` dispatches on this
   # exact name rather than re-deriving the endings a second time.
