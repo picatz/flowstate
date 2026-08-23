@@ -352,7 +352,7 @@ func issuerAcceptsResourceAsAudience(policy *Policy, issuer, resource string) bo
 		return false
 	}
 	for _, entry := range policy.Issuers {
-		if entry.Kind != "" && entry.Kind != "oidc" {
+		if entry.kind() != IssuerKindOIDC {
 			continue
 		}
 		if entry.Issuer != issuer {
