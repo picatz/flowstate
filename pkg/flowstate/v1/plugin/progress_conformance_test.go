@@ -179,7 +179,7 @@ func runProgressPlugin() int {
 				},
 			},
 		},
-	})
+	}, sdk.WithTelemetry(true))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "progress fixture: %v\n", err)
 		return 1
@@ -423,6 +423,7 @@ func TestExecuteStreamPropagatesTelemetry(t *testing.T) {
 
 	cfg := testConfig(t, pluginDir(t, "progress"))
 	cfg.TracerProvider = provider
+	cfg.TelemetryEnabled = true
 
 	host := openHost(t, cfg)
 	p, ok := host.Lookup("progress")

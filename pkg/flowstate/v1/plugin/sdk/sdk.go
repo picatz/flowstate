@@ -80,8 +80,10 @@ import (
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -409,11 +411,19 @@ to be named flowstate-plugin-%[1]s — and configure the worker to look there.
 type Option func(*options)
 
 type options struct {
-	logger          *slog.Logger
-	tracerProvider  trace.TracerProvider
-	meterProvider   metric.MeterProvider
-	maxRequestBytes int
-	shutdownTimeout time.Duration
+	logger           *slog.Logger
+	tracerProvider   trace.TracerProvider
+	meterProvider    metric.MeterProvider
+	telemetryEnabled bool
+	maxRequestBytes  int
+	shutdownTimeout  time.Duration
+}
+
+// WithTelemetry enables OpenTelemetry tracing and context propagation for the
+// plugin's Connect server. It is explicit so an unrelated custom global
+// propagator cannot accidentally turn telemetry on for the plugin protocol.
+func WithTelemetry(enabled bool) Option {
+	return func(o *options) { o.telemetryEnabled = enabled }
 }
 
 // WithTracerProvider configures tracing without coupling a plugin to an
@@ -848,9 +858,23 @@ func describeMessage(msg proto.Message, prose *flowstatev1.DescriptorProse) ([]b
 
 // handler builds the HTTP handler serving this plugin's services.
 func (p Plugin) handler(manifest *pluginv1.PluginManifest, token func() string, cfg options) (http.Handler, error) {
+	interceptors := []connect.Interceptor{requireToken(token)}
+	if cfg.telemetryEnabled {
+		otelInterceptor, err := otelconnect.NewInterceptor(
+			otelconnect.WithTracerProvider(cfg.tracerProvider),
+			otelconnect.WithPropagator(propagation.NewCompositeTextMapPropagator(
+				propagation.TraceContext{}, propagation.Baggage{},
+			)),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("sdk: create OpenTelemetry server interceptor: %w", err)
+		}
+		// Authentication stays first (and therefore runs before any tracing).
+		interceptors = append(interceptors, otelInterceptor, telemetryInterceptor(cfg))
+	}
 	opts := []connect.HandlerOption{
 		connect.WithReadMaxBytes(cfg.maxRequestBytes),
-		connect.WithInterceptors(requireToken(token), telemetryInterceptor(cfg)),
+		connect.WithInterceptors(interceptors...),
 	}
 
 	mux := http.NewServeMux()

@@ -3,13 +3,11 @@ package sdk
 import (
 	"context"
 	"log/slog"
-	"net/http"
 
 	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -55,9 +53,8 @@ func Logger(ctx context.Context) *slog.Logger {
 	return v.logger
 }
 
-// telemetryInterceptor extracts trace-context and filtered baggage from an
-// incoming request, starts the server span every task's Fn runs under, and
-// installs the [Tracer], [Meter] and [Logger] values it reads back.
+// telemetryInterceptor filters the baggage extracted by otelconnect and
+// installs the [Tracer], [Meter] and [Logger] values task implementations read.
 //
 // This has to be a full [connect.Interceptor], not a
 // [connect.UnaryInterceptorFunc]: the latter's WrapStreamingHandler is a
@@ -76,14 +73,9 @@ func telemetryInterceptor(cfg options) connect.Interceptor {
 // this plugin serves, unary or streaming.
 type telemetryServerInterceptor struct{ cfg options }
 
-// start extracts trace-context and filtered baggage from header, opens the
-// server span every request runs under, and returns the context a task's Fn
-// sees along with the func that ends the span. Shared by both RPC shapes so
-// unary and streaming calls are instrumented identically.
-func (t *telemetryServerInterceptor) start(ctx context.Context, header http.Header) (context.Context, func()) {
-	prop := propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	ctx = prop.Extract(ctx, propagation.HeaderCarrier(header))
-
+// start filters extracted baggage and returns the context a task's Fn sees.
+// Span creation and lifetime belong to the preceding otelconnect interceptor.
+func (t *telemetryServerInterceptor) start(ctx context.Context) context.Context {
 	// Rebuild baggage from the only bounded-cardinality, non-sensitive
 	// members the protocol permits. Never expose arbitrary caller baggage.
 	incoming := baggage.FromContext(ctx)
@@ -103,18 +95,18 @@ func (t *telemetryServerInterceptor) start(ctx context.Context, header http.Head
 		}
 	}
 
-	ctx, span := t.cfg.tracerProvider.Tracer(telemetryScope).Start(ctx, "flowstate.plugin.rpc", trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attrs...)
 	ctx = context.WithValue(ctx, telemetryKey{}, telemetryContext{
 		tracer: t.cfg.tracerProvider.Tracer(telemetryScope), meter: t.cfg.meterProvider.Meter(telemetryScope), logger: t.cfg.logger,
 	})
 
-	return ctx, func() { span.End() }
+	return ctx
 }
 
 func (t *telemetryServerInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		ctx, finish := t.start(ctx, req.Header())
-		defer finish()
+		ctx = t.start(ctx)
 		return next(ctx, req)
 	}
 }
@@ -128,8 +120,7 @@ func (t *telemetryServerInterceptor) WrapStreamingClient(next connect.StreamingC
 
 func (t *telemetryServerInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		ctx, finish := t.start(ctx, conn.RequestHeader())
-		defer finish()
+		ctx = t.start(ctx)
 		return next(ctx, conn)
 	}
 }

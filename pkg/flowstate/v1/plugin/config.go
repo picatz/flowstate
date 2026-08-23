@@ -193,6 +193,11 @@ const (
 // configuration for one that should not run third-party code, and it is the
 // default so that it takes a decision to change.
 type Config struct {
+	// TelemetryEnabled explicitly enables propagation across the plugin process
+	// boundary. It is deliberately not inferred from the global propagator: an
+	// application may install a custom propagator for unrelated HTTP traffic.
+	TelemetryEnabled bool
+
 	// TracerProvider and MeterProvider receive host-side plugin telemetry. Nil
 	// uses OpenTelemetry's global provider, which is a no-op unless the host has
 	// configured a backend.

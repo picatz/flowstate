@@ -80,7 +80,7 @@ func (c *clients) close() {
 // default transport consults HTTP_PROXY, and a worker that has one set would
 // otherwise try to reach a plugin's socket through a proxy. A transport with no
 // proxy function cannot.
-func newClients(socketPath, token string, maxResponseBytes, maxProgressFrames int, plugin string) *clients {
+func newClients(socketPath, token string, maxResponseBytes, maxProgressFrames int, plugin string, telemetryEnabled bool) *clients {
 	transport := &http.Transport{
 		// Proxy is deliberately nil; see above.
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -119,12 +119,16 @@ func newClients(socketPath, token string, maxResponseBytes, maxProgressFrames in
 		Transport: &boundedTransport{base: transport, max: int64(maxResponseBytes) + progressReserve(maxProgressFrames)},
 	}
 
+	interceptors := []connect.Interceptor{authInterceptor(token)}
+	if telemetryEnabled {
+		interceptors = append(interceptors, propagationInterceptor(plugin, ""))
+	}
 	opts := []connect.ClientOption{
 		// A plugin is not trusted because an operator installed it. Bounding the
 		// response before it is read is what stops one making the host allocate
 		// without limit.
 		connect.WithReadMaxBytes(maxResponseBytes),
-		connect.WithInterceptors(authInterceptor(token), propagationInterceptor(plugin, "")),
+		connect.WithInterceptors(interceptors...),
 	}
 
 	return &clients{
