@@ -270,14 +270,16 @@ const (
 	// re-exchanged, so a credential handed to a caller has time left to be used.
 	DefaultRefreshMargin = time.Minute
 
-	// DefaultMaxCredentialLifetime is the default policy ceiling for OAuth
-	// credentials. Providers must report their actual lifetime; this value is a
-	// ceiling, never a substitute for missing expiry metadata.
+	// DefaultMaxCredentialLifetime is the ceiling applied to a target that names
+	// no `max_credential_lifetime` of its own. A provider must still report its
+	// actual lifetime: this is a bound on what Flowstate will believe, never a
+	// substitute for expiry metadata that never arrived.
 	DefaultMaxCredentialLifetime = time.Hour
 
-	// MaxCredentialLifetime is the hard safety bound for configurable OAuth
-	// credential lifetime policies. Longer bearer credentials are standing-grant
-	// shaped and must use a different, explicitly designed protocol.
+	// MaxCredentialLifetime is the hard bound on what a target may configure. A
+	// bearer credential that outlives a day is standing-grant shaped, and a
+	// standing grant wants a protocol designed for one rather than a knob raised
+	// until an exchange stops failing — so this one is not configurable.
 	MaxCredentialLifetime = 24 * time.Hour
 
 	// DefaultMaxCachedCredentials bounds the credential cache. Every workflow and
@@ -444,6 +446,50 @@ type tokenResponse struct {
 	ErrorDescription string `json:"error_description"`
 }
 
+// credentialLifetimeCeiling resolves a target's configured credential lifetime
+// ceiling, applied at construction so that an unusable policy is a startup error
+// rather than something an operator learns from a workload's first exchange.
+//
+// It lives here, called by every OAuth constructor, rather than being written out
+// once per constructor: the default and the two ends of the range are one rule,
+// and a rule spelled twice is a rule that eventually disagrees with itself.
+func credentialLifetimeCeiling(name string, configured time.Duration) (time.Duration, error) {
+	if configured == 0 {
+		return DefaultMaxCredentialLifetime, nil
+	}
+
+	// A sub-second ceiling is refused rather than rounded, because expires_in is
+	// counted in whole seconds: rounding down produces a target that refuses every
+	// token it is ever offered, and rounding up silently grants more than was
+	// asked for.
+	if configured < time.Second || configured > MaxCredentialLifetime {
+		return 0, fmt.Errorf("%w: %s exchanger maximum credential lifetime %s is outside the %s to %s allowed, and zero takes the %s default",
+			ErrInvalidPolicy, name, configured, time.Second, MaxCredentialLifetime, DefaultMaxCredentialLifetime)
+	}
+
+	return configured, nil
+}
+
+// withinRequestedLifetime reports whether a relying party's own expiry timestamp
+// is one Flowstate can hold: still in the future, and no further out than the
+// lifetime that was asked for.
+//
+// The two bounds are deliberately not symmetric. The provider computes that
+// timestamp against *its* clock, so a worker whose clock lags the provider sees
+// every correctly honoured response land past now+lifetime — an upper bound with
+// no slack refuses a right answer, deterministically, for as long as the clocks
+// disagree. It therefore carries the same [DefaultClockSkew] the verifier already
+// allows between this host and an issuer. The lower bound gets no such slack,
+// because slack there means accepting a credential Flowstate itself believes has
+// already expired, which is a credential no caller can use.
+//
+// None of this applies to the OAuth expires_in path, and that is worth saying
+// out loud: expires_in is a duration the provider measures on its own clock, so
+// no clock of ours enters the comparison and no skew allowance belongs in it.
+func withinRequestedLifetime(expiresAt, now time.Time, lifetime time.Duration) bool {
+	return expiresAt.After(now) && !expiresAt.After(now.Add(lifetime+DefaultClockSkew))
+}
+
 // credential converts a token endpoint response into a bearer credential.
 func (r tokenResponse) credential(provider, target string, assertion Assertion, now time.Time, maxLifetime time.Duration) (Credential, error) {
 	if r.AccessToken == "" {
@@ -457,16 +503,33 @@ func (r tokenResponse) credential(provider, target string, assertion Assertion, 
 			ErrExchangeFailed, provider, truncate(r.TokenType, 32))
 	}
 
-	if maxLifetime <= 0 {
-		return Credential{}, fmt.Errorf("%w: %s has no positive credential lifetime policy", ErrExchangeFailed, provider)
+	// A ceiling below a second can admit nothing, because expires_in is counted
+	// in whole seconds. Refusing here rather than rejecting every token against
+	// an impossible bound keeps the error about the policy, which is the thing
+	// that is actually wrong. Every constructor applies the same one-second floor
+	// at startup, so reaching this is a caller of this method that did not.
+	if maxLifetime < time.Second {
+		return Credential{}, fmt.Errorf("%w: %s has no usable credential lifetime policy (%s)",
+			ErrExchangeFailed, provider, maxLifetime)
 	}
-	// Check in seconds before converting: time.Duration multiplication otherwise
-	// wraps, potentially turning an attacker-controlled lifetime into a plausible
-	// expiry. Zero also covers an omitted expires_in; opaque bearer tokens provide
-	// no other expiry Flowstate can validate, so no expiry is manufactured.
+
+	// Bound expires_in in seconds, before it becomes a Duration. Multiplying a
+	// relying party's number by time.Second wraps, and a wrapped product is not
+	// an obvious error — it is a plausible-looking expiry in the past or the far
+	// future. Because the ceiling is itself a Duration, no value that clears it
+	// can wrap: maxLifetime/time.Second is at most math.MaxInt64/1e9, and that
+	// many seconds is exactly what a Duration holds. So the policy check is the
+	// overflow check, rather than a second bound beside it that no input reaches.
 	maxSeconds := int64(maxLifetime / time.Second)
-	if r.ExpiresIn <= 0 || r.ExpiresIn > int64(^uint64(0)>>1)/int64(time.Second) || r.ExpiresIn > maxSeconds {
-		return Credential{}, fmt.Errorf("%w: %s reported invalid expires_in %d (policy maximum %s)",
+	switch {
+	case r.ExpiresIn <= 0:
+		// Zero is also an omitted expires_in, which is the case worth naming: an
+		// opaque bearer token carries no expiry of its own, so a missing one
+		// leaves Flowstate nothing to check and nothing it may invent.
+		return Credential{}, fmt.Errorf("%w: %s reported no usable expires_in (%d), and an opaque bearer token carries no other expiry to check",
+			ErrExchangeFailed, provider, r.ExpiresIn)
+	case r.ExpiresIn > maxSeconds:
+		return Credential{}, fmt.Errorf("%w: %s reported expires_in %d, longer than the %s this target allows",
 			ErrExchangeFailed, provider, r.ExpiresIn, maxLifetime)
 	}
 	lifetime := time.Duration(r.ExpiresIn) * time.Second

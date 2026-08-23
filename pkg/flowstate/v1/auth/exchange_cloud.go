@@ -162,6 +162,7 @@ func NewAWSExchanger(cfg AWSConfig) (Exchanger, error) {
 	if clock == nil {
 		clock = time.Now
 	}
+
 	return &awsExchanger{
 		name:       name,
 		roleARN:    cfg.RoleARN,
@@ -232,10 +233,19 @@ func (e *awsExchanger) Exchange(ctx context.Context, assertion Assertion) (Crede
 		return Credential{}, fmt.Errorf("%w: %s returned incomplete session credentials", ErrExchangeFailed, e.name)
 	}
 
+	// STS always reports an expiration, and the session it reports must be the
+	// session that was asked for. Neither a missing one nor an implausible one is
+	// papered over with a guess: a manufactured expiry is a credential Flowstate
+	// would keep using after it stopped working, or keep believing is short-lived
+	// after it stopped being so.
 	now := e.clock()
 	expiresAt := credentials.Expiration
-	if expiresAt.IsZero() || !expiresAt.After(now) || expiresAt.After(now.Add(e.duration)) {
-		return Credential{}, fmt.Errorf("%w: %s reported an invalid session expiration", ErrExchangeFailed, e.name)
+	switch {
+	case expiresAt.IsZero():
+		return Credential{}, fmt.Errorf("%w: %s returned session credentials with no expiration", ErrExchangeFailed, e.name)
+	case !withinRequestedLifetime(expiresAt, now, e.duration):
+		return Credential{}, fmt.Errorf("%w: %s reported a session expiration of %s, outside the %s session that was requested",
+			ErrExchangeFailed, e.name, expiresAt.UTC().Format(time.RFC3339), e.duration)
 	}
 
 	credential, err := NewCredential(CredentialAWSSession, expiresAt, map[string]string{
@@ -365,6 +375,27 @@ const (
 
 	// gcpDefaultScope is the scope requested when none is configured.
 	gcpDefaultScope = "https://www.googleapis.com/auth/cloud-platform"
+
+	// gcpFederatedLifetime is how long the security token service's federated
+	// access token lasts, and therefore the ceiling on the expires_in it may
+	// report. It is not an operator setting: the federated token is either handed
+	// straight back or spent immediately on impersonation, and Google names no
+	// lifetime knob for it.
+	gcpFederatedLifetime = time.Hour
+
+	// gcpDefaultLifetime is the service account token lifetime Google issues when
+	// generateAccessToken is called without one. It is written down because
+	// impersonate has to bound a response to a request that named no lifetime,
+	// and the bound has to be the number Google will actually have used.
+	gcpDefaultLifetime = time.Hour
+
+	// gcpMaxLifetime is the longest service account token Google will issue. An
+	// hour is the ceiling by default, and up to twelve is available to a project
+	// that has set constraints/iam.allowServiceAccountCredentialLifetimeExtension
+	// — so refusing anything above an hour here would refuse a legitimately
+	// configured deployment at startup, on the strength of a constraint that is
+	// Google's to enforce and not ours to guess at.
+	gcpMaxLifetime = 12 * time.Hour
 )
 
 // GCPConfig configures exchanging a Flowstate assertion for a Google Cloud access
@@ -406,7 +437,11 @@ type GCPConfig struct {
 	Scopes []string
 
 	// Lifetime is how long an impersonated service account token lasts. Google
-	// allows up to an hour by default. Ignored without ServiceAccountEmail.
+	// allows up to an hour by default, and up to twelve for a project that has
+	// set constraints/iam.allowServiceAccountCredentialLifetimeExtension. Zero
+	// names no lifetime at all and takes Google's own one-hour default, which is
+	// also what the response is then bounded against. Ignored, and therefore
+	// unvalidated, without ServiceAccountEmail.
 	Lifetime time.Duration
 
 	// Endpoint overrides the security token service endpoint. Mostly useful for
@@ -448,9 +483,6 @@ func NewGCPExchanger(cfg GCPConfig) (Exchanger, error) {
 	if cfg.Audience == "" {
 		return nil, fmt.Errorf("%w: %s exchanger needs the workload identity pool provider as its audience", ErrInvalidPolicy, name)
 	}
-	if cfg.Lifetime < 0 || cfg.Lifetime > time.Hour {
-		return nil, fmt.Errorf("%w: %s exchanger service account lifetime must be positive and no more than one hour", ErrInvalidPolicy, name)
-	}
 
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
@@ -471,6 +503,23 @@ func NewGCPExchanger(cfg GCPConfig) (Exchanger, error) {
 		if !strings.Contains(cfg.ServiceAccountEmail, "@") {
 			return nil, fmt.Errorf("%w: %s exchanger service account %q is not an email address",
 				ErrInvalidPolicy, name, truncate(cfg.ServiceAccountEmail, 64))
+		}
+
+		// Checked under impersonation for the same reason iam_endpoint above is:
+		// Lifetime is documented as ignored without a service account, and a
+		// field that does nothing must not be able to refuse a policy that loads
+		// today.
+		//
+		// Zero means "name no lifetime and take Google's default". Anything else
+		// is sent as whole seconds, which is why sub-second values are refused
+		// rather than rounded: int(0.5) is "0s", a request Google reads as no
+		// lifetime at all, and the hour-long token it answers with is then
+		// refused as out of policy on every single exchange. That is a target
+		// that can never succeed, and an operator should learn it here rather
+		// than from a workflow.
+		if cfg.Lifetime != 0 && (cfg.Lifetime < time.Second || cfg.Lifetime > gcpMaxLifetime) {
+			return nil, fmt.Errorf("%w: %s exchanger service account lifetime %s is outside the %s to %s Google issues, and zero takes Google's %s default",
+				ErrInvalidPolicy, name, cfg.Lifetime, time.Second, gcpMaxLifetime, gcpDefaultLifetime)
 		}
 	}
 
@@ -536,7 +585,7 @@ func (e *gcpExchanger) Exchange(ctx context.Context, assertion Assertion) (Crede
 		return Credential{}, err
 	}
 
-	credential, err := federated.credential(e.name, e.name, assertion, e.clock(), time.Hour)
+	credential, err := federated.credential(e.name, e.name, assertion, e.clock(), gcpFederatedLifetime)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -584,12 +633,13 @@ func (e *gcpExchanger) impersonate(ctx context.Context, assertion Assertion, fed
 		return Credential{}, fmt.Errorf("%w: %s reported an unparseable expiry: %w", ErrExchangeFailed, e.name, err)
 	}
 	now := e.clock()
-	maxLifetime := e.lifetime
-	if maxLifetime == 0 {
-		maxLifetime = time.Hour
+	lifetime := e.lifetime
+	if lifetime == 0 {
+		lifetime = gcpDefaultLifetime
 	}
-	if !expiresAt.After(now) || expiresAt.After(now.Add(maxLifetime)) {
-		return Credential{}, fmt.Errorf("%w: %s reported an invalid service account token expiry", ErrExchangeFailed, e.name)
+	if !withinRequestedLifetime(expiresAt, now, lifetime) {
+		return Credential{}, fmt.Errorf("%w: %s reported a service account token expiry of %s, outside the %s lifetime that was requested",
+			ErrExchangeFailed, e.name, expiresAt.UTC().Format(time.RFC3339), lifetime)
 	}
 
 	credential, err := NewCredential(CredentialBearer, expiresAt, map[string]string{

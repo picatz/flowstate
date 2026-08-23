@@ -176,12 +176,9 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-	maxLifetime := cfg.MaxCredentialLifetime
-	if maxLifetime == 0 {
-		maxLifetime = DefaultMaxCredentialLifetime
-	}
-	if maxLifetime < time.Second || maxLifetime > MaxCredentialLifetime {
-		return nil, fmt.Errorf("%w: %s exchanger maximum credential lifetime must be between one second and %s", ErrInvalidPolicy, name, MaxCredentialLifetime)
+	maxLifetime, err := credentialLifetimeCeiling(name, cfg.MaxCredentialLifetime)
+	if err != nil {
+		return nil, err
 	}
 
 	return &tokenExchanger{
@@ -339,13 +336,16 @@ type ClientCredentialsConfig struct {
 	// Scopes are the scopes to request. Optional.
 	Scopes []string
 
+	// MaxCredentialLifetime is the longest lifetime Flowstate will accept from
+	// this target, with the same meaning it has in [TokenExchangeConfig]: a
+	// ceiling on a reported expires_in, and never a stand-in for one that never
+	// arrived.
+	MaxCredentialLifetime time.Duration
+
 	// HTTPClient, Timeout, and Clock behave as in [TokenExchangeConfig].
 	HTTPClient *http.Client
 	Timeout    time.Duration
 	Clock      func() time.Time
-	// MaxCredentialLifetime has the same fail-closed semantics as in
-	// [TokenExchangeConfig].
-	MaxCredentialLifetime time.Duration
 }
 
 // clientCredentialsExchanger implements the client credentials grant.
@@ -398,12 +398,9 @@ func NewClientCredentialsExchanger(cfg ClientCredentialsConfig) (Exchanger, erro
 	if clock == nil {
 		clock = time.Now
 	}
-	maxLifetime := cfg.MaxCredentialLifetime
-	if maxLifetime == 0 {
-		maxLifetime = DefaultMaxCredentialLifetime
-	}
-	if maxLifetime < time.Second || maxLifetime > MaxCredentialLifetime {
-		return nil, fmt.Errorf("%w: %s exchanger maximum credential lifetime must be between one second and %s", ErrInvalidPolicy, name, MaxCredentialLifetime)
+	maxLifetime, err := credentialLifetimeCeiling(name, cfg.MaxCredentialLifetime)
+	if err != nil {
+		return nil, err
 	}
 
 	return &clientCredentialsExchanger{
