@@ -347,6 +347,11 @@ type TrustedIssuer struct {
 	// are short-lived by design, so an operator can insist on that: a captured
 	// token stays useful for minutes rather than hours.
 	MaxTokenAge time.Duration `json:"max_token_age,omitempty" yaml:"max_token_age,omitempty"`
+
+	// Projection gives provider claims a versioned, bounded meaning. When set,
+	// only claims explicitly named by Raw are retained in Principal.Claims;
+	// general authorization code consumes Principal.Normalized instead.
+	Projection *ClaimProjection `json:"projection,omitempty" yaml:"projection,omitempty"`
 }
 
 // ClaimRule requires that a claim in a verified token equals one of a set of
@@ -724,6 +729,11 @@ func (t TrustedIssuer) validateOIDC() error {
 			return err
 		}
 	}
+	if t.Projection != nil {
+		if err := t.Projection.validate(t.Issuer); err != nil {
+			return fmt.Errorf("projection: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -733,6 +743,9 @@ func (t TrustedIssuer) validateOIDC() error {
 // that set one would have it silently ignored otherwise, which is exactly the
 // class of mistake CLAUDE.md's "one value, written down twice" warns about.
 func (t TrustedIssuer) validateMTLS() error {
+	if t.Projection != nil {
+		return fmt.Errorf("projection is only meaningful for kind: %s entries", IssuerKindOIDC)
+	}
 	if t.Issuer == "" {
 		return fmt.Errorf("issuer is required: this deployment's own name for the trusted CA, not a value read from the certificate")
 	}
@@ -1137,6 +1150,12 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 		clone.Require[i].AnyOf = slices.Clone(rule.AnyOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
+	if t.Projection != nil {
+		projection := *t.Projection
+		projection.Fields = maps.Clone(t.Projection.Fields)
+		projection.Raw = maps.Clone(t.Projection.Raw)
+		clone.Projection = &projection
+	}
 
 	return clone
 }

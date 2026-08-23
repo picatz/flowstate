@@ -35,6 +35,7 @@ const (
 // Principal is a value type and is safe to copy and to read from many
 // goroutines. Its Claims map must be treated as read-only.
 type Principal struct {
+	Normalized NormalizedPrincipal `json:"normalized,omitempty"`
 	// Issuer is the token's verified "iss" claim, an exact match for the
 	// issuer of the [TrustedIssuer] entry that admitted this caller.
 	Issuer string `json:"issuer"`
@@ -92,6 +93,25 @@ type Principal struct {
 	// add — see picatz/flowstate#582 — and nothing here reads it. Empty for
 	// every Principal a bearer token produced.
 	CertificateThumbprint string `json:"certificate_thumbprint,omitempty"`
+}
+
+// NormalizedPrincipal is the bounded, provider-independent authorization view.
+type NormalizedPrincipal struct {
+	SchemaVersion         string   `json:"schema_version,omitempty"`
+	ProjectionRevision    string   `json:"projection_revision,omitempty"`
+	Subject               string   `json:"subject,omitempty"`
+	Kind                  string   `json:"kind,omitempty"`
+	Tenant                string   `json:"tenant,omitempty"`
+	Groups                []string `json:"groups,omitempty"`
+	Roles                 []string `json:"roles,omitempty"`
+	AssuranceLevel        string   `json:"assurance_level,omitempty"`
+	AuthenticationMethods []string `json:"authentication_methods,omitempty"`
+	WorkloadRepository    string   `json:"workload_repository,omitempty"`
+	WorkloadRef           string   `json:"workload_ref,omitempty"`
+	WorkloadEnvironment   string   `json:"workload_environment,omitempty"`
+	ServiceAccount        string   `json:"service_account,omitempty"`
+	DevicePostureRef      string   `json:"device_posture_ref,omitempty"`
+	OrganizationIDs       []string `json:"organization_ids,omitempty"`
 }
 
 // AnonymousPrincipal returns the Principal assigned to callers when anonymous

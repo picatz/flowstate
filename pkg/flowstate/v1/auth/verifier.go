@@ -397,7 +397,19 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 			return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
 		}
 
+		normalized := NormalizedPrincipal{}
+		principalClaims := claims // backwards compatibility for entries not migrated yet.
+		if entry.Projection != nil {
+			normalized, principalClaims, err = entry.Projection.apply(claims, issuer, namespace)
+			if err != nil {
+				return Principal{}, fmt.Errorf("trusted issuer %q: %w", entry.Name, err)
+			}
+			if normalized.Subject != subject {
+				return Principal{}, fmt.Errorf("trusted issuer %q: projected stable subject %q does not match verified sub %q", entry.Name, normalized.Subject, subject)
+			}
+		}
 		return Principal{
+			Normalized: normalized,
 			Issuer:     issuer,
 			IssuerName: entry.Name,
 			Subject:    subject,
@@ -406,7 +418,7 @@ func (v *OIDCVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 			Role:       entry.Role,
 			IssuedAt:   lifetime.issuedAt,
 			ExpiresAt:  lifetime.expiresAt,
-			Claims:     claims,
+			Claims:     principalClaims,
 		}, nil
 	}
 
