@@ -6,7 +6,11 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/log"
 )
 
@@ -46,10 +50,57 @@ import (
 // withActivityLogger returns a context whose `log:` steps reach Temporal's logger for
 // this activity, and a collector when one is configured.
 func withActivityLogger(ctx context.Context) context.Context {
-	return v1.ContextWithLogger(ctx, slog.New(v1.MultiHandler(
+	loggerCtx := v1.ContextWithLogger(ctx, slog.New(v1.MultiHandler(
 		&activityLogHandler{to: activity.GetLogger(ctx)},
 		otelslog.NewHandler(activityLogScope),
 	)))
+	if stepCtx := activityStepContext(ctx); stepCtx != nil {
+		loggerCtx = v1.ContextWithLogContext(loggerCtx, stepCtx)
+	}
+	return loggerCtx
+}
+
+// activityStepContext reads the tracing interceptor's documented Temporal
+// header. The header contains the StartActivity span reference written once by
+// workflow execution; retries receive the same immutable payload. Decoding it
+// here avoids treating the ambient RunActivity/attempt span as the log owner.
+func activityStepContext(ctx context.Context) context.Context {
+	payload := interceptor.Header(ctx)["_tracer-data"]
+	if payload == nil {
+		return nil
+	}
+	var carrier map[string]string
+	if err := converter.GetDefaultDataConverter().FromPayload(payload, &carrier); err != nil {
+		return nil
+	}
+	extracted := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier(carrier))
+	if !trace.SpanContextFromContext(extracted).IsValid() {
+		return nil
+	}
+	return extracted
+}
+
+// LogContextInterceptor captures the replay-safe StartActivity reference before
+// Temporal's tracing interceptor consumes the header and enters RunActivity.
+func LogContextInterceptor() interceptor.WorkerInterceptor { return &logContextInterceptor{} }
+
+type logContextInterceptor struct {
+	interceptor.WorkerInterceptorBase
+}
+
+func (logContextInterceptor) InterceptActivity(_ context.Context, next interceptor.ActivityInboundInterceptor) interceptor.ActivityInboundInterceptor {
+	return &logContextActivity{ActivityInboundInterceptorBase: interceptor.ActivityInboundInterceptorBase{Next: next}}
+}
+
+type logContextActivity struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
+func (l *logContextActivity) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (any, error) {
+	if stepCtx := activityStepContext(ctx); stepCtx != nil {
+		ctx = v1.ContextWithLogContext(ctx, stepCtx)
+	}
+	return l.Next.ExecuteActivity(ctx, in)
 }
 
 // activityLogScope names this package as the source of the records it bridges.

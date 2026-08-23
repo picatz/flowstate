@@ -2271,6 +2271,18 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // durable driver's two authority-carrying activity entry points write, from the
 // same constant. See [StartTaskSpan].
 func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope, stepID string) (*Node_Outputs, error) {
+	ctx, stepSpan := StartStepSpan(ctx, stepID)
+	defer func() {
+		// End outside the active panic. The OTel SDK otherwise helpfully records
+		// the panic value as an exception event, but a task may panic with input
+		// or secret material and spans are not an allowed destination for either.
+		if panicked := recover(); panicked != nil {
+			stepSpan.End()
+			panic(panicked)
+		}
+		stepSpan.End()
+	}()
+	ctx = ContextWithLogContext(ctx, ctx)
 	// Resolved here, above the loop, because this is the position the durable
 	// driver resolves at: in workflow code, before an activity is scheduled
 	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so

@@ -151,7 +151,7 @@ func TestTaskSpanParentsUnderTemporalActivitySpan(t *testing.T) {
 		require.True(t, ok,
 			"the task span %s has no recorded parent, so it is a root span beside the run rather than inside it",
 			stub.SpanContext.SpanID())
-		require.Equal(t, "RunActivity:Task", parent.Name,
+		require.Equal(t, v1.AttemptSpanName, parent.Name,
 			"the task span's parent is not the substrate's activity span")
 	}
 

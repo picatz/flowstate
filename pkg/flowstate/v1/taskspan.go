@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -54,6 +55,22 @@ import (
 // local run — which never loads the engine at all — would be the trace telling
 // an operator the run went through the durable driver.
 const taskTracerName = "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+const (
+	// StepSpanName is the logical operation represented by one workflow step.
+	StepSpanName = "flowstate.step"
+	// AttemptSpanName is the durable substrate operation for one activity attempt.
+	AttemptSpanName = "flowstate.attempt"
+)
+
+// StartStepSpan opens the logical operation that owns log correlation. It is
+// used only by the local driver; durably the Temporal StartActivity tracing seam
+// creates this span once and propagates its immutable context through history.
+func StartStepSpan(ctx context.Context, stepID string) (context.Context, trace.Span) {
+	return otel.GetTracerProvider().Tracer(taskTracerName).Start(ctx, StepSpanName,
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(attribute.String(SpanAttributeStepID, stepID)))
+}
 
 // The attribute vocabulary, named once so a driver cannot invent a second
 // spelling of a concept the other one already has, and so a test can assert the
@@ -312,6 +329,11 @@ func SanitizedTemporalSpanStarter(
 	name string,
 	options ...trace.SpanStartOption,
 ) trace.Span {
+	if strings.HasPrefix(name, "StartActivity:Task") {
+		name = StepSpanName
+	} else if strings.HasPrefix(name, "RunActivity:Task") {
+		name = AttemptSpanName
+	}
 	_, span := tracer.Start(ctx, name, options...)
 
 	return sanitizedTemporalSpan{Span: span}

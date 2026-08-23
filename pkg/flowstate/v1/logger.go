@@ -21,6 +21,11 @@ import (
 // loggerKey addresses the logger in a context.
 type loggerKey struct{}
 
+// logContextKey addresses the span context a log record is correlated with.
+// It is deliberately a Go context value rather than a schema value: span
+// context is observability plumbing and must never enter durable history.
+type logContextKey struct{}
+
 // ContextWithLogger returns a context whose `log:` steps emit through logger.
 //
 // A nil logger is ignored rather than stored, so a caller threading an optional logger
@@ -47,6 +52,24 @@ func LoggerFrom(ctx context.Context) *slog.Logger {
 	}
 
 	return slog.Default()
+}
+
+// ContextWithLogContext keeps logger ownership separate from attempt ownership.
+// Tasks still execute on (and create children from) their attempt context, while
+// the log task emits against the logical step context supplied here.
+func ContextWithLogContext(ctx, logCtx context.Context) context.Context {
+	if logCtx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, logContextKey{}, logCtx)
+}
+
+// LogContextFrom returns the context LogAttrs must use.
+func LogContextFrom(ctx context.Context) context.Context {
+	if logCtx, ok := ctx.Value(logContextKey{}).(context.Context); ok && logCtx != nil {
+		return logCtx
+	}
+	return ctx
 }
 
 // MultiHandler fans one record out to several handlers.

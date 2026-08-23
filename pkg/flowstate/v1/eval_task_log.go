@@ -37,7 +37,7 @@ func taskFuncLog(ctx context.Context, input map[string]*Value, scope *Scope) (*N
 		attrs = append(attrs, slog.String(name, taskInputs.GetFields()[name]))
 	}
 
-	LoggerFrom(ctx).LogAttrs(ctx, slogLevel(taskInputs.GetLevel()), taskInputs.GetMessage(),
+	LoggerFrom(ctx).LogAttrs(LogContextFrom(ctx), slogLevel(taskInputs.GetLevel()), taskInputs.GetMessage(),
 		attrsOf(attrs)...)
 
 	return nodeOutputsFromProtoMessage(&Task_Log_Outputs{})

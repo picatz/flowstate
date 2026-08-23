@@ -285,7 +285,7 @@ should contain three services:
 | --- | --- |
 | `flowstate` | the client's RPC span for `flowstate.v1.WorkflowService/Run`, and `StartWorkflow:Run` |
 | `flowstate-server` | the server side of the same RPC, as a child |
-| `flowstate-worker` | `RunWorkflow:Run`, then `RunActivity:TaskAuthorized` once per step |
+| `flowstate-worker` | `RunWorkflow:Run`, then `flowstate.step` once per logical step and `flowstate.attempt` once per activity attempt |
 
 That is the claim the lab exists to check: one trace id from the person to the
 step. If the worker's spans are a separate trace, the Temporal tracing
@@ -335,9 +335,13 @@ Flowstate already emits — nothing was added to the engine to make a panel work
 Log-to-trace correlation is by trace id, in both directions, and it is worth
 knowing exactly how far it reaches.
 
-A `log:` step's record **carries the trace and span ids of the step it ran in**.
-The task emits through its context, and on the worker that context is the
-activity's — which holds the span Temporal's tracing interceptor opened. So a line
+A `log:` step's record **carries the trace and span ids of the logical
+`flowstate.step` operation it ran in**. That is a stronger contract than merely
+sharing the run's trace: its SpanID is not the Temporal activity attempt (named
+`flowstate.attempt`) and is not the task-attempt span nested beneath that
+activity. The durable driver reads the immutable step reference that Temporal's
+tracing interceptor wrote to the activity header when the step was scheduled;
+every retry receives that same reference. So a line
 in the log panel has a **TraceID** field that opens the trace, and a span in Tempo
 links to the lines that run produced. That is the join the lab could not make
 before, when the honest answer was "the same service, around the same moment" and
@@ -346,10 +350,9 @@ the workflow id was the only real key.
 The server's and worker's **own** lines carry no trace id, and cannot: a worker
 saying it is starting up is not inside anybody's request. Find those by service
 and time. A `log:` step in `flow run local` **does** carry one now: the local
-driver opens the same `flowstate.task/<name>` span the worker does, so a
-rehearsal's lines join a rehearsal's trace the same way. It did not until #523's
-gap 3 closed, which is why an older run of this lab shows local lines with an
-empty TraceID.
+driver owns a `flowstate.step` context outside its per-attempt instrumentation,
+so a rehearsal's lines join the logical step rather than whichever attempt
+happened to emit them.
 
 The workflow id still works as a key and is still the string that joins Grafana to
 the Temporal UI. It is no longer the only one.

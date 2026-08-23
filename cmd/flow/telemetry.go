@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -494,7 +495,7 @@ func temporalWorkerInterceptors() []interceptor.WorkerInterceptor {
 		return nil
 	}
 
-	return []interceptor.WorkerInterceptor{tracing}
+	return []interceptor.WorkerInterceptor{engine.LogContextInterceptor(), tracing}
 }
 
 // telemetryState is the process's one initialization, and the flush that

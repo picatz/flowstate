@@ -19,6 +19,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,9 +35,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	noopTrace "go.opentelemetry.io/otel/trace/noop"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"go.temporal.io/sdk/contrib/opentelemetry"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -605,7 +609,7 @@ func TestTemporalInterceptorsPresentWhenConfigured(t *testing.T) {
 	// Both are asserted because either alone is silent: a header nobody writes
 	// and a header nobody opens look identical from a collector.
 	workerInterceptors := temporalWorkerInterceptors()
-	require.Len(t, workerInterceptors, 1)
+	require.Len(t, workerInterceptors, 2)
 	require.NotNil(t, worker.Options{Interceptors: workerInterceptors}.Interceptors)
 }
 
@@ -758,6 +762,7 @@ func TestTemporalSpanErrorsAreContained(t *testing.T) {
 type logCollector struct {
 	mu      sync.Mutex
 	records []*logspb.LogRecord
+	spans   []*tracepb.Span
 }
 
 // logCollectorTo stands one up and points the exporters at it.
@@ -772,10 +777,6 @@ func logCollectorTo(t *testing.T) *logCollector {
 	collector := &logCollector{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer w.WriteHeader(http.StatusOK)
-
-		if r.URL.Path != "/v1/logs" {
-			return
-		}
 
 		if err := collector.accept(r); err != nil {
 			t.Errorf("decoding an OTLP log export: %v", err)
@@ -815,17 +816,29 @@ func (c *logCollector) accept(r *http.Request) error {
 		return fmt.Errorf("reading the body: %w", err)
 	}
 
-	var request collogspb.ExportLogsServiceRequest
-	if err := proto.Unmarshal(raw, &request); err != nil {
-		return fmt.Errorf("unmarshaling: %w", err)
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, resource := range request.GetResourceLogs() {
-		for _, scope := range resource.GetScopeLogs() {
-			c.records = append(c.records, scope.GetLogRecords()...)
+	switch r.URL.Path {
+	case "/v1/logs":
+		var request collogspb.ExportLogsServiceRequest
+		if err := proto.Unmarshal(raw, &request); err != nil {
+			return fmt.Errorf("unmarshaling logs: %w", err)
+		}
+		for _, resource := range request.GetResourceLogs() {
+			for _, scope := range resource.GetScopeLogs() {
+				c.records = append(c.records, scope.GetLogRecords()...)
+			}
+		}
+	case "/v1/traces":
+		var request coltracepb.ExportTraceServiceRequest
+		if err := proto.Unmarshal(raw, &request); err != nil {
+			return fmt.Errorf("unmarshaling traces: %w", err)
+		}
+		for _, resource := range request.GetResourceSpans() {
+			for _, scope := range resource.GetScopeSpans() {
+				c.spans = append(c.spans, scope.GetSpans()...)
+			}
 		}
 	}
 
@@ -838,6 +851,12 @@ func (c *logCollector) exported() []*logspb.LogRecord {
 	defer c.mu.Unlock()
 
 	return append([]*logspb.LogRecord{}, c.records...)
+}
+
+func (c *logCollector) exportedSpans() []*tracepb.Span {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*tracepb.Span{}, c.spans...)
 }
 
 // text renders everything received as one string, for containment assertions.
@@ -983,7 +1002,7 @@ func TestLogRecordCarriesTheTraceOfItsSpan(t *testing.T) {
 // [TestALocalRunExportsItsTaskSpans] is the tier that can see it: the compiled
 // binary, a real process, and no provider anybody but `flow run local` itself
 // installed.
-func TestLocalRunLogLineCarriesTheTraceOfItsTaskSpan(t *testing.T) {
+func TestLocalRunLogLineCarriesTheLogicalStepSpan(t *testing.T) {
 	collector := logCollectorTo(t)
 	isolateTelemetry(t)
 
@@ -1014,6 +1033,75 @@ func TestLocalRunLogLineCarriesTheTraceOfItsTaskSpan(t *testing.T) {
 	require.NotEmpty(t, records[0].GetTraceId(),
 		"a local run's log line carries no trace id, so nothing links it to the step's span")
 	require.NotEmpty(t, records[0].GetSpanId())
+
+	var run, step, attempt *tracepb.Span
+	for _, span := range collector.exportedSpans() {
+		switch span.GetName() {
+		case v1.RunSpanName("local-log-correlation"):
+			run = span
+		case v1.StepSpanName:
+			step = span
+		case v1.TaskSpanName("log"):
+			attempt = span
+		}
+	}
+	require.NotNil(t, run)
+	require.NotNil(t, step)
+	require.NotNil(t, attempt)
+	require.Equal(t, hex.EncodeToString(run.GetTraceId()), hex.EncodeToString(records[0].GetTraceId()))
+	require.Equal(t, hex.EncodeToString(step.GetSpanId()), hex.EncodeToString(records[0].GetSpanId()))
+	require.NotEqual(t, hex.EncodeToString(attempt.GetSpanId()), hex.EncodeToString(records[0].GetSpanId()))
+}
+
+// TestDurableRunLogLineCarriesTheLogicalStepSpan exercises the OTLP wire on
+// the other driver. The tracing interceptor's StartActivity span is the stable
+// logical operation; RunActivity and flowstate.task/log are attempt-local.
+func TestDurableRunLogLineCarriesTheLogicalStepSpan(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	tracing, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{
+		SpanStarter: v1.SanitizedTemporalSpanStarter,
+	})
+	require.NoError(t, err)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{engine.LogContextInterceptor(), tracing}})
+	engine.Register(env, engine.TaskRuntimeConfig{})
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
+		Name: "durable-log-correlation", Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{Id: "say", Kind: &v1.Node_Task{Task: &v1.Task{
+			Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("from a durable run")},
+		}}}},
+	}})
+	require.NoError(t, env.GetWorkflowError())
+	shutdown(context.Background())
+
+	records := collector.exported()
+	require.Len(t, records, 1)
+	var run, step, activityAttempt, taskAttempt *tracepb.Span
+	for _, span := range collector.exportedSpans() {
+		switch span.GetName() {
+		case "RunWorkflow:Run":
+			run = span
+		case v1.StepSpanName:
+			step = span
+		case v1.AttemptSpanName:
+			activityAttempt = span
+		case v1.TaskSpanName("log"):
+			taskAttempt = span
+		}
+	}
+	require.NotNil(t, run)
+	require.NotNil(t, step)
+	require.NotNil(t, activityAttempt)
+	require.NotNil(t, taskAttempt)
+	require.Equal(t, hex.EncodeToString(run.GetTraceId()), hex.EncodeToString(records[0].GetTraceId()))
+	require.Equal(t, hex.EncodeToString(step.GetSpanId()), hex.EncodeToString(records[0].GetSpanId()))
+	require.NotEqual(t, hex.EncodeToString(activityAttempt.GetSpanId()), hex.EncodeToString(records[0].GetSpanId()))
+	require.NotEqual(t, hex.EncodeToString(taskAttempt.GetSpanId()), hex.EncodeToString(records[0].GetSpanId()))
 }
 
 // TestLogRecordWithoutASpanIsStillExported is the honest other half.
