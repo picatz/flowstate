@@ -33,8 +33,12 @@
 // The one place the address policy cannot reach is a proxy: with a proxy
 // configured, the dialer connects to the proxy and never sees the target. The
 // policy then resolves the target itself and checks it before the request goes
-// out, which is a weaker check because the proxy resolves the name again. This is
-// why proxies are off unless [WithProxy] or [WithProxyFromEnvironment] is given.
+// out — the address checks and the connection-scoped rules both, so a rule an
+// operator wrote against ip means the same thing with a proxy in the path as
+// without one. It is still the weaker check, because the proxy resolves the name
+// again and may get a different answer, and because the number of addresses it
+// will check is bounded (maxProxyTargetAddrs). This is why proxies are off
+// unless [WithProxy] or [WithProxyFromEnvironment] is given.
 //
 // # Rules
 //
@@ -77,7 +81,9 @@
 // transport dials. path is cleaned of the "." and ".." segments and repeated
 // slashes a server would collapse anyway, so "/x/../admin" is seen as "/admin".
 //
-// A rule that references ip is evaluated in the dialer, once per address, and may
+// A rule that references ip is evaluated once per resolved address — in the
+// dialer, or, when a proxy is configured and the dialer would only ever see the
+// proxy, against the addresses the policy resolves itself. It may
 // only combine ip with the attributes that identify a connection: scheme, host,
 // port, and identity. Those are exactly the attributes that stay true for every
 // request sharing a connection, so a connection-scoped rule cannot be bypassed by
@@ -458,7 +464,7 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 		return &DenyError{Reason: ReasonPort, Target: target, Detail: err.Error()}
 	}
 
-	addrs, err := net.DefaultResolver.LookupNetIP(req.Context(), "ip", req.URL.Hostname())
+	addrs, err := lookupTargetAddrs(req.Context(), "ip", req.URL.Hostname())
 	if err != nil {
 		return &DenyError{
 			Reason: ReasonAddress,
@@ -467,13 +473,81 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 		}
 	}
 
+	// WithRuleCostLimit bounds one rule against one address; nothing bounded the
+	// number of addresses, and that number comes from resolving a name the
+	// workflow chose. So the peer sets the multiplier on the aggregate CEL cost
+	// this check spends, which is the shape CLAUDE.md's own rule names: bounding
+	// one resource does not bound another the peer controls the ratio to.
+	//
+	// It denies rather than checking a prefix. Taking the first N would skip
+	// addresses, and an address this never looked at is an address the policy
+	// did not refuse — a bound that fails open is worse than no bound, because
+	// it reads like one.
+	if len(addrs) > maxProxyTargetAddrs {
+		return &DenyError{
+			Reason: ReasonAddress,
+			Target: target,
+			Detail: fmt.Sprintf("the host resolved to %d addresses, more than the %d this policy will check before proxying",
+				len(addrs), maxProxyTargetAddrs),
+		}
+	}
+
+	scheme, host := strings.ToLower(req.URL.Scheme), ruleHost(req.URL)
+	rules := !p.connRules.empty()
+
 	for _, addr := range addrs {
-		if err := p.CheckAddr(netip.AddrPortFrom(addr, port)); err != nil {
+		addrPort := netip.AddrPortFrom(addr, port)
+		if err := p.CheckAddr(addrPort); err != nil {
+			return err
+		}
+		if !rules {
+			continue
+		}
+		// target rather than the dialed address, unlike [Policy.controlDial]:
+		// here the URL is what the operator wrote the rule against and the
+		// address is one of several the name resolved to, so the URL is the more
+		// useful thing to name in a refusal. Deliberate, not an oversight.
+		if err := p.evalConnRules(req.Context(), target, scheme, host, addrPort); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// lookupTargetAddrs resolves a proxied request's target host.
+//
+// A variable rather than a direct call to [net.DefaultResolver] so that one test
+// can pose a name resolving to more addresses than maxProxyTargetAddrs — which
+// is not something a test can arrange through the real resolver, and a bound
+// nothing reaches is a bound nothing tests.
+var lookupTargetAddrs = net.DefaultResolver.LookupNetIP
+
+// maxProxyTargetAddrs bounds how many resolved addresses [Policy.checkProxiedTarget]
+// will check for one request.
+//
+// A name the workflow chose can be made to resolve to as many addresses as the
+// operator of that name likes, and every one of them costs a full pass of the
+// connection-scoped rules. Fifteen is far above what a real service publishes
+// and far below where the check costs more than the request it is guarding.
+const maxProxyTargetAddrs = 15
+
+// evalConnRules evaluates the connection-scoped rules for one resolved address.
+//
+// One function with two callers rather than two activations built side by side:
+// [Policy.controlDial] reads scheme and host from the attributes the round
+// tripper attached, and [Policy.checkProxiedTarget] takes them from the request
+// URL, but what the rules are handed has to be identical or a rule means two
+// different things depending on whether a proxy is configured. Adding an
+// attribute to connEnv (rules.go) must be a change in one place.
+func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string, addrPort netip.AddrPort) error {
+	return p.connRules.evaluate(ctx, target, map[string]any{
+		"scheme":   scheme,
+		"host":     host,
+		"port":     int64(addrPort.Port()),
+		"ip":       normalize(addrPort.Addr()).String(),
+		"identity": identityFromContext(ctx),
+	})
 }
 
 // controlDial is the dialer's control hook. It runs after the address has been
@@ -524,13 +598,7 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	return p.connRules.evaluate(ctx, address, map[string]any{
-		"scheme":   a.scheme,
-		"host":     a.host,
-		"port":     int64(addrPort.Port()),
-		"ip":       normalize(addrPort.Addr()).String(),
-		"identity": identityFromContext(ctx),
-	})
+	return p.evalConnRules(ctx, address, a.scheme, a.host, addrPort)
 }
 
 // checkRedirect is the client's redirect hook. It bounds the number of hops and
@@ -579,6 +647,14 @@ func (p *Policy) checkRedirect(req *http.Request, via []*http.Request) error {
 // port, and the request-scoped rules. It is meant for validating a workflow
 // definition before it runs, so that an endpoint the policy would refuse is
 // reported while it can still be corrected.
+//
+// With a proxy configured it does more than that, and the caveat is already
+// written down where it matters: [Policy.checkProxiedTarget] resolves the host
+// and evaluates the connection-scoped rules, so this is neither I/O-free nor
+// address-free on that path. eval_task_http_check.go says the same thing, and is
+// why the validator does not call this — a diagnostic drawn from a deployment's
+// proxy configuration would be telling an author their file is wrong on the
+// strength of something the machine they are typing on may not share.
 //
 // A URL that passes may still be denied when it is requested, because the address
 // it resolves to is only checked then. Use [Policy.CheckAddr] to check a resolved
