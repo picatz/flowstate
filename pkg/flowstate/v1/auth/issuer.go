@@ -272,23 +272,6 @@ func (k SigningKey) sign(ctx context.Context, claims jwt.ClaimsSet) (string, err
 	return k.signer(ctx, claims)
 }
 
-// NewProviderSigningKey adapts a KMS/HSM-backed Signer to Issuer. Only the
-// public half is inspected in this process; signing remains behind the Signer
-// boundary and receives the mint request's context for cancellation.
-func NewProviderSigningKey(signer Signer, public crypto.PublicKey) (SigningKey, error) {
-	if signer == nil {
-		return SigningKey{}, fmt.Errorf("%w: signer is nil", ErrNoSigningKey)
-	}
-	algorithm, published, err := publishValue(signer.KeyID(), public)
-	if err != nil {
-		return SigningKey{}, err
-	}
-	if algorithm != signer.Algorithm() {
-		return SigningKey{}, fmt.Errorf("%w: signer algorithm %q does not match public key algorithm %q", ErrInvalidPolicy, signer.Algorithm(), algorithm)
-	}
-	return SigningKey{id: signer.KeyID(), algorithm: algorithm, published: published, signer: signer.Sign}, nil
-}
-
 // signerFor returns a closure that signs claims with the given private key.
 //
 // The key is captured here and nowhere else, so it is reachable only by signing.
