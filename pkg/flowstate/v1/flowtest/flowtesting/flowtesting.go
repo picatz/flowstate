@@ -59,8 +59,10 @@ package flowtesting
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
@@ -214,20 +216,54 @@ func coveragePass(t testing.TB, file *flowtest.File, path, dir string) {
 // nothing does. Both refusals are about addressability rather than validity —
 // `flow test` runs these files fine — so the sentences say what this package
 // needs and why.
+//
+// Collisions are judged on the name [testing.T.Run] will expose, not on the
+// written spelling: go test rewrites a subtest's name before it becomes an
+// address (whitespace to underscores, unprintables to their escapes), so
+// cases named "a b" and "a_b" are two spellings of one address — the second
+// would run as "a_b#01", a name derived from declaration order that no
+// documentation of this package teaches, and `-run 'TestX/a_b'` would match
+// both. Reported by Codex on picatz/flowstate#1015.
 func refusal(file *flowtest.File) string {
 	if len(file.Tests) == 0 {
 		return "flowtesting: the file declares no cases, so this run would pass by testing nothing"
 	}
 
-	seen := make(map[string]bool, len(file.Tests))
+	seen := make(map[string]string, len(file.Tests))
 	for _, test := range file.Tests {
-		if seen[test.Name] {
+		address := subtestName(test.Name)
+		first, collides := seen[address]
+		if !collides {
+			seen[address] = test.Name
+			continue
+		}
+		if first == test.Name {
 			return fmt.Sprintf("flowtesting: two cases share the name %q; a subtest's name is how `go test -run` addresses a case, so every case needs its own", test.Name)
 		}
-		seen[test.Name] = true
+		return fmt.Sprintf("flowtesting: cases %q and %q both become subtest %q under go test's own name rewriting, so `-run` cannot tell them apart; rename one", first, test.Name, address)
 	}
 
 	return ""
+}
+
+// subtestName is the name go test will expose for a case: the testing
+// package's own rewrite (testing/match.go) — every whitespace rune becomes
+// "_", every unprintable rune its escaped spelling — applied here so
+// [refusal] judges collisions on the address `-run` really matches against.
+func subtestName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case unicode.IsSpace(r):
+			b.WriteByte('_')
+		case !strconv.IsPrint(r):
+			quoted := strconv.QuoteRune(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // reportCase renders one case's verdict onto its subtest: the harness error

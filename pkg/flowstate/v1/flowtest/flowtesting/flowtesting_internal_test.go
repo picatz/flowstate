@@ -160,6 +160,16 @@ func TestRefusalIsAboutAddressability(t *testing.T) {
 	require.Contains(t, reason, `"same"`)
 	require.Contains(t, reason, "go test -run")
 
+	// The collision go test manufactures (the Codex finding on #1015): the
+	// two written names differ, but the rewriting `-run` matches against
+	// folds them into one address, so checking the written spelling alone
+	// would document a rerun command that selects the wrong case.
+	rewritten := &flowtest.File{Tests: []flowtest.Test{{Name: "a b"}, {Name: "a_b"}}}
+	reason = refusal(rewritten)
+	require.Contains(t, reason, `"a b"`)
+	require.Contains(t, reason, `"a_b"`)
+	require.Contains(t, reason, "name rewriting")
+
 	ok := &flowtest.File{Tests: []flowtest.Test{{Name: "one"}, {Name: "two"}}}
 	require.Empty(t, refusal(ok))
 }
