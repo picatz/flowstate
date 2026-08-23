@@ -12,7 +12,21 @@
 //
 // Neither direction uses a shared secret. That is the point: a deployment holds
 // one signing key, publishes the public half, and everything else is a trust
-// relationship an operator can read, review, and revoke.
+// relationship an operator can read and review. The two directions differ in
+// how withdrawing that trust takes effect. Outbound, reviewing it is
+// prospective, not retroactive: withdrawing an issuer or narrowing a policy
+// stops [Broker] from minting further assertions or exchanging them for new
+// credentials, but does nothing to an assertion or exchanged credential
+// already issued within its lifetime — there is no revocation of those (see
+// THREAT_MODEL.md, "The issuer as a single point of failure" and "Non-goals
+// and honest gaps"). Short assertion and credential lifetimes are what bound
+// that exposure. Inbound is different: [OIDCVerifier] checks issuer
+// membership and claim rules against the [Policy] it was built with, and it
+// checks them on every request, not only at token mint time. Removing an
+// issuer or tightening a claim rule and reconstructing the verifier with the
+// new policy does invalidate access for previously-valid inbound tokens,
+// starting with the next request each one presents — even though the token
+// itself, as a JWT, is not and cannot be revoked.
 //
 // # Inbound: authenticating callers
 //
@@ -100,6 +114,16 @@
 // everyone. Rules match exactly, never by prefix or pattern, so a policy cannot
 // accidentally trust more than it names.
 //
+// For the public multi-tenant issuers this package knows by name — GitHub
+// Actions, GitLab.com, HCP Terraform — that is enforced rather than advised: an
+// entry naming one of them is refused when the policy loads unless it carries a
+// require rule or a namespace_claim. An audience does not substitute for either,
+// because on those platforms the audience is a value the workload requesting the
+// token names. The list of such issuers is a floor and not a ceiling — it says
+// nothing about an issuer it has not heard of, since an audience is a real
+// restriction for a single-tenant issuer whose tokens only its own operator can
+// obtain.
+//
 // Several entries may share an issuer, which is how one platform grants
 // different roles to different workloads. The first entry whose audience and
 // rules a token satisfies wins, and [Principal.IssuerName] records which one it
@@ -160,6 +184,13 @@
 //
 //	mux.Handle(auth.DiscoveryPath, issuer.Handler())
 //	mux.Handle(issuer.JWKSPath(), issuer.Handler())
+//
+// A process that starts this way publishes exactly one key, which is why
+// rotating one across a restart takes [WithVerifyOnlyKey]: it publishes a
+// previous key's public half beside the signing key, so assertions the process
+// before this one signed keep verifying until the retention lapses. That is
+// what `flow`'s repeatable --identity-key builds, and [Issuer.Rotate] is its
+// in-process counterpart for a deployment that never restarts.
 //
 // The subject names the workload hierarchically, so a relying party can authorize
 // at whatever level it wants with a prefix match:

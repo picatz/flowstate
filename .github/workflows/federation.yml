@@ -1,0 +1,51 @@
+name: Federation
+
+# Deliberately no pull_request trigger. This is the one job with a real
+# identity provider on the other end: it mints a genuine GitHub Actions OIDC
+# token and verifies it against token.actions.githubusercontent.com. Everything
+# in pkg/flowstate/v1/auth otherwise verifies tokens from an in-process
+# stand-in issuer, which proves this repository's reading of the specification
+# and cannot prove that the provider people actually configure still serves
+# what that reading assumes.
+#
+# It used to be a job in ci.yml, gated by `if:` on the auth package being
+# affected. That gate closed the wrong door: granting `id-token: write` to a
+# job is what makes the runner's token endpoint answer at all, and that job
+# still had to check out the pull request's own head to decide whether the
+# gate applied — so PR-authored code ran with a live token-minting credential
+# in scope regardless of which files the diff touched. Verifying here, on
+# push to main only, removes the untrusted-code precondition instead of
+# gating around it: nothing runs against this workflow's runner token until
+# code has already passed review and reached the protected branch.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  federation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # persist-credentials: false — see ci.yml's test job. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # -run so this job is the real-issuer check and nothing else; the
+      # offline auth tests already run in ci.yml's test job, and running them
+      # twice would make a failure here ambiguous about which half broke.
+      - name: Verify a real CI token against the real issuer
+        # FLOWSTATE_REQUIRE_REAL_TOKEN turns the test's everywhere-else skip
+        # into a failure here: this job exists to run the live check, so an
+        # absent token endpoint means the grant or the variables regressed,
+        # and a green skip would be the gate passing while verifying nothing.
+        run: FLOWSTATE_REQUIRE_REAL_TOKEN=1 GOMEMLIMIT=1GiB go test -v -timeout 300s -run TestRealCIToken ./pkg/flowstate/v1/auth/

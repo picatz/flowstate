@@ -21,7 +21,7 @@
 // exist to grant, and a property that forbade it would be a property no correct
 // engine could pass. [Result.UnorderedPrefix] is where a case says which of its
 // effects are a set rather than a sequence, the same distinction
-// [tests.UndoCase] already draws for the same reason.
+// [conformance.UndoCase] already draws for the same reason.
 //
 // # Every failure is a seed
 //
@@ -34,12 +34,14 @@
 //
 // # Bounds
 //
-// Two, because two resources run away, and they are not the same resource. The
-// number of schedules explored bounds this package's own wall-clock time and is
-// [Budget.Schedules], reported on every run so a search that explored nothing is
-// visible rather than green. The number of decisions inside one schedule bounds
-// what a single pathological workflow can spend, and is
-// [v1.MaxScheduleDecisions], reported here as [Observation.Truncated].
+// Three, because three resources run away and they are not the same resource.
+// The number of schedules explored bounds this package's own wall-clock time and
+// is [Budget.Schedules], reported on every run so a search that explored nothing
+// is visible rather than green. The number of decisions inside one schedule
+// bounds what a single pathological workflow can spend, and is
+// [v1.MaxScheduleDecisions], reported here as [Observation.Truncated]. And the
+// caller's context bounds how much of a search survives being cancelled, which
+// is a bound the caller cannot apply from outside — see [Explore].
 //
 // # Which driver
 //
@@ -50,8 +52,10 @@
 // exercises. Holding the durable driver to this property would mean driving
 // Temporal's test environment's coroutine scheduler from a seed — slice 3's work,
 // and a different mechanism. What keeps the two honest in the meantime is
-// unchanged: both drivers run every case in pkg/flowstate/v1/tests, and the cases
+// unchanged: both drivers run every case in pkg/flowstate/v1/internal/conformance, and the cases
 // this package explores are those same cases.
+//
+// [conformance.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#UndoCase
 package dst
 
 import (
@@ -63,8 +67,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"testing"
 
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -203,8 +207,10 @@ type Result struct {
 	// UnorderedPrefix is how many leading entries of Effects are compared as a
 	// set rather than a sequence: work whose order is the schedule's to choose,
 	// which is exactly what this harness varies. The same distinction
-	// [tests.UndoCase] draws, for the same reason — beyond the prefix, order is
+	// [conformance.UndoCase] draws, for the same reason — beyond the prefix, order is
 	// a claim.
+	//
+	// [conformance.UndoCase]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#UndoCase
 	UnorderedPrefix int
 }
 
@@ -307,7 +313,31 @@ func (r *Report) Truncated() bool {
 //
 // It returns rather than fails, so that a test can assert a divergence *is*
 // found — which is the only way to know the property is capable of failing at
-// all. [CheckScheduleEquivalence] is the ordinary caller.
+// all. [dsttest.CheckScheduleEquivalence] is the ordinary caller.
+//
+// # The search stops when ctx is done
+//
+// The third bound, and the one a caller cannot supply for itself. Schedules and
+// decisions bound what a search may spend; this bounds how long it goes on
+// spending after somebody said stop. A caller checking cancellation between its
+// own units does not help, because each of those units is a whole search: the
+// loop below would still start every remaining schedule, and starting one is not
+// cheap — `flow test`'s run recompiles a case's stubs and reparses its workflow
+// before execution ever consults a context, so an interrupted `--seeds 10000`
+// would spend thousands of parses on its way to stopping. Reported by Codex on
+// picatz/flowstate#814.
+//
+// The baseline is deliberately not gated. It is the run a caller *reports* —
+// `flow test` takes its verdict and its coverage from it — so refusing to run it
+// would hand back no result at all, which is a nil where a report expects one
+// rather than a bound doing its job. Refusing to start a whole unit is the
+// caller's own check; this one stops the search around it.
+//
+// A stopped search reports the schedules it managed rather than the ones it was
+// asked for, and records no divergence for the ones it never ran: an observation
+// that does not exist cannot disagree with the baseline.
+//
+// [dsttest.CheckScheduleEquivalence]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/dst/dsttest#CheckScheduleEquivalence
 func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 	report := &Report{}
 
@@ -315,6 +345,10 @@ func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 	report.Observations = append(report.Observations, baseline)
 
 	for _, seed := range budget.seeds() {
+		if ctx.Err() != nil {
+			break
+		}
+
 		scheduler := v1.NewSeededScheduler(seed)
 		observation := observe(ctx, scheduler, run)
 		report.Observations = append(report.Observations, observation)
@@ -356,10 +390,19 @@ func observe(ctx context.Context, scheduler *v1.SeededScheduler, run RunFunc) Ob
 // that are the encoder's and miss none of its own. The bytes are hex so the
 // rendering a failure prints is the same thing the comparison used, rather than
 // a second rendering that could disagree with it.
+//
+// [canonicalTranscript] closes the same hole one layer down, and the layer is
+// the whole of why it is needed: `Deterministic: true` sorts a *proto* map's
+// keys, and a CEL map inside a transcript is not one — it is
+// [expr.MapValue]'s repeated Entries, whose order is whatever order the engine
+// ranged a Go map in when it built the value. Two runs of one workflow under one
+// schedule therefore encode to different bytes with no ordering claim
+// distinguishing them, which this harness would report as a divergence produced
+// by a schedule that made no decisions at all.
 func render(result Result) string {
 	var b strings.Builder
 
-	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(result.Transcript)
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(canonicalTranscript(result.Transcript))
 	if err != nil {
 		// A transcript that will not encode is not a divergence to report; it is
 		// the same failure on every schedule, so it renders identically and the
@@ -384,35 +427,124 @@ func render(result Result) string {
 	return b.String()
 }
 
-// CheckScheduleEquivalence explores one workflow's schedule space and fails tb
-// on the first schedule whose observables differ from written order's.
+// canonicalTranscript returns transcript with every CEL map's entries in a fixed
+// order, so that one workflow run twice under one schedule encodes to one string.
 //
-// The failure names the seed and prints the command that replays it, because a
-// seed nobody can act on is a random number.
-func CheckScheduleEquivalence(tb testing.TB, run RunFunc) *Report {
-	tb.Helper()
+// A CEL map is [expr.MapValue], a *repeated* field of key/value entries, and a
+// map has no order — so the engine builds one by ranging a Go map and the entry
+// order that comes out is Go's randomized one. It is not a claim about anything.
+// Comparing it is how this harness reported, on the examples corpus, six
+// "divergences" produced by schedules that made zero scheduling decisions:
+// identical content, identical length, entries in a different order, on a run
+// where the seeded scheduler was never asked a single question.
+//
+// Sorting the entries rather than ignoring them keeps the comparison exact in
+// the direction that matters. A schedule that changed a key, a value, or how
+// many entries there are still changes these bytes; only the order they happen
+// to be listed in stops being a difference, which is the one thing the type
+// itself says is not one.
+//
+// Lists are left exactly as they are, deliberately: [expr.ListValue] *is*
+// ordered, a loop's `results` travel in one, and reordering those would hide
+// precisely the class of defect this package exists to find.
+func canonicalTranscript(transcript *v1.Workflow_StepOutputs) *v1.Workflow_StepOutputs {
+	if transcript == nil {
+		return nil
+	}
 
-	budget, err := DefaultBudget()
+	canonical := &v1.Workflow_StepOutputs{
+		StepValues: make(map[string]*v1.Node_Outputs, len(transcript.GetStepValues())),
+	}
+	for id, outputs := range transcript.GetStepValues() {
+		canonical.StepValues[id] = canonicalOutputs(outputs)
+	}
+
+	// The run's declared outputs, which is the answer the run was asked for and
+	// therefore the half of the transcript an author reads most directly.
+	if run := transcript.GetRunOutputs(); run != nil {
+		canonical.RunOutputs = &v1.RunOutputs{Values: make(map[string]*v1.Value, len(run.GetValues()))}
+		for name, value := range run.GetValues() {
+			canonical.RunOutputs.Values[name] = canonicalNamedValue(value)
+		}
+	}
+
+	return canonical
+}
+
+// canonicalOutputs is [canonicalTranscript] for one step's recorded outputs.
+func canonicalOutputs(outputs *v1.Node_Outputs) *v1.Node_Outputs {
+	if outputs == nil {
+		return nil
+	}
+
+	canonical := &v1.Node_Outputs{
+		NamedValues: make(map[string]*v1.Value, len(outputs.GetNamedValues())),
+	}
+	for name, value := range outputs.GetNamedValues() {
+		canonical.NamedValues[name] = canonicalNamedValue(value)
+	}
+
+	return canonical
+}
+
+// canonicalNamedValue rewrites one recorded value's literal, leaving every other
+// shape a [v1.Value] can take (an error, an unresolved reference) untouched.
+func canonicalNamedValue(value *v1.Value) *v1.Value {
+	literal := value.GetLiteral()
+	if literal == nil {
+		return value
+	}
+
+	clone := proto.Clone(value).(*v1.Value)
+	clone.Kind = &v1.Value_Literal{Literal: canonicalLiteral(literal)}
+
+	return clone
+}
+
+// canonicalLiteral sorts every map's entries, at every depth.
+func canonicalLiteral(value *expr.Value) *expr.Value {
+	switch kind := value.GetKind().(type) {
+	case *expr.Value_MapValue:
+		entries := make([]*expr.MapValue_Entry, 0, len(kind.MapValue.GetEntries()))
+		for _, entry := range kind.MapValue.GetEntries() {
+			entries = append(entries, &expr.MapValue_Entry{
+				Key:   canonicalLiteral(entry.GetKey()),
+				Value: canonicalLiteral(entry.GetValue()),
+			})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entrySortKey(entries[i].GetKey()) < entrySortKey(entries[j].GetKey())
+		})
+
+		return &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: entries}}}
+	case *expr.Value_ListValue:
+		values := make([]*expr.Value, 0, len(kind.ListValue.GetValues()))
+		for _, item := range kind.ListValue.GetValues() {
+			values = append(values, canonicalLiteral(item))
+		}
+
+		return &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: values}}}
+	default:
+		return value
+	}
+}
+
+// entrySortKey is a total order over CEL map keys.
+//
+// The key's own deterministic encoding rather than its string form, because a
+// CEL map's keys are values and need not be strings: an int key and the string
+// spelling of the same number are different keys, and a sort that rendered both
+// as "1" would order them by nothing. An encoding that fails sorts as empty,
+// which is stable and is the only property this needs — two keys that encode to
+// nothing are two keys nothing can tell apart, and the comparison one layer up
+// still sees them.
+func entrySortKey(key *expr.Value) string {
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(key)
 	if err != nil {
-		tb.Fatalf("the schedule budget is not usable: %v", err)
+		return ""
 	}
 
-	report := Explore(tb.Context(), budget, run)
-
-	// Printed on every run, pass or fail: a search that explored no junctions is
-	// a search that proved nothing, and a bound that was reached changes what a
-	// green means. Both are facts about the *check*, so neither is allowed to be
-	// silent.
-	tb.Logf("schedule equivalence: %d schedules explored, up to %d scheduling decisions each, truncated=%t",
-		report.Schedules(), report.Decisions(), report.Truncated())
-
-	if report.Divergence == nil {
-		return report
-	}
-
-	tb.Fatalf("%s", FailureText(tb.Name(), report.Divergence))
-
-	return report
+	return string(encoded)
 }
 
 // FailureText is what a divergence says for itself: which seed, what differed,

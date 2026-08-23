@@ -226,7 +226,8 @@ whose before clicking, #348, not landed.
 ### Worker to plugin
 
 **Today.** `--plugin-dir` names an explicit local path an operator controls; a
-relative or world-writable search path is refused, with
+relative search path, or one writable by any user other than its owner (group
+or world), is refused, with
 `--allow-insecure-plugin-dir` as the named escape hatch
 (`pkg/flowstate/v1/plugin/doc.go:50-52`, `docs/DEPLOYMENT.md:508-515`). Plugin
 environments are built from nothing rather than inherited
@@ -235,9 +236,47 @@ resolved host-side, before `Execute`, and only for inputs the `TaskManifest` nam
 an unnamed input is refused (`docs/ARCHITECTURE.md:432-448`). Responses from a
 plugin are byte-bounded at the RoundTripper, below the RPC library, so no error path
 the library treats specially can miss the cap
-(`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`).
+(`pkg/flowstate/v1/plugin/transport.go:124`, `CLAUDE.md`). The distribution digest a
+run is pinned to is taken from the same open descriptor the process is executed
+through, on Linux via `/proc/self/fd`, so a binary *replaced* between the hash and
+the exec — written beside and renamed over, which is how software on disk ordinarily
+replaces itself — cannot make the recorded provenance describe bytes that never ran
+(`pkg/flowstate/v1/plugin/image.go`). The descriptor pins the inode rather than its
+contents, so a writer who modifies that inode *in place* in the same window can still
+part the digest from what runs; this admits no new principal, because both the search
+path and each binary in it are refused when they are writable by group or world
+(`discover.go:75,111`), which leaves only the owner — the party who already chooses
+what this worker executes. Sealing a private copy would close it and is not done: the
+image is hashed as a stream precisely so that one very large plugin file cannot stop a
+worker from starting, and copying it into memory to seal it reintroduces that.
 
-**Limits.** A launched plugin is trusted code with the worker's authority. The output
+**Limits.** Pinning the digest to the executed image is a Linux guarantee, and
+not one it makes about every plugin. A platform with no way to execute an
+already-open descriptor falls back to executing the path, which leaves the window
+this closes; so does any image the kernel runs through an *interpreter* rather
+than directly, because the kernel starts that interpreter and hands it the path to
+reopen after the descriptor naming it is gone — and the bytes that then run are
+the interpreter's, which nothing here hashes. `#!` is the familiar case and not
+the only one: a `binfmt_misc` registration without the open-binary (`O`) flag
+behaves identically for whatever format it claims, and the format it most often
+claims is *foreign-architecture ELF*, which is how a multi-arch image runs
+anything at all. Which images may be pinned is therefore an allowlist rather than
+a list of known-bad markers a host can add to at any time, and it asks the two
+questions the kernel asks: *would `binfmt_elf` claim this image* — every header
+field whose failure returns `-ENOEXEC` and hands the file on to the next
+registered format, not merely a class/byte-order/machine triple that a malformed
+image also carries (#732, #741) — and *is `binfmt_elf` the format that is asked*,
+which is read from the `binfmt_misc` registry, because a registration is offered
+every image before the native loader is
+(`pkg/flowstate/v1/plugin/execformat_linux.go`, `binfmtmisc_linux.go`). Anything
+unproven, unparseable or unreadable takes the by-path fallback. The residual case
+is a registry that cannot be seen: a container that does not mount
+`binfmt_misc` is still subject to the host's registrations, and an absent registry
+is not proof of an empty one. Every case launches, and
+every case says which guarantee it is giving, and why, in a log line at every launch
+(`pkg/flowstate/v1/plugin/image.go`, `image_linux.go`, `image_other.go`). An
+operator who needs the strong guarantee ships a native binary. A launched
+plugin is trusted code with the worker's authority. The output
 scrubber matches known plaintext and is defeated by any deliberate transform:
 base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin
@@ -412,8 +451,11 @@ configured long: `DefaultAssertionLifetime` is five minutes and
 `MaxAssertionLifetime` is one hour, so an assertion cannot become a standing grant
 (`pkg/flowstate/v1/auth/issuer.go:29-36`). Claims the issuer sets itself are reserved
 and cannot be carried from a submitting token, so a caller cannot choose the subject
-of the assertion minted for it (`:53-59`). Rotated-out keys stay published only for
-`DefaultKeyRetention`, twenty four hours (`:41-45`). Which workload may assume which
+of the assertion minted for it (`:53-59`). A key a deployment no longer signs with
+stays published only for `DefaultKeyRetention`, twenty four hours (`:41-45`), whether
+it was retired in process by `Issuer.Rotate` or named as a verify-only key at
+start-up (`auth.WithVerifyOnlyKey`), which is the form an operator can actually
+reach — see the runbook below. Which workload may assume which
 target is CEL, evaluated under a cost limit
 (`pkg/flowstate/v1/auth/assume.go:11-15`). Key custody is a PKCS#8 PEM file that
 `flow keys` writes at mode 0600 and, everywhere except Windows, verifies after
@@ -425,6 +467,50 @@ key, so the residual risk in both cases is a key on disk under whatever protecti
 the filesystem gave it, which custody procedures have to cover rather than assume
 away. Inbound, the mirrored bound is audience plus optional `MaxTokenAge`
 (`pkg/flowstate/v1/auth/policy.go:88`, `:156`).
+
+**Rotating the issuer key.** Rotation is the whole response to a suspected key
+compromise here, so it has to be a procedure someone can rehearse rather than a
+method in the library. `Issuer.Rotate` rotates in process and no deployment calls
+it; what an operator performs is a restart, and until #891 a restart published the
+new key and nothing else — every assertion the previous process signed, still valid
+for the rest of its five minutes, stopped verifying at any relying party that
+refetched the key set. `--identity-key` therefore repeats, and the order is the
+rule: **the first occurrence signs, and every later one is published for
+verification only**, without its private half being retained. Nothing is derived
+from the file name or its modification time.
+
+```sh
+# 1. Generate the new key. Naming the file names the published key id.
+flow keys generate --out /etc/flowstate/keys/2026-09.pem
+
+# 2. Restart with both, newest first. The process signs with 2026-09 and keeps
+#    publishing 2026-08, so assertions the previous process signed keep verifying.
+flow server --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /etc/flowstate/keys/2026-09.pem \
+  --identity-key /etc/flowstate/keys/2026-08.pem
+
+# 3. After the retention window (federation.key_retention, default 24h, which has
+#    to outlast both the old assertions and every relying party's cached key set),
+#    restart with the new key alone and delete the old one.
+flow server --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /etc/flowstate/keys/2026-09.pem
+```
+
+The start-up line names what was actually published (`signing_key` and
+`verify_only_keys`), so step 2 is verifiable rather than assumed. A key that cannot
+be read or parsed, and two keys publishing one key id, refuse start-up rather than
+being skipped: a key silently left out is a rotation the operator believes is
+covered and is not. A verify-only entry may be the old private key file already
+mounted, or just its public half as a PKIX PEM (`openssl pkey -in 2026-08.pem
+-pubout`), which is the narrower custody choice.
+
+Rotating is not revoking. Publishing the outgoing key for its retention is
+precisely what keeps rotation from rejecting valid assertions, so it does nothing
+about a key believed compromised. `Issuer.RevokeKey` (#897) withdraws a published
+key immediately, and is — like `Rotate` — a library verb no deployment calls today;
+the restart-shaped equivalent is to not name the suspect key at step 2 at all,
+accepting that everything it signed stops verifying as each relying party's cached
+key set expires.
 
 **What is not bounded.** There is no revocation of an already-minted assertion inside
 its lifetime, no threshold or HSM custody, and no separation between the codec keys

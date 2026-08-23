@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // loopbackWorkflow dials a port nothing listens on, on loopback, so the http
@@ -41,6 +43,21 @@ func TestLoopbackDenialUnderTheDefaultPolicyNamesItsOwnRemedy(t *testing.T) {
 	require.Contains(t, stderr, "FLOWSTATE_ALLOW_LOOPBACK_EGRESS")
 	require.Contains(t, stderr, "allow_loopback: true")
 	require.Contains(t, stderr, "--egress-policy")
+
+	// The remedy has to be the one the reader of the variable accepts, which
+	// is the whole claim a suggested command makes. It offered
+	// `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=1` while the check is
+	// `os.Getenv(...) == "true"`, so an author who typed it got the identical
+	// denial back with nothing to distinguish "the opt-in did not apply" from
+	// "the opt-in did not help" (#184). Asserting the *assignment* rather than
+	// the variable name is what makes that visible: the previous assertion
+	// above passes on either spelling.
+	require.Contains(t, stderr, v1.AllowLoopbackEgressEnv+"="+v1.AllowLoopbackEgressValue)
+
+	// And not the spelling that did nothing. Asserting the absence as well as
+	// the presence is what keeps a suggestion that prints *both* — a plausible
+	// way to "fix" this by adding rather than correcting — from passing.
+	require.NotContains(t, stderr, v1.AllowLoopbackEgressEnv+"=1")
 }
 
 // TestLoopbackDenialUnderAnExplicitPolicyStaysSilent is #387's negative

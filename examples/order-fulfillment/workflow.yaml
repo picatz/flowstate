@@ -43,7 +43,6 @@
 edition: v2026.3
 name: order-fulfillment
 description: Reserve stock, charge a card, arrange shipping — and undo the first two if the third can't happen.
-
 inputs:
   # No sensible absent value — an order id names one order, the same way an
   # expense report's requester names one person — so this is required, with
@@ -52,15 +51,14 @@ inputs:
   order_id:
     type: string
     required: true
-    example: ORD-48213
     description: the order being fulfilled
+    example: ORD-48213
   # A feature flag, and false — the ordinary path — is exactly the sensible
   # absent value a default should carry.
   carrier_outage:
     type: bool
     default: false
     description: simulate no carrier being able to take the order, to see the hold and the charge undone
-
 steps:
   # Reserved first and released last: the stock is what everything else in
   # this run depends on existing, so undoing it has to wait until whatever
@@ -69,19 +67,16 @@ steps:
     description: hold the stock so this order cannot be oversold while payment and shipping are arranged
     http:
       method: GET
-      url: https://httpbin.org/get
-      query:
-        reserve: inventory
-        order: ${inputs.order_id}
-      parse_json: true
       outputs:
         id: ${"res-" + response.json.args.order}
+      parse_json: true
+      query: '${{"reserve": "inventory", "order": inputs.order_id}}'
+      url: https://httpbin.org/get
     undo:
       http:
         method: GET
+        query: '${{"release": steps.reserve_inventory.id}}'
         url: https://httpbin.org/get
-        query:
-          release: ${steps.reserve_inventory.id}
 
   # `${steps.reserve_inventory.id}` here is an ordinary backward reference —
   # this step reads an earlier one's output, ok anywhere in the file. The
@@ -92,13 +87,11 @@ steps:
     description: charge the card now that the stock is actually held, never before
     http:
       method: GET
-      url: https://httpbin.org/get
-      query:
-        charge: payment
-        reservation: ${steps.reserve_inventory.id}
-      parse_json: true
       outputs:
         id: ${"chg-" + response.json.args.reservation}
+      parse_json: true
+      query: '${{"charge": "payment", "reservation": steps.reserve_inventory.id}}'
+      url: https://httpbin.org/get
     undo:
       # The compensation that matters most in this file. A shipment that
       # cannot be arranged must not mean a payment that stays taken — this is
@@ -106,9 +99,8 @@ steps:
       # principle so much as this one refund.
       http:
         method: GET
+        query: '${{"refund": steps.charge_payment.id}}'
         url: https://httpbin.org/get
-        query:
-          refund: ${steps.charge_payment.id}
 
   # No `undo:` here — nothing after this step can fail on its behalf, because
   # this is the last step with a compensable effect. `confirm` below only
@@ -126,14 +118,12 @@ steps:
   - id: arrange_shipment
     description: hand the order to a carrier — the step this example fails on, when asked to
     http:
+      expect: ${!inputs.carrier_outage && response.status_code == 200}
       method: GET
       url: https://httpbin.org/status/200
-      expect: ${!inputs.carrier_outage && response.status_code == 200}
-
   - id: confirm
     log:
       message: ${"order %s confirmed and handed to a carrier".format([inputs.order_id])}
-
 outputs:
   order_id:
     value: ${inputs.order_id}

@@ -152,6 +152,25 @@ type TaskDef struct {
 	// tasks can compose with the same target catalog.
 	CredentialInputs []string
 
+	// SecretInputs names the inputs a plugin task accepts a *host* secret
+	// reference through — a Flowfile writes `${secret('vault:prod/api#token')}`,
+	// and a name here is what tells the host it may resolve that reference into
+	// this input before the request crosses into the plugin process, rather
+	// than refusing it. See TaskManifest.secret_inputs in plugin/v1 for the wire
+	// form and the full reasoning; only [Plugin.taskDef] populates this today.
+	//
+	// Deliberately not the same list as [TaskDef.AuthorityInputs] or
+	// [TaskDef.NestedSecretInputs] — see the note on AuthorityInputs for why a
+	// plugin task's secret inputs are not folded into either: enforcement reads
+	// this list where the wire actually carries it (the manifest, closed over in
+	// the plugin's task function), and reads AuthorityInputs and
+	// NestedSecretInputs for a built-in task's own secret-accepting inputs.
+	// This field exists so a *description* of the task — DescribeTask, the
+	// catalog, `flow plugins` — has something to read: before it, a plugin's
+	// claim to receive a host secret was enforced but invisible everywhere a
+	// reviewer or an operator would look for it (#712).
+	SecretInputs []string
+
 	// ShapesOutputs declares that this task evaluates its [ShapingInput] as a
 	// replacement for the outputs it declares.
 	//
@@ -209,33 +228,133 @@ type TaskDef struct {
 	Fn TaskFunc
 }
 
+// What a registry *miss* answers, and why it is decided one function at a time.
+//
+// Every helper below asks the registry a question about a task, and every one of
+// them can be asked about a name the registry does not have. "Unknown task" is not
+// an answer any of them can return, so each has to pick something — and the rule
+// that picks it is the repository's: a component that allows when it cannot decide
+// will eventually allow everything. Each one answers in whichever direction is
+// closed *for the question it is asking*.
+//
+// That is a shared rule and deliberately not a shared shape. The closed direction
+// is a different literal per function, because the questions point different
+// ways: [AcceptsNestedSecret] grants a permission, so its closed answer is
+// `false`; [TaskNeedsAuthority] asks whether an invocation carries something the
+// author asked to have resolved, so its closed answer for such an invocation is
+// `true` — and it reaches that answer through a check that needs no registry at
+// all, which is the actual defect #656 found. Making the six agree on a literal
+// would flip half of them open. What they share is that the miss case is
+// *reasoned about* rather than inherited from a zero value — which is what it
+// was, six times, before #656.
+//
+// Two of them are not gates at all and say so in their own docs
+// ([CheckLiteralInput], [MustBeExpression]): they feed an author's diagnostics, and
+// an unknown task is already reported on its own. Inventing a second complaint
+// about an input of a task nobody has is a false diagnostic, which this repository
+// holds to be worse than a missing one.
+
 // TaskNeedsAuthority reports whether this concrete task invocation needs the
 // identity-aware activity entry point.
+//
+// # The two halves, and why the sweep comes first
+//
+// Only one half of this question needs the registry. The declared
+// [TaskDef.AuthorityInputs] names do; the sweep of the invocation's own inputs for
+// a held [SecretRef] does not, and by construction cannot — it reads the task
+// message it was handed and nothing else. That is exactly what
+// [TaskDef.AuthorityInputs]' own doc relies on when it says a plugin task with a
+// secret input has nothing to declare here.
+//
+// So the sweep runs before the lookup. A `if !found { return false }` above it
+// discarded an answer that never depended on the registry: an invocation
+// *visibly holding a secret reference* was routed away from the identity-aware
+// activity because a lookup of its name missed. That is a defect at the current
+// package layout rather than a property of it, which is why it is fixed here
+// rather than by whatever the layout becomes.
+//
+// A plugin task is where it bites, and it bites precisely because of the promise
+// above: pkg/flowstate/v1/plugin's taskDef deliberately declares no authority
+// inputs, on the stated grounds that this sweep already covers them. A plugin task
+// is also the task most able to be unregistered here — plugin registration happens
+// from a worker's own `--plugin-dir`, so a fleet whose workers do not all carry the
+// same plugins has workflow workers deciding this for names they do not have. The
+// promise and the miss met in the same place.
+//
+// # What a miss answers, and why it is the sweep's answer rather than a blanket
+//
+// A miss answers whatever the sweep found, and nothing further. So an unknown
+// task holding a reference needs authority — the fix above — and an unknown task
+// holding nothing recognisable does not.
+//
+// That is deliberate, and it took being wrong once to state properly. The
+// tempting reading is that this is a permission gate and so a miss should answer
+// a blanket `true`. It is not a gate. Both arms it selects between run the same
+// deployment task-shape policy check; what the identity-aware arm adds is
+// *capability* — `taskActivities.context` installs the run's attested identity,
+// the secret store and the credential broker, which the plain arm never does. On
+// this question `true` hands a task nothing in the process can describe the run's
+// identity and a live credential runtime, and `false` withholds them. Least
+// privilege therefore points at `false`, not away from it.
+//
+// The two halves are closed in opposite directions because they answer different
+// questions, exactly as the six helpers in this file do:
+//
+//   - A held [SecretRef] is the *author's stated intent*, written in the file. The
+//     alternative to honouring it is a step proceeding without the credential it
+//     asked for — an unresolved reference handed to a task, or across a plugin's
+//     process boundary, where nothing guarantees it is refused rather than sent
+//     as a string or quietly dropped. Closed here means `true`.
+//   - Absent that, there is nothing the author asked for that could be silently
+//     dropped, and a blanket `true` would only grant capability. Closed here means
+//     `false`.
+//
+// An error was the other candidate and is wrong for who asks. Both callers are
+// `engine/executor.dispatch`'s two sites, mid-workflow, choosing an activity arm;
+// neither can act on a refusal. It would have to be swallowed back into a boolean
+// or turned into a workflow-side failure that pre-empts the better report already
+// in flight — the activity's own unknown-task error, which names the task and
+// lists what the run's registry offers ([TaskNamesIn]).
+//
+// And a blanket `true` would damage precisely that report. `conformance.ErrorKindCases`
+// makes "unknown task is [ErrorKindUnknownTask]" a contract both drivers keep, on
+// the stated grounds that it is permanent; routing an unknown task to an arm a
+// worker may not have registered turns it into a retryable
+// `ActivityNotRegisteredError` on that worker, which burns a retry budget on a
+// deterministic failure and reads as a broken worker. Which activity a
+// specification schedules is a replay-compatibility surface, and the change made
+// here touches it only for an invocation carrying a visible reference.
 func TaskNeedsAuthority(task *Task) bool {
 	if task == nil {
 		return false
 	}
-	def, found := LookupTask(task.GetName())
-	if !found {
-		return false
-	}
-	for _, name := range def.AuthorityInputs {
-		if value := task.GetInputs()[name]; value != nil {
+
+	// Any input *holding* a reference, wherever in it the reference sits, and
+	// whatever any registry does or does not know about the name.
+	//
+	// The declared names below answer for the inputs declared to take a whole
+	// value — `bearer:`, `credential:` — and cannot answer for a reference nested
+	// inside a header map, because the input carrying it is `headers`, which needs
+	// no authority when it holds only strings. Asking the value rather than the
+	// name is what keeps the two in step: an input that gains a reference gains
+	// the authority to resolve it in the same breath, and a task that never
+	// mentions one stays on the activity name replay compatibility depends on.
+	for _, value := range task.GetInputs() {
+		if ValueHoldsSecretRef(value) {
 			return true
 		}
 	}
 
-	// And any input *holding* a reference, wherever in it the reference sits.
-	//
-	// The named inputs above answer for the ones declared to take a whole value —
-	// `bearer:`, `credential:` — and cannot answer for a reference nested inside a
-	// header map, because the input carrying it is `headers`, which needs no
-	// authority when it holds only strings. Asking the value rather than the name
-	// is what keeps the two in step: an input that gains a reference gains the
-	// authority to resolve it in the same breath, and a task that never mentions
-	// one stays on the activity name replay compatibility depends on.
-	for _, value := range task.GetInputs() {
-		if ValueHoldsSecretRef(value) {
+	// The declared half, which is the only half that needs a registry. A miss
+	// leaves the sweep above as the whole answer; see this function's doc for why
+	// that is the closed direction here and `true` is not.
+	def, found := LookupTask(task.GetName())
+	if !found {
+		return false
+	}
+
+	for _, name := range def.AuthorityInputs {
+		if value := task.GetInputs()[name]; value != nil {
 			return true
 		}
 	}
@@ -251,6 +370,11 @@ func TaskNeedsAuthority(task *Task) bool {
 // none: a build that cannot describe a task cannot promise where that task
 // resolves a value, and guessing yes would compile a specification whose only
 // discovery of the mistake is a worker resolving a secret somewhere it should not.
+//
+// That `false` is already the closed direction — this grants a permission rather
+// than gating a dispatch — and #656 deliberately left it alone. It is the reason
+// the miss rule above is a rule and not a shape: matching [TaskNeedsAuthority]'s
+// literal here would open exactly what this refuses.
 func AcceptsNestedSecret(taskName, input string) bool {
 	def, found := LookupTask(taskName)
 	return found && slices.Contains(def.NestedSecretInputs, input)
@@ -258,6 +382,10 @@ func AcceptsNestedSecret(taskName, input string) bool {
 
 // NestedSecretInputs returns the inputs of a task that accept a nested reference,
 // sorted, for a diagnostic offering an author somewhere to put one.
+//
+// Empty for an unknown task: this is the suggestion half of what
+// [AcceptsNestedSecret] refused, and a build that cannot describe a task cannot
+// name a place inside it where a reference would be safe.
 func NestedSecretInputs(taskName string) []string {
 	def, found := LookupTask(taskName)
 	if !found {
@@ -288,6 +416,13 @@ func (d TaskDef) deferred(input string) bool {
 }
 
 // MustBeExpression reports whether the named input has to be written as one.
+//
+// False for an unknown task, and that is not the permissive answer to a gate
+// because this is not a gate. It is a diagnostic source, read by the validator and
+// the language server, and whether an input of a task this build does not have has
+// to be an expression is not a property of the file — it is unknowable. The step's
+// real problem is already reported as an unknown task; a second complaint about
+// one of its inputs would be a false diagnostic laid on top of a true one.
 func MustBeExpression(taskName, input string) bool {
 	def, found := LookupTask(taskName)
 	return found && slices.Contains(def.ExpressionInputs, input)
@@ -565,6 +700,11 @@ func TaskNamesIn(ctx context.Context) []string {
 //
 // An unknown task name yields no deferred inputs; execution then fails with an
 // unknown-task error, which is a clearer report than a resolution failure.
+//
+// Deferring is what hands an input through *unevaluated*, so resolving everything
+// is the conservative half of this question rather than the permissive one: a
+// miss evaluates in the engine's own scope, where a name that does not resolve is
+// reported, instead of passing an expression along to a task that may not exist.
 func ResolvableInputs(taskName string, inputs map[string]*Value) (resolve, defer_ map[string]*Value) {
 	def, known := LookupTask(taskName)
 	resolve = make(map[string]*Value, len(inputs))
@@ -581,6 +721,11 @@ func ResolvableInputs(taskName string, inputs map[string]*Value) (resolve, defer
 
 // TaskNeedsPrevOutputs reports whether the named task must receive the outputs
 // of earlier steps.
+//
+// False for an unknown task, which is the closed direction here: this decides how
+// much of a run's data travels into an activity payload, so the miss answer that
+// sends the least is the conservative one. A task nothing can describe gets no
+// claim on earlier steps' outputs.
 func TaskNeedsPrevOutputs(taskName string) bool {
 	def, ok := LookupTask(taskName)
 	return ok && def.NeedsPrevOutputs

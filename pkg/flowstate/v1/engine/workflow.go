@@ -41,19 +41,20 @@ type ErrRunFailed struct {
 	// without re-deriving it from a chain it has already flattened.
 	recordedFromTask bool
 
-	// recordedLoop is the outputs an exhausted loop's own step records in place
-	// of the bare `error` text: [v1.LoopExhaustedError.Record], the failure
-	// sentence plus the `results` that ran before the budget was spent.
+	// recordedOwn is the outputs a step that owns an account of its own records
+	// in place of the bare `error` text ([v1.StepFailureRecord]): an exhausted
+	// loop's failure sentence plus the `results` that ran before the budget was
+	// spent, or a failed switch's sentence plus the arm it had selected.
 	//
-	// Set by [failedAt] only when the error it is handed *is* the exhaustion,
-	// raised bare at the loop — never read back out of an inner [ErrRunFailed]
-	// the way Recorded is. That asymmetry is the containment: the account
-	// belongs to the loop's own transcript entry, and an exhaustion propagating
-	// out of a call or an enclosing for_each must record as a plain failure at
-	// that level rather than filing the inner loop's iterations under a step
-	// that did not run them. The local driver draws the identical line with a
+	// Set by [failedAt] only when the error it is handed *is* that failure,
+	// raised bare at the step that owns it — never read back out of an inner
+	// [ErrRunFailed] the way Recorded is. That asymmetry is the containment: the
+	// account belongs to that step's own transcript entry, and a failure
+	// propagating out of a call or an enclosing for_each must record as a plain
+	// failure at that level rather than filing the inner step's account under a
+	// step that did not run it. The local driver draws the identical line with a
 	// direct type assertion in its failureRecord.
-	recordedLoop *v1.Node_Outputs
+	recordedOwn *v1.Node_Outputs
 
 	// Kind classifies the failure the same way [v1.ClassifyError] would,
 	// carried alongside Message and Recorded for the same reason both of those
@@ -137,13 +138,44 @@ func nodeFailed(err error) error {
 func failedAt(err error, position string) error {
 	recorded, fromTask := recordedStepError(err)
 
-	// Composed from the inner failure's own message rather than from its
-	// Error(), which restates the `engine: flowstate run failed:` preamble at
-	// every level a position is added at.
-	message := err.Error()
+	// Composed from the same envelope-free extraction Recorded uses, rather
+	// than from err.Error() — which, for a failure that just crossed the
+	// activity boundary, is Temporal's own words: the whole cause including
+	// scheduledEventID, startedEventID and a worker identity. That was the
+	// bug (#788): recordedStepError already existed to shed exactly this for
+	// the recorded ${steps.<id>.error} value, and Message read err.Error()
+	// one line below it instead of the same extraction.
+	//
+	// Message still diverges from Recorded in the one way it always has: a
+	// classified task failure's Recorded text absorbs every structural prefix
+	// around it (so an author's `if:` compares the identical sentence the
+	// local driver would record), while Message accumulates a position at
+	// every level, because a person reading `flow get` benefits from the path
+	// to the failure and an expression comparing a value does not. That is
+	// why this does not simply assign message = recorded and stop: the
+	// unconditional prepend below, versus Recorded's fromTask-gated one, is
+	// what keeps that divergence intact.
+	message := recorded
+	if message == "" {
+		message = err.Error()
+	}
+
 	var inner *ErrRunFailed
-	if errors.As(err, &inner) {
+	switch {
+	case errors.As(err, &inner):
+		// A nested failure already carries Message built the identical way one
+		// level down — recursing into inner.Message rather than inner.Recorded
+		// is what lets Message keep accumulating position while Recorded does
+		// not (see above).
 		message = inner.Message
+	default:
+		// Not yet wrapped, so this is the one place a translation attached
+		// directly at the failure site — see [durableStepTimeoutMessage] — can
+		// still be read off err itself rather than out of a chain a later
+		// wrap would hide it in.
+		if friendly, ok := err.(interface{ runMessageText() string }); ok {
+			message = friendly.runMessageText()
+		}
 	}
 
 	if position != "" {
@@ -160,20 +192,23 @@ func failedAt(err error, position string) error {
 		}
 	}
 
-	// The exhausted loop's account, read off the raw error at the one site it
-	// is raised (the loop's own nodeFailed). A propagating re-wrap hands this
-	// function an [ErrRunFailed], which has no Unwrap on purpose, so the
-	// assertion fails there and the record stays with the loop's own entry.
-	var recordedLoop *v1.Node_Outputs
-	if exhausted, ok := err.(*v1.LoopExhaustedError); ok {
-		recordedLoop = exhausted.Record()
+	// The step's own account — an exhausted loop's iterations, a failed switch's
+	// selection — read off the raw error at the one site it is raised (that
+	// step's own nodeFailed). A propagating re-wrap hands this function an
+	// [ErrRunFailed], which has no Unwrap on purpose, so the assertion fails
+	// there and the record stays with the entry it belongs to.
+	var recordedOwn *v1.Node_Outputs
+	if account, ok := err.(v1.StepFailureRecord); ok {
+		// The envelope-free text this driver already extracted, never the
+		// error's own words: see [v1.StepFailureRecord].
+		recordedOwn = account.Record(recorded)
 	}
 
 	return &ErrRunFailed{
 		Message:          message,
 		Recorded:         recorded,
 		recordedFromTask: fromTask,
-		recordedLoop:     recordedLoop,
+		recordedOwn:      recordedOwn,
 		Kind:             recordedStepKind(err),
 	}
 }
@@ -320,6 +355,13 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
+	// Captured before any of the reassignments below, for [executor.detailsCtx]'s
+	// reason: this is the SDK's own root context, the one whose WorkflowOptions
+	// pointer the built-in `__temporal_workflow_metadata` query reads — and
+	// `withSignalDeliveryCompat` two lines down forks a new one, which
+	// [workflow.SetCurrentDetails] would then write to invisibly.
+	detailsCtx := ctx
+
 	ctx = workflow.WithActivityOptions(ctx, defaultActivityOptions())
 
 	// Every signal channel this run ever opens — here and for the rest of the
@@ -399,6 +441,14 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		if err := workflow.ExecuteActivity(ctx, WorkflowVars, &v1.Scope{
 			AmbientVars: st.GetWorkflow().GetVars(),
 			Profile:     st.GetWorkflow().GetProfile(),
+
+			// The run's own identity, for no reason this activity itself reads:
+			// it evaluates expressions and asks nobody who is running. It is here
+			// so the scope this activity travels in says whose work it is, which
+			// is what [TenantInterceptor]'s activity guard checks. A scope that
+			// named no tenant would be the one activity a wrong-tenant worker
+			// could take without being refused.
+			Identity: st.GetIdentity(),
 		}).Get(ctx, &evaluated); err != nil {
 			return nil, err
 		}
@@ -426,9 +476,10 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 
 		// Signals that arrived before their step was reached, carried from the
 		// run that suspended. A wait consumes from here before it blocks.
-		signals:  &signalCarry{pending: st.GetPendingSignals()},
-		progress: position,
-		waits:    parked,
+		signals:    &signalCarry{pending: st.GetPendingSignals()},
+		progress:   position,
+		detailsCtx: detailsCtx,
+		waits:      parked,
 
 		// The compensations registered by segments that already ran, oldest first.
 		// A saga is exactly the workload that outlives one segment — provision,
@@ -476,10 +527,24 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// is the answer the caller asked for, and a run that cannot produce it has not
 		// succeeded.
 		runOutputs, outputsErr := v1.EvalRunOutputs(context.Background(), st.GetWorkflow(), exec.scope)
-		if outputsErr != nil {
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: outputsErr.Error()}
+		if outputsErr == nil {
+			stepOutputs.RunOutputs = runOutputs
+			if sizeErr := v1.CheckRunResultSize(stepOutputs); sizeErr != nil {
+				logger.Error("cannot complete run", "error", sizeErr.Error())
+				outputsErr = sizeErr
+			}
 		}
-		stepOutputs.RunOutputs = runOutputs
+		if outputsErr != nil {
+			// Out through [compensate], the way every other failure leaves this
+			// function. A run that executed every step and then could not report
+			// them has failed, and a failed saga takes back what it did:
+			// reporting FAILED while leaving in place every resource those steps
+			// created is the outcome compensation exists to prevent, and it does
+			// not become acceptable because the failure arrived after the last
+			// step rather than during one.
+			return v1.PartialTranscript(stepOutputs),
+				compensate(ctx, exec, &ErrRunFailed{Message: outputsErr.Error()})
+		}
 
 		return stepOutputs, nil
 
@@ -559,7 +624,15 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 		// are the part that grew.
 		if err := v1.CheckRunStateSize(next); err != nil {
 			logger.Error("cannot continue as new", "error", err.Error())
-			return v1.PartialTranscript(stepOutputs), &ErrRunFailed{Message: err.Error()}
+			// Out through [compensate], the identical reason the completion-time
+			// size failure above does: a run whose carried state cannot fit is a
+			// failed run, and a failed saga takes back what it did. Returning
+			// ErrRunFailed directly here would report FAILED while leaving every
+			// effect this segment's steps performed in place — the saga-contract
+			// violation the original fix on this path existed to close, reopened
+			// by measuring the bound correctly and hitting it on a run this exact
+			// check used to let through.
+			return v1.PartialTranscript(stepOutputs), compensate(ctx, exec, &ErrRunFailed{Message: err.Error()})
 		}
 
 		logger.Info("continuing as new",
@@ -651,12 +724,27 @@ func compensate(ctx workflow.Context, exec *executor, err error) error {
 		return compensateCancelled(ctx, exec)
 	}
 
-	workflow.GetLogger(ctx).Info("compensating a failed run",
-		"pending", exec.undo.Len(), "error", err.Error())
+	// Two decisions, and they are not the same question — the trap eval.go's
+	// local driver documents at [failRun]. *Which context compensates* turns
+	// only on whether ctx is already done: a dead context refuses every entry
+	// regardless of what the run failed of. *What the run reports* turns on
+	// what err actually is. Reaching this line with a non-cancellation err and
+	// an already-cancelled ctx is completion racing a stop: the last activity
+	// returned, output evaluation or [v1.CheckRunResultSize] failed afterward,
+	// and only then does ctx.Err() read as done. Compensating on ctx in that
+	// case has Temporal refuse every entry before it is attempted — a run that
+	// reports it could not undo work it never tried to.
+	var results []v1.UndoResult
+	if ctx.Err() != nil {
+		results = compensateOnDisconnectedContext(ctx, exec)
+	} else {
+		workflow.GetLogger(ctx).Info("compensating a failed run",
+			"pending", exec.undo.Len(), "error", err.Error())
 
-	results := v1.RunUndoLog(exec.undo, func(entry *v1.PendingUndo) error {
-		return exec.runUndoTask(ctx, entry, 0)
-	})
+		results = v1.RunUndoLog(exec.undo, func(entry *v1.PendingUndo) error {
+			return exec.runUndoTask(ctx, entry, 0)
+		})
+	}
 
 	// Composed from the inner failure's own message, exactly as failedAt does, so
 	// the run's failure reads as one sentence rather than restating this driver's
@@ -694,18 +782,7 @@ func compensateCancelled(ctx workflow.Context, exec *executor) error {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("compensating a cancelled run", "pending", exec.undo.Len())
 
-	// The scope the cancellation does not reach. The cancel func is deliberately
-	// discarded: nothing here should be able to cancel this context, and the
-	// deadline below is what ends it.
-	uctx, _ := workflow.NewDisconnectedContext(ctx)
-	deadline := workflow.Now(uctx).Add(v1.UndoBudget)
-
-	results := v1.RunUndoLogWithin(exec.undo,
-		func() time.Duration { return deadline.Sub(workflow.Now(uctx)) },
-		func(entry *v1.PendingUndo, within time.Duration) error {
-			return exec.runUndoTask(uctx, entry, within)
-		})
-
+	results := compensateOnDisconnectedContext(ctx, exec)
 	summary := v1.UndoSummary(results)
 	logger.Info("compensated a cancelled run", "summary", summary)
 
@@ -714,6 +791,31 @@ func compensateCancelled(ctx workflow.Context, exec *executor) error {
 	// here. The run still closes CANCELED, which is decided by `errors.As` finding
 	// a `*temporal.CanceledError`, and this is one.
 	return temporal.NewCanceledError(summary)
+}
+
+// compensateOnDisconnectedContext runs every pending undo on a context the
+// cancellation that triggered it does not reach, bounded by [v1.UndoBudget].
+//
+// Factored out of [compensateCancelled] because it is not only that function's
+// scenario: [compensate] reaches here too, whenever the run's context is
+// already done but the *error being reported* is not itself a cancellation —
+// the last activity completing just as a stop arrives, with output evaluation
+// or the size check failing afterward. Both callers need the identical
+// disconnected, budgeted context Temporal will actually schedule the undo
+// activities on; only what each caller does with the resulting summary
+// differs.
+func compensateOnDisconnectedContext(ctx workflow.Context, exec *executor) []v1.UndoResult {
+	// The scope the cancellation does not reach. The cancel func is deliberately
+	// discarded: nothing here should be able to cancel this context, and the
+	// deadline below is what ends it.
+	uctx, _ := workflow.NewDisconnectedContext(ctx)
+	deadline := workflow.Now(uctx).Add(v1.UndoBudget)
+
+	return v1.RunUndoLogWithin(exec.undo,
+		func() time.Duration { return deadline.Sub(workflow.Now(uctx)) },
+		func(entry *v1.PendingUndo, within time.Duration) error {
+			return exec.runUndoTask(uctx, entry, within)
+		})
 }
 
 // resumeFrames returns the position a run resumes from.
@@ -764,17 +866,19 @@ func compactOutputsForFrames(spec *v1.Workflow, frames []*v1.Frame, outputs *v1.
 // err.Error(): what reaches here is wrapped in this driver's transport, and the
 // local driver records the same failure without any of it.
 func failedStepOutputs(err error) *v1.Node_Outputs {
-	// An exhausted loop's entry is richer than the text: `error` plus the
-	// `results` that ran, so the transcript distinguishes an iteration that ran
-	// and failed from one the spent budget never let start. The record was
-	// extracted by failedAt at the one site the exhaustion is raised, and is
-	// deliberately not propagated into the wrappers built above it — see the
-	// recordedLoop field — so only the loop's own entry ever carries it, which
-	// is the same containment the local driver's failureRecord gets from its
-	// direct type assertion.
+	// Some steps' entries are richer than the text ([v1.StepFailureRecord]): an
+	// exhausted loop's is `error` plus the `results` that ran, so the transcript
+	// distinguishes an iteration that ran and failed from one the spent budget
+	// never let start, and a failed switch's is `error` plus the arm it selected,
+	// so the branch that ran is still on the record. Each was extracted by
+	// failedAt at the one site that failure is raised, and is deliberately not
+	// propagated into the wrappers built above it — see the recordedOwn field —
+	// so only that step's own entry ever carries it, which is the same
+	// containment the local driver's failureRecord gets from its direct type
+	// assertion.
 	var run *ErrRunFailed
-	if errors.As(err, &run) && run.recordedLoop != nil {
-		return run.recordedLoop
+	if errors.As(err, &run) && run.recordedOwn != nil {
+		return run.recordedOwn
 	}
 
 	recorded, _ := recordedStepError(err)

@@ -79,9 +79,12 @@ type serverFlags struct {
 	credentialSource string
 
 	// audience is --audience / FLOWSTATE_AUDIENCE: the relying party a
-	// minted token, such as one from the "github-actions" source, is
-	// addressed to. Ignored by sources that present a token they did not
-	// mint.
+	// credential is addressed to. A request parameter for a source that
+	// mints, such as "github-actions"; a check for one that cannot, such as
+	// "gitlab" and "terraform-cloud", whose platforms fix the audience in the
+	// job or workspace configuration before the token exists. Ignored by
+	// "file" and "env", which present a token whose audience nothing here can
+	// read.
 	audience string
 
 	// clientCert is the client certificate/key/trust-root triple from
@@ -113,19 +116,24 @@ func addServerFlags(cmd *cobra.Command) {
 			"re-read per request, so a rotating token keeps working. "+
 			"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
 
-	// Names a credentialsource.Source explicitly. "github-actions" is what
-	// turns a CI job's ambient OIDC identity into a token without any
-	// hand-written curl; "file" and "env" force the same reading --token-file
-	// and FLOWSTATE_TOKEN already do, but as a refusal rather than silent
+	// Names a credentialsource.Source explicitly. "github-actions", "gitlab"
+	// and "terraform-cloud" are what turn a CI job's or a Terraform run's
+	// ambient OIDC identity into a token without any hand-written curl;
+	// "file" and "env" force the same reading --token-file and
+	// FLOWSTATE_TOKEN already do, but as a refusal rather than silent
 	// anonymity when the named source turns out empty.
 	cmd.Flags().String("credential-source", os.Getenv("FLOWSTATE_CREDENTIAL_SOURCE"),
 		"acquire a credential from a named source instead of --token-file/FLOWSTATE_TOKEN "+
-			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, file, env. "+
-			"An unknown or unusable source is an error, never anonymous")
+			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, "+
+			"terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous")
 
 	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
-		"the relying party a minted credential should be addressed to (overrides "+
-			"FLOWSTATE_AUDIENCE); required by --credential-source=github-actions")
+		"the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); "+
+			"required by --credential-source=github-actions, which mints a token for it. "+
+			"gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience "+
+			"in the job or workspace configuration before the token exists — so for those it is "+
+			"checked against the token's own audience rather than requested, and a mismatch is "+
+			"refused with the setting to change")
 
 	// The client's own certificate, key and trust root — see
 	// cmd/flow/clientcert.go. Declared alongside the bearer-credential flags
@@ -426,10 +434,10 @@ func refusedRun(verb, workflowID string, server serverFlags, err error) error {
 // can spell out rather than allude to. `flow run` is also the likeliest first
 // command anybody types, so it is the one that can least afford to report a bare
 // dial error.
-func refusedStart(file, name string, arguments []string, server serverFlags, err error) error {
+func refusedStart(file, name string, arguments []string, redacted bool, server serverFlags, err error) error {
 	switch connect.CodeOf(err) {
 	case connect.CodeUnavailable:
-		return unreachableServerWithArguments(server, file, arguments, err)
+		return unreachableServerWithArguments(server, file, arguments, redacted, err)
 	default:
 		return fmt.Errorf("starting %s: %w", name, err)
 	}
@@ -461,6 +469,13 @@ type noServerError struct {
 	// workload that was asked for.
 	runArguments []string
 
+	// redacted says a sensitive value was withheld from runArguments, so the
+	// suggested command carries a marker where a value belongs. The offer has
+	// to say so: a command that looks runnable and is not is worse than one
+	// that admits what it is missing, and for a string input it would start a
+	// different workload rather than fail.
+	redacted bool
+
 	// err is the dial failure underneath, kept so the reason survives: a
 	// connection refused and a TLS handshake that failed are the same code and
 	// very different afternoons.
@@ -472,14 +487,20 @@ type noServerError struct {
 //
 // file names the Flowfile the caller passed, or is empty when the verb has none.
 func unreachableServer(server serverFlags, file string, err error) error {
-	return unreachableServerWithArguments(server, file, nil, err)
+	return unreachableServerWithArguments(server, file, nil, false, err)
 }
 
 // unreachableServerWithArguments is the run-shaped form: the arguments ride
 // along so the suggested command is the invocation that failed, not a flagless
 // cousin of it.
-func unreachableServerWithArguments(server serverFlags, file string, arguments []string, err error) error {
-	return &noServerError{address: server.address, workflowFile: file, runArguments: arguments, err: err}
+func unreachableServerWithArguments(server serverFlags, file string, arguments []string, redacted bool, err error) error {
+	return &noServerError{
+		address:      server.address,
+		workflowFile: file,
+		runArguments: arguments,
+		redacted:     redacted,
+		err:          err,
+	}
 }
 
 // Error is the sentence every verb that dials the server now prints, written down
@@ -525,7 +546,16 @@ func (e *noServerError) nextCommands() []commandBlock {
 		invocation := shellArgument(e.workflowFile) + e.runArgumentSuffix()
 		durable = append(durable, "flow run "+invocation)
 
-		return append([]commandBlock{{commands: durable}}, commandBlock{
+		// The one case where the first block needs a lead: an input the
+		// workflow declared sensitive was withheld, so what is offered is the
+		// shape of the invocation rather than the invocation itself.
+		var lead string
+		if e.redacted {
+			lead = "supply the values shown as " + redactedMarker("name") +
+				" again — they were withheld here:"
+		}
+
+		return append([]commandBlock{{lead: lead, commands: durable}}, commandBlock{
 			lead:     "or rehearse it here, with no server at all:",
 			commands: []string{"flow run local " + invocation},
 		})

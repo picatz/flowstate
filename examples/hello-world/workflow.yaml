@@ -1,6 +1,6 @@
 edition: v2026.3
 name: hello-world
 steps:
-- id: hello
-  log:
-    message: hello world
+  - id: hello
+    log:
+      message: hello world

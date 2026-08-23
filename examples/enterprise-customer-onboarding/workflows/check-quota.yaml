@@ -15,35 +15,29 @@
 # otherwise paper over.
 edition: v2026.3
 name: check-quota
-
 inputs:
   tenant:
     type: string
     required: true
+    description: which tenant's quota to check
     example: acme
     must: this.matches(r'^[a-z][a-z0-9-]*$')
-    description: which tenant's quota to check
-
   plan:
     type: string
     required: true
-    example: growth
-    must: 'this in ["starter", "growth", "enterprise"]'
     description: the plan being requested, since a quota is plan-scoped
-
+    example: growth
+    must: this in ["starter", "growth", "enterprise"]
 steps:
   - id: check
     http:
-      method: GET
-      url: https://provisioning.internal.example.com/quota
-      query:
-        tenant: ${inputs.tenant}
-        plan: ${inputs.plan}
-      parse_json: true
       expect: ${response.status_code == 200 && response.json.available}
+      method: GET
       outputs:
         available: ${response.json.available}
-
+      parse_json: true
+      query: '${{"tenant": inputs.tenant, "plan": inputs.plan}}'
+      url: https://provisioning.internal.example.com/quota
 outputs:
   available:
     value: ${steps.check.available}

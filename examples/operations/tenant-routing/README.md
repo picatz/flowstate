@@ -35,13 +35,13 @@ Then one fleet per tenant. Each gets its own everything:
 
 ```console
 $ flow worker --tenant team-a --task-queue-prefix flowstate-run \
-    --namespace temporal-team-a \
+    --temporal-namespace temporal-team-a \
     --egress-policy /etc/flowstate/team-a/egress.yaml \
     --secret-dir /etc/flowstate/team-a/secrets \
     --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
 
 $ flow worker --tenant team-b --task-queue-prefix flowstate-run \
-    --namespace temporal-team-b \
+    --temporal-namespace temporal-team-b \
     --egress-policy /etc/flowstate/team-b/egress.yaml \
     --secret-dir /etc/flowstate/team-b/secrets \
     --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"

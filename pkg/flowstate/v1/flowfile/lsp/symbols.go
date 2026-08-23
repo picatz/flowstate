@@ -79,6 +79,8 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 // Only a reference to an earlier step resolves. A forward reference is a mistake
 // the diagnostics already report, and jumping to it would suggest it works.
 func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
+	pos = clampPosition(pos) // see [clampPosition]
+
 	if doc.parsed == nil {
 		return nil
 	}

@@ -16,13 +16,11 @@
 edition: v2026.3
 name: shift-traffic
 description: Move a percentage of traffic to the new version, record it, and check the canary.
-
 inputs:
   service:
     type: string
     required: true
     description: which service is being rolled out
-
   percent:
     type: int
     required: true
@@ -34,7 +32,6 @@ inputs:
     type: int
     default: 0
     description: simulate the canary failing its health check at this percentage, to see the rollout unwind
-
 steps:
   # Shifted first and reverted last: everything else in this stage exists
   # because traffic moved, so putting it back has to wait until what was
@@ -43,13 +40,11 @@ steps:
     description: move `percent` of traffic to the new version
     http:
       method: GET
-      url: https://httpbin.org/get
-      query:
-        shift: ${inputs.service}
-        to: ${string(inputs.percent)}
-      parse_json: true
       outputs:
         id: ${"stage-" + response.json.args.to}
+      parse_json: true
+      query: '${{"shift": inputs.service, "to": string(inputs.percent)}}'
+      url: https://httpbin.org/get
     undo:
       # `${steps.shift.id}` — a step reading its own output, which parses only
       # inside that step's own `undo:`. It is resolved the moment this step
@@ -59,27 +54,22 @@ steps:
       # all: there is nothing left to evaluate later.
       http:
         method: GET
+        query: '${{"revert": steps.shift.id}}'
         url: https://httpbin.org/get
-        query:
-          revert: ${steps.shift.id}
-
   - id: record
     description: write the stage into the rollout log
     http:
       method: GET
-      url: https://httpbin.org/get
-      query:
-        record: ${inputs.service}
-        stage: ${steps.shift.id}
-      parse_json: true
       outputs:
         id: ${"entry-" + response.json.args.stage}
+      parse_json: true
+      query: '${{"record": inputs.service, "stage": steps.shift.id}}'
+      url: https://httpbin.org/get
     undo:
       http:
         method: GET
+        query: '${{"erase": steps.record.id}}'
         url: https://httpbin.org/get
-        query:
-          erase: ${steps.record.id}
 
   # The canary check, and the step this example fails on when asked to. No
   # `undo:`: a health check has no effect of its own to take back.
@@ -92,12 +82,10 @@ steps:
   - id: check
     description: confirm the canary is healthy at this share of traffic
     http:
-      method: GET
-      url: https://httpbin.org/status/200
-      query:
-        canary: ${string(inputs.percent)}
       expect: ${(inputs.unhealthy_at == 0 || inputs.percent < inputs.unhealthy_at) && response.status_code == 200}
-
+      method: GET
+      query: '${{"canary": string(inputs.percent)}}'
+      url: https://httpbin.org/status/200
 outputs:
   stage:
     value: ${steps.shift.id}

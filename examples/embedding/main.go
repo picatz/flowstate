@@ -12,7 +12,6 @@ package main
 import (
 	"context"
 	_ "embed"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -154,6 +153,19 @@ func runDurable(workflow *embed.Workflow, tasks *embed.Tasks) error {
 	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:        "embedding-example-" + time.Now().UTC().Format(time.RFC3339Nano),
 		TaskQueue: engine.RunTaskQueueName,
+
+		// The worker above shares this client, which is the one topology
+		// Temporal's eager workflow start pays off in: the first workflow task
+		// comes back on this response for that worker to execute, instead of
+		// going through matching for it to poll for. An embedder without a
+		// co-located worker gets an ordinary dispatch and nothing else changes.
+		//
+		// Sound here because this program registers one unversioned worker.
+		// Eager start does not respect worker versioning, so an embedder
+		// running versioned workers should leave it off — the same reason
+		// `server.WithEagerWorkflowStart` is an option `flow server dev` opts
+		// into rather than a default.
+		EnableEagerStart: true,
 	}, engine.Run, &v1.RunState{
 		Workflow: workflow,
 		Inputs:   v1.NewNamedValues(map[string]any{"name": "embedder"}),
@@ -171,31 +183,29 @@ func runDurable(workflow *embed.Workflow, tasks *embed.Tasks) error {
 	return nil
 }
 
-// startWorker runs w in the background and returns a func that stops it,
-// surfacing a worker.Run failure (a task queue it could not poll, most
-// commonly) as an error from the func that started it rather than losing it
-// to a goroutine nobody checks.
+// startWorker starts w and returns a func that stops it.
+//
+// [worker.Worker.Start] rather than Run in a goroutine, and that difference is
+// load-bearing rather than stylistic. Start is what registers this worker with
+// its client's eager dispatcher, and it does so before returning
+// (`internal/internal_worker.go`, where Start registers the workflow worker,
+// and Run is exactly Start plus a block on an interrupt channel) — so by the
+// time this returns, the start above is guaranteed to find a worker to hand
+// the first workflow task to.
+//
+// The shape this replaced ran Run in a goroutine and signalled readiness from
+// inside it *before* the call, so the ExecuteWorkflow could reach the SDK
+// first and the eager request would be dropped with nothing said. A race
+// whose only symptom is an optimization quietly not happening is one to
+// remove from an example rather than to explain in it.
+//
+// What Start does not do is report a failure that arrives *after* start-up,
+// which Run would have returned; a program that runs for longer than this one
+// should watch for that rather than copy this.
 func startWorker(w worker.Worker) (stop func(), err error) {
-	started := make(chan error, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		started <- nil
-		if runErr := w.Run(worker.InterruptCh()); runErr != nil && !errors.Is(runErr, context.Canceled) {
-			// Nothing is listening on started by the time this can happen;
-			// worker.Run blocks for the worker's whole lifetime, and by the
-			// time it returns, startWorker has long since returned to its
-			// caller. Reported for a human reading stderr rather than
-			// propagated, which is a real limitation of this small example,
-			// not a claim that a production embedder should do the same —
-			// see w.Run's own doc for a fuller error-handling story.
-			log.Printf("worker stopped: %v", runErr)
-		}
-	}()
-	<-started
+	if err := w.Start(); err != nil {
+		return nil, err
+	}
 
-	return func() {
-		w.Stop()
-		<-done
-	}, nil
+	return w.Stop, nil
 }

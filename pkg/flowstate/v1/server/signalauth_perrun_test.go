@@ -21,10 +21,18 @@ import (
 // resolution helper between them is that a scheduled run resolves and
 // enforces exactly what a direct run does.
 
-// perRunGatedWorkflowRequiring is [gatedWorkflow] with a signal policy whose
-// subject is resolved per run, from an input named "expected_approver" —
-// the shape #207's decision record calls "per-run signal authorization".
-func perRunGatedWorkflowRequiring(namespace string) *v1.Workflow {
+// perRunGatedWorkflow is [gatedWorkflow] with a signal policy whose subject
+// is resolved per run, from an input named "expected_approver" — the shape
+// #207's decision record calls "per-run signal authorization".
+//
+// distinct_from_starter is set because a `subject_from` rule is required to
+// carry something the run's own inputs cannot reach, and this is the cheaper
+// of the two such things to express here (claims: would need the server
+// configured with an identity-claim allowlist). It is not incidental to what
+// these tests assert: the input naming the approver is chosen by whoever
+// starts the run, so without it the starter could name themselves — see
+// [v1.CheckSignalPolicyShape] for why a namespace: cannot serve instead.
+func perRunGatedWorkflow() *v1.Workflow {
 	wf := gatedWorkflow()
 	wf.DeclaredInputs = []*v1.InputDeclaration{
 		{Name: "expected_approver", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
@@ -33,8 +41,8 @@ func perRunGatedWorkflowRequiring(namespace string) *v1.Workflow {
 		"deploy-approved": {
 			Allow: []*v1.SignalPolicyRule{{
 				SubjectFrom: v1.NewExpr("inputs.expected_approver"),
-				Namespace:   namespace,
 			}},
+			DistinctFromStarter: true,
 		},
 	}
 	return wf
@@ -52,7 +60,7 @@ func TestSignalPolicySubjectFromResolvesAtRunSubmit(t *testing.T) {
 	fixture := newTenantFixture(t)
 
 	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
-		Workflow: perRunGatedWorkflowRequiring("team-a"),
+		Workflow: perRunGatedWorkflow(),
 		Inputs: map[string]*v1.Value{
 			"expected_approver": v1.NewLiteral(v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com")),
 		},
@@ -107,7 +115,7 @@ func TestSignalPolicySubjectFromResolvesDifferentlyPerRun(t *testing.T) {
 	t.Parallel()
 
 	fixture := newTenantFixture(t)
-	wf := perRunGatedWorkflowRequiring("team-a")
+	wf := perRunGatedWorkflow()
 
 	startAndApprove := func(approver, senderSubject string) error {
 		started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
@@ -142,13 +150,13 @@ func TestSignalPolicySubjectFromResolvesDifferentlyPerRun(t *testing.T) {
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
-// scheduledPerRunGatedWorkflowRequiring is [perRunGatedWorkflowRequiring]
+// scheduledPerRunGatedWorkflow is [perRunGatedWorkflow]
 // with a schedule trigger, so its subject_from resolution can be exercised
 // through [FlowstateServer.CreateSchedule] — the other submit path
 // [signalPolicyMemoEntry] serves, and #207's decision record's "both submit
 // paths" requirement.
-func scheduledPerRunGatedWorkflowRequiring(name, namespace string) *v1.Workflow {
-	wf := perRunGatedWorkflowRequiring(namespace)
+func scheduledPerRunGatedWorkflow(name string) *v1.Workflow {
+	wf := perRunGatedWorkflow()
 	wf.Name = name
 	wf.Triggers = &v1.Triggers{
 		Schedule: &v1.ScheduleTrigger{
@@ -171,7 +179,7 @@ func TestScheduledSignalPolicySubjectFromResolvesAtScheduleCreation(t *testing.T
 
 	fixture := newTenantFixture(t)
 
-	wf := scheduledPerRunGatedWorkflowRequiring("scheduled-per-run-gate", "team-a")
+	wf := scheduledPerRunGatedWorkflow("scheduled-per-run-gate")
 
 	_, err := fixture.teamA.CreateSchedule(t.Context(), connect.NewRequest(&v1.CreateScheduleRequest{
 		Workflow: wf,

@@ -47,7 +47,7 @@ func TestARunIsScheduledUnderItsOwnTenant(t *testing.T) {
 
 	for _, tenant := range []string{"team-a", "team-b"} {
 		t.Run(tenant, func(t *testing.T) {
-			flowstate := server.New(temporal, server.WithNamespace(tenant))
+			flowstate := mustNew(t, temporal, server.WithNamespace(tenant))
 
 			response, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: spec}))
 			require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestAnUntenantedRunCarriesNoFairnessKey(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	response, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: &v1.Workflow{Name: "untenanted", Steps: []*v1.Node{bulky("only", 8)}},
@@ -91,7 +91,7 @@ func TestAFairnessKeySurvivesContinueAsNew(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	flowstate := server.New(temporal, server.WithNamespace("team-a"),
+	flowstate := mustNew(t, temporal, server.WithNamespace("team-a"),
 		// One step per run, so the workload suspends between each.
 		server.WithMaxStepsPerRun(1))
 
