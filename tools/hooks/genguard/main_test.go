@@ -17,13 +17,14 @@ func TestGenerated(t *testing.T) {
 		rel      string
 		mentions []string // the source and command the message must name
 	}{
-		{"pkg/flowstate/v1/flowstate.pb.go", []string{"proto/flowstate/v1/flowstate.proto", "buf", "generate"}},
+		{"pkg/flowstate/v1/workflow.pb.go", []string{"proto/flowstate/v1/", "buf", "generate"}},
 		{"pkg/flowstate/v1/plugin/protocol.pb.go", []string{"buf", "generate"}},
 		{"docs/reference/tasks.md", []string{"make docs"}},
 		{"docs/reference/envvars.md", []string{"cmd/flow/internal/docsgen/envvars.go"}},
 		{"cmd/flow/internal/reference/mirror/DSL.md", []string{"docs/DSL.md", "go generate ./cmd/flow/internal/reference"}},
 		{"cmd/flow/internal/reference/mirror/examples/hello.yaml", []string{"go generate ./cmd/flow/internal/reference"}},
 		{"pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb", []string{"buf", "build"}},
+		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb", []string{"example.proto", "buf", "build"}},
 	}
 	for _, tt := range refuse {
 		msg := generated(tt.rel)
@@ -40,7 +41,7 @@ func TestGenerated(t *testing.T) {
 
 	allow := []string{
 		"pkg/flowstate/v1/eval.go",
-		"proto/flowstate/v1/flowstate.proto",
+		"proto/flowstate/v1/workflow.proto",
 		"docs/DSL.md",
 		"docs/ARCHITECTURE.md",
 		// The reference package's own source, beside the generated mirror.

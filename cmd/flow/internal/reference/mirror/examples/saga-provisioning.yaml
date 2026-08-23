@@ -30,11 +30,10 @@
 # watch it happen from here: interrupt this file part way through and the steps that
 # had already succeeded come back off before the command exits. CI cannot press
 # Ctrl-C, so what keeps that honest is the shared cross-driver corpus in
-# `pkg/flowstate/v1/tests/undo.go` rather than this example.
+# `pkg/flowstate/v1/internal/conformance/undo.go` rather than this example.
 edition: v2026.3
 name: saga-provisioning
 description: Provision a tenant, fail partway, and undo what already succeeded.
-
 inputs:
   # No sensible absent value — "which tenant" always names one, the same shape
   # as expense-approval's requester — so this is required, with an `example:`
@@ -42,9 +41,8 @@ inputs:
   tenant:
     type: string
     required: true
-    example: acme
     description: which tenant is being provisioned
-
+    example: acme
 steps:
   # `undo:` names the task that takes this step back, with its inputs beneath it —
   # the same shape as the step's own work, because it is the same kind of thing.
@@ -56,13 +54,11 @@ steps:
     description: allocate the tenant's network
     http:
       method: GET
-      url: https://httpbin.org/get
-      query:
-        create: network
-        tenant: ${inputs.tenant}
-      parse_json: true
       outputs:
         id: ${"net-" + response.json.args.tenant}
+      parse_json: true
+      query: '${{"create": "network", "tenant": inputs.tenant}}'
+      url: https://httpbin.org/get
     undo:
       # `${steps.network.id}` — a step reading its own output. Anywhere else in a
       # Flowfile that is a forward reference and `flow validate` refuses it; inside
@@ -75,27 +71,22 @@ steps:
       # a run suspending and resuming somewhere else entirely.
       http:
         method: GET
+        query: '${{"delete": steps.network.id}}'
         url: https://httpbin.org/get
-        query:
-          delete: ${steps.network.id}
-
   - id: volume
     description: allocate storage inside that network
     http:
       method: GET
-      url: https://httpbin.org/get
-      query:
-        create: volume
-        network: ${steps.network.id}
-      parse_json: true
       outputs:
         id: ${"vol-" + response.json.args.network}
+      parse_json: true
+      query: '${{"create": "volume", "network": steps.network.id}}'
+      url: https://httpbin.org/get
     undo:
       http:
         method: GET
+        query: '${{"delete": steps.volume.id}}'
         url: https://httpbin.org/get
-        query:
-          delete: ${steps.volume.id}
 
   # And the step that does not work. A 500 is retried — it is the kind of failure
   # that could plausibly succeed next time — and when the attempts run out the run
@@ -110,7 +101,7 @@ steps:
     retry:
       attempts: 2
       interval: 200ms
-      backoff: 2
+      backoff: 2.0
     http:
       method: GET
       url: https://httpbin.org/status/500

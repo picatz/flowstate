@@ -17,7 +17,6 @@ description: A bounded poll with no carried state — repeat a health check unti
 # would report the same thing every iteration, so it would stop on the first or
 # run to the bound; carrying that kind of progress yourself is what `as:` is for
 # (see examples/loop-accumulate).
-
 steps:
   - id: poll
     description: Ask the endpoint whether it is ready, and stop once it is.
@@ -28,10 +27,9 @@ steps:
         - id: probe
           http:
             method: GET
-            url: https://httpbin.org/status/200
             outputs:
               ready: ${response.status_code == 200}
-
+            url: https://httpbin.org/status/200
 outputs:
   # How many times the body ran, not just that it ran — `ran: [poll]` in
   # workflow.test.yaml proves the step executed, and nothing about "the poll

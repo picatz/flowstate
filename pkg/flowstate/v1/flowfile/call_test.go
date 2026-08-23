@@ -474,7 +474,7 @@ steps:
 
 // TestCallIsolationFlowfile compiles the negative isolation case through a real
 // file pair rather than constructing the schema by hand — see
-// [tests.CallCases] for the same claim asserted against both execution
+// [conformance.CallCases] for the same claim asserted against both execution
 // drivers.
 func TestCallIsolationFlowfile(t *testing.T) {
 	dir := t.TempDir()

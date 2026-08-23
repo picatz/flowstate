@@ -51,6 +51,14 @@ import (
 // [engine.NewTaskRuntimeConfig]. Passing none leaves secret resolution and
 // credential federation refused for every workflow this worker runs, the
 // same fail-closed default [RunOptions.Secrets] has locally.
+//
+// It also carries the plugin inventory this worker's runs are admitted
+// against, added with [engine.TaskRuntimeConfig.WithPluginCatalog]. Passing
+// none says this worker has no plugins, so a run pinned to one is refused
+// here — rather than admitted against a catalog some *other* worker in this
+// process launched, which is what a process-wide catalog did before #777.
+// An embedder running two worker fleets with different plugin sets gets one
+// answer per worker, because the answer travels with the registration.
 func RunDurable(w worker.Registry, tasks *Tasks, runtime ...engine.TaskRuntimeConfig) error {
 	if tasks != nil {
 		if missing, ok := tasks.installedExactly(); !ok {

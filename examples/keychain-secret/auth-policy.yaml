@@ -3,6 +3,14 @@ issuers:
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]
+    # Whose workflows are admitted. GitHub Actions mints tokens for anyone, and
+    # the audience is chosen by the workflow requesting one, so without this the
+    # entry would trust every workflow on GitHub — which is why a policy naming a
+    # public multi-tenant issuer with no require rule and no namespace_claim is
+    # refused when it loads.
+    require:
+      - claim: repository
+        any_of: [picatz/flowstate]
 
 secrets:
   allow:

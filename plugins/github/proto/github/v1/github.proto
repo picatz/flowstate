@@ -4,7 +4,7 @@ package github.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/github/gen/github/v1;githubv1";
 
-import "flowstate/v1/flowstate.proto";
+import "flowstate/v1/value.proto";
 
 // This plugin's own task schema. Everything here is intentionally named
 // after GitHub's own vocabulary - a pull request, an issue comment - rather

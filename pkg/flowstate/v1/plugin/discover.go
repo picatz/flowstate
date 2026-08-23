@@ -139,8 +139,31 @@ func Discover(cfg Config) ([]Found, error) {
 // would read as a flag, or anything else that would have to be quoted later.
 func pluginName(fileName string) (string, bool) {
 	name, ok := strings.CutPrefix(fileName, BinaryPrefix)
-	if !ok || name == "" || len(name) > MaxNameLen {
+	if !ok {
 		return "", false
+	}
+	if !validPluginName(name) {
+		return "", false
+	}
+
+	return name, true
+}
+
+// validPluginName reports whether name is a name a discovered plugin could
+// actually have: lower-case alphanumerics and interior hyphens, non-empty, and
+// no longer than [MaxNameLen] — the same constraint the schema puts on a
+// manifest name.
+//
+// It is its own function because two callers need the identical rule.
+// [pluginName] applies it to a discovered file's suffix; [validateDigestPin]
+// applies it to a pin's key, so that a pin naming something no plugin could be
+// called — `PinnedDigests["GitHub"]` for a binary discovered as `github` — is a
+// startup error rather than a pin that silently never matches and leaves the
+// real plugin running unpinned. A security control keyed by a name has to reject
+// a key that cannot name the thing it guards, or the guard fails open on a typo.
+func validPluginName(name string) bool {
+	if name == "" || len(name) > MaxNameLen {
+		return false
 	}
 
 	for i := range len(name) {
@@ -149,12 +172,23 @@ func pluginName(fileName string) (string, bool) {
 		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
 		case c == '-' && i > 0:
 		default:
-			return "", false
+			return false
 		}
 	}
 
-	return name, true
+	return true
 }
+
+// writableByOthers is every permission bit that lets a user who is not the
+// owner write: world (0o002) and group (0o020).
+//
+// The group bit belongs here for the same reason the world bit does. "Any member
+// of group staff chooses what this worker executes" is the same sentence with
+// one word changed, and a group is not a curated thing from this process's point
+// of view — it is a list somebody else maintains, which is exactly what a plugin
+// search path may not be. Refusing only the world bit made the guarantee read
+// stronger than it was.
+const writableByOthers = 0o022
 
 // checkWritableByOthers refuses a path that users other than its owner can
 // write to.
@@ -164,13 +198,23 @@ func pluginName(fileName string) (string, bool) {
 // equivalent to code execution here. The sticky bit does not redeem a
 // world-writable directory: it stops one user deleting another's files, and does
 // nothing to stop anyone adding a flowstate-plugin-anything of their own.
+//
+// This is deliberately stricter than the common 0o775 an installer leaves
+// behind, and the escape hatch for a deployment that cannot change it is the one
+// that already exists: [Config.AllowInsecureSearchPath], which says out loud
+// what is being accepted.
 func checkWritableByOthers(mode fs.FileMode, path string, allow bool) error {
-	if allow || mode.Perm()&0o002 == 0 {
+	if allow || mode.Perm()&writableByOthers == 0 {
 		return nil
 	}
 
+	who := "any user"
+	if mode.Perm()&0o002 == 0 {
+		who = "any member of its group"
+	}
+
 	return fmt.Errorf(
-		"%w: %q is writable by any user (mode %#o), which means any user chooses what this worker executes; fix its permissions, or set AllowInsecureSearchPath if this is a single-user image",
-		ErrSearchPath, path, mode.Perm(),
+		"%w: %q is writable by %s (mode %#o), which means they choose what this worker executes; fix its permissions, or set AllowInsecureSearchPath if this is a single-user image",
+		ErrSearchPath, path, who, mode.Perm(),
 	)
 }
