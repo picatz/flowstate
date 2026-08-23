@@ -101,6 +101,7 @@ type analysis struct {
 	exampleDataDeps []string
 	repoDataDeps    []string
 	base            string
+	baseWhy         string
 	changed         []string
 }
 
@@ -118,11 +119,7 @@ func analyse() (analysis, error) {
 		return analysis{}, err
 	}
 
-	base, err := gitOutput("merge-base", "HEAD", "origin/main")
-	if err != nil {
-		return analysis{}, fmt.Errorf("cannot find the merge-base with origin/main (run `git fetch origin main` first): %w", err)
-	}
-	base = strings.TrimSpace(base)
+	base, baseWhy := resolveBase()
 
 	changed, err := changedFiles(base)
 	if err != nil {
@@ -214,6 +211,7 @@ func analyse() (analysis, error) {
 		exampleDataDeps: exampleDataDeps,
 		repoDataDeps:    repoDataDeps,
 		base:            base,
+		baseWhy:         baseWhy,
 		changed:         changed,
 	}, nil
 }
@@ -227,9 +225,17 @@ func runCI(event string) error {
 	if err != nil {
 		return err
 	}
+	if a.baseWhy != "" {
+		fmt.Printf("plan: %s\n", a.baseWhy)
+	}
+	if a.base == "" {
+		fmt.Printf("plan: %d tracked file(s), every job selected\n", len(a.changed))
+
+		return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.base, a.plan)))
+	}
 	fmt.Printf("plan: %d changed file(s) vs merge-base %s, %d affected package(s)\n",
 		len(a.changed), a.base[:12], len(a.affected))
-	return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.plan)))
+	return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.base, a.plan)))
 }
 
 func run() error {
@@ -239,7 +245,14 @@ func run() error {
 	}
 	p, affected := a.plan, a.affected
 	exampleDataDeps, repoDataDeps := a.exampleDataDeps, a.repoDataDeps
-	fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(a.changed), a.base[:12])
+	if a.baseWhy != "" {
+		fmt.Printf("gate: %s\n", a.baseWhy)
+	}
+	if a.base == "" {
+		fmt.Printf("gate: %d tracked file(s), every leg wide\n", len(a.changed))
+	} else {
+		fmt.Printf("gate: %d changed file(s) vs merge-base %s\n", len(a.changed), a.base[:12])
+	}
 
 	g := &gate{}
 
@@ -276,12 +289,12 @@ func run() error {
 	//
 	// It is the cheap half of that gap. `go vet ./...` on this module is
 	// seconds, so following the forcing costs nothing anyone will notice.
-	if !scopedLegRuns(p, affected) {
+	if !scopedLegRuns(a.base, p, affected) {
 		g.skip("vet", "no Go packages affected by this diff")
-	} else if why := forcedWide(p); why != "" {
-		g.leg("vet", why, vet(vetScope(p, affected)...))
+	} else if why := forcedWide(a.base, p); why != "" {
+		g.leg("vet", why, vet(vetScope(a.base, p, affected)...))
 	} else {
-		g.leg("vet", narrowWhy, vet(vetScope(p, affected)...))
+		g.leg("vet", narrowWhy, vet(vetScope(a.base, p, affected)...))
 	}
 
 	// test's scope does not follow the forcing, and that is a decision with a
@@ -344,9 +357,9 @@ func run() error {
 	// opt-out is a second opinion about whether the required job matters, and
 	// a diff wide enough to make this expensive is one already paying for a
 	// full CI run.
-	if !scopedLegRuns(p, affected) {
+	if !scopedLegRuns(a.base, p, affected) {
 		g.skip("staticcheck", "no Go packages affected by this diff")
-	} else if why := forcedWide(p); why != "" {
+	} else if why := forcedWide(a.base, p); why != "" {
 		g.leg("staticcheck", why, staticcheck("./..."))
 	} else {
 		g.leg("staticcheck", fmt.Sprintf("%d affected package(s)", len(affected)),
@@ -509,7 +522,96 @@ func run() error {
 // two name-only entries either operation produces on its own, so the old
 // path still lands in p.goFiles and still trips hasUnresolvedGoDir when
 // whatever it named disappears.
+// resolveBase finds the merge-base with origin/main, fetching what it needs,
+// and says what it had to do. An empty base means it could not be found, and
+// [changedFiles] then answers with every tracked file.
+//
+// This used to be one `git merge-base` call that returned an error telling the
+// caller to run `git fetch origin main`. That error is the single most common
+// thing that happens when this gate is run somewhere other than a maintainer's
+// full clone: every one of the seven pull requests in one wave reported the
+// gate refusing to start for exactly this reason, and every one of them was
+// then opened unvalidated. The instruction was correct and nobody could act on
+// it, because a clone made with --depth or --single-branch does not have the
+// ref, and the agent or CI job running the gate is not in a position to go and
+// deepen somebody else's checkout by hand.
+//
+// So the gate does it. Three attempts, cheapest first: the ref as it stands,
+// then fetching the branch, then deepening a shallow clone — and each is only
+// reached because the one before it did not produce a merge-base.
+//
+// The fourth outcome is the one that decides this function's shape. When there
+// is no network, or the remote is not there at all, an honest answer is still
+// available: treat the whole tree as changed. That runs everything, which is
+// slow and correct, rather than nothing, which is fast and worthless. A
+// narrower answer than the truth is the only dangerous direction here — it
+// skips checks the diff could reach — and running wide cannot be narrow. It is
+// the same reasoning [ciForceReason] already applies to the merge queue, where
+// being wrong about the plan is unrecoverable and so the plan is not consulted.
+//
+// Every tier prints the reason, so a wide run is never mistaken for a diff that
+// happened to touch everything.
+func resolveBase() (base, why string) {
+	mergeBase := func() string {
+		out, err := gitOutput("merge-base", "HEAD", "origin/main")
+		if err != nil {
+			return ""
+		}
+
+		return strings.TrimSpace(out)
+	}
+
+	if b := mergeBase(); b != "" {
+		return b, ""
+	}
+
+	// The ref may simply not be here: --single-branch and a bare clone of one
+	// pull request branch both leave origin/main absent while the network is
+	// perfectly available.
+	if _, err := gitOutput("fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"); err == nil {
+		if b := mergeBase(); b != "" {
+			return b, "origin/main was not present; fetched it"
+		}
+	}
+
+	// Or it is here and truncated. A shallow clone has the tip of main and
+	// none of the history that main and this branch share, so there is no
+	// common ancestor to find until the history is deepened.
+	if shallow, err := gitOutput("rev-parse", "--is-shallow-repository"); err == nil &&
+		strings.TrimSpace(shallow) == "true" {
+		if _, err := gitOutput("fetch", "--no-tags", "--unshallow", "origin", "main"); err == nil {
+			if b := mergeBase(); b != "" {
+				return b, "the clone was shallow, so it had no common ancestor with origin/main; deepened it"
+			}
+		}
+	}
+
+	return "", "no merge-base with origin/main could be found or fetched, so every tracked file is treated as changed: " +
+		"this run is wide and slow rather than narrow and wrong"
+}
+
+// changedFiles is the diff against the merge-base, plus untracked files —
+// or, when no merge-base could be established, every tracked file.
+//
+// The fallback deliberately produces its answer through [buildPlan] like every
+// other run rather than through a "run everything" flag. Feeding the whole tree
+// in sets moduleWide (go.mod is in it) and ciWide (the workflows are), which is
+// the widest plan the one computation can produce, arrived at by the one
+// computation. A second code path meaning "everything" would be a second
+// opinion about scope, and this file exists so that there is exactly one.
 func changedFiles(base string) ([]string, error) {
+	if base == "" {
+		// Rooted at the repository with `:/` and printed --full-name, rather
+		// than a bare `ls-files`. Bare, git answers relative to the working
+		// directory, so this would list only the files under wherever it was
+		// called from — ten files instead of the tree, which is the narrow
+		// answer the whole fallback exists to avoid, arriving silently.
+		// [analyse] does chdir to the root first, so today the two agree; a
+		// pathspec that cannot be wrong is cheaper than a precondition
+		// somebody has to keep true.
+		return gitLines("ls-files", "--full-name", ":/")
+	}
+
 	diff, err := gitOutput("diff", "--no-renames", "--name-only", base)
 	if err != nil {
 		return nil, err
@@ -527,6 +629,23 @@ func changedFiles(base string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// gitLines runs git and splits its output into non-empty trimmed lines.
+func gitLines(args ...string) ([]string, error) {
+	out, err := gitOutput(args...)
+	if err != nil {
+		return nil, err
+	}
+
+	var lines []string
+	for l := range strings.SplitSeq(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+
+	return lines, nil
 }
 
 func gitOutput(args ...string) (string, error) {
@@ -672,10 +791,10 @@ func buf(args ...string) cmdSpec {
 // that function — a push to main, a merge group — describe runs that are not
 // this one: the local tier is always a pull request being prepared, so an
 // empty event is the honest input, and what is left is exactly the harness
-// forcing (ciWide) and the build-graph forcing (moduleWide) that also widen
-// the required job.
-func forcedWide(p plan) string {
-	return ciForceReason("", p)
+// forcing (ciWide), the build-graph forcing (moduleWide), and the
+// no-measurable-diff forcing — all three of which also widen the required job.
+func forcedWide(base string, p plan) string {
+	return ciForceReason("", base, p)
 }
 
 // scopedLegRuns is the trigger for those same legs, and deliberately the same
@@ -690,8 +809,8 @@ func forcedWide(p plan) string {
 // which is what happened here: the first version of the staticcheck leg read
 // `affected` alone, and a workflow-only diff skipped it while the required job
 // ran.
-func scopedLegRuns(p plan, affected []string) bool {
-	return forcedWide(p) != "" || len(affected) > 0
+func scopedLegRuns(base string, p plan, affected []string) bool {
+	return forcedWide(base, p) != "" || len(affected) > 0
 }
 
 // vet is the vet leg's command over the named packages, and vetScope is the
@@ -702,8 +821,8 @@ func vet(pkgs ...string) cmdSpec {
 	return command("go", append([]string{"vet"}, pkgs...)...)
 }
 
-func vetScope(p plan, affected []string) []string {
-	if forcedWide(p) != "" {
+func vetScope(base string, p plan, affected []string) []string {
+	if forcedWide(base, p) != "" {
 		return []string{"./..."}
 	}
 	return affected
