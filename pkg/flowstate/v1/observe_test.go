@@ -106,6 +106,14 @@ func TestRunObserverSeesEveryKindOfFact(t *testing.T) {
 	assert.Equal(t, "fatal", log.events[5].id)
 	assert.False(t, log.events[5].tolerated)
 	assert.ErrorContains(t, log.events[5].err, "deliberate failure")
+
+	// The error is a snapshot, not the live value the run propagates (Codex,
+	// #1052): a task failure travels the engine as a mutable *v1.TaskError,
+	// and an observer handed that object could edit the run's own verdict.
+	// The snapshot renders the same text and is nothing more.
+	_, isLive := log.events[5].err.(*v1.TaskError)
+	assert.False(t, isLive, "the observer must get a snapshot, never the mutable error the run propagates")
+	assert.Nil(t, errors.Unwrap(log.events[5].err), "the snapshot carries text, not the live chain")
 }
 
 // TestRunObserverSeesASignalWaitPark: the signal wait reports its name and

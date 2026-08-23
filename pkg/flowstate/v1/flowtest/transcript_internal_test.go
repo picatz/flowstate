@@ -156,6 +156,27 @@ func TestOverlappingSensitiveSubstringsRedactWhole(t *testing.T) {
 	}
 }
 
+// TestSuiteTranscriptBudgetDropsWithASentence pins round thirteen's P1:
+// per-case bounds do not compose, so the suite doles a whole-run budget out
+// in case order, and an account past it becomes the one line explaining the
+// drop — never a silent absence, never unbounded retention.
+func TestSuiteTranscriptBudgetDropsWithASentence(t *testing.T) {
+	t.Parallel()
+
+	b := &suiteTranscriptBudget{remaining: 20}
+
+	kept := b.take([]TranscriptLine{{Text: "0123456789"}})
+	require.Len(t, kept, 1)
+	require.Equal(t, "0123456789", kept[0].Text)
+
+	dropped := b.take([]TranscriptLine{{Text: strings.Repeat("x", 11)}})
+	require.Len(t, dropped, 1)
+	require.Contains(t, dropped[0].Text, "account dropped")
+	require.Equal(t, ToneWarning, dropped[0].Tone)
+
+	require.Nil(t, b.take(nil), "a case with no account stays a case with no account")
+}
+
 // TestNestedSensitiveKeysRedact pins round ten's P1: redactSensitiveTree
 // redacted values at every depth but preserved map keys, so a sensitive key
 // nested inside an output's structured value printed — including one below

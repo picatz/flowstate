@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -53,10 +54,12 @@ type RunObserver interface {
 	// written — recordStepOutcome and its loop-body equivalents — so the
 	// account and the record cannot disagree about what a step produced.
 	//
-	// outputs is the observer's own copy, cloned before the callback: the
-	// run's transcript holds the original, and an account that could write
-	// back into it would not be read-only, it would be a second author of
-	// what later expressions see.
+	// outputs is the observer's own copy, cloned before the callback, and err
+	// is a snapshot carrying the failure's rendered text rather than the live
+	// value the run propagates: the run's transcript holds the originals, and
+	// an account that could write back into either — mutating cloned outputs,
+	// or type-asserting a *TaskError and editing its fields — would not be
+	// read-only, it would be a second author of the run's own record.
 	StepFinished(id string, outputs *Node_Outputs, err error, tolerated bool)
 
 	// StepSkipped reports a step whose `if:` evaluated false. It is the one
@@ -127,11 +130,22 @@ func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, 
 	// run's final outputs read, and an observer that edited it would make an
 	// observed run differ from an unobserved one — the one thing an account
 	// must never do. Paid only when someone is listening.
+	//
+	// The error snapshots for the same reason: the live value is commonly a
+	// mutable *TaskError the run is about to propagate, and an observer that
+	// type-asserted and edited its fields would be editing the run's own
+	// verdict. The snapshot carries the rendered text — the whole of what an
+	// account renders; a future reader needing the classification gets it as
+	// its own immutable parameter, never the live object.
 	var copied *Node_Outputs
 	if outputs != nil {
 		copied = proto.Clone(outputs).(*Node_Outputs)
 	}
-	observeSafely(func() { observer.StepFinished(id, copied, err, tolerated) })
+	snapshot := err
+	if err != nil {
+		snapshot = errors.New(err.Error())
+	}
+	observeSafely(func() { observer.StepFinished(id, copied, snapshot, tolerated) })
 }
 
 func observeStepSkipped(ctx context.Context, id string) {

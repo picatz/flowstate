@@ -64,6 +64,48 @@ const maxTranscriptEvents = 10_000
 // it the run continues unrecorded, exactly as past the event count.
 const maxTranscriptOutputBytes = 8 << 20
 
+// maxSuiteTranscriptBytes bounds the rendered lines a whole suite's accounts
+// retain across [RunResult.Transcripts] — the third axis after each case's
+// event count and byte budget, because per-case bounds do not compose: a file
+// near [MaxTestsPerFile] cases each holding a bounded account still retains
+// their product until the suite finishes, passing accounts nobody may ever
+// print included. Past the budget a case's account is replaced by the one
+// line saying so, so a dropped account is a sentence a reader can act on
+// rather than an absence.
+const maxSuiteTranscriptBytes = 32 << 20
+
+// suiteTranscriptBudget doles [maxSuiteTranscriptBytes] out across a suite's
+// case accounts, in case order — the earlier account wins, matching every
+// other first-N truncation in this file.
+type suiteTranscriptBudget struct {
+	remaining int
+}
+
+func newSuiteTranscriptBudget() *suiteTranscriptBudget {
+	return &suiteTranscriptBudget{remaining: maxSuiteTranscriptBytes}
+}
+
+// take retains account if it fits the suite's remaining budget, or replaces
+// it with the line explaining the drop.
+func (b *suiteTranscriptBudget) take(account []TranscriptLine) []TranscriptLine {
+	if account == nil {
+		return nil
+	}
+	size := 0
+	for _, line := range account {
+		size += len(line.Text)
+	}
+	if size > b.remaining {
+		b.remaining = 0
+		return []TranscriptLine{{
+			Text: "  … account dropped: the suite's transcript budget is spent; rerun fewer cases (--run) to see this one",
+			Tone: ToneWarning,
+		}}
+	}
+	b.remaining -= size
+	return account
+}
+
 // transcriptEvent is one recorded fact; kind decides which fields mean
 // anything.
 type transcriptEvent struct {

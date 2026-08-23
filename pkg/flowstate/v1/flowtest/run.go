@@ -160,6 +160,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 	filtered := 0
 	var transcripts [][]TranscriptLine
+	transcriptBudget := newSuiteTranscriptBudget()
 	for _, test := range file.Tests {
 		if opts.Select != nil && !opts.Select(test.Name) {
 			filtered++
@@ -189,7 +190,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				return runCase(ctx, &test, l.deliveryPath, l.load, record)
 			})
 		report.Cases = append(report.Cases, result)
-		transcripts = append(transcripts, account)
+		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
 	}
 
