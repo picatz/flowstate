@@ -417,11 +417,12 @@ func jsonKindName(decoded any) string {
 // outright, and optional inputs silently start a different workload, which is
 // worse. Values the workflow declared sensitive are replaced with the same
 // marker as every other CLI display surface unless --reveal-sensitive was
-// explicitly requested. The `--flag=value` form is used because a value with a
-// leading dash would otherwise read as the next flag.
-func runArgumentFlags(cmd *cobra.Command, workflow *v1.Workflow) []string {
-	var arguments []string
-
+// explicitly requested, and the second return says whether any were, so the
+// caller can tell the reader the command needs a value put back rather than
+// leaving them to paste one that starts a different workload. The
+// `--flag=value` form is used because a value with a leading dash would
+// otherwise read as the next flag.
+func runArgumentFlags(cmd *cobra.Command, workflow *v1.Workflow) (arguments []string, redacted bool) {
 	if file, _ := cmd.Flags().GetString("input-file"); file != "" {
 		arguments = append(arguments, "--input-file="+shellArgument(file))
 	}
@@ -429,11 +430,20 @@ func runArgumentFlags(cmd *cobra.Command, workflow *v1.Workflow) []string {
 	declared := declaredInputs(workflow)
 	reveal := revealSensitiveRequested(cmd)
 	for _, flag := range flags {
-		if name, _, ok := strings.Cut(flag, "="); ok && declared[name].GetSensitive() && !reveal {
-			flag = name + "=" + redactedMarker(name)
+		if name, _, ok := strings.Cut(flag, "="); ok {
+			// The same normalization [parseInputFlag] applied when it bound
+			// the value. Looking the declaration up under the untrimmed name
+			// answers "not declared" for `--input " token=..."`, which the
+			// nil-safe proto getter then reports as not sensitive — a lookup
+			// that misses fails open, so it has to miss the same way twice or
+			// not at all.
+			name = strings.TrimSpace(name)
+			if declared[name].GetSensitive() && !reveal {
+				flag, redacted = name+"="+redactedMarker(name), true
+			}
 		}
 		arguments = append(arguments, "--input="+shellArgument(flag))
 	}
 
-	return arguments
+	return arguments, redacted
 }
