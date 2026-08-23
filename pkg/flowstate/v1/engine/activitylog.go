@@ -25,11 +25,11 @@ import (
 // no task runs in workflow code, so the case does not arise and nothing here handles it.
 //
 // The OTLP bridge goes beside it, and this is the one place in the repo where log-to-trace
-// correlation is real. A `log:` step emits through `LogAttrs(ctx, …)`, and an activity's
-// context carries the span Temporal's tracing interceptor opened — so the bridge reads a
-// span context off it and stamps the record's trace and span ids. A step's line and the
-// step's span then share a trace id, which is what makes a log panel clickable from a
-// trace instead of joinable only by workflow id.
+// correlation is real. A `log:` step emits through `LogAttrs` with the logical
+// Flowstate step context selected by [v1.LogContextFrom]. Temporal's activity span
+// remains the runtime parent of the attempt; it does not replace the domain identity
+// stamped onto the record. A step's line and step span therefore share trace and span
+// ids, which makes a log panel clickable from the exact operation that wrote it.
 //
 // It is a fan-out rather than a replacement because Temporal's tagging is not redundant
 // with it: the workflow id, run id, activity type and attempt are how somebody finds the

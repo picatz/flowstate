@@ -10,11 +10,16 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+	shared "github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	temporalotel "go.temporal.io/sdk/contrib/opentelemetry"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 )
 
 // What these tests are for.
@@ -67,7 +72,13 @@ func recordSpans(t *testing.T) *tracetest.SpanRecorder {
 // printed with %#v reaches fields no accessor exposes, and a slice printed with
 // %v is how a set of spans would be dumped by anything debugging them.
 func renderedSpans(recorder *tracetest.SpanRecorder) []string {
-	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
+	var flowstate []sdktrace.ReadOnlySpan
+	for _, span := range recorder.Ended() {
+		if span.InstrumentationScope().Name == v1.InstrumentationScope {
+			flowstate = append(flowstate, span)
+		}
+	}
+	stubs := tracetest.SpanStubsFromReadOnlySpans(flowstate)
 
 	rendered := []string{
 		fmt.Sprintf("%v", stubs),
@@ -136,6 +147,19 @@ func spanNames(recorder *tracetest.SpanRecorder) []string {
 	}
 
 	return names
+}
+
+func tracedWorkerOptions(t *testing.T) worker.Options {
+	t.Helper()
+	tracing, err := temporalotel.NewTracingInterceptor(temporalotel.TracerOptions{})
+	require.NoError(t, err)
+	return worker.Options{Interceptors: []interceptor.WorkerInterceptor{tracing}}
+}
+
+func configureTracedEnvironment(t *testing.T, env *testsuite.TestWorkflowEnvironment) {
+	t.Helper()
+	env.SetWorkerOptions(tracedWorkerOptions(t))
+	env.SetContextPropagators([]workflow.ContextPropagator{engine.DomainTracePropagator()})
 }
 
 // registerSecretReadingTask registers a task that resolves a reference and
@@ -227,11 +251,12 @@ func TestTaskSpanNamesTheSecretReferenceAndNeverTheSecret(t *testing.T) {
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	configureTracedEnvironment(t, env)
 	engine.Register(env, tracedSecretRuntime(t))
 	env.ExecuteWorkflow(engine.Run, secretReadingWorkflow(taskName))
 	require.NoError(t, env.GetWorkflowError())
 
-	attrs := spanAttributes(t, recorder, "flowstate.task/"+taskName)
+	attrs := spanAttributes(t, recorder, "flowstate.attempt")
 	require.Equal(t, taskName, attrs["flowstate.task.name"])
 	require.Equal(t, "read", attrs["flowstate.step.id"],
 		"the authorized activity knows which step it is; the span must say so")
@@ -262,13 +287,14 @@ func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	configureTracedEnvironment(t, env)
 	engine.Register(env, tracedSecretRuntime(t))
 	env.ExecuteWorkflow(engine.Run, secretReadingWorkflow(taskName))
 	require.Error(t, env.GetWorkflowError(), "the task fails on purpose")
 
 	var described bool
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
-		if stub.Name != "flowstate.task/"+taskName {
+		if stub.Name != "flowstate.attempt" {
 			continue
 		}
 
@@ -288,11 +314,12 @@ func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 // TestNoSpansWithoutATracerProvider is invariant 8 at this layer: a worker in a
 // process nobody configured for telemetry does the work and records nothing.
 //
-// Asserted through the recorder being installed only *after* the run, so
-// anything the activity minted would have gone to the global no-op provider and
-// left no trace — which is what the guard in startTaskSpan makes cheap as well
-// as silent.
+// The recording provider is installed before the run while the worker tracing
+// interceptors are deliberately absent. Empty output therefore proves the
+// execution path never reached that provider, rather than merely proving a
+// no-op provider discarded what it was handed.
 func TestNoSpansWithoutATracerProvider(t *testing.T) {
+	recorder := recordSpans(t)
 	const taskName = "untraced-secret-task"
 	registerSecretReadingTask(t, taskName, false)
 
@@ -302,7 +329,45 @@ func TestNoSpansWithoutATracerProvider(t *testing.T) {
 	env.ExecuteWorkflow(engine.Run, secretReadingWorkflow(taskName))
 	require.NoError(t, env.GetWorkflowError())
 
-	recorder := recordSpans(t)
 	require.Empty(t, recorder.Ended(),
-		"an unconfigured process recorded spans, which it has no provider to record into")
+		"a worker without tracing interceptors asked the global provider to record domain spans")
+}
+
+func TestDurableTraceAgreesWithExecutionModel(t *testing.T) {
+	recorder := recordSpans(t)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	configureTracedEnvironment(t, env)
+	engine.Register(env)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: shared.TraceWorkflow()})
+	require.NoError(t, env.GetWorkflowError())
+	shared.AssertTraceOperations(t, durableTraceOperations(recorder))
+}
+
+func TestDurableCompensationTraceAgreesWithExecutionModel(t *testing.T) {
+	recorder := recordSpans(t)
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	configureTracedEnvironment(t, env)
+	engine.Register(env)
+	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: shared.TraceCompensationWorkflow()})
+	require.Error(t, env.GetWorkflowError())
+	shared.AssertCompensationTrace(t, durableTraceOperations(recorder))
+}
+
+func durableTraceOperations(recorder *tracetest.SpanRecorder) []shared.TraceOperation {
+	var operations []shared.TraceOperation
+	for _, span := range recorder.Ended() {
+		op := shared.TraceOperation{Name: span.Name()}
+		for _, attr := range span.Attributes() {
+			switch string(attr.Key) {
+			case "flowstate.step.id":
+				op.StepID = attr.Value.AsString()
+			case "flowstate.attempt":
+				op.Attempt = attr.Value.AsInt64()
+			}
+		}
+		operations = append(operations, op)
+	}
+	return operations
 }

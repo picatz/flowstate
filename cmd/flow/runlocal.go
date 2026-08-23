@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -106,11 +107,15 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	//
 	// And to a collector when one is configured, so that the two drivers agree about
 	// where a `log:` line ends up: the durable driver exports the same records from
-	// the worker. What differs is the trace id, and unavoidably — a local run makes
-	// no RPC and opens no span, so its records have no trace to belong to.
+	// the worker. A configured local run gets a root below, and the shared
+	// execution instrumentation makes this handler observe its current step.
 	surface := newSurface(cmd)
 	ctx = v1.ContextWithLogger(ctx,
 		slog.New(telemetryLogHandler(newRunLogHandler(surface.Err, surface.ErrTheme))))
+	var runSpan trace.Span
+	if telemetryConfigured() {
+		ctx, runSpan = v1.StartRunSpan(ctx)
+	}
 
 	started := time.Now()
 
@@ -118,6 +123,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
 	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	if runSpan != nil {
+		v1.RecordExecutionOutcome(runSpan, runErr)
+		runSpan.End()
+	}
 	response := localRun(outputs, runErr, cmd.Context().Err(), started, time.Now())
 
 	// This process just parsed workflow itself, so redaction here is precise

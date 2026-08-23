@@ -11,6 +11,7 @@ import (
 	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -26,6 +27,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/opentelemetry"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/workflow"
 )
 
 // The telemetry that was imported and emitted nothing.
@@ -267,12 +269,12 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 // when its call site passes a context that is inside a span:
 //
 //   - A `log:` step **correlates on the worker**. The task emits through
-//     `LogAttrs(ctx, …)` and the activity's context carries the span Temporal's
-//     tracing interceptor opened, so a step's line and the step's span share a
-//     trace id. That is the pairing the lab could not do before.
-//   - A `log:` step in `flow run local` **does not**, and cannot: the local
-//     driver runs no RPC and opens no span, so there is no trace for the line to
-//     belong to. The record is still exported, with a context and no span in it.
+//     `LogAttrs(ctx, …)` with the Flowstate step context carried to its activity;
+//     Temporal's activity and Flowstate's attempt remain runtime children rather
+//     than becoming the identity stamped onto the record.
+//   - A `log:` step in `flow run local` **also correlates**. The command opens a
+//     local run root and shared execution instrumentation places the logger's
+//     context inside the current Flowstate step span.
 //   - The server's and worker's **own** lines do not. [infraLogger] is called at
 //     start-up and shutdown and logs through `Info`/`Warn` rather than the
 //     `Context` variants, and those moments are outside any request's span
@@ -407,6 +409,13 @@ func temporalWorkerInterceptors() []interceptor.WorkerInterceptor {
 	}
 
 	return []interceptor.WorkerInterceptor{tracing}
+}
+
+func temporalWorkerContextPropagators() []workflow.ContextPropagator {
+	if !telemetryConfigured() {
+		return nil
+	}
+	return []workflow.ContextPropagator{engine.DomainTracePropagator()}
 }
 
 // telemetryState is the process's one initialization, and the flush that

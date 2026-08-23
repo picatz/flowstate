@@ -8,6 +8,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -28,14 +32,43 @@ import (
 type capture struct {
 	records []slog.Record
 	attrs   []slog.Attr
+	spans   []trace.SpanContext
 }
 
 func (c *capture) Enabled(context.Context, slog.Level) bool { return true }
 
-func (c *capture) Handle(_ context.Context, record slog.Record) error {
+func (c *capture) Handle(ctx context.Context, record slog.Record) error {
 	c.records = append(c.records, record)
+	c.spans = append(c.spans, trace.SpanContextFromContext(ctx))
 
 	return nil
+}
+
+func TestLogCarriesItsFlowstateStepSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previous)
+		require.NoError(t, provider.Shutdown(context.Background()))
+	})
+
+	logs := &capture{}
+	ctx, run := v1.StartRunSpan(v1.ContextWithLogger(t.Context(), slog.New(logs)))
+	_, err := v1.Run(ctx, logStep(map[string]*v1.Value{"message": v1.NewLiteral("correlated")}))
+	run.End()
+	require.NoError(t, err)
+	require.Len(t, logs.spans, 1)
+	require.True(t, logs.spans[0].IsValid())
+
+	var stepID trace.SpanID
+	for _, span := range recorder.Ended() {
+		if span.Name() == "flowstate.step" {
+			stepID = span.SpanContext().SpanID()
+		}
+	}
+	require.Equal(t, stepID, logs.spans[0].SpanID())
 }
 
 func (c *capture) WithAttrs(attrs []slog.Attr) slog.Handler {

@@ -1028,7 +1028,10 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			continue
 		}
 
+		nodeCtx, stepSpan := StartStepSpan(nodeCtx, node)
 		outputs, err := runNodeWithVars(nodeCtx, node, scope, undo, placement, depth)
+		RecordExecutionOutcome(stepSpan, err)
+		stepSpan.End()
 		if err != nil {
 			// Cancellation is not a step failure, so `continue_on_error` does not
 			// get to tolerate it — the durable driver says the same thing at the
@@ -1120,8 +1123,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 // evaluate against a run; what remains unresolved is only what a task evaluates
 // against its own response, which needs no run scope in either driver.
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
+	ctx, span := StartCompensationSpan(ctx, entry.GetStepId(), entry.GetTask().GetName())
+	defer span.End()
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope)
+	RecordExecutionOutcome(span, err)
 
 	return err
 }
@@ -1609,7 +1615,10 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttempt(ctx, resolved, timeouts.StartToClose, scope)
+		attemptCtx, attemptSpan := StartAttemptSpan(ctx, executionStepID(ctx), resolved.GetName(), attempt)
+		out, err = runStepAttempt(attemptCtx, resolved, timeouts.StartToClose, scope)
+		RecordExecutionOutcome(attemptSpan, err)
+		attemptSpan.End()
 		if err == nil {
 			return out, nil
 		}

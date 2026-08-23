@@ -509,7 +509,13 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 // production default is [RealClock], and `flow test` is the only caller that
 // puts anything else there (a [VirtualClock]), which is what lets a `sleep:
 // 24h` step resolve without the test spending 24 hours finding that out.
-func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_Outputs, error) {
+func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (outputs *Node_Outputs, err error) {
+	ctx, span := StartWaitSpan(ctx, node.GetId())
+	defer func() {
+		RecordExecutionOutcome(span, err)
+		span.End()
+	}()
+
 	if err := ValidateWait(wait); err != nil {
 		return nil, err
 	}

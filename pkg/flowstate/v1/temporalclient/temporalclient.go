@@ -41,6 +41,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/contrib/envconfig"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/payloadcodec"
 )
@@ -95,6 +96,9 @@ type Config struct {
 	// fallback client and left every tenant's namespace untraced — the same
 	// shape of gap MetricsHandler was added to close.
 	Interceptors []interceptor.ClientInterceptor
+
+	// ContextPropagators are inherited by every worker built from this client.
+	ContextPropagators []workflow.ContextPropagator
 
 	// Codec is the payload codec every client this configuration dials is built
 	// with, together with the failure converter that must accompany it. See
@@ -154,6 +158,7 @@ func (c Config) Options() (client.Options, error) {
 	// interceptors today, and a future SDK that does should not have them
 	// silently dropped by this package.
 	opts.Interceptors = append(opts.Interceptors, c.Interceptors...)
+	opts.ContextPropagators = append(opts.ContextPropagators, c.ContextPropagators...)
 
 	// Checked here rather than at the first payload, and applied last so that
 	// nothing above can leave a client half-configured: a data converter with

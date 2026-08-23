@@ -5,7 +5,6 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -291,9 +290,6 @@ func activityError(taskName string, err error) error {
 // the error is not recorded as a span event, since RecordError writes the
 // message into one.
 
-// tracerName is the instrumentation scope these spans are attributed to.
-const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-
 // startTaskSpan opens the span covering one task execution.
 //
 // The provider is read per call rather than captured in a package variable, for
@@ -306,8 +302,14 @@ const tracerName = "github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 // written blank. An empty attribute is worse than a missing one: it reads as a
 // step whose id is the empty string.
 func startTaskSpan(ctx context.Context, task *v1.Task, stepID string) (context.Context, trace.Span) {
-	ctx, span := otel.GetTracerProvider().Tracer(tracerName).Start(ctx,
-		"flowstate.task/"+task.GetName(), trace.WithSpanKind(trace.SpanKindInternal))
+	if stepID == "" {
+		stepID, _ = ctx.Value(activityStepKey{}).(string)
+	}
+	attempt := 0
+	if activity.IsActivity(ctx) {
+		attempt = int(activity.GetInfo(ctx).Attempt)
+	}
+	ctx, span := v1.StartAttemptSpan(ctx, stepID, task.GetName(), attempt)
 
 	if !span.IsRecording() {
 		// Nothing configured a provider, so the cheapest possible path: no
@@ -316,23 +318,7 @@ func startTaskSpan(ctx context.Context, task *v1.Task, stepID string) (context.C
 		return ctx, span
 	}
 
-	attrs := []attribute.KeyValue{attribute.String("flowstate.task.name", task.GetName())}
-
-	if stepID != "" {
-		attrs = append(attrs, attribute.String("flowstate.step.id", stepID))
-	}
-
-	// The attempt is the substrate's, so it is asked of the substrate rather
-	// than threaded through: a retried activity is a second span, and without
-	// this they are indistinguishable in a trace. Guarded because these
-	// functions are ordinary Go functions the local driver could one day call,
-	// and activity.GetInfo panics outside an activity context.
-	if activity.IsActivity(ctx) {
-		attrs = append(attrs, attribute.Int("flowstate.attempt", int(activity.GetInfo(ctx).Attempt)))
-	}
-
-	attrs = append(attrs, secretReferenceAttributes(task)...)
-	span.SetAttributes(attrs...)
+	span.SetAttributes(secretReferenceAttributes(task)...)
 
 	return ctx, span
 }

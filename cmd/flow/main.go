@@ -230,12 +230,13 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	}
 
 	cfg := temporalclient.Config{
-		Address:        flags.address,
-		Namespace:      flags.namespace,
-		Profile:        flags.profile,
-		MetricsHandler: metricsHandler,
-		Interceptors:   temporalClientInterceptors(),
-		Codec:          codec,
+		Address:            flags.address,
+		Namespace:          flags.namespace,
+		Profile:            flags.profile,
+		MetricsHandler:     metricsHandler,
+		Interceptors:       temporalClientInterceptors(),
+		ContextPropagators: temporalWorkerContextPropagators(),
+		Codec:              codec,
 	}
 
 	if flags.verbose {

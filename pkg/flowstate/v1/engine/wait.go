@@ -27,7 +27,12 @@ import (
 
 // runWait blocks until what the node waits for happens, then records the
 // outcome as the step's outputs.
-func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
+func (e *executor) runWait(node *v1.Node, wait *v1.Wait) (err error) {
+	span := startWorkflowWaitSpan(e.ctx, node.GetId())
+	defer func() {
+		v1.RecordExecutionOutcome(span, err)
+		span.End()
+	}()
 	if err := v1.ValidateWait(wait); err != nil {
 		return nodeFailed(err)
 	}

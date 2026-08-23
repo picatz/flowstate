@@ -181,7 +181,14 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) error {
 			continue
 		}
 
-		if err := e.runNodeWithVars(node, depth, susp, descend); err != nil {
+		stepCtx, stepSpan := startWorkflowStepSpan(e.ctx, node)
+		outerCtx := e.ctx
+		e.ctx = stepCtx
+		err = e.runNodeWithVars(node, depth, susp, descend)
+		e.ctx = outerCtx
+		v1.RecordExecutionOutcome(stepSpan, err)
+		stepSpan.End()
+		if err != nil {
 			if errors.Is(err, errContinueAsNew) {
 				return err
 			}
@@ -629,6 +636,8 @@ func (e *executor) dispatch(
 // step defaults are the whole answer.
 func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, within time.Duration) error {
 	task := entry.GetTask()
+	wctx, span := startWorkflowCompensationSpan(wctx, entry.GetStepId(), task.GetName())
+	defer span.End()
 
 	opts := activityOptionsFor(nil)
 	if within > 0 {
@@ -652,6 +661,7 @@ func (e *executor) runUndoTask(wctx workflow.Context, entry *v1.PendingUndo, wit
 	}
 
 	err := e.dispatch(ctx, task, scope, v1.TaskNeedsAuthority(task), entry.GetStepId(), &out)
+	v1.RecordExecutionOutcome(span, err)
 	if err == nil {
 		return nil
 	}

@@ -144,6 +144,21 @@ watched scroll past.
 
 Everything below is meant to be pasted. It runs from the repository root.
 
+### Correlate a local-run log
+
+The same workload can be rehearsed without Temporal while retaining trace/log
+correlation:
+
+```console
+$ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+    go run ./cmd/flow run local examples/observability/workflow.yaml
+```
+
+Open the resulting `flowstate.run` trace in Grafana. The `announce`, `deploy`,
+and `report` records carry the trace ID and span ID of their `flowstate.step`;
+the attempt remains a separate child operation. With the endpoint unset, none
+of those spans or exporter work exists.
+
 ### 1. Bring the lab up
 
 ```console
@@ -255,18 +270,19 @@ Log-to-trace correlation is by trace id, in both directions, and it is worth
 knowing exactly how far it reaches.
 
 A `log:` step's record **carries the trace and span ids of the step it ran in**.
-The task emits through its context, and on the worker that context is the
-activity's — which holds the span Temporal's tracing interceptor opened. So a line
-in the log panel has a **TraceID** field that opens the trace, and a span in Tempo
-links to the lines that run produced. That is the join the lab could not make
-before, when the honest answer was "the same service, around the same moment" and
-the workflow id was the only real key.
+The durable driver propagates that domain context alongside Temporal's independent
+runtime context, so the workflow and activity spans remain parents while the log
+points at the exact Flowstate operation. A line in the log panel therefore has a
+**TraceID** field that opens the trace and a **SpanID** that selects its
+`flowstate.step`. That is the join the lab could not make before, when the honest
+answer was "the same service, around the same moment" and the workflow id was the
+only real key.
 
 The server's and worker's **own** lines carry no trace id, and cannot: a worker
 saying it is starting up is not inside anybody's request. Find those by service
-and time. A `log:` step in `flow run local` carries none either — the local driver
-makes no RPC and opens no span, so there is no trace for the line to belong to,
-though the record is still exported.
+and time. A `log:` step in `flow run local` is different: when OTLP telemetry is
+configured, its record points at the local run's `flowstate.step`; without an
+endpoint, the record is still written locally and no tracing work is performed.
 
 The workflow id still works as a key and is still the string that joins Grafana to
 the Temporal UI. It is no longer the only one.

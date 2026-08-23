@@ -472,12 +472,15 @@ func TestTemporalInterceptorsAbsentWhenTelemetryIsOff(t *testing.T) {
 		"an unconfigured binary installed a Temporal client interceptor")
 	require.Empty(t, temporalWorkerInterceptors(),
 		"an unconfigured binary installed a Temporal worker interceptor")
+	require.Empty(t, temporalWorkerContextPropagators(),
+		"an unconfigured binary installed a Temporal domain-header propagator")
 
 	// And the dial options a command actually builds carry none, which is the
 	// assertion that survives somebody rewiring main.go.
 	cfg, err := temporalConfig(t.Context(), temporalFlags{})
 	require.NoError(t, err)
 	require.Empty(t, cfg.Interceptors)
+	require.Empty(t, cfg.ContextPropagators)
 
 	opts, err := cfg.Options()
 	require.NoError(t, err)
@@ -503,10 +506,13 @@ func TestTemporalInterceptorsPresentWhenConfigured(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, cfg.Interceptors, 1,
 		"ExecuteWorkflow must be intercepted, or the workflow starts a trace of its own")
+	require.Len(t, cfg.ContextPropagators, 1,
+		"the Flowstate step context cannot reach an activity log")
 
 	opts, err := cfg.Options()
 	require.NoError(t, err)
 	require.Len(t, opts.Interceptors, 1, "the interceptor must reach the options the client is dialed with")
+	require.Len(t, opts.ContextPropagators, 1, "the domain propagator must reach every dialed client")
 
 	// The worker half, which is the one that reads back what the client wrote.
 	// Both are asserted because either alone is silent: a header nobody writes
@@ -514,6 +520,7 @@ func TestTemporalInterceptorsPresentWhenConfigured(t *testing.T) {
 	workerInterceptors := temporalWorkerInterceptors()
 	require.Len(t, workerInterceptors, 1)
 	require.NotNil(t, worker.Options{Interceptors: workerInterceptors}.Interceptors)
+	require.Len(t, temporalWorkerContextPropagators(), 1)
 }
 
 // TestTemporalTracingInterceptorServesBothSides pins the property that keeps
@@ -758,10 +765,9 @@ func TestLogRecordCarriesTheTraceOfItsSpan(t *testing.T) {
 
 // TestLogRecordWithoutASpanIsStillExported is the honest other half.
 //
-// `flow run local` opens no span — it makes no RPC — and the server's and
-// worker's own start-up lines are emitted outside any request. Those records must
-// still reach the collector, uncorrelated, rather than being dropped for want of
-// a trace to belong to: a log nobody can click on is worth much more than no log.
+// Server and worker start-up lines are emitted outside any request. Those records
+// must still reach the collector, uncorrelated, rather than being dropped for want
+// of a trace to belong to: a log nobody can click on is worth much more than no log.
 func TestLogRecordWithoutASpanIsStillExported(t *testing.T) {
 	collector := logCollectorTo(t)
 	isolateTelemetry(t)

@@ -21,6 +21,7 @@ import (
 
 // loggerKey addresses the logger in a context.
 type loggerKey struct{}
+type logContextKey struct{}
 
 // ContextWithLogger returns a context whose `log:` steps emit through logger.
 //
@@ -48,6 +49,25 @@ func LoggerFrom(ctx context.Context) *slog.Logger {
 	}
 
 	return slog.Default()
+}
+
+// ContextWithLogContext selects the context attached to a `log:` record without
+// changing the context used to execute its task. This is the seam the durable
+// driver uses to retain the Flowstate step correlation while the Temporal
+// activity span remains the task's runtime parent.
+func ContextWithLogContext(ctx, logCtx context.Context) context.Context {
+	if logCtx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, logContextKey{}, logCtx)
+}
+
+// LogContextFrom returns the context a `log:` record must carry.
+func LogContextFrom(ctx context.Context) context.Context {
+	if logCtx, ok := ctx.Value(logContextKey{}).(context.Context); ok && logCtx != nil {
+		return logCtx
+	}
+	return ctx
 }
 
 // MultiHandler fans one record out to several handlers.
