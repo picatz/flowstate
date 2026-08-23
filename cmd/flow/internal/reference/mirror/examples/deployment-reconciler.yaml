@@ -203,7 +203,11 @@ steps:
             # JSON has one number type, so a replica count arrives as a double
             # even when it was written `2`; accepting either CEL numeric type is
             # what makes this a shape check rather than an accident of the
-            # decoder. A stubbed run never evaluates `expect:` at all - a stub
+            # decoder. Accepting *every* double would be too generous the other
+            # way: a replica count is a count, and `2.5` is not a smaller number
+            # of replicas, it is a wrong answer. So a double has to be integral
+            # (`x == double(int(x))`) and the count non-negative - refusing the
+            # reading rather than converging toward a fraction. A stubbed run never evaluates `expect:` at all - a stub
             # replaces the task - so the first thing to catch an int-only check
             # here was the cross-driver harness running against the stand-in.
             #
@@ -217,8 +221,8 @@ steps:
             # does not spend the retries above on it.
             expect: |-
               ${response.status_code == 200 && has(response.json.replicas) && (type(response.json.replicas) == type(0) ||
-              type(response.json.replicas) == type(0.0)) && has(response.json.retired) &&
-              type(response.json.retired) == type(true)}
+              type(response.json.replicas) == type(0.0) && response.json.replicas == double(int(response.json.replicas))) &&
+              response.json.replicas >= 0 && has(response.json.retired) && type(response.json.retired) == type(true)}
             method: GET
             outputs:
               replicas: ${response.json.replicas}

@@ -81,6 +81,16 @@ var constructsWithoutAnExample = map[string]string{
 	// `input.type.TYPE_ENUM` is the same gap as `input.values` above, seen from
 	// the other side: an enum-constrained input needs the type and the values
 	// together, and one example closes both.
+	// Surfaced once the derivation stopped skipping proto3 `optional` fields,
+	// which protobuf models as synthetic oneofs. `input.must` and
+	// `input.min_items` turned out to be demonstrated already; these two are not.
+	// Adding a `max_len:` to an existing input that already satisfies it would
+	// make this list go quiet without teaching a reader anything — a constraint
+	// is worth showing where it *refuses* something, which is a deliberate
+	// example rather than a drive-by line.
+	"input.max_len": "a string-length bound on an input; no example declares one, and one worth reading shows it refusing a value — tracked in #969",
+	"output.must":   "a constraint on a declared output; the corpus constrains inputs only — tracked in #969",
+
 	"input.type.TYPE_ENUM":                     "an enum-constrained input; the same gap as input.values — tracked in #969",
 	"schedule.overlap.OVERLAP_BUFFER_ONE":      "an overlap policy no example selects; scheduled-report shows one policy — tracked in #969",
 	"schedule.overlap.OVERLAP_BUFFER_ALL":      "the same — tracked in #969",
@@ -342,7 +352,11 @@ func writableRequired(required map[string]string, desc protoreflect.MessageDescr
 	fields := desc.Fields()
 	for i := range fields.Len() {
 		field := fields.Get(i)
-		if field.ContainingOneof() != nil {
+		// A *real* oneof only. protobuf represents a proto3 `optional` field as a
+		// synthetic one-field oneof, so skipping every field with a containing
+		// oneof also skipped `max_len:`, `min_items:` and `must:` — author-facing
+		// constraints that quietly left the charter (Codex, #901).
+		if oneof := field.ContainingOneof(); oneof != nil && !oneof.IsSynthetic() {
 			continue
 		}
 		if _, excluded := spec.exclude[string(field.Name())]; excluded {
@@ -554,7 +568,10 @@ func reportWritableFields(msg protoreflect.Message, report func(string)) {
 	}
 
 	msg.Range(func(field protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
-		if field.ContainingOneof() != nil {
+		// Real oneofs only, for the reason [writableRequired] gives: a proto3
+		// `optional` field lives in a synthetic oneof and is an ordinary
+		// author-written field.
+		if oneof := field.ContainingOneof(); oneof != nil && !oneof.IsSynthetic() {
 			return true
 		}
 		if _, excluded := spec.exclude[string(field.Name())]; excluded {
