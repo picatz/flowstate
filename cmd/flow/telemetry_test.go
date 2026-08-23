@@ -1327,11 +1327,19 @@ func TestAFailedSignalPublishesNothingAndLeavesNothingRunning(t *testing.T) {
 // A banner is read as the truth about what the process is doing, so both are
 // pinned: a collector named for a deployment sending nothing, and silence from
 // one holding an open exporter.
+//
+// The signal-specific endpoints are set as well as the general one, because the
+// same disagreement has a quieter third shape that "is telemetry on at all"
+// does not catch: telemetry is genuinely on, and the endpoint named belongs to a
+// signal that was switched off. Reading the four endpoints in a fixed order is
+// what produces it, so the cases below put a disabled signal's endpoint ahead of
+// an enabled signal's and require the enabled one.
 func TestTheDevBannerNamesTelemetryExactlyWhenItIsOn(t *testing.T) {
 	for _, test := range []struct {
-		name                            string
-		endpoint, traces, metrics, logs string
-		want                            string
+		name                                                    string
+		endpoint, tracesEndpoint, metricsEndpoint, logsEndpoint string
+		traces, metrics, logs                                   string
+		want                                                    string
 	}{
 		{name: "nothing configured"},
 		{name: "a general endpoint", endpoint: "http://collector:4318", want: "http://collector:4318"},
@@ -1351,15 +1359,80 @@ func TestTheDevBannerNamesTelemetryExactlyWhenItIsOn(t *testing.T) {
 			traces:   "none", metrics: "none",
 			want: "http://collector:4318",
 		},
+		{
+			// The finding itself: the traces collector is named while traces are
+			// the one signal not being sent to it.
+			name:           "a disabled signal's endpoint ahead of an enabled one",
+			tracesEndpoint: "http://traces:4318", traces: "none",
+			metricsEndpoint: "http://metrics:4318", metrics: "otlp",
+			want: "http://metrics:4318",
+		},
+		{
+			// And the same shape with nothing but a general endpoint to fall back
+			// on: the enabled signal has no endpoint of its own, so the general one
+			// is what it is going to — not the disabled signal's collector.
+			name:           "an enabled signal falling back to the general endpoint",
+			endpoint:       "http://collector:4318",
+			tracesEndpoint: "http://traces:4318", traces: "none",
+			want: "http://collector:4318",
+		},
+		{
+			// A signal's own endpoint wins over the general one for that signal,
+			// which is how the SDK resolves it.
+			name:           "a signal's own endpoint beside a general one",
+			endpoint:       "http://collector:4318",
+			tracesEndpoint: "http://traces:4318",
+			want:           "http://traces:4318",
+		},
+		{
+			// Fail closed, and for the same reason [telemetryConfigured] does: the
+			// process refuses to start on this, so a banner naming a collector
+			// would be describing a run that is not going to happen.
+			name:     "a malformed selector",
+			endpoint: "http://collector:4318",
+			metrics:  "bogus",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			telemetryOff(t)
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", test.endpoint)
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", test.tracesEndpoint)
+			t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", test.metricsEndpoint)
+			t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", test.logsEndpoint)
 			t.Setenv("OTEL_TRACES_EXPORTER", test.traces)
 			t.Setenv("OTEL_METRICS_EXPORTER", test.metrics)
 			t.Setenv("OTEL_LOGS_EXPORTER", test.logs)
 
 			assert.Equal(t, test.want, devOTLPEndpoint())
+		})
+	}
+}
+
+// TestAMalformedSelectorReadsAsUnconfiguredWhicheverSignalItNames is the
+// fail-closed claim in [telemetryConfigured]'s own doc comment, asserted for
+// every signal rather than for the first one resolved.
+//
+// [telemetryConfigFromEnv] returns what it had resolved before the bad selector
+// alongside the error, so a malformed OTEL_METRICS_EXPORTER or
+// OTEL_LOGS_EXPORTER comes back as {traces: true} with an error. A predicate
+// that discarded the error would answer "configured" for those two and
+// "unconfigured" only for OTEL_TRACES_EXPORTER — and this predicate is what
+// switches the global propagator on, so an unparsed setting must never be the
+// reason a process starts writing traceparent onto other people's requests.
+func TestAMalformedSelectorReadsAsUnconfiguredWhicheverSignalItNames(t *testing.T) {
+	for _, signal := range []string{"OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER"} {
+		t.Run(signal, func(t *testing.T) {
+			telemetryOff(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+			t.Setenv(signal, "bogus")
+
+			assert.False(t, telemetryConfigured(),
+				"%s=bogus is refused by initTelemetry; this must not report telemetry as on", signal)
+
+			_, _, err := initTelemetry(t.Context())
+			require.Error(t, err, "the operator has to find out from somewhere")
+			require.ErrorContains(t, err, signal, "the diagnostic must name the variable")
+			require.ErrorContains(t, err, "bogus", "and the value the operator wrote")
 		})
 	}
 }
