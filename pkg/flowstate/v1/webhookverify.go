@@ -156,7 +156,7 @@ func verifyHMACSHA256(key secrets.Secret, headers map[string]string, body []byte
 	// Compute the digest before inspecting the attacker-controlled header. An
 	// unrouted request spends this same body-sized work under a decoy key; an
 	// early return here would therefore reveal that this route exists.
-	expected := signHMACSHA256(key, body)
+	expected := signWebhookPayload(key, body)
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", WebhookSignatureHeader)
 	}
@@ -204,7 +204,14 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	}
 
 	seconds, secondsErr := strconv.ParseInt(timestamp, 10, 64)
-	signingTimestamp := timestamp
+	// The signed payload is built from the *parsed* seconds, so a padded or
+	// oddly-spelled timestamp cannot make the payload something other than what
+	// the window was checked against. When it does not parse there is no such
+	// number, and the header's own text must not stand in for one: `t=` carries
+	// whatever a sender wrote, bounded only by MaxHeaderBytes, so hashing it
+	// would make this route's work scale with a value the sender chooses — a
+	// larger and more precise oracle than the one this ordering removes.
+	var signingTimestamp string
 	if secondsErr == nil {
 		signingTimestamp = strconv.FormatInt(seconds, 10)
 	}
@@ -216,7 +223,7 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	signed = append(signed, signingTimestamp...)
 	signed = append(signed, '.')
 	signed = append(signed, body...)
-	expected := signHMACSHA256(key, signed)
+	expected := signWebhookPayload(key, signed)
 
 	if supplied == "" {
 		return fmt.Errorf("the delivery carried no %s header", StripeSignatureHeader)
@@ -260,6 +267,18 @@ func verifyStripe(key secrets.Secret, headers map[string]string, body []byte, no
 	return fmt.Errorf("no v1 signature in %s matched the signed payload under this deployment's key",
 		StripeSignatureHeader)
 }
+
+// signWebhookPayload is [signHMACSHA256], reached through a variable so that
+// one internal test can count what a verification hashes.
+//
+// The ordering in [verifyHMACSHA256] and [verifyStripe] is load-bearing rather
+// than incidental: every refusal spends the same body-sized work an unrouted
+// delivery spends under the receiver's decoy key, so that "no such webhook" and
+// "wrong signature" cost the same. That is a claim about *work*, and a claim
+// about work that nothing measures is one the next tidy-up silently repeals by
+// restoring an early return. This is the same instrument, and the same reason,
+// as pathChecker.ownerOf in cmd/flow.
+var signWebhookPayload = signHMACSHA256
 
 // signHMACSHA256 is the one place a key is revealed, and it reveals it into an
 // HMAC and nothing else.
