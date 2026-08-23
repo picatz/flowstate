@@ -17,7 +17,9 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/jose/pkg/header"
 	"github.com/picatz/jose/pkg/jwa"
+	"github.com/picatz/jose/pkg/jwt"
 	"github.com/stretchr/testify/require"
 )
 
@@ -402,6 +404,11 @@ func TestNewIssuerRejectsBadConfiguration(t *testing.T) {
 			url:  "https://flowstate.example.com",
 			opts: []auth.IssuerOption{auth.WithJWKSPath(auth.DiscoveryPath)},
 		},
+		{
+			name: "a key set path that shadows workload metadata",
+			url:  "https://flowstate.example.com",
+			opts: []auth.IssuerOption{auth.WithJWKSPath(auth.WorkloadIssuerMetadataPath)},
+		},
 	}
 
 	for _, test := range tests {
@@ -583,7 +590,7 @@ func TestIssuerHandler(t *testing.T) {
 		// discovery correctly will refuse the document.
 		require.Equal(t, server.URL, document.Issuer)
 		require.Equal(t, server.URL+auth.DefaultJWKSPath, document.JWKSURI)
-		require.Equal(t, []jwa.Algorithm{jwa.ES256}, document.IDTokenSigningAlgValuesSupported)
+		require.Equal(t, []jwa.Algorithm{jwa.ES256}, document.SigningAlgValuesSupported)
 		require.Contains(t, document.ClaimsSupported, auth.ClaimOnBehalfOf)
 	})
 
@@ -623,6 +630,44 @@ func TestIssuerHandler(t *testing.T) {
 		require.Equal(t, http.StatusMethodNotAllowed, response.StatusCode)
 		require.Equal(t, "GET, HEAD", response.Header.Get("Allow"))
 	})
+}
+
+// TestIssuerMetadataNeverClaimsAnUnimplementedProtocol is the negative half of
+// discovery compatibility. These names have standardized OAuth/OIDC meanings;
+// adding one merely to appease a lenient parser would be a false capability.
+func TestIssuerMetadataNeverClaimsAnUnimplementedProtocol(t *testing.T) {
+	issuer, server := newIssuer(t, authtest.NewClock(referenceTime))
+	for _, path := range []string{auth.WorkloadIssuerMetadataPath, auth.DiscoveryPath} {
+		response, err := server.Client().Get(server.URL + path)
+		require.NoError(t, err)
+		var document map[string]any
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&document))
+		require.NoError(t, response.Body.Close())
+		for _, forbidden := range []string{"authorization_endpoint", "token_endpoint", "response_types_supported", "subject_types_supported", "id_token_signing_alg_values_supported", "scopes_supported", "grant_types_supported", "registration_endpoint"} {
+			require.NotContains(t, document, forbidden, "%s must not advertise OAuth/OIDC behavior", path)
+		}
+	}
+	require.Equal(t, auth.OIDCCompatibilityProfile, issuer.OIDCCompatibility().WorkloadIssuerProfile)
+}
+
+// TestWorkloadMetadataIsTheMintingContract proves the public vocabulary and
+// cryptography are descriptions of an actual assertion, not parallel lists.
+func TestWorkloadMetadataIsTheMintingContract(t *testing.T) {
+	issuer, _ := newIssuer(t, authtest.NewClock(referenceTime))
+	assertion, err := issuer.Mint(t.Context(), testIdentity(), testStepRef(), "sts.example")
+	require.NoError(t, err)
+	token, err := jwt.Parse(assertion.Token())
+	require.NoError(t, err)
+
+	metadata := issuer.WorkloadMetadata()
+	for claim := range token.Claims {
+		require.Contains(t, metadata.ClaimsSupported, claim, "minted built-in claim omitted from metadata")
+	}
+	for _, claim := range metadata.ClaimsSupported {
+		require.Contains(t, token.Claims, claim, "metadata claim is not mintable by the complete fixture")
+	}
+	require.Contains(t, metadata.SigningAlgValuesSupported, token.Header[header.Algorithm])
+	require.Equal(t, []string{"EC"}, metadata.KeyTypesSupported)
 }
 
 // TestAssertionNeverRevealsItsToken checks that the one value in an assertion that

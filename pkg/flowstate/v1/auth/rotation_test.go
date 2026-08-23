@@ -328,5 +328,5 @@ func TestDiscoveryNamesEveryPublishedAlgorithm(t *testing.T) {
 		keyPair{id: "2026-07", public: &rsaPrivate.PublicKey})
 
 	document := issuer.Discovery()
-	require.ElementsMatch(t, []jwa.Algorithm{jwa.ES256, jwa.RS256}, document.IDTokenSigningAlgValuesSupported)
+	require.ElementsMatch(t, []jwa.Algorithm{jwa.ES256, jwa.RS256}, document.SigningAlgValuesSupported)
 }

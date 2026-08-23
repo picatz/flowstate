@@ -61,7 +61,7 @@ func TestRevokeKeyIsNotRotation(t *testing.T) {
 
 	// The discovery document is built from the same key set, so an algorithm
 	// only the revoked key used goes with it.
-	require.NotEmpty(t, issuer.Discovery().IDTokenSigningAlgValuesSupported)
+	require.NotEmpty(t, issuer.Discovery().SigningAlgValuesSupported)
 }
 
 // TestRevokeKeyRefuses covers the two ways revoking could leave an issuer

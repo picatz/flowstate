@@ -11,124 +11,116 @@ import (
 	"github.com/picatz/jose/pkg/jwk"
 )
 
-// discoveryCacheMaxAge is how long a relying party is told it may cache the
-// discovery document and key set.
-//
-// It is a compromise: long enough that relying parties are not refetching keys on
-// every call, short enough that a rotated key is picked up in minutes. The
-// retention period for rotated keys is what actually makes rotation safe, and it
-// is far longer than this.
 const discoveryCacheMaxAge = 5 * time.Minute
 
-// DiscoveryDocument is the OpenID Provider Metadata a relying party reads to learn
-// how to verify Flowstate's assertions.
-//
-// It is exported so a deployment can serve it from somewhere other than
-// [Issuer.Handler], such as a static file behind a CDN, or embed it in a
-// configuration bundle for a relying party that does not fetch discovery documents
-// at all.
-type DiscoveryDocument struct {
-	// Issuer is the issuer identifier, which must exactly equal the "iss" claim of
-	// every assertion and the URL this document is served from. Relying parties
-	// check this, and so does this package's own [OIDCVerifier].
-	Issuer string `json:"issuer"`
+// WorkloadIssuerMetadataPath is Flowstate's protocol-accurate discovery
+// endpoint.  It describes signed workload assertions, not an OAuth
+// authorization server or an OpenID Provider.
+const WorkloadIssuerMetadataPath = "/.well-known/workload-identity-configuration"
 
-	// JWKSURI is where the public keys are published.
-	JWKSURI string `json:"jwks_uri"`
+// WorkloadAssertionProfile is the versioned contract of assertions minted by
+// Issuer.  Consumers should key compatibility on this value, not infer OIDC
+// authorization semantics from the well-known URL used by some cloud products.
+const WorkloadAssertionProfile = "https://flowstate.dev/profiles/workload-assertion/v1"
 
-	// ResponseTypesSupported and SubjectTypesSupported are required by OpenID
-	// Connect Discovery. Flowstate is not an interactive provider: it issues
-	// assertions about workloads, so these describe the minimum a strict consumer
-	// needs to accept the document.
-	ResponseTypesSupported []string `json:"response_types_supported"`
-	SubjectTypesSupported  []string `json:"subject_types_supported"`
+// OIDCCompatibilityProfile identifies the deliberately small, OIDC-shaped
+// compatibility document. It is not OpenID Provider Metadata: Flowstate has no
+// authorization endpoint, token endpoint, openid scope, authorization response,
+// ID token, or client protocol.
+const OIDCCompatibilityProfile = "https://flowstate.dev/profiles/oidc-shaped-workload-issuer/v1"
 
-	// IDTokenSigningAlgValuesSupported lists the algorithms of every published
-	// key, including keys retained from a rotation.
-	IDTokenSigningAlgValuesSupported []jwa.Algorithm `json:"id_token_signing_alg_values_supported"`
-
-	// ClaimsSupported names the claims an assertion carries, so an operator
-	// configuring an attribute mapping can see what there is to map.
-	ClaimsSupported []string `json:"claims_supported"`
-
-	// ScopesSupported is present because some consumers require the field.
-	ScopesSupported []string `json:"scopes_supported"`
+// WorkloadIssuerMetadata describes exactly the JWT workload assertion surface.
+// Algorithms and claims are derived from the declarations used by signing.
+type WorkloadIssuerMetadata struct {
+	Issuer                     string          `json:"issuer"`
+	JWKSURI                    string          `json:"jwks_uri"`
+	AssertionProfilesSupported []string        `json:"assertion_profiles_supported"`
+	SigningAlgValuesSupported  []jwa.Algorithm `json:"signing_alg_values_supported"`
+	ClaimsSupported            []string        `json:"claims_supported"`
+	KeyTypesSupported          []string        `json:"key_types_supported"`
 }
 
-// Discovery returns the metadata document for this issuer.
-func (i *Issuer) Discovery() DiscoveryDocument {
-	return DiscoveryDocument{
-		Issuer:                           i.url,
-		JWKSURI:                          i.JWKSURL(),
-		ResponseTypesSupported:           []string{"id_token"},
-		SubjectTypesSupported:            []string{"public"},
-		IDTokenSigningAlgValuesSupported: i.algorithms(),
-		// Derived from the same declaration the mint enforces, rather than
-		// listed a second time: an issuer that advertises a claim it would
-		// refuse to sign, or signs one it never advertised, is describing an
-		// assertion that does not exist.
-		ClaimsSupported: append([]string{
-			"iss", "sub", "aud", "exp", "nbf", "iat", "jti",
-			ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
-			ClaimOnBehalfOf, ClaimOnBehalfOfIssuer,
-		}, i.DeclaredClaims()...),
-		ScopesSupported: []string{"openid"},
+// OIDCCompatibilityDocument is served at the path hard-coded by OIDC-shaped
+// WIF consumers. Its profile marker makes the semantics explicit. In particular
+// it intentionally omits every field that would claim OpenID Provider or OAuth
+// authorization-server behavior.
+type OIDCCompatibilityDocument struct {
+	Issuer                    string          `json:"issuer"`
+	JWKSURI                   string          `json:"jwks_uri"`
+	WorkloadIssuerProfile     string          `json:"workload_issuer_profile"`
+	SigningAlgValuesSupported []jwa.Algorithm `json:"signing_alg_values_supported"`
+	ClaimsSupported           []string        `json:"claims_supported"`
+}
+
+// DiscoveryDocument is retained as a source-compatible name for the workload
+// issuer contract. It no longer denotes OpenID Provider Metadata.
+type DiscoveryDocument = WorkloadIssuerMetadata
+
+func (i *Issuer) supportedClaims() []string {
+	return append(slices.Clone(builtInAssertionClaims), i.DeclaredClaims()...)
+}
+
+// WorkloadMetadata returns Flowstate's native workload-issuer contract.
+func (i *Issuer) WorkloadMetadata() WorkloadIssuerMetadata {
+	return WorkloadIssuerMetadata{
+		Issuer: i.url, JWKSURI: i.JWKSURL(),
+		AssertionProfilesSupported: []string{WorkloadAssertionProfile},
+		SigningAlgValuesSupported:  i.algorithms(), ClaimsSupported: i.supportedClaims(),
+		KeyTypesSupported: i.keyTypes(),
 	}
 }
 
-// KeySet returns the public keys relying parties verify assertions with: the
-// active signing key, and any rotated-out key still within its retention period.
+// Discovery returns the native workload metadata. Use OIDCCompatibility when a
+// consumer insists on fetching the OIDC Discovery well-known path.
+func (i *Issuer) Discovery() DiscoveryDocument { return i.WorkloadMetadata() }
+
+func (i *Issuer) OIDCCompatibility() OIDCCompatibilityDocument {
+	m := i.WorkloadMetadata()
+	return OIDCCompatibilityDocument{Issuer: m.Issuer, JWKSURI: m.JWKSURI,
+		WorkloadIssuerProfile:     OIDCCompatibilityProfile,
+		SigningAlgValuesSupported: m.SigningAlgValuesSupported, ClaimsSupported: m.ClaimsSupported}
+}
+
+// KeySet returns all currently verifiable public keys.
 func (i *Issuer) KeySet() jwk.Set {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-
 	now := i.clock()
-
 	set := jwk.Set{Keys: make([]jwk.Value, 0, len(i.retired)+1)}
 	set.Keys = append(set.Keys, i.active.published)
-
 	for _, key := range i.retired {
-		if now.After(key.expiresAt) {
-			continue
+		if !now.After(key.expiresAt) {
+			set.Keys = append(set.Keys, key.published)
 		}
-		set.Keys = append(set.Keys, key.published)
 	}
-
 	return set
 }
 
-// algorithms returns the distinct algorithms of every published key.
 func (i *Issuer) algorithms() []jwa.Algorithm {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-
 	now := i.clock()
-
-	algorithms := []jwa.Algorithm{i.active.algorithm}
+	result := []jwa.Algorithm{i.active.algorithm}
 	for _, key := range i.retired {
-		if now.After(key.expiresAt) {
-			continue
-		}
-		if !slices.Contains(algorithms, key.algorithm) {
-			algorithms = append(algorithms, key.algorithm)
+		if !now.After(key.expiresAt) && !slices.Contains(result, key.algorithm) {
+			result = append(result, key.algorithm)
 		}
 	}
-
-	return algorithms
+	return result
 }
 
-// Handler serves the issuer's discovery document and key set.
-//
-// This is the surface that makes Flowstate verifiable by other systems. Mount it
-// at both paths, on the host the issuer URL names:
-//
-//	mux.Handle(auth.DiscoveryPath, issuer.Handler())
-//	mux.Handle(issuer.JWKSPath(), issuer.Handler())
-//
-// Both endpoints are public and must stay public: a relying party fetches them
-// before it has any credential to present, and they contain only public keys.
-// Putting them behind the API's own authentication is the usual reason a working
-// federation setup suddenly stops verifying.
+func (i *Issuer) keyTypes() []string {
+	result := []string{}
+	for _, key := range i.KeySet().Keys {
+		if kty, ok := key[jwk.KeyType].(string); ok && !slices.Contains(result, kty) {
+			result = append(result, kty)
+		}
+	}
+	return result
+}
+
+// Handler serves native metadata, the explicitly labelled OIDC-shaped
+// compatibility document, and JWKS. All are public bootstrap information.
 func (i *Issuer) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -136,26 +128,23 @@ func (i *Issuer) Handler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-
 		var document any
 		switch r.URL.Path {
+		case WorkloadIssuerMetadataPath:
+			document = i.WorkloadMetadata()
 		case DiscoveryPath:
-			document = i.Discovery()
+			document = i.OIDCCompatibility()
 		case i.jwksPath:
 			document = i.KeySet()
 		default:
 			http.NotFound(w, r)
 			return
 		}
-
 		body, err := json.Marshal(document)
 		if err != nil {
-			// Unreachable: both documents are plain strings and maps built from
-			// keys validated when they were created.
 			http.Error(w, "cannot render document", http.StatusInternalServerError)
 			return
 		}
-
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(int(discoveryCacheMaxAge.Seconds())))
 		_, _ = w.Write(body)

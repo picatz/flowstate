@@ -46,20 +46,24 @@ const (
 	DefaultKeyRetention = 24 * time.Hour
 )
 
-// DiscoveryPath is where an [Issuer] publishes its OpenID Provider Metadata,
-// relative to its issuer URL. It is fixed by OpenID Connect Discovery.
+// DiscoveryPath is the OIDC well-known path used by consumers which require an
+// OIDC-shaped workload issuer. The document served there is explicitly not
+// OpenID Provider Metadata; see [OIDCCompatibilityDocument].
 const DiscoveryPath = "/.well-known/openid-configuration"
+
+// builtInAssertionClaims is the public claim vocabulary owned by the mint.
+// Metadata and invariant tests consume this same declaration.
+var builtInAssertionClaims = []string{
+	jwt.Issuer, jwt.Subject, jwt.Audience, jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
+	ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
+	ClaimOnBehalfOf, ClaimOnBehalfOfIssuer, ClaimRunMode,
+}
 
 // reservedClaims are the claims an [Issuer] sets itself. A carried claim may not
 // use one of these names: a workload whose submitting token contained a claim
 // called "sub" must not be able to choose the subject of the assertion Flowstate
 // mints for it.
-var reservedClaims = []string{
-	jwt.Issuer, jwt.Subject, jwt.Audience,
-	jwt.ExpirationTime, jwt.NotBefore, jwt.IssuedAt, jwt.JWTID,
-	ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
-	ClaimOnBehalfOf, ClaimOnBehalfOfIssuer, ClaimRunMode,
-}
+var reservedClaims = builtInAssertionClaims
 
 // Claims an [Issuer] adds to every assertion, beyond the registered JWT claims.
 //
@@ -591,6 +595,8 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		return nil, fmt.Errorf("%w: key set path %q must begin with %q", ErrInvalidPolicy, issuer.jwksPath, "/")
 	case issuer.jwksPath == DiscoveryPath:
 		return nil, fmt.Errorf("%w: key set path must not be the discovery path %q", ErrInvalidPolicy, DiscoveryPath)
+	case issuer.jwksPath == WorkloadIssuerMetadataPath:
+		return nil, fmt.Errorf("%w: key set path must not be the workload metadata path %q", ErrInvalidPolicy, WorkloadIssuerMetadataPath)
 	case issuer.keyRetention < 0:
 		return nil, fmt.Errorf("%w: key retention must not be negative", ErrInvalidPolicy)
 	}

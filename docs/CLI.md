@@ -49,7 +49,7 @@ together.
 ## Just-in-time workload credentials
 
 Prefer federation to a static secret when the downstream system supports token
-exchange or workload identity. Configure `federation.targets` in the same reviewed
+exchange or workload identity. The precise issuer, JWKS, protocol, and cloud-consumer compatibility contract is documented in [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md). Configure `federation.targets` in the same reviewed
 auth policy, give the worker a rotating PKCS#8 signing key, and name the target in
 the HTTP task:
 

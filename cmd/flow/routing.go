@@ -120,6 +120,7 @@ func serverHandler(
 
 	if broker != nil {
 		issuer := broker.Issuer()
+		mux.Handle(auth.WorkloadIssuerMetadataPath, issuer.Handler())
 		mux.Handle(auth.DiscoveryPath, issuer.Handler())
 		mux.Handle(issuer.JWKSPath(), issuer.Handler())
 	}
