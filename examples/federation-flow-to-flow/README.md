@@ -83,7 +83,8 @@ the key):
 
 ```console
 $ flow server --auth-policy examples/federation-flow-to-flow/auth-policy.yaml \
-    --identity-key /etc/flowstate/identity.pem
+    --identity-key /etc/flowstate/identity.pem \
+    --rpc-resource https://flowstate.example.com/rpc
 ```
 
 Deployment A's **worker** runs the workflow and mints the assertion, with the
@@ -100,8 +101,17 @@ Deployment B's **server** authenticates callers against `trust.yaml`, which
 names A's issuer, and fetches A's keys from A's server above:
 
 ```console
-$ flow server --auth-policy examples/federation-flow-to-flow/trust.yaml
+$ flow server --auth-policy examples/federation-flow-to-flow/trust.yaml \
+    --rpc-resource https://flowstate.peer.example.com
 ```
+
+Both servers name an `--rpc-resource`, because both trust an issuer that mints
+bearer tokens and every such server must say which audience its Connect RPC
+surface answers as. B's is the identifier A's `assertion` target already mints
+for — `audience: https://flowstate.peer.example.com`, the same string in
+`trust.yaml`'s `audiences:` — which is the whole federation agreement read from
+one more angle: the assertion A presents to B is spendable at B's RPC surface
+precisely because it names B.
 
 `--deployment-name prod` on A's worker is what makes the assertion carry
 `deployment: prod`, which B's `trust.yaml` requires. A rehearsal has to supply

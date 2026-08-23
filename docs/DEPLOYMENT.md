@@ -322,6 +322,7 @@ worker fleet that serves only that tenant.
 # Server: route each tenant onto its own queue, tenants mapped onto Temporal
 # namespaces by the trust policy's `tenancy:` block.
 $ flow server --auth-policy /etc/flowstate/trust.yaml \
+    --rpc-resource https://flowstate.example.com/rpc \
     --task-queue-prefix flowstate-run
 
 # One fleet per tenant. Each gets that tenant's own egress policy and secrets,
@@ -480,6 +481,7 @@ TEMPORAL_NAMESPACE=production
 FLOWSTATE_DEPLOYMENT_NAME=flowstate
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
 FLOWSTATE_IDENTITY_KEY=/etc/flowstate/identity-2026-07.pem
+FLOWSTATE_RPC_RESOURCE=https://flowstate.example.com/rpc
 ```
 
 `/etc/systemd/system/flowstate-server.service`:
@@ -503,6 +505,13 @@ ProtectSystem=strict
 [Install]
 WantedBy=multi-user.target
 ```
+
+`FLOWSTATE_RPC_RESOURCE` is what this unit's `flow server` binds its Connect
+RPC audience to, and it is required because `policy.yaml` names a `kind: oidc`
+issuer — write the URI clients actually reach this deployment at, and list that
+exact string in the issuer's `audiences:`. A server started without it does not
+run degraded; it refuses to start, which on this shape is a unit that fails and
+a message in `journalctl -u flowstate-server`.
 
 `FLOWSTATE_ADDRESS=127.0.0.1:9233` above is loopback, so `flow server` needs
 no TLS configuration of its own to start — [blockers](#blockers) below is
