@@ -129,22 +129,28 @@ type TokenExchangeConfig struct {
 	// Timeout bounds a single exchange. Defaults to [DefaultExchangeTimeout].
 	Timeout time.Duration
 
+	// MaxCredentialLifetime is the longest lifetime Flowstate will accept from
+	// this target. Defaults to [DefaultMaxCredentialLifetime]. The provider must
+	// still return expires_in; this is not a fallback expiry.
+	MaxCredentialLifetime time.Duration
+
 	// Clock is used for credential expiry. It exists for tests.
 	Clock func() time.Time
 }
 
 // tokenExchanger implements RFC 8693 token exchange.
 type tokenExchanger struct {
-	name      string
-	tokenURL  string
-	audience  string
-	target    string
-	resource  string
-	scopes    []string
-	tokenType string
-	delegator DelegatorTokenFunc
-	client    *exchangeClient
-	clock     func() time.Time
+	name        string
+	tokenURL    string
+	audience    string
+	target      string
+	resource    string
+	scopes      []string
+	tokenType   string
+	delegator   DelegatorTokenFunc
+	client      *exchangeClient
+	clock       func() time.Time
+	maxLifetime time.Duration
 }
 
 // NewTokenExchanger returns an [Exchanger] that performs RFC 8693 token exchange.
@@ -170,18 +176,26 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 	if clock == nil {
 		clock = time.Now
 	}
+	maxLifetime := cfg.MaxCredentialLifetime
+	if maxLifetime == 0 {
+		maxLifetime = DefaultMaxCredentialLifetime
+	}
+	if maxLifetime < time.Second || maxLifetime > MaxCredentialLifetime {
+		return nil, fmt.Errorf("%w: %s exchanger maximum credential lifetime must be between one second and %s", ErrInvalidPolicy, name, MaxCredentialLifetime)
+	}
 
 	return &tokenExchanger{
-		name:      name,
-		tokenURL:  cfg.TokenURL,
-		audience:  cfg.Audience,
-		target:    cfg.TargetAudience,
-		resource:  cfg.Resource,
-		scopes:    cfg.Scopes,
-		tokenType: tokenType,
-		delegator: cfg.Delegator,
-		client:    newExchangeClient(cfg.HTTPClient, cfg.Timeout),
-		clock:     clock,
+		name:        name,
+		tokenURL:    cfg.TokenURL,
+		audience:    cfg.Audience,
+		target:      cfg.TargetAudience,
+		resource:    cfg.Resource,
+		scopes:      cfg.Scopes,
+		tokenType:   tokenType,
+		delegator:   cfg.Delegator,
+		client:      newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		clock:       clock,
+		maxLifetime: maxLifetime,
 	}, nil
 }
 
@@ -241,7 +255,7 @@ func (e *tokenExchanger) Exchange(ctx context.Context, assertion Assertion) (Cre
 		return Credential{}, err
 	}
 
-	return response.credential(e.name, e.name, assertion, e.clock(), DefaultCredentialLifetime)
+	return response.credential(e.name, e.name, assertion, e.clock(), e.maxLifetime)
 }
 
 // delegate rewrites form into RFC 8693's delegation shape: the delegator's
@@ -329,6 +343,9 @@ type ClientCredentialsConfig struct {
 	HTTPClient *http.Client
 	Timeout    time.Duration
 	Clock      func() time.Time
+	// MaxCredentialLifetime has the same fail-closed semantics as in
+	// [TokenExchangeConfig].
+	MaxCredentialLifetime time.Duration
 }
 
 // clientCredentialsExchanger implements the client credentials grant.
@@ -350,9 +367,10 @@ type clientCredentialsExchanger struct {
 	// replace.
 	secret Material
 
-	scopes []string
-	client *exchangeClient
-	clock  func() time.Time
+	scopes      []string
+	client      *exchangeClient
+	clock       func() time.Time
+	maxLifetime time.Duration
 }
 
 // NewClientCredentialsExchanger returns an [Exchanger] that performs an OAuth 2.0
@@ -380,16 +398,24 @@ func NewClientCredentialsExchanger(cfg ClientCredentialsConfig) (Exchanger, erro
 	if clock == nil {
 		clock = time.Now
 	}
+	maxLifetime := cfg.MaxCredentialLifetime
+	if maxLifetime == 0 {
+		maxLifetime = DefaultMaxCredentialLifetime
+	}
+	if maxLifetime < time.Second || maxLifetime > MaxCredentialLifetime {
+		return nil, fmt.Errorf("%w: %s exchanger maximum credential lifetime must be between one second and %s", ErrInvalidPolicy, name, MaxCredentialLifetime)
+	}
 
 	return &clientCredentialsExchanger{
-		name:     name,
-		tokenURL: cfg.TokenURL,
-		clientID: cfg.ClientID,
-		audience: audience,
-		secret:   NewSingleMaterial(cfg.ClientSecret),
-		scopes:   cfg.Scopes,
-		client:   newExchangeClient(cfg.HTTPClient, cfg.Timeout),
-		clock:    clock,
+		name:        name,
+		tokenURL:    cfg.TokenURL,
+		clientID:    cfg.ClientID,
+		audience:    audience,
+		secret:      NewSingleMaterial(cfg.ClientSecret),
+		scopes:      cfg.Scopes,
+		client:      newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		clock:       clock,
+		maxLifetime: maxLifetime,
 	}, nil
 }
 
@@ -440,5 +466,5 @@ func (e *clientCredentialsExchanger) Exchange(ctx context.Context, assertion Ass
 		return Credential{}, err
 	}
 
-	return response.credential(e.name, e.name, assertion, e.clock(), DefaultCredentialLifetime)
+	return response.credential(e.name, e.name, assertion, e.clock(), e.maxLifetime)
 }

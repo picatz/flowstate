@@ -371,6 +371,7 @@ func TestAWSExchanger(t *testing.T) {
 	exchanger, err := auth.NewAWSExchanger(auth.AWSConfig{
 		RoleARN:  "arn:aws:iam::123456789012:role/flowstate",
 		Endpoint: party.url + "/",
+		Duration: time.Hour,
 		Clock:    clock.Now,
 	})
 	require.NoError(t, err)
@@ -386,7 +387,7 @@ func TestAWSExchanger(t *testing.T) {
 	require.Equal(t, "AssumeRoleWithWebIdentity", sent.form.Get("Action"))
 	require.Equal(t, "arn:aws:iam::123456789012:role/flowstate", sent.form.Get("RoleArn"))
 	require.Equal(t, assertion.Token(), sent.form.Get("WebIdentityToken"))
-	require.Equal(t, "900", sent.form.Get("DurationSeconds"))
+	require.Equal(t, "3600", sent.form.Get("DurationSeconds"))
 
 	// The session name is what appears in CloudTrail, so it has to be derived from
 	// the workload and legal for AWS at the same time.

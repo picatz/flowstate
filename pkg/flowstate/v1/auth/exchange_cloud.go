@@ -162,7 +162,6 @@ func NewAWSExchanger(cfg AWSConfig) (Exchanger, error) {
 	if clock == nil {
 		clock = time.Now
 	}
-
 	return &awsExchanger{
 		name:       name,
 		roleARN:    cfg.RoleARN,
@@ -233,11 +232,10 @@ func (e *awsExchanger) Exchange(ctx context.Context, assertion Assertion) (Crede
 		return Credential{}, fmt.Errorf("%w: %s returned incomplete session credentials", ErrExchangeFailed, e.name)
 	}
 
+	now := e.clock()
 	expiresAt := credentials.Expiration
-	if expiresAt.IsZero() {
-		// AWS always reports an expiry; assuming a short one is safer than
-		// treating an unreported expiry as no expiry.
-		expiresAt = e.clock().Add(awsMinDuration)
+	if expiresAt.IsZero() || !expiresAt.After(now) || expiresAt.After(now.Add(e.duration)) {
+		return Credential{}, fmt.Errorf("%w: %s reported an invalid session expiration", ErrExchangeFailed, e.name)
 	}
 
 	credential, err := NewCredential(CredentialAWSSession, expiresAt, map[string]string{
@@ -450,6 +448,9 @@ func NewGCPExchanger(cfg GCPConfig) (Exchanger, error) {
 	if cfg.Audience == "" {
 		return nil, fmt.Errorf("%w: %s exchanger needs the workload identity pool provider as its audience", ErrInvalidPolicy, name)
 	}
+	if cfg.Lifetime < 0 || cfg.Lifetime > time.Hour {
+		return nil, fmt.Errorf("%w: %s exchanger service account lifetime must be positive and no more than one hour", ErrInvalidPolicy, name)
+	}
 
 	endpoint := cfg.Endpoint
 	if endpoint == "" {
@@ -575,13 +576,20 @@ func (e *gcpExchanger) impersonate(ctx context.Context, assertion Assertion, fed
 		return Credential{}, fmt.Errorf("%w: %s returned no service account token", ErrExchangeFailed, e.name)
 	}
 
-	expiresAt := e.clock().Add(time.Hour)
-	if response.ExpireTime != "" {
-		parsed, err := time.Parse(time.RFC3339, response.ExpireTime)
-		if err != nil {
-			return Credential{}, fmt.Errorf("%w: %s reported an unparseable expiry: %w", ErrExchangeFailed, e.name, err)
-		}
-		expiresAt = parsed
+	if response.ExpireTime == "" {
+		return Credential{}, fmt.Errorf("%w: %s returned no service account token expiry", ErrExchangeFailed, e.name)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, response.ExpireTime)
+	if err != nil {
+		return Credential{}, fmt.Errorf("%w: %s reported an unparseable expiry: %w", ErrExchangeFailed, e.name, err)
+	}
+	now := e.clock()
+	maxLifetime := e.lifetime
+	if maxLifetime == 0 {
+		maxLifetime = time.Hour
+	}
+	if !expiresAt.After(now) || expiresAt.After(now.Add(maxLifetime)) {
+		return Credential{}, fmt.Errorf("%w: %s reported an invalid service account token expiry", ErrExchangeFailed, e.name)
 	}
 
 	credential, err := NewCredential(CredentialBearer, expiresAt, map[string]string{

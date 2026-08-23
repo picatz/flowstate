@@ -270,11 +270,15 @@ const (
 	// re-exchanged, so a credential handed to a caller has time left to be used.
 	DefaultRefreshMargin = time.Minute
 
-	// DefaultCredentialLifetime is assumed when a relying party returns a
-	// credential without saying when it expires. It is short, because guessing
-	// long about a credential's lifetime means using one after it has stopped
-	// working, or worse, believing a long-lived one is short-lived.
-	DefaultCredentialLifetime = 15 * time.Minute
+	// DefaultMaxCredentialLifetime is the default policy ceiling for OAuth
+	// credentials. Providers must report their actual lifetime; this value is a
+	// ceiling, never a substitute for missing expiry metadata.
+	DefaultMaxCredentialLifetime = time.Hour
+
+	// MaxCredentialLifetime is the hard safety bound for configurable OAuth
+	// credential lifetime policies. Longer bearer credentials are standing-grant
+	// shaped and must use a different, explicitly designed protocol.
+	MaxCredentialLifetime = 24 * time.Hour
 
 	// DefaultMaxCachedCredentials bounds the credential cache. Every workflow and
 	// step is a distinct identity, so an unbounded cache in a long-running worker
@@ -441,7 +445,7 @@ type tokenResponse struct {
 }
 
 // credential converts a token endpoint response into a bearer credential.
-func (r tokenResponse) credential(provider, target string, assertion Assertion, now time.Time, fallbackLifetime time.Duration) (Credential, error) {
+func (r tokenResponse) credential(provider, target string, assertion Assertion, now time.Time, maxLifetime time.Duration) (Credential, error) {
 	if r.AccessToken == "" {
 		return Credential{}, fmt.Errorf("%w: %s returned no access token", ErrExchangeFailed, provider)
 	}
@@ -453,10 +457,19 @@ func (r tokenResponse) credential(provider, target string, assertion Assertion, 
 			ErrExchangeFailed, provider, truncate(r.TokenType, 32))
 	}
 
-	lifetime := fallbackLifetime
-	if r.ExpiresIn > 0 {
-		lifetime = time.Duration(r.ExpiresIn) * time.Second
+	if maxLifetime <= 0 {
+		return Credential{}, fmt.Errorf("%w: %s has no positive credential lifetime policy", ErrExchangeFailed, provider)
 	}
+	// Check in seconds before converting: time.Duration multiplication otherwise
+	// wraps, potentially turning an attacker-controlled lifetime into a plausible
+	// expiry. Zero also covers an omitted expires_in; opaque bearer tokens provide
+	// no other expiry Flowstate can validate, so no expiry is manufactured.
+	maxSeconds := int64(maxLifetime / time.Second)
+	if r.ExpiresIn <= 0 || r.ExpiresIn > int64(^uint64(0)>>1)/int64(time.Second) || r.ExpiresIn > maxSeconds {
+		return Credential{}, fmt.Errorf("%w: %s reported invalid expires_in %d (policy maximum %s)",
+			ErrExchangeFailed, provider, r.ExpiresIn, maxLifetime)
+	}
+	lifetime := time.Duration(r.ExpiresIn) * time.Second
 
 	credential, err := NewCredential(CredentialBearer, now.Add(lifetime), map[string]string{
 		CredentialAccessToken: r.AccessToken,
