@@ -177,7 +177,16 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		result, spec, transcript, account := schedules.run(ctx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
-				return runCase(ctx, &test, l.deliveryPath, l.load, !opts.skipTranscript)
+				// The account is recorded only for the run whose account is
+				// kept: [scheduleAccumulator.run] retains the written-order
+				// baseline's and discards every seeded one, so recording
+				// through ten thousand seeds would clone and render for
+				// nothing (Codex, #1052). The discriminator is the same one
+				// schedules.run itself keeps the baseline by, and a default
+				// unexplored run has no scheduler on its context, which reads
+				// as written order.
+				record := !opts.skipTranscript && v1.SchedulerFromContext(ctx) == v1.WrittenOrder
+				return runCase(ctx, &test, l.deliveryPath, l.load, record)
 			})
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, account)

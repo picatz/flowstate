@@ -80,6 +80,26 @@ func TestByteBudgetLatchesLikeTheEventBound(t *testing.T) {
 		"nothing records past a tripped bound; a hole mid-account would belie the truncation line")
 }
 
+// TestAFirstEventOverBudgetStillRendersTheTruncationLine pins round
+// eleven's finding: an account emptied by its own bound must still say so —
+// zero events with a tripped latch renders the truncation sentence, never
+// nothing.
+func TestAFirstEventOverBudgetStillRendersTheTruncationLine(t *testing.T) {
+	t.Parallel()
+
+	r := newRunRecorder(v1.NewVirtualClock(epoch))
+	r.StepFinished("giant", &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+		"blob": v1.NewLiteral(strings.Repeat("x", maxTranscriptOutputBytes+1)),
+	}}, nil, false)
+
+	require.True(t, r.bytesFull)
+	require.Empty(t, r.events)
+
+	lines := r.render()
+	require.Len(t, lines, 1, "the discarded account's one line is the sentence explaining the discard")
+	require.Contains(t, lines[0].Text, "truncated")
+}
+
 // TestFailureTextCountsAgainstTheByteBudget pins round nine's first P1: a
 // tolerated failure's message is a string the event retains just as surely
 // as cloned outputs, and a budget counting only protobuf bytes let repeated

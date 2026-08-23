@@ -336,7 +336,12 @@ func (r *runRecorder) render() []TranscriptLine {
 	switches := r.switches
 	r.mu.Unlock()
 
-	if len(events) == 0 {
+	// An empty account renders nothing — unless a bound is what emptied it:
+	// a first event already over the byte budget records zero events AND
+	// trips the latch, and suppressing the truncation line there shows a
+	// failing case no transcript at all instead of the sentence explaining
+	// that its account was discarded at the bound (Codex, #1052).
+	if len(events) == 0 && !eventsFull && !bytesFull {
 		return nil
 	}
 

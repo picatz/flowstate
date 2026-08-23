@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -761,6 +762,45 @@ tests:
 	assert.NotContains(t, failing, `stub 1 (task "log")`,
 		"the failing attempt was answered by nothing; attributing it to the drained stub would be a false claim")
 	assert.Contains(t, failing, "drained", "the diagnostic's own account of the drained stub stands")
+}
+
+// TestTranscriptSurvivesSeededExploration guards the direction of the
+// only-record-the-baseline optimization (Codex, #1052): seeded runs record no
+// account, and the written-order baseline — the one run whose account is
+// kept — still must.
+func TestTranscriptSurvivesSeededExploration(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: greet
+steps:
+  - id: hello
+    log:
+      message: hi
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: explored and accounted
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [hello]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Budget: dst.Budget{Schedules: 2, Seed0: 1}})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	require.Len(t, result.Transcripts, 1)
+	require.NotEmpty(t, result.Transcripts[0],
+		"the written-order baseline's account is the kept one, and exploration must not cost it")
+	assert.Contains(t, transcriptText(result.Transcripts[0]), "hello")
 }
 
 // TestTranscriptOfAFailingRunEndsOnTheFailure: the account a failing case
