@@ -32,6 +32,18 @@ hides. That would end the run FAILED with nobody asked, so the loop step carries
 `continue_on_error:`, which turns exhaustion into the path where `handoff`
 happens. The human is a step, not a bolt-on.
 
+**The budget is one, and that is the tooling's limit rather than a taste.** A
+second attempt cannot work today: `codex.exec` computes its `patch` by diffing
+`working_context` against the state it observed before the turn, and it fails
+closed when that workspace starts dirty. Attempt one's edits are still sitting in
+the workspace — nothing reverts them, and `git.commit_push` operates on its own
+in-memory clone rather than on that directory — so attempt two would receive an
+empty patch and be refused for having nothing to commit. There is no input that
+resets a working context, so the loop is kept (it is the shape that generalizes,
+and with a budget of one it is still what turns "did not fix it" into a handoff)
+and the number is the one thing that changes when that gap closes. See *What is
+still missing*.
+
 **The patch is a value.** `codex.exec` edits a workspace and emits a `patch` — a
 unified diff of what it changed; `git.commit_push` applies that `patch`. Neither
 plugin knows the other exists, and the type check that they agree happens before
@@ -73,8 +85,8 @@ In CI, and on any machine, with no plugin, no model, no forge and no network:
 $ flow test examples/plugins/agentic-fix/
 ```
 
-Five cases: fixed on the second attempt; five attempts and a person takes over;
-five attempts and nobody answers the gate either; an attempt that fails outright
+Five cases: the one attempt fixes the build; it does not and a person takes over;
+it does not and nobody answers the gate either; an attempt that fails outright
 (the gateway down) reaching the same person by a different road; and a build that
 is already green, left untouched with nobody asked. The failure cases are why the
 attempt count is read through a `has(steps.attempt)` guard: a loop that spends
@@ -84,6 +96,10 @@ at all — so the run reports zero attempts rather than failing while evaluating
 own report. Everything except the four effects runs for real — the loop, the
 carried state, the budget, the `if:`, the gate and its 24-hour deadline, which
 passes in microseconds on the virtual clock.
+
+No case scripts a second attempt, deliberately: the installed plugin could not
+produce one, and a stub that pretended otherwise would be asserting behavior the
+real task cannot deliver.
 
 For real, this file needs both plugins built and a worker told where they are,
 the two secrets, a CI endpoint that answers `passed`, and two pieces of setup the
@@ -125,14 +141,30 @@ $ flow signal <run-id> human-review --payload '{"taken_over": true}'
 
 ## What is still missing
 
-One thing this file cannot yet express, named rather than faked: keeping the
-`workspace` in step with the commit each attempt is computed against. The agent
-edits whatever the operator's `working_context` holds, and `git.commit_push`
-applies the resulting `patch` against `base` — so if the workspace does not track
-`base` across attempts, a later patch may not apply. A production version would
-re-checkout the workspace at `base` before each turn; there is no task that does
-that today, so the example assumes a workspace at the tip being fixed and leaves
-the per-attempt refresh as the gap.
+**A way to reset a working context between turns**, and it is what caps the
+budget at one rather than five.
+
+`codex.exec` produces its `patch` by diffing `working_context` against a baseline
+it reads before the turn, and it fails closed — no patch at all — when that
+baseline is already dirty (`plugins/codex/diff.go`, `computePatch`:
+`!baseline.observed || baseline.dirty`). Attempt one leaves its own edits in the
+workspace. Nothing in this workflow can revert them: `git.commit_push` builds its
+commit in an in-memory clone and never touches that directory, and `ExecInputs`
+has no field that re-checks-out, cleans, or otherwise resets a working context.
+So attempt two would start dirty, get an empty `patch`, and be refused by
+`git.commit_push`, which requires files or a patch.
+
+That is why this example ships one attempt and says so, rather than shipping five
+and stubbing a patch the installed plugin could never emit. What would close it
+is a way to hand a turn a clean tree at a named commit — an input on `codex.exec`,
+or a separate task that materializes a workspace — at which point the only change
+here is the number in `max_iterations:`. Tracked against
+[#179](https://github.com/picatz/flowstate/issues/179)'s fourth showcase file,
+whose "five tries" sketch needs it.
+
+The related, smaller gap: even with a reset, each turn's tree would have to be the
+commit that attempt is computed against (`base`), not the branch tip, so the
+refresh has to take a sha.
 
 ## Why it sits here
 

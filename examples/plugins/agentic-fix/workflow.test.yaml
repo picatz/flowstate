@@ -10,12 +10,20 @@
 # processes is still a workflow a laptop with no credentials can hold to its
 # behavior.
 #
-# The scripted forge is keyed on the loop's carried state — `prior.base` and
-# `prior.n`, which a stub's `where:` and `returns:` can both read, because they
-# are evaluated in the scope of the step being replaced. So each attempt's push
-# answers with a distinct sha, and the scripted CI answers per sha. Without that,
-# every attempt would be indistinguishable and "fixed on the second try" would
-# not be a claim this file could make.
+# What a stub here may *not* do is answer with a shape the real task could not
+# produce. The workflow's budget is one attempt because `codex.exec` fails closed
+# on a workspace that starts dirty and nothing can reset one between turns (see
+# the workflow header), so these cases script exactly one turn per run — a case
+# that stubbed a second attempt's patch would be asserting behavior the installed
+# plugin cannot deliver, which is the failure this file exists not to hide.
+#
+# The scripted forge is still keyed on the loop's carried state — `prior.base`
+# and `prior.n`, which a stub's `where:` and `returns:` can both read, because
+# they are evaluated in the scope of the step being replaced — and the scripted
+# CI is keyed on the sha it is asked about. With one attempt the keying proves a
+# narrower thing than it used to, but the thing it proves is the one that
+# matters: `verify` asks about the sha `apply` actually returned, not about a
+# branch name.
 edition: v2026.3
 
 defaults:
@@ -28,7 +36,7 @@ defaults:
       returns: {}
 
 tests:
-  - name: the second attempt passes, and nobody is asked anything
+  - name: the one attempt fixes the build, and nobody is asked anything
     workflow: ./workflow.yaml
     # Bound at the reference boundary, exactly as tasks are bound at the task
     # boundary: no `env:` or `git:` provider is configured in this process, and
@@ -49,23 +57,17 @@ tests:
           patch: "--- a/x\n+++ b/x\n"
           final_message: narrowed the failure to one assertion
           output_tokens: 812
-      # One push per attempt, answering with the sha that attempt produced. The
-      # `where:` reads the base this attempt was computed against, which is what
-      # makes the chain sha-0 -> sha-1 -> sha-2 an assertion rather than a
-      # coincidence: an `apply` that ignored the carried state and always pushed
-      # against the branch tip would match the first stub every time.
+      # The push, answering with the sha this attempt produced. The `where:`
+      # reads the base the attempt was computed against, so an `apply` that
+      # ignored the carried state and pushed against something else would not
+      # match at all.
       - task: git.commit_push
         where: "prior.base == 'sha-0'"
         returns:
           sha: sha-1
-      - task: git.commit_push
-        where: "prior.base == 'sha-1'"
-        returns:
-          sha: sha-2
-      # The scripted CI. Keyed on the commit it was asked about, which is the
-      # point of `verify` being called with `${steps.apply.sha}`: a workflow that
-      # verified a branch name instead would ask about the same thing every time
-      # and this stub could not tell the attempts apart.
+      # The scripted CI, keyed on the commit it was asked about — which is the
+      # point of `verify` being called with `${steps.apply.sha}`. The initial run
+      # at the tip fails; the run at the commit the agent pushed passes.
       - task: http
         where: "inputs.json.ref == 'sha-0'"
         returns:
@@ -74,26 +76,21 @@ tests:
       - task: http
         where: "inputs.json.ref == 'sha-1'"
         returns:
-          passed: false
-          output: "FAIL TestCheckout/expired_card (still)"
-      - task: http
-        where: "inputs.json.ref == 'sha-2'"
-        returns:
           passed: true
           output: ""
     expect:
-      ran: [tip, failing, attempt, unresolved, spent, report]
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, report]
       # The gate is not reached at all, which is the difference between "a person
       # approved this" and "nobody had to be asked".
       skipped: [handoff]
       outputs:
-        attempts: 2
+        attempts: 1
         fixed: true
-        fix_ref: sha-2
+        fix_ref: sha-1
         handed_off: false
         taken_over: false
 
-  - name: five attempts do not fix it and a person takes the work
+  - name: the one attempt does not fix it and a person takes the work
     workflow: ./workflow.yaml
     secrets:
       env:OPENAI_API_KEY: not-a-real-key
@@ -116,8 +113,6 @@ tests:
           patch: "--- a/x\n+++ b/x\n"
           final_message: another guess
           output_tokens: 640
-      # A distinct sha per attempt, computed from the attempt counter the loop
-      # carries — an expression rather than five stubs.
       - task: git.commit_push
         returns:
           sha: '${"sha-%d".format([prior.n + 1])}'
@@ -132,18 +127,18 @@ tests:
       # without `until:` holding, which the language treats as a distinct failure
       # rather than a quiet stop. `continue_on_error:` is what turns it into the
       # branch below rather than into a FAILED run with nobody asked.
-      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
       outputs:
-        attempts: 5
+        attempts: 1
         fixed: false
-        # Empty rather than the last sha: nothing here was verified as fixing
-        # anything, and reporting the last commit as the fix would be a claim
+        # Empty rather than the sha that was pushed: nothing here was verified as
+        # fixing anything, and reporting that commit as the fix would be a claim
         # about a test run that failed.
         fix_ref: ""
         handed_off: true
         taken_over: true
 
-  - name: the budget runs out and nobody answers the gate either
+  - name: the attempt does not fix it and nobody answers the gate either
     workflow: ./workflow.yaml
     secrets:
       env:OPENAI_API_KEY: not-a-real-key
@@ -171,9 +166,9 @@ tests:
           passed: false
           output: "FAIL TestCheckout/expired_card"
     expect:
-      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
       outputs:
-        attempts: 5
+        attempts: 1
         fixed: false
         fix_ref: ""
         handed_off: true
@@ -196,9 +191,9 @@ tests:
             - name: refs/heads/agent/fix
               sha: sha-0
       # The gateway is down. The turn is not retried (`attempts: 1`), so the
-      # first attempt fails part way through the body rather than producing a
-      # verdict — a different failure from spending the budget, and the one that
-      # publishes no `results` for the loop at all.
+      # attempt fails part way through the body rather than producing a verdict —
+      # a different failure from spending the budget, and the one that publishes
+      # no `results` for the loop at all.
       - task: codex.exec
         fails:
           kind: Upstream
@@ -208,7 +203,7 @@ tests:
           passed: false
           output: "FAIL TestCheckout/expired_card"
     expect:
-      ran: [tip, failing, attempt, unresolved, spent, handoff, report]
+      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
       # `apply` and `verify` never happen: the attempt died before either.
       skipped: [apply, verify]
       outputs:
@@ -243,7 +238,7 @@ tests:
           passed: true
           output: ""
     expect:
-      ran: [tip, failing, unresolved, spent, report]
+      ran: [tip, base_sha, failing, attempted, unresolved, spent, fixed_sha, report]
       # `attempt` never runs (the build is good), so neither does the gate.
       skipped: [attempt, handoff]
       outputs:

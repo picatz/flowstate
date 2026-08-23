@@ -1,4 +1,4 @@
-# An agent gets five tries at a broken build, and then a person does.
+# An agent gets one bounded try at a broken build, and then a person does.
 #
 # This is #179's fourth showcase file, and the reason it is worth having as an
 # example rather than as a blog post is that every hard part of it is a property
@@ -19,11 +19,11 @@
 #   * verification binds to content. `verify` is called with the sha the push
 #     produced, never with a branch name, so what was tested is what was written;
 #   * the budget is real, and running out of it is an outcome rather than a
-#     crash. Five attempts, then a human — as a step, not as a bolt-on.
+#     crash. One attempt, then a human — as a step, not as a bolt-on.
 #
 # The shape of the loop is the part to copy. `until: ${steps.verify.passed}` is
 # checked after the body, so an attempt always happens before anything decides
-# whether another one is needed, and `max_iterations: 5` is what makes "an agent
+# whether another one is needed, and `max_iterations:` is what makes "an agent
 # tries until it works" a promise the engine can keep. A loop that spends its
 # whole budget without its `until:` holding *fails* — that is the language's rule,
 # not this file's — so `continue_on_error:` on the loop step is what turns
@@ -32,10 +32,24 @@
 # for what a tolerated exhaustion leaves in scope: `results` for every attempt
 # that ran, and `error` for the budget having been spent.
 #
-# What each attempt learns from the last one is carried state: the failure text
-# the previous verification produced, and the commit that attempt wrote. So the
-# second prompt is about the second failure, and the second patch is computed
-# against the first patch's tree rather than against the branch this started on.
+# **The budget is one, and that is a limit of the tooling rather than a taste.**
+# An earlier version of this file gave the agent five tries, and it could not have
+# worked: `codex.exec` computes its `patch` by diffing `working_context` against
+# the state it observed *before* the turn, and it fails closed when that workspace
+# starts dirty (`plugins/codex/diff.go`, `computePatch`: `!baseline.observed ||
+# baseline.dirty` means no patch). Attempt one leaves its own edits in the
+# workspace — nothing here reverts them, and `git.commit_push` works on its own
+# in-memory clone rather than on that directory — so attempt two would start
+# dirty, receive an empty `patch`, and be refused by `git.commit_push`, which
+# requires files or a patch. There is no input on `codex.exec` that resets or
+# re-checks-out a working context, so a second attempt is not expressible today.
+#
+# What is kept is the loop and its carried state — the failure text and the commit
+# to compute the next patch against — because that is the shape that generalizes
+# the day a workspace-reset capability exists, and because with a budget of one it
+# still does real work: it is what makes "the attempt did not fix it" an
+# *exhaustion* the file turns into a human handoff rather than a crash. The number
+# is the only thing that has to change when the gap closes.
 #
 # This directory sits under `examples/plugins/` because it names tasks two
 # plugins provide, and a `flow` that has not loaded them is *supposed* to refuse
@@ -46,7 +60,7 @@
 # plugin, no model, no forge and no network, by stubbing at the task boundary.
 edition: v2026.3
 name: agentic-fix
-description: Gives an agent five durable attempts at making a failing test suite pass — each one a real commit, each one verified at the sha it produced — and hands the work to a person when the budget runs out.
+description: Gives an agent one bounded, durable attempt at making a failing test suite pass — a real commit, verified at the sha it produced — and hands the work to a person when that attempt does not fix it.
 # The floor each plugin has to meet, resolved against what the deployment
 # actually has before a run is accepted, so a mismatch is refused at submit with
 # a sentence naming what is installed rather than discovered as a missing task
@@ -79,10 +93,11 @@ inputs:
     # The directory `codex.exec` is given as its working directory, where the
     # agent edits files and from which its `patch` is diffed. It must resolve
     # inside the root an operator configured with FLOWSTATE_CODEX_WORKDIR_ROOT
-    # (see the codex plugin), and it is assumed to be a checkout of `repo` at the
-    # commit being fixed. Keeping it in step with `base` across attempts is the
-    # one thing this file cannot yet express — see the README's "What is still
-    # missing".
+    # (see the codex plugin), and it must be a *clean* checkout of `repo` at the
+    # commit being fixed: `codex.exec` diffs the workspace against the state it
+    # observed before the turn and fails closed — no patch at all — when that
+    # baseline is dirty. That requirement is also why the attempt budget is one;
+    # see the header and the README's "What is still missing".
     description: the checkout the agent edits; codex.exec's working_context, operator-rooted
     example: repo
 steps:
@@ -138,10 +153,14 @@ steps:
       # Checked after the body, which is what makes an attempt always happen and
       # lets the condition read the verification that attempt produced.
       until: ${steps.verify.passed}
-      # The five tries. A ceiling rather than a hope: `until:` is a promise this
-      # loop cannot keep on its own, since nothing here can make a model
-      # eventually succeed.
-      max_iterations: 5
+      # One try. A ceiling rather than a hope — `until:` is a promise this loop
+      # cannot keep on its own, since nothing here can make a model eventually
+      # succeed — and one rather than five because a second attempt cannot work
+      # today: `codex.exec` fails closed on a workspace that starts dirty, and
+      # attempt one's own edits are still sitting in `working_context` with no
+      # input on that task to reset it. See the header for the full account.
+      # Raising this number is the entire change the day that gap closes.
+      max_iterations: 1
       steps:
         - id: propose
           description: One bounded agentic turn that edits the workspace and emits a patch of what it changed.
