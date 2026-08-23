@@ -201,7 +201,14 @@ steps:
             # not) and the shape is checked in the body, where a bad reading can
             # do something better than fail: see `readable` below.
             method: GET
-            # Presence-guarded for the reason run-tests.yaml's outputs are:
+            # The root is checked before either field is selected. `has(a.b)`
+            # selects on `a` in order to answer, so a body that is not an object
+            # at all - `[]`, `null`, a bare string from a proxy's error page -
+            # errors rather than answering false. `type(response.json) ==
+            # type({})` is the outermost guard and `&&` short-circuits, so
+            # nothing is ever selected on a non-object.
+            #
+            # Presence-guarded, for the reason run-tests.yaml's outputs are:
             # `type(x)` evaluates x, and a control plane that omitted a field
             # would fail this step on a missing key rather than reaching
             # `readable` below. The substitutes are chosen to *fail* that check -
@@ -209,8 +216,8 @@ steps:
             # the same path as a malformed one: this pass decides nothing and the
             # next resync reads again.
             outputs:
-              replicas: "${has(response.json.replicas) ? response.json.replicas : -1}"
-              retired: '${has(response.json.retired) ? response.json.retired : "absent"}'
+              replicas: "${(type(response.json) == type({}) && has(response.json.replicas)) ? response.json.replicas : -1}"
+              retired: '${(type(response.json) == type({}) && has(response.json.retired)) ? response.json.retired : "absent"}'
             parse_json: true
             query: '${{"name": inputs.target}}'
             url: https://control-plane.internal.example.com/workloads/status

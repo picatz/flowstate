@@ -41,14 +41,22 @@ steps:
       # be *written back* to the world; here it only decides whether to keep
       # trying.)
       outputs:
-        # `has()` before `type()`, because `type(x)` evaluates x first and a
+        # Root first, then presence, then shape. `has(a.b)` selects on `a` in
+        # order to answer, so a body that is not an object at all - `[]`, `null`,
+        # a bare string from a proxy - errors rather than answering false. The
+        # outermost `type(response.json) == type({})` is what makes the rest
+        # safe, and `&&` short-circuits so nothing is selected on a non-object.
+        #
+        # Then `has()` before `type()`, because `type(x)` evaluates x first and a
         # missing key is an *error*, not a type. A passing suite that omits
         # `output` entirely would otherwise fail this step permanently on the
         # very first call - before the repair loop or the human handoff could
         # run. Presence, then shape, then the value; anything short of all three
         # reads as "no pass", which is the safe direction.
-        output: '${(has(response.json.output) && type(response.json.output) == type("")) ? response.json.output : ""}'
-        passed: ${has(response.json.passed) && type(response.json.passed) == type(true) && response.json.passed}
+        output: '${(type(response.json) == type({}) && has(response.json.output) && type(response.json.output) == type("")) ? response.json.output : ""}'
+        passed: |-
+          ${type(response.json) == type({}) && has(response.json.passed) && type(response.json.passed) == type(true) &&
+          response.json.passed}
       parse_json: true
       url: https://ci.internal.example.com/test-runs
 outputs:
