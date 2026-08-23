@@ -291,6 +291,11 @@ func (e *tokenExchanger) Exchange(ctx context.Context, assertion Assertion) (Cre
 		return Credential{}, err
 	}
 
+	// The per-target ceiling from TokenExchangeConfig.MaxCredentialLifetime,
+	// resolved once at construction by credentialLifetimeCeiling. The strict
+	// decoder above validates the *shape* of the response; how long a credential
+	// from this target may live is the operator's decision, and there is exactly
+	// one place it is written down.
 	return response.credential(e.name, e.name, assertion, e.clock(), e.maxLifetime)
 }
 
@@ -298,20 +303,48 @@ func (e *tokenExchanger) Exchange(ctx context.Context, assertion Assertion) (Cre
 // responses have stronger requirements than the other OAuth grants supported
 // by this package, and sharing the permissive decoder made absent fields and
 // transformed grants indistinguishable from valid answers.
+//
+// Every field RFC 8693 section 2.2.1 defines is declared here, including the
+// ones this profile *drops* rather than uses, so that DisallowUnknownFields
+// keeps its job — refusing extensions nobody here has reasoned about, such as
+// authorization_details or cnf — without also refusing a compliant
+// authorization server that returned a member the RFC defines. A refresh token
+// is dropped because this profile re-exchanges the assertion rather than
+// refreshing it.
 type tokenExchangeResponse struct {
 	AccessToken     string `json:"access_token"`
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int64  `json:"expires_in"`
-	Scope           string `json:"scope,omitempty"`
+
+	// Scope is held raw rather than as a string because this decoder has to
+	// tell an *omitted* scope from an explicitly empty one, and a string
+	// cannot: `"scope": ""`, `"scope": null` and no scope member at all all
+	// decode to "". Only omission means the request's scope was granted
+	// verbatim (RFC 8693 section 2.2.1, RFC 6749 section 5.1), so collapsing
+	// the three reads an authorization server's refusal to grant anything as a
+	// grant of everything that was asked for — the one direction a scope bug
+	// must never fail in. nil here is omission; anything else is a value the
+	// server chose to send. See decodeTokenExchangeResponse.
+	Scope json.RawMessage `json:"scope,omitempty"`
+
+	// RefreshToken is accepted and discarded. See the type's comment.
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 // decodeTokenExchangeResponse reads one RFC 8693 success response and refuses
 // everything the profile above cannot faithfully turn into a bearer credential:
-// a body that is not exactly one JSON document, a field this package does not
-// know, an absent access_token, token_type or issued_token_type, a result that
-// is not the access token that was requested, a token that is not a Bearer one,
-// and a scope grant that is not the set that was asked for.
+// a body that is not exactly one JSON document, a member RFC 8693 does not
+// define, an absent access_token, token_type or issued_token_type, a result
+// that is not the access token that was requested, a token that is not a Bearer
+// one, and a scope grant that is not the set that was asked for.
+//
+// Two things it does not refuse are worth naming, because a strict profile that
+// also rejects what the standard permits is not strict, it is broken. A
+// refresh_token is a member RFC 8693 section 2.2.1 defines, so it is declared
+// and dropped rather than treated as an unknown extension. And an omitted scope
+// member is a grant of what was requested, which is why grantedScopes has to see
+// the difference between omitted and empty that a plain string erases.
 //
 // What it deliberately does not check is expires_in. The lifetime a relying
 // party reports is judged against the ceiling this target configured, by
@@ -339,16 +372,13 @@ func decodeTokenExchangeResponse(provider string, raw []byte, requestedType stri
 	if !strings.EqualFold(response.TokenType, "Bearer") {
 		return tokenResponse{}, fmt.Errorf("%w: %s issued a %q or sender-constrained token, which cannot be represented as CredentialBearer", ErrExchangeFailed, provider, truncate(response.TokenType, 32))
 	}
-	granted, err := canonicalScopes(response.Scope)
-	if err != nil {
-		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
-	}
 	wanted, err := canonicalScopeList(requestedScopes)
 	if err != nil { // constructor already checked this; keep the boundary closed.
 		return tokenResponse{}, fmt.Errorf("%w: %s has invalid requested scope: %v", ErrExchangeFailed, provider, err)
 	}
-	if response.Scope == "" {
-		granted = wanted // RFC 6749: omission means the requested scope was granted.
+	granted, err := grantedScopes(response.Scope, wanted)
+	if err != nil {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
 	}
 	if strings.Join(granted, " ") != strings.Join(wanted, " ") {
 		return tokenResponse{}, fmt.Errorf("%w: %s returned a partial, transformed, or overbroad scope grant", ErrExchangeFailed, provider)
@@ -398,6 +428,41 @@ func validateExchangeRequest(cfg TokenExchangeConfig) error {
 	return nil
 }
 
+// grantedScopes resolves what an authorization server actually granted, given
+// the raw scope member it sent (nil when it sent none) and the canonical list
+// that was requested.
+//
+// The distinction between an absent member and an empty one is the whole point
+// of this function, and it is asymmetric on purpose. RFC 6749 section 5.1, which
+// RFC 8693 section 2.2.1 defers to, says the scope member is OPTIONAL "if
+// identical to the scope requested by the client" and REQUIRED otherwise — so
+// silence is a claim that the request was granted verbatim, and it is the only
+// thing that may be read that way. An explicit empty string is the server saying
+// it granted no scope, which is the opposite claim, and reading it as the first
+// one hands a caller a credential whose recorded scopes it does not have.
+func grantedScopes(raw json.RawMessage, wanted []string) ([]string, error) {
+	if raw == nil {
+		return wanted, nil
+	}
+
+	// null is not a string, so it is not a scope. It is refused rather than
+	// treated as an empty grant because a server that sends it is not speaking
+	// the grammar, and guessing which of the two readings it meant is exactly
+	// the guess this function exists to avoid.
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, fmt.Errorf("scope is null rather than a string")
+	}
+
+	var scope string
+	if err := json.Unmarshal(raw, &scope); err != nil {
+		return nil, fmt.Errorf("scope is not a string")
+	}
+	if scope == "" && len(wanted) > 0 {
+		return nil, fmt.Errorf("scope is present but empty, which grants nothing, while %d scope(s) were requested", len(wanted))
+	}
+	return canonicalScopes(scope)
+}
+
 func canonicalScopes(scope string) ([]string, error) {
 	if scope == "" {
 		return nil, nil
@@ -408,16 +473,15 @@ func canonicalScopes(scope string) ([]string, error) {
 	return canonicalScopeList(strings.Split(scope, " "))
 }
 
-// canonicalScopeList checks every scope against RFC 6749 section 3.3's
-// scope-token grammar, refuses duplicates, and returns the set in a canonical
+// canonicalScopeList validates a scope list and returns it in a canonical
 // order.
 //
-// Sorting is what makes the returned value canonical rather than merely copied,
-// and it is the whole reason the granted and requested lists can be compared as
-// strings. RFC 6749 gives scope no order: an authorization server that answers
-// "write read" to a request for "read write" has granted exactly what was asked
-// for, and comparing the two in arrival order refuses that identical grant as a
-// transformed one. A relying party's serialisation is not a fact about authority.
+// The sort is what makes the name true, and it is load-bearing rather than
+// tidiness. RFC 6749 section 3.3 defines scope as a space-delimited,
+// case-sensitive, *unordered* set, so an authorization server that grants
+// exactly what was asked for may say so as "b a" when the request said "a b".
+// The grant check downstream compares joined strings; without a canonical order
+// it would refuse a conforming server for reordering a set.
 func canonicalScopeList(scopes []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
@@ -434,7 +498,6 @@ func canonicalScopeList(scopes []string) ([]string, error) {
 		}
 		seen[scope] = struct{}{}
 	}
-
 	canonical := append([]string(nil), scopes...)
 	slices.Sort(canonical)
 	return canonical, nil

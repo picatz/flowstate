@@ -308,6 +308,8 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 		{"a lifetime past the target's ceiling", func(v map[string]any) { v["expires_in"] = 86401 }},
 		{"malformed scope", func(v map[string]any) { v["scope"] = "read  write" }},
 		{"overbroad scope", func(v map[string]any) { v["scope"] = "read write" }},
+		{"explicitly empty scope grant", func(v map[string]any) { v["scope"] = "" }},
+		{"null scope grant", func(v map[string]any) { v["scope"] = nil }},
 		{"proof downgrade", func(v map[string]any) { v["token_type"] = "DPoP" }},
 		{"confirmation extension", func(v map[string]any) { v["cnf"] = map[string]any{"jkt": "thumbprint"} }},
 		{"authorization details extension", func(v map[string]any) { v["authorization_details"] = []any{} }},
@@ -408,6 +410,13 @@ func TestTokenExchangeAppliesThePerTargetLifetimeCeiling(t *testing.T) {
 		require.ErrorIs(t, err, auth.ErrExchangeFailed)
 		require.ErrorContains(t, err, auth.DefaultMaxCredentialLifetime.String())
 		require.True(t, credential.IsZero())
+
+		// And the default admits a token that reaches it exactly, which is the
+		// direction a zero ceiling would break while the refusal above still
+		// passed for the wrong reason.
+		credential, err = exchange(t, 0, int(auth.DefaultMaxCredentialLifetime.Seconds()))
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(auth.DefaultMaxCredentialLifetime), credential.ExpiresAt.UTC())
 	})
 }
 
@@ -452,7 +461,8 @@ func TestTokenExchangeReadsGrantedScopesAsASet(t *testing.T) {
 	t.Run("the same scopes in another order are the same grant", func(t *testing.T) {
 		credential, err := exchange(t, []string{"read", "write"}, "write read")
 		require.NoError(t, err, "a server may serialise a granted scope set in any order")
-		require.False(t, credential.IsZero())
+		require.ElementsMatch(t, []string{"read", "write"}, credential.Scopes,
+			"and the credential records the set that was granted")
 	})
 
 	t.Run("the requested order is accepted too", func(t *testing.T) {
@@ -549,6 +559,137 @@ func TestTokenExchangeRefusesTwoTargetSelectors(t *testing.T) {
 	resourceOnly.Resource = "https://api.example.com/v1"
 	_, err = auth.NewTokenExchanger(resourceOnly)
 	require.NoError(t, err)
+}
+
+// TestTokenExchangeStrictProfileAcceptsConformingServers is the other half of
+// the vectors above, and the half that is easy to leave out: a strict profile
+// that also refuses answers the RFC permits is not strict, it is broken.
+//
+// The other two responses a conforming server is entitled to send have tests of
+// their own, because each also has a direction that must still be refused:
+// TestTokenExchangeReadsGrantedScopesAsASet for a reordered scope grant, and
+// TestTokenExchangeAppliesThePerTargetLifetimeCeiling for a lifetime inside the
+// ceiling this target configured.
+func TestTokenExchangeStrictProfileAcceptsConformingServers(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	exchange := func(t *testing.T, cfg auth.TokenExchangeConfig, response map[string]any) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			writeJSON(t, w, http.StatusOK, response)
+		})
+
+		cfg.TokenURL = party.url + "/token"
+		cfg.Audience = "https://as.example.com"
+		cfg.Clock = clock.Now
+
+		exchanger, err := auth.NewTokenExchanger(cfg)
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+	}
+
+	// RFC 8693 section 2.2.1 lists refresh_token as an OPTIONAL member of a
+	// success response. The profile drops it rather than using it, and dropping
+	// a member is not the same as refusing the response that carried it.
+	t.Run("a response carrying the optional refresh_token", func(t *testing.T) {
+		credential, err := exchange(t, auth.TokenExchangeConfig{Scopes: []string{"read"}}, map[string]any{
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        300,
+			"scope":             "read",
+			"refresh_token":     "not-ours-to-keep",
+		})
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(5*time.Minute), credential.ExpiresAt.UTC())
+
+		// The refresh token is dropped, not carried along under another name.
+		require.NotContains(t, fmt.Sprintf("%+v", credential), "not-ours-to-keep")
+	})
+
+}
+
+// TestTokenExchangeScopeOmissionIsNotAnEmptyGrant separates the two readings of
+// a missing scope, which a plain string field cannot tell apart.
+//
+// RFC 6749 section 5.1, which RFC 8693 section 2.2.1 defers to, makes the scope
+// member OPTIONAL only when it is identical to what was requested and REQUIRED
+// otherwise. So an omitted member is the server saying "all of it" and an
+// explicitly empty one is the server saying "none of it" — and decoding both
+// into "" turns the second into the first. The failure is silent and it is in
+// the dangerous direction: the exchange succeeds, and the credential records
+// scopes the authorization server refused to grant.
+func TestTokenExchangeScopeOmissionIsNotAnEmptyGrant(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	// exchange asks for the given scopes against a server that answers with the
+	// given raw JSON body, so that a test can send a scope member no Go map
+	// literal can distinguish — absent, empty, and null.
+	exchange := func(t *testing.T, scopes []string, body string) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			w.Header().Set("Content-Type", "application/json")
+			_, err := w.Write([]byte(body))
+			require.NoError(t, err)
+		})
+
+		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+			TokenURL: party.url + "/token", Audience: "https://as.example.com",
+			Scopes: scopes, Clock: clock.Now,
+		})
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+	}
+
+	const withoutScope = `{"access_token":"downstream-token",` +
+		`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",` +
+		`"token_type":"Bearer","expires_in":300}`
+
+	// The one reading that may be taken as "granted as requested".
+	t.Run("an omitted scope member", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"}, withoutScope)
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"read", "write"}, credential.Scopes)
+	})
+
+	t.Run("an explicitly empty scope member", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"},
+			`{"access_token":"downstream-token",`+
+				`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+				`"token_type":"Bearer","expires_in":300,"scope":""}`)
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "present but empty",
+			"the diagnostic names the difference from an omitted member")
+		require.True(t, credential.IsZero(), "a refused grant yields no credential to overstate")
+	})
+
+	t.Run("a null scope member", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"},
+			`{"access_token":"downstream-token",`+
+				`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+				`"token_type":"Bearer","expires_in":300,"scope":null}`)
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "null")
+		require.True(t, credential.IsZero())
+	})
+
+	// The asymmetry is only defensible if it is actually asymmetric: a server
+	// that grants nothing to a request that asked for nothing has agreed with
+	// the request, and is not refused for saying so out loud.
+	t.Run("an empty scope member when nothing was requested", func(t *testing.T) {
+		credential, err := exchange(t, nil,
+			`{"access_token":"downstream-token",`+
+				`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",`+
+				`"token_type":"Bearer","expires_in":300,"scope":""}`)
+		require.NoError(t, err)
+		require.Empty(t, credential.Scopes)
+	})
 }
 
 // TestClientCredentialsExchanger covers the client credentials grant, both
