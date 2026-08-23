@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -206,6 +207,8 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	surface := newSurface(cmd)
 	machine := format.Machine()
 
+	started := time.Now()
+
 	var (
 		anyFailed bool
 		results   []testFileResult
@@ -250,12 +253,72 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		if err := writeTestResults(surface, format, results); err != nil {
 			return err
 		}
+	} else {
+		printSummary(surface.Out, surface.Theme, results, coverageRequired, time.Since(started))
 	}
 
 	if anyFailed {
 		return errTestsFailed
 	}
 	return nil
+}
+
+// printSummary ends a text-mode run with the whole-run account (#936): how
+// many files and cases ran, how many passed, and the wall time — so a CI log
+// ends with a total rather than mid-list, and a person reads one line instead
+// of scanning backward for red. What decides the exit code leads the line and
+// renders in the danger style: failed cases, refused files, and — only when
+// `--coverage-required` opted them in — coverage gaps and stale records.
+//
+// Text mode only: the machine formats carry every one of these counts
+// structurally in `cases[]` and `coverage[]`, so stdout's JSON is untouched.
+// Wall time is wall-clock, the "is the suite still fast" number, never a
+// reading of virtual time — [v1.TestCase]'s own duration field states that
+// distinction.
+func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, coverageRequired bool, elapsed time.Duration) {
+	files, cases, passed, failed, refused := len(results), 0, 0, 0, 0
+	gaps, stale := 0, 0
+	for _, r := range results {
+		if r.report.GetRefused() != "" {
+			refused++
+		}
+		for _, c := range r.report.GetCases() {
+			cases++
+			if c.GetPassed() {
+				passed++
+			} else {
+				failed++
+			}
+		}
+		if coverageRequired {
+			for _, cov := range r.coverage {
+				gaps += len(cov.Gaps()) + len(cov.ArmGaps())
+				stale += len(cov.Stale)
+			}
+		}
+	}
+
+	var parts []string
+	if failed > 0 {
+		parts = append(parts, theme.Danger.Render(fmt.Sprintf("%d failed", failed)))
+	}
+	if refused > 0 {
+		parts = append(parts, theme.Danger.Render(count(refused, "file refused", "files refused")))
+	}
+	if gaps > 0 {
+		parts = append(parts, theme.Danger.Render(count(gaps, "coverage gap", "coverage gaps")))
+	}
+	if stale > 0 {
+		parts = append(parts, theme.Danger.Render(count(stale, "stale coverage record", "stale coverage records")))
+	}
+	parts = append(parts,
+		count(files, "file", "files"),
+		count(cases, "case", "cases"),
+		fmt.Sprintf("%d passed", passed),
+		fmt.Sprintf("%.1fs", elapsed.Seconds()),
+	)
+
+	fmt.Fprintf(out, "\n%s\n", strings.Join(parts, " · "))
 }
 
 // testFileResult pairs one file's report with the branch coverage its cases
