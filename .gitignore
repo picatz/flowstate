@@ -32,6 +32,11 @@ go.work
 # added this line.
 /gate
 
+# The embedding example's binary, for the same reason: `go build
+# ./examples/embedding` from the repo root writes it here. A 46 MB copy was
+# committed exactly this way in ff6131b and removed by #922.
+/embedding
+
 # Plugin binaries, when built in place per a plugin's own README
 # (`go build -o .../flowstate-plugin-<name> ./plugins/<name>`) rather than
 # into a directory already outside the tree.

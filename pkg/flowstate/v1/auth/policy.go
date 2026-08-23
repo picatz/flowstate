@@ -720,7 +720,7 @@ func (t TrustedIssuer) validateOIDC() error {
 	}
 
 	if t.JWKSURL != "" {
-		if _, err := validateHTTPSURL(t.JWKSURL, "jwks_url"); err != nil {
+		if _, err := ValidateHTTPSURL(t.JWKSURL, "jwks_url"); err != nil {
 			return err
 		}
 	}
@@ -1063,7 +1063,7 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("issuer is required")
 	}
 
-	parsed, err := validateHTTPSURL(issuer, "issuer")
+	parsed, err := ValidateHTTPSURL(issuer, "issuer")
 	if err != nil {
 		return err
 	}
@@ -1075,11 +1075,16 @@ func validateIssuerURL(issuer string) error {
 	return nil
 }
 
-// validateHTTPSURL checks that a configured URL is absolute and transport
+// ValidateHTTPSURL checks that a configured URL is absolute and transport
 // protected. Plain http is permitted only against loopback addresses, which
 // keeps a local development issuer usable without leaving a way to configure a
 // production issuer whose tokens and keys cross the network in the clear.
-func validateHTTPSURL(rawURL, field string) (*url.URL, error) {
+//
+// Exported so that `credentialsource` holds every credential-bearing URL in this
+// repository to one rule rather than to a second implementation of it. field
+// names the setting in the caller's own vocabulary, so a refusal says what the
+// operator has to change rather than what this function is called.
+func ValidateHTTPSURL(rawURL, field string) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("%s %q is not a valid URL: %w", field, rawURL, err)

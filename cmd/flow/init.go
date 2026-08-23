@@ -477,5 +477,9 @@ tests:
         returns: {}
     expect:
       ran: [greet]
+      # The closed claim: every step ` + "`ran:`" + ` does not name must have been
+      # skipped, so adding a step to the workflow fails this case loudly
+      # instead of passing silently around the new step.
+      others: skipped
 `
 }

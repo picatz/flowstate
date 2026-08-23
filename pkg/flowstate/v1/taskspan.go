@@ -81,13 +81,81 @@ const (
 	SpanAttributeSecretRefCount = "flowstate.secret.ref.count"
 )
 
+// MaxTaskNameLen is the longest task name the schema permits, in characters.
+//
+// The Go-side twin of `Task.name`'s protovalidate rule
+// (`proto/flowstate/v1/task.proto:377-385`, `max_len: 128`), the same
+// relationship [MaxEntityKeyLen] has to `entity_key`'s, and it exists for the
+// same reason: a caller embedding this package builds a [Task] in Go and never
+// parses a protovalidate error, so a bound that lives only in the schema is not
+// a bound that path has.
+const MaxTaskNameLen = 128
+
+// boundedSpanName is what telemetry may say a thing is called.
+//
+// # Why a bound is needed at all, when the schema already has one
+//
+// The schema's rule is enforced when a specification is *validated*, and the
+// paths that reach a span do not all validate first. [RunWithInputs] checks that
+// a workflow is non-empty and then opens the run span; [CheckSubmissionSize]
+// runs after it, inside the observed call. So a caller embedding this package —
+// which builds a [Workflow] in Go rather than compiling a Flowfile — can hand a
+// name of any length whatever to telemetry, and the span carrying it is
+// exported to a collector before the submission is refused. That is
+// peer-controlled-input reasoning applied to our own API surface: the bound
+// belongs where the value is *used*, not only where it is checked.
+//
+// The server's own paths do validate — `server.WebhookReceiver.register` calls
+// [Validate] before a workflow is ever served (`server/webhook.go:396`), which
+// is why the webhook delivery span's names need no bounding of their own — but
+// "some callers validate" is not a bound, it is a convention that holds until
+// someone adds a caller.
+//
+// # Truncation with a marker, not a fixed fallback
+//
+// An over-long name keeps its first max characters and gains "…". A fixed
+// fallback — exporting `<invalid>` for every over-long name — would be equally
+// safe and strictly less useful: it collapses every malformed name to one value,
+// so an operator looking at a span cannot tell which run produced it, which is
+// the one question a span exists to answer. The prefix survives, and the marker
+// says plainly that something was cut.
+//
+// The marker cannot be mistaken for part of a legal name: every name this bounds
+// is matched by a protovalidate pattern over `[A-Za-z0-9-_]` (plus `.` for a
+// plugin-qualified task), so a "…" in a span name means exactly one thing.
+//
+// Counted in runes and cut on a rune boundary, because the value being bounded
+// is by definition one that broke the schema's pattern and may therefore contain
+// anything at all — cutting mid-rune would export a mojibake byte sequence. The
+// length pre-check is on bytes, which bound runes from above, so a legal name
+// returns without the string ever being walked.
+func boundedSpanName(name string, max int) string {
+	if len(name) <= max {
+		return name
+	}
+
+	count := 0
+	for offset := range name {
+		if count == max {
+			return name[:offset] + "…"
+		}
+		count++
+	}
+
+	return name
+}
+
 // TaskSpanName is the name of the span covering one execution of a named task.
 //
 // Both drivers ask for it here rather than concatenating it themselves, which is
 // what makes "the same workflow produces the same span names under either
 // driver" a property of one function instead of a coincidence between two.
+//
+// Bounded by [MaxTaskNameLen], here rather than at the two call sites, so that
+// what a test computes as the expected name and what a driver exports are the
+// same string by construction.
 func TaskSpanName(taskName string) string {
-	return "flowstate.task/" + taskName
+	return "flowstate.task/" + boundedSpanName(taskName, MaxTaskNameLen)
 }
 
 // StartTaskSpan opens the span covering one task execution.
@@ -127,7 +195,12 @@ func StartTaskSpan(ctx context.Context, task *Task, stepID string) (context.Cont
 		return ctx, span
 	}
 
-	attrs := []attribute.KeyValue{attribute.String(SpanAttributeTaskName, task.GetName())}
+	// Bounded like the span name above it: an attribute reaches the same
+	// collector, so bounding one alone would relocate the unbounded value rather
+	// than remove it.
+	attrs := []attribute.KeyValue{
+		attribute.String(SpanAttributeTaskName, boundedSpanName(task.GetName(), MaxTaskNameLen)),
+	}
 
 	if stepID != "" {
 		attrs = append(attrs, attribute.String(SpanAttributeStepID, stepID))
@@ -189,4 +262,84 @@ func RecordTaskOutcome(span trace.Span, err error) {
 	}
 
 	span.SetStatus(codes.Error, ClassifyError(err).String())
+}
+
+// TemporalSpanErrorDescription is what a Temporal SDK span's error status says
+// instead of the failure's own text.
+//
+// A fixed string rather than a classification, unlike [RecordTaskOutcome]: this
+// wraps spans the SDK opens for every workflow and activity it runs, including
+// ones this repository knows nothing about, so there is no classification it is
+// entitled to claim. What it can say honestly is that the operation failed.
+//
+// The considered alternative was to read the classification back off the error
+// when it is a *temporal.ApplicationError, whose Type() this repository builds
+// from [ClassifyError] at engine/activities.go and is therefore safe by
+// construction. Two costs, and both are paid here rather than there. This
+// package does not import Temporal at all — `go list -deps ./pkg/flowstate/v1`
+// names nothing under go.temporal.io — and one description string is a poor
+// price for that edge, given the engine already exports the classification on
+// the first-party `flowstate.task` span an operator reads next. The
+// import-free spelling, a structural check for `interface{ Type() string }`,
+// fails open on every unrelated error type that happens to have that method,
+// which is the direction this repository refuses to fail.
+const TemporalSpanErrorDescription = "operation failed"
+
+// SanitizedTemporalSpanStarter is [opentelemetry.TracerOptions.SpanStarter] for
+// Temporal's tracing interceptor, and it exists because that interceptor is the
+// one span-writing path in this repository that does not already obey
+// [RecordTaskOutcome]'s rule.
+//
+// The interceptor's Finish calls RecordError with the activity's error and
+// SetStatus with its message, and both write that text into an exported span.
+// `${steps.<id>.error}` is rendered from whatever the task said, and a task can
+// say a great deal — an http task's error names the URL it called, a plugin's
+// names whatever the plugin wrote. The first-party flowstate.task span already
+// refuses to export that; the SDK span Temporal wraps around it did not, so the
+// same run leaked through the outer span what the inner one withheld.
+//
+// It lives here rather than in cmd/flow because `engine`'s trace-join tests build
+// the same interceptor and say in writing that they match the binary's options.
+// Left in cmd/flow, those tests would go on constructing the unsanitized version
+// while their comment claimed otherwise — one meaning written down twice, and the
+// copy that drifts is the one nothing executes in production.
+//
+// The signature is structural: it matches SpanStarter without this package
+// importing anything from Temporal.
+func SanitizedTemporalSpanStarter(
+	ctx context.Context,
+	tracer trace.Tracer,
+	name string,
+	options ...trace.SpanStartOption,
+) trace.Span {
+	_, span := tracer.Start(ctx, name, options...)
+
+	return sanitizedTemporalSpan{Span: span}
+}
+
+// sanitizedTemporalSpan is a [trace.Span] whose failure reporting says a
+// classification and never a message.
+type sanitizedTemporalSpan struct {
+	trace.Span
+}
+
+// RecordError writes nothing at all.
+//
+// Not a sanitized error — nothing. This repository's posture for a failed span
+// is a status and no exception event, which [RecordTaskOutcome] states and
+// plugin/telemetry.go repeats, because RecordError's whole job is to write an
+// error's own message into an exported event. Recording a constant instead would
+// be a third spelling of the same rule, and an event carrying no information
+// anybody can act on.
+func (sanitizedTemporalSpan) RecordError(error, ...trace.EventOption) {}
+
+// SetStatus replaces the description on a failure, and leaves every other code's
+// alone: an Ok or Unset description is set by the interceptor itself, not copied
+// from something a task wrote.
+func (s sanitizedTemporalSpan) SetStatus(code codes.Code, description string) {
+	if code == codes.Error {
+		description = TemporalSpanErrorDescription
+	}
+
+	s.Span.SetStatus(code, description)
 }

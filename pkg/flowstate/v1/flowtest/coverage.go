@@ -14,8 +14,11 @@ import (
 // Coverage is which of a workflow's steps at least one case in a `*.test.yaml`
 // ran, and which no case ever reached (issue #420).
 //
-// It is a property of the harness, not of the workflow language: no schema
-// field carries it, and it never travels a durable boundary. It is derived
+// It is a property of the harness, not of the workflow language: no field of
+// the *workflow* schema carries it, and it never travels a durable boundary.
+// It does ride the machine report — [Coverage.Report] renders it into the
+// [v1.CoverageReport] a [v1.TestReport] carries (#420) — which is a fact about
+// `flow test`'s own output, not about the language. It is derived
 // from the same transcript `expect.ran` is checked against (the
 // [v1.Workflow_StepOutputs] a run hands back), so a step counts as reached on
 // exactly the evidence `expect.ran` counts on, and nothing weaker.

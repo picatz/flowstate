@@ -101,7 +101,7 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 	}
 
 	for _, as := range cfg.AuthorizationServers {
-		if _, err := validateHTTPSURL(as, "authorization_servers"); err != nil {
+		if _, err := ValidateHTTPSURL(as, "authorization_servers"); err != nil {
 			return nil, err
 		}
 		if !issuerAcceptsResourceAsAudience(policy, as, cfg.Resource) {
@@ -273,7 +273,7 @@ func validateResourceURI(raw string) (*url.URL, error) {
 			"resource identifier as fragment-free)", raw)
 	}
 
-	parsed, err := validateHTTPSURL(raw, "resource")
+	parsed, err := ValidateHTTPSURL(raw, "resource")
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +352,7 @@ func issuerAcceptsResourceAsAudience(policy *Policy, issuer, resource string) bo
 		return false
 	}
 	for _, entry := range policy.Issuers {
-		if entry.Kind != "" && entry.Kind != "oidc" {
+		if entry.kind() != IssuerKindOIDC {
 			continue
 		}
 		if entry.Issuer != issuer {

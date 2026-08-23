@@ -241,19 +241,19 @@ func TestADivergenceIsRenderedWithItsReplayCommand(t *testing.T) {
 // observables moved with the schedule exits non-zero with no second flag.
 func TestADivergenceFailsTheCommand(t *testing.T) {
 	passing := testFileResult{report: &v1.TestReport{Cases: []*v1.TestCase{{Passed: true}}}}
-	require.False(t, passing.failed(false), "a passing file with no exploration is not a failure")
+	require.False(t, passing.failed(false, false), "a passing file with no exploration is not a failure")
 
 	diverged := passing
 	diverged.schedules = &flowtest.ScheduleReport{
 		Schedules:  4,
 		Divergence: &flowtest.ScheduleDivergence{Case: "a case", Seed: 7},
 	}
-	assert.True(t, diverged.failed(false),
+	assert.True(t, diverged.failed(false, false),
 		"a schedule that changed what a case observed must fail the command without --coverage-required")
 
 	explored := passing
 	explored.schedules = &flowtest.ScheduleReport{Schedules: 4, Decisions: 3}
-	assert.False(t, explored.failed(false), "an exploration that agreed with itself is not a failure")
+	assert.False(t, explored.failed(false, false), "an exploration that agreed with itself is not a failure")
 }
 
 // TestShellArgQuotesHostilePaths is the regression for a Codex finding on

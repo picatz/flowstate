@@ -494,6 +494,13 @@ func runWorkflow(ctx workflow.Context, st *v1.RunState) (*v1.Workflow_StepOutput
 	}
 
 	err := exec.runNodes(st.Workflow.GetSteps(), 0, 0)
+	// WaitForCancellation lets an activity that wins the cancellation race report
+	// success. The workflow context is still cancelled in that case, and success
+	// must not turn an operator's cancellation into a completed run or bypass the
+	// compensation the activity just registered.
+	if err == nil {
+		err = ctx.Err()
+	}
 	switch {
 	case err == nil:
 		// The declared outputs, evaluated once — here, inline, in workflow code.

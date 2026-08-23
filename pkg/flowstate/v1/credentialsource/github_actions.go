@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/picatz/jose/pkg/jwt"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // Environment variables GitHub Actions sets inside a job granted
@@ -59,8 +61,11 @@ type githubActionsSource struct {
 type GitHubActionsOption func(*githubActionsSource)
 
 // WithGitHubActionsHTTPClient overrides the HTTP client used to reach the
-// runner's token endpoint. Exists for tests; production callers get
-// [http.DefaultClient].
+// runner's token endpoint. Exists for tests; production callers get a copy of
+// [http.DefaultClient] that refuses redirects.
+//
+// Whatever a caller supplies, [githubActionsHTTPClient] wraps it — the redirect
+// refusal is applied after the options, so this cannot be used to opt out of it.
 func WithGitHubActionsHTTPClient(client *http.Client) GitHubActionsOption {
 	return func(s *githubActionsSource) { s.httpClient = client }
 }
@@ -98,6 +103,7 @@ func NewGitHubActionsSource(audience string, opts ...GitHubActionsOption) (Sourc
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.httpClient = githubActionsHTTPClient(s.httpClient)
 
 	return s, nil
 }
@@ -141,6 +147,18 @@ func (s *githubActionsSource) mint(ctx context.Context) (Token, error) {
 	target, err := url.Parse(requestURL)
 	if err != nil {
 		return Token{}, fmt.Errorf("%w: %s is not a URL: %w", ErrSourceUnusable, envRequestURL, err)
+	}
+	// The same rule every other credential-bearing URL in this repository is
+	// held to, rather than a second implementation of it: https, a host, no
+	// user information, and plain http only to loopback. The loopback carve-out
+	// is not a concession to tests — [auth.ValidateHTTPSURL] states its reason,
+	// and it holds here for the same one plus a stronger one. A production
+	// runner's ACTIONS_ID_TOKEN_REQUEST_URL is never loopback, and anyone who
+	// can point it at 127.0.0.1 already runs code inside the job and can read
+	// ACTIONS_ID_TOKEN_REQUEST_TOKEN out of the environment directly. What the
+	// check is for is the endpoint that leaves the machine in the clear.
+	if _, err := auth.ValidateHTTPSURL(target.String(), envRequestURL); err != nil {
+		return Token{}, fmt.Errorf("%w: %w", ErrSourceUnusable, err)
 	}
 
 	// The endpoint already carries an api-version query parameter, so the
@@ -194,6 +212,31 @@ func (s *githubActionsSource) mint(ctx context.Context) (Token, error) {
 	}
 
 	return newToken(SourceGitHubActions, minted.Value, expiresAt), nil
+}
+
+// githubActionsHTTPClient copies client and refuses redirects.
+//
+// The request carries the runner's credential in its Authorization header. Go
+// already strips Authorization across a redirect to a different host
+// (net/http's shouldCopyHeaderOnRedirect), so the naive disclosure is handled —
+// but that comparison is by hostname and not by scheme, so `https://host/a` to
+// `http://host/b` keeps the header and sends it in the clear. This mirrors
+// auth's unredirectedClient rather than its transportProtectedClient: a token
+// endpoint does not redirect, so refusing outright is both stricter and simpler
+// than validating each hop.
+//
+// Copying preserves a caller's transport, timeout, cookie jar and
+// instrumentation without mutating a client it may also use elsewhere.
+func githubActionsHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	copied := *client
+	copied.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return fmt.Errorf("runner token endpoint redirected to %s: redirects are refused because the request carries a credential",
+			req.URL.Redacted())
+	}
+	return &copied
 }
 
 // unverifiedExpiry reads a token's "exp" claim without checking its signature.

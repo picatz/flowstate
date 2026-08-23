@@ -56,6 +56,13 @@ func newTestCommand() *cobra.Command {
 			"arm a case took is read from the step's own `case` record, so an arm no case reached is " +
 			"reported by the position it was written at — the only name an arm has. Record one under " +
 			"`coverage.allow_unreached` by the key the diagnostic prints.\n\n" +
+			"A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name " +
+			"the workflow does not have refuses the case before it runs, with a suggestion — a claim " +
+			"about a step that does not exist would otherwise pass vacuously forever. A stub the case " +
+			"declared and the run never answered through is reported as a warning: a fact about the " +
+			"case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs " +
+			"inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle " +
+			"in cases that never invoke its task.\n\n" +
 			"`--output json` or `--output jsonl` reports what ran as a schema message instead of " +
 			"text, and carries the coverage sets under a `coverage` key so CI annotates rather than " +
 			"parses prose.\n\n" +
@@ -93,6 +100,17 @@ flow test -o jsonl examples/`,
 	cmd.Flags().Bool("coverage-required", false,
 		"fail when a workflow has a step, or a `switch:` arm, no test case reached and no "+
 			"coverage.allow_unreached entry records why")
+
+	// The same opt-in shape for the warning tier (#926): a warning is a fact
+	// worth reading that is not a verdict — today, a stub the case declared
+	// and the run never answered through — and this is the flag that promotes
+	// it to a reason the command exits non-zero. Stubs inherited from
+	// `defaults:` are exempt from the warning itself (see
+	// flowtest's unusedStubWarnings), so a file-level catch-all never trips a
+	// suite that opted in.
+	cmd.Flags().Bool("fail-on-warning", false,
+		"fail when a case reports a warning — a stub the case declared and the run never "+
+			"answered through — instead of only printing it")
 
 	// Off by default, and the default is the whole of the compatibility promise:
 	// at zero seeds every case runs exactly once, under v1.WrittenOrder, which is
@@ -173,6 +191,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		return err
 	}
 	coverageRequired, _ := cmd.Flags().GetBool("coverage-required")
+	failOnWarning, _ := cmd.Flags().GetBool("fail-on-warning")
 
 	budget, err := scheduleBudget(cmd)
 	if err != nil {
@@ -209,7 +228,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		results = append(results, result)
 
 		if !machine {
-			printTestReport(surface.Out, surface.Theme, report)
+			printTestReport(surface.Out, surface.Theme, report, failOnWarning)
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 			printSchedules(surface.Out, surface.Theme, report, schedules)
 		} else {
@@ -223,7 +242,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			printSchedules(surface.Err, surface.ErrTheme, report, schedules)
 		}
 
-		if result.failed(coverageRequired) {
+		if result.failed(coverageRequired, failOnWarning) {
 			anyFailed = true
 		}
 	}
@@ -254,10 +273,11 @@ type testFileResult struct {
 // failed reports whether this file's result makes the command exit non-zero.
 //
 // One function rather than a run of conditions inside the loop, because the
-// three reasons a file fails are three different kinds of claim and each needs
+// four reasons a file fails are four different kinds of claim and each needs
 // saying: a case that did not pass, a coverage gap the run opted in to treating
-// as one, and a schedule that changed what a case observed.
-func (r testFileResult) failed(coverageRequired bool) bool {
+// as one, a warning the run opted in to treating as one, and a schedule that
+// changed what a case observed.
+func (r testFileResult) failed(coverageRequired, failOnWarning bool) bool {
 	if r.report.GetRefused() != "" {
 		return true
 	}
@@ -265,6 +285,17 @@ func (r testFileResult) failed(coverageRequired bool) bool {
 	for _, c := range r.report.GetCases() {
 		if !c.GetPassed() {
 			return true
+		}
+	}
+
+	// A failure only when the run opted in, exactly as coverage below: a
+	// warning is a fact about the case's own scaffolding, not a verdict, until
+	// `--fail-on-warning` says a suite wants it enforced (#926).
+	if failOnWarning {
+		for _, c := range r.report.GetCases() {
+			if len(c.GetWarnings()) > 0 {
+				return true
+			}
 		}
 	}
 
@@ -397,8 +428,10 @@ func indentRendering(text string) string {
 
 // printTestReport renders one file's report in the CLI's ordinary text style:
 // one line per case, a diagnostic per unmet expectation for a case that
-// failed.
-func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport) {
+// failed, and a line per warning — coloured as a fault only where the run
+// opted in to treat one as such (`--fail-on-warning`), on the exact rule
+// [printCoverage] applies to an unrecorded gap.
+func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, failOnWarning bool) {
 	if refused := report.GetRefused(); refused != "" {
 		fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(report.GetFile()), theme.Danger.Render(refused))
 		return
@@ -421,6 +454,15 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 				continue
 			}
 			fmt.Fprintf(out, "       %s: %s\n", f.GetField(), f.GetMessage())
+		}
+		for _, w := range c.GetWarnings() {
+			line := fmt.Sprintf("%s: %s", w.GetField(), w.GetMessage())
+			if failOnWarning {
+				line = theme.Danger.Render(line)
+			} else {
+				line = theme.Warning.Render(line)
+			}
+			fmt.Fprintf(out, "       %s\n", line)
 		}
 	}
 }

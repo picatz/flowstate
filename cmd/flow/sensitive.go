@@ -230,9 +230,20 @@ func redactRunOutputs(outputs *v1.RunOutputs, sensitive map[string]bool, reveal 
 	return &v1.RunOutputs{Values: redactRunOutputsValues(outputs.GetValues(), sensitive, reveal)}
 }
 
-// stepTranscriptMarker is what every named value in the step transcript renders
-// as once it is withheld — see [redactStepValues] for when that is.
-const stepTranscriptMarker = "step transcript withheld: workflow declares a sensitive output"
+// The two reasons a step transcript is withheld, which are not the same reason
+// and must not read as though they were — see [redactStepValues] for when each
+// applies.
+//
+// A reader who is told the workflow declared something sensitive goes and looks
+// at the file. On the fail-closed path there is no file to look at: `flow get`
+// deliberately holds no specification, and a follow whose specification the
+// server did not attest has one it is not entitled to redact against. Telling
+// that reader about a declaration is telling them about something this process
+// never saw.
+const (
+	stepTranscriptMarkerDeclared   = "step transcript withheld: this run's workflow declares sensitive data"
+	stepTranscriptMarkerUnverified = "step transcript withheld: this view holds no specification to check against"
+)
 
 // redactStepValues implements this file's answer to the gap Codex found on PR
 // #212: a declared output computed from a step's output — `outputs.token.value:
@@ -285,7 +296,7 @@ const stepTranscriptMarker = "step transcript withheld: workflow declares a sens
 // ran, and which named outputs each produced — because that information is
 // already implied by the workflow specification itself (an author who wrote the
 // file already knows its step ids and output names); only the values change,
-// to [stepTranscriptMarker], so `flow watch`'s step-progress display still shows
+// to one of the two markers above, so `flow watch`'s step-progress display still shows
 // a run advancing rather than going dark the moment a workflow declares anything
 // sensitive.
 func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]bool, reveal bool) map[string]*v1.Node_Outputs {
@@ -303,12 +314,17 @@ func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]b
 		return values
 	}
 
+	marker := stepTranscriptMarkerDeclared
+	if sensitive == nil {
+		marker = stepTranscriptMarkerUnverified
+	}
+
 	redacted := make(map[string]*v1.Node_Outputs, len(values))
 	for stepID, outputs := range values {
 		named := outputs.GetNamedValues()
 		redactedNamed := make(map[string]*v1.Value, len(named))
 		for name := range named {
-			redactedNamed[name] = redactedValue(stepTranscriptMarker)
+			redactedNamed[name] = redactedValue(marker)
 		}
 		redacted[stepID] = &v1.Node_Outputs{NamedValues: redactedNamed}
 	}
@@ -354,7 +370,13 @@ func redactStepOutputs(outputs *v1.Workflow_StepOutputs, sensitive map[string]bo
 // message), and both must see the redacted answer rather than one of them racing
 // ahead of a mutation to the original.
 func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal bool) *v1.GetResponse {
-	if response == nil || response.GetRunOutputs() == nil || reveal {
+	// The transcript is checked as well as the run outputs, because a run that
+	// declared no outputs has a nil RunOutputs and a full step transcript — and
+	// returning early on RunOutputs alone made the fail-closed path in
+	// [redactStepValues] unreachable for exactly those runs. `flow get <id>`
+	// passes a nil workflow on purpose so that everything is withheld, and it
+	// was printing the whole transcript in the clear instead.
+	if response == nil || reveal || (response.GetRunOutputs() == nil && response.GetOutputs() == nil) {
 		return response
 	}
 

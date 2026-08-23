@@ -14,6 +14,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // epoch is the moment every case's [v1.VirtualClock] starts at.
@@ -313,6 +314,15 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 
+	// Refused before the run for the same reason a bad stub target is: an
+	// expectation naming a step the workflow does not have is the file
+	// disagreeing with the workflow, and a whole virtual day of execution
+	// cannot make the claim checkable. See [checkExpectationNames].
+	if err := checkExpectationNames(&test.Expect, workflow); err != nil {
+		result.Error = err.Error()
+		return
+	}
+
 	runtime, err := secretRuntime(test.Secrets)
 	if err != nil {
 		result.Error = err.Error()
@@ -469,6 +479,16 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	result.Failures = assertExpectation(&test.Expect, workflow, outputs, runErr)
 	result.Passed = len(result.Failures) == 0
+
+	// Only for a run that completed: on one that failed, a stub the run never
+	// reached is legitimately unanswered, and the report cannot tell that
+	// apart from a genuinely idle one — the same unverifiable-claim honesty
+	// `expect.skipped` applies to parallel branches on a failed run. A case
+	// that never reached a run at all (result.Error set) returns above and
+	// never gets here.
+	if runErr == nil {
+		result.Warnings = unusedStubWarnings(stubs)
+	}
 
 	return
 }
@@ -734,6 +754,158 @@ func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
 	}
 }
 
+// checkExpectationNames refuses an expectation naming a step the workflow does
+// not have, before the run ever starts (#926). Without it, `skipped:` naming a
+// ghost — a typo, or a step renamed since the case was written — asserted
+// nothing forever while reading as if it asserted something, because "absent
+// from the transcript" is satisfied by a name that never existed; and `ran:`
+// on the same typo failed with "produced no recorded outputs" and no hint that
+// the step is not merely unreached but unreal.
+//
+// Refused as a case-level error rather than a failure diagnostic, exactly as a
+// stub naming an unknown step is ([bindStubs]): both are the file disagreeing
+// with the workflow, decided before anything runs, with the same did-you-mean
+// machinery every other surface reads the compiled workflow through.
+//
+// Three name sets, because the honest refusal differs:
+//
+//   - `ran:`/`skipped:` are judged against the top-level transcript, so their
+//     names must be in [topLevelStepUniverse]. A name that exists only inside
+//     a loop body gets the specific sentence — its outputs travel inside the
+//     loop's own results, so no top-level claim about it can ever be checked —
+//     rather than a suggestion to retype what is already spelled right.
+//   - `compensated:` names any step the run could have undone, so it is
+//     checked against every id the workflow declares at any depth.
+func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
+	top := map[string]bool{}
+	topLevelStepUniverse(spec.GetSteps(), top)
+
+	all := map[string]bool{}
+	collectAllStepIDs(spec.GetSteps(), all)
+
+	candidates := func(set map[string]bool) []string {
+		names := make([]string, 0, len(set))
+		for id := range set {
+			names = append(names, id)
+		}
+		sort.Strings(names)
+		return names
+	}
+	topNames := candidates(top)
+	allNames := candidates(all)
+
+	checkTop := func(field, step string) error {
+		if top[step] {
+			return nil
+		}
+		if all[step] {
+			return fmt.Errorf("expect.%s names step %q, which is a loop body step: its outputs travel "+
+				"inside the loop's own results and never appear in the top-level transcript this claim "+
+				"is judged against; assert the loop's results through expect.outputs", field, step)
+		}
+		if suggestion, ok := nearest.Name(step, topNames); ok {
+			return fmt.Errorf("expect.%s names unknown step %q; did you mean %q?", field, step, suggestion)
+		}
+		return fmt.Errorf("expect.%s names unknown step %q, which this workflow has no step for", field, step)
+	}
+
+	for _, step := range want.Ran {
+		if err := checkTop("ran", step); err != nil {
+			return err
+		}
+	}
+	for _, step := range want.Skipped {
+		if err := checkTop("skipped", step); err != nil {
+			return err
+		}
+	}
+	// A `call:` registers its callee's own `undo:` steps onto this run's
+	// stack under the callee's step ids (see examples/progressive-rollout,
+	// whose cases name `record` and `shift` — steps of shift-traffic.yaml,
+	// not of the caller), and this checker deliberately never loads a callee,
+	// the same line [stepTasks] draws. So a workflow with a `call:` anywhere
+	// leaves `compensated:` unchecked rather than refusing a name it cannot
+	// see: a false diagnostic is worse than a missing one, the
+	// ResolvableInputs abstention CLAUDE.md's diagnostics rule names.
+	if !containsCallStep(spec.GetSteps()) {
+		for _, step := range want.Compensated {
+			if all[step] {
+				continue
+			}
+			if suggestion, ok := nearest.Name(step, allNames); ok {
+				return fmt.Errorf("expect.compensated names unknown step %q; did you mean %q?", step, suggestion)
+			}
+			return fmt.Errorf("expect.compensated names unknown step %q, which this workflow has no step for", step)
+		}
+	}
+
+	return nil
+}
+
+// containsCallStep reports whether any step at any depth is a `call:` — the
+// one node kind whose compensations run under step ids this package never
+// compiles. See [checkExpectationNames].
+func containsCallStep(nodes []*v1.Node) bool {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Call:
+			return true
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				if containsCallStep(branch.GetSteps()) {
+					return true
+				}
+			}
+		case *v1.Node_Switch:
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				if containsCallStep(body) {
+					return true
+				}
+			}
+		case *v1.Node_ForEach:
+			if containsCallStep(kind.ForEach.GetBody()) {
+				return true
+			}
+		case *v1.Node_Loop:
+			if containsCallStep(kind.Loop.GetBody()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collectAllStepIDs records every step id the workflow declares, at any depth —
+// parallel branches, switch bodies, and loop/for_each bodies included. It does
+// not descend into a `call:`, whose steps belong to the callee's own file, the
+// same line [stepTasks] draws.
+func collectAllStepIDs(nodes []*v1.Node, out map[string]bool) {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				collectAllStepIDs(branch.GetSteps(), out)
+			}
+			continue
+		case *v1.Node_Switch:
+			out[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				collectAllStepIDs(body, out)
+			}
+			continue
+		case *v1.Node_ForEach:
+			out[node.GetId()] = true
+			collectAllStepIDs(kind.ForEach.GetBody(), out)
+			continue
+		case *v1.Node_Loop:
+			out[node.GetId()] = true
+			collectAllStepIDs(kind.Loop.GetBody(), out)
+			continue
+		}
+		out[node.GetId()] = true
+	}
+}
+
 // assertExpectation compares a run's outcome against what the case declared,
 // returning one diagnostic per unmet expectation.
 //
@@ -932,12 +1104,21 @@ func parallelBranchSteps(nodes []*v1.Node, out map[string]bool) {
 }
 
 // collectStepIDs records every node id in nodes, recursing into parallel
-// branches, so a nested block's steps are counted too.
+// branches and switch bodies, so a nested block's steps are counted too — a
+// switch-body step inside a branch is as unknowable on a failed run as any
+// other branch step.
 func collectStepIDs(nodes []*v1.Node, out map[string]bool) {
 	for _, node := range nodes {
 		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
 			for _, branch := range parallel.Parallel.GetBranches() {
 				collectStepIDs(branch.GetSteps(), out)
+			}
+			continue
+		}
+		if sw, ok := node.GetKind().(*v1.Node_Switch); ok {
+			out[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(sw.Switch) {
+				collectStepIDs(body, out)
 			}
 			continue
 		}
@@ -950,6 +1131,20 @@ func topLevelStepUniverse(nodes []*v1.Node, universe map[string]bool) {
 		if parallel, ok := node.GetKind().(*v1.Node_Parallel); ok {
 			for _, branch := range parallel.Parallel.GetBranches() {
 				topLevelStepUniverse(branch.GetSteps(), universe)
+			}
+			continue
+		}
+		// A switch records its own id (the `case` record coverage reads) *and*
+		// its taken arm's body steps at the top level — a body step is
+		// assertable through `ran:`, so it has to be in the universe the
+		// closed claim walks. Before this arm existed, `others: skipped` was
+		// blind to a switch-body step that ran: the id was absent from the
+		// universe, so the one claim built to catch an unnamed step passed
+		// straight over it (#926).
+		if sw, ok := node.GetKind().(*v1.Node_Switch); ok {
+			universe[node.GetId()] = true
+			for _, body := range v1.SwitchBodies(sw.Switch) {
+				topLevelStepUniverse(body, universe)
 			}
 			continue
 		}

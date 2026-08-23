@@ -568,7 +568,7 @@ func (e *exchangeClient) post(ctx context.Context, provider, endpoint, contentTy
 	ctx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	if _, err := validateHTTPSURL(endpoint, "endpoint"); err != nil {
+	if _, err := ValidateHTTPSURL(endpoint, "endpoint"); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrExchangeFailed, provider, err)
 	}
 
@@ -653,7 +653,7 @@ func requiredEndpoint(name, field, endpoint string) error {
 	if endpoint == "" {
 		return fmt.Errorf("%w: %s exchanger needs %s", ErrInvalidPolicy, name, field)
 	}
-	if _, err := validateHTTPSURL(endpoint, field); err != nil {
+	if _, err := ValidateHTTPSURL(endpoint, field); err != nil {
 		return fmt.Errorf("%w: %s exchanger: %w", ErrInvalidPolicy, name, err)
 	}
 	return nil

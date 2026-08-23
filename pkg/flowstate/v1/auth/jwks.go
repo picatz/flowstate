@@ -77,7 +77,7 @@ func transportProtectedClient(client *http.Client) *http.Client {
 		if len(via) >= maxRedirects {
 			return fmt.Errorf("stopped after %d redirects", maxRedirects)
 		}
-		if _, err := validateHTTPSURL(req.URL.String(), "redirect target"); err != nil {
+		if _, err := ValidateHTTPSURL(req.URL.String(), "redirect target"); err != nil {
 			return err
 		}
 		if inherited != nil {
@@ -400,7 +400,7 @@ func discoverJWKSURL(ctx context.Context, client *http.Client, issuer string) (s
 
 	// The key set may live on another host, as it does for several major
 	// providers, but it must still be reachable over a protected transport.
-	if _, err := validateHTTPSURL(document.JWKSURI, "jwks_uri"); err != nil {
+	if _, err := ValidateHTTPSURL(document.JWKSURI, "jwks_uri"); err != nil {
 		return "", fmt.Errorf("discovery document at %q is unusable: %w", discoveryURL, err)
 	}
 

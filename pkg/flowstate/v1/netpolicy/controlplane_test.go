@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"sync/atomic"
 	"testing"
 
@@ -232,6 +233,76 @@ func Test_controlPlane_withRunIdentity(t *testing.T) {
 		_, err := policy.Client().Do(newRequest(t, ctx))
 		requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
 	})
+}
+
+// Test_controlPlane_proxyCannotBypassReservation is the direction CheckAddr
+// cannot answer.
+//
+// With a proxy configured the dialer connects to the proxy, so controlDial never
+// sees the control plane's address and the reservation there never fires. The
+// proxied path resolved the target itself and asked CheckAddr, which decides an
+// address *category* and knows nothing about p.cfg.controlPlane — so a policy
+// that permits loopback for local development, which is the posture the control
+// plane's own doc says it exists to protect, let a workflow reach the reserved
+// address with no identity check.
+//
+// The proxy fails the test if it is ever reached, rather than the test only
+// asserting an error: a refusal produced for some other reason would look
+// identical from the caller's side.
+func Test_controlPlane_proxyCannotBypassReservation(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a denied control-plane request reached the proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	proxyFor := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+
+	const controlPlane = "127.0.0.1:9"
+	policy, err := New(
+		WithAllowLoopback(),
+		WithControlPlane(controlPlane),
+		WithProxy(proxyFor),
+	)
+	require.NoError(t, err)
+
+	_, err = get(t, policy, "http://"+controlPlane+"/")
+	requireDenied(t, err, ReasonControlPlane, "reserved")
+}
+
+// Test_controlPlane_proxyStillRequiresRunIdentity is the second refusal the
+// reservation makes, taken through the same proxied path.
+//
+// The test above covers the undeclared capability, where the answer is a flat
+// refusal that never reads the request. This one covers the deployment that
+// actually turned self-administration on: there the address is permitted and the
+// question becomes whose authority the request carries, which is decided from
+// the request context rather than from the address. Both refusals live behind
+// checkResolvedAddr, and only one of them was reachable from a test.
+func Test_controlPlane_proxyStillRequiresRunIdentity(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("an anonymous control-plane request reached the proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	proxyFor := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+
+	const controlPlane = "127.0.0.1:9"
+	policy, err := New(
+		WithAllowLoopback(),
+		WithControlPlane(controlPlane),
+		WithSelfAdministration(),
+		WithProxy(proxyFor),
+	)
+	require.NoError(t, err)
+
+	_, err = get(t, policy, "http://"+controlPlane+"/")
+	requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
 }
 
 // Test_controlPlane_grantsOnlyTheDeclaredAddress covers the other half of "not a

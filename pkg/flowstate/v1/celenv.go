@@ -540,6 +540,13 @@ func buildEnv(libs []string) (*cel.Env, error) {
 	return env, nil
 }
 
+// jsonParseFunction is the CEL function name json_parse registers under, named
+// once because [byteCostEstimator] has to recognise it at the charge point and a
+// function name spelled in two places is one that eventually disagrees with
+// itself — quietly, since the estimator's only symptom would be reverting to
+// cel-go's flat 1-unit charge.
+const jsonParseFunction = "json_parse"
+
 // jsonLibrary returns the "json" extension library, which provides json_parse
 // for turning a JSON string or bytes into CEL values.
 //
@@ -554,7 +561,7 @@ func jsonLibrary() cel.EnvOption {
 		}
 		return types.DefaultTypeAdapter.NativeToValue(out)
 	}
-	return cel.Function("json_parse",
+	return cel.Function(jsonParseFunction,
 		cel.Overload("json_parse_string",
 			[]*cel.Type{cel.StringType}, cel.DynType,
 			cel.UnaryBinding(func(val ref.Val) ref.Val {

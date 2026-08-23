@@ -210,6 +210,130 @@ func TestTheLanguageServerTakesThePluginFlags(t *testing.T) {
 	}
 }
 
+// editorCommand is the harness the language-server cases share: a command
+// registered exactly the way `flow lsp` is, driven through [runLSP].
+//
+// Through runLSP rather than through the flag reader, because the defect this
+// file is testing for is a *wiring* one. The first version of this change put
+// the narrowing in a helper of its own and asserted on the helper, so reverting
+// runLSP to the shared reader would have left both tests green while the
+// vulnerability came back. Test the traversal, not the step.
+func editorCommand(t *testing.T) *cobra.Command {
+	t.Helper()
+
+	cmd := &cobra.Command{Use: "lsp"}
+	addOutputFlag(cmd)
+	addEditorPluginFlags(cmd)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetContext(t.Context())
+
+	return cmd
+}
+
+// TestTheLanguageServerRefusesWorkspaceRelativePluginDirectories is the
+// vulnerability itself, from the direction an attacker takes it.
+//
+// An editor starts a language server with the opened workspace as its working
+// directory, so `--plugin-dir ./plugins` — which is what this command's own
+// example used to show — makes any cloned repository carrying an executable
+// `plugins/flowstate-plugin-*` choose what runs when somebody opens it.
+func TestTheLanguageServerRefusesWorkspaceRelativePluginDirectories(t *testing.T) {
+	for _, dir := range []string{"plugins", "./plugins", filepath.Join("..", "plugins")} {
+		t.Run(dir, func(t *testing.T) {
+			cmd := editorCommand(t)
+			require.NoError(t, cmd.Flags().Set("plugin-dir", dir))
+
+			err := runLSP(cmd, nil)
+			require.Error(t, err,
+				"a workspace-relative plugin directory was accepted, so a cloned "+
+					"repository chooses what the editor executes")
+			assert.Contains(t, err.Error(), "relative")
+			assert.Contains(t, err.Error(), dir,
+				"the refusal does not name the path the operator typed")
+		})
+	}
+}
+
+// TestTheLanguageServerDoesNotReadThePluginDirectoryEnvironment probes the
+// other half, and does it by the *difference between two refusals* rather than
+// by reading a struct.
+//
+// With $FLOWSTATE_PLUGIN_DIR set and a --plugin pin given: if the environment
+// were read, the pin would have somewhere to look, a host would open over that
+// directory and the failure would name the missing plugin. If it is not read,
+// there is nowhere to look and the pin refusal fires instead. The two errors
+// are distinguishable, which is what makes this a test rather than a
+// tautology — and it fails if the pin refusal is ever dropped from this path
+// as well.
+func TestTheLanguageServerDoesNotReadThePluginDirectoryEnvironment(t *testing.T) {
+	t.Setenv(pluginSearchPathEnv, t.TempDir())
+
+	cmd := editorCommand(t)
+	require.NoError(t, cmd.Flags().Set("plugin", "ghost"))
+
+	err := runLSP(cmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nowhere to look",
+		"an editor process inherited a plugin search path that can select workspace code")
+	assert.NotContains(t, err.Error(), pluginSearchPathEnv,
+		"the refusal tells an operator to set a variable this command does not read")
+}
+
+// TestTheLanguageServerKeepsThePluginPinRefusal is #835's check, on the path
+// that had lost it.
+//
+// `flow lsp --plugin foo` with no --plugin-dir must refuse, not start a server
+// having launched nothing and said nothing. The parallel reader the first
+// version of this change introduced dropped exactly this, and only here.
+func TestTheLanguageServerKeepsThePluginPinRefusal(t *testing.T) {
+	cmd := editorCommand(t)
+	require.NoError(t, cmd.Flags().Set("plugin", "ghost"))
+
+	err := runLSP(cmd, nil)
+	require.Error(t, err,
+		"a pinned plugin with nowhere to look started a language server anyway")
+	assert.Contains(t, err.Error(), "ghost")
+	assert.Contains(t, err.Error(), "nowhere to look")
+}
+
+// TestTheLanguageServerHelpAgreesWithWhatItReads.
+//
+// `flow lsp --help` printed "(default [...])" for --plugin-dir, taken from
+// $FLOWSTATE_PLUGIN_DIR, beside usage text saying the variable is not accepted:
+// the command contradicting its own help in the one place an operator has to
+// read. Registration and behaviour are one decision now, and this holds it.
+func TestTheLanguageServerHelpAgreesWithWhatItReads(t *testing.T) {
+	ambient := t.TempDir()
+	t.Setenv(pluginSearchPathEnv, ambient)
+
+	var lspCmd, workerCmd *cobra.Command
+	for _, c := range newRootCommand().Commands() {
+		switch c.Name() {
+		case "lsp":
+			lspCmd = c
+		case "worker":
+			workerCmd = c
+		}
+	}
+	require.NotNil(t, lspCmd, "there is no lsp command")
+	require.NotNil(t, workerCmd, "there is no worker command")
+
+	dir := lspCmd.Flags().Lookup("plugin-dir")
+	require.NotNil(t, dir)
+
+	assert.Equal(t, "[]", dir.DefValue,
+		"`flow lsp --help` prints a plugin-dir default the command does not read")
+	assert.NotContains(t, lspCmd.Flags().FlagUsages(), ambient,
+		"the ambient search path reached the help text of a command that ignores it")
+
+	// The worker is the control: the same flag, registered the ordinary way,
+	// still mirrors the environment — which is what the generated CLI
+	// reference's detection reads, and what #725 landed.
+	assert.Contains(t, workerCmd.Flags().Lookup("plugin-dir").DefValue, ambient,
+		"$"+pluginSearchPathEnv+" stopped reaching the commands that do read it")
+}
+
 // TestTheLanguageServerFailsLoudlyWhenAPluginWillNotStart.
 //
 // Degrading quietly to no plugins is the state this whole path exists to end: an
