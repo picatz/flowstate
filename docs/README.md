@@ -33,6 +33,7 @@ it.
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Putting Flowstate somewhere real: the four-tier isolation model, and each topology as commands and unit files. Read it before sharing a Temporal namespace. |
 | [AUTHORIZATION_FRESHNESS.md](AUTHORIZATION_FRESHNESS.md) | How a deployment orders policy changes, detects rollback and split-brain across a fleet, and what the protected-resource route may and may not reveal about the policy behind it. |
 | [MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md) | Authorizing an agent when `flow mcp` is reachable over HTTP rather than over stdio. |
+| [WORKLOAD_IDENTITY_FEDERATION.md](WORKLOAD_IDENTITY_FEDERATION.md) | The two metadata documents an issuer publishes, what each is for, and what each cloud consumer actually requires. Read it before changing anything a relying party parses. |
 | [reference/mcp.md](reference/mcp.md) | *Generated.* Every MCP tool `flow mcp` serves, derived from the service descriptor. |
 
 ## How it is built, and where it is going

@@ -50,6 +50,15 @@ const (
 // relative to its issuer URL. It is fixed by OpenID Connect Discovery.
 const DiscoveryPath = "/.well-known/openid-configuration"
 
+// WorkloadIssuerMetadataPath is where an [Issuer] publishes
+// [WorkloadIssuerMetadata], relative to its issuer URL.
+//
+// It is a path this project chooses, unlike [DiscoveryPath], because the
+// document served there is a contract this project defines rather than one a
+// specification fixes. Both are served: see [WorkloadIssuerMetadata] for why
+// the OpenID Provider Metadata is not replaced by it.
+const WorkloadIssuerMetadataPath = "/.well-known/workload-identity-configuration"
+
 // builtInClaimNames is the single declaration of the claims an [Issuer] mints
 // itself and advertises through discovery. A carried claim may not use one of
 // these names: a workload whose submitting token contained a claim called "sub"
@@ -596,6 +605,8 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		return nil, fmt.Errorf("%w: key set path %q must begin with %q", ErrInvalidPolicy, issuer.jwksPath, "/")
 	case issuer.jwksPath == DiscoveryPath:
 		return nil, fmt.Errorf("%w: key set path must not be the discovery path %q", ErrInvalidPolicy, DiscoveryPath)
+	case issuer.jwksPath == WorkloadIssuerMetadataPath:
+		return nil, fmt.Errorf("%w: key set path must not be the workload issuer metadata path %q", ErrInvalidPolicy, WorkloadIssuerMetadataPath)
 	case issuer.keyRetention < 0:
 		return nil, fmt.Errorf("%w: key retention must not be negative", ErrInvalidPolicy)
 	}

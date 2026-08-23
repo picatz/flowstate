@@ -59,6 +59,25 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 		require.NotEmpty(t, document["jwks_uri"], "discovery document should name its key set")
 	})
 
+	t.Run("workload issuer metadata answers without a credential", func(t *testing.T) {
+		response, err := server.Client().Get(server.URL + auth.WorkloadIssuerMetadataPath)
+		require.NoError(t, err)
+		defer response.Body.Close()
+
+		require.Equal(t, http.StatusOK, response.StatusCode,
+			"the workload issuer metadata document must be reachable unauthenticated, for "+
+				"the same reason the discovery document is: it is read before there is a "+
+				"credential to read it with")
+
+		var document map[string]any
+		require.NoError(t, json.NewDecoder(response.Body).Decode(&document))
+		require.NotEmpty(t, document["issuer"])
+		require.NotEmpty(t, document["jwks_uri"])
+		require.NotEmpty(t, document["assertion_profiles_supported"],
+			"the document exists to name the assertion profile; without it the endpoint "+
+				"says nothing the discovery document does not")
+	})
+
 	t.Run("the key set answers without a credential", func(t *testing.T) {
 		response, err := server.Client().Get(server.URL + broker.Issuer().JWKSPath())
 		require.NoError(t, err)
@@ -97,7 +116,7 @@ func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	for _, path := range []string{auth.DiscoveryPath, auth.DefaultJWKSPath, "/"} {
+	for _, path := range []string{auth.DiscoveryPath, auth.WorkloadIssuerMetadataPath, auth.DefaultJWKSPath, "/"} {
 		response, err := server.Client().Get(server.URL + path)
 		require.NoError(t, err)
 		response.Body.Close()
