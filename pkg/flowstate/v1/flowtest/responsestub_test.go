@@ -194,6 +194,44 @@ tests:
 	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
 }
 
+// TestResponseStatusOutsideTheWireRangeIsRefused pins the Codex finding on
+// #982: the decoder's int64 narrowed unchecked through the int32 the default
+// outputs carry, so a stub declaring 4294967496 wrapped to 200 and could
+// satisfy a success expectation — a test passing on a status no HTTP response
+// could carry. Both directions of the range are refused before any response
+// is constructed; the wrap-around value is the exact one from the finding,
+// and without the range check the first case here passes.
+func TestResponseStatusOutsideTheWireRangeIsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", shapingWorkflow)
+
+	for name, code := range map[string]string{"wraps to 200": "4294967496", "negative": "-1", "two digits": "99"} {
+		report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: `+name+`
+    workflow: ./workflow.yaml
+    stubs:
+      - step: build
+        response:
+          status_code: `+code+`
+          body: {artifact: x}
+    expect:
+      outputs:
+        artifact: x
+`))
+		c := report.GetCases()[0]
+		require.False(t, c.GetPassed(), "status_code %s must not produce a satisfiable response", code)
+		var account string
+		for _, f := range c.GetFailures() {
+			account += f.GetMessage()
+		}
+		require.Contains(t, account, "must be a three-digit HTTP status",
+			"status_code %s: got error=%q failures=%v", code, c.GetError(), c.GetFailures())
+	}
+}
+
 // TestResponseHeadersAndStringBodyReachTheShaping: headers land in the
 // response scope the shaping reads, a string body arrives verbatim, and an
 // omitted status_code is the ordinary 200.

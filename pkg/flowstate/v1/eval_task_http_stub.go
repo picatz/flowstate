@@ -63,6 +63,18 @@ func decodeHTTPStubResponse(response map[string]*Value) (statusCode int, header 
 			if !ok {
 				return 0, nil, nil, fmt.Errorf("response status_code must be an integer, got %T", native)
 			}
+			// The HTTP wire range, before any narrowing conversion: Go's own
+			// response parser accepts exactly three digits, so anything else
+			// is a response no transport could have produced — and the
+			// unchecked int64 would otherwise wrap through the int32 the
+			// default outputs carry, so a stub declaring 4294967496 would
+			// read back as a 200 and could satisfy a success expectation
+			// (Codex, #982).
+			if code < 100 || code > 999 {
+				return 0, nil, nil, fmt.Errorf(
+					"response status_code must be a three-digit HTTP status (100-999), got %d — "+
+						"a value no HTTP response could carry", code)
+			}
 			statusCode = int(code)
 		case "body":
 			switch b := native.(type) {
