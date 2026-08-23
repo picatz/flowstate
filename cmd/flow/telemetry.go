@@ -43,10 +43,17 @@ import (
 // server and the worker.
 //
 // This file turns both on, gated the way the ecosystem already gates it: the
-// standard OTEL_EXPORTER_OTLP_ENDPOINT variable. Unset means everything stays
-// exactly as it was — no exporter, no goroutines, no network, no global
-// propagator — which keeps invariant 8: a first run needs nothing, and
-// telemetry is a deployment's choice rather than a default phone-home.
+// standard OTEL_* variables, per signal. An OTEL_EXPORTER_OTLP_ENDPOINT — or a
+// signal's own endpoint — enables the signals it names, and
+// OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER and OTEL_LOGS_EXPORTER select or
+// disable one each, with `none` winning over any endpoint and `otlp` enabling a
+// signal that has no endpoint at all (the exporter then uses its own localhost
+// default). Set none of them and everything stays exactly as it was — no
+// exporter, no goroutines, no network, no global propagator — which keeps
+// invariant 8: a first run needs nothing, and telemetry is a deployment's
+// choice rather than a default phone-home. [telemetryConfigFromEnv] resolves
+// the whole switchboard, and it is the only place that decides whether a signal
+// is on.
 //
 // Three things here are less obvious than the exporters, and each of them was
 // a way the telemetry was on and still useless:
@@ -88,6 +95,13 @@ const telemetryFlushTimeout = 5 * time.Second
 // send things. Traces-only is the deployment that failed this way: the SDK
 // would have exported them and this said no.
 //
+// The endpoints are not the whole gate any more, and this delegates the whole
+// of it to [telemetryConfigFromEnv]: OTEL_TRACES_EXPORTER, OTEL_METRICS_EXPORTER
+// and OTEL_LOGS_EXPORTER can enable a signal with no endpoint set anywhere and
+// disable one with an endpoint set, so an endpoint-only reading is wrong in both
+// directions and there is one resolver rather than a predicate with a second
+// opinion.
+//
 // OTEL_EXPORTER_OTLP_LOGS_ENDPOINT used to be excluded, and the exclusion was
 // right for as long as it lasted: honouring a variable about logs would have
 // started a tracer and a meter and nothing else, because nothing here exported
@@ -104,12 +118,22 @@ const telemetryFlushTimeout = 5 * time.Second
 // are the same question. Two functions with identical bodies would be one
 // meaning written down twice, and the copy that drifts is the one nothing runs.
 //
-// A malformed OTEL_*_EXPORTER reads as unconfigured here. That is the
-// fail-closed direction — an unparsed setting must not switch propagation on —
-// and it is not how an operator finds out: [initTelemetry] returns the same
-// error and refuses to start.
+// A malformed OTEL_*_EXPORTER reads as unconfigured here, whichever signal it
+// names. That is the fail-closed direction — an unparsed setting must not
+// switch propagation on — and it takes an explicit check on the error rather
+// than a reading of the resolved config, because [telemetryConfigFromEnv]
+// returns whatever it had resolved before the bad selector alongside the
+// error: OTEL_METRICS_EXPORTER=bogus beside a working traces endpoint comes
+// back as {traces: true} with an error, so discarding the error would make
+// this sentence true only of OTEL_TRACES_EXPORTER, the first selector
+// resolved. None of this is how an operator finds out: [initTelemetry] returns
+// the same error, naming the variable and the value, and refuses to start.
 func telemetryConfigured() bool {
-	c, _ := telemetryConfigFromEnv()
+	c, err := telemetryConfigFromEnv()
+	if err != nil {
+		return false
+	}
+
 	return c.traces || c.metrics || c.logs
 }
 
@@ -277,6 +301,15 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 // constructors declare still says they can fail, and a caller that gets it
 // wrong leaks a live batch processor into a process that has been told it has
 // no telemetry, so the failure is arranged here rather than left untested.
+//
+// A package-level var a test reassigns is a data race waiting for the test that
+// runs beside it, and what keeps it from being one is not a convention: every
+// path to [initTelemetry] is decided by the OTEL_* environment, so every test
+// that reaches it sets those with t.Setenv, and t.Setenv panics in a test that
+// has called t.Parallel. A parallel test that swapped one of these could not
+// have arranged an environment to reach it in the first place. Keep it that
+// way — reaching initTelemetry from a parallel test would need a seam of its
+// own rather than this one.
 var (
 	newTraceExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
 		return otlptracehttp.New(ctx)

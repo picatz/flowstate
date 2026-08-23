@@ -916,9 +916,19 @@ reimplement it, and this is exactly that call.
 
 ## Metrics
 
-Telemetry is OTLP push, gated on the standard `OTEL_EXPORTER_OTLP*`
-environment variables — unset means nothing is emitted at all: no exporter,
-no goroutines, no network (`telemetryConfigured`, `cmd/flow/telemetry.go:98-103`).
+Telemetry is OTLP push, gated per signal on the standard `OTEL_*` environment
+variables (`telemetryConfigFromEnv` in `cmd/flow/telemetry.go`). An
+`OTEL_EXPORTER_OTLP_ENDPOINT`, or one of the signal-specific
+`OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT`, enables the signals it
+names; `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` and `OTEL_LOGS_EXPORTER`
+select one signal each — `none` disables it whatever endpoint is set, and
+`otlp` enables it even with no endpoint anywhere, in which case the exporter
+uses its own `http://localhost:4318` default. Any other value is refused at
+startup with a message naming the variable and the value. Traces, metrics and
+logs are therefore independent: exporting metrics alone builds no tracer
+provider and no log exporter. Ask for no signal — set none of these variables,
+or set every selector to `none` — and nothing is emitted at all: no exporter,
+no goroutines, no network, no global propagator.
 There is no Prometheus-shaped `/metrics` scrape endpoint on either listener;
 [internalHandler](#health-checks-and-probes)'s own doc comment says why —
 standing one up means a second telemetry pipeline (a registry plus an

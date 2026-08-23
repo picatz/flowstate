@@ -717,30 +717,54 @@ func devUIURL(port int) string {
 //   - A general endpoint with all three selectors set to none exports nothing.
 //     An endpoint-only reading names a collector no signal is going to.
 //
-// So the predicate decides whether there is anything to say, and the endpoint
-// reads decide what to call it — with the exporters' own default named
-// explicitly for the first case, since a selector can enable a signal without
-// any endpoint being set. It is the otlphttp default rather than the gRPC one
+// So the resolved config decides whether there is anything to say, and *which*
+// signal's endpoint says it. Reading the four endpoints in a fixed order
+// regardless of the config is the same bug one step further in: with
+// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://traces:4318 and
+// OTEL_TRACES_EXPORTER=none beside an enabled metrics signal pointed at another
+// collector, a fixed order names the traces collector — again a host no signal
+// is going to, this time while telemetry really is on. The banner therefore
+// names the first *enabled* signal's effective endpoint, resolved the way the
+// SDK resolves it: the signal's own variable, then the general one, then the
+// exporters' own default — the otlphttp default rather than the gRPC one,
 // because these are the http exporters ([initTelemetry] builds otlp*http).
 //
-// The endpoints are written as four literal reads rather than a loop over a
-// slice of names, which is what [telemetryConfigFromEnv] does and for the same
-// reason: the env-var reference is kept honest by a test that reads every
-// os.Getenv call site in the tree, and a name that arrives as a variable is a
-// read it cannot resolve. A loop here would have to be exempted from that
-// check, which is a hole in the shape of the thing the check defends.
+// One endpoint for up to three signals is a real loss, and it is the banner's
+// shape rather than an oversight: a deployment splitting signals across
+// collectors gets the first of them named and the others not. The line is one
+// line, and the alternative — three lines, usually identical — costs every
+// ordinary deployment to describe an unusual one. `flow server dev` is the
+// local-development command; the operator-facing account of the whole
+// switchboard is [telemetryConfigFromEnv] and docs/DEPLOYMENT.md.
+//
+// The endpoints are written as literal reads rather than a loop over a slice of
+// names, which is what [telemetryConfigFromEnv] does and for the same reason:
+// the env-var reference is kept honest by a test that reads every os.Getenv
+// call site in the tree, and a name that arrives as a variable is a read it
+// cannot resolve. A loop here would have to be exempted from that check, which
+// is a hole in the shape of the thing the check defends.
 func devOTLPEndpoint() string {
-	if !telemetryConfigured() {
+	// The resolver rather than [telemetryConfigured], because this needs to know
+	// which signal is on and not merely that one is. A malformed selector is an
+	// error there and silence here, which is the same fail-closed answer that
+	// predicate gives: the process refuses to start, so the banner has nothing
+	// truthful to name.
+	config, err := telemetryConfigFromEnv()
+	if err != nil {
 		return ""
 	}
 
-	return cmp.Or(
-		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
-		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"),
-		os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"),
-		"http://localhost:4318",
-	)
+	general := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	switch {
+	case config.traces:
+		return cmp.Or(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"), general, "http://localhost:4318")
+	case config.metrics:
+		return cmp.Or(os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"), general, "http://localhost:4318")
+	case config.logs:
+		return cmp.Or(os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"), general, "http://localhost:4318")
+	}
+
+	return ""
 }
 
 // devStartError explains a Temporal dev server that would not come up.
