@@ -332,7 +332,7 @@ func TestParentBoundIsEnforcedBeforeTheParentsAreExpanded(t *testing.T) {
 		t.Fatalf("SetEncodedObject: %v", err)
 	}
 
-	iter := newMultiRootCommitIter(repo, []plumbing.Hash{hash}, map[plumbing.Hash]bool{})
+	iter := newMultiRootCommitIter(repo, []plumbing.Hash{hash}, map[plumbing.Hash]bool{}, nil)
 	if _, err := iter.Next(); !errors.Is(err, errCommitMetadataTooLarge) {
 		t.Fatalf("Next: err = %v, want errCommitMetadataTooLarge", err)
 	}
@@ -340,6 +340,97 @@ func TestParentBoundIsEnforcedBeforeTheParentsAreExpanded(t *testing.T) {
 		t.Fatalf("the walk's stack holds %d hashes after the refusal, want 0 - the parents were "+
 			"expanded onto it before the bound refused them, which is the allocation the bound "+
 			"exists to prevent", got)
+	}
+}
+
+// TestGitLogSinceExcludesAnOctopusMergeFromTheParentBound is issue #717: a
+// since window that would already exclude an octopus merge (more than
+// maxLogParents parents) must let the walk decline to expand it, rather
+// than fail with errCommitMetadataTooLarge. Before the fix, since was
+// applied only by an outer object.NewCommitLimitIterFromIter wrapped
+// around multiRootCommitIter - so the octopus merge was still fully
+// resolved, its parent count still checked, and the walk still refused,
+// even though since's own cutoff, evaluated first, would have excluded it
+// outright. classifyGitError turns that refusal into InvalidInput whose
+// own suggested remedy ("narrow the walk with since or path") could never
+// actually have helped, because the cutoff never got a chance to prevent
+// the expansion.
+//
+// The octopus merge and the commit after it are built the same way
+// TestParentBoundIsEnforcedBeforeTheParentsAreExpanded builds its own
+// oversized commit: encoded directly into the repository's object store,
+// since no history a test could actually push has this shape.
+func TestGitLogSinceExcludesAnOctopusMergeFromTheParentBound(t *testing.T) {
+	remote := newBareRemote(t)
+	root := seedRemote(t, remote, "main")
+	repo, err := git.PlainOpen(remote)
+	if err != nil {
+		t.Fatalf("PlainOpen: %v", err)
+	}
+	realRoot, err := repo.CommitObject(root)
+	if err != nil {
+		t.Fatalf("CommitObject: %v", err)
+	}
+
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	// The octopus merge itself, dated before cutoff and carrying more
+	// parents than maxLogParents reads - none of which resolve to a real
+	// object, proving the walk never even looks at them once since
+	// excludes the commit that would have expanded into them.
+	monster := *realRoot
+	monster.ParentHashes = make([]plumbing.Hash, maxLogParents+1)
+	for i := range monster.ParentHashes {
+		monster.ParentHashes[i] = plumbing.NewHash(fmt.Sprintf("%040x", i+1))
+	}
+	monster.Committer = object.Signature{Name: "A", Email: "a@example.com", When: older}
+	monster.Author = monster.Committer
+	monsterEncoded := repo.Storer.NewEncodedObject()
+	if err := monster.Encode(monsterEncoded); err != nil {
+		t.Fatalf("Encode monster: %v", err)
+	}
+	monsterHash, err := repo.Storer.SetEncodedObject(monsterEncoded)
+	if err != nil {
+		t.Fatalf("SetEncodedObject monster: %v", err)
+	}
+
+	// A single, in-range commit whose sole parent is the octopus merge -
+	// what puts the octopus on the walk's own frontier, reachable only
+	// after this commit is emitted.
+	head := *realRoot
+	head.ParentHashes = []plumbing.Hash{monsterHash}
+	head.Committer = object.Signature{Name: "A", Email: "a@example.com", When: newer}
+	head.Author = head.Committer
+	head.Message = "the commit since should still return"
+	headEncoded := repo.Storer.NewEncodedObject()
+	if err := head.Encode(headEncoded); err != nil {
+		t.Fatalf("Encode head: %v", err)
+	}
+	headHash, err := repo.Storer.SetEncodedObject(headEncoded)
+	if err != nil {
+		t.Fatalf("SetEncodedObject head: %v", err)
+	}
+
+	commits, truncated, baseIter, err := walkPage(repo, []plumbing.Hash{headHash}, map[plumbing.Hash]bool{},
+		logParams{maxCommits: maxMaxCommits, since: cutoff})
+	if err != nil {
+		t.Fatalf("walkPage: %v, want success - since's own cutoff should have excluded the octopus "+
+			"merge before its parent count was ever checked", err)
+	}
+	if truncated {
+		t.Fatalf("truncated = true, want false - nothing since would have returned remains unexplored")
+	}
+	if len(commits) != 1 {
+		t.Fatalf("len(commits) = %d, want 1 (only the commit after the cutoff)", len(commits))
+	}
+	if commits[0].Sha != headHash.String() {
+		t.Fatalf("commits[0].sha = %s, want %s", commits[0].Sha, headHash)
+	}
+	if got := len(baseIter.Frontier()); got != 0 {
+		t.Fatalf("frontier holds %d hashes, want 0 - the octopus merge was excluded, not merely "+
+			"deferred, so nothing remains to resume", got)
 	}
 }
 

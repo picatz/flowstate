@@ -8,10 +8,10 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
-// registerPluginIdentityTask puts [tests.PluginIdentityTaskDef] where the
+// registerPluginIdentityTask puts [conformance.PluginIdentityTaskDef] where the
 // durable driver's activities can actually find it.
 //
 // The activity that executes a step runs in a fresh context.Context Temporal
@@ -27,19 +27,19 @@ import (
 // one-way door for the same reason and the same fix.
 //
 // needsScope selects which unauthorized entry point the workflow schedules —
-// see [tests.PluginIdentityTaskDef]'s doc for why both are worth exercising
+// see [conformance.PluginIdentityTaskDef]'s doc for why both are worth exercising
 // separately. Register overwrites rather than erroring on a name already
 // present, so reusing the one global name across these tests — run
 // sequentially, none opting into t.Parallel — is safe.
 func registerPluginIdentityTask(t *testing.T, needsScope bool) {
 	t.Helper()
-	require.NoError(t, v1.DefaultRegistry().Register(tests.PluginIdentityTaskDef(needsScope)))
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.PluginIdentityTaskDef(needsScope)))
 }
 
 // runPluginIdentityDurable installs identity the way the durable driver
 // actually does it in production — as [v1.RunState.Identity], read by
 // engine/runtime.go's taskActivities.context and engine/activities.go's Task
-// and TaskInScope — and runs [tests.PluginIdentityStep] through [engine.Run]
+// and TaskInScope — and runs [conformance.PluginIdentityStep] through [engine.Run]
 // on a Temporal test environment.
 func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.WorkloadIdentity) (subject, namespace string, present bool) {
 	t.Helper()
@@ -50,7 +50,7 @@ func runPluginIdentityDurable(t *testing.T, needsScope bool, identity *v1.Worklo
 	engine.Register(env)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
-		Workflow: tests.PluginIdentityStep("plugin-identity-durable", "call"),
+		Workflow: conformance.PluginIdentityStep("plugin-identity-durable", "call"),
 		Identity: identity,
 	})
 	require.True(t, env.IsWorkflowCompleted())

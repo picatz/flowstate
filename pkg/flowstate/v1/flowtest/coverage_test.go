@@ -478,3 +478,177 @@ tests:
 		"a failed run must not credit steps it never reached")
 	assert.Equal(t, 5, coverage.Total())
 }
+
+// sharedStepIDWorkflow is two isolated `for_each` bodies that legally name a step
+// the same, with only the first body's copy ever running.
+//
+// A step id is unique within one scope and not within a workflow: the validator's
+// nesting rule refuses an id that collides with a step the body is nested
+// *inside*, and says nothing about two bodies beside each other, so `notify` may
+// name a step in both. Both loops run one item; the second body's `notify` is
+// gated on an item the loop never carries, so it is a step no case has ever run.
+const sharedStepIDWorkflow = `edition: v2026.3
+name: shared-step-ids
+steps:
+  - id: first
+    for_each:
+      items: ${['a']}
+      as: item
+      steps:
+        - id: notify
+          log:
+            message: ${'first body saw ' + item}
+  - id: second
+    for_each:
+      items: ${['a']}
+      as: item
+      steps:
+        - id: notify
+          if: ${item == 'never-carried'}
+          log:
+            message: ${'second body saw ' + item}
+`
+
+// TestTwoStepsSharingAnIDAreMeasuredApart is issue #821 in the negative
+// direction CLAUDE.md insists on: exercising a step in one isolated body must
+// not report a *different* step of the same name, in another body, covered.
+//
+// Keyed by step id, the two declarations shared one entry in the reached set, so
+// running the first body's `notify` credited the second body's — and
+// `--coverage-required` passed with a genuinely untested step, the fail-open
+// direction the unit exists to close. Measurement is keyed by the declaration's
+// structural path instead, the same identity #817 gave a switch arm, and a name
+// answering to several declarations reports the fail-closed answer.
+//
+// Reverting the keying change fails here: `notify` moves into Reached, Unreached
+// empties, and Gaps reports nothing to fix.
+func TestTwoStepsSharingAnIDAreMeasuredApart(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", sharedStepIDWorkflow)
+	writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: both loops run one item each
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [first, second]
+`)
+
+	report, coverages := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
+	require.Empty(t, report.GetRefused())
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "case %q failed: %v", c.GetName(), c.GetFailures())
+	}
+	require.Len(t, coverages, 1)
+	coverage := coverages[0]
+
+	// The claim: the second body's `notify` is untested, so the name is
+	// unreached however thoroughly the first body's copy was exercised.
+	assert.Equal(t, []string{"notify"}, coverage.Unreached,
+		"a step no case ran must stay unreached, even where another body runs a step of the same name")
+	assert.Equal(t, []string{"notify"}, coverage.Gaps(),
+		"an untested step with no recorded reason is what --coverage-required fails on")
+
+	// And the measurement did not simply stop crediting anything: both loop
+	// containers ran and are reached, and the workflow still accounts for the
+	// three names an author can read in the file.
+	assert.Equal(t, []string{"first", "second"}, coverage.Reached)
+	assert.Equal(t, 3, coverage.Total())
+	assert.Empty(t, coverage.Accepted)
+	assert.Empty(t, coverage.Stale)
+}
+
+// TestARecordedResidualSpeaksForEveryStepAnsweringToItsName pins the decision
+// #821 asks for about `coverage.allow_unreached`: an entry names a step *id*, so
+// where an id answers to more than one declaration the entry speaks for all of
+// them — the same reading #817 chose for an ambiguous switch arm key, and the
+// only one available when the name cannot tell them apart.
+//
+// The consequence worth stating plainly: this record cannot say "the second
+// body's copy is the one I accept". It is not a gap in the mechanism so much as
+// the cost of naming residuals by a name that is not an identity, and it errs the
+// safe way — the entry is judged a real residual precisely because some `notify`
+// is unreached, so it can never quietly cover a workflow where every `notify`
+// ran. That case is the second half of this test: it is reported stale.
+func TestARecordedResidualSpeaksForEveryStepAnsweringToItsName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", sharedStepIDWorkflow)
+
+	t.Run("an entry naming an ambiguous id accepts it", func(t *testing.T) {
+		writeFile(t, dir+"/ok.test.yaml", `
+tests:
+  - name: both loops run one item each
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [first, second]
+coverage:
+  allow_unreached:
+    notify: the second body's copy needs an item this suite cannot supply
+`)
+
+		report, coverages := flowtest.RunFileWithCoverage(dir + "/ok.test.yaml")
+		require.Empty(t, report.GetRefused())
+		require.Len(t, coverages, 1)
+		coverage := coverages[0]
+
+		assert.Equal(t, []string{"notify"}, coverage.Unreached)
+		assert.Empty(t, coverage.Gaps(), "the record turns the residual into a decision")
+		assert.Contains(t, coverage.Accepted, "notify")
+		assert.Empty(t, coverage.Stale)
+	})
+
+	t.Run("an entry naming an id every declaration of which ran is stale", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir+"/workflow.yaml", `edition: v2026.3
+name: both-bodies-run
+steps:
+  - id: first
+    for_each:
+      items: ${['a']}
+      as: item
+      steps:
+        - id: notify
+          log:
+            message: ${'first body saw ' + item}
+  - id: second
+    for_each:
+      items: ${['a']}
+      as: item
+      steps:
+        - id: notify
+          log:
+            message: ${'second body saw ' + item}
+`)
+		writeFile(t, dir+"/x.test.yaml", `
+tests:
+  - name: both bodies run their notify
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [first, second]
+coverage:
+  allow_unreached:
+    notify: kept past the branch it explained
+`)
+
+		report, coverages := flowtest.RunFileWithCoverage(dir + "/x.test.yaml")
+		require.Empty(t, report.GetRefused())
+		require.Len(t, coverages, 1)
+		coverage := coverages[0]
+
+		assert.Empty(t, coverage.Unreached, "every declaration of `notify` ran")
+		require.Len(t, coverage.Stale, 1)
+		assert.Contains(t, coverage.Stale[0], `names "notify", but a case reached it`)
+	})
+}

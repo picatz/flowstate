@@ -53,15 +53,15 @@ func (e *vocabularyExchanger) Exchange(_ context.Context, assertion Assertion) (
 // assertion would carry, so a test cannot pass by the two happening to agree.
 func callerFixture() (WorkloadIdentity, StepRef) {
 	return WorkloadIdentity{
-			Subject:    "spiffe://acme/ci-runner",
-			Issuer:     "https://token.actions.githubusercontent.com",
-			Namespace:  "team-a",
-			Deployment: "prod",
-		}, StepRef{
-			Workflow: "deploy",
-			Run:      "run-1",
-			Step:     "push",
-		}
+		Subject:    "spiffe://acme/ci-runner",
+		Issuer:     "https://token.actions.githubusercontent.com",
+		Namespace:  "team-a",
+		Deployment: "prod",
+	}, StepRef{
+		Workflow: "deploy",
+		Run:      "run-1",
+		Step:     "push",
+	}
 }
 
 func TestIdentityIsTheCallerAndWorkloadIsTheAssertion(t *testing.T) {

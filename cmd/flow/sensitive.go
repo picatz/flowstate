@@ -34,11 +34,15 @@ import (
 // # The fail-closed case this schema forces
 //
 // Whether a named value is sensitive is a fact about the *workflow specification*
-// that produced it — [v1.Workflow.DeclaredOutputs] — and that specification travels
-// with the caller only when the caller just submitted it: `flow run`, `flow run
-// local`, and the `flowstate_run_local` MCP tool all hold the parsed [*v1.Workflow]
-// they started the run with, so redaction there is precise — only what the file
-// itself marked `sensitive: true` is withheld, and nothing else changes.
+// that produced it — [v1.Workflow.DeclaredOutputs] — and it is the specification
+// that *executed*, which is not always the one a caller submitted. `flow run
+// local` and the `flowstate_run_local` MCP tool run the parsed [*v1.Workflow] in
+// this same process, so there is no gap between the two and redaction is precise:
+// only what the file itself marked `sensitive: true` is withheld. `flow run` sends
+// its copy to a deployment that may hold one of its own under that name and run
+// that instead, so it redacts precisely only against a server attestation that the
+// two are the same specification, and falls back to the fail-closed case below
+// otherwise — see [executedSpecification].
 //
 // `flow get <id>`, `flow watch <id>`, and the generic per-RPC MCP tools (a
 // `flowstate_get` call, or `flow watch` polling on a later, separate invocation)
@@ -122,6 +126,67 @@ func sensitiveOutputNames(workflow *v1.Workflow) map[string]bool {
 	return names
 }
 
+// executedSpecification is the specification a follow may redact against: the one
+// this process submitted, when the server attested that it is also the one that
+// ran, and nil — the fail-closed case every function above already handles —
+// otherwise.
+//
+// # The gap this closes (#734)
+//
+// A deployment may register its own copy of a workflow under a name a caller
+// submits, and the server then executes the *registered* copy: that substitution
+// is what makes `manual: denied` authorization policy rather than caller input
+// (see the server's trustedWorkflow). `flow run` parsed a file, submitted it, and
+// then redacted the run's outputs against that file — the copy it *sent*, which in
+// exactly the case the substitution exists for is not the copy that ran. An output
+// the deployment's copy marks `sensitive: true` and the submitted copy does not was
+// printed in the clear, with no `--reveal-sensitive` typed, because the local file
+// said it was ordinary.
+//
+// Holding a specification is therefore not sufficient grounds to redact against it.
+// The grounds are the server saying that the specification held is the one that
+// ran, which is what [v1.RunResponse.RanSubmittedSpecification] answers — and
+// answers false both for a substitution and for a server too old to have an
+// opinion, since a client cannot tell a deliberate silence from an absent one and
+// must not treat either as assent.
+//
+// The cost is stated rather than hidden: a run whose specification *was*
+// substituted loses the precise view, and every declared output is withheld
+// instead of only the sensitive ones. That is the same answer `flow watch <id>`
+// has always given for a run it did not start, for the same reason — nothing
+// present can say which names are sensitive — and the alternative is printing a
+// value the deployment declared secret.
+func executedSpecification(submitted *v1.Workflow, started *v1.RunResponse) *v1.Workflow {
+	if !started.RanSubmittedSpecification() {
+		return nil
+	}
+
+	return submitted
+}
+
+// noteUnattestedSpecification says why a follow is about to withhold outputs it
+// would ordinarily have shown, once, before the view starts.
+//
+// Without it the degraded view is indistinguishable from a bug: an author who
+// wrote a file declaring one sensitive output among five sees all five withheld
+// and has nothing on screen connecting that to a specification they did not
+// write.
+//
+// It names both readings, because the client genuinely cannot tell them apart —
+// a deployment-owned copy ran instead of this file, or the server is older than
+// the attestation — and picking one would be this command asserting something it
+// does not know. Either way the consequence is the same and is the part an author
+// has to act on.
+//
+// stderr, and once per invocation, for the reasons [noteRevealedSensitiveValues]
+// gives.
+func noteUnattestedSpecification(surface *ui.UI) {
+	fmt.Fprintf(surface.Err, "%s the server did not confirm this run executes the file submitted — a "+
+		"deployment-owned copy may have replaced it, or the server predates the attestation — so every "+
+		"declared output is withheld rather than guessed at\n",
+		surface.ErrTheme.Pill(ui.ToneWarning, "unattested"))
+}
+
 // redactRunOutputsValues returns values with every entry this call site cannot
 // vouch for replaced by [redactedValue].
 //
@@ -165,9 +230,20 @@ func redactRunOutputs(outputs *v1.RunOutputs, sensitive map[string]bool, reveal 
 	return &v1.RunOutputs{Values: redactRunOutputsValues(outputs.GetValues(), sensitive, reveal)}
 }
 
-// stepTranscriptMarker is what every named value in the step transcript renders
-// as once it is withheld — see [redactStepValues] for when that is.
-const stepTranscriptMarker = "step transcript withheld: workflow declares a sensitive output"
+// The two reasons a step transcript is withheld, which are not the same reason
+// and must not read as though they were — see [redactStepValues] for when each
+// applies.
+//
+// A reader who is told the workflow declared something sensitive goes and looks
+// at the file. On the fail-closed path there is no file to look at: `flow get`
+// deliberately holds no specification, and a follow whose specification the
+// server did not attest has one it is not entitled to redact against. Telling
+// that reader about a declaration is telling them about something this process
+// never saw.
+const (
+	stepTranscriptMarkerDeclared   = "step transcript withheld: this run's workflow declares sensitive data"
+	stepTranscriptMarkerUnverified = "step transcript withheld: this view holds no specification to check against"
+)
 
 // redactStepValues implements this file's answer to the gap Codex found on PR
 // #212: a declared output computed from a step's output — `outputs.token.value:
@@ -220,7 +296,7 @@ const stepTranscriptMarker = "step transcript withheld: workflow declares a sens
 // ran, and which named outputs each produced — because that information is
 // already implied by the workflow specification itself (an author who wrote the
 // file already knows its step ids and output names); only the values change,
-// to [stepTranscriptMarker], so `flow watch`'s step-progress display still shows
+// to one of the two markers above, so `flow watch`'s step-progress display still shows
 // a run advancing rather than going dark the moment a workflow declares anything
 // sensitive.
 func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]bool, reveal bool) map[string]*v1.Node_Outputs {
@@ -238,12 +314,17 @@ func redactStepValues(values map[string]*v1.Node_Outputs, sensitive map[string]b
 		return values
 	}
 
+	marker := stepTranscriptMarkerDeclared
+	if sensitive == nil {
+		marker = stepTranscriptMarkerUnverified
+	}
+
 	redacted := make(map[string]*v1.Node_Outputs, len(values))
 	for stepID, outputs := range values {
 		named := outputs.GetNamedValues()
 		redactedNamed := make(map[string]*v1.Value, len(named))
 		for name := range named {
-			redactedNamed[name] = redactedValue(stepTranscriptMarker)
+			redactedNamed[name] = redactedValue(marker)
 		}
 		redacted[stepID] = &v1.Node_Outputs{NamedValues: redactedNamed}
 	}
@@ -289,7 +370,13 @@ func redactStepOutputs(outputs *v1.Workflow_StepOutputs, sensitive map[string]bo
 // message), and both must see the redacted answer rather than one of them racing
 // ahead of a mutation to the original.
 func redactGetResponse(response *v1.GetResponse, workflow *v1.Workflow, reveal bool) *v1.GetResponse {
-	if response == nil || response.GetRunOutputs() == nil || reveal {
+	// The transcript is checked as well as the run outputs, because a run that
+	// declared no outputs has a nil RunOutputs and a full step transcript — and
+	// returning early on RunOutputs alone made the fail-closed path in
+	// [redactStepValues] unreachable for exactly those runs. `flow get <id>`
+	// passes a nil workflow on purpose so that everything is withheld, and it
+	// was printing the whole transcript in the clear instead.
+	if response == nil || reveal || (response.GetRunOutputs() == nil && response.GetOutputs() == nil) {
 		return response
 	}
 

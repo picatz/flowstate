@@ -341,20 +341,23 @@ func doLogWithBounds(ctx context.Context, p logParams, cloneDepthSteps []int, ma
 // because Frontier() itself is computed later, after the caller decides
 // whether the result is usable.
 func walkPage(repo *git.Repository, roots []plumbing.Hash, emittedSet map[plumbing.Hash]bool, p logParams) ([]*gitv1.Commit, bool, *multiRootCommitIter, error) {
-	baseIter := newMultiRootCommitIter(repo, roots, emittedSet)
+	// since is passed into the iterator itself, not applied by a wrapping
+	// object.NewCommitLimitIterFromIter, so the walk can decline to expand
+	// a too-old commit's parents rather than merely discard the commit
+	// after fully resolving it - see multiRootCommitIter.Next's own
+	// comment, and issue #717, for why applying since only as an outer
+	// filter lets an octopus merge past maxLogParents fail the walk even
+	// when since's own cutoff would have excluded it.
+	var since *time.Time
+	if !p.since.IsZero() {
+		s := p.since
+		since = &s
+	}
+	baseIter := newMultiRootCommitIter(repo, roots, emittedSet, since)
 	var iter object.CommitIter = baseIter
 	if p.path != "" {
 		path := p.path
 		iter = newPathFilteringCommitIter(iter, baseIter.PushBack, func(candidate string) bool { return pathMatchesFilter(candidate, path) })
-	}
-	if !p.since.IsZero() {
-		// commitLimitIter (object.NewCommitLimitIterFromIter) consumes its
-		// source exactly one commit at a time with no lookahead - unlike
-		// the path filter above, it has no interaction with
-		// baseIter.Frontier() to worry about, so go-git's own helper is
-		// used here unchanged.
-		since := p.since
-		iter = object.NewCommitLimitIterFromIter(iter, object.LogLimitOptions{Since: &since})
 	}
 	defer iter.Close()
 

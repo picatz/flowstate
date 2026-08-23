@@ -1,9 +1,6 @@
 edition: v2026.3
 name: computed-durations
-description: >-
-  Sizes a grace period and an approval deadline from its inputs, so one
-  definition serves a trial signup and an enterprise contract unedited.
-
+description: Sizes a grace period and an approval deadline from its inputs, so one definition serves a trial signup and an enterprise contract unedited.
 # `wait-until-a-moment` computes *when* a wait ends. This one computes *how
 # long* it lasts, which used to be the one thing a wait could not say: `sleep:`
 # and `wait_for_signal:`'s `timeout:` took a literal and nothing else, so a
@@ -24,14 +21,13 @@ description: >-
 # is deliberately far future - a contract deadline that never goes stale - so
 # the computed timeout is enormous and nothing but an answer ends the gate. That
 # is `approval-gate`'s convention, not a quirk of this file.
-
 inputs:
   plan:
     type: string
     required: true
-    example: growth
-    must: 'this in ["starter", "growth", "enterprise"]'
     description: which contract this tenant is on, which is what sizes the grace period
+    example: growth
+    must: this in ["starter", "growth", "enterprise"]
 
   # A string rather than a duration, because there is no duration among the six
   # types an input may declare: those are the shapes a *caller* can send, and
@@ -41,19 +37,13 @@ inputs:
   quiet_period:
     type: string
     required: true
+    description: how long to let provisioning settle before anything else happens, written the way a duration is written anywhere else in the DSL - 30s, 5m, 1h, 7d
     example: 30m
-    description: >-
-      how long to let provisioning settle before anything else happens, written
-      the way a duration is written anywhere else in the DSL - 30s, 5m, 1h, 7d
-
   sign_off_by:
     type: string
     required: true
-    example: "2099-01-01T00:00:00Z"
-    description: >-
-      the absolute moment sign-off has to arrive by, as RFC 3339 - a contract
-      deadline, which is a thing a caller knows and a duration is not
-
+    description: the absolute moment sign-off has to arrive by, as RFC 3339 - a contract deadline, which is a thing a caller knows and a duration is not
+    example: 2099-01-01T00:00:00Z
 steps:
   - id: announce
     log:
@@ -82,7 +72,7 @@ steps:
   # Quoted because of YAML rather than because of the expression: a plain scalar
   # cannot contain a colon followed by a space, and a conditional has one.
   - id: grace
-    sleep: '${inputs.plan == "enterprise" ? seconds(4) : seconds(1)}'
+    sleep: '${(inputs.plan == "enterprise") ? seconds(4) : seconds(1)}'
 
   # A timeout computed from `now`, which is the clock the wait is evaluated
   # against - `workflow.Now` under Temporal, so it replays to the same instant.
@@ -95,10 +85,7 @@ steps:
   - id: sign_off
     wait_for_signal:
       name: onboarding-signed-off
-      timeout: >-
-        ${timestamp(inputs.sign_off_by) > now
-            ? timestamp(inputs.sign_off_by) - now
-            : duration("0s")}
+      timeout: '${(timestamp(inputs.sign_off_by) > now) ? (timestamp(inputs.sign_off_by) - now) : duration("0s")}'
       outputs:
         # Shape the answer once, here, on the step that produced it, the same
         # way approval-gate shapes its gate. "signed off" was written twice
@@ -109,29 +96,24 @@ steps:
         # `.?` reads a field the payload may not carry — a lapsed gate has no
         # payload, and a signal is free to arrive without the field — with the
         # default sitting beside the read instead of a guard in front of it.
-        outcome: >-
-          ${payload.?approved.orValue(false) ? "signed_off" : "unsigned"}
+        outcome: '${payload.?approved.orValue(false) ? "signed_off" : "unsigned"}'
         # Re-exposed because `outputs:` replaces what the wait produced: the
         # `outcome` output below still reads `timed_out` to tell a lapsed
         # deadline apart from a plain answer.
         timed_out: ${timed_out}
-
   - id: activate
     if: ${steps.sign_off.outcome == "signed_off"}
     log:
       message: ${"%s tenant signed off, activating".format([inputs.plan])}
-
   - id: lapsed
     if: ${steps.sign_off.outcome == "unsigned"}
     log:
       level: warn
       message: sign-off did not arrive before the contract deadline
-
 outputs:
   outcome:
     value: '${steps.sign_off.timed_out ? "lapsed" : "answered"}'
     description: whether sign-off arrived or the contract deadline passed first
-
   plan:
     value: ${inputs.plan}
     description: which contract sized this run's grace period

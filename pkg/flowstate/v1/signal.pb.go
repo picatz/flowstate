@@ -160,11 +160,24 @@ type SignalPolicyRule struct {
 	// for an ordinary input.
 	//
 	// The narrowing rule: a rule that sets this field must also set
-	// [namespace] or [claims]. See the Flowfile compiler's narrowing check.
-	// An interpolated subject alone would let a caller pick their own
-	// authorization by choosing what input value to submit; requiring a
-	// co-resident literal constraint means an input can only narrow a static
-	// grant the workflow's author already wrote, never invent one.
+	// [claims], or its policy must set [distinct_from_starter]. An
+	// interpolated subject alone would let whoever starts a run pick their
+	// own authorization by choosing what input value to submit — naming
+	// themselves as their own approver — so it must be accompanied by
+	// something the run's inputs cannot reach. Claims are attested on the
+	// sender's own token; `distinct_from_starter` refuses the starter by
+	// comparison rather than by matching at all.
+	//
+	// [namespace] is deliberately not one of them, though it looks like it
+	// should be. A namespace is compared against the sender's own, and no
+	// sender with a different one can reach the comparison: `Signal` reaches
+	// `authorizeSignal` only through `authorizeRun`, which refuses any
+	// caller outside the namespace recorded on the run — and the namespace
+	// recorded on a run is the starter's. So a namespace equal to the run's
+	// own tenant restates a constraint that already held, and any other
+	// value makes the rule unmatchable; either way it narrows nothing, while
+	// reading in the file as though the gate had been closed.
+	// `CheckSignalPolicyShape` enforces all of this.
 	SubjectFrom   *Value `protobuf:"bytes,4,opt,name=subject_from,json=subjectFrom,proto3" json:"subject_from,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

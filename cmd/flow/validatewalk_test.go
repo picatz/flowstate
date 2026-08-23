@@ -60,13 +60,7 @@ func TestValidateOnAMissingFileMatchesRunLocalsWording(t *testing.T) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "nope.yaml")
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs([]string{"validate", missing})
-
-	err := root.Execute()
+	err := runFlow(t, "validate", missing).Err
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "error reading")
 	require.Equal(t, missing+": open "+missing+": no such file or directory", err.Error())
@@ -100,16 +94,9 @@ func TestValidateJSONOnADirectoryReportsBothFiles(t *testing.T) {
 func validateStdin(t *testing.T, body string, extra ...string) (string, error) {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetIn(strings.NewReader(body))
-	root.SetArgs(append([]string{"validate", "-"}, extra...))
+	res := runFlowStdin(t, body, append([]string{"validate", "-"}, extra...)...)
 
-	err := root.Execute()
-
-	return out.String(), err
+	return res.Stdout, res.Err
 }
 
 // TestValidateDashReadsAWorkflowFromStdin is #397's central claim: `flow

@@ -8,8 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // The submit boundary, from the outside.
@@ -32,9 +31,9 @@ func TestRunRefusesInputsThatDoNotMatchTheDeclarations(t *testing.T) {
 	t.Parallel()
 
 	temporal, _ := newTemporalNamespace(t)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
-	for _, refusal := range tests.InputRefusalCases() {
+	for _, refusal := range conformance.InputRefusalCases() {
 		t.Run(refusal.Name, func(t *testing.T) {
 			_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 				Workflow: refusal.Workflow,
@@ -63,7 +62,7 @@ func TestAFinishedRunReportsItsDeclaredOutputs(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	spec := &v1.Workflow{
 		Name:    "answers",
@@ -128,7 +127,7 @@ func TestAWorkflowWithNoDeclaredOutputsReportsNothing(t *testing.T) {
 
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
-	flowstate := server.New(temporal)
+	flowstate := mustNew(t, temporal)
 
 	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: &v1.Workflow{

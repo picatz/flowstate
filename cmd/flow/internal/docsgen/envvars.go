@@ -64,6 +64,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/credentialsource/github_actions.go",
 		},
 		{
+			name:    "CI_JOB_JWT_V2",
+			value:   "unset",
+			purpose: "Set by GitLab before 17.0, which removed it. Never read for its value: the `gitlab` credential source only checks whether it is present, so a job still relying on it is told that it was removed and to declare an `id_tokens:` token instead, rather than being told its ID token is missing.",
+			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
+		},
+		{
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
 			purpose: "Address the API server listens on, and that the client commands connect to.",
@@ -78,14 +84,14 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUDIENCE",
 			value:   "unset",
-			purpose: "Default for `--audience`: the relying party a minted credential is addressed to. Required by `--credential-source=github-actions`; ignored by a source that presents a token it did not mint.",
+			purpose: "Default for `--audience`: the relying party a credential is addressed to. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
 			read:    "cmd/flow/client.go",
 		},
 		{
 			name:    "FLOWSTATE_AUTH_POLICY",
 			value:   "unset",
-			purpose: "Default for `--auth-policy`: on `flow server` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
+			purpose: "Default for `--auth-policy`: on `flow server` and `flow mcp serve` the trust policy naming which issuers and claims to accept; on `flow worker`, `flow run local` and `flow mcp` the same file's secrets rules, authorizing worker-side resolution.",
+			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/mcpserve.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
 		},
 		{
 			name:    "FLOWSTATE_BACKGROUND",
@@ -102,7 +108,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
-			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			purpose: "Default for `--credential-source`: acquire a credential from a named `pkg/flowstate/v1/credentialsource.Source` (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -142,10 +148,16 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/taskpolicy.go",
 		},
 		{
+			name:    "FLOWSTATE_ID_TOKEN",
+			value:   "unset",
+			purpose: "The OIDC ID token a GitLab CI job's `id_tokens:` keyword mints, and the variable name `--credential-source=gitlab` reads unless told otherwise. GitLab lets the job author name the key, so this is Flowstate's convention rather than the platform's; a job using another name passes it as `credentialsource.Config.EnvVar`. Set by GitLab, never by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
+		},
+		{
 			name:    "FLOWSTATE_IDENTITY_KEY",
 			value:   "unset",
-			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation.",
-			read:    "cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go, cmd/flow/taskrun.go",
+			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation. It names one key, since a rotation names the keys in order and a list in an environment variable would need a separator; `--identity-key` on the command line replaces this default rather than adding to it.",
+			read:    "cmd/flow/main.go",
 		},
 		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
@@ -200,6 +212,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Handshake: the per-launch token a plugin authenticates its host with. Set by the host on the child process.",
 			read:    "pkg/flowstate/v1/plugin/sdk/sdk.go",
+		},
+		{
+			name:    "FLOWSTATE_PROTECTED_RESOURCE",
+			value:   "unset",
+			purpose: "Default for `--protected-resource` on `flow server`: the canonical resource URI (RFC 8707 section 2) this deployment's MCP surface identifies as. Given together with one or more `--authorization-server`, this deployment serves RFC 9728 protected resource metadata and every 401 challenge names it. Unset: the route does not exist, and every challenge reads exactly as it does without this slice.",
+			read:    "cmd/flow/protectedresource.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
@@ -413,6 +431,48 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_WORKER_IDENTITY",
+			value:   "unset",
+			purpose: "Default for `--identity`: how this worker identifies itself to Temporal, shown in Event History and a Task Queue's poller list (#752). Unset builds one from `--deployment-name`/`--build-id`, `--tenant` if set, and this process's hostname — more specific than the SDK's own `pid@hostname` default, but a platform-native identifier (a Kubernetes pod name, an ECS task id) is worth setting explicitly.",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND",
+			value:   "0",
+			purpose: "Default for `--max-activities-per-second` on `flow worker`: maximum rate, per second, at which this worker process starts activity tasks. `0` takes the Temporal SDK's own default (effectively unlimited). Enforced locally, per worker process — see `FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND` for the server-enforced, per-queue limit. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES",
+			value:   "0",
+			purpose: "Default for `--max-concurrent-activities` on `flow worker`: maximum number of activity tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). Raising this trades worker CPU/memory for throughput on a single replica rather than scaling out — see docs/DEPLOYMENT.md's capacity section. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS",
+			value:   "0",
+			purpose: "Default for `--max-concurrent-workflow-tasks` on `flow worker`: maximum number of workflow tasks executing at once in this process. `0` takes the Temporal SDK's own default (1000). The value `1` refuses to start: the Temporal SDK panics on it, because a worker with a single workflow-task slot never polls its regular queue (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND",
+			value:   "0",
+			purpose: "Default for `--task-queue-activities-per-second` on `flow worker`: maximum rate, per second, at which the Temporal server dispatches activity tasks from this worker's task queue, shared across every worker polling that queue (last-writer-wins if they disagree). `0` takes the Temporal SDK's own default (effectively unlimited); setting it disables eager activity execution for this worker. A negative value refuses to start (#783).",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_WORKER_STOP_TIMEOUT",
+			value:   "2m0s",
+			purpose: "Default for `--worker-stop-timeout` on `flow worker`: how long a shutdown (SIGINT or SIGTERM) waits for in-flight activities and workflow tasks to finish before the worker exits regardless. Parsed with v1.ParseDuration, the same grammar the DSL itself accepts (Go's duration syntax plus days); an unparsable value refuses to start rather than silently keep the default. Keep it under whatever grace period the deployment shape actually gives the process — see docs/DEPLOYMENT.md.",
+			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "GITLAB_CI",
+			value:   "unset",
+			purpose: "Set to `true` inside every GitLab CI job. Read by the `gitlab` credential source only to tell \"this is not a GitLab job\" apart from \"it is, and the job declares no ID token\" — two mistakes with different fixes. Never configured by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
+		},
+		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
@@ -452,8 +512,10 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:  "TEMPORAL_ADDRESS",
 			value: "unset",
 			purpose: "Temporal's own environment configuration, honoured by every command that dials a " +
-				"cluster: `flow server` and `flow worker` resolve it through the SDK, and `--address` " +
-				"overrides it. `flow server dev` is the exception, and refuses to start while it is set: " +
+				"cluster: `flow server` and `flow worker` resolve it through the SDK, and " +
+				"`--temporal-address` overrides it (`--address` on those two commands is refused, and " +
+				"says so — picatz/flowstate#580). `flow server dev` is the exception, and refuses to " +
+				"start while it is set: " +
 				"that command starts a Temporal of its own, so a variable naming somebody else's cluster " +
 				"would be silently unused while its operator believed their runs were landing there.",
 			read: "cmd/flow/serverdev.go, go.temporal.io/sdk envconfig",
@@ -480,6 +542,26 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "flowstate-run-task-queue",
 			purpose: "Default for `--task-queue`: the queue workers serve and workflows are routed to.",
 			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "TFC_RUN_ID",
+			value:   "unset",
+			purpose: "Set by HCP Terraform in every run. Read by the `terraform-cloud` credential source only to tell \"this is not an HCP Terraform run\" apart from \"it is, and the workspace set no workload identity audience\". Never configured by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/terraform_cloud.go",
+		},
+		{
+			name:    "TFC_WORKLOAD_IDENTITY_AUDIENCE[_<TAG>]",
+			value:   "unset",
+			purpose: "The workspace variable an operator sets to make HCP Terraform mint a workload identity token for a run, naming the relying party — the Flowstate server. The tagged form mints a second token for another relying party. Set on the workspace, not in the run's environment, so nothing here reads it; it is named in the `terraform-cloud` source's diagnostics because it is the setting missing when the token is.",
+			read:    "pkg/flowstate/v1/credentialsource/terraform_cloud.go",
+			family:  true,
+		},
+		{
+			name:    "TFC_WORKLOAD_IDENTITY_TOKEN[_<TAG>]",
+			value:   "unset",
+			purpose: "The workload identity token HCP Terraform gives a run whose workspace set the audience variable above, and what `--credential-source=terraform-cloud` presents. The tagged form carries the token for a tagged audience. Set by HCP Terraform, never by an operator.",
+			read:    "pkg/flowstate/v1/credentialsource/terraform_cloud.go",
+			family:  true,
 		},
 	}
 }

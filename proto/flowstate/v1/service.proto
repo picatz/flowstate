@@ -192,6 +192,45 @@ message RunResponse {
     Error error = 4;
     Workflow.StepOutputs outputs = 5;
   }
+
+  // SpecificationAsSubmitted is the server saying whether the run it just
+  // started executes the specification this caller sent, unchanged.
+  //
+  // A deployment may register a workflow of its own under a name a caller also
+  // submits, and the server then runs *its* copy rather than the caller's — that
+  // substitution is the point of the trusted-workflow set, because it is what
+  // makes `manual: denied` and `manual.allowed_principals` authorization policy
+  // rather than caller input. The caller cannot otherwise see it happen. That
+  // matters beyond curiosity because a client renders a run's declared outputs
+  // against the specification it holds: `sensitive: true` is a fact about the
+  // specification that *ran*, so a caller redacting against a copy that did not
+  // run prints in the clear any value only the executed copy marks.
+  //
+  // Substitution is the loudest way the two can differ and not the only one. A
+  // server also *transforms* what it runs: it writes its own selection of plugin
+  // versions onto the specification before the engine sees it, and may normalize
+  // or expand more of it later. So this is whole-message equality between the
+  // request as it arrived and the specification handed to the engine, answered
+  // after every one of those steps rather than at the substitution alone. Reading
+  // it as "the parts a client's redaction happens to consult" would be a list
+  // somebody has to extend for every transformation added afterwards, and it
+  // would answer true the first time nobody did.
+  //
+  // Three answers, not two, which is why this is `optional`. True means the
+  // executed specification is the submitted one, so a client may trust its own
+  // copy's declarations. False means it is not, so the client must not. *Unset*
+  // means this server did not say — an older server that substitutes and has no
+  // field to report it in — which is not the same claim as false and must not be
+  // read as true: a client fails closed on it exactly as it does on false. A
+  // plain `bool` could not carry that, its zero value being indistinguishable
+  // from silence.
+  //
+  // What it deliberately does not carry is the executed specification, or any
+  // part of it. The trusted copy is deployment configuration the caller did not
+  // send and is not owed; this answers only "is mine the one that ran", which a
+  // caller is owed about their own request, and leaves the disclosure question
+  // alone.
+  optional bool specification_as_submitted = 6;
 }
 
 // GetRequest is the request message for getting a workflow run.
@@ -381,11 +420,19 @@ message SignalRequest {
 message SignalResponse {}
 
 // SignalWithStartRequest delivers a signal to an entity, creating it first if it
-// does not yet exist, atomically, through the SDK's SignalWithStartWorkflow,
-// which closes the race an ordinary create-then-signal has: a caller who checks
-// "does it exist" and then either Runs or Signals can always be beaten between the
-// two calls, either by another creator or by the signal arriving before the run
-// does.
+// does not yet exist, which closes the race an ordinary create-then-signal has: a
+// caller who checks "does it exist" and then either Runs or Signals can always be
+// beaten between the two calls, either by another creator or by the signal
+// arriving before the run does.
+//
+// The delivery that creates the entity travels as part of that entity's own
+// starting state rather than as a signal that follows its creation, so an
+// accepted create can never leave an entity missing the mutation that initiated
+// it — even if this handler disappears immediately afterward. Only a delivery to
+// an entity that *already existed* before this call — the not-created branch — is
+// sent as a signal after the fact, and by then the entity's existence was
+// somebody else's atomic creation, not this call's, so there is nothing left for
+// this call itself to make atomic.
 //
 // # Two authorization questions, decided separately, both fail-closed
 //
@@ -469,9 +516,35 @@ message SignalWithStartResponse {
   // False means a signal was delivered to an entity that was already running.
   // A caller that needs to tell "I just created this" from "this already
   // existed" (to decide whether to wait for a different handler, say) has
-  // no other way to learn it, since Temporal's own SignalWithStartWorkflow
-  // answers the same shape (a run and a workflow execution) either way.
+  // no other way to learn it: [workflow_id] and [run_id] are populated
+  // identically either way, a run and a workflow execution, so this field is
+  // the only place the distinction is reported.
   bool created = 3;
+
+  // SpecificationAsSubmitted is [RunResponse.specification_as_submitted] for
+  // this RPC: the same question, the same three answers, and deliberately the
+  // same name rather than a second vocabulary for one fact.
+  //
+  // This RPC substitutes the trusted copy exactly as `Run` does — see the
+  // server's `trustedWorkflow` — and then transforms what it runs the same way,
+  // writing the deployment's plugin selection onto it before the engine sees it.
+  // So a caller here faces the identical question a caller of `Run` faces: is
+  // the specification I hold the one that ran, and may I therefore trust its
+  // `sensitive: true` declarations to describe this entity's outputs? Read
+  // [RunResponse.specification_as_submitted] for the whole argument, including
+  // why *unset* is not `false` and why neither may be read as assent.
+  //
+  // One thing is this RPC's own, and it is a consequence of [created]. When this
+  // call created the entity, the answer is about the specification this call
+  // handed the engine, exactly as `Run`'s is. When it did not — a mutation
+  // delivered to an entity that was already running — the executing
+  // specification is whatever *that* run was created with, which this server did
+  // not compare against anything and will not claim to know: the answer is false,
+  // the fail-closed one, and it is stated rather than left unset because the
+  // server is answering rather than staying silent. A caller wanting the precise
+  // view of an entity it did not create has no route to it through this field,
+  // which is the honest position.
+  optional bool specification_as_submitted = 4;
 }
 
 // Stopping a run is two different asks, and the difference is not a detail of
@@ -655,6 +728,53 @@ message RunSummary {
   // an error. See server/list.go and runfilter.go, where a filter comparing
   // against `name` simply does not match a run that carries none.
   string name = 6;
+
+  // Labels are the workflow's own declared labels ([Workflow.labels]), recorded
+  // on the run at submit.
+  //
+  // Populated from the memo, on [RunSummary.name]'s exact terms and for its exact
+  // reason: written unconditionally by every path that starts a run, read back
+  // through the same memo a listing already fetches for the tenant check, and
+  // never sourced from a search attribute — a `labels` filter that worked only
+  // where attribute registration succeeded would answer "nothing matched" to a
+  // filter with nothing wrong with it.
+  //
+  // Empty for a run of a workflow that declared none, and for a run started
+  // before this was recorded at all. The two are deliberately not distinguished:
+  // both are "this run carries no labels", which is the only question a filter
+  // asks. `labels["team"] == "payments"` does not match such a run, and
+  // `!("team" in labels)` does.
+  map<string, string> labels = 7;
+
+  // Starter is who submitted this run, as the qualified `issuer#subject` string
+  // recorded on it at submit — the same string, from the same memo, by the same
+  // rules as [GetResponse.starter], whose doc is the whole of the reasoning for
+  // the raw qualified form and for what an empty value means.
+  //
+  // Here rather than only on Get because the question an operator asks at scale
+  // is "whose runs are these", and answering it through Get is one RPC per run.
+  // It is the same fact in both places, read from the same memo by the same
+  // reader, so the two cannot disagree.
+  string starter = 8;
+
+  // WorkerVersion is the Worker Deployment version this run is pinned to, as
+  // `deployment-name.build-id` — Temporal's own spelling of the pair
+  // `flow worker --deployment-name`/`--build-id` configures.
+  //
+  // Empty when the deployment does not use Worker Deployment Versioning at all,
+  // which is the unconfigured default, and empty for a run started before its
+  // worker was versioned. Absence is therefore "this run is not pinned to a
+  // version", never "the version is unknown".
+  //
+  // Read from Temporal's own `WorkflowExecutionInfo.versioning_info` rather than
+  // from a memo, unlike every other field here, and the difference is the point:
+  // the pinned version is not a fact about the submission, it is a fact about
+  // where the run is *executing*, and it legitimately changes at Continue-As-New
+  // when a run takes the deployment's current version. A memo written at submit
+  // would freeze a value the run itself does not honour — the one shape of
+  // "recorded twice, drifting" this schema keeps out. It costs nothing extra:
+  // the listing response already carries it.
+  string worker_version = 9;
 }
 
 // ListResponse returns a page of the caller's runs.
@@ -713,6 +833,9 @@ service WorkflowService {
   // of it: the same signal name, the same outputs, the same expressions reading
   // them. That is the part that has to match for a local run to tell an author
   // what production will do.
+  //
+  // [SignalResponse] is empty: it says the signal was accepted, not what the run
+  // did with it. Call [Get] afterward to see whether a waiting step consumed it.
   rpc Signal(SignalRequest) returns (SignalResponse) {}
 
   // SignalWithStart delivers a signal to the entity holding a business key, an
@@ -746,10 +869,16 @@ service WorkflowService {
   rpc List(ListRequest) returns (ListResponse) {}
 
   // Cancel asks a run to stop and lets it clean up on the way out.
+  //
+  // [CancelResponse] is empty: it says the stop request was accepted, not that
+  // the run has stopped. Call [Get] afterward to see the run's final status.
   rpc Cancel(CancelRequest) returns (CancelResponse) {}
 
   // Terminate stops a run immediately, running none of its cleanup. Prefer
   // Cancel; see CancelRequest for when this is the right answer anyway.
+  //
+  // [TerminateResponse] is empty: the run is already stopped by the time this
+  // returns, so a follow-up call to [Get] confirms status rather than awaiting it.
   rpc Terminate(TerminateRequest) returns (TerminateResponse) {}
 
   // Validate checks Flowfiles and returns their diagnostics, executing nothing.

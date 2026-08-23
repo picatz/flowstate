@@ -245,3 +245,56 @@ edition: v2026.3
 	assert.Contains(t, got, "code",
 		"the shaped name the author wrote was not offered")
 }
+
+// TestAPluginsFieldCommentReachesHoverOverAStepInput is #723's finish line, at
+// the surface an author actually meets: hovering an input key of a plugin's task
+// in a Flowfile shows the sentence that plugin's author wrote over the field in
+// their own .proto.
+//
+// Nothing in this build's schema describes that field — it is a message this
+// binary never compiled — so the sentence can only have come from the source info
+// the plugin shipped alongside its descriptor. Before the SDK could ship any, the
+// same hover rendered one paragraph fewer, which
+// TestATaskWithNoSchemaProseStillHovers still pins for a plugin that ships none.
+func TestAPluginsFieldCommentReachesHoverOverAStepInput(t *testing.T) {
+	t.Parallel()
+
+	const comment = "Greeting overrides the default \"Hello\"."
+
+	shape, ok := v1.LookupTask("log")
+	require.True(t, ok, "the log task is where the executor below comes from and it is not registered")
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(v1.TaskDef{
+		Name:    pluginTaskName,
+		Summary: pluginTaskSummary,
+		Inputs:  standInInputs(t, comment),
+		Outputs: shape.Outputs,
+		Fn:      shape.Fn,
+	}))
+
+	c := newClientFor(t, &FlowfileServer{Logger: discardLogger(), Tasks: registry})
+	c.initialize()
+
+	const uri = "file:///plugin-field-prose.yaml"
+	c.open(uri, `name: plugin-prose
+steps:
+  - id: greet
+    `+pluginTaskName+`:
+      greeting: hi
+edition: v2026.3
+`)
+
+	// Line 4, the `greeting:` key.
+	hover := c.hover(uri, 4, 8)
+	require.NotNil(t, hover, "hovering an input of a task the server knows about produced nothing")
+
+	var content string
+	for _, part := range hover.Contents {
+		content += part.Value
+	}
+
+	assert.Contains(t, content, comment,
+		"the plugin author's own sentence did not reach hover, which is the whole of what a shipped "+
+			"descriptor set buys (#723)")
+}

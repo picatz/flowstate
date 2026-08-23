@@ -63,12 +63,73 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
+			// The example plugin's schema is a second buf module with
+			// a descriptor set of its own, which is what carries that
+			// plugin's field comments to an editor (#723). It rides
+			// the proto leg, so that a .proto edit re-pins the
+			// artifact built from it — but not the docs leg, since
+			// nothing under docs/reference/ is derived from a
+			// plugin's schema.
+			name:    "the example plugin's schema fires the proto leg and not the docs leg",
+			changed: []string{examplePluginProtoDir + "example/v1/example.proto"},
+			want: plan{
+				fileDirs: []string{examplePluginProtoDir + "example/v1"},
+				proto:    true,
+				reasons: map[string]string{
+					"proto": examplePluginProtoDir + "example/v1/example.proto",
+				},
+			},
+		},
+		{
+			// The artifact as well as its source: a pin over a file
+			// nothing rebuilt is not a pin.
+			name:    "the example plugin's descriptor set fires the proto leg",
+			changed: []string{examplePluginProse},
+			want: plan{
+				fileDirs: []string{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example"},
+				proto:    true,
+				reasons: map[string]string{
+					"proto": examplePluginProse,
+				},
+			},
+		},
+		{
 			name:    "DSL.md fires the docs leg",
 			changed: []string{"docs/DSL.md"},
 			want: plan{
-				fileDirs: []string{"docs"},
-				docs:     true,
-				reasons:  map[string]string{"docs": "docs/DSL.md"},
+				fileDirs:      []string{"docs"},
+				docs:          true,
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
+				reasons: map[string]string{
+					"docs": "docs/DSL.md",
+					"test": "docs/DSL.md",
+				},
+			},
+		},
+		{
+			// Every Markdown file under docs/ is test data, because
+			// cmd/flow/docsindex_test.go is about the *set* of them:
+			// a page added, renamed or removed without docs/README.md
+			// moving with it fails there, and nothing else would run
+			// (#708). This one reaches no other leg at all.
+			name:    "a documentation page fires the test job and nothing else",
+			changed: []string{"docs/DEPLOYMENT.md"},
+			want: plan{
+				fileDirs:      []string{"docs"},
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
+				reasons:       map[string]string{"test": "docs/DEPLOYMENT.md"},
+			},
+		},
+		{
+			name:    "an internal plan is test data too, for its banner",
+			changed: []string{"docs/plans/factory.md"},
+			want: plan{
+				fileDirs:      []string{"docs/plans"},
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
+				reasons:       map[string]string{"test": "docs/plans/factory.md"},
 			},
 		},
 		{
@@ -237,9 +298,11 @@ func TestBuildPlan(t *testing.T) {
 					"pkg/flowstate/v1/engine",
 					"proto/flowstate/v1",
 				},
-				proto:    true,
-				docs:     true,
-				examples: true,
+				proto:         true,
+				docs:          true,
+				examples:      true,
+				repoTestData:  true,
+				repoDataRoots: []string{"docs"},
 				reasons: map[string]string{
 					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
@@ -247,6 +310,7 @@ func TestBuildPlan(t *testing.T) {
 					// trigger recorded rather than DSL.md.
 					"docs":     "proto/flowstate/v1/workflow.proto",
 					"examples": "examples/hello/workflow.yaml",
+					"test":     "docs/DSL.md",
 				},
 			},
 		},
@@ -307,6 +371,59 @@ func TestResolveDirs(t *testing.T) {
 			got := resolveDirs(tt.dirs, index)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("resolveDirs(%v) = %v, want %v", tt.dirs, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHasUnresolvedGoDir is the regression for a Codex P1 on #688: a diff
+// that deletes the last .go file a package had leaves that package's
+// directory absent from `go list`'s output entirely, which resolveDirs
+// (walking upward for the nearest ancestor) cannot distinguish from a file
+// that was never part of a package at all — both silently drop out of the
+// changed set, and whatever else in the tree still imports the now-vanished
+// package would build broken with the test job never having run.
+func TestHasUnresolvedGoDir(t *testing.T) {
+	t.Parallel()
+
+	index := map[string]string{
+		"pkg/flowstate/v1":          modulePath + "/pkg/flowstate/v1",
+		"pkg/flowstate/v1/flowfile": modulePath + "/pkg/flowstate/v1/flowfile",
+		"cmd/flow":                  modulePath + "/cmd/flow",
+	}
+
+	tests := []struct {
+		name string
+		go_  []string
+		want bool
+	}{
+		{
+			name: "every changed .go file's own directory is still a package",
+			go_:  []string{"cmd/flow/main.go", "pkg/flowstate/v1/flowfile/parse.go"},
+			want: false,
+		},
+		{
+			name: "a deleted package's last file leaves its directory unresolved",
+			go_:  []string{"pkg/flowstate/v1/deleted/last.go"},
+			want: true,
+		},
+		{
+			name: "one resolvable file alongside one unresolvable one still reports true",
+			go_:  []string{"cmd/flow/main.go", "pkg/flowstate/v1/deleted/last.go"},
+			want: true,
+		},
+		{
+			name: "no changed .go files resolves to nothing missing",
+			go_:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasUnresolvedGoDir(tt.go_, index); got != tt.want {
+				t.Errorf("hasUnresolvedGoDir(%v) = %v, want %v", tt.go_, got, tt.want)
 			}
 		})
 	}
@@ -502,6 +619,147 @@ func TestExampleDataDepPackagesIsNotEveryPackage(t *testing.T) {
 	if !reflect.DeepEqual(affected, want) {
 		t.Errorf("seeding from examples/ data deps must not sweep in unrelated packages; affected = %v, want %v",
 			affected, want)
+	}
+}
+
+// TestDocsOnlyDiffReachesTheDocumentationReaders is the #708 shape of the same
+// defect, found in review of #820: docs/README.md maps to no Go package, so
+// resolveDirs yields nothing and the local gate — which scopes its vet and test
+// legs to the affected set — ran neither, while the tests that would have
+// caught the diff (TestTheDocsIndexListsEveryDocument and
+// TestInternalDocumentsSayTheyAreInternal, both in cmd/flow) sat there unrun.
+// An index whose completeness check only ever runs in CI is exactly the round
+// trip the pre-push tier exists to remove.
+//
+// The literal below is the real one: cmd/flow/docsindex_test.go's docsDir.
+func TestDocsOnlyDiffReachesTheDocumentationReaders(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	cmdFlow := m + "/cmd/flow"
+
+	p := buildPlan([]string{"docs/README.md"})
+	if !p.repoTestData {
+		t.Fatal("a change to a Markdown file under docs/ must set p.repoTestData")
+	}
+
+	changedSet := map[string]bool{}
+	for _, ip := range resolveDirs(p.fileDirs, map[string]string{}) {
+		changedSet[ip] = true
+	}
+	if len(changedSet) != 0 {
+		t.Fatalf("docs/ has no Go package ancestor; changedSet = %v", changedSet)
+	}
+
+	testSrc := map[string][]byte{
+		cmdFlow:                        []byte(`const docsDir = "../../docs"`),
+		m + "/pkg/flowstate/v1/engine": []byte(`func TestPolicy(t *testing.T) {}`),
+	}
+	for _, ip := range repoDataDepPackages(testSrc, p.repoDataRoots) {
+		changedSet[ip] = true
+	}
+
+	pkgs := []pkgMeta{
+		{ImportPath: cmdFlow},
+		{ImportPath: m + "/pkg/flowstate/v1/engine"},
+	}
+	affected := affectedPackages(pkgs, changedSet)
+	if !contains(affected, cmdFlow) {
+		t.Errorf("a docs/README.md-only diff must reach cmd/flow, which holds the index tests; affected = %v", affected)
+	}
+	if contains(affected, m+"/pkg/flowstate/v1/engine") {
+		t.Errorf("an unrelated package must not be swept in; affected = %v", affected)
+	}
+}
+
+// TestRepoDataDepPackages is a direct test of the pattern, over the literal
+// shapes actually in the tree, plus the two ways it must not match: the word
+// in the middle of another path, and a package that merely mentions a document
+// in prose.
+func TestRepoDataDepPackages(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		// cmd/flow/docsindex_test.go and cmd/flow/docs_test.go.
+		m + "/cmd/flow": []byte("const docsDir = \"../../docs\"\nconst referenceDir = \"../../docs/reference\""),
+		// pkg/flowstate/v1/flowfile/readme_test.go.
+		m + "/pkg/flowstate/v1/flowfile": []byte(`os.ReadFile(filepath.Join(root, "docs", "ARCHITECTURE.md"))`),
+		// pkg/flowstate/v1/agentsmd_test.go.
+		m + "/pkg/flowstate/v1": []byte(`os.ReadFile("../../../AGENTS.md")`),
+		// A doc comment naming a document, with no test reading one:
+		// prose is not a data dependency.
+		m + "/pkg/flowstate/v1/engine": []byte(`// The retry defaults docs/DSL.md describes.`),
+		// "docs" as a segment in the middle of an unrelated path, the
+		// shape that made exampleDataDepPattern anchor to the quote.
+		m + "/pkg/flowstate/v1/netpolicy": []byte(`golden := "testdata/docs/fixture.json"`),
+	}
+
+	got := repoDataDepPackages(testSrc, []string{"AGENTS.md", "README.md", "docs"})
+	want := []string{
+		m + "/cmd/flow",
+		m + "/pkg/flowstate/v1",
+		m + "/pkg/flowstate/v1/flowfile",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("repoDataDepPackages = %v, want %v", got, want)
+	}
+}
+
+// TestRepoDataDepPackagesIsNotEveryPackage is the negative direction, the same
+// property TestExampleDataDepPackagesIsNotEveryPackage pins for examples/: a
+// documentation change must not turn the diff-scoped gate into a full run.
+func TestRepoDataDepPackagesIsNotEveryPackage(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/cmd/flow":                   []byte(`const docsDir = "../../docs"`),
+		m + "/pkg/flowstate/v1/secrets":   []byte(`func TestSecrets(t *testing.T) {}`),
+		m + "/pkg/flowstate/v1/engine":    []byte(`func TestPolicy(t *testing.T) {}`),
+		m + "/pkg/flowstate/v1/auth":      []byte(`func TestAuth(t *testing.T) {}`),
+		m + "/pkg/flowstate/v1/netpolicy": []byte(`func TestNet(t *testing.T) {}`),
+	}
+
+	deps := repoDataDepPackages(testSrc, []string{"docs"})
+	if len(deps) != 1 || deps[0] != m+"/cmd/flow" {
+		t.Fatalf("repoDataDepPackages = %v, want exactly cmd/flow", deps)
+	}
+}
+
+// TestRepoDataRootsScopeTheSeed is why the roots are recorded per diff rather
+// than folded into one fixed pattern. pkg/flowstate/v1's tests read AGENTS.md,
+// and most of this module imports that package — so seeding AGENTS.md's readers
+// on a documentation change would expand a docs edit into a near-full run for a
+// dependency it does not have. Each root reaches its own readers and no others.
+func TestRepoDataRootsScopeTheSeed(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/cmd/flow":         []byte(`const docsDir = "../../docs"`),
+		m + "/pkg/flowstate/v1": []byte(`os.ReadFile("../../../AGENTS.md")`),
+	}
+
+	for _, tc := range []struct {
+		changed string
+		root    string
+		want    string
+	}{
+		{changed: "docs/DEPLOYMENT.md", root: "docs", want: m + "/cmd/flow"},
+		{changed: "AGENTS.md", root: "AGENTS.md", want: m + "/pkg/flowstate/v1"},
+	} {
+		t.Run(tc.changed, func(t *testing.T) {
+			p := buildPlan([]string{tc.changed})
+			if !reflect.DeepEqual(p.repoDataRoots, []string{tc.root}) {
+				t.Fatalf("buildPlan(%q).repoDataRoots = %v, want [%q]", tc.changed, p.repoDataRoots, tc.root)
+			}
+
+			deps := repoDataDepPackages(testSrc, p.repoDataRoots)
+			if !reflect.DeepEqual(deps, []string{tc.want}) {
+				t.Errorf("repoDataDepPackages = %v, want [%q]", deps, tc.want)
+			}
+		})
 	}
 }
 

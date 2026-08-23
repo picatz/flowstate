@@ -218,8 +218,10 @@ signals: {}
 // the run.
 
 // perRunSignaledSource is [signaledSource] with a per-run rule: an
-// interpolated subject, narrowed by a co-resident `namespace:` — the shape
-// the narrowing check requires.
+// interpolated subject, narrowed by the policy's own `distinct_from_starter:`
+// — one of the two shapes the narrowing check accepts. The `namespace:` beside
+// it is ordinary and permitted; it is simply not what makes this rule narrow
+// enough (see [TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace]).
 const perRunSignaledSource = `edition: v2026.3
 name: deploy-gate
 inputs:
@@ -310,17 +312,55 @@ signals:
 	require.Len(t, diagnostics, 1)
 
 	d := diagnostics[0]
-	assert.Contains(t, d.Message, "an interpolated subject must be narrowed")
-	assert.Contains(t, d.Message, "the caller would be choosing their own authorization")
+	assert.Contains(t, d.Message, "they may name themselves as their own approver")
+	assert.Contains(t, d.Message, "add a `claims:` entry to the rule, or `distinct_from_starter: true`")
 	assert.NotZero(t, d.Line, "the narrowing diagnostic carried no source position")
 	assert.NotZero(t, d.Column, "the narrowing diagnostic carried no source position")
 	// The diagnostic points at the line `subject:` is written on.
 	assert.Equal(t, 15, d.Line, "the narrowing diagnostic did not point at the subject: line")
 }
 
-// TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims checks the other
-// literal constraint the narrowing check accepts: `claims:` narrows exactly
-// as `namespace:` does.
+// TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace is the
+// case an author is most likely to write believing it is safe, and the reason
+// the diagnostic spends a sentence on it rather than only listing what to add.
+//
+// A `namespace:` is compared against the sender's own namespace, and every
+// sender that can reach the check is already in the run's namespace — the
+// server refuses anyone else before a policy is consulted at all. So it
+// narrows nothing, and the rule authorizes exactly what the unnarrowed one
+// does. The validator has to say so here, in the editor, or the file reads as
+// though the gate had been closed until submission refuses it.
+func TestNarrowingCheckRefusesAnInterpolatedSubjectNarrowedOnlyByNamespace(t *testing.T) {
+	t.Parallel()
+
+	source := `edition: v2026.3
+name: deploy-gate
+inputs:
+  expected_approver:
+    type: string
+    required: true
+steps:
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      timeout: 24h
+signals:
+  deploy-approved:
+    allow:
+      - subject: "${inputs.expected_approver}"
+        namespace: release-managers-ns
+`
+	diagnostics, err := flowfile.ValidateSource([]byte(source))
+	require.NoError(t, err)
+	require.Len(t, diagnostics, 1,
+		"a namespace: was accepted as narrowing an interpolated subject, which it does not")
+	assert.Contains(t, diagnostics[0].Message, "A `namespace:` does not narrow this")
+	assert.NotZero(t, diagnostics[0].Line)
+}
+
+// TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims checks the
+// rule-level constraint the narrowing check accepts: `claims:` are attested on
+// the sender's own token, which the run's inputs cannot reach.
 func TestNarrowingCheckAllowsAnInterpolatedSubjectWithClaims(t *testing.T) {
 	t.Parallel()
 

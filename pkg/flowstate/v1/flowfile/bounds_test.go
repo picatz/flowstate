@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,183 +19,187 @@ import (
 // attack. Depth bounds do not stop breadth explosions; a bound on the values a
 // walk descends into does not stop values produced without descending.
 
-// TestMergeExpansionIsBounded is the case that was not.
+// The *compiler's* anchor, alias, and merge-key expansion bounds are no longer
+// reachable from [flowfile.Parse]: the grammar is a strict subset of YAML that
+// refuses all three at the document tree before [compiler.collectAnchors] or any
+// call to [compiler.entries] runs (parse.go, strict.go), so the billion-laughs
+// shape their tests fed is refused on the *presence* of the construct, before any
+// expansion — strict_test.go's TestStrictYAMLRefusesBillionLaughsWithoutExpanding.
 //
-// The document bound counts values the compiler descends into. Merging produces
-// values without descending: one anchored mapping of N keys merged into D steps
-// is N×D entries from a file of size N+D, so the cost is quadratic in something
-// the file does not have to be large to say. The limit was never reached, because
-// it was counting steps.
+// The bounds themselves did not go away with those tests, and neither did every
+// path to them. [flowfile.CallPins] and [flowfile.Format] read a document that
+// need not compile — `flow fix` reads the pins of every file in a tree to report
+// staleness it caused (cmd/flow/fixstale.go), including files its own strict
+// refusal left alone — and the walk they share resolves anchors, aliases and
+// merge keys (callpins.go's pinCollector) under exactly the two bounds the
+// compiler used to enforce: maxNodes on total expansion, maxAliasDepth on chain
+// length. That is hostile input reaching a live bound with no refusal in front of
+// it, so the two below drive each bound to the point it fires. See #653, #841.
 //
-// Measured before the bound, the document built here — 110 KiB, well inside the
-// 1 MiB ceiling — took 27 seconds, and the cost grows quadratically from there. A
-// language server runs this on whatever file an editor opens.
-func TestMergeExpansionIsBounded(t *testing.T) {
+// One more correction to that first paragraph, because reading it as "the
+// compiler's node budget is dead" is how a live bound loses its last test. What
+// #840 made unreachable is the *alias-driven* half — the merge branch in
+// fields.go and [compiler.resolve]. The budget on the walk itself
+// ([compiler.enter], parse.go) is untouched by the strict profile, because a
+// document needs no anchor, alias or merge key to hold more values than the
+// budget allows: two bytes per value in flow style puts 120,000 of them well
+// inside the byte limit. TestCompilingRefusesADocumentPastTheValueBudget drives
+// that one, on the surface every compile goes through.
+
+// TestCallPinsRefusesABillionLaughsAtTheNodeBudget drives [maxNodes] with the
+// document it exists for.
+//
+// Aliases multiply breadth rather than depth: nine levels of nine references
+// each is 9^9 ≈ 387 million nodes expanded, out of a few hundred bytes on disk.
+// The pin collector follows aliases — it has to, because a `digest:` may arrive
+// through one (#640) — so nothing about the strict profile saves this walk. The
+// budget is what does, and this asserts the budget is *reached*: the answer is
+// the node-count refusal naming the limit, not some other failure and not a
+// listing of pins.
+func TestCallPinsRefusesABillionLaughsAtTheNodeBudget(t *testing.T) {
 	t.Parallel()
 
-	// Deliberately modest next to maxNodes. The point is that neither dimension
-	// looks alarming on its own: 800 keys is a large mapping and 800 steps is a
-	// large workflow, and neither is anywhere near a limit. Their product is.
-	const keys, steps = 800, 800
-
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: bomb\nsteps:\n")
-	for d := range steps {
-		b.WriteString("  - id: s" + strconv.Itoa(d) + "\n")
-		b.WriteString("    <<: *base\n")
-		b.WriteString("    log:\n      message: hi\n")
+	b.WriteString("edition: v2026.3\nname: boom\n")
+	b.WriteString("l0: &l0 \"lol\"\n")
+	for i := 1; i <= 9; i++ {
+		level := strconv.Itoa(i)
+		b.WriteString("l" + level + ": &l" + level + " [")
+		for j := 0; j < 9; j++ {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString("*l" + strconv.Itoa(i-1))
+		}
+		b.WriteString("]\n")
 	}
-	// The anchor is written last so that nothing depends on declaration order
-	// being what makes this terminate.
-	b.WriteString("anchored: &base\n")
-	for i := range keys {
-		b.WriteString("  k" + strconv.Itoa(i) + ": v" + strconv.Itoa(i) + "\n")
-	}
+	// A real pin, so the walk has every reason to run to completion rather than
+	// stopping early on a document with nothing in it to find.
+	b.WriteString("steps:\n  - id: s\n    call: ./callee.yaml\n    digest: sha256:abc\n")
 
 	src := []byte(b.String())
-	require.Less(t, len(src), 1<<20, "premise: the file is inside the size limit, so size is not what stops this")
+	require.Less(t, len(src), 4096, "premise: the bomb is tiny on disk; only expansion makes it large")
 
-	// Parsed inline, and on a deliberately empty stopwatch.
-	//
-	// This used to run in a goroutine against a 20-second wall-clock budget,
-	// which is the one thing a bound test must not do: the budget measured the
-	// machine, so the test failed on ten consecutive full-suite runs under CPU
-	// contention while passing in isolation in under two seconds. A bound test
-	// that reddens for load is worse than no bound test, because "it is just
-	// the box being busy" is the honest reading of a real regression too.
-	//
-	// Nothing is lost by dropping the timer, because the timer was never what
-	// proved anything. The bound here is a *count* — maxNodes, checked against
-	// the values the compiler produces once aliases are expanded — and the
-	// assertion below reads that count's own diagnostic. If the bound is ever
-	// removed again, this does not return at all, and the test binary's
-	// -timeout reports it with a stack sitting in the expansion, which names
-	// the defect more precisely than a 20-second stopwatch ever did.
-	_, _, err := flowfile.Parse(src)
-
-	var ds flowfile.Diagnostics
-	require.ErrorAs(t, err, &ds)
-	// Reached, not merely survived. A run that finished quickly because the
-	// document was rejected for some unrelated reason would prove nothing about
-	// the bound, so the diagnostic itself is what is asserted.
-	assert.Contains(t, ds.Error(), "once aliases are expanded",
-		"the expansion bound is what should have stopped this")
+	pins, err := flowfile.CallPins(src)
+	require.Error(t, err, "an alias bomb must be refused, not walked to the end")
+	assert.Contains(t, err.Error(), "holds more than 100000 values once aliases are expanded",
+		"the refusal must be the node budget, so the test fails if some other limit starts catching this first")
+	assert.Empty(t, pins)
 }
 
-// TestEnumValuesAliasExpansionIsBounded covers a sequence-expansion path that
-// does not use the generic recursive value reader. Reusing one anchored enum
-// list for many declarations must still charge every expanded member.
-func TestEnumValuesAliasExpansionIsBounded(t *testing.T) {
+// TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound drives [maxAliasDepth],
+// the other half, and asserts the bound both from below and from above: a chain
+// one link short of the limit resolves to the digest it names, and a chain past
+// it is refused. A bound only ever tested from above is also satisfied by a walk
+// that gave up immediately (CLAUDE.md: assert the bound was reached).
+//
+// Refusal here is fail-closed rather than a dropped pin, which is the property
+// worth pinning down: a `digest:` is a security check, so a collector that
+// cannot read one says so instead of reporting a file as holding no pins.
+func TestCallPinsStopsFollowingAnAliasChainAtTheDepthBound(t *testing.T) {
 	t.Parallel()
 
-	const values, inputs = 200, 501
+	// Each link is an anchor whose value is an alias of the link before it. YAML
+	// refuses that inline (`&a1 *a0`), so it is written in block form, which is
+	// the spelling a hostile document would have to use too.
+	chain := func(links int) []byte {
+		var b strings.Builder
+		b.WriteString("edition: v2026.3\nname: chain\na0: &a0 sha256:abc\n")
+		for i := 1; i <= links; i++ {
+			b.WriteString("a" + strconv.Itoa(i) + ": &a" + strconv.Itoa(i) + "\n  *a" + strconv.Itoa(i-1) + "\n")
+		}
+		b.WriteString("steps:\n  - id: s\n    call: ./callee.yaml\n    digest: *a" + strconv.Itoa(links) + "\n")
+		return []byte(b.String())
+	}
 
+	// One link short of the bound: followed all the way to the anchor at the end.
+	pins, err := flowfile.CallPins(chain(31))
+	require.NoError(t, err, "a chain within the bound must be followed, or the bound is untested from below")
+	require.Len(t, pins, 1)
+	assert.Equal(t, "sha256:abc", pins[0].Digest)
+
+	// One link past it: refused rather than followed, and refused out loud.
+	pins, err = flowfile.CallPins(chain(32))
+	require.Error(t, err, "a chain past the bound must be refused, not followed")
+	assert.Contains(t, err.Error(), "could not be read as text",
+		"a pin the collector cannot resolve is reported, not treated as absent")
+	assert.Empty(t, pins)
+
+	// Far past it, to show the answer is the bound firing rather than an
+	// accident of that one length.
+	_, err = flowfile.CallPins(chain(256))
+	require.Error(t, err)
+}
+
+// valueBudgetDocument is a Flowfile whose one `value:` step holds a flow
+// sequence of n values, and nothing else out of the ordinary.
+//
+// Flow style rather than block, because the interesting property is the ratio
+// between what is on disk and what is walked: `1,` is two bytes per value, so a
+// document past the 100,000-value budget still fits well inside the byte limit
+// that would otherwise catch it first. The same document written as a block
+// sequence is over 2 MiB and never reaches the budget at all — [maxBytes]
+// refuses it on sight, which is a different bound answering a different question.
+func valueBudgetDocument(n int) []byte {
 	var b strings.Builder
-	b.WriteString("edition: v2026.3\nname: bomb\ninputs:\n  first:\n    type: enum\n    values: &values [")
-	for i := range values {
+	b.WriteString("edition: v2026.3\nname: budget\nsteps:\n  - id: a\n    value: [")
+	for i := range n {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		b.WriteString("v" + strconv.Itoa(i))
+		b.WriteByte('1')
 	}
 	b.WriteString("]\n")
-	for i := 1; i < inputs; i++ {
-		b.WriteString("  input" + strconv.Itoa(i) + ":\n    type: enum\n    values: *values\n")
-	}
-	b.WriteString("steps:\n  - id: done\n    log:\n      message: done\n")
-
-	src := []byte(b.String())
-	require.Less(t, len(src), 1<<20, "premise: the file is inside the size limit")
-
-	_, _, err := flowfile.Parse(src)
-	var ds flowfile.Diagnostics
-	require.ErrorAs(t, err, &ds)
-	assert.Contains(t, ds.Error(), "once aliases are expanded",
-		"the expansion bound is what should have stopped this")
+	return []byte(b.String())
 }
 
-// TestMergeExpansionWithinTheBoundStillWorks is the other half, and the reason
-// the bound is a count rather than a refusal.
+// TestCompilingRefusesADocumentPastTheValueBudget drives the *compiler's* copy
+// of [maxNodes] — parse.go's [compiler.enter], the one every compile walks
+// through — with the input that still reaches it.
 //
-// `<<:` is how step boilerplate is shared, which is a thing people should do. A
-// bound that made ordinary sharing fail would be a bound that removed a feature
-// to close a hole.
-func TestMergeExpansionWithinTheBoundStillWorks(t *testing.T) {
+// The bound's alias-driven tests went with #840, and the merge branch beside it
+// (fields.go) is genuinely unreachable now: the strict profile refuses an alias
+// or a merge key at the document tree before anything resolves or expands. The
+// budget on the *walk* is not, and never was, about aliases alone. A document
+// with no anchor, alias or merge key in it can hold as many values as its bytes
+// allow, and the language server compiles whatever an editor opens — so this is
+// hostile input reaching a live bound with no refusal in front of it, which
+// after #840 had no test at all. See #841.
+//
+// The assertion is on the message naming the value limit, not merely on some
+// error, so the test fails rather than passes if [maxBytes] or [maxDepth] starts
+// catching this shape first — three bounds guarding three different resources,
+// and a test that cannot tell them apart proves none of them.
+func TestCompilingRefusesADocumentPastTheValueBudget(t *testing.T) {
 	t.Parallel()
 
-	// The anchor is on a step, because a Flowfile has nowhere else to put one: a
-	// top-level key added purely to hold an anchor is an unknown key, and reported
-	// as one. So boilerplate is shared by anchoring the first step that carries it.
-	src := `edition: v2026.3
-name: shared
-steps:
-  - &policy
-    id: a
-    timeout: 30s
-    continue_on_error: true
-    log:
-      message: one
-  - id: b
-    <<: *policy
-    log:
-      message: two
-`
-	wf, _, err := flowfile.Parse([]byte(src))
-	require.NoError(t, err)
-	require.Len(t, wf.GetSteps(), 2)
+	src := valueBudgetDocument(120_000)
+	require.Less(t, len(src), 1<<20,
+		"premise: the document is inside the byte limit, so the value budget is what answers")
 
-	for _, step := range wf.GetSteps() {
-		assert.True(t, step.GetPolicy().GetContinueOnError(), "step %q", step.GetId())
-		assert.Equal(t, 30*time.Second, step.GetPolicy().GetTimeout().AsDuration(), "step %q", step.GetId())
-	}
-
-	// The merged step keeps its own id and its own work, which is what makes the
-	// pattern usable at all: merging a whole step in would otherwise give two steps
-	// the same id, and this file would be refused rather than shared.
-	assert.Equal(t, "b", wf.GetSteps()[1].GetId())
-	assert.Equal(t, "two", wf.GetSteps()[1].GetTask().GetInputs()["message"].GetLiteral().GetStringValue())
+	ds, err := flowfile.ValidateSource(src)
+	require.Error(t, err, "a document past the value budget must be refused")
+	assert.Contains(t, err.Error(), "holds more than 100000 values",
+		"the refusal must be the value budget, named, rather than any other limit")
+	assert.NotContains(t, err.Error(), "larger than the",
+		"the byte limit answering instead would make this test prove nothing about the value budget")
+	assert.Empty(t, ds, "the refusal is reported as the compile error, not as a diagnostic list")
 }
 
-// TestWrittenKeysWinOverMergedOnes pins the precedence the merge pass exists to
-// get right, which the bound above must not have disturbed.
+// TestCompilingAcceptsADocumentInsideTheValueBudget is the other side of it.
 //
-// A merged mapping does not shadow a key the step writes for itself. That is
-// YAML's rule, and it is the whole reason `<<:` is usable for sharing
-// boilerplate: a step opts into the shared policy and then overrides the one part
-// it needs different.
-func TestWrittenKeysWinOverMergedOnes(t *testing.T) {
+// A bound only ever tested from above is also satisfied by a compiler that
+// refuses everything: `nodes <= maxNodes` holds trivially for a walk that gave
+// up on the first value. This document is the same shape, one order of magnitude
+// under the budget, and it has to compile clean — which is also what makes the
+// test above evidence that the budget is what fired rather than the document
+// being malformed in some way the size hid.
+func TestCompilingAcceptsADocumentInsideTheValueBudget(t *testing.T) {
 	t.Parallel()
 
-	src := `edition: v2026.3
-name: shared
-steps:
-  - &policy
-    id: base
-    timeout: 30s
-    log:
-      message: base
-  - id: overrides
-    <<: *policy
-    timeout: 5s
-    log:
-      message: one
-  - id: written-first
-    timeout: 5s
-    <<: *policy
-    log:
-      message: two
-`
-	wf, _, err := flowfile.Parse([]byte(src))
-	require.NoError(t, err)
-	require.Len(t, wf.GetSteps(), 3)
-	wf.Steps = wf.GetSteps()[1:]
-
-	// Both directions, because the pass that decides this walks the keys in source
-	// order and a bug here would show in only one of them.
-	for _, step := range wf.GetSteps() {
-		assert.Equal(t, 5*time.Second, step.GetPolicy().GetTimeout().AsDuration(),
-			"step %q writes its own timeout, so the merged one must not win", step.GetId())
-	}
+	ds, err := flowfile.ValidateSource(valueBudgetDocument(10_000))
+	require.NoError(t, err, "a document well inside the budget must compile")
+	assert.Empty(t, ds, "and hold no diagnostics: the shape is legitimate, only large")
 }
 
 // The root is the one name rooting *creates* a collision for, which is worth

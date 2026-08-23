@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -50,12 +51,33 @@ func RunFile(path string) *v1.TestReport {
 // (a refused file, or one whose every case failed to compile), where a "0/0
 // steps reached" line would say less than nothing. See [Coverage].
 func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
+	report, coverage, _ := RunFileUnderSchedules(context.Background(), path, dst.Budget{})
+
+	return report, coverage
+}
+
+// RunFileUnderSchedules is [RunFileWithCoverage] with two additions the command
+// line reaches and nothing else needs: a caller-supplied context, and a budget
+// of seeded schedules to run every case under (issue #800, #477 slice 2).
+//
+// The zero budget explores nothing, which is what [RunFileWithCoverage] passes
+// and what `flow test` does unless `--seeds` says otherwise: each case runs once,
+// under [v1.WrittenOrder], exactly as it always has. A budget that explores runs
+// each case once more per seed and returns a [ScheduleReport] beside the other
+// two results; the report and the coverage still describe the written-order run
+// alone, so a verdict never depends on which seeds were drawn. See
+// [scheduleAccumulator.run].
+//
+// The context is the same bound [RunSourceContext] documents, for the same
+// reason and now with a second one: a case whose virtual clock can never advance
+// has nothing to end it, and `--seeds N` multiplies whatever that costs by N.
+func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) (*v1.TestReport, []*Coverage, *ScheduleReport) {
 	report := &v1.TestReport{File: path}
 
 	file, err := Load(path)
 	if err != nil {
 		report.Refused = err.Error()
-		return report, nil
+		return report, nil, nil
 	}
 
 	var allowUnreached map[string]string
@@ -63,6 +85,7 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 		allowUnreached = file.Coverage.AllowUnreached
 	}
 	coverage := newCoverageAccumulator(allowUnreached)
+	schedules := newScheduleAccumulator(budget)
 
 	// Reads test.Workflow off disk, relative to the *.test.yaml itself — the
 	// same rule `call:` resolves against ([WorkflowPath]'s doc) — which is
@@ -70,22 +93,66 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 	// [RunSource]: the loader is the only part of one case's run that differs
 	// between a file on disk and a workflow submitted as bytes.
 	for _, test := range file.Tests {
+		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			report.Cases = append(report.Cases, stopped)
+
+			continue
+		}
+
 		// The workflow's resolved path is its coverage identity: each case names
 		// its own `workflow:`, so this is what keeps two workflows' coverage
 		// apart within one file (Finding 3).
 		identity := WorkflowPath(path, &test)
-		result, spec, transcript := runCase(&test, DeliveryPath(path, &test), func() (*v1.Workflow, error) {
-			workflow, _, err := flowfile.ParseFile(identity)
+		// Kept rather than discarded, which is the whole of issue #801's part B.
+		// [flowfile.ParseFile] has always handed these back and this loop has
+		// always thrown them away, which is why coverage was the one author-facing
+		// diagnostic in the repo that could not name a position. A `switch:` arm
+		// needs one more than anything else does: a step has an id every surface
+		// resolves, and `on_event:case[2]` has nothing but where it is written.
+		var positions *flowfile.Positions
+		load := func() (*v1.Workflow, error) {
+			workflow, parsed, err := flowfile.ParseFile(identity)
 			if err != nil {
 				return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, err)
 			}
+			positions = parsed
 			return workflow, nil
-		})
+		}
+		deliveryPath := DeliveryPath(path, &test)
+
+		result, spec, transcript := schedules.run(ctx,
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
+				return runCase(ctx, &test, deliveryPath, load)
+			})
 		report.Cases = append(report.Cases, result)
-		coverage.observe(identity, spec, transcript)
+		coverage.observe(identity, spec, transcript, positions)
 	}
 
-	return report, coverage.result()
+	return report, coverage.result(), schedules.result()
+}
+
+// caseStoppedBefore reports the case a caller's context ended before it could
+// start, or nil while there is still budget to run one.
+//
+// Checked before the case rather than only inside the run, because most of what
+// a case costs happens before its context is ever consulted: compiling its
+// stubs, parsing the workflow again, binding the stubs against it. A file may
+// declare [MaxTestsPerFile] cases, so a deadline that expired during an early
+// one would otherwise be followed by hundreds of expensive parses — and on a
+// serving surface those run while the caller's whole budget is already spent
+// and, worse, while it still holds whatever lock it took (see
+// cmd/flow/mcpserve.go's registry guard). The bound has to stop the *work*, not
+// only the execution. Reported by Codex on picatz/flowstate#807.
+func caseStoppedBefore(ctx context.Context, test *Test) *v1.TestCase {
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+
+	return &v1.TestCase{
+		Name:  test.Name,
+		Error: fmt.Sprintf("not run: the run was stopped before this case started (%v)", err),
+	}
 }
 
 // RunSource is [RunFile] for a workflow and a `*.test.yaml` given directly as
@@ -107,6 +174,27 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 // with a diagnostic rather than resolved, the same restriction
 // [flowfile.Parse] documents.
 func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
+	return RunSourceContext(context.Background(), label, workflowSource, testSource)
+}
+
+// RunSourceContext is [RunSource] with a caller-supplied context, which every
+// case's run is started from.
+//
+// It exists because a run here can block forever and nothing outside it could
+// say stop. The virtual clock advances when every participant is parked, so a
+// `wait_for_signal:` with no timeout and no scripted signal has no deadline to
+// advance to: the case never completes, and neither does the call that asked
+// for it. On a developer's machine that is a hung `flow test` somebody
+// interrupts. On a server whose callers are whoever holds a token — see
+// cmd/flow/mcpserve.go — it is a request that never returns and a goroutine
+// that never exits, arranged from a legal Flowfile, which is the shape
+// CLAUDE.md's "bound anything that consumes untrusted input" names. Reported
+// by Codex on picatz/flowstate#807.
+//
+// A context that is already done makes every case fail rather than run, with
+// the reason on the case; [RunSource] and [RunFile] pass a background context
+// and are unchanged by this existing.
+func RunSourceContext(ctx context.Context, label string, workflowSource, testSource []byte) *v1.TestReport {
 	report := &v1.TestReport{File: label}
 
 	file, err := LoadSource(testSource)
@@ -124,10 +212,18 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 	}
 
 	for _, test := range file.Tests {
+		// See [caseStoppedBefore] for why the bound is checked here rather than
+		// only inside the run.
+		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
+			report.Cases = append(report.Cases, stopped)
+
+			continue
+		}
+
 		// No delivery path: bytes have no directory to resolve a fixture against,
 		// which is why [checkTrigger] refuses a trigger case in this shape rather
 		// than letting one arrive here with nowhere to read from.
-		result, _, _ := runCase(&test, "", load)
+		result, _, _, _ := runCase(ctx, &test, "", load)
 		report.Cases = append(report.Cases, result)
 	}
 
@@ -149,7 +245,23 @@ func RunSource(label string, workflowSource, testSource []byte) *v1.TestReport {
 // deliveryPath is where a `trigger:` case's stored delivery lives, already
 // resolved against the test file's own directory ([DeliveryPath]); empty for every
 // other case and for [RunSource], which has no directory at all.
-func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs) {
+// runErr is the run's own failure, distinct from the verdict: a case that
+// declares `expect.failed: true` passes while its run errored, and schedule
+// exploration compares the error text because `expect.error_contains` is read
+// out of it ([caseObservables]). Nil for a case that never reached a run.
+//
+// # The schedule this case runs under
+//
+// base decides it. Everything below builds on base with [context.WithValue], so
+// a [v1.Scheduler] a caller put there reaches [v1.RunWithInputs] and answers the
+// two questions the local driver asks — `parallel:` branch order and where an
+// `async:` step's work happens. Nothing here installs one, deliberately: a
+// scheduler is a fact about the run somebody asked for, exactly as the clock
+// this function *does* install is a fact about the harness, and inventing one
+// here would take the choice away from the only caller with a reason to make it
+// ([RunFileUnderSchedules]). With no scheduler on base the driver takes
+// [v1.WrittenOrder], which is what every `flow test` case has always run under.
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -208,7 +320,10 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 	}
 
 	clock := v1.NewVirtualClock(epoch)
-	ctx := v1.NewContextWithClock(context.Background(), clock)
+	// base rather than context.Background(): whatever bound the caller put on
+	// this run is the only thing that can end a case the virtual clock cannot
+	// advance past. See [RunSourceContext].
+	ctx := v1.NewContextWithClock(base, clock)
 	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
 
 	// The run executes against its own registry, not the process-wide one:
@@ -335,7 +450,12 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 		return
 	}
 
-	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	// runErr is this function's named result, assigned here rather than
+	// redeclared: it is reported to the caller beside the verdict, because a
+	// case can pass with a failed run and schedule exploration compares the
+	// failure text ([caseObservables]).
+	var outputs *v1.Workflow_StepOutputs
+	outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	close(runFinished)
 
 	// The transcript coverage reads is the same one the verdict does. A failed
@@ -368,7 +488,7 @@ func runCase(test *Test, deliveryPath string, load func() (*v1.Workflow, error))
 // case fails, naming the task, rather than doing whatever the real one does.
 //
 // The registry-swap pattern the repo's own tests already use for the same
-// reason (`allowLoopback` in pkg/flowstate/v1/tests/tests.go): the local
+// reason (`allowLoopback` in pkg/flowstate/v1/internal/conformance/conformance.go): the local
 // driver looks tasks up through the process-wide default registry
 // ([v1.LookupTask]), so replacing a task for the duration of one case means
 // mutating that registry and putting it back. Test cases within one `flow

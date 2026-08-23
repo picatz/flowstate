@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -241,6 +242,52 @@ func TestEvaluatorEvalString(t *testing.T) {
 			}
 			if got := out.Value(); got != tt.want {
 				t.Errorf("got %v (%T), want %v (%T)", got, got, tt.want, tt.want)
+			}
+		})
+	}
+}
+
+// TestEvalStringClassifiesEveryExpressionPhaseAsExpression pins #899's
+// correction: parsing is an expression-failure phase like compiling and
+// evaluating, so a malformed expression passed to the exported
+// [Evaluator.EvalString] must classify [ErrorKindExpression] — the author's
+// mistake — rather than falling through [ClassifyError] to Internal, which
+// errors.go defines as a defect in Flowstate and which is retryable.
+//
+// The eval-phase case is the one #184 already fixed; it is asserted alongside
+// the parse case so the test says the two phases agree, which is the whole
+// point — a consumer branching on the kind should not be told to file a bug for
+// one malformed expression and fix the file for another.
+func TestEvalStringClassifiesEveryExpressionPhaseAsExpression(t *testing.T) {
+	e := NewEvaluator()
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		expr string
+	}{
+		// Unbalanced parenthesis: env.Parse rejects it before an AST exists, the
+		// branch that returned a bare fmt.Errorf until #899.
+		{name: "parse failure", expr: "1 + ("},
+		// Compiles and fails at evaluation — the phase #184 already wrapped, here
+		// to prove the classification is the same across phases.
+		{name: "eval failure", expr: "['a'][5]"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := e.EvalString(ctx, tc.expr, nil, map[string]any{})
+			if err == nil {
+				t.Fatalf("expected %s to fail", tc.expr)
+			}
+
+			if got := ClassifyError(err); got != ErrorKindExpression {
+				t.Errorf("ClassifyError(%q) = %q, want %q", tc.expr, got, ErrorKindExpression)
+			}
+
+			var exprErr *ExpressionError
+			if !errors.As(err, &exprErr) {
+				t.Errorf("error for %q is not an *ExpressionError: %v", tc.expr, err)
 			}
 		})
 	}

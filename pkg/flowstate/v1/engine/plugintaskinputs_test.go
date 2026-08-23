@@ -6,11 +6,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestPluginTaskInputsDurable is the second of #436's two driver callers: the
-// identical [tests.PluginTaskInputCases], run through worker registration and a
+// identical [conformance.PluginTaskInputCases], run through worker registration and a
 // Temporal test environment instead of a context value.
 //
 // The pairing is the point. An input evaluated a step too early, a deferred
@@ -21,9 +21,9 @@ import (
 // TestPluginTaskInputsLocal in pkg/flowstate/v1/plugintaskinputs_local_test.go
 // is the first caller.
 func TestPluginTaskInputsDurable(t *testing.T) {
-	require.NoError(t, v1.DefaultRegistry().Register(tests.PluginTaskInputsTaskDef()))
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.PluginTaskInputsTaskDef()))
 
-	for _, test := range tests.PluginTaskInputCases() {
+	for _, test := range conformance.PluginTaskInputCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
 		})

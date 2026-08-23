@@ -70,6 +70,13 @@ That is the correct answer from a process that has not been told about this
 plugin, and it is worth keeping correct rather than growing an exception for
 this directory.
 
+Telling it is the other half, and it is a flag rather than an exception:
+`flow validate --plugin-dir <dir> examples/plugins/vcs/workflow.yaml` launches
+the plugins there and checks this file against the tasks and input schemas they
+provide, and `flow tasks --plugin-dir <dir>` lists them with the plugin each one
+came from (#724, #710). Build this plugin first — see
+[`plugins/vcs`](../../../plugins/vcs), which is a module of its own.
+
 ## What proves this file is reachable
 
 `TestAFlowfileCanNameTheVCSPluginsTasks`, in

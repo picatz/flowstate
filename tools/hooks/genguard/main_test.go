@@ -24,6 +24,7 @@ func TestGenerated(t *testing.T) {
 		{"cmd/flow/internal/reference/mirror/DSL.md", []string{"docs/DSL.md", "go generate ./cmd/flow/internal/reference"}},
 		{"cmd/flow/internal/reference/mirror/examples/hello.yaml", []string{"go generate ./cmd/flow/internal/reference"}},
 		{"pkg/flowstate/v1/protodoc/flowstate.descriptorset.binpb", []string{"buf", "build"}},
+		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/schema.descriptorset.binpb", []string{"example.proto", "buf", "build"}},
 	}
 	for _, tt := range refuse {
 		msg := generated(tt.rel)

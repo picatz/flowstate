@@ -10,11 +10,13 @@ the shape of the connection layer; this document is what to do with it.
 
 ## Read this before you share a Temporal namespace
 
-If two tenants' runs execute in the same Temporal namespace, anyone with
-Temporal UI or `tctl`/`temporal` CLI access to that namespace can read **every
-tenant's** workflow history: the full compiled specification, every step's
-inputs and outputs, the identity claims a run carries, and its memo. That
-access is Temporal's, not Flowstate's — Temporal's own visibility and
+> [!WARNING]
+> If two tenants' runs execute in the same Temporal namespace, anyone with
+> Temporal UI or `tctl`/`temporal` CLI access to that namespace can read **every
+> tenant's** workflow history: the full compiled specification, every step's
+> inputs and outputs, the identity claims a run carries, and its memo.
+
+That access is Temporal's, not Flowstate's — Temporal's own visibility and
 namespace permissions are what would have to gate it, and most self-hosted
 clusters don't gate per-workflow.
 
@@ -69,6 +71,51 @@ Each tier is a set of claims a security reviewer can check independently.
 Nothing here is aspirational — every ✅ is traced to code, and every ❌ is
 something to stop assuming once you've read it.
 
+Each tier adds exactly one boundary to the one before it, and the two claims
+people most often assume they already have arrive last:
+
+```mermaid
+flowchart LR
+  T0["Tier 0<br/>flow run local"] -->|"an --auth-policy<br/>and one ownedBy check"| T1a["Tier 1a<br/>shared worker"]
+  T1a -->|"policy rules keyed on<br/>identity.namespace"| T1b["Tier 1b<br/>shared worker,<br/>per-tenant rules"]
+  T1b -->|"a Temporal namespace and<br/>a worker fleet per tenant"| T2["Tier 2<br/>per-tenant namespace<br/>+ worker"]
+  T2 -->|"containers, microVMs,<br/>substrate credentials"| T3["Tier 3<br/>substrate isolation"]
+
+  History(["history privacy<br/>between tenants"]) -.->|"first true here"| T2
+  Blast(["worker blast radius<br/>of one tenant"]) -.->|"first true here"| T2
+
+  classDef notbuilt stroke-dasharray: 5 5;
+  class T3 notbuilt;
+```
+
+Tier 3 is dashed because it is documented and not built: it is what a substrate
+provides, not something Flowstate implements. The same claims as a grid, which is
+the form to hand a reviewer:
+
+| Claim | Tier 0 | Tier 1a | Tier 1b | Tier 2 | Tier 3 |
+| --- | --- | --- | --- | --- | --- |
+| Identity is verified rather than asserted | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Every cross-tenant API verb refused | n/a | ✅ | ✅ | ✅ | ✅ |
+| Secrets, tasks and egress scoped per tenant | rehearsal only | ❌ | ✅ | ✅ | ✅ |
+| Workflow history private between tenants | n/a | ❌ | ❌ | ✅ | ✅ |
+| Worker blast radius is one tenant | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Enforcement below the process (network, kernel) | ❌ | ❌ | ❌ | ❌ | substrate's |
+
+A cell is a summary of the tier's section below, which is where the tracing to
+code lives; read the section before relying on a tick.
+
+One definition the grid depends on, because a reviewer will otherwise find the
+counter-example immediately: **Tier 1a means `flow server --auth-policy`.**
+`--insecure-no-auth` is not a weaker Tier 1a, it is Tier 0's identity model with
+a network listener in front of it — every caller is admitted anonymously
+(`auth.InsecureAnonymousVerifier`), so every run belongs to the same empty
+namespace and there is no tenancy for the `ownedBy` check to enforce. The code
+draws the same line: `authVerifier` refuses to start a server given neither a
+policy nor that flag, and treats the flag as a thing an operator says out loud
+rather than a fallback for a policy that failed to load
+(`cmd/flow/main.go`). The Local development recipe below is labelled a Tier 0/1a
+*boundary* for this reason.
+
 ### Tier 0 — `flow run local`
 
 No server, no Temporal, no worker process boundary. A single command runs a
@@ -87,15 +134,23 @@ Flowfile to completion in the calling process.
   credential minted for a local run carries a `_local` subject component no
   server-attested run can produce, so a cloud trust policy written for
   production will not match a rehearsal's.
-- ❌ Never run this as a shared service. There is no authentication surface to
-  turn on — it doesn't have one to withhold.
+> [!WARNING]
+> Never run Tier 0 as a shared service. There is no authentication surface to
+> turn on — it doesn't have one to withhold, and every `--as-*` flag above is
+> an assertion anyone reaching it can make.
 
 ### Tier 1a — shared worker, zero configuration
 
 One Temporal namespace, one worker fleet, one Flowstate server, `flow server`
-started with an OIDC/workload-identity `--auth-policy` (or, deliberately for
-development only, `--insecure-no-auth`). This is what running `flow worker`
-and `flow server` with no per-tenant flags gets you.
+started with an OIDC/workload-identity `--auth-policy`. This is what running
+`flow worker` and `flow server` with no per-tenant flags gets you.
+
+The policy is part of the definition, not a recommendation inside it: every
+claim below rests on a caller whose identity was *attested*, and `flow server
+--insecure-no-auth` — which the server accepts only because an operator asked
+for it in as many words — admits everyone anonymously into one empty namespace,
+which is Tier 0's model reachable over a socket rather than a weaker Tier 1a.
+Read the ticks below as claims about a server started with a policy.
 
 - ✅ The Flowstate API refuses every cross-tenant verb: one `ownedBy` check
   covering `Get`/`List`/`Cancel`/`Terminate`/`Signal`/`Describe`, reported as
@@ -273,7 +328,7 @@ $ flow server --auth-policy /etc/flowstate/trust.yaml \
 # which is the whole point: a compromise of this process reaches one tenant's
 # material, which is the claim Tier 1 structurally cannot make.
 $ flow worker --tenant team-a --task-queue-prefix flowstate-run \
-    --namespace temporal-team-a \
+    --temporal-namespace temporal-team-a \
     --egress-policy /etc/flowstate/team-a/egress.yaml \
     --secret-dir /etc/flowstate/team-a/secrets \
     --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
@@ -439,9 +494,29 @@ fleet — one per tenant namespace for Tier 2, replicas for throughput within a
 tenant. Plugins are Unix-socket subprocesses launched by the worker process
 itself, so no extra container or sidecar is needed for them; a `--plugin-dir`
 pointed at a `ConfigMap`- or `initContainer`-populated directory works as
-long as that directory isn't world-writable (see [blockers](#blockers)).
+long as that directory isn't writable by other users — group or world (see
+[blockers](#blockers)).
 Secrets mount as files (`--secret-dir`) or environment (`--secret-env`) the
 ordinary Kubernetes way — Secret volumes or `envFrom`.
+
+**Set `--identity` (or `FLOWSTATE_WORKER_IDENTITY`) to the pod name.** Left
+unset, a worker's identity in Temporal's Event History and Task Queue poller
+list is built from `--deployment-name`/`--build-id`, `--tenant` if set, and
+this process's hostname — better than the SDK's own `pid@hostname` default
+(every container's PID 1 is `1`), but a pod hostname is still a hash an
+operator has to cross-reference against `kubectl get pods`. Wire the
+downward API's pod name straight through instead:
+
+```yaml
+env:
+  - name: FLOWSTATE_WORKER_IDENTITY
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+```
+
+so a stuck task in Temporal's UI names the exact pod to `kubectl exec` into,
+with nothing to look up.
 
 **The pod's `FLOWSTATE_ADDRESS` needs a flag alongside it, and which one
 depends on where TLS actually ends.** A pod almost always sets
@@ -473,6 +548,182 @@ in front of it: that is exactly the plaintext-to-the-internet case the flag's
 help text tells you not to use it for, and the cluster network is not a
 substitute boundary the way a container's published-port binding is.
 
+### Health checks and probes
+
+`flow server` answers `GET`/`HEAD /healthz` with `200` and an empty body —
+nothing else, deliberately: an unauthenticated endpoint that describes the
+deployment (version, config, dependency state) is reconnaissance served on
+request (`healthzHandler`, `cmd/flow/routing.go:118-126`). It is mounted in
+two places:
+
+- On the **public** listener, unauthenticated, always — `serverHandler`,
+  `cmd/flow/routing.go:94`.
+- On the **internal** listener, if `--internal-listen`
+  (`FLOWSTATE_INTERNAL_ADDRESS`) names a loopback address — `internalHandler`,
+  `cmd/flow/routing.go:160`. The internal listener also carries `/debug/pprof/*`
+  (`cmd/flow/routing.go:167-171`), which is why it has no default and is
+  refused off loopback (`checkInternalListenAddress`,
+  `cmd/flow/internallistener.go:79-90`): pprof can read this process's memory
+  and running goroutines, and the listener has no TLS or authentication of its
+  own.
+
+There is exactly one probe endpoint — `flow server` does not expose a
+separate readiness or startup route. What makes `/healthz` usable as more than
+a bare liveness check is startup ordering: `flow server` dials Temporal with
+the SDK's eager `client.DialContext` (`cmd/flow/main.go:809`, wired through
+`temporalclient.Dial`, `pkg/flowstate/v1/temporalclient/temporalclient.go:175-187`)
+and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
+and every other startup check (TLS configuration, auth policy load, plugin
+catalog build), succeeds. So the first `200` from `/healthz` already implies
+the initial Temporal connection worked; it does not mean the connection is
+*still* good, since nothing re-checks it afterward, and it says nothing about
+the pool's per-tenant Temporal clients (`temporalclient.Pool`) reconnecting
+after that.
+
+`flow worker` exposes no HTTP surface at all — no listener, no `/healthz`, no
+`--internal-listen` flag — so a worker's liveness has to come from the
+process itself: run it under a supervisor that treats process exit as the
+signal (`systemd`'s `Restart=on-failure` in the [systemd
+recipe](#single-vm-ec2-or-similar-systemd--the-best-supported-production-shape)
+above, or a Kubernetes `Deployment`'s own restart-on-crash) rather than an
+HTTP probe, because there is no port to point one at.
+
+A Kubernetes `httpGet` probe is dialed by the kubelet from the node's own
+network namespace, against the pod's IP — not from inside the pod's network
+namespace — so it can only reach a listener bound to an address the pod IP
+routes to. That is exactly what the public listener is, per the "pod's
+`FLOWSTATE_ADDRESS` needs a flag alongside it" note above (`0.0.0.0:9233`,
+wildcard bind). The internal listener is the opposite on purpose: refused
+off loopback (`checkInternalListenAddress`,
+`cmd/flow/internallistener.go:79-90`), so it never accepts a connection that
+didn't originate in the same network namespace — which rules it out for a
+`httpGet` probe target, not just as a matter of style. So:
+
+The `httpGet` probes below assume the **upstream-terminated-TLS** shape from
+the [Kubernetes](#kubernetes) section above (`--tls-terminated-upstream`,
+Ingress does the TLS): the pod's public listener speaks plain HTTP, and
+`httpGet`'s `scheme` defaults to `HTTP`, so it needs no `scheme:` field to
+line up. If the pod terminates TLS itself
+(`FLOWSTATE_TLS_CERT_FILE`/`FLOWSTATE_TLS_KEY_FILE` instead), `/healthz`
+shares that listener with everything else `flow server` serves
+(`healthzHandler` is mounted on the same mux the TLS-wrapped `http.Server`
+answers — `cmd/flow/main.go:974`, `:1032-1033`) and comes back over HTTPS
+only; an `httpGet` probe with no `scheme:` then dials plaintext against a
+TLS port and every probe fails, which reads as a healthy pod stuck in a
+restart loop, not as a TLS error anywhere the kubelet reports. Setting
+`scheme: HTTPS` gets the handshake started, but does not finish it if the
+pod also requires client certificates (`--tls-client-auth` /
+`client_certificate_required`, `cmd/flow/main.go:996`) — the kubelet's probe
+client presents none, and a `Kubernetes` probe has no field to give it one.
+When the pod terminates TLS itself, point the probes at the loopback `exec`
+probe below instead of `httpGet`.
+
+```yaml
+        # startupProbe: gives Temporal-dial-plus-policy-load startup room
+        # before liveness/readiness get a vote, without lowering their own
+        # timeouts to cover a case that only happens once per pod.
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 9233
+          failureThreshold: 30
+          periodSeconds: 2
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9233
+          periodSeconds: 10
+          failureThreshold: 3
+        # readinessProbe: same route as liveness, because flow server has no
+        # separate readiness check today. It answers "the process is up and
+        # its one-time startup checks passed" (see above), not "Temporal is
+        # reachable right now" — a mid-run Temporal outage does not flip this
+        # to unready, so a readiness probe alone will not pull a pod out of
+        # an Ingress/Service's rotation for that failure mode.
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9233
+          periodSeconds: 10
+          failureThreshold: 3
+```
+
+The internal listener is also the fix for server-terminated TLS **when that
+TLS comes from an explicit `--tls-cert-file`/`--tls-key-file` pair**, and not
+only a way to keep credential-free probe traffic off the RPC port when that
+is a concern on the upstream-terminated shape above — either way it works
+the same, just not through `httpGet`. It does not apply when TLS comes from
+`--tls-acme-hosts`: `resolveACMESettings` refuses to start `flow server` if
+`--internal-listen` is set alongside it at all (`cmd/flow/acme.go:185-194`),
+because the internal listener is loopback or a private address by design and
+a public CA can never issue it a certificate. An ACME deployment needing
+probe traffic off the TLS-terminated port has no `httpGet` workaround here;
+the options are a sidecar or a probe that speaks the ACME-issued cert's
+protocol.
+
+For the explicit-certificate case, set `--internal-listen 127.0.0.1:9090`
+and point **`exec` probes** at it instead of `httpGet` — for all three
+probes above, not just liveness, since `startupProbe` and `readinessProbe`
+are equally plaintext `httpGet` checks against the TLS-terminated port and
+fail the same way if left as they are. `exec` runs the command inside the
+container's own network namespace, which loopback is reachable from, and the
+internal listener never carries TLS or client-cert requirements of its own
+(`internalHandler`, `cmd/flow/routing.go:160`) regardless of what the public
+listener demands:
+
+```yaml
+        startupProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          failureThreshold: 30
+          periodSeconds: 2
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "wget -q -O- --timeout=2 http://127.0.0.1:9090/healthz || exit 1"]
+          periodSeconds: 10
+          failureThreshold: 3
+```
+
+That trades a probe dependency on the container image having `wget` (or
+`curl`) for keeping probe traffic off the RPC port and away from anything
+that terminates TLS in front of it; whether that trade is worth making is a
+per-deployment call this document isn't going to make for you.
+
+### Graceful shutdown
+
+`flow worker` catches SIGINT and SIGTERM — the signal every recipe above
+actually sends: `docker stop`, `systemctl stop`, and a Kubernetes pod
+termination all send SIGTERM first and SIGKILL only after a grace period. On
+either signal it stops polling for new work immediately, then gives in-flight
+activities and workflow tasks up to `--worker-stop-timeout`
+(`FLOWSTATE_WORKER_STOP_TIMEOUT`, default `2m`) to finish before exiting
+regardless.
+
+That timeout only does its job if the deployment's own grace period is at
+least as long, or the platform's hard kill lands first and the wait was for
+nothing:
+
+- **systemd** — add `TimeoutStopSec=` to the `[Service]` block in the unit
+  above, at least as large as `--worker-stop-timeout` (systemd's own default
+  is 90s, shorter than this document's 2-minute worker default).
+- **Docker / Docker Compose** — `docker stop` defaults to a 10-second grace
+  period; pass `--time` (or `stop_grace_period:` in Compose) to raise it, or
+  lower `--worker-stop-timeout` to fit inside the default if 10s is enough for
+  your activities.
+- **Kubernetes** — set the worker `Deployment`'s pod
+  `terminationGracePeriodSeconds` (default 30s) to at least
+  `--worker-stop-timeout`'s value; the kubelet sends SIGKILL the moment that
+  elapses; it does not wait on the container.
+
+Size `--worker-stop-timeout` to the longest activity you expect in flight, not
+to the platform default — the platform default is not a fact about your
+workflows, and the two are independently configured on purpose.
+
 ### Cloud Run / fly.io
 
 These need attention before they're a good fit, not because they can't work:
@@ -480,10 +731,10 @@ These need attention before they're a good fit, not because they can't work:
 - Neither `flow server` nor `flow worker` honors `$PORT` — Cloud Run and
   fly.io both expect a service to bind the port they inject via that
   variable, and neither reads it (verified: no `os.Getenv("PORT")` anywhere in
-  `cmd/flow`). `FLOWSTATE_ADDRESS` is the only way to set the listen address
-  today, and it's env-only — there's no `--listen` flag. An entrypoint script
-  translating `$PORT` into `FLOWSTATE_ADDRESS=0.0.0.0:$PORT` is the practical
-  workaround until this lands upstream.
+  `cmd/flow`). `flow server --listen 0.0.0.0:$PORT` says it on the command
+  line (`FLOWSTATE_ADDRESS` is still the default it falls back to), so a
+  container command referencing `$PORT` is the whole workaround — no
+  entrypoint script translating one variable into another.
 - That `0.0.0.0` bind needs `--tls-terminated-upstream` (or
   `FLOWSTATE_TLS_TERMINATED_UPSTREAM=1`) alongside it, on both platforms, for
   the same reason the Kubernetes recipe above needs it: `flow server` reads a
@@ -496,9 +747,14 @@ These need attention before they're a good fit, not because they can't work:
   its own, that stops being true, and `FLOWSTATE_TLS_CERT_FILE`/
   `FLOWSTATE_TLS_KEY_FILE` (a certificate the container loads itself) is the
   flag you want instead.
-- `--address` on `flow worker`/`flow server` means the **Temporal** address,
-  not the HTTP listen address — a real foot-gun on a platform that hands you
-  a `--address`-shaped port variable and expects it to mean "listen here."
+- Temporal's address is `--temporal-address` on `flow worker`/`flow server`,
+  and the socket the server binds is `--listen`. It used to be that both
+  commands spelled Temporal's `--address` — the spelling every client verb
+  uses for the *Flowstate* server — which was a real foot-gun on a platform
+  that hands you an `--address`-shaped port variable and expects it to mean
+  "listen here." `--address` on those two commands is now refused outright,
+  naming both replacements, rather than quietly dialing Temporal at your
+  listen address (picatz/flowstate#580).
 - Once the port is sorted: `fly.io` works with a `dev-server`
   (`temporal server start-dev` in a sidecar/separate machine, Tier 0/1a-only,
   fine for a demo), a self-hosted Temporal cluster reached over Fly's private
@@ -572,12 +828,17 @@ than it is.
   `pkg/flowstate/v1/plugin` dials plugins over `AF_UNIX`
   (`internal/protocol.NetworkUnix`), with nothing conditionally compiled for
   another transport on Windows. **Windows support is for authoring, not for
-  running workers.** `flow validate`, `flow fix`, `flow lsp`, and
-  `flow run local` with no `--plugin-dir` work on Windows; a worker process,
-  or `run local` with plugins, needs a POSIX host. State that posture to
+  running workers.** `flow validate`, `flow fix`, `flow tasks`, `flow lsp` and
+  `flow run local` with no `--plugin-dir` work on Windows; a worker process, or
+  any of those five given `--plugin-dir`, needs a POSIX host. (`flow validate`,
+  `flow tasks` and `flow fix` take that flag as of #724 — every authoring verb
+  that can launch a plugin launches it over the same `AF_UNIX` transport, so
+  none of them is an exception to this line; the split is "told to launch
+  plugins" versus "not", never which verb it is.) State that posture to
   anyone asking "does this run on Windows" — the honest answer is "your
   editor does, your worker fleet doesn't."
-- **`--plugin-dir` refuses a world-writable directory**, and rightly:
+- **`--plugin-dir` refuses a directory other users can write to**, group as
+  well as world, and rightly:
   `plugin.doc.go` documents this refusal (a plugin directory is arbitrary
   code execution; a directory anyone can write to is arbitrary code execution
   by anyone), with `--allow-insecure-plugin-dir` as the explicit, named escape
@@ -612,6 +873,157 @@ substrate whose whole job is being the thing that enforces limits
 correctly under load; this repo's own design bias (`CLAUDE.md`, "proto-first",
 "leaning into Temporal") is to surface what Temporal does rather than
 reimplement it, and this is exactly that call.
+
+## Metrics
+
+Telemetry is OTLP push, gated on the standard `OTEL_EXPORTER_OTLP*`
+environment variables — unset means nothing is emitted at all: no exporter,
+no goroutines, no network (`telemetryConfigured`, `cmd/flow/telemetry.go:98-103`).
+There is no Prometheus-shaped `/metrics` scrape endpoint on either listener;
+[internalHandler](#health-checks-and-probes)'s own doc comment says why —
+standing one up means a second telemetry pipeline (a registry plus an
+exporter) this tree does not carry today (`cmd/flow/routing.go:141-146`). If
+your metrics stack expects to scrape, point an OTel Collector's OTLP receiver
+at it and let the collector's own Prometheus exporter serve `/metrics` from
+there; `examples/observability/docker-compose.yaml` wires exactly that
+(Collector receiving OTLP, Prometheus scraping the Collector).
+
+Every metric below is real code, cited by call site — not a proposal. Two
+instrumentation sources exist, and one deliberate gap:
+
+**RPC metrics**, from the `otelconnect` interceptor wired onto every command
+that speaks Connect RPC — `flow server` (`cmd/flow/main.go:923`), `flow server
+dev` (`cmd/flow/serverdev.go:724`), and every CLI/MCP client call
+(`cmd/flow/client.go:270`). `otelconnect.NewInterceptor()` is called with no
+options, so both its default instruments are active
+(`instruments.go:44-49`, `connectrpc.com/otelconnect@v0.9.0`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `rpc.server.duration` / `rpc.client.duration` | histogram | ms | `rpc.system`, `rpc.service`, `rpc.method`, `rpc.connect.error_code` or `rpc.grpc.status_code`, `net.peer.name`, `net.peer.port` | Wall time per RPC, server- or client-side depending which end recorded it |
+| `rpc.server.request.size` / `rpc.client.request.size` | histogram | bytes | same as above | Uncompressed request message size |
+| `rpc.server.response.size` / `rpc.client.response.size` | histogram | bytes | same as above | Uncompressed response message size |
+| `rpc.server.requests_per_rpc` / `rpc.client.requests_per_rpc` | histogram | 1 | same as above | Messages received per RPC (1 for every non-streaming call) |
+| `rpc.server.responses_per_rpc` / `rpc.client.responses_per_rpc` | histogram | 1 | same as above | Messages sent per RPC |
+
+(`rpc.service`/`rpc.method` come from the Connect procedure path;
+`net.peer.*` from the connection's remote address — `attributes.go:48-83`,
+same module.)
+
+**Plugin metrics**, from every plugin process a worker launches
+(`pkg/flowstate/v1/plugin/telemetry.go:42-47`):
+
+| Metric | Type | Unit | Labels | Meaning |
+| --- | --- | --- | --- | --- |
+| `flowstate.plugin.operation.duration` | histogram | s | `flowstate.plugin.name`, `flowstate.plugin.operation`, `flowstate.task.name` (when the operation is task-scoped), `flowstate.plugin.outcome` | Duration of one host-to-plugin operation (`launch`, `start`, `health`, `execute`) |
+| `flowstate.plugin.calls` | counter | — | same as above | One increment per operation, same attribute set as the duration it accompanies |
+| `flowstate.plugin.health.checks` | counter | — | `flowstate.plugin.name`, `flowstate.plugin.health.status` (`serving`, `not serving`, or `unreachable` — `plugin.go:87-99`; `unknown` is the pre-poll default and is never recorded, since an unspecified poll response is mapped to `not serving` before the metric is written) | One increment per health poll result (`plugin.go:353`, `plugin.go:385`) |
+| `flowstate.plugin.restarts` | counter | — | none | One increment per relaunch actually attempted, after the restart budget and backoff both let it through (`plugin.go:732`) |
+| `flowstate.plugin.launch.failures` | counter | — | none | One increment per failed plugin launch (`launch.go:93`) |
+| `flowstate.plugin.protocol.errors` | counter | — | none | One increment when a launch fails specifically on handshake — `ErrHandshake` or `ErrHandshakeTimeout` (`launch.go:96`) |
+
+The last three carry no labels at the call site — a launch failure or a
+protocol error happens before a plugin identity is necessarily known, and
+`restarts` is recorded without one either, so none of the three can be
+filtered by plugin name today; only the span each operation opens carries
+`flowstate.plugin.name` regardless of outcome. `flowstate.plugin.name` and
+`flowstate.task.name` are `ClassConfiguration` labels (bounded by which
+plugins/tasks a deployment installs, not by a caller) and every label passes
+through `pkg/flowstate/v1/metricschema` before reaching an instrument, which
+drops an unrecognized key and caps a runaway value's cardinality behind an
+`OverflowValue` sentinel rather than losing the measurement — see that
+package's doc comment for the full policy.
+
+**Temporal SDK metrics** are also live once telemetry is on: `initTelemetry`
+wires a `client.MetricsHandler` (`opentelemetry.NewMetricsHandler`, meter name
+`temporal-sdk`) into both the server's and the worker's Temporal client
+options, which the SDK had never had a handler for before this landed
+(`cmd/flow/telemetry.go:35-41`, `:290-292`). That handler emits the Go SDK's
+own instrument set — task-queue backlog, poller counts, workflow-task
+latency, activity failures among them — under names and label conventions
+Flowstate does not define and this document is not going to restate, since
+they belong to `go.temporal.io/sdk` and drift with it rather than with this
+codebase; see the [Temporal SDK metrics
+reference](https://docs.temporal.io/references/sdk-metrics) for the current
+list. Verified here only as "on and reachable," not enumerated.
+
+**No metric exists yet for a run's own lifecycle** — started, completed,
+failed, a step's retry count — searched for and not found anywhere under
+`pkg/flowstate/v1` or `cmd/flow` outside the two tables above. An operator
+wanting "runs per tenant per hour" or "step failure rate" today has to derive
+it from spans (`engine.startTaskSpan` and neighbors) or from `flow list`
+against Temporal visibility, not from a counter. That is a real gap, not a
+documentation one — file it separately rather than treat this catalog as
+covering it.
+
+## Worker capacity
+
+`flow worker` builds its Temporal worker from exactly five fixed fields —
+`DeploymentOptions`, `Interceptors`, `DeadlockDetectionTimeout`, `Identity`,
+`WorkerStopTimeout` — plus, as of #783, four capacity options an operator can
+set: `--max-concurrent-activities`, `--max-concurrent-workflow-tasks`,
+`--max-activities-per-second`, and `--task-queue-activities-per-second`
+(`FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES`,
+`FLOWSTATE_WORKER_MAX_CONCURRENT_WORKFLOW_TASKS`,
+`FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND`,
+`FLOWSTATE_WORKER_TASK_QUEUE_ACTIVITIES_PER_SECOND`; `cmd/flow/main.go`). All
+four default to `0`, which the flag help text and `workerCapacityOptions`'s
+doc comment both spell out as "take the Temporal SDK's own default" — an
+unset flag changes no behavior on any existing deployment. `flow server
+dev`'s embedded worker does not read any of these; it exists for the laptop,
+where the SDK defaults are the right answer.
+
+**Defaults, unset.** The Go SDK sizes an untuned worker at
+`MaxConcurrentActivityExecutionSize` = 1000, `MaxConcurrentWorkflowTaskExecutionSize`
+= 1000, and both rate limits at 100000/s (`go.temporal.io/sdk@v1.47.0/internal/internal_worker.go:55-64`
+— effectively unlimited for the rate limits). That is generous enough that
+most single-tenant deployments never touch these flags; they exist for the
+deployment that does.
+
+**When to raise slots versus scale out.** Temporal's own troubleshooting
+guidance for slot exhaustion — `temporal_worker_task_slots_available` sitting
+at zero, schedule-to-start latency climbing (watch both; see
+[Metrics](#metrics) above for how Flowstate wires the SDK's metrics handler
+that emits them) — names two remedies, and they cost differently here:
+
+- **Raise `--max-concurrent-activities` / `--max-concurrent-workflow-tasks`.**
+  Free if the process has CPU and memory headroom: no new connection, no new
+  plugin launch, no new secret-provider handshake, just more of this worker's
+  own goroutines running at once. The cost moves downstream instead —
+  Temporal's own caveat applies unchanged: raising how much a worker
+  *dispatches* raises the load on whatever its activities *call*, so a higher
+  slot count without a matching `--task-queue-activities-per-second` (or a
+  more forgiving downstream) trades one bottleneck for another. And it does
+  not help once the process itself is the constraint: CPU-bound workflow
+  determinism or memory-bound activities top out before the slot count does.
+- **Scale out (add a replica).** The expensive remedy in this system
+  specifically, not scale-out in general: each `flow worker` process launches
+  its own plugin fleet and opens its own secret providers (`cmd/flow/main.go`,
+  the ordering documented at the top of `runWorker`), so a new replica pays
+  for a whole plugin fleet and a secret-provider handshake to buy additional
+  slots, where raising the existing process's slots buys the same slots for
+  free if the headroom is there. Scale out when the constraint is the
+  process's own CPU/memory, when durability against a single host failing
+  matters more than this replica's plugin-launch cost, or once raising slots
+  has pushed the bottleneck downstream far enough that more of this process
+  would not help.
+
+**`--task-queue-activities-per-second` is per queue, not per worker.**
+Server-enforced across every worker polling the queue, so on a dedicated
+per-tenant queue (`--task-queue-prefix`/`--tenant`, [Tier
+2](#tier-2--per-tenant-temporal-namespace--per-tenant-worker) above) it is a
+real per-tenant dispatch cap today. Two workers on the same queue setting it
+differently is last-writer-wins on the server — treat it as a fleet-wide
+setting, not a per-process one. Setting it also disables the SDK's eager
+activity execution for this worker.
+
+**Metrics to watch while tuning either lever**: the Temporal SDK slot and
+poller instruments named in [Metrics](#metrics) above (task-queue backlog,
+poller counts, schedule-to-start latency — see the [SDK metrics
+reference](https://docs.temporal.io/references/sdk-metrics) for exact names),
+plus this process's own CPU/memory if raising slots is the lever being
+pulled, since that is what tells you when the free remedy has run out of
+room.
 
 ## Worker versioning, every time
 

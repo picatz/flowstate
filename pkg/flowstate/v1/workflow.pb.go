@@ -130,7 +130,41 @@ type Workflow struct {
 	// Each step can have its own inputs and outputs, allowing for complex workflows
 	// that can perform a variety of operations.
 	Steps []*Node `protobuf:"bytes,3,rep,name=steps,proto3" json:"steps,omitempty"`
-	// Labels are key-value pairs that can be used to organize and categorize workflows.
+	// Labels are the author's own key-value facts about this workflow — the team
+	// that owns it, the cost centre it bills to, the pipeline it belongs to — and
+	// they exist to be *selected on* rather than read: every run records them at
+	// submit, [RunSummary.labels] carries them back, and `flow list --filter`
+	// exposes them as `labels`, so "which runs are payments' runs" is a question
+	// the listing can answer.
+	//
+	// Written by an author, in the Flowfile, as `labels:` directly under `name:`.
+	// Deliberately not a per-run argument: an input is what one run was asked to
+	// do, and a label is what every run of this workflow *is*. A caller who wants
+	// to distinguish two runs of the same workflow has `inputs:` and the run id
+	// already; a caller who wants to select the whole class has this.
+	//
+	// Recorded into the run's memo at submit, never read back out of a search
+	// attribute — see [RunSummary.labels] for the whole of that reasoning, which
+	// is [RunSummary.name]'s unchanged: a field a filter can read only on a
+	// deployment where attribute registration happened to succeed is worse than
+	// one it cannot read at all, because "sometimes" is indistinguishable from
+	// "nothing matched".
+	//
+	// Bounded because a label travels: into the run's memo, into Temporal's
+	// history, and into a CEL activation the server builds per execution during a
+	// listing's scan. The bounds are the ones every other author-written map in
+	// this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason
+	// stated there — a spec is a thing an outside party writes.
+	//
+	// `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the
+	// difference is not an oversight. That field is written in bytes because a
+	// second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts
+	// bytes — refuses the same sizes at mint, and one limit written down twice in
+	// two units is two limits that disagree about a value of 700 two-byte runes.
+	// Nothing enforces this map a second time: protovalidate is the only reader of
+	// the bound, so the unit that matters is the one its neighbours already use,
+	// and matching them is what keeps every author-written map in this file
+	// answering the same way.
 	Labels map[string]string `protobuf:"bytes,5,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Profile names the vocabulary every expression in this workflow was compiled
 	// against: which CEL extension libraries are in scope.
@@ -541,8 +575,40 @@ type ResolvedPlugin struct {
 	ProtocolVersion    uint32                 `protobuf:"varint,3,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	TaskSchemaDigest   string                 `protobuf:"bytes,4,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
 	DistributionDigest string                 `protobuf:"bytes,5,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// ClaimsDigest is the pinned answer to [flowstatev1.PluginDescription]'s
+	// field of the same name — the security-weight claims, hashed apart from
+	// task_schema_digest so the two can move independently (#712, #763
+	// review). Empty on a run resolved before this field existed: a worker
+	// checking this pin skips comparing it rather than refusing the run, since
+	// there is nothing recorded to compare against and the alternative is a
+	// routine host upgrade permanently failing every already-durable run
+	// touching a plugin with a non-default claim.
+	ClaimsDigest string `protobuf:"bytes,6,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	// ClaimsSchemaVersion is [flowstatev1.PluginCatalog]'s claims-schema
+	// version at the moment this pin was resolved, pinned alongside
+	// claims_digest rather than folded into it.
+	//
+	// A schema-version bump is allowed to redefine what an existing claim
+	// field *means*, not only add a new one — see
+	// [flowstatev1.CurrentClaimsSchemaVersion]'s doc comment. claims_digest
+	// hashes only the claim fields' values, so a run pinned under one schema
+	// version and a worker computing the identical field values under a later
+	// version, whose meaning has since changed, would hash to the same
+	// claims_digest and pass [flowstatev1.sameResolvedPlugin] silently — the
+	// run would execute under new security semantics its own pin never
+	// agreed to. Comparing this field exactly, the same way task_schema_digest
+	// and distribution_digest already are, is what refuses that worker
+	// instead of accepting it.
+	//
+	// Zero on a run resolved before this field existed, the same "not
+	// asserted" leniency claims_digest itself carries and for the identical
+	// reason: there is nothing recorded to compare a worker's version
+	// against, and treating that as a mismatch would turn a routine worker
+	// upgrade into a non-retryable failure for a property that pin never
+	// promised to track.
+	ClaimsSchemaVersion uint32 `protobuf:"varint,7,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *ResolvedPlugin) Reset() {
@@ -608,6 +674,20 @@ func (x *ResolvedPlugin) GetDistributionDigest() string {
 		return x.DistributionDigest
 	}
 	return ""
+}
+
+func (x *ResolvedPlugin) GetClaimsDigest() string {
+	if x != nil {
+		return x.ClaimsDigest
+	}
+	return ""
+}
+
+func (x *ResolvedPlugin) GetClaimsSchemaVersion() uint32 {
+	if x != nil {
+		return x.ClaimsSchemaVersion
+	}
+	return 0
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is
@@ -2813,13 +2893,13 @@ var File_flowstate_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\x85\v\n" +
+	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\x91\v\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
 	"\x05steps\x18\x03 \x03(\v2\x12.flowstate.v1.NodeB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\x12L\n" +
-	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x10\xe2A\x01\x01\xbaH\t\x9a\x01\x06\"\x04r\x02\x10\x01R\x06labels\x12\x1e\n" +
+	"\xc8\x01\x01\x92\x01\x04\b\x01\x10dR\x05steps\x12X\n" +
+	"\x06labels\x18\x05 \x03(\v2\".flowstate.v1.Workflow.LabelsEntryB\x1c\xe2A\x01\x01\xbaH\x15\x9a\x01\x12\x10@\"\ar\x05\x10\x01\x18\x80\x01*\x05r\x03\x18\x80\x02R\x06labels\x12\x1e\n" +
 	"\aprofile\x18\x06 \x01(\tB\x04\xe2A\x01\x01R\aprofile\x12H\n" +
 	"\x04vars\x18\a \x03(\v2 .flowstate.v1.Workflow.VarsEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x04vars\x12U\n" +
 	"\x0fdeclared_inputs\x18\b \x03(\v2\x1e.flowstate.v1.InputDeclarationB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x0edeclaredInputs\x12X\n" +
@@ -2849,13 +2929,15 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\x8d\x01\n" +
 	"\x11PluginRequirement\x12-\n" +
 	"\x04name\x18\x01 \x01(\tB\x19\xbaH\x16r\x142\x12^[a-z][a-z0-9_-]*$R\x04name\x12I\n" +
-	"\x0fminimum_version\x18\x02 \x01(\tB \xbaH\x1dr\x1b2\x19^v[0-9]+\\.[0-9]+\\.[0-9]+$R\x0eminimumVersion\"\xc8\x01\n" +
+	"\x0fminimum_version\x18\x02 \x01(\tB \xbaH\x1dr\x1b2\x19^v[0-9]+\\.[0-9]+\\.[0-9]+$R\x0eminimumVersion\"\xa1\x02\n" +
 	"\x0eResolvedPlugin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12)\n" +
 	"\x10protocol_version\x18\x03 \x01(\rR\x0fprotocolVersion\x12,\n" +
 	"\x12task_schema_digest\x18\x04 \x01(\tR\x10taskSchemaDigest\x12/\n" +
-	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\"\xc6\x06\n" +
+	"\x13distribution_digest\x18\x05 \x01(\tR\x12distributionDigest\x12#\n" +
+	"\rclaims_digest\x18\x06 \x01(\tR\fclaimsDigest\x122\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\xc6\x06\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12J\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\x11\xe2A\x01\x02\xbaH\n" +

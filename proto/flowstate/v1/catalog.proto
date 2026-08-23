@@ -71,6 +71,38 @@ message TaskCatalog {
   // consumer that only wants to know the shape of the dialect should not have to
   // derive it from ninety names.
   repeated CELFunction cel_functions = 6;
+
+  // ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
+  // describing a task's security-relevant claims — started at 1 for
+  // needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
+  // expression_inputs (#712).
+  //
+  // Exists because proto3 cannot mark a bool or a repeated string field
+  // `optional`, so none of those five fields can distinguish "populated as
+  // false/empty" from "never populated, because the server that built this
+  // catalog predates them" on its own — an old GetCatalog server's response
+  // decodes needs_scope as false whether the task genuinely claims nothing
+  // or the field simply does not exist in that server's schema. This is the
+  // presence signal for the whole set instead of one per field, read once
+  // rather than reconstructed from five independent zero-checks.
+  //
+  // Zero means "this catalog predates every claim field" — the value on
+  // every GetCatalog response before this field existed, and the value an
+  // old server still on that build keeps returning during a rolling
+  // upgrade. A reader comparing this against zero, not the individual claim
+  // fields, is what tells "unknown" from "false": see
+  // [flowstatev1.TaskDescriptionClaimsKnown].
+  //
+  // Checked for exact equality against the reading client's own
+  // [flowstatev1.CurrentClaimsSchemaVersion], not merely boundedness in
+  // either direction — a version bump can redefine a field as well as add
+  // one, so neither "newer than mine" nor "older than mine" is safe to
+  // treat as known: a newer version may mean something this client was not
+  // compiled to read, and an older version's silence on a field this
+  // client's version introduced is not the same fact as that field
+  // genuinely being false. Only the version this client understands
+  // exactly is known; see [flowstatev1.TaskDescriptionClaimsKnown].
+  uint32 claims_schema_version = 7;
 }
 
 // CELFunction is one name an expression may call.
@@ -105,13 +137,16 @@ message CELFunction {
   // Example is a complete expression calling this, set only where `name` is not
   // enough to construct one, which is exactly the macros.
   //
-  // A function's name *is* its call form: `upperAscii` is written `x.upperAscii()`
-  // or `regex.replace(a, b, c)` as the name says. A macro's is not, and cel-go's
-  // parser API is why: `Macro` exposes `Function`, `ArgCount`, `IsReceiverStyle`
-  // and `MacroKey`, and none of them names the *receiver*. So `greatest` is
-  // reported for something written `math.greatest(1, 2)` and `sortBy` for
-  // something written `[3,1,2].sortBy(v, v)`: a namespace in one case and a value
-  // in the other, indistinguishable from the outside.
+  // A macro's own parser API will not say whether its `name` is written on a
+  // namespace or on a value, and that is the gap this fills: `Macro` exposes
+  // `Function`, `ArgCount`, `IsReceiverStyle` and `MacroKey`, and none of them
+  // names the *receiver*. So `greatest` is reported for something written
+  // `math.greatest(1, 2)` and `sortBy` for something written
+  // `[3,1,2].sortBy(v, v)`: a namespace in one case and a value in the other,
+  // indistinguishable from the outside. An ordinary function does not have
+  // this problem — its overloads answer the same question, which is what
+  // `signature` below carries, along with the arity and argument order this
+  // field does not give either kind.
   //
   // Which means this cannot be derived, and a consumer told "do not render `name`
   // as a call" and given nothing else has been handed a catalogue of things it
@@ -128,6 +163,22 @@ message CELFunction {
   // library in five is worse than a table somebody has to keep, because nothing
   // about it says which one.
   string example = 4;
+
+  // Signature is this function's call form, one entry per overload: argument
+  // order, arity and types, and — unlike `name` alone — whether it is written
+  // on a namespace or on a value. `string.charAt(int) -> string` for a member
+  // function, `math.abs(double) -> double` for a namespaced one. Empty for a
+  // macro, where `example` carries the call form instead.
+  //
+  // Where `example` above had to become a written table because cel-go's macro
+  // API cannot say which style a name is written in, an ordinary function's own
+  // overload does answer that exact question — `OverloadDecl.IsMemberFunction`
+  // names the receiver where `Macro.IsReceiverStyle` alone does not. So this is
+  // derived from the profile's compiled environment
+  // (`FunctionDecl.Documentation`) rather than hand-maintained, and a function
+  // added to a library brings its signature with it the same day rather than
+  // waiting for somebody to write one down (#702).
+  repeated string signature = 5;
 }
 
 // TaskDescription is one task's name and shape.
@@ -139,6 +190,102 @@ message TaskDescription {
 
   repeated TaskField inputs = 3;
   repeated TaskField outputs = 4;
+
+  // NeedsScope reports whether the task must receive every prior step's
+  // outputs and the variables bound by enclosing control flow, on every call.
+  //
+  // The largest trust jump a task definition can make: from seeing its own
+  // declared inputs to seeing the whole workflow's computed state so far. A
+  // plugin task that flips this from false to true between versions has
+  // asked for materially more than it asked for last time, and this is the
+  // field an operator or a pinned digest reads to notice that.
+  bool needs_scope = 5;
+
+  // SecretInputs names the inputs the host will resolve a `${secret(...)}`
+  // reference into a plaintext value for, before the request crosses into a
+  // plugin process. Empty for a built-in task, which resolves its own secret
+  // inputs a different way (see TaskField.constraints' "may hold a secret
+  // reference" note); populated for a plugin task from TaskManifest's field of
+  // the same name.
+  //
+  // This is the whole-value case, not TaskField.deferred or the per-field
+  // "may hold a secret reference" note — this is the list of inputs where a
+  // secret *reference itself* is a legal thing to write, which is a claim
+  // about trust: naming an input here is the plugin asking to receive a value
+  // the workflow author never wrote in the clear.
+  //
+  // A membership set, not a sequence — sorted and deduplicated by whichever
+  // server produces this message, regardless of what order a plugin manifest
+  // declared it in. What matters to every reader is which names are present;
+  // an order that varied between two launches of one unchanged plugin binary
+  // would otherwise change TaskSchemaDigest for no behavioral reason.
+  repeated string secret_inputs = 6;
+
+  // ShapesOutputs reports whether the task evaluates an `outputs:` input as a
+  // replacement for the outputs it declares above, rather than the outputs
+  // above being what the task actually returns.
+  bool shapes_outputs = 7;
+
+  // DeferredInputs names inputs whose expressions the task evaluates itself,
+  // against a scope the workflow does not have. Mirrors TaskField.deferred at
+  // the task level, so a consumer that wants the list rather than a per-field
+  // scan does not have to walk every field.
+  //
+  // Sorted and deduplicated, for the same reason secret_inputs above is.
+  repeated string deferred_inputs = 8;
+
+  // ExpressionInputs names inputs that must be written as `${...}` rather
+  // than as a literal.
+  //
+  // Sorted and deduplicated, for the same reason secret_inputs above is.
+  repeated string expression_inputs = 9;
+
+  // InputDescriptor and InputMessage — and OutputDescriptor and
+  // OutputMessage below them — carry the task's input and output messages
+  // the way a descriptor crosses a process: serialized FileDescriptorProtos,
+  // or a FileDescriptorSet holding a file and its dependencies, plus the
+  // full name of the message within them.
+  //
+  // Spelled exactly as flowstate.plugin.v1.TaskManifest spells the same four
+  // facts, because they are the same four facts. That message is how a
+  // plugin's descriptors reach a host; these are how a host's reach a reader
+  // that cannot launch one — a checked-in catalog document, a browser
+  // authoring surface, a server-side validator (#710).
+  //
+  // The `inputs` and `outputs` fields above are a *rendering* of these: field
+  // names, a type spelled as an author would write it, and constraint
+  // phrases, which is what a reader displaying a task wants and is not what a
+  // reader *validating* against one can use. Validation is descriptor-driven
+  // throughout — flowfile's validateTaskInputs asks the message descriptor
+  // for a field before it will report an unknown input, and stands down
+  // entirely when there is none — so a catalog carrying only the rendering
+  // reconstructs a task definition that accepts a misspelled input the
+  // launching validator refuses. A validator that is quietly weaker than the
+  // one it stands in for is the failure this exists to prevent.
+  //
+  // Empty bytes beside a set message name is the ordinary case rather than an
+  // omission: a message the reader's own build already has needs no bytes,
+  // only its name, and every built-in task's messages are in this schema.
+  // Bytes are carried for exactly the files the engine does not already
+  // provide, which for a plugin task is its own schema. Both empty means the
+  // task declares no message for that side, which TaskDef permits.
+  //
+  // Deliberately outside PluginDescription.task_schema_digest, which hashes
+  // the projection TaskDescriptionSansClaims builds and so cannot see these:
+  // that digest is embedded in every in-flight run's ResolvedPlugin and
+  // compared exactly at each segment boundary, and re-serialized descriptor
+  // bytes are not guaranteed identical across two builds of one unchanged
+  // plugin. The shape they describe is already covered there through
+  // `inputs` and `outputs`, which are derived from these and are stable.
+  //
+  // Deliberately not a claim field either, so ClaimsSchemaVersion does not
+  // bump for them: a bump is compared exactly by the same replay guard, and
+  // these say what a task's messages *are* rather than what a task asks to
+  // be trusted with.
+  bytes input_descriptor = 10;
+  string input_message = 11;
+  bytes output_descriptor = 12;
+  string output_message = 13;
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
@@ -172,6 +319,20 @@ message PluginCatalog {
   // apart (nothing installed, or nowhere to look), and only one of them is a
   // configuration mistake.
   repeated string search_path = 2;
+
+  // ClaimsSchemaVersion is the same presence signal as
+  // [TaskCatalog.claims_schema_version], for the same reason, on the other
+  // message a build's task claims travel in.
+  //
+  // `flow plugins -o json` serializes this message directly rather than a
+  // TaskCatalog, and that output is written to disk or piped to another
+  // process, so it outlives the process that produced it — the same
+  // rolling-upgrade skew ClaimsSchemaVersion exists to resolve for a remote
+  // GetCatalog reader applies just as well to a saved PluginCatalog read
+  // later by a binary built before this field, or read by a newer binary
+  // against a file a pre-#712 build wrote. Zero means "this catalog predates
+  // every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
+  uint32 claims_schema_version = 3;
 }
 
 // PluginDescription is one plugin's identity and what it advertises.
@@ -198,8 +359,33 @@ message PluginDescription {
   // task is.
   repeated TaskDescription tasks = 6;
   uint32 protocol_version = 7;
+
+  // TaskSchemaDigest is computed over Tasks' descriptor shape — name,
+  // summary, inputs, outputs — deterministically marshaled: the case it
+  // exists to catch is a plugin whose descriptors changed shape while its
+  // version stood still.
+  //
+  // Deliberately not computed over NeedsScope, SecretInputs, ShapesOutputs,
+  // DeferredInputs or ExpressionInputs, even though those travel on the same
+  // TaskDescription — see ClaimsDigest below for why they get their own
+  // digest instead of folding into this one. This field is embedded in every
+  // in-flight run's ResolvedPlugin the moment a run is submitted, replayed
+  // against a worker's freshly computed catalog at every segment boundary,
+  // and a mismatch is a non-retryable failure: a run already durable when
+  // this field's *meaning* changed must still see the same digest for a
+  // plugin whose descriptors did not change.
   string task_schema_digest = 8;
   string distribution_digest = 9;
+
+  // ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
+  // ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
+  // with security weight (#712) — kept apart from task_schema_digest so it
+  // can change on its own without disturbing the replay contract every
+  // already-durable run is pinned to. See
+  // [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
+  // old pin that predates this field (#763 review): it is not compared, not
+  // assumed safe, simply not asked.
+  string claims_digest = 10;
 }
 
 // TaskField is one input or output, described in the DSL's vocabulary.
