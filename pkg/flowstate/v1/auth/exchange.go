@@ -2,7 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,6 +25,8 @@ import (
 const (
 	// CredentialAccessToken is the bearer token of a [CredentialBearer].
 	CredentialAccessToken = "access_token"
+	// CredentialProofKey is private activity-local sender-constraint material.
+	CredentialProofKey = "proof_key"
 
 	// AWS session credentials, the three values of a [CredentialAWSSession].
 	CredentialAccessKeyID     = "access_key_id"
@@ -37,6 +42,10 @@ const (
 	// CredentialBearer is an access token presented in an Authorization header.
 	// [Credential.Apply] can attach it to a request.
 	CredentialBearer CredentialType = "bearer"
+
+	// CredentialDPoP is a sender-constrained access token. Apply creates a new
+	// proof for every request; it is never interchangeable with bearer.
+	CredentialDPoP CredentialType = "dpop"
 
 	// CredentialAWSSession is a set of temporary AWS session credentials, to be
 	// handed to an AWS SDK. They cannot be attached to a request directly:
@@ -154,6 +163,34 @@ func (c Credential) Apply(req *http.Request) error {
 			return fmt.Errorf("%w: resolve credentials in the activity that uses them", ErrCredentialUnresolved)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+		return nil
+	case CredentialDPoP:
+		token, ok := c.Value(CredentialAccessToken)
+		if !ok {
+			return fmt.Errorf("%w: resolve credentials in the activity that uses them", ErrCredentialUnresolved)
+		}
+		encoded, ok := c.Value(CredentialProofKey)
+		if !ok {
+			return fmt.Errorf("%w: DPoP proof key is unavailable", ErrCredentialUnresolved)
+		}
+		der, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			return fmt.Errorf("auth: invalid DPoP proof key")
+		}
+		parsed, err := x509.ParsePKCS8PrivateKey(der)
+		if err != nil {
+			return fmt.Errorf("auth: invalid DPoP proof key")
+		}
+		key, ok := parsed.(*ecdsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("auth: invalid DPoP proof key type")
+		}
+		proof, err := makeProof(key, token, req, time.Now())
+		if err != nil {
+			return fmt.Errorf("auth: create DPoP proof: %w", err)
+		}
+		req.Header.Set("Authorization", "DPoP "+token)
+		req.Header.Set("DPoP", proof)
 		return nil
 	case CredentialAWSSession:
 		return fmt.Errorf("auth: %s credentials must sign the request, not set a header; hand them to an AWS SDK", c.Type)

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto"
 	"fmt"
 	"net/http"
@@ -110,6 +111,12 @@ type FederationTarget struct {
 	// Name is the operator's name for this system, matched by assumption rules and
 	// recorded in audit. Required, and unique within the policy.
 	Name string `json:"name" yaml:"name"`
+
+	// TokenMode controls presentation of OAuth access tokens returned by this
+	// target. Empty/bearer preserves bearer behavior; dpop produces a distinct
+	// sender-constrained credential and generates its key only when Exchange is
+	// invoked in the activity.
+	TokenMode TokenMode `json:"token_mode,omitempty" yaml:"token_mode,omitempty"`
 
 	// TokenExchange configures RFC 8693 OAuth 2.0 Token Exchange, the
 	// standards-based path that works with any authorization server implementing
@@ -221,6 +228,9 @@ func (p FederationPolicy) Validate() error {
 			return fmt.Errorf("%w: targets[%d]: duplicate name %q", ErrInvalidPolicy, i, target.Name)
 		}
 		names[target.Name] = struct{}{}
+		if target.TokenMode != "" && target.TokenMode != TokenModeBearer && target.TokenMode != TokenModeDPoP {
+			return fmt.Errorf("%w: targets[%d] %q: unsupported token_mode %q", ErrInvalidPolicy, i, target.Name, target.TokenMode)
+		}
 
 		configured := 0
 		for _, set := range []bool{
@@ -442,9 +452,31 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 		if err != nil {
 			return nil, err
 		}
+		if target.TokenMode == TokenModeDPoP {
+			exchanger = dpopExchanger{Exchanger: exchanger}
+		}
 
 		exchangers[target.Name] = exchanger
 	}
 
 	return exchangers, nil
+}
+
+type dpopExchanger struct{ Exchanger }
+
+func (e dpopExchanger) Exchange(ctx context.Context, assertion Assertion) (Credential, error) {
+	credential, err := e.Exchanger.Exchange(ctx, assertion)
+	if err != nil {
+		return Credential{}, err
+	}
+	token, ok := credential.Bearer()
+	if !ok {
+		return Credential{}, fmt.Errorf("%w: DPoP target returned a non-bearer credential", ErrExchangeFailed)
+	}
+	constrained, err := NewDPoPCredential(credential.ExpiresAt, token)
+	if err != nil {
+		return Credential{}, err
+	}
+	constrained.Target, constrained.Provider, constrained.Scopes, constrained.AssertionID = credential.Target, credential.Provider, credential.Scopes, credential.AssertionID
+	return constrained, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"connectrpc.com/authn"
 	"connectrpc.com/connect"
@@ -40,6 +41,20 @@ type Authenticator struct {
 	observe                      func(context.Context, *http.Request, error)
 	protectedResourceMetadataURL string
 	expectedResource             string
+	tokenMode                    TokenMode
+	dpop                         DPoPConfig
+}
+
+// WithTokenMode makes proof requirements explicit for one serving surface.
+// The zero/default mode remains bearer for compatibility. DPoP and mTLS never
+// fall back to bearer when their proof is absent or invalid.
+func WithTokenMode(mode TokenMode, dpop ...DPoPConfig) AuthenticatorOption {
+	return func(a *Authenticator) {
+		a.tokenMode = mode
+		if len(dpop) != 0 {
+			a.dpop = dpop[0]
+		}
+	}
 }
 
 // An AuthenticatorOption configures an [Authenticator].
@@ -199,6 +214,14 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 	// which every Verifier rejects. Requests with no credentials therefore take
 	// the same path as requests with bad ones.
 	rawToken, _ := authn.BearerToken(req)
+	if a.tokenMode == TokenModeDPoP {
+		const prefix = "DPoP "
+		if value := req.Header.Get("Authorization"); strings.HasPrefix(value, prefix) {
+			rawToken = strings.TrimPrefix(value, prefix)
+		} else {
+			rawToken = ""
+		}
+	}
 
 	tokenPrincipal, tokenErr := verifier.Verify(ctx, rawToken)
 	if tokenErr == nil && tokenPrincipal.IsZero() {
@@ -237,6 +260,17 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 		// published in the RFC 9728 document the challenge points at, which is
 		// where a client is meant to read it.
 		tokenErr = fmt.Errorf("%w: the token's audience does not name this resource", ErrInvalidAudience)
+	}
+	if tokenErr == nil {
+		switch a.tokenMode {
+		case "", TokenModeBearer:
+		case TokenModeDPoP:
+			tokenErr = verifyDPoP(ctx, req, rawToken, tokenPrincipal, a.dpop)
+		case TokenModeCertificateBound:
+			tokenErr = verifyCertificateBinding(req, tokenPrincipal)
+		default:
+			tokenErr = fmt.Errorf("%w: unsupported token mode %q", ErrInvalidPolicy, a.tokenMode)
+		}
 	}
 
 	// req.TLS.VerifiedChains is set by crypto/tls itself, only once the peer's
@@ -303,7 +337,11 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *http.Request) (an
 // deployment has not defined one to name here.
 func (a *Authenticator) unauthenticated(cause error) error {
 	err := connect.NewError(connect.CodeUnauthenticated, errors.New(publicReason(cause)))
-	challenge := `Bearer error="invalid_token"`
+	scheme := "Bearer"
+	if a.tokenMode == TokenModeDPoP {
+		scheme = "DPoP"
+	}
+	challenge := scheme + ` error="invalid_token"`
 	if a.protectedResourceMetadataURL != "" {
 		challenge += fmt.Sprintf(`, resource_metadata=%q`, a.protectedResourceMetadataURL)
 	}
