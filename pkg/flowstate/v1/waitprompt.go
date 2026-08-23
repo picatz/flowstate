@@ -215,7 +215,7 @@ func checkNodePrompts(nodes []*Node, sensitive map[string]bool, depth int) error
 
 	for _, node := range nodes {
 		if signal := node.GetWait().GetSignal(); signal != nil {
-			if err := checkPrompt(signal.GetPrompt(), node.GetId(), sensitive); err != nil {
+			if err := checkPrompt(signal.GetPrompt(), node.GetVars(), node.GetId(), sensitive); err != nil {
 				return err
 			}
 		}
@@ -255,7 +255,7 @@ func checkNodePrompts(nodes []*Node, sensitive map[string]bool, depth int) error
 }
 
 // checkPrompt reports what is wrong with one gate's prompt, by step id.
-func checkPrompt(value *Value, stepID string, sensitive map[string]bool) error {
+func checkPrompt(value *Value, vars map[string]*Value, stepID string, sensitive map[string]bool) error {
 	if value == nil {
 		return nil
 	}
@@ -273,6 +273,16 @@ func checkPrompt(value *Value, stepID string, sensitive map[string]bool) error {
 	}
 
 	reached, opaque := promptInputReach(value)
+	for name := range promptFreeIdentifiers(value) {
+		declared, ok := vars[name]
+		if !ok {
+			continue
+		}
+
+		varReached, varOpaque := promptInputReach(declared)
+		maps.Copy(reached, varReached)
+		opaque = opaque || varOpaque
+	}
 
 	if named := slices.Sorted(maps.Keys(reached)); len(named) > 0 {
 		for _, name := range named {
@@ -298,6 +308,19 @@ func checkPrompt(value *Value, stepID string, sensitive map[string]bool) error {
 	}
 
 	return nil
+}
+
+// promptFreeIdentifiers returns the bare names a prompt reads. A step's own
+// `vars:` are installed under bare names before its prompt is evaluated, so the
+// sensitivity walk must follow any such name into its declaration rather than
+// treating the prompt expression in isolation.
+func promptFreeIdentifiers(value *Value) map[string]struct{} {
+	free := make(map[string]struct{})
+	for _, e := range promptExpressions(value, 0) {
+		collectFreeIdentifiers(e, map[string]struct{}{}, free)
+	}
+
+	return free
 }
 
 // promptInputReach reports which inputs a prompt names, and whether it reaches
