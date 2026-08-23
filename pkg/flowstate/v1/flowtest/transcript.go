@@ -120,9 +120,16 @@ func runRecorderFromContext(ctx context.Context) *runRecorder {
 type runRecorder struct {
 	clock *v1.VirtualClock
 
-	mu          sync.Mutex
-	events      []transcriptEvent
-	truncated   bool
+	mu sync.Mutex
+
+	events []transcriptEvent
+
+	// eventsFull and bytesFull record which bound stopped the account — kept
+	// apart because the truncation line names its cause, and blaming the
+	// event count for a byte-budget stop sends a reader counting events
+	// toward the wrong bound.
+	eventsFull  bool
+	bytesFull   bool
 	outputBytes int
 
 	// sensitive is the redaction set every rendered value passes through —
@@ -223,13 +230,13 @@ func (r *runRecorder) record(event transcriptEvent) {
 
 func (r *runRecorder) recordLocked(event transcriptEvent) {
 	if len(r.events) >= maxTranscriptEvents {
-		r.truncated = true
+		r.eventsFull = true
 		return
 	}
 	if event.outputs != nil {
 		size := proto.Size(event.outputs)
 		if r.outputBytes+size > maxTranscriptOutputBytes {
-			r.truncated = true
+			r.bytesFull = true
 			return
 		}
 		r.outputBytes += size
@@ -303,7 +310,8 @@ func (r *runRecorder) deliverRecorded(name string, payload map[string]any, sende
 // signal goroutine is still winding down.
 func (r *runRecorder) render() []TranscriptLine {
 	r.mu.Lock()
-	events, truncated := r.events, r.truncated
+	events := r.events
+	eventsFull, bytesFull := r.eventsFull, r.bytesFull
 	sensitive := r.sensitive
 	switches := r.switches
 	r.mu.Unlock()
@@ -380,9 +388,19 @@ func (r *runRecorder) render() []TranscriptLine {
 		}
 	}
 
-	if truncated {
+	// The truncation line names the bound that stopped the account, because a
+	// reader counting events toward the wrong bound is a reader misled by the
+	// line meant to keep the account honest.
+	if eventsFull || bytesFull {
+		var reasons []string
+		if eventsFull {
+			reasons = append(reasons, fmt.Sprintf("the %d-event bound", maxTranscriptEvents))
+		}
+		if bytesFull {
+			reasons = append(reasons, fmt.Sprintf("the %d MiB step-output bound", maxTranscriptOutputBytes>>20))
+		}
 		lines = append(lines, TranscriptLine{
-			Text: fmt.Sprintf("  … transcript truncated at %d events; the run continued unrecorded", maxTranscriptEvents),
+			Text: fmt.Sprintf("  … transcript truncated at %s; the run continued unrecorded", strings.Join(reasons, " and ")),
 			Tone: ToneWarning,
 		})
 	}
@@ -421,7 +439,16 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs, switches map[
 	isSwitch = isSwitch && !fact.ambiguous
 
 	if e.failure != "" {
-		text := redactSensitiveSubstrings(e.failure, sensitive.substrings)
+		// withholdAll withholds the failure text too (Codex, #1052): a failed
+		// expression's message can embed the very value the set could not
+		// enumerate, and an empty substring list applied when redaction has
+		// decided nothing is provably safe is the fail-open inverse of what
+		// the flag means. The case's own diagnostics still carry the failure;
+		// only this rendered account withholds.
+		text := "[failure withheld: a sensitive input could not be enumerated, so no text is provably safe]"
+		if !sensitive.withholdAll {
+			text = redactSensitiveSubstrings(e.failure, sensitive.substrings)
+		}
 		// A failed switch body's record deliberately preserves the arm that
 		// was taken ([v1.StepFailureRecord]), and the decision is most worth
 		// showing exactly when the branch it chose is what failed (Codex,

@@ -28,13 +28,34 @@ func TestTranscriptBoundsRetainedOutputBytes(t *testing.T) {
 		r.StepFinished("bulky", big, nil, false)
 	}
 
-	require.True(t, r.truncated, "past the byte budget the account must say it is incomplete")
+	require.True(t, r.bytesFull, "past the byte budget the account must say it is incomplete")
 	require.Less(t, len(r.events), 32, "events past the budget are dropped, not retained")
 	require.LessOrEqual(t, r.outputBytes, maxTranscriptOutputBytes)
 
 	lines := r.render()
 	require.NotEmpty(t, lines)
-	assert.Contains(t, lines[len(lines)-1].Text, "truncated")
+	last := lines[len(lines)-1].Text
+	assert.Contains(t, last, "truncated")
+	assert.Contains(t, last, "step-output bound",
+		"the truncation line names the bound that stopped the account, not the one that did not")
+	assert.NotContains(t, last, "event bound")
+}
+
+// TestFailureTextIsWithheldWhenTheSetCouldNotBeBuilt pins round seven's P1
+// on #1052: withholdAll means no text is provably safe, and a failure
+// message can embed the very value the walk could not enumerate — so the
+// failure line withholds rather than applying an empty substring list.
+func TestFailureTextIsWithheldWhenTheSetCouldNotBeBuilt(t *testing.T) {
+	t.Parallel()
+
+	text, tone := stepOutcomeText(
+		transcriptEvent{kind: eventStepFinished, step: "boom", failure: "expression refused secret-material-here"},
+		sensitiveInputs{withholdAll: true},
+		map[string]switchFact{},
+	)
+	assert.Equal(t, ToneDanger, tone)
+	assert.NotContains(t, text, "secret-material-here")
+	assert.Contains(t, text, "[failure withheld")
 }
 
 // TestShortDurationKeepsSubMillisecondTime pins the round-six timing finding:
