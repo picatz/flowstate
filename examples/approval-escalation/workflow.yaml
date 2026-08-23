@@ -35,10 +35,11 @@ description: Asks an approver on a cadence, escalates to a backup when the prima
 # The hazard this file exists to name, because the grammar cannot yet say it
 # and every reader of a chasing loop reaches for the wrong number first.
 #
-# `max_iterations:` is the engine's *per-segment* ceiling — the number of
-# iterations one Continue-As-New segment will run before the run suspends and
-# resumes carrying its state, documented under "carried state" in
-# `docs/DSL.md`. Reaching it is a **failed run**: a loop whose stop condition
+# `max_iterations:` is the engine's hard ceiling for the *whole loop* — the
+# cumulative iteration count survives every Continue-As-New handover and is
+# compared against the same limit each segment, documented under "Bounded,
+# because the author does not control the trip count" in `docs/DSL.md`.
+# Reaching it is a **failed run**: a loop whose stop condition
 # never held has not decided anything, and reporting that as a completed run is
 # how a request stops being chased with nobody deciding it should. That is
 # exactly right for `renewal-reminder`, where nothing but the customer can end
@@ -54,8 +55,10 @@ description: Asks an approver on a cadence, escalates to a backup when the prima
 #
 # Read the two as one number and both readings go wrong in the same direction:
 # lower `max_iterations:` to "the budget" and the run fails instead of
-# auto-rejecting; raise `vars.ask_budget` past it and the auto-reject the file
-# promises silently becomes a failure at a number nobody wrote down.
+# auto-rejecting; raise `vars.ask_budget` past it and the ceiling wins — the
+# auto-reject the file promises silently becomes a failure at a number nobody
+# wrote down, because the ceiling is a whole-loop bound no amount of
+# suspending and resuming gets past.
 #
 # # Two commands
 #
@@ -183,7 +186,7 @@ steps:
       # Or the budget ran out: `asks + 1` is how many asks this iteration
       # makes it, so the loop stops on the iteration that spends the last one.
       until: ${steps.gate.verdict != "undecided" || asks + 1 >= vars.ask_budget}
-      # The per-segment ceiling, well above `vars.ask_budget` and never
+      # The whole-loop ceiling, well above `vars.ask_budget` and never
       # reached — see the header for why these are two numbers and not one.
       max_iterations: 20
       steps:

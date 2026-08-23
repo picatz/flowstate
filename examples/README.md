@@ -100,7 +100,7 @@ built and a worker told where to find it; `observability` is a whole docker-comp
 lab; the examples charter (#165) asks a few to name the one durability property they
 demonstrate alongside the two-command local-then-durable contrast;
 `approval-escalation` has a hazard its own grammar cannot name — `max_iterations:` is
-the engine's per-segment ceiling and reads exactly like the reminder budget beside it,
+the engine's whole-loop ceiling and reads exactly like the reminder budget beside it,
 which is a policy — so its README teaches the difference the file can only imply;
 `embedding` is a Go
 program rather than a Flowfile `flow` runs on its own, so its README says how to run

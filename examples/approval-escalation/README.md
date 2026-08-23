@@ -76,9 +76,10 @@ A chasing loop has two ceilings that look like the same number:
 - **`vars.ask_budget`** — how many times anybody is asked before the request is decided
   without them. This is a policy: the business has decided that four unanswered asks
   means no.
-- **`max_iterations:`** — the engine's *per-segment* ceiling, the number of iterations
-  one Continue-As-New segment runs before the run suspends and resumes carrying its
-  state (see "carried state" in `docs/DSL.md`). This is a bound on a mechanism.
+- **`max_iterations:`** — the engine's hard ceiling for the whole loop. The cumulative
+  iteration count survives every Continue-As-New handover and is checked against the
+  same limit in every segment (see "Bounded, because the author does not control the
+  trip count" in `docs/DSL.md`). This is a bound on a mechanism.
 
 They differ in what happens when they are reached. Reaching `max_iterations:` **fails
 the run** — deliberately, because a loop whose stop condition never held has not decided
@@ -189,6 +190,14 @@ $ flow run examples/approval-escalation/workflow.yaml \
 ```console
 $ flow signal <workflow-id> approval-decision --data '{"approved": true}'
 ```
+
+One note if you try that against the Quickstart's dev setup, the same one the main
+README makes for `approval-gate`: `--insecure-no-auth` makes every caller the same
+anonymous principal, and this gate names two qualified approver subjects and sets
+`distinct_from_starter: true`, so that `flow signal` is refused and the chase keeps
+chasing — which is the gate working. Rehearse the answered paths with `flow test`
+above, or run the server with `--auth-policy` and real identities
+([docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md)).
 
 ## The interesting lines
 
