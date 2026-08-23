@@ -232,7 +232,17 @@ func pick(cond bool, yes, no string) string {
 // A change to the workflows, the Makefile, or this gate itself forces the same,
 // on any event: those decide what CI runs, and a plan cannot reason about a
 // change to the thing computing the plan.
-func ciForceReason(event string, p plan) string {
+//
+// base is the merge-base [resolveBase] found, and empty means it found none.
+// That is the fourth forcing and the bluntest: with no base there is no diff,
+// so there is nothing for a plan to be a plan *of*. It belongs here rather than
+// at the caller because this function is where "must this ignore the diff"
+// is answered, and an answer to that question living in two places is the one
+// thing docs/CI.md says must never happen.
+func ciForceReason(event, base string, p plan) string {
+	if base == "" {
+		return "no merge-base with origin/main could be established, so the diff cannot be measured and is not trusted to narrow anything"
+	}
 	if event != "" && event != "pull_request" {
 		return "event is " + event + ", not a pull request: the full set runs"
 	}

@@ -186,6 +186,82 @@ message TestReport {
   // another. Empty when the file was refused, or when no case compiled a
   // workflow to account for.
   repeated CoverageReport coverage = 4;
+
+  // Schedules is what seeded-schedule exploration found for this file
+  // (issues #800, #931), and is unset when the invocation explored nothing —
+  // the default: `flow test` with no `--seeds` or `--seed` runs each case
+  // once, under written order, and this field stays null exactly as the
+  // command's prose says nothing.
+  //
+  // On the machine report for the reason Coverage is: CI reads the account
+  // rather than scraping the prose from stderr, and a `--seeds` run whose
+  // exploration left no machine-readable trace is a green nobody can check.
+  // The cases and coverage beside this field still describe the
+  // written-order runs alone, so a verdict never depends on which seeds were
+  // drawn; a divergence here fails the command without changing any case's
+  // own passed/failed.
+  ScheduleExploration schedules = 5;
+}
+
+// ScheduleExploration is what running one `*.test.yaml`'s cases under seeded
+// schedules found, beyond the written-order run the rest of the report
+// describes (issue #800).
+message ScheduleExploration {
+  // Schedules is how many seeded schedules each explored case ran under,
+  // beyond its written-order run. Counted from what really ran, not from what
+  // was asked for.
+  int32 schedules = 1;
+
+  // Cases is how many of the file's cases were explored.
+  int32 cases = 2;
+
+  // Decisions is the largest number of scheduling choices any one schedule of
+  // any case asked for.
+  //
+  // Zero means no case reached a junction: the file's workflows have no
+  // `parallel:` and no `async:`, so every schedule explored was written order
+  // and the exploration proved nothing beyond what the ordinary run already
+  // proved. Recorded rather than inferred, because that distinction is
+  // invisible from the outcome alone — a green from exploring nothing must
+  // not read as a green from exploring.
+  int32 decisions = 3;
+
+  // Truncated reports that some schedule spent its whole decision budget and
+  // took written order for the rest of its run, so the interleaving it
+  // explored stopped partway.
+  bool truncated = 4;
+
+  // Divergence is the first case whose observables were not the same under a
+  // seeded schedule as under written order, unset when every case agreed with
+  // itself under every schedule explored.
+  ScheduleDivergenceReport divergence = 5;
+}
+
+// ScheduleDivergenceReport is one case that observed a difference the schedule
+// made: the finding `--seeds` exists to surface, carried with the seed because
+// a divergence nobody can replay is a random number.
+message ScheduleDivergenceReport {
+  // Case is the name of the test case, as the file spells it.
+  string case = 1;
+
+  // Seed is the schedule that disagreed — the whole of what a replay needs:
+  // `flow test --seed <seed>` on the same file runs exactly this schedule.
+  uint64 seed = 2;
+
+  // Decisions is how many scheduling choices the diverging seed's run made.
+  // The written-order baseline always makes zero: it asks a scheduler for
+  // nothing.
+  int32 decisions = 3;
+
+  // Truncated reports that the diverging schedule spent its whole decision
+  // budget, so what it explored is only the part before the bound.
+  bool truncated = 4;
+
+  // WrittenOrder and Seeded are the two renderings the comparison was made
+  // over — the observable account of each run, for a person reading the
+  // failure rather than replaying it.
+  string written_order = 5;
+  string seeded = 6;
 }
 
 // CoverageReport is `flow test`'s branch-coverage account for one workflow:

@@ -68,19 +68,19 @@ func TestTheVetLegFollowsCIsForcing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := buildPlan(tc.changed)
 
-			if forced := forcedWide(p) != ""; forced != tc.wide {
+			if forced := forcedWide(resolvedBase, p) != ""; forced != tc.wide {
 				t.Fatalf("forcedWide says forced=%t, but CI runs %s for this diff",
 					forced, pick(tc.wide, "the whole module", "only what the diff reaches"))
 			}
 
-			if !scopedLegRuns(p, tc.affected) {
+			if !scopedLegRuns(resolvedBase, p, tc.affected) {
 				if tc.wide {
 					t.Fatalf("the vet leg skips, but CI's test job vets ./... for this diff")
 				}
 				return
 			}
 
-			scope := vetScope(p, tc.affected)
+			scope := vetScope(resolvedBase, p, tc.affected)
 			if tc.wide && (len(scope) != 1 || scope[0] != "./...") {
 				t.Errorf("forced wide, but the leg vets %v; CI's test job vets ./..., so a finding anywhere else passes here and fails there", scope)
 			}
@@ -136,6 +136,204 @@ func TestTheTestLegStaysNarrowAndSaysWhy(t *testing.T) {
 			ds := decide(t, tc.changed, tc.affected, "pull_request")
 			if !ds["test"].Run {
 				t.Fatalf("CI's test job is skipped for a harness diff (%s); the residual this leg reports would not exist", ds["test"].Why)
+			}
+		})
+	}
+}
+
+// TestAnUnresolvableBaseSelectsEverything is the safety property of the
+// fallback in [resolveBase]: when no merge-base can be established, the run is
+// wide rather than absent.
+//
+// It matters because the alternative the gate used to have was to exit with an
+// error telling the caller to fetch origin/main. Every one of the seven pull
+// requests in one wave reported exactly that refusal, and every one of them
+// was then opened unvalidated — a gate that refuses to start protects nothing.
+//
+// The fix is only safe in one direction. Running everything costs time; running
+// a *subset* of what the diff can reach passes commits the checks reject. So
+// what is asserted is that no narrowing survives an unmeasurable diff, and it
+// is asserted by calling the functions the two tiers actually call —
+// [changedFiles], [forcedWide], [scopedLegRuns], [vetScope], [ciDecisions] —
+// rather than by rebuilding what they are expected to answer. The first draft
+// of this test did the latter, and three mutations of the production code
+// walked straight past it.
+func TestAnUnresolvableBaseSelectsEverything(t *testing.T) {
+	// The empty base is what resolveBase returns when it has exhausted the ref,
+	// the fetch and the deepen. changedFiles turns that into the whole tree.
+	changed, err := changedFiles("")
+	if err != nil {
+		t.Fatalf("changedFiles with no base: %v", err)
+	}
+	if len(changed) < 100 {
+		t.Fatalf("changedFiles with no base answered %d file(s), which is not the tree: "+
+			"a narrow answer here is the whole hazard, since every leg would then be scoped to it", len(changed))
+	}
+
+	p := buildPlan(changed)
+
+	// The local tier: nothing may be scoped to the affected set, and the two
+	// legs that follow CI's scope must go wide with an empty affected set —
+	// which is the state a caller reaches when no package resolved.
+	if why := forcedWide("", p); why == "" {
+		t.Error("forcedWide answers \"\" with no merge-base, so vet and staticcheck would narrow")
+	}
+	if !scopedLegRuns("", p, nil) {
+		t.Error("scopedLegRuns is false with no merge-base and nothing affected, so the leg would be skipped")
+	}
+	if got := vetScope("", p, nil); len(got) != 1 || got[0] != "./..." {
+		t.Errorf("vetScope with no merge-base is %v, want [./...]", got)
+	}
+
+	// And every conditional leg, so none is skipped on a run that cannot tell
+	// whether its inputs moved.
+	for name, on := range map[string]bool{
+		"proto":        p.proto,
+		"docs":         p.docs,
+		"examples":     p.examples,
+		"repoTestData": p.repoTestData,
+	} {
+		if !on {
+			t.Errorf("the %s leg is not selected with no merge-base, so it would be skipped on an unmeasurable diff", name)
+		}
+	}
+
+	// The CI tier, through the same call the plan job makes.
+	decisions := ciDecisions(p, nil, ciForceReason("pull_request", "", p))
+	if len(decisions) == 0 {
+		t.Fatal("no decisions")
+	}
+	for _, d := range decisions {
+		if !d.Run {
+			t.Errorf("job %q is skipped on a run with no merge-base: %s", d.Job, d.Why)
+		}
+	}
+}
+
+// TestAResolvableBaseIsStillNarrow is the other direction, and it is the one
+// that keeps the fallback honest: a gate that ran wide always would satisfy
+// every assertion above and destroy the whole point of this tool.
+func TestAResolvableBaseIsStillNarrow(t *testing.T) {
+	p := buildPlan([]string{"pkg/flowstate/v1/auth/issuer.go"})
+
+	if why := forcedWide(resolvedBase, p); why != "" {
+		t.Errorf("one .go file forces a wide run: %s", why)
+	}
+	if got := vetScope(resolvedBase, p, []string{"example.com/x"}); len(got) == 1 && got[0] == "./..." {
+		t.Error("one .go file vets the whole module")
+	}
+	if p.proto || p.examples {
+		t.Error("one .go file selected a conditional leg whose inputs did not move")
+	}
+}
+
+// TestResolveBaseFallsBackRatherThanRefusing is the give-up branch, exercised
+// where it actually happens: a repository with no origin at all, which is what
+// a --single-branch clone with no network looks like from in here.
+//
+// The assertion is the shape of the answer, not the wording: an empty base,
+// because that is what [changedFiles] reads as "take the whole tree", and a
+// non-empty reason, because a wide run that does not say why it is wide is
+// indistinguishable from a diff that happened to touch everything.
+func TestResolveBaseFallsBackRatherThanRefusing(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "--initial-branch=main")
+	git(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "root")
+
+	t.Chdir(dir)
+
+	base, why := resolveBase()
+	if base != "" {
+		t.Errorf("resolveBase invented a base %q where there is no origin, so the diff would be taken against it", base)
+	}
+	if why == "" {
+		t.Error("resolveBase gave up silently, so a wide run reads as a diff that touched everything")
+	}
+}
+
+// TestResolveBaseFindsTheBaseWhenItIsThere is the happy path, and it is what
+// stops the fallback from becoming the only path: this repository has
+// origin/main, so the gate must answer with a real merge-base and say nothing.
+func TestResolveBaseFindsTheBaseWhenItIsThere(t *testing.T) {
+	if _, err := gitOutput("rev-parse", "--verify", "--quiet", "origin/main"); err != nil {
+		t.Skip("no origin/main in this checkout, which is the case the other test covers")
+	}
+
+	base, why := resolveBase()
+	if len(base) != 40 {
+		t.Errorf("resolveBase answered %q, want a commit id", base)
+	}
+	if why != "" {
+		t.Errorf("resolveBase had to do something to find a base that was already here: %s", why)
+	}
+}
+
+// TestAnUnmeasurableDiffSaysSoRatherThanBlamingTheDiff isolates the one thing
+// the base arm of [ciForceReason] is for.
+//
+// It is not scope: an unresolvable base makes [changedFiles] answer with the
+// whole tree, which sets ciWide and moduleWide, so every job would run through
+// those arms whether this one existed or not. What it is for is the *reason*,
+// and a wrong reason is a real defect here — docs/CI.md's whole argument is
+// that a skip, or a wide run, has to be a decision somebody can read. Told that
+// the workflows changed, a reader goes looking for a workflow diff that is not
+// there.
+//
+// So the plan is deliberately a narrow one, where the other arms cannot fire.
+func TestAnUnmeasurableDiffSaysSoRatherThanBlamingTheDiff(t *testing.T) {
+	narrow := buildPlan([]string{"pkg/flowstate/v1/auth/issuer.go"})
+
+	if why := ciForceReason("pull_request", resolvedBase, narrow); why != "" {
+		t.Fatalf("this plan is not narrow, so the test proves nothing: %s", why)
+	}
+
+	why := ciForceReason("pull_request", "", narrow)
+	if why == "" {
+		t.Fatal("an unmeasurable diff does not force a wide run")
+	}
+	if !strings.Contains(why, "merge-base") {
+		t.Errorf("the reason for a wide run is %q, which does not name the merge-base as the cause", why)
+	}
+}
+
+// TestResolveBaseFetchesWhatTheCheckoutIsMissing is the case that motivated all
+// of this, reproduced: a clone that has the branch under review and not the
+// branch it will merge into.
+//
+// Both shapes are covered because they fail differently and are fixed
+// differently. A --single-branch clone has full history and no origin/main ref
+// at all, so fetching the branch is enough. A --depth=1 clone gets the ref and
+// still has no common ancestor with it, because the shared history is exactly
+// what the depth cut off — so it needs deepening as well, and a gate that only
+// did the first would still refuse on the second.
+func TestResolveBaseFetchesWhatTheCheckoutIsMissing(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		clone []string
+		want  string
+	}{
+		{name: "the ref is absent", clone: []string{"--single-branch", "--branch", "feature"}, want: "fetched"},
+		{name: "the history is cut off", clone: []string{"--depth=1", "--single-branch", "--branch", "feature"}, want: "deepened"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			src := t.TempDir()
+			git(t, src, "init", "--initial-branch=main")
+			git(t, src, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "shared history")
+			git(t, src, "checkout", "-b", "feature")
+			git(t, src, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "the change under review")
+
+			dst := t.TempDir() + "/clone"
+			git(t, t.TempDir(), append(append([]string{"clone"}, test.clone...), "file://"+src, dst)...)
+
+			t.Chdir(dst)
+
+			base, why := resolveBase()
+			if base == "" {
+				t.Fatalf("resolveBase gave up on a checkout it could have repaired, so the gate runs wide "+
+					"on every pull request from a clone like this: %s", why)
+			}
+			if !strings.Contains(why, test.want) {
+				t.Errorf("resolveBase found a base but reports %q, which does not say it %s anything", why, test.want)
 			}
 		})
 	}
