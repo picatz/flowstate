@@ -127,11 +127,11 @@ func TestNoSeedsPrintsNothingAboutSchedules(t *testing.T) {
 }
 
 // TestSeedsInMachineModeKeepsStdoutParseable pins where the account goes when
-// the answer stream belongs to a program. The JSON document must stay exactly a
-// JSON document — Phase A adds no schema field for schedule exploration — and
-// the honesty line must still be somewhere a person or a CI log can read it,
-// because a `--seeds` run whose exploration was silent is a green nobody can
-// check.
+// the answer stream belongs to a program. The JSON document must stay exactly
+// a JSON document — the exploration rides it as the `schedules` schema field
+// (issue #931), never as prose — and the honesty line must still be somewhere
+// a person or a CI log can read it, because a `--seeds` run whose exploration
+// was silent is a green nobody can check.
 func TestSeedsInMachineModeKeepsStdoutParseable(t *testing.T) {
 	dir := writeScheduleFixture(t, scheduleStraightWorkflow)
 
@@ -142,6 +142,51 @@ func TestSeedsInMachineModeKeepsStdoutParseable(t *testing.T) {
 	assert.NotContains(t, out, "schedules explored")
 	assert.Contains(t, errOut, "3 schedules explored per case")
 	assert.Contains(t, errOut, "nothing was explored")
+
+	// The machine half of the same account: what stderr says in words, the
+	// document says in the schema's own field, so CI reads the sets rather
+	// than scraping the prose. The document is the `{"files": [...]}`
+	// envelope writeTestResults wraps every JSON invocation in.
+	var envelope struct {
+		Files []struct {
+			Schedules *struct {
+				Schedules  int             `json:"schedules"`
+				Cases      int             `json:"cases"`
+				Decisions  int             `json:"decisions"`
+				Divergence json.RawMessage `json:"divergence"`
+			} `json:"schedules"`
+		} `json:"files"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope))
+	require.Len(t, envelope.Files, 1)
+	carried := envelope.Files[0].Schedules
+	require.NotNil(t, carried, "the report must carry the exploration it performed")
+	assert.Equal(t, 3, carried.Schedules)
+	assert.Equal(t, 1, carried.Cases)
+	assert.Equal(t, 0, carried.Decisions,
+		"a straight-line workflow reaches no junction, and the document must say so the way stderr does")
+	assert.Equal(t, "null", string(carried.Divergence))
+}
+
+// TestNoSeedsLeavesTheScheduleFieldUnset is the machine-mode face of the
+// compatibility promise TestNoSeedsPrintsNothingAboutSchedules makes for text:
+// a run that explored nothing carries `schedules: null`, so a consumer can
+// tell "explored and found nothing" apart from "never explored" without
+// knowing which flags the invocation had.
+func TestNoSeedsLeavesTheScheduleFieldUnset(t *testing.T) {
+	dir := writeScheduleFixture(t, scheduleStraightWorkflow)
+
+	out, _, err := runFlowTestStreams(t, "-o", "json", dir)
+	require.NoError(t, err)
+
+	var envelope struct {
+		Files []struct {
+			Schedules json.RawMessage `json:"schedules"`
+		} `json:"files"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope))
+	require.Len(t, envelope.Files, 1)
+	assert.Equal(t, "null", string(envelope.Files[0].Schedules))
 }
 
 // TestSeedFlagsRefuseCombinationsThatWouldDoNothing is the fail-closed posture
