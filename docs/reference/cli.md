@@ -1600,6 +1600,8 @@ Per file, `flow test` reports branch coverage: the set of the workflow's steps a
 
 A `switch:` is measured a second way, per arm rather than per step, because an arm's body may hold no steps at all: `steps: []` is how a switch writes down deliberately ignoring a value, and `case: [closed, merged]` is one body two literals share. Which arm a case took is read from the step's own `case` record, so an arm no case reached is reported by the position it was written at — the only name an arm has. Record one under `coverage.allow_unreached` by the key the diagnostic prints.
 
+A case's `ran:`, `skipped:`, and `compensated:` name steps of the workflow, and a name the workflow does not have refuses the case before it runs, with a suggestion — a claim about a step that does not exist would otherwise pass vacuously forever. A stub the case declared and the run never answered through is reported as a warning: a fact about the case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle in cases that never invoke its task.
+
 `--output json` or `--output jsonl` reports what ran as a schema message instead of text, and carries the coverage sets under a `coverage` key so CI annotates rather than parses prose.
 
 `--seeds N` additionally runs every case under N seeded schedules and fails when a case's observables change with the schedule. It explores only the orderings the local driver is free to choose — the order a `parallel:` block advances its branches in, and whether an `async:` step's work happens where it is written or at its join — so a green says your file does not depend on those. It is not a claim about Temporal's orderings. The number of scheduling decisions is reported alongside, because a workflow with no `parallel:` and no `async:` reaches no junction and every schedule of it is written order.
@@ -1620,6 +1622,7 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
+| `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub the case declared and the run never answered through — instead of only printing it |
 | `-o, --output <string>` | `string` | `text` | — | how to render the answer: text, json, jsonl. json and jsonl are named fields rather than columns, so a value is addressable by name: the server's own schema where a verb reads something, and the result document this verb's help describes where it changes something |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed --seeds walks upward from, to move the search to a different part of the seed space |

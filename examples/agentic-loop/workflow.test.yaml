@@ -101,9 +101,11 @@ tests:
           summary: rewrote more than anyone expected
           patch: "--- a/main.go\n+++ b/main.go\n"
           tokens: 45000
-      # No `land` stub, and that is load-bearing: a stub whose task is never
-      # invoked is itself reported, so an unused one here would fail this case
-      # rather than sit quietly. The write not happening is checked twice.
+      # No `land` stub, and that is load-bearing: `flow test` fails closed on
+      # any invocation with no stub, so a `land` call on this path would fail
+      # the case rather than write anything — and a stub declared here would
+      # itself be reported as never consulted (#926). The write not happening
+      # is checked twice.
       - task: log
         where: inputs.fields.outcome == 'declined at the gate'
         returns: {}

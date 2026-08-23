@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
@@ -33,6 +34,35 @@ type compiledStub struct {
 	step      string
 	stepScope string
 
+	// ordinal is this stub's 1-based position in the case's declared order —
+	// the number every diagnostic about it uses ("stub 2"), kept here because
+	// [bindStubs] regroups matchers by task and the position in a task's own
+	// matcher list stops being the position the author can count to.
+	ordinal int
+
+	// fromDefaults mirrors [Stub]'s provenance mark: this stub reached the
+	// case through the file's `defaults:`. Read by [unusedStubWarnings],
+	// which exempts an inherited catch-all from the idle-stub warning a
+	// case's own stub earns (#926).
+	fromDefaults bool
+
+	// answered records that this matcher answered at least one invocation in
+	// the current case — with `returns:` or with `fails:`, either is an
+	// answer. Written under [stubbedTask.mu], because two parallel branches
+	// can invoke one task concurrently. Per-case state: [bindStubs] builds a
+	// fresh matcher list for every case, and schedule exploration re-runs the
+	// whole case, so nothing here survives into another run.
+	answered bool
+
+	// times is the stub's declared answer budget, 0 for unbounded; remaining
+	// counts it down per answer, under the same lock and with the same
+	// per-case lifetime as answered. A drained matcher (times > 0, remaining
+	// 0) is skipped with a verdict that says so, and the list falls through —
+	// which is the whole mechanism of [Stub.Times]: the matcher sequence
+	// becomes a script.
+	times     int
+	remaining int
+
 	where *expr.ParsedExpr // nil matches unconditionally
 
 	// whereSource is the `where:` clause exactly as the author wrote it, kept
@@ -47,6 +77,13 @@ type compiledStub struct {
 	// `returns: {}`.
 	returns    map[string]any
 	hasReturns bool
+
+	// response is [Stub.Response] compiled exactly as returns is — the same
+	// fence rule at every depth — and resolved per invocation the same way.
+	// What the resolved fields *mean* is the task's business
+	// ([v1.TaskDef.StubResponseFn]); this package only carries them there.
+	response    map[string]any
+	hasResponse bool
 
 	fails *StubFailure
 }
@@ -66,6 +103,27 @@ type stubExpr struct {
 // they were written — the shape a `switch` already has, and named that way in
 // [Stub.Where]'s doc.
 type stubbedTask struct {
+	// mu serializes the matcher scan and the per-matcher bookkeeping against
+	// concurrent invocations of one task: two `parallel:` branches invoking
+	// the same task race otherwise, and the bookkeeping ([compiledStub.answered],
+	// and a `times:` budget once one exists) must decide atomically with the
+	// match itself. Held for the length of one invocation's scan — a test
+	// harness's matcher list is short, and a lock that is obviously correct
+	// beats a clever one in the package whose own claims are ordering claims.
+	mu sync.Mutex
+
+	// invoked records that any invocation of this task reached the stub set at
+	// all, which is what tells "this case never invokes the task" apart from
+	// "the task ran and this stub never matched" in [unusedStubWarnings].
+	invoked bool
+
+	// respond is the task's own [v1.TaskDef.StubResponseFn], resolved once at
+	// bind time so a `response:` stub aimed at a task with no raw-response
+	// semantics is refused before the run rather than surfacing mid-case. Nil
+	// where the task defines none — which [bindStubs] has then already
+	// guaranteed no matcher here needs.
+	respond func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope, response map[string]*v1.Value) (*v1.Node_Outputs, error)
+
 	matchers []compiledStub
 }
 
@@ -91,14 +149,30 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 			return nil, fmt.Errorf("stub %d for %s: returns: %w", i+1, stubTarget(&s), err)
 		}
 
+		response, err := compileReturns(s.Response)
+		if err != nil {
+			return nil, fmt.Errorf("stub %d for %s: response: %w", i+1, stubTarget(&s), err)
+		}
+
+		times := 0
+		if s.Times != nil {
+			times = *s.Times
+		}
+
 		compiled = append(compiled, compiledStub{
-			task:        s.Task,
-			step:        s.Step,
-			where:       parsed,
-			whereSource: s.Where,
-			returns:     returns,
-			hasReturns:  s.Returns != nil,
-			fails:       s.Fails,
+			task:         s.Task,
+			step:         s.Step,
+			ordinal:      i + 1,
+			fromDefaults: s.fromDefaults,
+			where:        parsed,
+			whereSource:  s.Where,
+			returns:      returns,
+			hasReturns:   s.Returns != nil,
+			response:     response,
+			hasResponse:  s.Response != nil,
+			fails:        s.Fails,
+			times:        times,
+			remaining:    times,
 		})
 	}
 
@@ -153,12 +227,38 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 		t, ok := byTask[task]
 		if !ok {
 			t = &stubbedTask{}
+			if def, exists := v1.DefaultRegistry().Lookup(task); exists {
+				t.respond = def.StubResponseFn
+			}
 			byTask[task] = t
 		}
+
+		// A `response:` stub needs the task to say what a raw response means
+		// ([v1.TaskDef.StubResponseFn]), and only a task with deferred
+		// response semantics does — refused here, before the run, with the
+		// spelling that exists. A task this harness knows only by name (a
+		// plugin's) has no semantics to consult, and gets the same answer.
+		if m.hasResponse && t.respond == nil {
+			return nil, fmt.Errorf(
+				"stub %d for %s declares response:, but task %q does not evaluate a raw response — "+
+					"only a task with deferred inputs (such as http's outputs: and expect:) can; "+
+					"use returns: for already-shaped outputs",
+				m.ordinal, describeStubTarget(&m), task)
+		}
+
 		t.matchers = append(t.matchers, m)
 	}
 
 	return byTask, nil
+}
+
+// describeStubTarget names a compiled stub the way the author aimed it, for a
+// diagnostic: by step where a step was named, by task otherwise.
+func describeStubTarget(m *compiledStub) string {
+	if m.step != "" {
+		return fmt.Sprintf("step %q", m.step)
+	}
+	return fmt.Sprintf("task %q", m.task)
 }
 
 // unknownStepError refuses a step-form stub naming a step the workflow does not
@@ -175,8 +275,16 @@ func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[
 			"stub a task step, or the task itself with `task:` and `where:`", step, kind)
 	}
 
-	names := make([]string, 0, len(taskOfStep))
+	// Suggestions draw on every step the workflow has, not only the task
+	// steps: a typo one letter off a `call:` or a `wait` step used to get the
+	// bare "no task step" sentence below, because the candidate list stopped
+	// at taskOfStep — and the author retyping the suggested id then gets the
+	// kind-specific refusal above, which names the actual fix (#926).
+	names := make([]string, 0, len(taskOfStep)+len(kindOfStep))
 	for id := range taskOfStep {
+		names = append(names, id)
+	}
+	for id := range kindOfStep {
 		names = append(names, id)
 	}
 	sort.Strings(names)
@@ -361,6 +469,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 
 		activation := stubActivation(ctx, scope, native)
 
+		// The scan and its bookkeeping are one atomic decision: two parallel
+		// branches invoking this task concurrently must not both read a
+		// matcher's state between one another's updates. See [stubbedTask.mu].
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.invoked = true
+
 		var verdicts []stubVerdict
 		// sawEvalErr tracks whether any tried matcher's where: failed to
 		// evaluate, so the final failure keeps ErrorKindExpression rather than
@@ -369,7 +484,9 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 		// errors.
 		var sawEvalErr bool
 
-		for _, m := range s.matchers {
+		for i := range s.matchers {
+			m := &s.matchers[i]
+
 			// A step-form stub answers only its own step's invocations, told
 			// apart by the step id the engine records on each node's context.
 			// An undo call carries none (it runs off the run level context), so
@@ -380,6 +497,15 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 				if !ok || current != m.stepScope {
 					continue
 				}
+			}
+
+			// A drained `times:` stub retires: the list falls through to the
+			// next matcher, which is the scripting [Stub.Times] promises. The
+			// verdict is recorded so an invocation that then matches nothing
+			// is explained by the budget it fell past, not left mysterious.
+			if m.times > 0 && m.remaining == 0 {
+				verdicts = append(verdicts, stubVerdict{whereSource: m.whereSource, drained: m.times})
+				continue
 			}
 
 			ok, matchErr := m.matches(ctx, scope.GetProfile(), activation)
@@ -398,11 +524,36 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			}
 
 			if m.fails != nil {
+				// A `fails:` answer is an answer: the stub did its job, so the
+				// unused-stub report must not name it (#926), and it spends
+				// `times:` budget exactly as a `returns:` answer does.
+				m.answered = true
+				if m.times > 0 {
+					m.remaining--
+				}
 				kind := v1.ErrorKind(m.fails.Kind)
 				if kind == "" {
 					kind = v1.ErrorKindUpstream
 				}
 				return nil, v1.NewTaskError(name, kind, errors.New(m.fails.Message))
+			}
+
+			m.answered = true
+			if m.times > 0 {
+				m.remaining--
+			}
+
+			// A `response:` answer hands the resolved fields to the task's own
+			// raw-response evaluation ([v1.TaskDef.StubResponseFn], resolved
+			// non-nil at bind time), with the invocation's full input map —
+			// deferred expressions included — so the step's `outputs:` and
+			// `expect:` run exactly as they would over a live response (#925).
+			if m.hasResponse {
+				resolved, err := resolveStubValues(ctx, scope.GetProfile(), activation, m.response)
+				if err != nil {
+					return nil, v1.NewTaskError(name, v1.ErrorKindExpression, fmt.Errorf("response: %w", err))
+				}
+				return s.respond(ctx, inputs, scope, v1.NewNamedValues(resolved))
 			}
 
 			returns, err := m.answer(ctx, scope.GetProfile(), activation)
@@ -531,6 +682,11 @@ type stubVerdict struct {
 	whereSource string // empty for a stub with no `where:`
 	matched     bool
 	err         error
+
+	// drained is the stub's spent `times:` budget when the matcher was
+	// skipped as retired rather than tried at all — the one verdict where the
+	// clause is not what decided (#927). Zero otherwise.
+	drained int
 }
 
 // maxUnmatchedStubValueLen bounds how much of one input's rendered value an
@@ -869,6 +1025,8 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 				where = "(no where:)"
 			}
 			switch {
+			case v.drained > 0:
+				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> drained (times: %d spent)", i+1, where, v.drained)
 			case v.matched:
 				fmt.Fprintf(&b, "\n    stub %d requires: %s   -> true", i+1, where)
 			case v.err != nil:
@@ -882,6 +1040,87 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	return errors.New(b.String())
 }
 
+// unusedStubWarnings reports, after one case's run, every stub the case
+// declared and the run never answered through — the account a green case owes
+// about its own scaffolding (#926). A shipped example asserted in prose that
+// "a stub whose task is never invoked is itself reported"; before this
+// existed, that sentence was false, and an unused stub sat quietly forever.
+//
+// Warnings, not failures: an idle stub is a hole in the case's hygiene, not
+// in the run, so the case's verdict is untouched and `flow test
+// --fail-on-warning` is where a suite opts in to treating one as fatal — the
+// `--coverage-required` shape. Two exemptions, each a legitimate pattern
+// rather than a hole:
+//
+//   - A stub inherited from `defaults:` ([compiledStub.fromDefaults]): a
+//     file-level catch-all exists precisely to be shared by cases that may
+//     not all invoke its task.
+//   - Nothing at all when the run failed or never reached a verdict — the
+//     caller skips this whenever the run errored, since a run that stopped
+//     early leaves later stubs legitimately unanswered, and this report
+//     cannot tell that apart from a genuinely idle one (the same
+//     unverifiable-claim honesty `expect.skipped` applies to parallel
+//     branches on a failed run).
+//
+// The two messages tell the two situations apart, because the fix differs: a
+// task never invoked is a stub aimed at nothing, while a matcher tried and
+// never matched is a `where:` (or an earlier stub) that took the traffic.
+func unusedStubWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
+	type idle struct {
+		ordinal int
+		message string
+	}
+	var found []idle
+
+	for task, stubs := range byTask {
+		for i := range stubs.matchers {
+			m := &stubs.matchers[i]
+			if m.answered || m.fromDefaults {
+				continue
+			}
+
+			target := fmt.Sprintf("task %q", task)
+			if m.step != "" {
+				target = fmt.Sprintf("step %q", m.step)
+			}
+
+			var message string
+			switch {
+			case !stubs.invoked:
+				message = fmt.Sprintf(
+					"stub %d (%s) was never consulted: this case invoked no %q task at all; "+
+						"delete the stub, or move it under `defaults:` if it is shared boilerplate",
+					m.ordinal, target, task)
+			case m.whereSource != "":
+				message = fmt.Sprintf(
+					"stub %d (%s) never answered an invocation: its where: (%s) matched nothing this case ran; "+
+						"tighten or delete it — a matcher that answers nothing asserts nothing",
+					m.ordinal, target, m.whereSource)
+			default:
+				message = fmt.Sprintf(
+					"stub %d (%s) never answered an invocation: every call it could have answered "+
+						"was taken by an earlier stub; delete it, or reorder the list it falls through",
+					m.ordinal, target)
+			}
+
+			found = append(found, idle{ordinal: m.ordinal, message: message})
+		}
+	}
+
+	// Ordered by the author's own numbering, not by Go's map walk: the report
+	// must read identically on every run.
+	sort.Slice(found, func(i, j int) bool { return found[i].ordinal < found[j].ordinal })
+
+	warnings := make([]*v1.Diagnostic, 0, len(found))
+	for _, f := range found {
+		warnings = append(warnings, &v1.Diagnostic{
+			Field:   "stubs",
+			Message: f.message,
+		})
+	}
+	return warnings
+}
+
 // answer resolves the stub's `returns:` for one invocation, evaluating every
 // ${...} it holds against that invocation's activation.
 func (c compiledStub) answer(ctx context.Context, profile string, activation cel.Activation) (map[string]any, error) {
@@ -889,11 +1128,23 @@ func (c compiledStub) answer(ctx context.Context, profile string, activation cel
 		return nil, nil
 	}
 
-	resolved := make(map[string]any, len(c.returns))
-	for name, v := range c.returns {
+	resolved, err := resolveStubValues(ctx, profile, activation, c.returns)
+	if err != nil {
+		return nil, fmt.Errorf("returns %w", err)
+	}
+	return resolved, nil
+}
+
+// resolveStubValues resolves one compiled value map — a stub's `returns:` or
+// its `response:` — for one invocation, evaluating every ${...} it holds
+// against that invocation's activation. One resolver for both, so the two
+// stanzas cannot disagree about what a fenced value means.
+func resolveStubValues(ctx context.Context, profile string, activation cel.Activation, values map[string]any) (map[string]any, error) {
+	resolved := make(map[string]any, len(values))
+	for name, v := range values {
 		value, err := resolveReturnValue(ctx, profile, activation, v)
 		if err != nil {
-			return nil, fmt.Errorf("returns %q: %w", name, err)
+			return nil, fmt.Errorf("%q: %w", name, err)
 		}
 		resolved[name] = value
 	}

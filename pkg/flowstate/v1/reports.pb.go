@@ -404,7 +404,18 @@ type TestCase struct {
 	// reading of virtual time: it is what a person deciding whether the suite
 	// is still fast wants to know, and virtual time inside the run answers a
 	// different question.
-	Duration      *durationpb.Duration `protobuf:"bytes,5,opt,name=duration,proto3" json:"duration,omitempty"`
+	Duration *durationpb.Duration `protobuf:"bytes,5,opt,name=duration,proto3" json:"duration,omitempty"`
+	// Warnings are facts worth reading that are not verdicts (#926): the case
+	// passed or failed on Failures and Error alone, and these neither block nor
+	// excuse it. Today's one producer is a stub the case declared and the run
+	// never answered through — a task-form stub whose task was never invoked,
+	// or a matcher tried and never matched — which is a hole in the case's own
+	// account rather than in the run. `flow test --fail-on-warning` promotes
+	// them to the exit code the way `--coverage-required` promotes a coverage
+	// gap; the report itself is identical either way, because whether a run
+	// opted in is a property of the invocation, not of the suite (the same
+	// reasoning [CoverageReport] records for `--coverage-required`).
+	Warnings      []*Diagnostic `protobuf:"bytes,6,rep,name=warnings,proto3" json:"warnings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -470,6 +481,13 @@ func (x *TestCase) GetError() string {
 func (x *TestCase) GetDuration() *durationpb.Duration {
 	if x != nil {
 		return x.Duration
+	}
+	return nil
+}
+
+func (x *TestCase) GetWarnings() []*Diagnostic {
+	if x != nil {
+		return x.Warnings
 	}
 	return nil
 }
@@ -906,13 +924,14 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\x05files\x18\x01 \x03(\v2\x17.flowstate.v1.FixReportR\x05files\";\n" +
 	"\n" +
 	"FmtReports\x12-\n" +
-	"\x05files\x18\x01 \x03(\v2\x17.flowstate.v1.FmtReportR\x05files\"\xc1\x01\n" +
+	"\x05files\x18\x01 \x03(\v2\x17.flowstate.v1.FmtReportR\x05files\"\xf7\x01\n" +
 	"\bTestCase\x12\x1a\n" +
 	"\x04name\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04name\x12\x16\n" +
 	"\x06passed\x18\x02 \x01(\bR\x06passed\x124\n" +
 	"\bfailures\x18\x03 \x03(\v2\x18.flowstate.v1.DiagnosticR\bfailures\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x125\n" +
-	"\bduration\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\bduration\"\xaa\x01\n" +
+	"\bduration\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\bduration\x124\n" +
+	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\xaa\x01\n" +
 	"\n" +
 	"TestReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12,\n" +
@@ -983,16 +1002,17 @@ var file_flowstate_v1_reports_proto_depIdxs = []int32{
 	2,  // 6: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
 	11, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
 	12, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	5,  // 9: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	7,  // 10: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
-	10, // 11: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
-	8,  // 12: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
-	6,  // 13: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	11, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
+	5,  // 10: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
+	7,  // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
+	10, // 12: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
+	8,  // 13: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
+	6,  // 14: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_reports_proto_init() }
