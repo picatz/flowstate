@@ -1,0 +1,5 @@
+{
+  "change": "deploy v1.4.2 to production",
+  "primary_approver": "sre-lead@example.com",
+  "backup_approver": "sre-manager@example.com"
+}
