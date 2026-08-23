@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -115,4 +116,70 @@ func TestInternalListenerServesHealthAndPprofButNotTheRPCSurface(t *testing.T) {
 	resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode,
 		"the internal listener must not serve the RPC surface")
+}
+
+// TestInternalListenerBoundsHeaderCountBelowTheByteBound is the count bound
+// asserted where it differs from the byte bound, which is the only place
+// asserting it proves anything.
+//
+// Both probes below are a few tens of kilobytes — around two percent of
+// MaxHeaderBytes — so neither is refused for its size. What separates them is
+// only how many header lines those bytes are spent on. The under-bound probe
+// must be answered and the over-bound one must not, which together say the
+// listener bounds a resource the sender chooses the ratio to, rather than
+// bounding the bytes and calling it done.
+//
+// Bracketing rather than testing the exact boundary: net/http counts the
+// headers the client library adds for itself (Host, User-Agent,
+// Accept-Encoding) alongside these, so the precise cut-off is a fact about the
+// client, and pinning it here would test that instead of this.
+func TestInternalListenerBoundsHeaderCountBelowTheByteBound(t *testing.T) {
+	t.Parallel()
+
+	server, listener, err := startInternalListener(discardLogger(), "127.0.0.1:0")
+	require.NoError(t, err)
+	require.NotNil(t, server)
+	defer listener.Close()
+
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+
+	base := "http://" + listener.Addr().String()
+
+	probe := func(t *testing.T, count int) (*http.Response, error) {
+		t.Helper()
+
+		req, err := http.NewRequest(http.MethodGet, base+"/healthz", nil)
+		require.NoError(t, err)
+		for i := range count {
+			req.Header.Add(fmt.Sprintf("X-Flowstate-Probe-%d", i), "v")
+		}
+
+		// One connection per probe, not the shared default transport: a
+		// refusal here closes the connection, and a pooled one carrying that
+		// state into another test is a flake nobody would enjoy finding.
+		transport := &http.Transport{}
+		defer transport.CloseIdleConnections()
+
+		return transport.RoundTrip(req)
+	}
+
+	resp, err := probe(t, maxHeaderValueCount-100)
+	require.NoError(t, err, "a request comfortably under the header-count bound must be answered")
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"%d header lines is under the bound and must be served", maxHeaderValueCount-100)
+
+	resp, err = probe(t, maxHeaderValueCount+100)
+	if err == nil {
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusRequestHeaderFieldsTooLarge, resp.StatusCode,
+			"%d header lines is over the bound and must be refused, not served",
+			maxHeaderValueCount+100)
+		return
+	}
+
+	// A refusal the server declines to write a response for is equally a
+	// refusal: what must not happen is the request being *served*.
+	require.Error(t, err)
 }

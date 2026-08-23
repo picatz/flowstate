@@ -159,13 +159,16 @@ flow server dev
 flow server dev -o json`,
 	}
 
-	// Deliberately not spelled --address. On `flow server` and `flow worker`
-	// that flag means *Temporal's* address, while on every verb that talks to
-	// Flowstate it means the Flowstate server's. Two meanings for one spelling,
-	// split by which command declares it. This command holds both halves at
-	// once, so it may not inherit the ambiguity: --listen is where Flowstate
-	// listens, and there is no flag for Temporal's address because this command
-	// is what starts Temporal.
+	// Deliberately not spelled --address, and the first flag in the tree to say
+	// so: on every verb that talks to Flowstate, --address names the Flowstate
+	// server a client dials, which a socket to bind is not. `flow server` and
+	// `flow worker` used to spell Temporal's own address the same way — two
+	// meanings for one spelling, split by which command declared it — and this
+	// command, which holds both halves at once, refused to inherit the
+	// ambiguity. picatz/flowstate#580 settled it the same way everywhere else:
+	// --listen is where Flowstate listens, --temporal-address is Temporal's
+	// frontend, and this command needs no flag for the latter because it is
+	// what starts Temporal.
 	cmd.Flags().String("listen", cmp.Or(os.Getenv("FLOWSTATE_ADDRESS"), defaultServerAddress),
 		"address the Flowstate server listens on (default $FLOWSTATE_ADDRESS); "+
 			"loopback only, and a port of 0 takes a free one")
@@ -545,19 +548,24 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	// This process is both halves of the plugin contract, so the catalog is
-	// installed on both. The worker's half admits a run against what this
-	// process can actually execute, before it polls; the server's half is what
-	// makes a `plugins:` requirement resolvable at submission at all. Either one
-	// alone fails closed against the other: a dev stack with only the server's
-	// pin admits a run its own worker then refuses, and one with only the
-	// worker's refuses every submission as "not installed".
-	engine.UsePluginCatalog(pluginCatalog)
-
 	runtime, err := workerRuntime(cmd, secretProviders, secretsConfigured)
 	if err != nil {
 		return err
 	}
+
+	// This process is both halves of the plugin contract, so the catalog goes to
+	// both. The worker's half admits a run against what this process can
+	// actually execute, before it polls; the server's half is what makes a
+	// `plugins:` requirement resolvable at submission at all. Either one alone
+	// fails closed against the other: a dev stack with only the server's pin
+	// admits a run its own worker then refuses, and one with only the worker's
+	// refuses every submission as "not installed".
+	//
+	// The worker's half rides its registration rather than a process value, which
+	// matters most in exactly this command: co-locating a server and a worker is
+	// what this file does, and it is one restructuring away from co-locating two
+	// workers.
+	runtime = runtime.WithPluginCatalog(pluginCatalog)
 
 	// Idempotent, once, before anything serves, and a warning rather than a
 	// refusal, exactly as in [runServer]: a dev server with no operator setup
@@ -566,6 +574,21 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	serverOpts := []server.Option{
 		server.WithDataConverter(cfg.Codec.DataConverter()),
 		server.WithPluginCatalog(pluginCatalog),
+
+		// The one thing this command has that neither `flow server` nor
+		// `flow worker` can have: the control plane below and the worker a few
+		// lines down share the single client this function opened, which is the
+		// exact topology Temporal's eager workflow start requires. Every `flow
+		// run` against this stack then skips the matching round trip its first
+		// workflow task would otherwise wait for.
+		//
+		// Scoped here rather than set for every deployment because eager start
+		// does not respect worker versioning — see [server.WithEagerWorkflowStart],
+		// which carries that argument in full. It is sound for this command
+		// specifically because this stack is unversioned by construction
+		// (devPostureUnversioned above), so there is no Current version for an
+		// eager dispatch to step around.
+		server.WithEagerWorkflowStart(),
 	}
 	if err := server.EnsureSearchAttributesRegistered(cmd.Context(), temporal, devTemporalNamespace); err != nil {
 		logger.Warn("could not register Flowstate's search attributes; "+
@@ -581,6 +604,14 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 	})
 	engine.Register(w, runtime)
 
+	// Before the listener below exists, and that order is load-bearing rather
+	// than tidy. Start is what registers this worker with the client's eager
+	// dispatcher, and it does so before returning, so by the time anything can
+	// connect to this stack there is a worker for [server.WithEagerWorkflowStart]
+	// to hand a first workflow task to. Starting the worker after serving would
+	// leave the earliest runs quietly falling back to ordinary dispatch — a race
+	// whose only symptom is the optimization not happening. Keep this above the
+	// listener.
 	if err := w.Start(); err != nil {
 		return fmt.Errorf("starting the worker: %w", err)
 	}
@@ -601,7 +632,7 @@ func runServerDev(cmd *cobra.Command, args []string) error {
 		uiURL:          devUIURL(flags.uiPort),
 		database:       flags.db,
 		otlp:           devOTLPEndpoint(),
-		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == "true",
+		loopbackEgress: os.Getenv(v1.AllowLoopbackEgressEnv) == v1.AllowLoopbackEgressValue,
 	}
 	stack.egressPolicy, _ = cmd.Flags().GetString("egress-policy")
 	stack.taskPolicy, _ = cmd.Flags().GetString("task-policy")
@@ -726,10 +757,15 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 		return nil, nil, fmt.Errorf("error creating OpenTelemetry interceptor: %w", err)
 	}
 
+	flowServer, err := server.New(temporal, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(
 		flowstatev1connect.NewWorkflowServiceHandler(
-			server.New(temporal, opts...),
+			flowServer,
 			connect.WithInterceptors(validate.NewInterceptor(), otelInterceptor),
 			// The same bound `flow server` sets: connect-go defaults to
 			// unlimited, and an anonymous caller must not choose how much this
@@ -747,7 +783,7 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 	// posture in one line, and the same one `flow server --insecure-no-auth`
 	// installs.
 	httpServer := &http.Server{
-		Handler: serverHandler(infraLogger(), auth.InsecureAnonymousVerifier(), nil, nil, rpcMux, nil),
+		Handler: serverHandler(infraLogger(), auth.InsecureAnonymousVerifier(), nil, nil, rpcMux, nil, nil),
 
 		// The same timeouts `flow server` sets, for the same reason: Go's zero
 		// values mean no timeout at all, and a dev stack on loopback still has a
@@ -757,6 +793,10 @@ func devHTTPServer(flags devFlags, opts []server.Option, temporal client.Client)
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
+
+		// And the same header-count bound `flow server` sets, so a dev stack
+		// does not answer a request the real server would refuse.
+		MaxHeaderValueCount: maxHeaderValueCount,
 	}
 
 	return httpServer, listener, nil
@@ -809,7 +849,7 @@ func writeDevBanner(surface *ui.UI, stack devStack) {
 	posture("--"+allowUnversionedFlag, devPostureUnversioned, warn)
 
 	if stack.loopbackEgress {
-		posture(v1.AllowLoopbackEgressEnv+"=true",
+		posture(v1.AllowLoopbackEgressEnv+"="+v1.AllowLoopbackEgressValue,
 			"the http task may reach this machine, including services this stack does not own", warn)
 	} else {
 		posture(v1.AllowLoopbackEgressEnv+" unset",

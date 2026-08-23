@@ -14,6 +14,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -49,9 +50,23 @@ func newTestCommand() *cobra.Command {
 			"one case ran, and the complement no case ever reached. Coverage is reported, not failed, " +
 			"unless `--coverage-required` is set, which makes an unreached step a failure for any file " +
 			"whose `coverage.allow_unreached` does not record a reason for it.\n\n" +
+			"A `switch:` is measured a second way, per arm rather than per step, because an arm's " +
+			"body may hold no steps at all: `steps: []` is how a switch writes down deliberately " +
+			"ignoring a value, and `case: [closed, merged]` is one body two literals share. Which " +
+			"arm a case took is read from the step's own `case` record, so an arm no case reached is " +
+			"reported by the position it was written at — the only name an arm has. Record one under " +
+			"`coverage.allow_unreached` by the key the diagnostic prints.\n\n" +
 			"`--output json` or `--output jsonl` reports what ran as a schema message instead of " +
 			"text, and carries the coverage sets under a `coverage` key so CI annotates rather than " +
-			"parses prose.",
+			"parses prose.\n\n" +
+			"`--seeds N` additionally runs every case under N seeded schedules and fails when a " +
+			"case's observables change with the schedule. It explores only the orderings the local " +
+			"driver is free to choose — the order a `parallel:` block advances its branches in, and " +
+			"whether an `async:` step's work happens where it is written or at its join — so a green " +
+			"says your file does not depend on those. It is not a claim about Temporal's orderings. " +
+			"The number of scheduling decisions is reported alongside, because a workflow with no " +
+			"`parallel:` and no `async:` reaches no junction and every schedule of it is written " +
+			"order.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -76,10 +91,74 @@ flow test -o jsonl examples/`,
 	// a branch it cannot reach by recording it under `coverage.allow_unreached`
 	// with a reason (see flowtest.CoverageStanza).
 	cmd.Flags().Bool("coverage-required", false,
-		"fail when a workflow has a step no test case reached and no coverage.allow_unreached "+
-			"entry records why")
+		"fail when a workflow has a step, or a `switch:` arm, no test case reached and no "+
+			"coverage.allow_unreached entry records why")
+
+	// Off by default, and the default is the whole of the compatibility promise:
+	// at zero seeds every case runs exactly once, under v1.WrittenOrder, which is
+	// what `flow test` has always done. See flowtest's schedules.go.
+	cmd.Flags().Int("seeds", 0,
+		"also run every case under N seeded schedules of the local driver's own choices "+
+			"(`parallel:` branch order, where an `async:` step's work happens), and fail when a "+
+			"case's observables depend on which one ran; 0, the default, runs written order only")
+	cmd.Flags().Uint64("seed0", dst.DefaultSeed0,
+		"the first seed --seeds walks upward from, to move the search to a different part of "+
+			"the seed space")
+	cmd.Flags().Uint64("seed", 0,
+		"replay exactly one schedule, the seed a reported divergence names, instead of searching")
 
 	return cmd
+}
+
+// scheduleBudget reads the three seed flags into the budget
+// [flowtest.RunFileUnderSchedules] spends, or refuses the combination.
+//
+// Refuses rather than resolves, in all four shapes, because every one of them is
+// a person asking for exploration and not getting what they asked for. A flag
+// that silently does nothing is the same failure as a check that silently does
+// not run: `--seed0 7` with no `--seeds` explores nothing while reading like it
+// explores from 7; `--seeds 24 --seed 7` explores one schedule while reading like
+// it explores 24; and `--seed 7 --seed0 3` reads like it does something with 3,
+// while [dst.Budget] ignores Seed0 outright whenever Pinned is set. Reported by
+// Codex on picatz/flowstate#814.
+//
+// The bound on `--seeds` is [dst.MaxSchedules] and is the same number, for the
+// same reason, as the one the Go tier enforces on FLOWSTATE_DST_SCHEDULES: a
+// schedule is a whole run of every case in the file, so the cost is linear in
+// it.
+func scheduleBudget(cmd *cobra.Command) (dst.Budget, error) {
+	seeds, _ := cmd.Flags().GetInt("seeds")
+	seed0, _ := cmd.Flags().GetUint64("seed0")
+	seed, _ := cmd.Flags().GetUint64("seed")
+
+	pinned := cmd.Flags().Changed("seed")
+
+	switch {
+	case seeds < 0:
+		return dst.Budget{}, fmt.Errorf("--seeds %d is not a count of schedules; write a non-negative integer", seeds)
+	case seeds > dst.MaxSchedules:
+		return dst.Budget{}, fmt.Errorf(
+			"--seeds %d is above the %d this command will explore in one run; a schedule runs every "+
+				"case in the file again, so the cost is linear in this number", seeds, dst.MaxSchedules)
+	case pinned && seeds > 0:
+		return dst.Budget{}, errors.New(
+			"--seed replays one schedule and --seeds searches many; pass one or the other")
+	case pinned && cmd.Flags().Changed("seed0"):
+		return dst.Budget{}, errors.New(
+			"--seed replays the one schedule it names, so there is no search for --seed0 to start; " +
+				"drop --seed0, or replace --seed with --seeds N")
+	case cmd.Flags().Changed("seed0") && seeds == 0:
+		return dst.Budget{}, errors.New(
+			"--seed0 names where --seeds starts walking, and no --seeds was given, so nothing " +
+				"would be explored; pass --seeds N")
+	}
+
+	budget := dst.Budget{Schedules: seeds, Seed0: seed0}
+	if pinned {
+		budget.Pinned = &seed
+	}
+
+	return budget, nil
 }
 
 // errTestsFailed reports that at least one case did not pass. It carries no
@@ -95,6 +174,11 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	}
 	coverageRequired, _ := cmd.Flags().GetBool("coverage-required")
 
+	budget, err := scheduleBudget(cmd)
+	if err != nil {
+		return err
+	}
+
 	files, err := collectTestFiles(paths)
 	if err != nil {
 		return err
@@ -108,41 +192,39 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		results   []testFileResult
 	)
 	for _, path := range files {
-		report, coverage := flowtest.RunFileWithCoverage(path)
+		// cmd.Context() rather than a background one: `flow test` is where a
+		// legal Flowfile can park forever (a `wait_for_signal:` with no timeout
+		// and no scripted signal has no deadline the virtual clock can advance
+		// to), and `--seeds N` multiplies whatever that costs by N. The signal
+		// context main installs is what makes ^C end it. See
+		// [flowtest.RunSourceContext] for the same bound on the serving side.
+		report, coverage, schedules := flowtest.RunFileUnderSchedules(cmd.Context(), path, budget)
 		// Attach each workflow's coverage to the report so the whole document
 		// renders through protojson: there is one rendering of the report and no
 		// second, hand-shaped encoder beside it to disagree with the first.
 		for _, c := range coverage {
 			report.Coverage = append(report.Coverage, c.Report())
 		}
-		results = append(results, testFileResult{report: report, coverage: coverage})
+		result := testFileResult{report: report, coverage: coverage, schedules: schedules}
+		results = append(results, result)
 
 		if !machine {
 			printTestReport(surface.Out, surface.Theme, report)
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
+			printSchedules(surface.Out, surface.Theme, report, schedules)
+		} else {
+			// The account of the exploration goes to stderr in machine mode, so
+			// stdout stays exactly the JSON document a consumer parses while the
+			// honesty line — how many schedules ran, and how many scheduling
+			// decisions they actually made — is still somewhere a person or a CI
+			// log can see it. A `--seeds` run whose exploration was silent would
+			// be a green nobody could check. Phase A adds no schema field for
+			// this (issue #800), so this is where it lives.
+			printSchedules(surface.Err, surface.ErrTheme, report, schedules)
 		}
 
-		if report.GetRefused() != "" {
+		if result.failed(coverageRequired) {
 			anyFailed = true
-			continue
-		}
-		for _, c := range report.GetCases() {
-			if !c.GetPassed() {
-				anyFailed = true
-			}
-		}
-		// A failure only when the run opted in: coverage is otherwise a result,
-		// not a verdict. Both an unrecorded gap and a stale record fail, because
-		// a record that no longer describes a real residual is a false statement
-		// about the suite, not a smaller one than a gap. Checked per workflow the
-		// file targets, so a gap in one workflow is not masked by another
-		// (Finding 3).
-		if coverageRequired {
-			for _, c := range coverage {
-				if len(c.Gaps()) > 0 || len(c.Stale) > 0 {
-					anyFailed = true
-				}
-			}
 		}
 	}
 
@@ -161,10 +243,156 @@ func runTest(cmd *cobra.Command, paths []string) error {
 // testFileResult pairs one file's report with the branch coverage its cases
 // achieved, one entry per workflow the file targeted, so the two travel
 // together into rendering. coverage is nil for a file with no workflow to
-// account for (a refused file); see [flowtest.RunFileWithCoverage].
+// account for (a refused file); see [flowtest.RunFileWithCoverage]. schedules is
+// nil unless `--seeds`/`--seed` asked for schedule exploration.
 type testFileResult struct {
-	report   *v1.TestReport
-	coverage []*flowtest.Coverage
+	report    *v1.TestReport
+	coverage  []*flowtest.Coverage
+	schedules *flowtest.ScheduleReport
+}
+
+// failed reports whether this file's result makes the command exit non-zero.
+//
+// One function rather than a run of conditions inside the loop, because the
+// three reasons a file fails are three different kinds of claim and each needs
+// saying: a case that did not pass, a coverage gap the run opted in to treating
+// as one, and a schedule that changed what a case observed.
+func (r testFileResult) failed(coverageRequired bool) bool {
+	if r.report.GetRefused() != "" {
+		return true
+	}
+
+	for _, c := range r.report.GetCases() {
+		if !c.GetPassed() {
+			return true
+		}
+	}
+
+	// A failure only when the run opted in: coverage is otherwise a result,
+	// not a verdict. Both an unrecorded gap and a stale record fail, because
+	// a record that no longer describes a real residual is a false statement
+	// about the suite, not a smaller one than a gap. Checked per workflow the
+	// file targets, so a gap in one workflow is not masked by another
+	// (Finding 3).
+	if coverageRequired {
+		for _, c := range r.coverage {
+			if len(c.Gaps()) > 0 || len(c.ArmGaps()) > 0 || len(c.Stale) > 0 {
+				return true
+			}
+		}
+	}
+
+	// A divergence needs no opt-in beyond the `--seeds` that found it: asking
+	// for the schedule space to be explored is already the opt-in, and a case
+	// whose observables move with the schedule is a finding, not a statistic.
+	return r.schedules != nil && r.schedules.Divergence != nil
+}
+
+// printSchedules renders what seeded schedule exploration found for one file:
+// nothing at all when nobody asked for it, one summary line when every schedule
+// agreed, and the divergence with the command that replays it when one did not.
+//
+// The summary line carries the decision count even on the happy path, and that
+// is the point of it rather than decoration. A workflow with no `parallel:` and
+// no `async:` reaches no junction, so a scheduler is never asked anything and
+// every schedule of it *is* written order — a green from exploring it is a green
+// from exploring nothing. Printing "0 scheduling decisions" and saying what that
+// means is what stops `--seeds 500` on such a file from reading as evidence.
+// [flowtest.ScheduleReport.Decisions] is the number; this is where an author
+// meets it.
+func printSchedules(out io.Writer, theme ui.Theme, report *v1.TestReport, schedules *flowtest.ScheduleReport) {
+	if schedules == nil {
+		return
+	}
+
+	file := theme.Muted.Render(report.GetFile())
+
+	summary := fmt.Sprintf("%s explored per case over %s, up to %s",
+		count(schedules.Schedules, "schedule", "schedules"),
+		count(schedules.Cases, "case", "cases"),
+		count(schedules.Decisions, "scheduling decision", "scheduling decisions"))
+	if schedules.Decisions == 0 {
+		summary += "; " + theme.Warning.Render(
+			"nothing was explored: no case reached a `parallel:` or `async:` junction, "+
+				"so every schedule was written order")
+	}
+	if schedules.Truncated {
+		summary += "; " + theme.Warning.Render(fmt.Sprintf(
+			"a schedule spent its whole %d-decision budget and took written order for the rest of its run",
+			v1.MaxScheduleDecisions))
+	}
+	fmt.Fprintf(out, "%s  %s\n", file, summary)
+
+	divergence := schedules.Divergence
+	if divergence == nil {
+		return
+	}
+
+	fmt.Fprintf(out, "%s  %s: %s\n", file, divergence.Case, theme.Danger.Render(
+		fmt.Sprintf("the schedule changed what this case observed (seed %d)", divergence.Seed)))
+
+	explanation := []string{
+		fmt.Sprintf("Seed %d produced observables the written-order run did not.", divergence.Seed),
+		"`flow test` explores only the orderings the LOCAL driver is free to choose —",
+		"a `parallel:` block's branch order, and whether an `async:` step's work happens",
+		"where it is written or at its join. So this says your file's observables depend",
+		"on one of those, or that the local engine does. It is not a claim about",
+		"Temporal's orderings.",
+	}
+	if divergence.Truncated {
+		explanation = append(explanation, fmt.Sprintf(
+			"This schedule spent its whole %d-decision budget and took written order for the",
+			v1.MaxScheduleDecisions), "rest of its run, so what it explored stops before the bound.")
+	}
+	for _, line := range explanation {
+		fmt.Fprintf(out, "       %s\n", line)
+	}
+
+	fmt.Fprintf(out, "\n       REPLAY THIS EXACT SCHEDULE:\n\n           flow test --seed %d -- %s\n\n",
+		divergence.Seed, shellArg(report.GetFile()))
+	fmt.Fprintf(out, "       written order:\n%s", indentRendering(divergence.WrittenOrder))
+	fmt.Fprintf(out, "       seed %d (%d scheduling decisions):\n%s",
+		divergence.Seed, divergence.Decisions, indentRendering(divergence.Seeded))
+}
+
+// shellArg renders one path as a shell-safe argument for a command a human is
+// told to copy and run. A path with a space or a shell metacharacter would
+// otherwise split or be interpreted, and the "exact" replay command would not
+// replay the failing file — the one job that line has. Single quotes disable
+// every shell expansion, and an embedded single quote uses the standard
+// '"'"'-style splice; a path needing neither is left bare so the common case
+// stays readable. The `--` its caller prints before it handles the remaining
+// hazard, a path beginning with `-` parsing as a flag.
+func shellArg(path string) string {
+	if path != "" && !strings.ContainsAny(path, " \t'\"\\$&|;<>()*?[]#~%{}!\n") {
+		return path
+	}
+	return "'" + strings.ReplaceAll(path, "'", `'"'"'`) + "'"
+}
+
+// count renders a number with the noun that agrees with it.
+//
+// A line an author reads on every `--seeds` run, including the one that says
+// nothing was explored, so "1 cases" and "0 scheduling decision" are not
+// acceptable: the whole job of that line is to be believed.
+func count(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// indentRendering shifts a rendering right so a divergence reads as two blocks
+// rather than as one wall, the same shape [dst.FailureText] gives the Go tier's
+// version of this failure.
+func indentRendering(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "           " + line
+	}
+
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // printTestReport renders one file's report in the CLI's ordinary text style:
@@ -217,6 +445,11 @@ func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverag
 	file := theme.Muted.Render(report.GetFile())
 	for _, cov := range coverage {
 		summary := fmt.Sprintf("%d/%d steps reached", len(cov.Reached), cov.Total())
+		// Only where the workflow has a switch, so a file without one prints the
+		// exact line it always did rather than a second number reading "0/0".
+		if len(cov.Arms) > 0 {
+			summary += fmt.Sprintf(", %d/%d switch arms taken", cov.ArmsReached(), len(cov.Arms))
+		}
 
 		gaps := cov.Gaps()
 		tail := ""
@@ -242,9 +475,54 @@ func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverag
 
 		fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
 
+		printArmGaps(out, theme, cov, required)
+
 		for _, stale := range cov.Stale {
 			fmt.Fprintf(out, "       %s\n", theme.Danger.Render(stale))
 		}
+	}
+}
+
+// printArmGaps names each switch arm no case took, one positioned line each.
+//
+// A line of its own rather than a name on the summary line, because an arm has
+// no name to put there. A step has an id an author can search for; `case
+// "synchronize"` is one of possibly several in one step and is findable only by
+// where it is written — which is the whole reason issue #801 threads positions
+// through at all. So these follow the `flowfile/validate.go` diagnostic
+// standard: the file, the line and column, what is wrong, and what to do.
+//
+// An arm the file recorded a reason for is not printed here. It is an accepted
+// residual, already named on the line below as a decision rather than a hole,
+// exactly as an accepted step is.
+func printArmGaps(out io.Writer, theme ui.Theme, cov *flowtest.Coverage, required bool) {
+	for _, arm := range cov.ArmGaps() {
+		where := cov.Workflow
+		if arm.Where.IsValid() {
+			where += ":" + arm.Where.Start.String()
+		}
+
+		message := fmt.Sprintf("%s: %s of switch %q was taken by no test case; add a case whose "+
+			"inputs reach it, or record why under coverage.allow_unreached: %s",
+			where, arm.Label, arm.Step, arm.Key)
+		if required {
+			message = theme.Danger.Render(message)
+		} else {
+			message = theme.Warning.Render(message)
+		}
+
+		fmt.Fprintf(out, "       %s\n", message)
+	}
+
+	accepted := make([]string, 0, len(cov.Arms))
+	for _, arm := range cov.Arms {
+		if !arm.Reached && arm.Reason != "" {
+			accepted = append(accepted, arm.Key)
+		}
+	}
+	if len(accepted) > 0 {
+		fmt.Fprintf(out, "       %s\n",
+			theme.Muted.Render("accepted-unreached arms: "+strings.Join(accepted, ", ")))
 	}
 }
 

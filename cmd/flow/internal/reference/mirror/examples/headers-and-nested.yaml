@@ -1,18 +1,18 @@
 edition: v2026.3
 name: headers-and-nested
 vars:
-  nested: "${{'outer': {'inner': 'value'}}}"
+  nested: '${{"outer": {"inner": "value"}}}'
 steps:
   - id: web
     http:
-      method: GET
-      url: https://httpbin.org/anything
       headers:
         X-From: Flowstate
         X-Env: dev
+      method: GET
+      url: https://httpbin.org/anything
   - id: report_status
     log:
       message: ${string(steps.web.status_code)}
   - id: pick
     log:
-      message: ${vars.nested['outer']['inner']}
+      message: ${vars.nested["outer"]["inner"]}

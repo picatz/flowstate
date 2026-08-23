@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types/ref"
+	"google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // What a declared webhook can be wrong about, and how a delivery becomes a run's
@@ -223,6 +224,47 @@ func CheckWebhookVerifyScheme(name, scheme string, key *Value) error {
 // webhook delivery is at-least-once by nature, so a trigger with no key turns every
 // retried delivery into a second run. An integration that genuinely has no stable
 // key has to write that down rather than inherit it from a default nobody chose.
+//
+// # What this refuses, and the wider thing it does not
+//
+// It asks one question — does the expression *name* the delivery, a free
+// occurrence of `event` no enclosing comprehension has shadowed
+// ([celExprReferencesIdentifier])? That question is answerable from the syntax
+// and its answer is a proof: an expression with no free `event` cannot read the
+// delivery, so it cannot vary with it, on any delivery that will ever arrive.
+//
+// The wider question — does the key's *value* actually move when the delivery
+// does — is not answered here, and #733 is the record of why. Naming the delivery
+// is not the same as depending on it: `${true ? "all-events" : event.body.id}`
+// carries a real free `event` in a branch nothing takes, passes this check, and
+// still collapses every delivery onto one run.
+//
+// Two ways to close that were tried and rejected, and the second is the one worth
+// knowing about because it looks like it works:
+//
+//   - Constant folding, partially. A special case for a literal condition closes
+//     the example above and leaves `1 == 1 ? … : …`, a constant `has()`, a
+//     comparison of two literals and a macro over a literal list all passing — a
+//     check that reads complete when it is not.
+//   - Evaluating the key against synthetic deliveries and refusing one that comes
+//     out the same string every time. This was built, reviewed and backed out: a
+//     finite sample can witness that a key *varies* and can never prove that it
+//     does not. `${event.body.type == "invoice.paid" ? event.body.id : "ignored"}`
+//     is identical across any set of synthetic deliveries that happen not to carry
+//     that type, and distinct across the ones the author cares about — so the
+//     refusal lands on a working file, which is the outcome CLAUDE.md rates worse
+//     than the gap it closes. This function is also reached from [BindRunInputs],
+//     from the webhook mount and from [BindWebhookTriggerInputs], so such a
+//     refusal is not an editor's squiggle: it rejects a live delivery to a webhook
+//     that had been working.
+//
+// So the check refuses what it can prove and stays silent about the rest, and the
+// residual is documented in docs/DSL.md rather than left for somebody to discover
+// by reading this function and assuming it is complete. Closing it needs a place
+// to put a finding that is evidence rather than proof — a diagnostic severity this
+// package does not have, or a rehearsal over the author's own recorded deliveries,
+// where two distinct deliveries colliding on one key is a fact rather than a
+// sample.
 func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	if key == nil {
 		return fmt.Errorf("webhook %q declares no `idempotency_key:`; delivery is at-least-once, so without one "+
@@ -235,7 +277,8 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	// be named alike, so either all of them dedupe against each other or none does.
 	// Refused where it is written rather than at the first redelivery, which is the
 	// one moment nobody is watching.
-	if _, computed := key.GetKind().(*Value_Expr); !computed {
+	expression, computed := key.GetKind().(*Value_Expr)
+	if !computed || !celExprReferencesIdentifier(expression.Expr.GetExpr(), EventRoot) {
 		return fmt.Errorf("webhook %q writes an `idempotency_key:` that does not depend on the delivery, so "+
 			"every delivery would be named alike; write an expression over `%s`, such as "+
 			"`${%s.%s[\"stripe-signature\"]}` or an id from the body",
@@ -243,6 +286,131 @@ func CheckWebhookIdempotencyKey(name string, key *Value) error {
 	}
 
 	return nil
+}
+
+// celExprReferencesIdentifier reports whether an expression has a *free*
+// occurrence of name — one not shadowed by an enclosing comprehension's own
+// bound variable. Trigger expressions are already type-checked separately;
+// this walk exists to distinguish a delivery-derived key from a CEL
+// expression that merely wraps a constant.
+//
+// Scope-aware for the same reason [collectFreeIdentifiers] is: a
+// comprehension can bind an iteration variable of the same name it is asked
+// about, and once it does, every occurrence inside the comprehension's
+// loop_condition, loop_step and result refers to that local binding, not to
+// the identifier this is checking for. `[1].map(event, string(event))[0]`
+// type-checks to the constant `"1"` — its `event` is the comprehension's own
+// loop variable, never the delivery root — and treating it as a reference to
+// the outer `event` would accept an idempotency key that names the same
+// value on every delivery.
+func celExprReferencesIdentifier(expression *expr.Expr, name string) bool {
+	return celExprReferencesFreeIdentifier(expression, name, false, maxIdentifierWalkDepth)
+}
+
+// maxIdentifierWalkDepth bounds [celExprReferencesFreeIdentifier]'s recursion.
+//
+// This walk reads an AST an outside party chose: the submit path accepts a
+// hand-built `RunRequest` carrying a `ParsedExpr` that never went through the
+// CEL parser, so nothing upstream has limited how deeply it nests. The 1 MiB
+// specification cap bounds bytes, and bytes are not depth — compact nested
+// nodes buy thousands of levels inside it, which is CLAUDE.md's rule about
+// bounding the resource the attacker actually controls. Depth is that
+// resource here, because the walk is recursive and the exhaustible thing is
+// the goroutine stack.
+//
+// Exceeding it answers "no free occurrence", which refuses the idempotency
+// key. That is the fail-closed direction: the alternative accepts a key on an
+// expression this function gave up reading.
+//
+// 32, the same bound and the same argument as [maxActivationDepth]. A real
+// idempotency key is a header lookup or a field selection, nowhere near it.
+const maxIdentifierWalkDepth = 32
+
+// celExprReferencesFreeIdentifier is [celExprReferencesIdentifier]'s walk.
+//
+// shadowed records whether an enclosing comprehension has bound `name` — one
+// bool rather than the set of every enclosing binding, because that set was
+// only ever consulted about `name`. Carrying the set meant copying it at each
+// comprehension, which made the walk quadratic in nesting depth on exactly
+// the hand-built input described above: thousands of nested comprehensions
+// with distinct iterator names, each level copying every name bound above it.
+// One bool has nothing to copy, and shadowing is monotone — once `name` is
+// bound it stays bound for everything inside — so there is no pop to get
+// wrong either.
+func celExprReferencesFreeIdentifier(expression *expr.Expr, name string, shadowed bool, depth int) bool {
+	if expression == nil || depth <= 0 {
+		return false
+	}
+	depth--
+	switch kind := expression.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		if shadowed {
+			return false
+		}
+		return kind.IdentExpr.GetName() == name
+	case *expr.Expr_SelectExpr:
+		return celExprReferencesFreeIdentifier(kind.SelectExpr.GetOperand(), name, shadowed, depth)
+	case *expr.Expr_CallExpr:
+		if celExprReferencesFreeIdentifier(kind.CallExpr.GetTarget(), name, shadowed, depth) {
+			return true
+		}
+		for _, argument := range kind.CallExpr.GetArgs() {
+			if celExprReferencesFreeIdentifier(argument, name, shadowed, depth) {
+				return true
+			}
+		}
+	case *expr.Expr_ListExpr:
+		for _, element := range kind.ListExpr.GetElements() {
+			if celExprReferencesFreeIdentifier(element, name, shadowed, depth) {
+				return true
+			}
+		}
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			if celExprReferencesFreeIdentifier(entry.GetMapKey(), name, shadowed, depth) ||
+				celExprReferencesFreeIdentifier(entry.GetValue(), name, shadowed, depth) {
+				return true
+			}
+		}
+	case *expr.Expr_ComprehensionExpr:
+		comprehension := kind.ComprehensionExpr
+
+		// iter_range and accu_init are evaluated in the *outer* scope — the
+		// comprehension's own variables are not bound yet when either runs.
+		if celExprReferencesFreeIdentifier(comprehension.GetIterRange(), name, shadowed, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetAccuInit(), name, shadowed, depth) {
+			return true
+		}
+
+		// The loop's own scope: iteration variables and the accumulator are
+		// all bound while loop_condition and loop_step run.
+		loop := shadowed
+		for _, bound := range []string{comprehension.GetIterVar(), comprehension.GetIterVar2(), comprehension.GetAccuVar()} {
+			if bound == name && bound != "" {
+				loop = true
+			}
+		}
+
+		// The result's scope is *not* the loop's. It is evaluated once the
+		// iteration has ended, with only the accumulator still bound — so an
+		// expression that names `event` in a comprehension's result names the
+		// delivery root, even when the comprehension iterates over a variable
+		// of that same name.
+		//
+		// Carrying the loop's shadowing into the result would refuse a key
+		// that genuinely does depend on the delivery, and CLAUDE.md rates a
+		// false diagnostic worse than a missing one: a refusal an author
+		// cannot act on, about a file that is right.
+		result := shadowed
+		if comprehension.GetAccuVar() == name && name != "" {
+			result = true
+		}
+
+		return celExprReferencesFreeIdentifier(comprehension.GetLoopCondition(), name, loop, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetLoopStep(), name, loop, depth) ||
+			celExprReferencesFreeIdentifier(comprehension.GetResult(), name, result, depth)
+	}
+	return false
 }
 
 // CheckWebhookTriggers reports what is wrong across a workflow's whole set of

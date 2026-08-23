@@ -77,6 +77,9 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := v1.CheckScheduleBackfillForTrigger(workflow.GetTriggers().GetSchedule(), backfills); err != nil {
+		return err
+	}
 
 	request := &v1.CreateScheduleRequest{
 		Workflow: workflow,
@@ -421,6 +424,17 @@ func writeScheduleText(surface *ui.UI, schedule *v1.ScheduleDescription) error {
 	}
 
 	fmt.Fprintf(table, "RUNS TAKEN\t%d\n", schedule.GetNumActions())
+
+	// Rendered only when non-zero, matching describeTrigger's "absent fields stay
+	// absent" posture: the common case is that neither knob has ever fired, and a
+	// table that always shows two zero lines buries the two facts that actually
+	// answer "why is there no run since Tuesday".
+	if missed := schedule.GetNumActionsMissedCatchupWindow(); missed > 0 {
+		fmt.Fprintf(table, "RUNS MISSED\t%d (came due outside the catch-up window)\n", missed)
+	}
+	if skipped := schedule.GetNumActionsSkippedOverlap(); skipped > 0 {
+		fmt.Fprintf(table, "RUNS SKIPPED\t%d (overlap policy)\n", skipped)
+	}
 
 	for i, at := range schedule.GetNextRunTimes() {
 		label := "NEXT"

@@ -32,15 +32,9 @@ import (
 func compileOutput(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(append([]string{"compile"}, args...))
+	res := runFlow(t, append([]string{"compile"}, args...)...)
 
-	err := root.Execute()
-
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // TestCompileWritesTheSpecificationTheCompilerProduces is the join, and the reason

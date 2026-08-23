@@ -408,7 +408,7 @@ var File_codex_v1_codex_proto protoreflect.FileDescriptor
 
 const file_codex_v1_codex_proto_rawDesc = "" +
 	"\n" +
-	"\x14codex/v1/codex.proto\x12\bcodex.v1\x1a\x1cflowstate/v1/flowstate.proto\"\xb9\x02\n" +
+	"\x14codex/v1/codex.proto\x12\bcodex.v1\x1a\x18flowstate/v1/value.proto\"\xb9\x02\n" +
 	"\n" +
 	"ExecInputs\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x14\n" +

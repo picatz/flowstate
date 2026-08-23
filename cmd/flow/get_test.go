@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -42,6 +43,7 @@ func getCommand(t *testing.T) (*cobra.Command, *strings.Builder, *strings.Builde
 	cmd := &cobra.Command{}
 	cmd.Flags().String("run-id", "", "")
 	addOutputFlag(cmd)
+	addRawOutputFlag(cmd)
 	addServerFlags(cmd)
 	addRevealSensitiveFlag(cmd)
 	cmd.SetContext(t.Context())
@@ -302,6 +304,31 @@ func TestGetJSONOutputRedactsToo(t *testing.T) {
 	require.NotContains(t, out.String(), "https://example.com/build/12",
 		"a machine reader must not recover the value a human reader is denied")
 	require.Contains(t, out.String(), "[redacted: url]")
+}
+
+// TestGetRawWritesTheDocumentWithoutDashOJSON is the regression for a Codex
+// follow-on on #666: `flow get x --raw` with the default text format used to
+// ask format.Machine() alone, which is false without `-o json`, so the whole
+// GetResponse document --raw promises never got written — the last of the
+// run-answering verbs whose --raw only worked when paired with -o json.
+func TestGetRawWritesTheDocumentWithoutDashOJSON(t *testing.T) {
+	fake := &fakeWorkflowService{
+		getResponse: &v1.GetResponse{
+			WorkflowId: "flowstate-workflow-3f7c",
+			RunId:      "0198f1e2-0000-7000-8000-000000000000",
+			Status:     v1.RunResponse_STATUS_COMPLETED,
+		},
+	}
+	serveFake(t, fake)
+	cmd, out, _ := getCommand(t)
+	require.NoError(t, cmd.Flags().Set("raw", "true"))
+
+	require.NoError(t, runGet(cmd, []string{"flowstate-workflow-3f7c"}))
+
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out.String()), &document),
+		"--raw without -o json wrote nothing a program could parse:\n%s", out.String())
+	require.Equal(t, "STATUS_COMPLETED", document["status"])
 }
 
 // TestGetNonSensitiveInputUnaffected is the non-regression direction on a surface

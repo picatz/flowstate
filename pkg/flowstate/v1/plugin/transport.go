@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
+
+	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 
 	pluginv1connect "github.com/picatz/flowstate/pkg/flowstate/plugin/v1/pluginv1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/internal/protocol"
@@ -38,9 +41,22 @@ type clients struct {
 	secret pluginv1connect.SecretServiceClient
 	task   pluginv1connect.TaskServiceClient
 
+	// taskStream is the TaskServiceClient [Plugin.executeTask] calls
+	// ExecuteStream on. It is a second client rather than a reused reference
+	// to task above so that its transport can carry a larger byte ceiling —
+	// MaxResponseBytes plus the fixed progress reserve described on
+	// [DefaultMaxProgressFrames] — without touching what Execute, Describe,
+	// or a secret resolution may return. Only ExecuteStream's aggregate
+	// response mixes progress frames in with a terminal response, so only
+	// its transport needs the extra headroom; every other call keeps exactly
+	// the ceiling an operator configured.
+	taskStream pluginv1connect.TaskServiceClient
+
 	// transport is retained only so that its idle connections can be closed
 	// when the plugin goes away. Leaving them open would keep a file descriptor
-	// per dead plugin.
+	// per dead plugin. Both http.Clients above share this one: two
+	// boundedTransports with different limits wrap the identical dialer and
+	// connection pool, so closing it once covers both.
 	transport *http.Transport
 }
 
@@ -64,7 +80,7 @@ func (c *clients) close() {
 // default transport consults HTTP_PROXY, and a worker that has one set would
 // otherwise try to reach a plugin's socket through a proxy. A transport with no
 // proxy function cannot.
-func newClients(socketPath, token string, maxResponseBytes int, plugin string) *clients {
+func newClients(socketPath, token string, maxResponseBytes, maxProgressFrames int, plugin string) *clients {
 	transport := &http.Transport{
 		// Proxy is deliberately nil; see above.
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -92,6 +108,17 @@ func newClients(socketPath, token string, maxResponseBytes int, plugin string) *
 		// shorter one and be invisible to a caller's longer one.
 	}
 
+	// streamHTTPClient is used only for the taskStream client below — see its
+	// own field doc for why ExecuteStream alone gets the extra headroom.
+	// connect.WithReadMaxBytes is unchanged between the two: it bounds one
+	// *message*, not the stream, and neither a progress frame nor a terminal
+	// response got any larger — only the whole-response aggregate this
+	// package enforces itself (boundedTransport) needs to grow, to make room
+	// for however many extra tiny frames MaxProgressFrames allows.
+	streamHTTPClient := &http.Client{
+		Transport: &boundedTransport{base: transport, max: int64(maxResponseBytes) + progressReserve(maxProgressFrames)},
+	}
+
 	opts := []connect.ClientOption{
 		// A plugin is not trusted because an operator installed it. Bounding the
 		// response before it is read is what stops one making the host allocate
@@ -101,11 +128,73 @@ func newClients(socketPath, token string, maxResponseBytes int, plugin string) *
 	}
 
 	return &clients{
-		plugin:    pluginv1connect.NewPluginServiceClient(httpClient, pluginBaseURL, opts...),
-		secret:    pluginv1connect.NewSecretServiceClient(httpClient, pluginBaseURL, opts...),
-		task:      pluginv1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
-		transport: transport,
+		plugin:     pluginv1connect.NewPluginServiceClient(httpClient, pluginBaseURL, opts...),
+		secret:     pluginv1connect.NewSecretServiceClient(httpClient, pluginBaseURL, opts...),
+		task:       pluginv1connect.NewTaskServiceClient(httpClient, pluginBaseURL, opts...),
+		taskStream: pluginv1connect.NewTaskServiceClient(streamHTTPClient, pluginBaseURL, opts...),
+		transport:  transport,
 	}
+}
+
+// maxProgressFrameWireBytes bounds the wire size of one ExecuteStreamResponse
+// message carrying a TaskProgress frame: the envelope Connect's streaming
+// protocol prefixes every message with (1 flag byte + 4 length bytes) plus
+// the marshaled protobuf payload.
+//
+// TaskPhase is a closed vocabulary (plugin.proto, mirroring progress.go), so
+// every legitimate frame's payload is the same shape: one oneof field
+// wrapping one single-byte-tag, single-byte-value enum field. That marshals
+// to 4 bytes today — 9 with its envelope —
+// [TestProgressFrameWireSizeStaysWithinBudget] measures it directly rather
+// than trusting this comment's arithmetic. This constant is more than triple
+// that measurement, so a small, deliberate addition to TaskProgress does not
+// silently under-reserve progressReserve below; that test fails first if it
+// ever would, rather than this package quietly starving a terminal response
+// again the way issue #804 reports.
+//
+// The bound is enforced, not assumed: [checkProgressFrameSize] refuses any
+// received progress frame whose re-encoded size exceeds it, because a frame
+// carrying unknown fields — a schema this build has never seen, or a hostile
+// peer's padding — is not bounded by the closed vocabulary this comment
+// reasons from, and the reserve's arithmetic is only sound while every frame
+// it reserves for actually fits the per-frame figure.
+const maxProgressFrameWireBytes = 32
+
+// checkProgressFrameSize enforces [maxProgressFrameWireBytes] on one received
+// ExecuteStreamResponse carrying a progress frame. proto.Size re-encodes what
+// was decoded, unknown fields included, so a frame padded past the budget by
+// fields this build cannot name is still measured at its wire cost.
+//
+// The five bytes of Connect envelope the constant's doc accounts for are not
+// added here: leaving them as slack keeps this check about the payload the
+// peer chose, with the envelope inside the more-than-triple headroom the
+// constant already carries.
+func checkProgressFrameSize(msg *pluginv1.ExecuteStreamResponse) error {
+	if size := proto.Size(msg); size > maxProgressFrameWireBytes {
+		return fmt.Errorf(
+			"ExecuteStream progress frame is %d bytes, over the %d byte per-frame bound the progress reserve is sized from; "+
+				"a progress frame carries one TaskPhase and nothing else",
+			size, maxProgressFrameWireBytes)
+	}
+	return nil
+}
+
+// progressReserve is the additive byte headroom carved out of a plugin's
+// ExecuteStream transport for progress frames, on top of MaxResponseBytes'
+// own share — see [DefaultMaxProgressFrames] for why a frame count, not a
+// byte count, is what this is sized from.
+//
+// A non-positive maxProgressFrames reserves nothing, which is the fail-closed
+// answer: [Plugin.executeTask]'s own frame counter treats the identical value
+// as "drop every progress frame" (frame 1 already exceeds a cap of zero or
+// less), so a misconfiguration that reaches this function with nothing to
+// reserve for is consistent on both sides of the call, not merely harmless on
+// this one.
+func progressReserve(maxProgressFrames int) int64 {
+	if maxProgressFrames <= 0 {
+		return 0
+	}
+	return int64(maxProgressFrames) * maxProgressFrameWireBytes
 }
 
 // boundedTransport caps every response body, including the ones Connect's own
@@ -151,7 +240,16 @@ type boundedBody struct {
 	io.Closer
 }
 
-// authInterceptor presents the per-launch secret on every request.
+// authInterceptor presents the per-launch secret on every request, unary or
+// streaming.
+//
+// This has to be a full [connect.Interceptor], not a
+// [connect.UnaryInterceptorFunc]: the latter's WrapStreamingClient is a
+// documented no-op, so ExecuteStream — the one streaming RPC this package's
+// client calls — would leave the socket with no token attached at all,
+// silently, rather than failing to compile or to run. See
+// [requireToken] in the sdk package for the handler side of the same
+// mistake.
 //
 // The token is held in this closure rather than in a struct field for the reason
 // the secrets package gives for doing the same with a resolved value: fmt
@@ -159,12 +257,40 @@ type boundedBody struct {
 // methods, and a credential in a field is a credential that prints. Nothing can
 // reflect into a captured variable.
 func authInterceptor(token string) connect.Interceptor {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			req.Header().Set(protocol.TokenHeader, token)
-			return next(ctx, req)
-		}
-	})
+	return &tokenClientInterceptor{token: func() string { return token }}
+}
+
+// tokenClientInterceptor sets the per-launch token header on every request
+// this plugin's client makes, unary or streaming.
+//
+// The token is held as a closure, not as a bare string field: this struct can
+// reach a log line or an error's %+v the moment anything holding one is
+// formatted for diagnostics, and fmt reflects into an unexported field it
+// cannot call a method on. A closure is opaque to that reflection — see the
+// doc comment on [authInterceptor] above, which this field used to violate
+// after round 2's streaming fix stored the token directly.
+type tokenClientInterceptor struct{ token func() string }
+
+func (t *tokenClientInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		req.Header().Set(protocol.TokenHeader, t.token())
+		return next(ctx, req)
+	}
+}
+
+func (t *tokenClientInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		conn.RequestHeader().Set(protocol.TokenHeader, t.token())
+		return conn
+	}
+}
+
+// WrapStreamingHandler is a no-op: this interceptor is only ever installed on
+// a client (see [newClients]), and a plugin's client never serves as a
+// streaming handler.
+func (t *tokenClientInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return next
 }
 
 // maxSocketPathLen bounds a Unix socket path.

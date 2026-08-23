@@ -88,11 +88,35 @@ difference is this one field being set - see `ls-remote-private.yaml`.
 accepts an anonymous push over HTTPS, so writing always needs a credential,
 whichever repository it targets - see `commit-push.yaml`.
 
-A reference's *name* is ignored; this plugin resolves the one credential its
-own environment names:
+A credential is selected by two things, and only one of them is written in
+the Flowfile. The *name* is what a reference carries: `${secret('git:token')}`
+is scheme `git`, name `token`, and a reference has no third part — the form is
+`scheme:name`. The *namespace* is the tenant the requesting workload belongs
+to, established by the server from the authenticated caller and handed to this
+plugin alongside the reference. A workflow cannot name it, choose it, or
+change it; that is the point, since a workload that could name its own tenant
+could name somebody else's.
+
+So in a single-tenant deployment — no identity provider configured, or one
+that assigns no namespaces — every reference arrives in the default namespace
+and the only variables that resolve are the default namespace's. The
+namespaced form below is what the *same* Flowfile resolves to when it runs on
+a worker serving an authenticated tenant; it is not an alternative spelling
+available to the author.
+
+Both segments are lowercase ASCII letters, digits and hyphens — anything else
+is refused rather than rewritten — and each is encoded into the variable name
+by upcasing it and turning every hyphen into an underscore. The namespace's
+*encoded* length is written in front, which is what preserves the boundary
+between the two halves. The default namespace encodes to the empty string, so
+its length is zero and the segment between the separators is empty:
 
 ```
-GIT_SECRET_<NAME>=<https-password>
+GIT_SECRET_<NAMESPACE_LENGTH>_<NAMESPACE>_<NAME>=<https-password>
+# ${secret('git:deploy-token')}, run in the default namespace:
+GIT_SECRET_0__DEPLOY_TOKEN=<https-password>
+# the same reference, run by a caller the server placed in tenant team-a:
+GIT_SECRET_6_TEAM_A_DEPLOY_TOKEN=<https-password>
 ```
 
 Used, unconditionally, as the *password* half of HTTP Basic auth

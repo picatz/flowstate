@@ -151,14 +151,23 @@ func TestRequireCursorFingerprintRefusesMismatch(t *testing.T) {
 	}
 }
 
-// TestFilterFingerprintDoesNotCollideAcrossFieldBoundaries proves the nul
-// separator filterFingerprint uses actually prevents the concatenation
-// collision its own doc comment names: "a=1" then "b=" must not fingerprint
-// identically to "a=1b=" then "".
+// TestFilterFingerprintDoesNotCollideAcrossFieldBoundaries proves the
+// length prefixing filterFingerprint uses actually prevents the
+// concatenation collision its own doc comment names: "a=1" then "b=" must
+// not fingerprint identically to "a=1b=" then "".
+//
+// The nul-carrying pair is the case a separator cannot answer and a length
+// prefix can, which is why the prefix replaced it: with fields joined by a
+// nul byte, a field that CONTAINS one forges a boundary, so "a=1\x00b=2"
+// alone hashes exactly as "a=1" then "b=2" does.
 func TestFilterFingerprintDoesNotCollideAcrossFieldBoundaries(t *testing.T) {
-	a := filterFingerprint("a=1", "b=")
-	b := filterFingerprint("a=1b=", "")
-	if a == b {
-		t.Fatal("filterFingerprint collided across a field boundary")
+	if filterFingerprint("a=1", "b=") == filterFingerprint("a=1b=", "") {
+		t.Error("filterFingerprint collided across a field boundary")
+	}
+	if filterFingerprint("a=1\x00b=2") == filterFingerprint("a=1", "b=2") {
+		t.Error("filterFingerprint collided on a field carrying its own separator byte")
+	}
+	if filterFingerprint("a=") == filterFingerprint("a=", "") {
+		t.Error("filterFingerprint collided on a trailing empty field")
 	}
 }
