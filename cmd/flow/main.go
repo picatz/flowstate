@@ -943,6 +943,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	rpcResource, err := resolveRPCResource(rpcResourceFlagsOf(cmd), authCfg, policy)
+	if err != nil {
+		return err
+	}
 
 	broker, err := identityBroker(authCfg, policy)
 	if err != nil {
@@ -1215,7 +1219,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr:    publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver, protectedResource),
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
@@ -2445,6 +2449,7 @@ flow server --verbose`,
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
 		"allow unauthenticated access; for local development only")
+	addRPCResourceFlags(serverCmd)
 	serverCmd.Flags().StringArray("identity-key",
 		identityKeyDefault(),
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+

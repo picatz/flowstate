@@ -34,7 +34,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 
 	// A verifier that refuses everything, so an authenticated route answering at
 	// all would mean the middleware was not applied.
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
@@ -90,7 +90,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 func TestNoUnauthenticatedRoutesWithoutFederation(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	), nil, nil)
 
@@ -113,6 +113,26 @@ type refusingVerifier struct{}
 
 func (refusingVerifier) Verify(context.Context, string) (auth.Principal, error) {
 	return auth.Principal{}, auth.ErrMalformedToken
+}
+
+type audienceVerifier struct{ audience string }
+
+func (v audienceVerifier) Verify(context.Context, string) (auth.Principal, error) {
+	return auth.Principal{Issuer: "https://idp.example.com", Subject: "caller", Audience: []string{v.audience}}, nil
+}
+
+func TestServerHandlerBindsConnectRPCToItsResource(t *testing.T) {
+	t.Parallel()
+	const rpcResource = "https://flowstate.example.com/rpc"
+	called := false
+	handler := serverHandler(discardLogger(), audienceVerifier{audience: "https://flowstate.example.com/mcp"},
+		nil, nil, rpcResource, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/flowstate.v1.WorkflowService/Get", nil)
+	req.Header.Set("Authorization", "Bearer valid")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.False(t, called, "an MCP-audience token reached the Connect RPC handler")
 }
 
 // testBroker builds a broker with a throwaway signing key.
@@ -141,7 +161,7 @@ func testBroker(t *testing.T) *auth.Broker {
 func TestHealthzAnswersWithoutCredentialsAndWithoutInformation(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a health probe reached the RPC handler")
 		}), nil, nil)
@@ -185,7 +205,7 @@ func TestARejectionIsLoggedWithoutTheToken(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	handler := serverHandler(logger, refusingVerifier{}, nil, nil, http.HandlerFunc(
+	handler := serverHandler(logger, refusingVerifier{}, nil, nil, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a rejected request reached the RPC handler")
 		}), nil, nil)
@@ -227,6 +247,7 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 
 	for _, name := range []string{
 		"identity-claim", "deployment-name", "auth-policy", "identity-key",
+		"rpc-resource", "allow-issuer-wide-audiences",
 
 		// The receiver's own surface, and the secret flags it cannot resolve a
 		// `verify:` key without. A --webhook the command did not declare would
@@ -252,7 +273,7 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 func TestPublicMuxDoesNotServePprof(t *testing.T) {
 	t.Parallel()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil, nil)
 
 	server := httptest.NewServer(handler)
@@ -295,7 +316,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 		}}, staticStore(t))
 	require.NoError(t, err)
 
-	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+	served := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			t.Error("a delivery reached the RPC handler")
 		}), receiver, nil))
@@ -311,7 +332,7 @@ func TestTheWebhookRouteIsMountedOnlyWhenConfigured(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode,
 		"a delivery was answered by something other than the receiver")
 
-	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), nil, nil))
 	defer unconfigured.Close()
 
@@ -364,7 +385,7 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, pr)
 
-	configured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+	configured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, pr))
 	defer configured.Close()
@@ -379,7 +400,7 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	require.Equal(t, "https://flowstate.example.com/mcp", doc["resource"])
 	require.NotContains(t, doc, "scopes_supported")
 
-	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, nil))
 	defer unconfigured.Close()
@@ -413,7 +434,7 @@ func TestProtectedResourceChallengeMatchesServedDocument(t *testing.T) {
 	}, policy)
 	require.NoError(t, err)
 
-	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, pr))
 	defer server.Close()
@@ -459,7 +480,7 @@ func TestProtectedResourceChallengeUnaffectedByForgedHost(t *testing.T) {
 	}, policy)
 	require.NoError(t, err)
 
-	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil,
+	server := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 		nil, pr))
 	defer server.Close()
@@ -561,7 +582,7 @@ func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing
 	// And the positive control: what this check exists to prevent actually
 	// panics serverHandler if the check is skipped.
 	require.Panics(t, func() {
-		serverHandler(discardLogger(), refusingVerifier{}, nil, broker,
+		serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "",
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), nil, pr)
 	}, "a colliding route should panic serverHandler's mux.Handle, which is exactly what the check must catch first")
 }

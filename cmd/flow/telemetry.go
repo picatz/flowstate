@@ -612,9 +612,46 @@ func temporalTracingInterceptor() interceptor.Interceptor {
 // global provider *at construction time*, which is the ordering the doc comment
 // above depends on, and a test that has to set its own recorder can set that one
 // field without inheriting a decision about the rest.
+//
+// # Why baggage is disabled here and trace context is not
+//
+// This is the one door in the process where a caller's own key-value data
+// reached durable storage, and it reached it by default.
+//
+// otelconnect extracts the inbound `Baggage` header into the RPC handler's
+// context — it was built from the global propagator, which this file registers
+// as trace context *plus* baggage. The handler then calls into Temporal on that
+// same context, and this interceptor's tracer reads `baggage.FromContext` and
+// writes what it finds into the workflow header, which is workflow history:
+// durable, broadly readable, and the one place docs/ARCHITECTURE.md's invariant
+// says a peer's bytes must not land. An authenticated caller could therefore
+// choose several kilobytes of arbitrary text and have this server persist it
+// against a run, under keys the caller also chose.
+//
+// [opentelemetry.TracerOptions.DisableBaggage] closes it at the seam that
+// writes the header, which is where the whole of this repository already
+// answers the question. `pkg/flowstate/v1/server/webhooktrace.go` strips
+// baggage outright before starting a run and says why; `plugin/telemetry.go`
+// refuses to consult context baggage even under its own reserved keys, because
+// a caller who can seed baggage would otherwise choose what this host asserts
+// about itself; `netpolicy/tracing.go` injects trace context alone toward a
+// host a workflow named. The consistent answer is that a peer's baggage does
+// not cross a boundary — never that it crosses once filtered — and this makes
+// the RPC path say it too.
+//
+// Nothing in this repository reads Temporal-propagated baggage, so nothing is
+// given up: the plugin boundary builds its own bag from host-created values on
+// both sides, and the span vocabulary in taskspan.go never reads one.
+//
+// Trace context is deliberately left on. It is a fixed-shape identifier — a
+// trace id, a span id and a flag byte, all bounded by the format itself — and
+// carrying it is the entire reason a run can be followed from the command that
+// started it. Baggage is the arbitrary-payload half, and only that half is
+// refused.
 func temporalTracerOptions() opentelemetry.TracerOptions {
 	return opentelemetry.TracerOptions{
-		SpanStarter: v1.SanitizedTemporalSpanStarter,
+		SpanStarter:    v1.SanitizedTemporalSpanStarter,
+		DisableBaggage: true,
 	}
 }
 

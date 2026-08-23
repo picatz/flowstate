@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	logglobal "go.opentelemetry.io/otel/log/global"
 	noopLog "go.opentelemetry.io/otel/log/noop"
@@ -1435,4 +1436,76 @@ func TestAMalformedSelectorReadsAsUnconfiguredWhicheverSignalItNames(t *testing.
 			require.ErrorContains(t, err, "bogus", "and the value the operator wrote")
 		})
 	}
+}
+
+// TestACallersBaggageNeverReachesTheTemporalHeader is the one door where a
+// peer's own bytes reached durable storage, closed and pinned.
+//
+// The path it walks is the real one, in the order the process walks it. An
+// authenticated caller sends a `Baggage` header; otelconnect extracts it into
+// the RPC handler's context, because the global propagator this file registers
+// is trace context plus baggage; the handler calls Temporal on that context;
+// and the tracing interceptor's tracer reads `baggage.FromContext` and marshals
+// what it finds into the workflow header — which is history. So the assertion
+// is on the map that becomes that header, produced by the SDK's own
+// SpanFromContext and MarshalSpan rather than by a stand-in, because it is
+// those two functions that consult the option.
+//
+// And it takes [temporalTracerOptions] rather than writing the options out, for
+// the same reason [TestTemporalSpanErrorsAreContained] does: written out,
+// deleting DisableBaggage from what the worker builds would leave this test
+// green while the leak came back. The wiring is the fix, so the wiring is what
+// is under the assertion.
+//
+// The positive half matters as much. Disabling baggage must not disable
+// propagation: `traceparent` still has to cross, or a run stops being
+// followable from the command that started it, which is the whole point of
+// configuring any of this.
+func TestACallersBaggageNeverReachesTheTemporalHeader(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	options := temporalTracerOptions()
+	options.Tracer = provider.Tracer("test")
+
+	tracer, err := opentelemetry.NewTracer(options)
+	require.NoError(t, err)
+
+	// What an authenticated caller chose, in the shape otelconnect would have
+	// left in the handler's context: a key and a value both of the caller's
+	// choosing, distinctive enough that a substring search cannot match either
+	// by accident.
+	const secretKey = "caller-chosen-key-4f2a"
+	const secretValue = "caller-chosen-payload-that-must-never-reach-history-9d13"
+	member, err := baggage.NewMember(secretKey, secretValue)
+	require.NoError(t, err)
+	bag, err := baggage.New(member)
+	require.NoError(t, err)
+
+	ctx, span := provider.Tracer("test").Start(context.Background(), "inbound rpc")
+	defer span.End()
+	ctx = baggage.ContextWithBaggage(ctx, bag)
+
+	// The two calls the interceptor makes on the way to the header: read the
+	// span out of the handler's context, then marshal it into the map Temporal
+	// persists.
+	fromContext := tracer.SpanFromContext(ctx)
+	require.NotNil(t, fromContext, "the handler context carries a valid span")
+
+	header, err := tracer.MarshalSpan(fromContext)
+	require.NoError(t, err)
+
+	for key, value := range header {
+		assert.NotContains(t, key, secretKey, "a caller's baggage key became a Temporal header field")
+		assert.NotContains(t, value, secretKey,
+			"a caller's baggage key reached the Temporal header under %q, and the header is workflow history", key)
+		assert.NotContains(t, value, secretValue,
+			"a caller's baggage value reached the Temporal header under %q, and the header is workflow history", key)
+	}
+	assert.NotContains(t, header, "baggage", "a baggage header is written into workflow history at all")
+
+	// Trace context still crosses. Refusing the arbitrary-payload half must not
+	// cost the fixed-shape half, which is what makes a run followable at all.
+	assert.NotEmpty(t, header["traceparent"],
+		"trace context stopped crossing, so a run no longer joins the command that started it")
 }
