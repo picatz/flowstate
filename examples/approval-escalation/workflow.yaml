@@ -88,7 +88,7 @@ description: Asks an approver on a cadence, escalates to a backup when the prima
 # worker deployments as the chase takes, reachable the whole while (needs
 # `flow server` and `flow worker`; see the main README's Quickstart):
 #
-#   flow signal <run-id> approval-decision --data '{"approved": true}'
+#   flow signal <workflow-id> approval-decision --data '{"approved": true}'
 inputs:
   # No default: there is no sensible absent value for the thing being approved,
   # only a plausible one to paste, which is what `example:` is for.
