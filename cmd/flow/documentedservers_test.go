@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -130,7 +131,10 @@ type documentedCommand struct {
 //
 // What remains genuinely unchecked is one thing and it is named:
 // `flow server dev`, a different command with its own authentication, skipped
-// on the subcommand rather than on the absence of a flag.
+// on the subcommand rather than on the absence of a flag — and recognized from
+// the cobra tree ([serverSubcommands]), so a mistyped verb is a documented
+// command that does not run and fails here, rather than a word shaped like a
+// subcommand and skipped.
 //
 // The five counts are each asserted non-zero: a walk that stopped reading any
 // one kind would otherwise pass by finding nothing.
@@ -255,6 +259,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 	require.NotZero(t, envConfigured, "no documented server invocation was configured through an environment "+
 		"file; a systemd-style recipe spells the same requirement as variables rather than flags, and one that "+
 		"stopped being recognized here would be unstartable with every counter unchanged")
+	require.NotEmptyf(t, serverSubcommands(), "the cobra tree names no `flow server` subcommand, so %q in "+
+		"README.md is about to be read as a malformed invocation; if the verb went away, the documents that "+
+		"use it are the thing to fix", "flow server dev")
 	require.NotZero(t, anonymous, "no documented server invocation asked for anonymous access; every local "+
 		"walkthrough having grown a trust policy would be news, and a walk that stopped seeing them would look "+
 		"exactly the same from here")
@@ -487,19 +494,32 @@ func isShellOperator(field string) bool {
 	return false
 }
 
-// isVerb reports whether a field is a cobra subcommand name rather than a flag,
-// a path, a shell operator or an argument.
-func isVerb(field string) bool {
-	if field == "" || field[0] < 'a' || field[0] > 'z' {
-		return false
-	}
-	for _, r := range field {
-		if (r < 'a' || r > 'z') && r != '-' {
-			return false
+// serverSubcommands is the set of verbs `flow server` registers, read from the
+// cobra tree this binary builds rather than written down here: the command that
+// answers `flow server dev` is the only authority on what `dev` is, and a hand
+// list would be a second declaration of the tree, wrong the day somebody adds a
+// verb or renames one.
+//
+// Names and aliases both, because a document may reasonably use either. Read
+// once, since building the root command walks every subcommand's flag set.
+//
+// A verb this misses fails closed rather than open: the invocation falls
+// through to the checks below, which is the direction a mistake should go.
+var serverSubcommands = sync.OnceValue(func() map[string]bool {
+	verbs := map[string]bool{}
+	for _, command := range newRootCommand().Commands() {
+		if command.Name() != "server" {
+			continue
+		}
+		for _, sub := range command.Commands() {
+			verbs[sub.Name()] = true
+			for _, alias := range sub.Aliases {
+				verbs[alias] = true
+			}
 		}
 	}
-	return true
-}
+	return verbs
+})
 
 // backtickedPath reads a line that is nothing but one backticked path, with or
 // without a trailing colon — how these documents label the file a fence holds.
@@ -537,9 +557,12 @@ func parseServerCommand(command string) (rpcResourceFlags, string, bool, bool) {
 	}
 
 	// `flow server dev` is a different command — its own flags, its own
-	// authentication — and nothing here applies to it. A verb, specifically:
-	// anything else in that position is an argument to `flow server` itself.
-	if len(fields) > 2 && isVerb(fields[2]) {
+	// authentication — and nothing here applies to it. Matched against the
+	// verbs the command actually registers, never against the *shape* of the
+	// word: "any lowercase token" also matched `flow server typo`, which is a
+	// documented invocation that does not run at all, skipped before anything
+	// checked it. Reported by Codex on picatz/flowstate#1060.
+	if len(fields) > 2 && serverSubcommands()[fields[2]] {
 		return flags, "", false, true
 	}
 
