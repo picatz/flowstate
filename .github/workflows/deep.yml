@@ -8,10 +8,10 @@
 # because advisories arrive by calendar, not by commit.
 #
 # A scheduled run fails with nobody watching, so every job files an issue on
-# failure: labeled deep-tier, deduplicated by title against open issues before
-# filing, carrying the corpus entry or log excerpt and a link to the run that
-# produced it. Actions and tools are pinned by commit for the reasons ci.yml
-# records at length.
+# failure: labeled deep-tier and deduplicated by title against open issues before
+# filing. Security-sensitive jobs only publish a generic triage notice: fuzz
+# crashers and vulnerability findings must remain private under SECURITY.md.
+# Actions and tools are pinned by commit for the reasons ci.yml records at length.
 name: Deep
 
 on:
@@ -46,10 +46,9 @@ jobs:
   # time. -fuzztime bounds time, not memory; GOMEMLIMIT is the memory bound.
   #
   # continue-on-error on each target so one crasher does not hide the others'
-  # results; the gate step at the end turns any failure back into a red job. A
-  # crasher is written to the package's testdata/fuzz/<target>/ directory, and
-  # since the tracked corpus is committed, a crasher from this run is exactly an
-  # untracked file there — which is what the collect and report steps key on.
+  # results; the gate step at the end turns any failure back into a red job.
+  # Failure output and any corpus entry remain only in the ephemeral runner
+  # workspace so potentially security-sensitive reproducers are not published.
   fuzz-deep:
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -77,140 +76,57 @@ jobs:
         id: roundtrip
         continue-on-error: true
         run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 10m ./pkg/flowstate/v1/flowfile/ 2>&1 | tee fuzz-FuzzRoundTrip.log
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzRoundTrip -fuzztime 10m ./pkg/flowstate/v1/flowfile/ >fuzz-FuzzRoundTrip.log 2>&1
 
       - name: Fuzz deep (FuzzCELCompile)
         id: celcompile
         continue-on-error: true
         run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 10m ./pkg/flowstate/v1/flowfile/ 2>&1 | tee fuzz-FuzzCELCompile.log
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzCELCompile -fuzztime 10m ./pkg/flowstate/v1/flowfile/ >fuzz-FuzzCELCompile.log 2>&1
 
       - name: Fuzz deep (FuzzMCPToolArguments)
         id: mcpargs
         continue-on-error: true
         run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 10m ./cmd/flow/ 2>&1 | tee fuzz-FuzzMCPToolArguments.log
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMCPToolArguments -fuzztime 10m ./cmd/flow/ >fuzz-FuzzMCPToolArguments.log 2>&1
 
       - name: Fuzz deep (FuzzMessageDescriptor)
         id: msgdesc
         continue-on-error: true
         run: |
-          set -o pipefail
-          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 10m ./pkg/flowstate/v1/plugin/ 2>&1 | tee fuzz-FuzzMessageDescriptor.log
+          GOMEMLIMIT=512MiB go test -timeout 900s -parallel 1 -run=XXX -fuzz FuzzMessageDescriptor -fuzztime 10m ./pkg/flowstate/v1/plugin/ >fuzz-FuzzMessageDescriptor.log 2>&1
 
-      # A crasher from this run is an untracked file under a testdata/fuzz/
-      # directory (the committed seed corpus is tracked, so it never matches).
-      # Staged into a scratch directory so the artifact carries only what this
-      # run found.
-      - name: Collect crashing inputs
-        id: collect
-        run: |
-          set -euo pipefail
-          new=$(git ls-files --others --exclude-standard | grep '/testdata/fuzz/' || true)
-          if [ -z "$new" ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "no crashing inputs were written"
-            exit 0
-          fi
-          while IFS= read -r f; do
-            mkdir -p "$RUNNER_TEMP/crashers/$(dirname "$f")"
-            cp "$f" "$RUNNER_TEMP/crashers/$f"
-          done <<< "$new"
-          echo "found=true" >> "$GITHUB_OUTPUT"
-
-      - name: Upload crashing inputs
-        if: steps.collect.outputs.found == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fuzz-crashers
-          path: ${{ runner.temp }}/crashers/
-          retention-days: 90
-
-      # One issue per crasher, and one per target that failed without writing a
-      # crasher (a broken fuzz harness is a broken check). Deduplicated by title
-      # against open deep-tier issues, so a crasher nobody has triaged yet is not
-      # refiled every Saturday.
-      - name: File issues for crashers
+      # Do not upload crashers or quote their contents in a public issue. A
+      # parser/evaluator crasher may be vulnerability material; SECURITY.md
+      # requires private triage before disclosure. The generic issue preserves
+      # the unattended-run notification without publishing a reproducer.
+      - name: File a private-triage notice for fuzz failures
+        if: steps.roundtrip.outcome == 'failure' || steps.celcompile.outcome == 'failure' || steps.mcpargs.outcome == 'failure' || steps.msgdesc.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ROUNDTRIP_OUTCOME: ${{ steps.roundtrip.outcome }}
-          CELCOMPILE_OUTCOME: ${{ steps.celcompile.outcome }}
-          MCPARGS_OUTCOME: ${{ steps.mcpargs.outcome }}
-          MSGDESC_OUTCOME: ${{ steps.msgdesc.outcome }}
         run: |
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
-          already_open() {
-            gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$1"
-          }
-          crashers=$(git ls-files --others --exclude-standard | grep '/testdata/fuzz/' || true)
-          for entry in $crashers; do
-            target=$(basename "$(dirname "$entry")")
-            pkgdir=${entry%%/testdata/fuzz/*}
-            name=$(basename "$entry")
-            title="deep-tier: ${target} found a crashing input"
-            if already_open "$title"; then
-              echo "an open issue already covers ${target}; not filing another"
-              continue
-            fi
-            body=$(mktemp)
-            {
-              echo "The weekly deep tier's long-run fuzz job found an input that crashes \`${target}\`."
-              echo
-              echo "Produced by workflow run: ${RUN_URL} (the input is also attached there as the \`fuzz-crashers\` artifact)."
-              echo
-              echo "Corpus entry \`${entry}\` (Go fuzz corpus text; base64 of the exact bytes):"
-              echo
-              echo '```'
-              base64 "$entry"
-              echo '```'
-              echo
-              echo "Reproduce: decode the entry back to \`${entry}\` (\`base64 -d\`), then:"
-              echo
-              echo '```'
-              echo "GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 -run '${target}/${name}' ./${pkgdir}/"
-              echo '```'
-              echo
-              echo "Per CLAUDE.md, a crasher the fuzzer finds is a real defect with a corpus entry to triage, never flake to re-run away."
-            } > "$body"
-            gh issue create --title "$title" --label deep-tier --body-file "$body"
-          done
-          harness() {
-            target=$1; outcome=$2; log=$3
-            [ "$outcome" = failure ] || return 0
-            if printf '%s\n' "$crashers" | grep -q "/${target}/"; then return 0; fi
-            title="deep-tier: ${target} failed without writing a crasher"
-            if already_open "$title"; then
-              echo "an open issue already covers the ${target} harness failure; not filing another"
-              return 0
-            fi
-            body=$(mktemp)
-            {
-              echo "The weekly deep tier's fuzz step for \`${target}\` failed, but no corpus entry was written. A broken fuzz harness is a broken check, so this is a defect in the harness or its bounds rather than a crasher to triage."
-              echo
-              echo "Produced by workflow run: ${RUN_URL}"
-              echo
-              echo "Log tail:"
-              echo
-              echo '```'
-              tail -n 60 "$log"
-              echo '```'
-            } > "$body"
-            gh issue create --title "$title" --label deep-tier --body-file "$body"
-          }
-          harness FuzzRoundTrip "$ROUNDTRIP_OUTCOME" fuzz-FuzzRoundTrip.log
-          harness FuzzCELCompile "$CELCOMPILE_OUTCOME" fuzz-FuzzCELCompile.log
-          harness FuzzMCPToolArguments "$MCPARGS_OUTCOME" fuzz-FuzzMCPToolArguments.log
-          harness FuzzMessageDescriptor "$MSGDESC_OUTCOME" fuzz-FuzzMessageDescriptor.log
+          title="deep-tier: fuzz run requires private maintainer triage"
+          if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
+            echo "an open issue already requests private fuzz triage; not filing another"
+            exit 0
+          fi
+          body=$(mktemp)
+          {
+            echo "The weekly deep tier's fuzz job failed and requires maintainer triage."
+            echo
+            echo "Produced by workflow run: ${RUN_URL}"
+            echo
+            echo "The crashing input and failure details are intentionally omitted. Treat them as potentially security-sensitive and follow SECURITY.md's private vulnerability-reporting process before publishing details."
+          } > "$body"
+          gh issue create --title "$title" --label deep-tier --body-file "$body"
 
       - name: A failed target fails the job
         if: steps.roundtrip.outcome == 'failure' || steps.celcompile.outcome == 'failure' || steps.mcpargs.outcome == 'failure' || steps.msgdesc.outcome == 'failure'
         run: |
-          echo "::error::at least one fuzz target failed; see the deep-tier issue(s) filed by this run and the fuzz-crashers artifact"
+          echo "::error::at least one fuzz target failed; reproduce privately and see the generic deep-tier notice"
           exit 1
 
   # The ordering-claims tier at five times the local count, plus soak runs of the
@@ -626,8 +542,9 @@ jobs:
         id: scan
         continue-on-error: true
         run: |
-          set -o pipefail
-          go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... 2>&1 | tee govulncheck.log
+          # Do not echo findings into the public Actions log. Maintainers can
+          # reproduce the scan locally and coordinate any finding privately.
+          go run golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }} ./... >govulncheck.log 2>&1
 
       - name: File an issue for findings
         if: steps.scan.outcome == 'failure'
@@ -637,24 +554,18 @@ jobs:
         run: |
           set -euo pipefail
           gh label create deep-tier --color B60205 --description "Filed automatically by the weekly deep CI tier (deep.yml)" --force
-          title="deep-tier: govulncheck reports reachable vulnerabilities"
+          title="deep-tier: vulnerability scan requires private maintainer triage"
           if gh issue list --state open --label deep-tier --limit 100 --json title --jq '.[].title' | grep -qxF "$title"; then
-            echo "an open issue already covers the govulncheck findings; not filing another"
+            echo "an open issue already requests private vulnerability-scan triage; not filing another"
             exit 0
           fi
           body=$(mktemp)
           {
-            echo "The weekly deep tier's govulncheck scan went red."
+            echo "The weekly deep tier's vulnerability scan went red and requires maintainer triage."
             echo
             echo "Produced by workflow run: ${RUN_URL}"
             echo
-            echo "Per CLAUDE.md: govulncheck reports reachability against a database fetched when it runs, so a failure on this schedule is almost certainly a newly published advisory reaching a dependency of an untouched tree — an advisory that arrived by clock, not a bug introduced by any diff. Verify by running the scan against main; if main fails too, the fix is a dependency bump that belongs to everyone, and it should be reported that way even though the scan names specific files."
-            echo
-            echo "Findings:"
-            echo
-            echo '```'
-            tail -n 120 govulncheck.log
-            echo '```'
+            echo "Finding details are intentionally omitted. Reproduce privately and follow SECURITY.md's private vulnerability-reporting process before publishing details."
             echo
             echo "Reproduce locally (toolchain pinned to match go.mod, per CLAUDE.md):"
             echo
