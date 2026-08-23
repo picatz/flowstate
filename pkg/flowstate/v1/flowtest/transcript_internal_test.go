@@ -215,6 +215,25 @@ func TestNonStringSensitiveScalarsJoinTheSubstringBackstop(t *testing.T) {
 	require.Equal(t, "code [redacted] here", redactSensitiveSubstrings("code 8231 here", set.substrings))
 }
 
+// TestShortNumericDescendantsJoinTheBackstopAtTheFloor pins the boundary
+// round seventeen asked about: a nested numeric descendant's converted text
+// enters the substring set at the same two-rune floor as any descendant —
+// `creds: {pin: 12}` renders "12" redacted — and a one-rune numeric stays
+// out for the floor's own documented reason: replacing every occurrence of a
+// single digit shreds the line (every `t=7m` timestamp included) while
+// protecting a ten-value guessing space.
+func TestShortNumericDescendantsJoinTheBackstopAtTheFloor(t *testing.T) {
+	t.Parallel()
+
+	set := sensitiveNativeValues(&v1.Scope{Inputs: map[string]*v1.Value{
+		"creds": v1.NewLiteralMap(map[string]any{"pin": int64(12)}),
+	}}, map[string]bool{"creds": true})
+
+	require.Contains(t, set.substrings, "12",
+		"a two-rune converted numeric descendant is at the floor, not under it")
+	require.Equal(t, "code [redacted] here", redactSensitiveSubstrings("code 12 here", set.substrings))
+}
+
 // TestNestedSensitiveKeysRedact pins round ten's P1: redactSensitiveTree
 // redacted values at every depth but preserved map keys, so a sensitive key
 // nested inside an output's structured value printed — including one below
