@@ -13,11 +13,132 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
+
+// TestServerHandlerContainsInboundBaggage exercises the public handler rather
+// than the filter in isolation. The recorders deliberately sit on both sides
+// of authentication and the RPC instrumentation boundary: this pins not only
+// what survives, but where the reduction happens.
+func TestServerHandlerContainsInboundBaggage(t *testing.T) {
+	isolateTelemetry(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://telemetry.invalid")
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{}))
+
+	type seen struct {
+		header http.Header
+		bag    baggage.Baggage
+		span   trace.SpanContext
+	}
+	var authenticated, instrumented, handled []seen
+	verifier := recordingVerifier{record: func(ctx context.Context) {
+		authenticated = append(authenticated, seen{bag: baggage.FromContext(ctx), span: trace.SpanContextFromContext(ctx)})
+	}}
+	rpc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		instrumented = append(instrumented, seen{header: r.Header.Clone(), bag: baggage.FromContext(ctx), span: trace.SpanContextFromContext(ctx)})
+		r = r.WithContext(ctx)
+		handled = append(handled, seen{header: r.Header.Clone(), bag: baggage.FromContext(r.Context()), span: trace.SpanContextFromContext(r.Context())})
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := serverHandler(discardLogger(), verifier, nil, testBroker(t), rpc, nil, nil)
+
+	const traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	request := func(path string, lines ...string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("aUtHoRiZaTiOn", "Bearer accepted")
+		req.Header.Set("tRaCePaReNt", traceparent)
+		for i, line := range lines {
+			name := "Baggage"
+			if i%2 == 1 {
+				name = "bAgGaGe"
+			}
+			req.Header.Add(name, line)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	request("/flowstate.v1.WorkflowService/Run",
+		"flowstate.workflow=orders,unknown=drop,authorization=secret",
+		"flowstate.run=run-7,flowstate.tenant=forged")
+	require.Len(t, authenticated, 1)
+	require.Empty(t, authenticated[0].bag.Members(), "baggage was extracted before authentication")
+	require.Len(t, handled, 1)
+	require.Equal(t, "orders", handled[0].bag.Member("flowstate.workflow").Value())
+	require.Equal(t, "run-7", handled[0].bag.Member("flowstate.run").Value())
+	for _, key := range []string{"unknown", "authorization", "flowstate.tenant"} {
+		require.Empty(t, handled[0].bag.Member(key).Value(), "%s crossed the RPC boundary", key)
+	}
+	require.ElementsMatch(t, []string{"flowstate.workflow=orders", "flowstate.run=run-7"},
+		strings.Split(instrumented[0].header.Get("Baggage"), ","))
+	require.Equal(t, traceparent, instrumented[0].header.Get("Traceparent"))
+	require.True(t, handled[0].span.IsValid(), "filtering baggage damaged trace context")
+
+	for name, lines := range map[string][]string{
+		"malformed": {"flowstate.workflow=orders", "%not-baggage"},
+		"key count is measured across header lines": {
+			"flowstate.workflow=orders,k0=v,k1=v,k2=v,k3=v,k4=v,k5=v,k6=v,k7=v",
+			"k8=v,k9=v,k10=v,k11=v,k12=v,k13=v,k14=v,k15=v",
+		},
+		"encoded size is measured across header lines": {
+			"flowstate.workflow=orders", "unknown=" + strings.Repeat("x", serverBaggageMaxEncodedBytes),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := len(handled)
+			request("/flowstate.v1.WorkflowService/Run", lines...)
+			require.Len(t, handled, before+1)
+			require.Empty(t, handled[before].header.Values("Baggage"))
+			require.Empty(t, handled[before].bag.Members())
+			require.True(t, handled[before].span.IsValid())
+		})
+	}
+
+	for _, path := range []string{"/healthz", auth.DiscoveryPath, testBroker(t).Issuer().JWKSPath()} {
+		resp := request(path, "flowstate.workflow=orders")
+		require.Empty(t, resp.Header().Values("Baggage"), "%s reflected caller baggage", path)
+	}
+}
+
+type recordingVerifier struct{ record func(context.Context) }
+
+func (v recordingVerifier) Verify(ctx context.Context, _ string) (auth.Principal, error) {
+	v.record(ctx)
+	return auth.Principal{Subject: "routing-test"}, nil
+}
+
+func TestServerHandlerLeavesPropagationAloneWhenTelemetryIsDisabled(t *testing.T) {
+	isolateTelemetry(t)
+	telemetryOff(t)
+
+	var got http.Header
+	handler := serverHandler(discardLogger(), recordingVerifier{record: func(context.Context) {}}, nil, nil,
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Clone()
+			w.WriteHeader(http.StatusNoContent)
+		}), nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/flowstate.v1.WorkflowService/Get", nil)
+	req.Header.Set("Authorization", "Bearer accepted")
+	req.Header.Add("bAgGaGe", "unknown=still-present")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, "unknown=still-present", got.Get("Baggage"), "telemetry-off changed the prior request surface")
+	require.Empty(t, rec.Header().Values("Traceparent"))
+	require.Empty(t, rec.Header().Values("Baggage"), "telemetry-off added propagation response headers")
+}
 
 // TestIdentityDocumentsAreReachableWithoutCredentials is the regression guard for
 // the mistake this routing exists to prevent.

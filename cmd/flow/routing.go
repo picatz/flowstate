@@ -5,11 +5,22 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"strings"
 
 	"connectrpc.com/authn"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
+	"go.opentelemetry.io/otel/baggage"
 )
+
+const serverBaggageMaxKeys = 16
+const serverBaggageMaxEncodedBytes = 4096
+
+var serverBaggageKeys = map[string]struct{}{
+	"flowstate.workflow": {},
+	"flowstate.run":      {},
+	"flowstate.task":     {},
+}
 
 // serverHandler routes the server's HTTP surface, deciding what authentication
 // applies where.
@@ -135,7 +146,49 @@ func serverHandler(
 		mux.Handle(protectedResource.Path(), protectedResource.Handler())
 	}
 
-	return mux
+	if !telemetryConfigured() {
+		return mux
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		filterServerBaggage(r.Header)
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// filterServerBaggage reduces caller-controlled correlation data before any
+// authenticator or RPC interceptor can observe it. Trace headers are deliberately
+// untouched: they identify a trace, whereas baggage is arbitrary caller-chosen data.
+func filterServerBaggage(header http.Header) {
+	values := header.Values("Baggage")
+	if len(values) == 0 {
+		return
+	}
+	encoded := strings.Join(values, ",")
+	if len(encoded) > serverBaggageMaxEncodedBytes {
+		header.Del("Baggage")
+		return
+	}
+	bag, err := baggage.Parse(encoded)
+	if err != nil || len(bag.Members()) > serverBaggageMaxKeys {
+		header.Del("Baggage")
+		return
+	}
+	keptMembers := make([]baggage.Member, 0, len(bag.Members()))
+	for _, member := range bag.Members() {
+		if _, ok := serverBaggageKeys[member.Key()]; !ok {
+			continue
+		}
+		keptMembers = append(keptMembers, member)
+	}
+	kept, err := baggage.New(keptMembers...)
+	if err != nil {
+		header.Del("Baggage")
+		return
+	}
+	header.Del("Baggage")
+	if encoded := kept.String(); encoded != "" {
+		header.Set("Baggage", encoded)
+	}
 }
 
 // healthzHandler answers a liveness probe with a status code and nothing
