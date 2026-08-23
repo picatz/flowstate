@@ -17,13 +17,16 @@ import (
 )
 
 // MaxSignatureBytes is the largest compact JWS an [Issuer] accepts from a
-// [Signer], and the size a [Signer] implementation must cap its own reads at.
+// [Signer]. It is a limit on the decoded token, and nothing else.
 //
 // It is exported because it is half of a contract with code this repository
-// does not compile: an adapter has to know the number to bound its transport
-// with, and a number an implementer has to guess is a bound that will be
-// guessed differently by everyone. See [Signer] for why that read bound is the
-// adapter's to apply and cannot be applied from here.
+// does not compile: a [Signer] implementation needs it to size the read cap its
+// own transport applies, and a number an implementer has to guess is a bound
+// that will be guessed differently by everyone. It is not itself that cap —
+// a provider that wraps the token in an envelope sends more bytes than the
+// token is long, so an adapter reading through one caps higher. See
+// [Signer] for how to size it and for why the read bound is the adapter's to
+// apply rather than something that can be applied from here.
 //
 // Derived from the limit [OIDCVerifier.Verify] applies to a token arriving from
 // outside rather than chosen again, because it is the same kind of value —
@@ -67,7 +70,7 @@ const MaxSignatureBytes = maxTokenBytes
 // because only the adapter knows whether its transport has one session or many,
 // and how many are affordable.
 //
-// # Sign must bound its own reads at [MaxSignatureBytes]
+// # Sign must bound its own reads
 //
 // This one is an obligation Flowstate cannot take back, and it is worth being
 // exact about why, because the repository's usual answer does not reach here.
@@ -92,17 +95,46 @@ const MaxSignatureBytes = maxTokenBytes
 // which is a bound that looks real and is not.
 //
 // So the requirement is stated instead of enforced: **an implementation must
-// cap what it reads from its provider at [MaxSignatureBytes] and fail rather
-// than allocate past it**, at whatever layer it does own — an
-// [io.LimitReader] over the response body, an SDK's own response-size option,
-// or the fixed buffer a PKCS#11 call already writes into.
+// cap what it reads from its provider at a fixed size and fail rather than
+// allocate past it**, at whatever layer it does own — an [io.LimitReader] over
+// the response body, an SDK's own response-size option, or the fixed buffer a
+// PKCS#11 call already writes into.
 // pkg/flowstate/v1/plugin/transport.go is the shape to copy for an adapter that
 // does speak HTTP directly.
 //
-// What Flowstate does with the returned value is refuse it above that size —
-// see [boundedSign] — which stops an oversized token from ever being minted as
-// an assertion. That is a policy check and a backstop, not a memory bound, and
-// it should not be mistaken for one.
+// # Sizing that read cap
+//
+// The cap is the adapter's own number and is *larger* than
+// [MaxSignatureBytes], which is worth stating because the obvious reading —
+// cap the read at the limit Flowstate enforces — is wrong in a way that only
+// shows up on a large token.
+//
+// Most providers do not return a bare compact JWS. They return it inside
+// something: a JSON object with a "token" field, a protobuf message, base64
+// inside either. A JWS of exactly [MaxSignatureBytes] therefore arrives as more
+// than [MaxSignatureBytes] on the wire, so an adapter that capped its read
+// there would refuse signatures this package accepts — a failure that waits for
+// a token near the limit and then looks like the provider is broken.
+//
+// Size it as [MaxSignatureBytes] plus that provider's own framing and encoding
+// overhead. Both are properties of the wire format rather than of any
+// particular response, so both are known before one arrives: the envelope's
+// fixed keys and syntax, plus the expansion of whatever encoding carries the
+// token — base64 spends four bytes for every three, for instance. Round up and
+// leave margin; the number only has to be small enough that no plausible
+// response exhausts memory, not tight. What it must not be is a length the
+// response itself declares, because that is the far side choosing its own
+// bound.
+//
+// There is deliberately no second exported constant for this. The overhead
+// belongs to one provider's wire format, so a number named here would be wrong
+// for every adapter whose envelope differs from whichever one it was derived
+// from — and wrong in the direction that silently refuses valid tokens.
+//
+// What Flowstate does with the returned value is refuse it above
+// [MaxSignatureBytes] — see [boundedSign] — which stops an oversized token from
+// ever being minted as an assertion. That is a policy check on the decoded JWS
+// and a backstop, not a memory bound, and it should not be mistaken for one.
 type Signer interface {
 	// KeyID returns the id this signer's public half is published under, and
 	// which every assertion it signs carries in its "kid" header.
@@ -198,7 +230,9 @@ func NewProviderSigningKey(ctx context.Context, signer Signer, public crypto.Pub
 // provider answering with a multi-gigabyte body exhausts the process inside the
 // adapter, several frames below here. Nothing at this seam can prevent that,
 // which is why [Signer]'s contract makes capping the read the implementation's
-// obligation and names [MaxSignatureBytes] for it to cap at.
+// obligation — at a size derived from [MaxSignatureBytes] and that provider's
+// own framing overhead, which is the adapter's number to compute rather than
+// this one.
 //
 // What it is, is the refusal that keeps an oversized token from becoming an
 // assertion — a policy check on a value another process chose the size of — and

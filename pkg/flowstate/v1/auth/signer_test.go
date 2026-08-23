@@ -565,17 +565,22 @@ func TestProviderSigningKeyIsCalledConcurrently(t *testing.T) {
 	}
 }
 
-// TestMaxSignatureBytesIsTheSizeActuallyRefused ties the number an
-// implementation is told to cap its reads at to the number this process
-// actually refuses.
+// TestMaxSignatureBytesIsTheSizeActuallyRefused ties the published token limit
+// to the size this process actually refuses.
 //
 // The two have to be one value, because they are one contract written on both
 // sides of a boundary this repository does not compile: [auth.MaxSignatureBytes]
-// is what an adapter author reads and bounds their transport with, and the check
-// in boundedSign is what happens when they get it wrong. If the refusal drifted
-// above the published number, every compliant adapter would still be correct and
-// the backstop would have quietly stopped backstopping; if it drifted below,
-// a compliant adapter's largest legal answer would be refused at the mint.
+// is the number an adapter author reads and sizes their transport's read cap
+// from, and the check in boundedSign is what happens when they get it wrong. If
+// the refusal drifted above the published number, every compliant adapter would
+// still be correct and the backstop would have quietly stopped backstopping; if
+// it drifted below, a compliant adapter's largest legal answer would be refused
+// at the mint.
+//
+// It is the *decoded* token that both sides are about. An adapter's own read cap
+// is deliberately a larger, provider-specific number — a JWS at this limit
+// arrives inside an envelope that adds bytes — so nothing here asserts anything
+// about that one; it belongs to a wire format this package never sees.
 //
 // So the boundary itself is asserted from both sides: exactly the limit passes,
 // one byte more does not.
