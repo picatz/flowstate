@@ -128,7 +128,7 @@ type SigningKey struct {
 	// cannot call a method on a value it reaches through an unexported field, so a
 	// key held in a plain field would be printed in full by %v on any struct that
 	// happened to contain it.
-	signer func(claims jwt.ClaimsSet) (string, error)
+	signer func(context.Context, jwt.ClaimsSet) (string, error)
 
 	// published is the public half rendered as a JSON Web Key, built when the key
 	// is created so that serving the key set cannot fail at request time.
@@ -189,7 +189,8 @@ func NewSigningKey(id string, private crypto.PrivateKey) (SigningKey, error) {
 	}
 	key.algorithm, key.published = algorithm, published
 
-	key.signer = signerFor(key.id, key.algorithm, private)
+	local := signerFor(key.id, key.algorithm, private)
+	key.signer = func(_ context.Context, claims jwt.ClaimsSet) (string, error) { return local(claims) }
 
 	return key, nil
 }
@@ -260,11 +261,28 @@ func (k SigningKey) LogValue() slog.Value {
 }
 
 // sign signs the given claims with this key.
-func (k SigningKey) sign(claims jwt.ClaimsSet) (string, error) {
+func (k SigningKey) sign(ctx context.Context, claims jwt.ClaimsSet) (string, error) {
 	if k.signer == nil {
 		return "", ErrNoSigningKey
 	}
-	return k.signer(claims)
+	return k.signer(ctx, claims)
+}
+
+// NewProviderSigningKey adapts a KMS/HSM-backed Signer to Issuer. Only the
+// public half is inspected in this process; signing remains behind the Signer
+// boundary and receives the mint request's context for cancellation.
+func NewProviderSigningKey(signer Signer, public crypto.PublicKey) (SigningKey, error) {
+	if signer == nil {
+		return SigningKey{}, fmt.Errorf("%w: signer is nil", ErrNoSigningKey)
+	}
+	algorithm, published, err := publishValue(signer.KeyID(), public)
+	if err != nil {
+		return SigningKey{}, err
+	}
+	if algorithm != signer.Algorithm() {
+		return SigningKey{}, fmt.Errorf("%w: signer algorithm %q does not match public key algorithm %q", ErrInvalidPolicy, signer.Algorithm(), algorithm)
+	}
+	return SigningKey{id: signer.KeyID(), algorithm: algorithm, published: published, signer: signer.Sign}, nil
 }
 
 // signerFor returns a closure that signs claims with the given private key.
@@ -1005,7 +1023,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		return Assertion{}, ErrNoSigningKey
 	}
 
-	token, err := key.sign(claims)
+	token, err := key.sign(ctx, claims)
 	keyID := key.id
 	i.mu.RUnlock()
 
