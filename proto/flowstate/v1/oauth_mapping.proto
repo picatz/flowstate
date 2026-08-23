@@ -1,0 +1,201 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// Action is Flowstate's protocol-independent authorization verb. Actions are
+// internal by default: an OAuth grant can name one only through an explicit
+// MappingProfile entry.
+message Action {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+// ResourceType is a bounded class of objects on which an Action operates.
+message ResourceType {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+// OAuthScope is one externally visible OAuth scope and its explicit meaning.
+// Several scopes on an ActionMapping express a compound (AND) grant; the
+// actions and resource_types here are bounded expansion sets, not wildcards.
+message OAuthScope {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  repeated string actions = 2 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  repeated string resource_types = 3 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  ConsentDescription consent = 4;
+}
+
+// AuthorizationDetailType maps one RFC 9396 authorization-detail type onto
+// the same canonical vocabulary. ConstraintFields is an allowlist: an
+// unrecognised field is not silently discarded or widened.
+message AuthorizationDetailType {
+  string type = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  repeated string actions = 2 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  repeated string resource_types = 3 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  repeated string constraint_fields = 4 [(buf.validate.field).repeated = {
+    max_items: 32
+    unique: true
+  }];
+  ConsentDescription consent = 5;
+}
+
+enum Directionality {
+  DIRECTIONALITY_UNSPECIFIED = 0;
+  DIRECTIONALITY_INBOUND = 1;
+  DIRECTIONALITY_OUTBOUND = 2;
+  DIRECTIONALITY_BIDIRECTIONAL = 3;
+}
+
+// AttenuationRule describes a constraint that must survive translation. A
+// required rule makes an otherwise-valid but less expressive OAuth grant
+// unrepresentable, and therefore refused rather than widened.
+message AttenuationRule {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  string authorization_detail_field = 2 [(buf.validate.field).string = {max_len: 128}];
+  bool required = 3;
+}
+
+message RequiredContext {
+  repeated string claims = 1 [(buf.validate.field).repeated = {
+    max_items: 32
+    unique: true
+  }];
+  uint32 minimum_assurance_level = 2 [(buf.validate.field).uint32 = {lte: 10}];
+}
+
+message ConsentDescription {
+  string summary = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  string detail = 2 [(buf.validate.field).string = {max_len: 2048}];
+}
+
+// ActionMapping is the only bridge from an internal action to OAuth. All
+// required_scopes are required together; alternatives use separate mappings.
+message ActionMapping {
+  string action = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated string resource_types = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+    unique: true
+  }];
+  repeated string required_scopes = 3 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+  }];
+  repeated string authorization_detail_types = 4 [(buf.validate.field).repeated = {
+    max_items: 16
+    unique: true
+  }];
+  Directionality directionality = 5 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  repeated AttenuationRule attenuation = 6 [(buf.validate.field).repeated = {max_items: 16}];
+  RequiredContext required_context = 7;
+  ConsentDescription consent = 8;
+}
+
+message MappingRevision {
+  uint64 revision = 1 [(buf.validate.field).uint64 = {gt: 0}];
+  string meaning_digest = 2 [(buf.validate.field).string = {
+    pattern: "^[0-9a-f]{64}$"
+    max_len: 64
+  }];
+  repeated OAuthScope scopes = 3 [(buf.validate.field).repeated = {max_items: 256}];
+  repeated AuthorizationDetailType authorization_detail_types = 4 [(buf.validate.field).repeated = {max_items: 128}];
+  repeated Action actions = 5 [(buf.validate.field).repeated = {max_items: 512}];
+  repeated ResourceType resource_types = 6 [(buf.validate.field).repeated = {max_items: 256}];
+  repeated ActionMapping mappings = 7 [(buf.validate.field).repeated = {max_items: 1024}];
+}
+
+message MappingProfile {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  repeated MappingRevision revisions = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+  }];
+}
+
+// PARCRequest is the canonical policy authorization request context produced
+// after an OAuth grant has been normalized.
+message PARCRequest {
+  repeated string actions = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+    unique: true
+  }];
+  repeated string resource_types = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 64
+    unique: true
+  }];
+  map<string, string> constraints = 3 [(buf.validate.field).map = {max_pairs: 32}];
+  string deployment = 4 [(buf.validate.field).string = {max_len: 128}];
+  string tenant = 5 [(buf.validate.field).string = {max_len: 128}];
+  string resource = 6 [(buf.validate.field).string = {max_len: 2048}];
+  repeated string delegation_chain = 7 [(buf.validate.field).repeated = {max_items: 8}];
+  map<string, string> context = 8 [(buf.validate.field).map = {max_pairs: 32}];
+  uint32 assurance_level = 9 [(buf.validate.field).uint32 = {lte: 10}];
+}
+
+message OAuthGrant {
+  repeated string scopes = 1 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  repeated OAuthAuthorizationDetail authorization_details = 2 [(buf.validate.field).repeated = {max_items: 32}];
+}
+
+message OAuthAuthorizationDetail {
+  string type = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  repeated string actions = 2 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  repeated string resource_types = 3 [(buf.validate.field).repeated = {
+    max_items: 64
+    unique: true
+  }];
+  map<string, string> constraints = 4 [(buf.validate.field).map = {max_pairs: 32}];
+}
