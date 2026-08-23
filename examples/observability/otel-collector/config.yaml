@@ -63,6 +63,19 @@ exporters:
     resource_to_telemetry_conversion:
       enabled: true
 
+  # The contrib collector owns ClickHouse's physical schema. Flowstate emits
+  # only OTLP and therefore neither imports a ClickHouse driver nor bakes a
+  # vendor table into the application. Async inserts amortize small telemetry
+  # batches; the collector's batch processor remains the first cost control.
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s&compress=lz4
+    database: otel
+    username: default
+    password: ""
+    create_schema: true
+    async_insert: true
+    ttl: 24h
+
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
@@ -85,7 +98,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp/tempo]
+      exporters: [otlp/tempo, clickhouse]
 
     metrics:
       receivers: [otlp]
@@ -95,4 +108,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlphttp/loki]
+      exporters: [otlphttp/loki, clickhouse]

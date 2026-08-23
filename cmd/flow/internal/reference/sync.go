@@ -1,10 +1,12 @@
 //go:build ignore
 
-// Command sync rewrites mirror/ from the documents it mirrors.
+// Command sync rewrites docs/DSL.md's table of contents and mirror/ from the
+// documents it mirrors.
 //
 // Run it with `go generate ./cmd/flow/internal/reference` after editing
 // docs/DSL.md or adding an example. TestTheMirrorMatchesTheRepository is what
-// makes forgetting a failure rather than a silently stale answer.
+// makes forgetting the mirror a failure rather than a silently stale answer,
+// and TestDSLTOCHasNoDrift is the same guarantee for the contents list.
 package main
 
 import (
@@ -12,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/picatz/flowstate/cmd/flow/internal/reference"
 )
 
 func main() {
@@ -32,10 +36,27 @@ func run() error {
 		return err
 	}
 
-	dsl, err := os.ReadFile(filepath.Join(repo, "docs", "DSL.md"))
+	dslPath := filepath.Join(repo, "docs", "DSL.md")
+
+	dsl, err := os.ReadFile(dslPath)
 	if err != nil {
 		return err
 	}
+
+	// The contents list is derived from the document's own headings, so it is
+	// regenerated here rather than copied verbatim — and written back to
+	// docs/DSL.md itself, not only the mirror, since the mirror's whole job is
+	// to be a byte-identical copy of the source, and a TOC that only existed
+	// in the copy is the "second source of truth" this package's own doc
+	// comment warns about.
+	dsl, err = reference.SyncTOC(dsl)
+	if err != nil {
+		return fmt.Errorf("regenerating docs/DSL.md's table of contents: %w", err)
+	}
+	if err := os.WriteFile(dslPath, dsl, 0o644); err != nil {
+		return err
+	}
+
 	if err := os.WriteFile(filepath.Join("mirror", "DSL.md"), dsl, 0o644); err != nil {
 		return err
 	}

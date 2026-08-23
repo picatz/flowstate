@@ -64,12 +64,12 @@ func overDepthBehindACall(name string) *v1.Workflow {
 //
 // Neither RPC needs a live Temporal cluster to reach this refusal: both
 // validate the specification before making their first call through the
-// client, which is what makes `server.New(nil, ...)` a legitimate fixture
+// client, which is what makes `mustNew(t, nil, ...)` a legitimate fixture
 // here rather than a shortcut around the real path.
 func TestRunAndCreateScheduleAgreeOnAStructureHiddenInACallee(t *testing.T) {
 	t.Parallel()
 
-	s := server.New(nil, server.WithNamespace("team-a"))
+	s := mustNew(t, nil, server.WithNamespace("team-a"))
 
 	runErr := func() error {
 		_, err := s.Run(t.Context(), connect.NewRequest(&v1.RunRequest{

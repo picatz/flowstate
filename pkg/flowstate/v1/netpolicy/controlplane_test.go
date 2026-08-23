@@ -3,10 +3,12 @@ package netpolicy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -354,4 +356,57 @@ func Test_controlPlane_addressForms(t *testing.T) {
 
 	_, err = get(t, policy, server.URL)
 	requireDenied(t, err, ReasonControlPlane, "reserved")
+}
+
+// Test_controlPlane_identityIsRecheckedAcrossRequests is the connection-reuse
+// direction for self-administration, and it is the same defect the CEL
+// connection rules had: [Policy.checkControlPlane] reads the run identity off
+// the *request's* context, but it runs in the dialer, which a reused connection
+// never enters.
+//
+// So a request carrying an identity opens the connection, and a request
+// carrying none rides it straight to the control plane — acting with the
+// worker's authority instead of the run's, which is the exact substitution the
+// missing-identity denial exists to prevent. This policy declares no CEL rules,
+// which is what made it slip past a no-reuse condition keyed only on those.
+//
+// Asserted in the negative direction, and by connection count as well as by the
+// error: a denial that arrives after the request already reached the control
+// plane is not a denial.
+func Test_controlPlane_identityIsRecheckedAcrossRequests(t *testing.T) {
+	var connections atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "control plane")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	addr := server.Listener.Addr().String()
+
+	policy, err := New(WithAllowLoopback(), WithControlPlane(addr), WithSelfAdministration())
+	require.NoError(t, err)
+
+	ctx := WithRunIdentity(t.Context(), &runIdentity{namespace: "team-a", subject: "workflow/deploy"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+
+	resp, err := policy.Client().Do(req)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, int64(1), connections.Load())
+
+	// No run identity on this one. It must be refused rather than carried by the
+	// connection the identity-carrying request established.
+	anonymous, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+
+	_, err = policy.Client().Do(anonymous)
+	requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
+	require.Equal(t, int64(1), connections.Load(), "the denied request must not reach the control plane")
 }

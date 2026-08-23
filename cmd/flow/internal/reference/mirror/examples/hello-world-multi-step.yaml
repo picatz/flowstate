@@ -9,7 +9,6 @@ steps:
   - id: greet
     log:
       message: ${vars.greeting}
-
   - id: shout
     log:
       message: ${vars.greeting.upperAscii()}

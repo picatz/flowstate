@@ -14,8 +14,8 @@ go run ./cmd/flow fix --check examples/*/workflow.yaml
 go run github.com/bufbuild/buf/cmd/buf@v1.72.0 lint
 go run github.com/bufbuild/buf/cmd/buf@v1.72.0 breaking --against '.git#branch=origin/main'
 go run github.com/bufbuild/buf/cmd/buf@v1.72.0 generate && git diff --exit-code
-GOTOOLCHAIN=go1.26.6 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-GOTOOLCHAIN=go1.26.6 go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
+GOTOOLCHAIN=go1.27.0 go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+GOTOOLCHAIN=go1.27.0 go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
 ```
 
 Advisory, run separately, not part of the block above (bounded per CLAUDE.md's
@@ -32,7 +32,7 @@ Notes, per CLAUDE.md:
 - `flow fix --check` on every example is not advisory: the examples are already
   in the current edition, so a failure here is a real regression, not noise.
 - `buf generate` followed by `git diff --exit-code` catches committed generated
-  code that has drifted from `proto/flowstate/v1/flowstate.proto`.
+  code that has drifted from the schema under `proto/flowstate/v1/`.
 - `govulncheck` reports reachability against a database fetched at run time, so
   it can go red on a tree nobody touched. Before treating a finding as yours,
   run it against `main` too — if `main` also fails, the advisory arrived rather
@@ -43,8 +43,8 @@ Notes, per CLAUDE.md:
   something pre-existing that isn't yours. The fuzz smoke job carries the same
   advisory window, to absorb flake rather than to excuse ignoring a real
   crasher.
-- The `GOTOOLCHAIN=go1.26.6` pin matches CI's toolchain; without it, a machine
-  honouring a newer `toolchain` directive in `go.mod` can fail with a spurious
+- The `GOTOOLCHAIN=go1.27.0` pin matches CI's toolchain; without it, a machine
+  honouring a newer `go` directive in `go.mod` can fail with a spurious
   "file requires newer Go version" error from files in the module cache. This
   applies to both govulncheck and staticcheck — each resolves its own
   toolchain via its own `go.mod` otherwise.

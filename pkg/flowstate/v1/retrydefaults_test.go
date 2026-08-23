@@ -34,7 +34,7 @@ import (
 // be idempotent, appear only in production.
 func TestAStepWithNoRetryBlockUsesTheSharedDefault(t *testing.T) {
 	// Not parallel: reaching a test server means swapping the http task in the
-	// default registry, which is process-wide. `tests.NewHTTPServer` does the same
+	// default registry, which is process-wide. `conformance.NewHTTPServer` does the same
 	// and for the same reason — the shipped default denies loopback, correctly, so
 	// a test that needs it says so rather than weakening it for everyone.
 	allowLoopback(t)

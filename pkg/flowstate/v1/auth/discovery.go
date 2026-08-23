@@ -63,11 +63,15 @@ func (i *Issuer) Discovery() DiscoveryDocument {
 		ResponseTypesSupported:           []string{"id_token"},
 		SubjectTypesSupported:            []string{"public"},
 		IDTokenSigningAlgValuesSupported: i.algorithms(),
-		ClaimsSupported: []string{
+		// Derived from the same declaration the mint enforces, rather than
+		// listed a second time: an issuer that advertises a claim it would
+		// refuse to sign, or signs one it never advertised, is describing an
+		// assertion that does not exist.
+		ClaimsSupported: append([]string{
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti",
 			ClaimNamespace, ClaimDeployment, ClaimWorkflow, ClaimRun, ClaimStep,
 			ClaimOnBehalfOf, ClaimOnBehalfOfIssuer,
-		},
+		}, i.DeclaredClaims()...),
 		ScopesSupported: []string{"openid"},
 	}
 }

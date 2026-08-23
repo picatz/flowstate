@@ -357,7 +357,7 @@ steps:
 }
 
 // TestRetryTimeoutStayOnTaskSteps is the positive half of the wait refusal: the
-// keys `checkWaitPolicy` refuses beside a wait are exactly the keys a task step is
+// keys `checkPolicyPlacement` refuses beside a wait are exactly the keys a task step is
 // meant to carry, so bounding and retrying a task must stay clean. Refusing them on
 // waits by narrowing the grammar rather than by check would have taken them off
 // tasks too; this proves it did not.

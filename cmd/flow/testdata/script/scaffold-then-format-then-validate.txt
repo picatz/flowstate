@@ -1,0 +1,44 @@
+# The sequence #381 and #382 came out of: scaffold a workflow, then point the
+# rest of the tool at what the scaffold wrote. Each of these is somebody's first
+# five minutes with `flow`, and the failure they cover is a template that has
+# drifted past the grammar — which nothing compiles, so only a walk like this
+# one can see it.
+$ flow init demo
+-- exit --
+0
+-- stderr --
+# The formatter has to accept its own tool's output, with nothing left to do —
+# and to say so about the test file beside it rather than rewriting it.
+$ flow fmt demo
+-- exit --
+0
+-- stdout --
+demo/workflow.test.yaml: test file; flow fmt does not format test files
+demo/workflow.yaml: already formatted
+
+# Twice, which is the idempotence a pre-commit hook needs.
+$ flow fmt demo
+-- exit --
+0
+-- stdout --
+demo/workflow.test.yaml: test file; flow fmt does not format test files
+demo/workflow.yaml: already formatted
+
+# The grammar accepts it, which is what a template that has drifted would fail.
+$ flow validate demo
+-- exit --
+0
+
+# The scaffold's own case passes, so the workflow and the test file beside it
+# agree about step ids and the task's inputs.
+$ flow test demo
+-- exit --
+0
+
+# And it is already in the edition this build speaks, which is the assertion
+# that goes red on the day the edition moves and the template does not.
+$ flow fix --check demo/workflow.yaml
+-- exit --
+0
+-- stdout --
+demo/workflow.yaml: already current

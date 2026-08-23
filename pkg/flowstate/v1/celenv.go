@@ -79,7 +79,13 @@ func (l Limits) programOptions() []cel.ProgramOption {
 	var opts []cel.ProgramOption
 	if l.Cost > 0 {
 		// CostLimit implies OptTrackCost.
-		opts = append(opts, cel.CostLimit(l.Cost))
+		//
+		// The estimator is what decides that a unit of this budget buys a
+		// bounded number of *bytes* rather than one operation of any size; see
+		// celcost.go for why cel-go's own size-aware pricing cannot reach a
+		// parsed AST. It is installed here rather than at any call site because
+		// this is the one place both execution drivers build a program.
+		opts = append(opts, cel.CostLimit(l.Cost), cel.CostTracking(evaluationCostEstimator))
 	}
 	if l.InterruptCheckFrequency > 0 {
 		opts = append(opts, cel.InterruptCheckFrequency(l.InterruptCheckFrequency))
@@ -210,14 +216,56 @@ func checkLibraries(libs []string) error {
 func (e *Evaluator) Eval(ctx context.Context, env *cel.Env, ast *cel.Ast, activation any) (ref.Val, error) {
 	prg, err := env.Program(ast, e.limits.programOptions()...)
 	if err != nil {
-		return nil, fmt.Errorf("compile expression: %w", err)
+		return nil, &ExpressionError{Err: fmt.Errorf("compile expression: %w", err)}
 	}
 	out, _, err := prg.ContextEval(ctx, activation)
 	if err != nil {
-		return nil, fmt.Errorf("evaluate expression: %w", err)
+		return nil, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
 	}
 	return out, nil
 }
+
+// An ExpressionError reports that a CEL expression failed to compile or to
+// evaluate, and carries nothing but that fact: [ExpressionError.Error] is its
+// cause's own words, byte for byte.
+//
+// It exists to classify, not to phrase. [ErrorKindExpression] is documented as
+// the kind for an expression that "failed to parse, exceeded its cost budget,
+// or referenced something that does not exist" (errors.go), and until this type
+// existed nothing outside a task ever produced it: an expression failure left
+// this evaluator as a bare [fmt.Errorf] chain, so [ClassifyError] fell through
+// to its default and every surface reading a kind — `flow run local --output
+// json`, the `flowstate_run_local` MCP result, a durable run's
+// `RunResponse.Error.kind` — reported an author's `${['a'][5]}` or a refused
+// cost budget as `Internal`, which errors.go defines as "a defect in Flowstate
+// itself". Two consequences, neither cosmetic: an agent branching on the kind
+// was told to file a bug rather than fix the file, and `Internal` is one of the
+// two *retryable* kinds, so a deterministic failure was classified as one worth
+// attempting again.
+//
+// Deliberately not a [TaskError] with an empty Task, which renders identically
+// and would have been a smaller diff. The durable driver asks
+// `errors.As(err, **v1.TaskError)` to decide whether a failure came from a task
+// (`engine/workflow.go`'s recordedStepError), and answers "yes" by *dropping the
+// enclosing position* — `iteration 0: step "child": …` — from the text it
+// records. An expression failure has no task and needs that position, since the
+// expression is the author's and the iteration is how they find it. So the
+// classification travels in a type of its own, the text stays what it was, and
+// nothing that reads for a task finds one.
+type ExpressionError struct {
+	// Err is the failure this classifies, already worded for a reader.
+	Err error
+}
+
+// Error implements the error interface. The cause's own words and nothing
+// added: this type is a classification, and a classification that also
+// prefixes the message would double every sentence it travels with — the
+// garbling #184 is about.
+func (e *ExpressionError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the cause, so errors.Is and errors.As reach through this the
+// way they reach through every other wrapper here.
+func (e *ExpressionError) Unwrap() error { return e.Err }
 
 // EvalParsed evaluates a previously parsed expression, of the form carried in a
 // compiled workflow specification, against the given activation.
@@ -266,7 +314,13 @@ func (e *Evaluator) EvalString(ctx context.Context, exprStr string, libs []strin
 	}
 	ast, issues := env.Parse(exprStr)
 	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("parse expression: %w", issues.Err())
+		// Parsing is an expression-failure phase like compiling and evaluating
+		// (which [Evaluator.Eval] already wraps): a malformed expression is the
+		// author's, not a defect in Flowstate, so it classifies [ErrorKindExpression]
+		// rather than falling through [ClassifyError] to the retryable Internal
+		// default. Without this wrapper parsing was the one phase still mislabeled
+		// (#184, #899).
+		return nil, &ExpressionError{Err: fmt.Errorf("parse expression: %w", issues.Err())}
 	}
 	return e.Eval(ctx, env, ast, activation)
 }
