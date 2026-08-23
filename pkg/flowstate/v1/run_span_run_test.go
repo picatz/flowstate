@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/codes"
@@ -148,6 +149,114 @@ func renderedSpanShapes(recorder *tracetest.SpanRecorder) []string {
 	}
 
 	return rendered
+}
+
+// oversizedName is a name far past any schema bound, in the size class the
+// finding named: a submission is refused above 1 MiB, so this is a name that
+// reaches telemetry and is then refused.
+var oversizedName = strings.Repeat("n", 1<<20)
+
+// TestSpanNamesAreBoundedBeforeExport is #903's round-6 finding: a name that
+// never passed validation must not be exported to a collector verbatim.
+//
+// The hole was real on the path an embedder takes. [v1.RunWithInputs] checks
+// only that a workflow has steps and then opens the run span; the bound that
+// would refuse this workflow — [v1.CheckSubmissionSize] — runs *after* it. So a
+// 1 MiB name became a 1 MiB span name and a 1 MiB attribute, exported before the
+// submission carrying it was refused. The same applied one level down, since a
+// hand-built [v1.Task] reaches [v1.StartTaskSpan] by the same unvalidated route.
+//
+// Both constructors are asserted, because bounding one and not the other would
+// have moved the unbounded value rather than removed it.
+func TestSpanNamesAreBoundedBeforeExport(t *testing.T) {
+	recorder := conformance.RecordSpans(t)
+
+	// The run span, through the real entry point rather than by calling the
+	// constructor: the claim is about the path, and the path is what had the
+	// hole. The run is refused, which is the point — the span exists anyway.
+	_, err := v1.RunWithInputs(t.Context(), &v1.Workflow{
+		Name:    oversizedName,
+		Profile: v1.CurrentProfile,
+		Steps:   []*v1.Node{{Id: "never", Kind: &v1.Node_Value{Value: v1.NewLiteral("x")}}},
+	}, nil)
+	require.Error(t, err, "a 1 MiB workflow name was accepted, so this test no longer exercises the refused path")
+
+	// And the task span, whose name comes from a Task an embedder built by hand.
+	_, taskSpan := v1.StartTaskSpan(t.Context(), &v1.Task{Name: oversizedName}, "step")
+	taskSpan.End()
+
+	var checked int
+	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
+		var limit int
+		switch {
+		case strings.HasPrefix(stub.Name, "flowstate.run/"):
+			limit = v1.MaxWorkflowNameLen
+		case strings.HasPrefix(stub.Name, "flowstate.task/"):
+			limit = v1.MaxTaskNameLen
+		default:
+			continue
+		}
+		checked++
+
+		// The name is bounded, and says it was cut. Counted in runes, since that
+		// is what the schema's rule counts.
+		//
+		// The failure message quotes a *prefix* of the span name and never the
+		// whole of it: when this assertion fails the name is by definition
+		// enormous, and a message that interpolated it would be truncated by the
+		// test runner's own line scanner — a failure nobody can read is a failure
+		// that costs an hour to understand. Found by mutating the bound away.
+		name := stub.Name[strings.Index(stub.Name, "/")+1:]
+		require.LessOrEqual(t, utf8.RuneCountInString(name), limit+1,
+			"a span exports a name of %d characters, past the schema's bound of %d; it begins %q",
+			utf8.RuneCountInString(name), limit, stub.Name[:min(len(stub.Name), 64)])
+		require.True(t, strings.HasSuffix(name, "…"),
+			"a truncated name carries no marker, so a reader cannot tell it was cut; it ends %q",
+			name[max(0, len(name)-32):])
+
+		// And every attribute carrying a name is bounded the same way, which is
+		// the half that would otherwise relocate the value rather than remove it.
+		for _, attr := range stub.Attributes {
+			key := string(attr.Key)
+			if key != v1.SpanAttributeWorkflowName && key != v1.SpanAttributeTaskName {
+				continue
+			}
+			require.LessOrEqual(t, utf8.RuneCountInString(attr.Value.AsString()), limit+1,
+				"%s carries an unbounded %s attribute", stub.Name, key)
+		}
+	}
+	require.Equal(t, 2, checked, "want one bounded run span and one bounded task span")
+
+	// The containment direction, over the rendered shapes: no span anywhere holds
+	// the oversized name, in any rendering.
+	//
+	// Checked with strings.Contains and reported by hand rather than with
+	// require.NotContains, which prints the haystack — here a megabyte of it.
+	for _, rendered := range renderedSpanShapes(recorder) {
+		if strings.Contains(rendered, oversizedName) {
+			t.Fatal("an unvalidated oversized name reached a span, which is exported to a collector")
+		}
+	}
+}
+
+// TestALegalNameIsExportedExactly is the other half, and the reason the bound is
+// truncation rather than a hash or a fixed fallback: the overwhelmingly common
+// case must be untouched, byte for byte.
+func TestALegalNameIsExportedExactly(t *testing.T) {
+	t.Parallel()
+
+	// The longest name the schema permits, which is the value most likely to be
+	// mangled by an off-by-one in the bound.
+	exact := strings.Repeat("w", v1.MaxWorkflowNameLen)
+
+	require.Equal(t, "flowstate.run/"+exact, v1.RunSpanName(exact),
+		"a name exactly at the bound was altered")
+	require.Equal(t, "flowstate.task/"+exact, v1.TaskSpanName(exact),
+		"a name exactly at the bound was altered")
+
+	// One character further is the first that may be cut.
+	require.NotEqual(t, "flowstate.run/"+exact+"w", v1.RunSpanName(exact+"w"),
+		"a name past the bound was exported unchanged")
 }
 
 // TestLocalRunSpanRecordsAPanicAsAFailure is the run-level half of #888's

@@ -127,12 +127,25 @@ const (
 	SpanAttributeDeliveryJoined = "flowstate.webhook.joined"
 )
 
+// MaxWorkflowNameLen is the longest workflow name the schema permits, in
+// characters.
+//
+// The Go-side twin of `Workflow.name`'s protovalidate rule
+// (`proto/flowstate/v1/workflow.proto:71-79`, `max_len: 128`), declared for the
+// same reason [MaxTaskNameLen] is: the paths that reach a span do not all
+// validate first, and this one demonstrably does not — [RunWithInputs] opens the
+// run span before [CheckSubmissionSize] runs, so an embedder's oversized name
+// reaches a collector before the submission that carried it is refused.
+const MaxWorkflowNameLen = 128
+
 // RunSpanName is the name of the span covering one local run.
 //
 // Asked for here rather than concatenated at the call site, so that the one
-// place a test compares against is the one place the driver reads.
+// place a test compares against is the one place the driver reads — and, since
+// [boundedSpanName] is applied here, so that the expectation and the exported
+// name are bounded identically rather than only the exported one.
 func RunSpanName(workflowName string) string {
-	return "flowstate.run/" + workflowName
+	return "flowstate.run/" + boundedSpanName(workflowName, MaxWorkflowNameLen)
 }
 
 // StartRunSpan opens the span covering one local run.
@@ -152,7 +165,11 @@ func StartRunSpan(ctx context.Context, w *Workflow) (context.Context, trace.Span
 		return ctx, span
 	}
 
-	span.SetAttributes(attribute.String(SpanAttributeWorkflowName, w.GetName()))
+	// Bounded like the span name above it, and for the same reason: an attribute
+	// is exported to the same collector the name is, so bounding one and not the
+	// other would move the unbounded value rather than remove it.
+	span.SetAttributes(attribute.String(SpanAttributeWorkflowName,
+		boundedSpanName(w.GetName(), MaxWorkflowNameLen)))
 
 	return ctx, span
 }
