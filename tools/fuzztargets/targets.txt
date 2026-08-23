@@ -32,6 +32,7 @@ FuzzFormatIdempotent         pkg/flowstate/v1/flowfile      smoke,deep
 FuzzCELEvaluate              pkg/flowstate/v1               smoke,deep
 FuzzLSPDocumentEdits         pkg/flowstate/v1/flowfile/lsp  smoke,deep
 FuzzLSPFrames                pkg/flowstate/v1/flowfile/lsp  smoke,deep
+FuzzSchemaProjection         cmd/flow/internal/mcp          smoke,deep
 
 # The signal payload decoder is deep-only, and the reason is the budget this
 # file's `smoke` note names rather than anything about the target. Its package
