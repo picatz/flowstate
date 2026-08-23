@@ -65,6 +65,11 @@ func newTestCommand() *cobra.Command {
 			"case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs " +
 			"inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle " +
 			"in cases that never invoke its task.\n\n" +
+			"A failing case prints its transcript beneath the unmet expectation: what each step " +
+			"produced and when virtual time moved, which stub answered it, each scripted signal " +
+			"with its sender, and the `switch:` arm taken — the account the expectation was judged " +
+			"against, with every value passing through the same redaction the stub diagnostics " +
+			"apply. `-v` prints every case's transcript, passing or not.\n\n" +
 			"`--run <pattern>` runs only the cases whose name matches the regular expression, the " +
 			"way `go test -run` does, and says how many cases it filtered out — beside the file " +
 			"and on the summary line — so a green over a subset never reads as the file's green. " +
@@ -213,6 +218,12 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	}
 	coverageRequired, _ := cmd.Flags().GetBool("coverage-required")
 	failOnWarning, _ := cmd.Flags().GetBool("fail-on-warning")
+	// The root's own persistent -v/--verbose, reused rather than shadowed
+	// (#929 slice 2): under `flow test` it additionally means "show every
+	// case's transcript", the `go test -v` reading, while a failing case
+	// prints its transcript regardless — the account is the whole point of
+	// having one when something failed.
+	verbose, _ := cmd.Flags().GetBool("verbose")
 
 	budget, err := scheduleBudget(cmd)
 	if err != nil {
@@ -270,7 +281,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		results = append(results, result)
 
 		if !machine {
-			printTestReport(surface.Out, surface.Theme, report, failOnWarning)
+			printTestReport(surface.Out, surface.Theme, report, run.Transcripts, failOnWarning, verbose)
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 			printSchedules(surface.Out, surface.Theme, report, schedules)
 			printFiltered(surface.Out, surface.Theme, report, runPattern, run.Filtered)
@@ -592,13 +603,19 @@ func indentRendering(text string) string {
 // failed, and a line per warning — coloured as a fault only where the run
 // opted in to treat one as such (`--fail-on-warning`), on the exact rule
 // [printCoverage] applies to an unrecorded gap.
-func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, failOnWarning bool) {
+//
+// A failing case's transcript prints beneath its diagnostics (#929 slice 2):
+// the unmet expectation arrives with the account it was judged against —
+// which stub answered each step, when virtual time moved, what each step
+// produced — instead of alone. verbose (`-v`) prints every case's, the
+// `go test -v` reading of the flag.
+func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, transcripts [][]flowtest.TranscriptLine, failOnWarning, verbose bool) {
 	if refused := report.GetRefused(); refused != "" {
 		fmt.Fprintf(out, "%s: %s\n", theme.Muted.Render(report.GetFile()), theme.Danger.Render(refused))
 		return
 	}
 
-	for _, c := range report.GetCases() {
+	for i, c := range report.GetCases() {
 		status := theme.Success.Render("PASS")
 		if !c.GetPassed() {
 			status = theme.Danger.Render("FAIL")
@@ -625,6 +642,26 @@ func printTestReport(out io.Writer, theme ui.Theme, report *v1.TestReport, failO
 			}
 			fmt.Fprintf(out, "       %s\n", line)
 		}
+
+		if (verbose || !c.GetPassed()) && i < len(transcripts) {
+			printTranscript(out, theme, transcripts[i])
+		}
+	}
+}
+
+// printTranscript renders one case's account, each line in the tone flowtest
+// assigned it — the package doc's color rule, decided where the fact was
+// recorded rather than re-derived here.
+func printTranscript(out io.Writer, theme ui.Theme, lines []flowtest.TranscriptLine) {
+	for _, line := range lines {
+		text := line.Text
+		switch line.Tone {
+		case flowtest.ToneDanger:
+			text = theme.Danger.Render(text)
+		case flowtest.ToneWarning:
+			text = theme.Warning.Render(text)
+		}
+		fmt.Fprintf(out, "     %s\n", text)
 	}
 }
 

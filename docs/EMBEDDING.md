@@ -197,6 +197,11 @@ each case through the same engine, stubbing and virtual clock the CLI uses,
 so a case passing under `go test` and failing under `flow test` (or the
 reverse) would be a bug in the harness, not a property of your suite.
 
+Each case logs its transcript — what every step produced and when virtual
+time moved, which stub answered it, scripted signals with their sender, the
+`switch:` arm taken — through the subtest's own log, so `go test` shows it
+exactly when the CLI would: on a failing case, and under `-v` for every case.
+
 ## What is not curated here
 
 - **`call:` across embedder files.** Compiling from bytes has no directory to

@@ -200,6 +200,16 @@ func runCase(t testing.TB, file *flowtest.File, path string, cfg config, want st
 
 	reportCase(t, result.Report.GetCases()[0])
 	reportSchedules(t, path, result.Schedules)
+
+	// The case's transcript (#929 slice 2), through the log channel on
+	// purpose: go test shows logs when the subtest fails and under -v, which
+	// is exactly the CLI's own rule — a failing case arrives with the account
+	// its expectation was judged against, and `-v` shows every case's.
+	if len(result.Transcripts) == 1 {
+		for _, line := range result.Transcripts[0] {
+			t.Log(line.Text)
+		}
+	}
 }
 
 // coveragePass is the whole-suite run behind [WithCoverageRequired]: every
