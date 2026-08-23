@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// SecurityEvent is the provider-neutral form of a verified SET. Raw provider
+// claims and the signed token are deliberately not retained.
+message SecurityEvent {
+  SecurityEventType type = 1;
+  string issuer = 2;
+  string audience = 3;
+  string event_id = 4;
+  google.protobuf.Timestamp issued_at = 5;
+  SecuritySubject subject = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  uint64 policy_revision = 8;
+  EnforcementAction enforcement = 9;
+}
+
+message SecuritySubject {
+  SecuritySubjectType type = 1;
+  string identifier = 2;
+  string tenant = 3;
+}
+
+enum SecuritySubjectType {
+  SECURITY_SUBJECT_TYPE_UNSPECIFIED = 0;
+  SECURITY_SUBJECT_TYPE_PRINCIPAL = 1;
+  SECURITY_SUBJECT_TYPE_SESSION = 2;
+  SECURITY_SUBJECT_TYPE_TOKEN = 3;
+  SECURITY_SUBJECT_TYPE_DEVICE = 4;
+  SECURITY_SUBJECT_TYPE_GROUP = 5;
+  SECURITY_SUBJECT_TYPE_APPLICATION = 6;
+  SECURITY_SUBJECT_TYPE_DELEGATION = 7;
+  SECURITY_SUBJECT_TYPE_ISSUER_KEY = 8;
+  SECURITY_SUBJECT_TYPE_TENANT_RELATIONSHIP = 9;
+}
+
+enum SecurityEventType {
+  SECURITY_EVENT_TYPE_UNSPECIFIED = 0;
+  SECURITY_EVENT_TYPE_PRINCIPAL_DISABLED = 1;
+  SECURITY_EVENT_TYPE_SESSION_REVOKED = 2;
+  SECURITY_EVENT_TYPE_CREDENTIAL_COMPROMISED = 3;
+  SECURITY_EVENT_TYPE_DEVICE_POSTURE_CHANGED = 4;
+  SECURITY_EVENT_TYPE_GROUP_MEMBERSHIP_CHANGED = 5;
+  SECURITY_EVENT_TYPE_APPLICATION_ACCESS_WITHDRAWN = 6;
+  SECURITY_EVENT_TYPE_DELEGATION_REVOKED = 7;
+  SECURITY_EVENT_TYPE_ISSUER_KEY_COMPROMISED = 8;
+  SECURITY_EVENT_TYPE_TENANT_RELATIONSHIP_REMOVED = 9;
+}
+
+// EnforcementAction describes the explicit durable-run transition. Prospective
+// changes affect future use boundaries only; none alter replayed workflow code.
+enum EnforcementAction {
+  ENFORCEMENT_ACTION_UNSPECIFIED = 0;
+  ENFORCEMENT_ACTION_FUTURE_EXTERNAL_CALLS = 1;
+  ENFORCEMENT_ACTION_CANCEL_RUN = 2;
+  ENFORCEMENT_ACTION_PAUSE_RUN = 3;
+  ENFORCEMENT_ACTION_QUARANTINE_RUN = 4;
+}
