@@ -845,12 +845,73 @@ func TestLogRecordCarriesTheTraceOfItsSpan(t *testing.T) {
 	require.Equal(t, spanCtx.SpanID().String(), hex.EncodeToString(records[0].GetSpanId()))
 }
 
+// TestLocalRunLogLineCarriesTheTraceOfItsTaskSpan is the same claim for the
+// driver that used to be the counter-example.
+//
+// `flow run local` opened no span at all until #523's gap 3, so a `log:` line
+// from a local run reached the collector with no trace to belong to and this
+// file said so. It says something different now: the local driver opens the
+// same `flowstate.task/<name>` span the durable driver does, the task emits
+// through `LogAttrs(ctx, …)` on that span's context, and the line is therefore
+// clickable from the trace in a rehearsal exactly as it is in production.
+//
+// Through a real run rather than a hand-built span context, because what is
+// being checked is that the driver puts the span where the task will find it —
+// a synthetic context would pass whether or not it did.
+//
+// # What this cannot see, said here because it already fooled one review round
+//
+// It calls [initTelemetry] itself. That makes it a test of the *plumbing* — the
+// span reaches the record, the record reaches the collector — and not of the
+// command, which reached [startTelemetry] from nowhere at the time this was
+// written and therefore ran every one of these spans into the global no-op
+// provider. This test passed throughout. The gap was found in review, not here.
+//
+// [TestALocalRunExportsItsTaskSpans] is the tier that can see it: the compiled
+// binary, a real process, and no provider anybody but `flow run local` itself
+// installed.
+func TestLocalRunLogLineCarriesTheTraceOfItsTaskSpan(t *testing.T) {
+	collector := logCollectorTo(t)
+	isolateTelemetry(t)
+
+	_, shutdown, err := initTelemetry(t.Context())
+	require.NoError(t, err)
+
+	ctx := v1.ContextWithLogger(t.Context(),
+		slog.New(telemetryLogHandler(slog.NewTextHandler(io.Discard, nil))))
+
+	_, err = v1.Run(ctx, &v1.Workflow{
+		Name:    "local-log-correlation",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id: "say",
+			Kind: &v1.Node_Task{Task: &v1.Task{
+				Name:   "log",
+				Inputs: map[string]*v1.Value{"message": v1.NewLiteral("from a local run")},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+
+	shutdown(context.Background())
+
+	records := collector.exported()
+	require.Len(t, records, 1)
+	require.Equal(t, "from a local run", records[0].GetBody().GetStringValue())
+	require.NotEmpty(t, records[0].GetTraceId(),
+		"a local run's log line carries no trace id, so nothing links it to the step's span")
+	require.NotEmpty(t, records[0].GetSpanId())
+}
+
 // TestLogRecordWithoutASpanIsStillExported is the honest other half.
 //
-// `flow run local` opens no span — it makes no RPC — and the server's and
-// worker's own start-up lines are emitted outside any request. Those records must
-// still reach the collector, uncorrelated, rather than being dropped for want of
-// a trace to belong to: a log nobody can click on is worth much more than no log.
+// The server's and worker's own start-up lines are emitted outside any request,
+// and so is anything logged through a plain `Info`. Those records must still
+// reach the collector, uncorrelated, rather than being dropped for want of a
+// trace to belong to: a log nobody can click on is worth much more than no log.
+//
+// `flow run local` used to be the headline example here and no longer is — see
+// [TestLocalRunLogLineCarriesTheTraceOfItsTaskSpan].
 func TestLogRecordWithoutASpanIsStillExported(t *testing.T) {
 	collector := logCollectorTo(t)
 	isolateTelemetry(t)

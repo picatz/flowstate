@@ -1,0 +1,222 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// Diagnostic is one problem found in a Flowfile, positioned in its source.
+//
+// A schema type rather than a shape the CLI invents, because it already has three
+// readers and they must agree: `flow validate --output json` hands it to whatever is
+// driving the CLI, the language server converts it into an editor's own diagnostic,
+// and the Validate RPC returns it unchanged. Three hand-written
+// projections of one idea is how the editor and the command line come to disagree
+// about what is wrong with a file.
+//
+// It is also what keeps `--output json` meaning one thing. On `get` and `list` that
+// flag is documented as carrying the server's own schema, so a field is addressable by
+// name; a `validate` that answered with an object the CLI made up would give one flag
+// two meanings in one binary.
+//
+// # Positions are 1-based, and zero means unknown
+//
+// Zero rather than an omitted field, because a diagnostic with no position is a real
+// answer (some problems are about a file rather than about a line in one), and a
+// consumer that saw `line: 1` for those would send a reader to the wrong place with
+// confidence.
+message Diagnostic {
+  // Line is the 1-based source line, or zero when the position is unknown.
+  uint32 line = 1;
+
+  // Column is the 1-based column within Line, counting characters rather than
+  // bytes, or zero when only the line is known.
+  uint32 column = 2;
+
+  // Message states the problem and, where possible, what to do instead.
+  string message = 3 [(buf.validate.field).required = true];
+
+  // Step is the id of the step the problem was found in, when there is one.
+  string step = 4;
+
+  // Field names the input or property at fault, when there is one.
+  string field = 5;
+
+  // Kind names the step's kind key (the task's name, or `for_each`, `sleep`) when
+  // the problem is with that key rather than with anything under it.
+  //
+  // Separate from Field because the two read differently and are fixed differently:
+  // one sends a reader to a value they wrote under a task, the other to the word
+  // naming the work itself.
+  string kind = 6;
+
+  // Value is the literal at fault *inside* Field, when the field holds a list and one
+  // element of it is the problem.
+  string value = 7;
+
+  // Code names the diagnostic's class in a form that survives Message being
+  // reworded: the same argument this message already makes for Line/Column
+  // over parsing a squiggle out of prose, applied to *what* is wrong rather
+  // than to *where*.
+  //
+  // A small, deliberately incomplete set: only the classes a program is
+  // expected to actually branch on (an unknown task, an unresolved reference,
+  // a type mismatch, a schema constraint violation, a placement the grammar
+  // refuses, a retired spelling) get their own code today. Everything else is
+  // "general": an honest fallback rather than a code invented to look
+  // complete. The full set, generated from the registry that assigns them so
+  // it cannot drift, is docs/reference/diagnostics.md.
+  string code = 8;
+
+  // Edits are repairs a program may apply to the source without understanding
+  // the diagnostic, each one complete on its own.
+  //
+  // Empty is the common and honest answer, and is what every diagnostic
+  // answers unless the checker that raised it could name the exact source it
+  // would replace and the exact text to put there. Most cannot: a missing
+  // required input, a reference to a step that does not exist, a value the
+  // schema refuses are all problems where only the author knows what was
+  // meant, and an edit invented for one of them would be a rewriter guessing.
+  // `flow fix` has corrupted valid files twice by guessing at scope (see
+  // CLAUDE.md, "A rewriter has to know what the grammar binds"), and this
+  // field carries the same hazard to every consumer at once, so a checker that
+  // is not certain leaves it empty.
+  //
+  // More than one entry means the repairs are alternatives, offered for a
+  // person or an agent to choose between. They are never applied together.
+  repeated SuggestedEdit edits = 9;
+}
+
+// SourceRange is a region of a file's source text, in the units [Diagnostic]
+// already positions itself in.
+//
+// The same coordinates rather than byte offsets, because a message carrying two
+// coordinate systems asks every reader to know which one each field speaks, and
+// the reader that guesses wrong edits the wrong text. Lines and columns are
+// 1-based and columns count Unicode code points, exactly as [Diagnostic.line]
+// and [Diagnostic.column] do; zero means unknown, for the same reason it does
+// there.
+//
+// The end is exclusive, so a range over a four-character key on one line ends
+// four columns past where it starts. An editor underlines that region and a
+// program replacing it replaces exactly that much.
+message SourceRange {
+  // StartLine is the 1-based line the region begins on, or zero when unknown.
+  uint32 start_line = 1;
+
+  // StartColumn is the 1-based column the region begins at, counting
+  // characters rather than bytes, or zero when only the line is known.
+  uint32 start_column = 2;
+
+  // EndLine is the 1-based line the region ends on, or zero when unknown.
+  uint32 end_line = 3;
+
+  // EndColumn is the 1-based column just past the region's last character, or
+  // zero when only the line is known.
+  uint32 end_column = 4;
+}
+
+// TextChange replaces the source a range covers with new text.
+//
+// One primitive rather than separate insert, delete, and replace forms: an
+// empty range inserts, empty text deletes, and neither empty replaces, so a
+// consumer implements one operation and gets all three.
+message TextChange {
+  // Range is the source this change replaces.
+  //
+  // Required, because a change with no range names no text, and a consumer
+  // that defaulted it to the start of the file would write the change into
+  // somebody's first line.
+  SourceRange range = 1 [(buf.validate.field).required = true];
+
+  // NewText is what the range's source becomes. Empty deletes it.
+  string new_text = 2;
+}
+
+// SuggestedEdit is one repair for the diagnostic carrying it, complete and
+// independently applyable.
+//
+// Complete means a consumer applies every change in it and stops: nothing else
+// has to run afterwards for the problem this diagnostic names to be repaired.
+// It is not a promise the file is then free of problems. A repair can surface
+// one the mistake was masking, exactly as fixing a syntax error lets the type
+// checker finally read the line: renaming a misspelled key exposes its value to
+// checks that could not run while the key was unknown. What the edit does
+// promise is that it introduces nothing: applied to source where the diagnostic
+// holds, it never manufactures a problem the file did not already contain,
+// which is what the guards on the offering site are for. Independently applyable
+// means it stands alone rather than composing with a sibling, so two edits on
+// one diagnostic are alternatives to choose between and never a sequence.
+//
+// Both properties are what let an agent apply one without reading the message.
+// A partial edit would leave a file in a state nothing described, and edits
+// that had to be applied in order would make correctness depend on a rule that
+// is nowhere in the message.
+message SuggestedEdit {
+  // Title says what applying this does, imperatively and in a few words:
+  // "rename to `message`". It is what an editor puts in a menu and what a log
+  // records when an agent applies one.
+  //
+  // Required, because an unlabeled choice is not a choice, and these are
+  // offered as alternatives.
+  string title = 1 [(buf.validate.field).required = true];
+
+  // Changes are the edits to make, all of them, in any order. They never
+  // overlap.
+  //
+  // At least one, since a suggestion that changes nothing is a suggestion a
+  // consumer would offer and then appear to fail at.
+  repeated TextChange changes = 2 [(buf.validate.field).repeated = {min_items: 1}];
+}
+
+// DiagnosticReport is what one file's check produced.
+//
+// Per file rather than per invocation, because `flow validate a.yaml b.yaml` is two
+// answers and a consumer wants to know which file each belongs to. It is also what
+// makes the JSONL form useful: one report per line, one file per report.
+//
+// A file with no diagnostics still gets a report. "Checked and clean" and "not checked"
+// are different facts, and a consumer that saw only failures could not tell them apart.
+message DiagnosticReport {
+  // File is the path as it was given on the command line, so a reader can find it
+  // again without resolving anything.
+  string file = 1 [(buf.validate.field).required = true];
+
+  // Diagnostics is every problem found, in source order. Empty means the file is
+  // valid.
+  repeated Diagnostic diagnostics = 2;
+}
+
+// ValidationReport is what one check produced, across every file it was given.
+//
+// It exists because `json` and `jsonl` are different shapes rather than different
+// spellings, and this CLI is consistent about which: `json` is one document per
+// invocation, `jsonl` is one per line. Checking three files produces three
+// [DiagnosticReport]s, which is three lines of `jsonl` and, without something to hold
+// them, three documents where `json` promises one. A bare JSON array would do it and
+// is not a proto message, so the thing that holds them is a message.
+message ValidationReport {
+  // Files is one report per file checked, in the order they were given, including the
+  // files that were clean.
+  repeated DiagnosticReport files = 1;
+}
+
+// SourceFile is one file's contents, with the name to report diagnostics against.
+message SourceFile {
+  // Name is what a diagnostic should call this file. It is a label, not a path
+  // the server resolves (nothing here opens anything), so a caller with no
+  // filesystem may say `<stdin>` or a request id and still get a readable report.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 512
+  }];
+
+  // Source is the file's bytes.
+  //
+  // Bounded at the same megabyte the offline parser bounds a Flowfile at, and for
+  // the same reason: this is input an outside party chooses, and the resource it
+  // spends is memory in the parser. A caller sending more is refused by
+  // protovalidate before anything reads it.
+  bytes source = 2 [(buf.validate.field).bytes = {max_len: 1048576}];
+}

@@ -13,7 +13,7 @@ breaking:
   # The pattern, when a schema change genuinely has to break: add a scoped
   # `ignore_only` naming the one rule and the one file, explain in a comment
   # exactly which fields moved and why, land it, and remove it in the very next
-  # commit. It has been used six times and removed six times. A suppression
+  # commit. It has been used seven times and removed seven times. A suppression
   # measures a distance from one commit, and once that commit is on main the
   # distance is zero — what a stale block still does is stand ready to hide the
   # *next* break in the same file, which is a quiet failure, because it reads as

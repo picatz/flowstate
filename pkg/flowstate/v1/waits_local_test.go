@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // A local run parked on a gate looked exactly like a hung process, and the
@@ -54,14 +54,14 @@ func runParkedLocally(t *testing.T, spec *v1.Workflow) (*v1.PendingWaits, *v1.Lo
 func TestALocalRunSaysWhatItIsWaitingFor(t *testing.T) {
 	t.Parallel()
 
-	for _, test := range tests.PendingWaitCases() {
+	for _, test := range conformance.PendingWaitCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			t.Parallel()
 
 			waits, signals, done := runParkedLocally(t, test.Workflow)
 
 			parked, truncated := waits.Snapshot()
-			tests.AssertPendingWaits(t, parked, test.Want)
+			conformance.AssertPendingWaits(t, parked, test.Want)
 			assert.False(t, truncated,
 				"an answer with a handful of waits in it called itself truncated")
 
@@ -153,7 +153,7 @@ func TestALocalRunWithNobodyWatchingKeepsNoBookkeeping(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := v1.Run(ctx, tests.PendingWaitCases()[0].Workflow)
+		_, err := v1.Run(ctx, conformance.PendingWaitCases()[0].Workflow)
 		done <- err
 	}()
 
@@ -175,7 +175,7 @@ func TestALocalRunWithNobodyWatchingKeepsNoBookkeeping(t *testing.T) {
 func TestPendingWaitsAreCopiedOutOfTheLiveSet(t *testing.T) {
 	t.Parallel()
 
-	waits, signals, done := runParkedLocally(t, tests.PendingWaitCases()[0].Workflow)
+	waits, signals, done := runParkedLocally(t, conformance.PendingWaitCases()[0].Workflow)
 
 	parked, _ := waits.Snapshot()
 	require.Len(t, parked, 1)

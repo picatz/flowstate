@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -106,11 +105,11 @@ func TestRunLocalTakesEveryDeclaredType(t *testing.T) {
 
 	outputs := runOutputsOf(t, stdout)
 
-	assert.Equal(t, "checkout in eu-west-1", outputs["where"].GetLiteral().GetStringValue(),
+	assert.Equal(t, "checkout in eu-west-1", outputs["where"],
 		"the supplied string and the declaration's default did not both reach the run")
-	assert.EqualValues(t, 3, outputs["replicas"].GetLiteral().GetInt64Value(),
+	assert.Equal(t, json.Number("3"), outputs["replicas"],
 		"an int input arrived as something other than a number")
-	assert.Equal(t, "beta", outputs["first_target"].GetLiteral().GetStringValue(),
+	assert.Equal(t, "beta", outputs["first_target"],
 		"a list input written as JSON did not arrive as a list")
 }
 
@@ -122,10 +121,10 @@ func TestARunWithNoArgumentsGetsTheDeclaredDefaults(t *testing.T) {
 
 	outputs := runOutputsOf(t, stdout)
 
-	assert.Equal(t, "checkout in eu-west-1", outputs["where"].GetLiteral().GetStringValue())
-	assert.EqualValues(t, 2, outputs["replicas"].GetLiteral().GetInt64Value(),
+	assert.Equal(t, "checkout in eu-west-1", outputs["where"])
+	assert.Equal(t, json.Number("2"), outputs["replicas"],
 		"the declaration's default did not reach the run")
-	assert.Equal(t, "alpha", outputs["first_target"].GetLiteral().GetStringValue())
+	assert.Equal(t, "alpha", outputs["first_target"])
 }
 
 // TestRunLocalReportsTheBindersOwnRefusal is the direction that decides whether this
@@ -217,14 +216,14 @@ func TestAnInputFileCarriesTypesTheFlagsCannot(t *testing.T) {
 
 	outputs := runOutputsOf(t, stdout)
 
-	assert.Equal(t, "checkout in eu-west-1", outputs["where"].GetLiteral().GetStringValue())
+	assert.Equal(t, "checkout in eu-west-1", outputs["where"])
 
 	// The one a naive decoder gets wrong. encoding/json reads every number as a
 	// float64, so `4` would arrive as 4.0 and be refused against an `int`
 	// declaration for a difference the document does not contain.
-	assert.EqualValues(t, 4, outputs["replicas"].GetLiteral().GetInt64Value(),
+	assert.Equal(t, json.Number("4"), outputs["replicas"],
 		"a whole number in the file did not arrive as an int")
-	assert.Equal(t, "beta", outputs["first_target"].GetLiteral().GetStringValue())
+	assert.Equal(t, "beta", outputs["first_target"])
 }
 
 // TestAFlagWinsOverTheInputFile pins the precedence, which is the one thing about
@@ -239,9 +238,9 @@ func TestAFlagWinsOverTheInputFile(t *testing.T) {
 
 	outputs := runOutputsOf(t, stdout)
 
-	assert.Equal(t, "from-flag in eu-west-1", outputs["where"].GetLiteral().GetStringValue(),
+	assert.Equal(t, "from-flag in eu-west-1", outputs["where"],
 		"the file overrode the flag, which is the wrong way round")
-	assert.EqualValues(t, 4, outputs["replicas"].GetLiteral().GetInt64Value(),
+	assert.Equal(t, json.Number("4"), outputs["replicas"],
 		"the flag replaced the whole file rather than the one value it named")
 }
 
@@ -311,20 +310,16 @@ func TestBothDriversReportDeclaredOutputsInOneField(t *testing.T) {
 	require.NoError(t, err, stderr)
 
 	var document struct {
-		RunOutputs struct {
-			Values map[string]json.RawMessage `json:"values"`
-		} `json:"runOutputs"`
-		Outputs struct {
-			RunOutputs struct {
-				Values map[string]json.RawMessage `json:"values"`
-			} `json:"runOutputs"`
+		RunOutputs map[string]json.RawMessage `json:"runOutputs"`
+		Outputs    struct {
+			RunOutputs map[string]json.RawMessage `json:"runOutputs"`
 		} `json:"outputs"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(stdout), &document))
 
-	require.NotEmpty(t, document.RunOutputs.Values,
+	require.NotEmpty(t, document.RunOutputs,
 		"a local run left `runOutputs` empty, where a durable run reports the values")
-	assert.Equal(t, len(document.Outputs.RunOutputs.Values), len(document.RunOutputs.Values),
+	assert.Equal(t, len(document.Outputs.RunOutputs), len(document.RunOutputs),
 		"the two places the answer appears disagree about how many values there are")
 }
 
@@ -393,16 +388,31 @@ func TestANestedNumberIsReadAsWritten(t *testing.T) {
 }
 
 // runOutputsOf reads the declared outputs out of the document a run wrote, the way
-// a caller would: by name, off the top-level field.
-func runOutputsOf(tb testing.TB, stdout string) map[string]*v1.Value {
+// a caller would: by name, off the top-level field, as JSON.
+//
+// Plain JSON rather than a decoded [v1.GetResponse], which is what this used to do,
+// because plain JSON is what the document now carries: `.runOutputs.replicas` is
+// `3`, not `{"literal":{"int64Value":"3"}}`. See rundoc.go. That makes this helper
+// the same thing a `jq` expression is, which is the point of the tests below — an
+// int input that arrived as a string still fails here, and now fails on the
+// difference between `3` and `"3"` rather than on which arm of a union it carried.
+//
+// UseNumber, so a declared `int` output stays exactly the digits the run computed
+// rather than becoming a float64 on the way to being compared.
+func runOutputsOf(tb testing.TB, stdout string) map[string]any {
 	tb.Helper()
 
-	var response v1.GetResponse
-	require.NoError(tb, protojson.Unmarshal([]byte(stdout), &response),
-		"the run's document is not a GetResponse: %s", stdout)
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	decoder.UseNumber()
 
-	values := response.GetRunOutputs().GetValues()
-	require.NotEmpty(tb, values, "the run reported no declared outputs: %s", stdout)
+	var document struct {
+		RunOutputs map[string]any `json:"runOutputs"`
+	}
+	require.NoError(tb, decoder.Decode(&document),
+		"the run's document did not decode: %s", stdout)
 
-	return values
+	require.NotEmpty(tb, document.RunOutputs,
+		"the run reported no declared outputs: %s", stdout)
+
+	return document.RunOutputs
 }

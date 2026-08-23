@@ -43,7 +43,7 @@ type Secrets struct {
 	// federation target. Nil refuses every credential target; a Secrets set
 	// can configure Store and Policy for static secrets without ever setting
 	// this, which is itself a supported posture — see
-	// pkg/flowstate/v1/tests/authority.go's "secrets are configured,
+	// pkg/flowstate/v1/internal/conformance/authority.go's "secrets are configured,
 	// federation is not" case.
 	Broker *auth.Broker
 

@@ -2,6 +2,7 @@ package flowstatev1_test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -44,6 +45,42 @@ func TestBindRunInputsRefusesNonMemberEnumValue(t *testing.T) {
 	// large; check the nearer one instead: "prod" is closer to nothing here,
 	// so just assert the message names what was given.
 	assert.Contains(t, err.Error(), `"prod"`)
+}
+
+// TestBindRunInputsBoundsEnumSuggestionWork proves that an outside-controlled
+// value too long to be a typo is refused without sending it through the
+// quadratic edit-distance scan. The diagnostic still names the submitted
+// value and the declaration's choices; only the inapplicable suggestion is
+// skipped.
+func TestBindRunInputsBoundsEnumSuggestionWork(t *testing.T) {
+	t.Parallel()
+
+	values := make([]string, 64)
+	for i := range values {
+		values[i] = fmt.Sprintf("%03d-%s", i, strings.Repeat("x", 124))
+	}
+	const submittedBytes = 256 << 10
+	submitted := strings.Repeat("z", submittedBytes)
+	wf := constrainedWorkflow(enumDecl(values...))
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"environment": v1.NewLiteral(submitted)})
+	require.Error(t, err, "a non-member enum value was accepted")
+	assert.Contains(t, err.Error(), strconv.Quote(submitted))
+	assert.Contains(t, err.Error(), strconv.Quote(values[0]))
+	assert.NotContains(t, err.Error(), "did you mean")
+}
+
+// TestBindRunInputsSuggestsNearbyMultibyteEnumValue keeps the bound in rune
+// units, as nearest.Distance is: byte length must not suppress a legitimate
+// suggestion in a multibyte script.
+func TestBindRunInputsSuggestsNearbyMultibyteEnumValue(t *testing.T) {
+	t.Parallel()
+
+	wf := constrainedWorkflow(enumDecl("環境本番"))
+
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"environment": v1.NewLiteral("環境本番版")})
+	require.Error(t, err, "a non-member enum value was accepted")
+	assert.Contains(t, err.Error(), `did you mean "環境本番"?`)
 }
 
 // TestBindRunInputsRefusesNonMemberDefault is the same negative direction

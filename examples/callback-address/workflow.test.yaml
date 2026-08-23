@@ -9,7 +9,7 @@
 # this corpus enforces rather than a rule written in a doc comment. A durable
 # run reports Temporal's own workflow id and the first run id of its
 # continued-execution chain; the shared driver cases in
-# `pkg/flowstate/v1/tests/runaddress.go` are where those two answers are held to
+# `pkg/flowstate/v1/internal/conformance/runaddress.go` are where those two answers are held to
 # one definition.
 edition: v2026.3
 defaults:

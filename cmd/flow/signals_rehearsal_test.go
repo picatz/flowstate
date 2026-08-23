@@ -14,7 +14,7 @@ import (
 // from, so a gate whose `signals:` policy names an approver is reachable in a
 // rehearsal at all.
 //
-// The driver agreement itself is pinned in pkg/flowstate/v1/tests - these are
+// The driver agreement itself is pinned in pkg/flowstate/v1/internal/conformance - these are
 // about the command: what the flags parse to, that a rehearsal is announced
 // rather than slipped past, and that the two refusals an author is most likely
 // to meet say what to do about them.

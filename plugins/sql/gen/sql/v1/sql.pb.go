@@ -443,7 +443,7 @@ var File_sql_v1_sql_proto protoreflect.FileDescriptor
 
 const file_sql_v1_sql_proto_rawDesc = "" +
 	"\n" +
-	"\x10sql/v1/sql.proto\x12\x06sql.v1\x1a\x1cflowstate/v1/flowstate.proto\"\xba\x01\n" +
+	"\x10sql/v1/sql.proto\x12\x06sql.v1\x1a\x18flowstate/v1/value.proto\"\xba\x01\n" +
 	"\vQueryInputs\x12&\n" +
 	"\x06engine\x18\x01 \x01(\x0e2\x0e.sql.v1.EngineR\x06engine\x12%\n" +
 	"\x03dsn\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x03dsn\x12\x14\n" +

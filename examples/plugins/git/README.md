@@ -73,7 +73,7 @@ network examples one level up.
 Needs a real credential and a real private repository this token can read:
 
 ```console
-$ export GIT_SECRET_TOKEN=ghp_...
+$ export GIT_SECRET_0__TOKEN=ghp_...
 $ flow run examples/plugins/git/ls-remote-private.yaml \
     --input url=https://github.com/your-org/your-private-repo.git
 ```
@@ -128,7 +128,7 @@ Do not run this against a repository you do not want a real commit pushed
 to. It needs a real credential and a real target:
 
 ```console
-$ export GIT_SECRET_TOKEN=ghp_...
+$ export GIT_SECRET_0__TOKEN=ghp_...
 $ flow run examples/plugins/git/commit-push.yaml \
     --input url=https://github.com/your-org/your-repo.git \
     --input branch=main \
