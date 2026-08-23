@@ -19,7 +19,7 @@ func TestCursorRoundTrips(t *testing.T) {
 		{page: 1, skip: 0},
 		{page: 1, skip: 9},
 		{page: 42, skip: 0},
-		{page: 1000000, skip: 100},
+		{page: 1000000, skip: maxPerPage - 1},
 	}
 
 	for _, c := range cases {
@@ -56,6 +56,8 @@ func TestDecodePageCursorRefusesGarbage(t *testing.T) {
 		{"too short", "AA"},
 		{"too long", strings.Repeat("A", 200)},
 		{"page zero", encodePageCursorRawForTest(0, 0, fp)},
+		{"skip at page size", encodePageCursorRawForTest(1, maxPerPage, fp)},
+		{"skip overflows int32", encodePageCursorRawForTest(1, 1<<31, fp)},
 		{"wrong magic", "X" + valid[1:]},
 		{"empty", ""},
 	}
@@ -84,11 +86,11 @@ func TestDecodePageCursorRefusesGarbage(t *testing.T) {
 // encodePageCursor's own packing by hand rather than calling it, since
 // encodePageCursor is production code that never needs to write an
 // out-of-range page number.
-func encodePageCursorRawForTest(page, skip int, fp fingerprint) string {
+func encodePageCursorRawForTest(page, skip uint32, fp fingerprint) string {
 	buf := make([]byte, 0, cursorRawLen)
 	buf = append(buf, cursorMagic...)
-	buf = binary.BigEndian.AppendUint32(buf, uint32(page))
-	buf = binary.BigEndian.AppendUint32(buf, uint32(skip))
+	buf = binary.BigEndian.AppendUint32(buf, page)
+	buf = binary.BigEndian.AppendUint32(buf, skip)
 	buf = append(buf, fp[:]...)
 	return base64.RawURLEncoding.EncodeToString(buf)
 }

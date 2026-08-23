@@ -105,8 +105,9 @@ func encodePageCursor(page, skip int, fp fingerprint) string {
 // decides whether a string is shaped like a value this plugin could ever
 // have emitted - checked structurally (bounded length, valid base64,
 // exactly cursorRawLen decoded bytes, this task's own magic prefix, a page
-// number of at least 1) before a single byte of it is trusted for
-// anything else. It does not check the fingerprint against a caller's
+// number that fits this worker and a skip smaller than the largest page
+// this task requests) before a single byte of it is trusted for anything
+// else. It does not check the fingerprint against a caller's
 // current filters - that comparison needs the caller's own filters in
 // hand, so it is done by whichever list task calls this (see
 // requireCursorFingerprint below), the same "decode structurally here,
@@ -135,6 +136,14 @@ func decodePageCursor(raw string) (pageCursor, error) {
 	skip := binary.BigEndian.Uint32(rest[4:8])
 	if page < 1 {
 		return pageCursor{}, fmt.Errorf("cursor names page %d, which this task never emits", page)
+	}
+	if uint64(page) > uint64(^uint(0)>>1) {
+		return pageCursor{}, fmt.Errorf("cursor names page %d, which does not fit this worker's integer size", page)
+	}
+	if skip >= maxPerPage {
+		return pageCursor{}, fmt.Errorf(
+			"cursor names within-page skip %d, want less than the maximum page size %d: not a value this task ever emitted",
+			skip, maxPerPage)
 	}
 	var fp fingerprint
 	copy(fp[:], rest[8:])

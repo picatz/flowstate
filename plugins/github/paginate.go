@@ -103,11 +103,14 @@ func paginateBounded[T any, S proto.Message](
 		// treating that as "this page is now fully consumed" is the
 		// conservative reading - never re-emitting an entry already
 		// returned, at the cost of possibly missing one that moved earlier.
+		// The lower clamp is defense in depth: cursor decoding rejects a
+		// negative or overflowing skip, but this helper must not turn an
+		// invalid value from any future caller into a negative slice index.
 		// See cursor.go's own doc comment for why this is the one gap even
 		// a stable sort order does not close.
 		skip := 0
 		if requests == 0 {
-			skip = min(startSkip, len(got))
+			skip = max(0, min(startSkip, len(got)))
 		}
 
 		for i := skip; i < len(got); i++ {

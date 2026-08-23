@@ -104,6 +104,24 @@ func TestPaginateBoundedReturnsEverythingWhenUnderTheCap(t *testing.T) {
 	}
 }
 
+// TestPaginateBoundedClampsANegativeSkip is defense in depth for callers
+// other than the cursor decoder: an invalid resume position must never become
+// a negative index into a fetched page.
+func TestPaginateBoundedClampsANegativeSkip(t *testing.T) {
+	fetch, _ := pagedInts(3)
+
+	items, truncated, _, _, err := paginateBounded(context.Background(), 1, -1, 3, 100, 20, unboundedResultBytes, fetch, identity)
+	if err != nil {
+		t.Fatalf("paginateBounded: unexpected error: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("len(items) = %d, want 3", len(items))
+	}
+	if truncated {
+		t.Fatal("truncated = true, want false")
+	}
+}
+
 // TestPaginateBoundedHitsTheExactBoundaryWithoutAFalsePositive is the case
 // CLAUDE.md's own "assert the bound was reached, not merely not exceeded"
 // lesson demands proof of in the other direction too: the total available
