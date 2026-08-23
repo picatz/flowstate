@@ -48,13 +48,13 @@ steps:
       name: approve
       timeout: 3s
       outputs:
-        approved: ${(payload.?approved.orValue(false) && true)}
+        approved: ${has(payload.approved) && payload.approved}
   - id: review
     wait_for_signal:
       name: review
       timeout: 3s
   - id: halt
-    if: ${!(steps.review.payload.?ok.orValue(false) && true)}
+    if: ${!steps.review.payload.?ok.orValue(false)}
     log:
       message: stop
 outputs:
@@ -62,6 +62,18 @@ outputs:
     value: '${steps.review.payload.?days.orValue(-1)}'
 `
 
+	// The step's `outputs:` keeps its guarded read, and that is the point of the
+	// fixture rather than an omission. `has(x.y) && x.y` errors when x.y is
+	// present and not a boolean; `x.?y.orValue(false)` hands back the value. In
+	// a condition the difference is invisible, because the engine refuses a
+	// non-boolean either way. In a value position the original errored and the
+	// rewrite computes something else — `flow fix` changing what a valid file
+	// means, which is the one thing this command must never do. The idiom is
+	// still legal, so the file left alone is a file that still works.
+	//
+	// The ternary under `outputs.days.value` *is* rewritten in that same value
+	// position, because `has(x.y) ? x.y : d` and `x.?y.orValue(d)` agree on
+	// every input there is.
 	result, err := flowfile.Fix([]byte(in))
 	require.NoError(t, err)
 	require.Empty(t, result.Refusals)

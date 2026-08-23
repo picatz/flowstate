@@ -22,8 +22,8 @@ import (
 //
 // Three shapes, decided on the issue, and nothing else:
 //
-//	has(x.y) && x.y        →  (x.?y.orValue(false) && true)
-//	!(has(x.y) && x.y)     →  !(x.?y.orValue(false) && true)
+//	has(x.y) && x.y        →  x.?y.orValue(false)
+//	!(has(x.y) && x.y)     →  !x.?y.orValue(false)
 //	has(x.y) ? x.y : d     →  x.?y.orValue(d)      (whole expression only)
 //
 // # Exact match, or nothing
@@ -64,11 +64,7 @@ import (
 // no name. Whatever `x` resolves to — a step, a loop binding, the wait's
 // `payload`, the http task's response — `x.?y.orValue(false)` reads the same
 // binding `has(x.y) && x.y` read, so the scope question that makes rooting hard
-// does not arise. The trailing `&& true` is intentional: it preserves the old
-// expression's runtime boolean check when a dynamically typed field is present,
-// rather than allowing a malformed string, list, or object to escape from a
-// value-context expression. What the rewrite needs in addition is *syntax*
-// honesty: a match inside a
+// does not arise. What it needs instead is *syntax* honesty: a match inside a
 // string literal is prose, so literals are masked before matching; and the
 // rewritten expression must parse back to the tree described above, so a splice
 // this reasoning missed cannot leave a file that means something else.
@@ -114,7 +110,12 @@ var (
 // result that does not re-parse — answers with the source unchanged. This
 // rewrite has no refusal path on purpose: the idiom is legal in the new edition,
 // so a site left alone is a valid file, not a stranded migration.
-func rewriteOptionalReads(src string) (string, bool) {
+// booleanEnforced says whether the engine will refuse a non-boolean where this
+// expression is being rewritten — see [booleanEnforcedKeys]. The ternary shape
+// is rewritten regardless, because `has(x.y) ? x.y : d` and
+// `x.?y.orValue(d)` agree on every input; only the conjunction shapes differ,
+// and only when the field is present and not a boolean.
+func rewriteOptionalReads(src string, booleanEnforced bool) (string, bool) {
 	if !strings.Contains(src, "has(") {
 		return src, false
 	}
@@ -139,7 +140,7 @@ func rewriteOptionalReads(src string) (string, bool) {
 		if path == other {
 			out = optionalSpelling(path) + ".orValue(" + strings.TrimSpace(src[m[6]:m[7]]) + ")"
 		}
-	} else {
+	} else if booleanEnforced {
 		out = rewriteConjunctions(src, masked)
 	}
 
@@ -195,7 +196,7 @@ func rewriteConjunctions(src, masked string) string {
 		if path != other || !cleanNeighbours(masked, m[0], m[1], false) {
 			continue
 		}
-		splices = append(splices, splice{m[0], m[1], "!" + guardedOptionalSpelling(path)})
+		splices = append(splices, splice{m[0], m[1], "!" + optionalSpelling(path) + ".orValue(false)"})
 		claim(m[0], m[1])
 	}
 	for _, m := range guardedRead.FindAllStringSubmatchIndex(masked, -1) {
@@ -203,7 +204,7 @@ func rewriteConjunctions(src, masked string) string {
 		if path != other || !free(m[0], m[1]) || !cleanNeighbours(masked, m[0], m[1], true) {
 			continue
 		}
-		splices = append(splices, splice{m[0], m[1], guardedOptionalSpelling(path)})
+		splices = append(splices, splice{m[0], m[1], optionalSpelling(path) + ".orValue(false)"})
 		claim(m[0], m[1])
 	}
 	if len(splices) == 0 {
@@ -261,14 +262,6 @@ func isIdentByte(b byte) bool {
 func optionalSpelling(path string) string {
 	i := strings.LastIndex(path, ".")
 	return path[:i] + ".?" + path[i+1:]
-}
-
-// guardedOptionalSpelling preserves both halves of the old guarded read: the
-// optional traversal supplies false for absence, while && still rejects a
-// present dynamically typed value that is not boolean. Parentheses keep this a
-// single operand wherever the original conjunction appeared.
-func guardedOptionalSpelling(path string) string {
-	return "(" + optionalSpelling(path) + ".orValue(false) && true)"
 }
 
 // profileEnv returns the profile's environment — the same environment the
@@ -452,7 +445,7 @@ func transformConjunctionChain(env *cel.Env, e *exprpb.Expr) (*exprpb.Expr, bool
 		if i+1 < len(ops) {
 			if guard, ok := testOnlySelectPath(ops[i]); ok {
 				if read, ok := plainSelectPath(ops[i+1]); ok && read == guard {
-					if repl, ok := parseInProfile(env, guardedOptionalSpelling(guard)); ok {
+					if repl, ok := parseInProfile(env, optionalSpelling(guard)+".orValue(false)"); ok {
 						out = append(out, repl)
 						changed = true
 						i++
@@ -700,21 +693,56 @@ func maskCELLiterals(src string) string {
 // because a block scalar has no one line to splice — the idiom is legal in the
 // new edition, so a multi-line site left alone is a valid file.
 func (f *fixer) optionalReads(n ast.Node) {
+	f.optionalReadsUnder(n, "")
+}
+
+// booleanEnforcedKeys are the mapping keys whose expression the engine refuses
+// unless it evaluates to a boolean.
+//
+// The conjunction rewrite is confined to these, and the reason is the whole of
+// this rewriter's job. `has(x.y) && x.y` errors when x.y is present and not a
+// boolean; `x.?y.orValue(false)` yields the value. Under one of these keys the
+// difference is invisible — [EvalConditionInScope] refuses the non-boolean
+// either way, so only the message changes — but in a value position (`outputs:`,
+// `vars:`, `value:`) the original errored and the rewrite computes something
+// else. That is `flow fix` changing what a valid file means, which the package
+// comment calls the worst thing this command can do, and it has managed it
+// twice before.
+//
+// `until:` is here because [EvalLoopUntil] delegates to [EvalConditionInScope]
+// precisely so the two cannot disagree about what a condition is; the http
+// task's `expect:` enforces the same rule but is not a step key, and is left
+// out rather than guessed at.
+var booleanEnforcedKeys = map[string]bool{
+	conditionKey: true,
+	loopUntilKey: true,
+}
+
+// optionalReadsUnder walks the document carrying the mapping key the value sits
+// under, which is what tells [fixer.optionalReadScalar] whether a boolean is
+// enforced where it is about to rewrite.
+//
+// A sequence keeps its parent's key, so `if:` written as a list of expressions
+// — or an expression nested in one — is still seen as a condition. A nested
+// mapping replaces it, because a value under `if: {a: ...}` is not the
+// condition itself.
+func (f *fixer) optionalReadsUnder(n ast.Node, key string) {
 	switch node := unwrapAnchor(n).(type) {
 	case *ast.MappingNode:
 		for _, v := range node.Values {
-			f.optionalReads(v)
+			f.optionalReadsUnder(v, key)
 		}
 	case *ast.MappingValueNode:
-		f.optionalReads(node.Value)
+		name, _ := keyNameOf(node.Key)
+		f.optionalReadsUnder(node.Value, name)
 	case *ast.SequenceNode:
 		for _, v := range node.Values {
-			f.optionalReads(v)
+			f.optionalReadsUnder(v, key)
 		}
 	case *ast.StringNode:
-		f.optionalReadScalar(node)
+		f.optionalReadScalar(node, key)
 	case *ast.LiteralNode:
-		f.optionalReadBlockScalar(node)
+		f.optionalReadBlockScalar(node, key)
 	}
 }
 
@@ -724,13 +752,13 @@ func (f *fixer) optionalReads(n ast.Node) {
 // line is located by its text within the literal's span — and any doubt about
 // which line that is (none found, or more than one) skips the site, because the
 // idiom is legal and a site left alone is a valid file.
-func (f *fixer) optionalReadBlockScalar(node *ast.LiteralNode) {
+func (f *fixer) optionalReadBlockScalar(node *ast.LiteralNode, key string) {
 	inner, fenced := SplitFence(strings.TrimSpace(blockText(node)))
 	if !fenced || strings.Contains(inner, "\n") {
 		return
 	}
 
-	rewritten, changed := rewriteOptionalReads(inner)
+	rewritten, changed := rewriteOptionalReads(inner, booleanEnforcedKeys[key])
 	if !changed {
 		return
 	}
@@ -766,13 +794,13 @@ func (f *fixer) optionalReadBlockScalar(node *ast.LiteralNode) {
 // optionalReadScalar rewrites one fenced scalar, splicing the way
 // [fixer.rootScalar] does and skipping silently where that splice cannot be
 // made — see [fixer.optionalReads] for why silence is correct here.
-func (f *fixer) optionalReadScalar(node *ast.StringNode) {
+func (f *fixer) optionalReadScalar(node *ast.StringNode, key string) {
 	inner, fenced := SplitFence(node.Value)
 	if !fenced {
 		return
 	}
 
-	rewritten, changed := rewriteOptionalReads(inner)
+	rewritten, changed := rewriteOptionalReads(inner, booleanEnforcedKeys[key])
 	if !changed {
 		return
 	}
