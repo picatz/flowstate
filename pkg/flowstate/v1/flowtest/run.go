@@ -79,6 +79,24 @@ func RunFile(path string) *v1.TestReport {
 func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult {
 	return runSuite(ctx, file, opts, func(test *Test) (loader, string) {
 		identity := workflowPathIn(dir, test)
+
+		// The refusal the doc above promises, made real: with no directory, a
+		// relative path would otherwise fall through [filepath.Join]'s
+		// identity on an empty prefix and resolve against the process working
+		// directory — so the same suite would silently run whatever file the
+		// caller's cwd happens to hold, or fail there, depending on where the
+		// test binary ran from. A path-shaped fact must never depend on cwd;
+		// refused per case, since a sibling case naming absolute paths is
+		// fine. Reported by Codex on picatz/flowstate#1015.
+		if dir == "" {
+			if err := pathlessRefusal(test); err != nil {
+				return loader{
+					load:      func() (*v1.Workflow, error) { return nil, err },
+					positions: func() *flowfile.Positions { return nil },
+				}, identity
+			}
+		}
+
 		var positions *flowfile.Positions
 		return loader{
 			load: func() (*v1.Workflow, error) {
@@ -164,6 +182,22 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Schedules = out.Schedules.Report()
 	}
 	return out
+}
+
+// pathlessRefusal is what stops one case from running under [Run] with no
+// directory: a relative `workflow:` or trigger `payload:` has nothing to
+// resolve against, and the two honest answers are an absolute path or a
+// directory. Nil when every path the case names is absolute (or absent).
+func pathlessRefusal(test *Test) error {
+	if !filepath.IsAbs(test.Workflow) {
+		return fmt.Errorf("workflow %q is a relative path and this run has no directory to resolve it against; "+
+			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Workflow)
+	}
+	if test.Trigger != nil && test.Trigger.Payload != "" && !filepath.IsAbs(test.Trigger.Payload) {
+		return fmt.Errorf("trigger payload %q is a relative path and this run has no directory to resolve it against; "+
+			"pass dir to Run (flowtesting callers: WithDir), or make the path absolute", test.Trigger.Payload)
+	}
+	return nil
 }
 
 // workflowPathIn and deliveryPathIn are [WorkflowPath] and [DeliveryPath] for
