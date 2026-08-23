@@ -920,6 +920,15 @@ func redactSensitiveTree(v any, sensitiveValues []any) any {
 	case map[string]any:
 		out := make(map[string]any, len(t))
 		for k, e := range t {
+			// Keys redact by exact match at every depth, not only where a
+			// renderer happens to print one at the top level: a sensitive
+			// struct's key — including one below the substring floor — is as
+			// much the material as the value it maps to (Codex, #1052). Two
+			// sensitive keys folding into one marker entry lose a pair, which
+			// is the redaction doing its job, not a collision to avoid.
+			if isSensitiveValue(k, sensitiveValues) {
+				k = sensitiveMarker
+			}
 			out[k] = redactSensitiveTree(e, sensitiveValues)
 		}
 		return out

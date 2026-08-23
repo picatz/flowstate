@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"google.golang.org/protobuf/proto"
 
@@ -436,9 +438,32 @@ func transcriptLabel(e transcriptEvent) string {
 
 func transcriptLine(at time.Duration, width int, label, text string, tone TranscriptTone) TranscriptLine {
 	return TranscriptLine{
-		Text: fmt.Sprintf("  t=%-6s %-*s  %s", shortDuration(at), width, label, text),
+		Text: escapeControlRunes(fmt.Sprintf("  t=%-6s %-*s  %s", shortDuration(at), width, label, text)),
 		Tone: tone,
 	}
+}
+
+// escapeControlRunes renders control characters as their escaped spelling, at
+// the one point every transcript line is formed. A scripted sender subject —
+// or any authored string a line carries — may hold a newline or an ANSI
+// escape, and passed through bare it fabricates apparent transcript entries
+// or restyles the terminal (Codex, #1052): a [TranscriptLine] promises one
+// physical line in the tone its renderer chose, so anything that could break
+// that promise is spelled out instead.
+func escapeControlRunes(s string) string {
+	if !strings.ContainsFunc(s, unicode.IsControl) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			quoted := strconv.QuoteRune(r)
+			b.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // stubIdentity renders which stub answered, in the numbering every other stub

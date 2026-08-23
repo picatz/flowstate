@@ -136,6 +136,39 @@ func TestOverlappingSensitiveSubstringsRedactWhole(t *testing.T) {
 	}
 }
 
+// TestNestedSensitiveKeysRedact pins round ten's P1: redactSensitiveTree
+// redacted values at every depth but preserved map keys, so a sensitive key
+// nested inside an output's structured value printed — including one below
+// the substring floor. Keys now redact by exact match at every level, in the
+// one shared walk.
+func TestNestedSensitiveKeysRedact(t *testing.T) {
+	t.Parallel()
+
+	got := redactSensitiveTree(map[string]any{
+		"outer": map[string]any{"zq": "v", "kept": "w"},
+	}, []any{"zq"})
+
+	outer, ok := got.(map[string]any)["outer"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, outer, "zq")
+	require.Contains(t, outer, sensitiveMarker)
+	require.Contains(t, outer, "kept")
+}
+
+// TestTranscriptLinesEscapeControlRunes pins round ten's P2: a scripted
+// sender subject carrying a newline or an ANSI escape must not fabricate
+// apparent transcript entries or restyle the terminal — a TranscriptLine is
+// one physical line, enforced at the one point every line is formed.
+func TestTranscriptLinesEscapeControlRunes(t *testing.T) {
+	t.Parallel()
+
+	line := transcriptLine(0, 4, "gate", "sender: evil\nFAKE PASS line \x1b[32mgreen", ToneInfo)
+	require.NotContains(t, line.Text, "\n")
+	require.NotContains(t, line.Text, "\x1b")
+	require.Contains(t, line.Text, `\n`)
+	require.Contains(t, line.Text, `\x1b`)
+}
+
 // TestShortDurationKeepsSubMillisecondTime pins the round-six timing finding:
 // `sleep: 500us` is legal, and a timing account that rendered it as 0s would
 // report that no virtual time passed.
