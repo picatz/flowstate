@@ -111,6 +111,11 @@ type FederationTarget struct {
 	// recorded in audit. Required, and unique within the policy.
 	Name string `json:"name" yaml:"name"`
 
+	// Profile pins this target to one immutable protocol revision. Required.
+	Profile string `json:"profile" yaml:"profile"`
+	// EnableExperimentalProfile is required in addition to selecting any draft profile.
+	EnableExperimentalProfile bool `json:"enable_experimental_profile,omitempty" yaml:"enable_experimental_profile,omitempty"`
+
 	// TokenExchange configures RFC 8693 OAuth 2.0 Token Exchange, the
 	// standards-based path that works with any authorization server implementing
 	// it. Prefer it where it is available.
@@ -221,7 +226,6 @@ func (p FederationPolicy) Validate() error {
 			return fmt.Errorf("%w: targets[%d]: duplicate name %q", ErrInvalidPolicy, i, target.Name)
 		}
 		names[target.Name] = struct{}{}
-
 		configured := 0
 		for _, set := range []bool{
 			target.TokenExchange != nil,
@@ -242,6 +246,20 @@ func (p FederationPolicy) Validate() error {
 		default:
 			return fmt.Errorf("%w: targets[%d] %q: configures %d providers, and a target names exactly one system",
 				ErrInvalidPolicy, i, target.Name, configured)
+		}
+		expected := ProfileFlowstateAssertionV1
+		switch {
+		case target.TokenExchange != nil:
+			expected = ProfileTokenExchange8693
+		case target.AWS != nil:
+			expected = ProfileAWSWebIdentity
+		case target.GCP != nil:
+			expected = ProfileGCPWorkloadIdentity
+		case target.ClientCredentials != nil:
+			expected = ProfileClientCredentials6749
+		}
+		if err := requireProfile(target.Profile, expected, target.EnableExperimentalProfile); err != nil {
+			return fmt.Errorf("targets[%d] %q: %w", i, target.Name, err)
 		}
 	}
 
@@ -381,15 +399,17 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 		switch {
 		case target.TokenExchange != nil:
 			exchanger, err = NewTokenExchanger(TokenExchangeConfig{
-				Name:               target.Name,
-				TokenURL:           target.TokenExchange.TokenURL,
-				Audience:           target.TokenExchange.Audience,
-				TargetAudience:     target.TokenExchange.TargetAudience,
-				Resource:           target.TokenExchange.Resource,
-				Scopes:             target.TokenExchange.Scopes,
-				RequestedTokenType: target.TokenExchange.RequestedTokenType,
-				HTTPClient:         cfg.client,
-				Clock:              cfg.clock,
+				Profile:                    target.Profile,
+				EnableExperimentalProfiles: target.EnableExperimentalProfile,
+				Name:                       target.Name,
+				TokenURL:                   target.TokenExchange.TokenURL,
+				Audience:                   target.TokenExchange.Audience,
+				TargetAudience:             target.TokenExchange.TargetAudience,
+				Resource:                   target.TokenExchange.Resource,
+				Scopes:                     target.TokenExchange.Scopes,
+				RequestedTokenType:         target.TokenExchange.RequestedTokenType,
+				HTTPClient:                 cfg.client,
+				Clock:                      cfg.clock,
 			})
 		case target.AWS != nil:
 			exchanger, err = NewAWSExchanger(AWSConfig{

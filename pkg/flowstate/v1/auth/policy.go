@@ -163,6 +163,9 @@ func (m NamespaceMap) IsZero() bool {
 // provider identity token are all just different values here, not different code
 // paths.
 type TrustedIssuer struct {
+	// Profile pins the exact authentication protocol revision. New policy files
+	// should always set it; when present it is validated without negotiation.
+	Profile string `json:"profile,omitempty" yaml:"profile,omitempty"`
 	// Name is a short operator-chosen label for this entry, unique within the
 	// policy, such as "github-actions-main" or "k8s-runner". It appears in
 	// audit records as [Principal.IssuerName] to identify which rule admitted a
@@ -654,6 +657,15 @@ func (t TrustedIssuer) kind() string {
 
 // validate reports whether a single trusted issuer entry is usable.
 func (t TrustedIssuer) validate() error {
+	if t.Profile != "" {
+		expected := ProfileOIDCCore10
+		if t.kind() == IssuerKindMTLS {
+			expected = ProfileMTLSRFC8705
+		}
+		if err := requireProfile(t.Profile, expected, false); err != nil {
+			return err
+		}
+	}
 	if t.Name == "" {
 		return fmt.Errorf("name is required")
 	}

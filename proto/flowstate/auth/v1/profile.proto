@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package flowstate.auth.v1;
+
+option go_package = "authv1";
+
+// AuthProfileDescriptor is the immutable, non-secret contract behind a profile
+// identifier.  An identifier is never retargeted when a draft changes.
+message AuthProfileDescriptor {
+  string id = 1;
+  string protocol_family = 2;
+  string revision = 3;
+  AuthProfileMaturity maturity = 4;
+  repeated AuthProfileRole roles = 5;
+  repeated string required_metadata = 6;
+  repeated string grant_types = 7;
+  repeated string token_types = 8;
+  AuthSenderConstraint sender_constraint = 9;
+  repeated string required_claims = 10;
+  repeated string capability_dependencies = 11;
+  AuthDowngradeBehavior downgrade_behavior = 12;
+  bool deprecated = 13;
+}
+
+enum AuthProfileMaturity {
+  AUTH_PROFILE_MATURITY_UNSPECIFIED = 0;
+  AUTH_PROFILE_MATURITY_EXPERIMENTAL = 1;
+  AUTH_PROFILE_MATURITY_PREVIEW = 2;
+  AUTH_PROFILE_MATURITY_STABLE = 3;
+}
+
+enum AuthProfileRole {
+  AUTH_PROFILE_ROLE_UNSPECIFIED = 0;
+  AUTH_PROFILE_ROLE_ISSUER = 1;
+  AUTH_PROFILE_ROLE_CLIENT = 2;
+  AUTH_PROFILE_ROLE_RESOURCE_SERVER = 3;
+}
+
+enum AuthSenderConstraint {
+  AUTH_SENDER_CONSTRAINT_UNSPECIFIED = 0;
+  AUTH_SENDER_CONSTRAINT_NONE = 1;
+  AUTH_SENDER_CONSTRAINT_MTLS = 2;
+  AUTH_SENDER_CONSTRAINT_DPOP = 3;
+}
+
+enum AuthDowngradeBehavior {
+  AUTH_DOWNGRADE_BEHAVIOR_UNSPECIFIED = 0;
+  AUTH_DOWNGRADE_BEHAVIOR_REFUSE = 1;
+}

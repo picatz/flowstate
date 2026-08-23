@@ -273,6 +273,7 @@ federation:
     - 'target == "aws-prod" && workload.namespace == "picatz"'
   targets:
     - name: aws-prod
+      profile: aws-sts-web-identity-2011-06-15
       aws:
         role_arn: arn:aws:iam::123456789012:role/flowstate
 `))

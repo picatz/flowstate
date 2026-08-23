@@ -116,6 +116,7 @@ allow:
   - 'target == "peer-flowstate" && workload.namespace == "acme"'
 targets:
   - name: peer-flowstate
+    profile: flowstate-assertion-v1
     assertion:
       audience: ` + deploymentB.URL + `
 `))
@@ -186,6 +187,7 @@ issuer: ` + deploymentA.URL + `
 declared_claims: [repository]
 targets:
   - name: somewhere-else
+    profile: flowstate-assertion-v1
     assertion:
       audience: https://partner.example.com
 `))

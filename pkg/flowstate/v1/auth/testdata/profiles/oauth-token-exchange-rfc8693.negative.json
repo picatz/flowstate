@@ -1,0 +1,6 @@
+[
+  {"name":"missing profile","profile":""},
+  {"name":"unknown revision","profile":"oauth-token-exchange-draft-99"},
+  {"name":"incompatible profile","profile":"oidc-core-1.0"},
+  {"name":"implicit downgrade","profile":"oauth-token-exchange-rfc8693-or-earlier"}
+]

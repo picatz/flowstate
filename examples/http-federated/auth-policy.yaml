@@ -24,6 +24,7 @@ federation:
     - 'target == "partner-api" && workload.step == "health"'
   targets:
     - name: partner-api
+      profile: oauth-token-exchange-rfc8693
       token_exchange:
         token_url: https://identity.partner.example.com/oauth2/token
         audience: https://identity.partner.example.com

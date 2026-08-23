@@ -3067,6 +3067,7 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	rootCmd.AddCommand(lspCmd)
 	rootCmd.AddCommand(keysCmd)
 	rootCmd.AddCommand(jwtCmd)
+	rootCmd.AddCommand(newAuthCommand())
 	rootCmd.AddCommand(versionCmd)
 
 	return rootCmd

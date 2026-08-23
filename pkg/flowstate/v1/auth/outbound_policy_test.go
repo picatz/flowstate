@@ -22,6 +22,7 @@ func TestParseFederationPolicySimpleCases(t *testing.T) {
 issuer: https://flowstate.example.com
 targets:
   - name: aws-prod
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::123456789012:role/flowstate
 `))
@@ -44,6 +45,7 @@ targets:
 issuer: https://flowstate.example.com
 targets:
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: https://as.partner.example.com/oauth2/token
       audience: https://as.partner.example.com
@@ -79,6 +81,7 @@ allow:
 
 targets:
   - name: aws-prod
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::123456789012:role/flowstate
       region: us-east-1
@@ -86,6 +89,7 @@ targets:
       session_policy_arns:
         - arn:aws:iam::aws:policy/ReadOnlyAccess
   - name: gcp-analytics
+    profile: gcp-workload-identity-v1
     gcp:
       audience: //iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/flowstate
       service_account_email: flowstate@project.iam.gserviceaccount.com
@@ -93,12 +97,14 @@ targets:
         - https://www.googleapis.com/auth/bigquery
       lifetime: 30m
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: https://as.partner.example.com/oauth2/token
       audience: https://as.partner.example.com
       target_audience: https://api.partner.example.com
       scopes: [orders.read]
   - name: internal
+    profile: oauth-client-credentials-rfc6749
     client_credentials:
       token_url: https://as.internal.example.com/oauth2/token
       client_id: flowstate-prod
@@ -151,6 +157,7 @@ func TestParseFederationPolicyRejects(t *testing.T) {
 			input: `issuer: https://flowstate.example.com
 targets:
   - name: both
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::1:role/r
     token_exchange:
@@ -163,9 +170,11 @@ targets:
 			input: `issuer: https://flowstate.example.com
 targets:
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::1:role/r
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::2:role/other
 `,
@@ -179,6 +188,7 @@ targets:
 			input: `issuer: https://flowstate.example.com
 targets:
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arm: arn:aws:iam::1:role/r
 `,
@@ -190,6 +200,7 @@ allow:
   - 'workload.namespace =='
 targets:
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::1:role/r
 `,
@@ -201,6 +212,7 @@ allow:
   - 'workload.tenant == "acme"'
 targets:
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::1:role/r
 `,
@@ -212,6 +224,7 @@ allow:
   - 'workload.namespace'
 targets:
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::1:role/r
 `,
@@ -221,6 +234,7 @@ targets:
 			input: `issuer: https://flowstate.example.com
 targets:
   - name: aws
+    profile: aws-sts-web-identity-2011-06-15
     aws:
       role_arn: arn:aws:iam::1:role/r
       duration: 24h
@@ -231,6 +245,7 @@ targets:
 			input: `issuer: https://flowstate.example.com
 targets:
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: http://as.partner.example.com/token
       audience: https://as.partner.example.com
@@ -241,6 +256,7 @@ targets:
 			input: `issuer: https://flowstate.example.com
 targets:
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: https://as.partner.example.com/token
 `,
@@ -284,6 +300,7 @@ federation:
     - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
   targets:
     - name: aws-prod
+      profile: aws-sts-web-identity-2011-06-15
       aws:
         role_arn: arn:aws:iam::123456789012:role/flowstate
 `))
@@ -316,6 +333,7 @@ federation:
   issuer: https://flowstate.example.com
   targets:
     - name: aws-prod
+      profile: aws-sts-web-identity-2011-06-15
       aws:
         role_arn: not-an-arn
 `))
@@ -424,6 +442,7 @@ allow:
   - 'target == "partner" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
 targets:
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: ` + relyingParty.URL + `/token
       audience: ` + relyingParty.URL + `
@@ -474,6 +493,7 @@ issuer: ` + identityServer.URL + `
 declared_claims: [repository]
 targets:
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: ` + relyingParty.URL + `/token
       audience: ` + relyingParty.URL + `
@@ -518,6 +538,7 @@ func TestFederationPolicyHasNoPlaceForSecrets(t *testing.T) {
 issuer: https://flowstate.example.com
 targets:
   - name: internal
+    profile: oauth-client-credentials-rfc6749
     client_credentials:
       token_url: https://as.internal.example.com/oauth2/token
       client_id: flowstate-prod
@@ -531,6 +552,7 @@ targets:
 issuer: https://flowstate.example.com
 targets:
   - name: internal
+    profile: oauth-client-credentials-rfc6749
     client_credentials:
       token_url: https://as.internal.example.com/oauth2/token
       client_id: flowstate-prod

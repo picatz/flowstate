@@ -85,6 +85,10 @@ type DelegatorTokenFunc func(ctx context.Context) (token Material, tokenType str
 // delegation chain. Those belong to the grant model, which is design-gated on
 // #567's D1 and D2.
 type TokenExchangeConfig struct {
+	// Profile pins the exact protocol revision. No default or fallback exists.
+	Profile string
+	// EnableExperimentalProfiles is the operator's explicit opt-in for a draft profile.
+	EnableExperimentalProfiles bool
 	// Name identifies this exchanger in credentials and audit records. Defaults
 	// to "token-exchange".
 	Name string
@@ -149,6 +153,14 @@ type tokenExchanger struct {
 
 // NewTokenExchanger returns an [Exchanger] that performs RFC 8693 token exchange.
 func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
+	// The Go constructor predates profiles and remains source-compatible. Policy
+	// targets, the operator-controlled startup surface, never take this default.
+	if cfg.Profile == "" {
+		cfg.Profile = ProfileTokenExchange8693
+	}
+	if err := requireProfile(cfg.Profile, ProfileTokenExchange8693, cfg.EnableExperimentalProfiles); err != nil {
+		return nil, err
+	}
 	name := cfg.Name
 	if name == "" {
 		name = "token-exchange"

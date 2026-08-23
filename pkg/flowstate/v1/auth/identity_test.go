@@ -277,6 +277,7 @@ issuer: https://flowstate.example.com
 declared_claims: [repository]
 targets:
   - name: partner
+    profile: oauth-token-exchange-rfc8693
     token_exchange:
       token_url: ` + party.url + `/token
       audience: https://as.example.com

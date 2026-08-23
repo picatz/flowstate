@@ -156,6 +156,7 @@ func TestAssertionTargetInAFederationPolicy(t *testing.T) {
 issuer: https://flowstate.example.com
 targets:
   - name: peer-flowstate
+    profile: flowstate-assertion-v1
     assertion:
       audience: https://peer.example.com
 `))
@@ -178,6 +179,7 @@ targets:
 issuer: https://flowstate.example.com
 targets:
   - name: peer-flowstate
+    profile: flowstate-assertion-v1
     assertion: {}
 `))
 		require.ErrorIs(t, err, auth.ErrInvalidPolicy)
@@ -190,6 +192,7 @@ targets:
 issuer: https://flowstate.example.com
 targets:
   - name: confused
+    profile: flowstate-assertion-v1
     assertion:
       audience: https://peer.example.com
     aws:
@@ -228,6 +231,7 @@ assertion_lifetime: 90s
 declared_claims: [repository]
 targets:
   - name: peer-flowstate
+    profile: flowstate-assertion-v1
     assertion:
       audience: https://peer.example.com
 `))
@@ -253,6 +257,7 @@ issuer: https://flowstate.example.com
 assertion_lifetime: 24h
 targets:
   - name: peer-flowstate
+    profile: flowstate-assertion-v1
     assertion:
       audience: https://peer.example.com
 `))

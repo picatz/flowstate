@@ -32,5 +32,6 @@ federation:
     # credential. `audience:` is the peer's own identifier, and it is the only
     # place this assertion is good for.
     - name: peer-flowstate
+      profile: flowstate-assertion-v1
       assertion:
         audience: https://flowstate.peer.example.com
