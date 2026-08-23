@@ -8,9 +8,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
-	flowtests "github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // The two arms of the local driver's task span that a successful run never
@@ -28,29 +26,37 @@ import (
 // own spelling of it.
 
 // TestLocalFailedTaskSpanCarriesTheClassificationNotTheMessage is the local
-// counterpart of `engine.TestFailedTaskSpanCarriesTheClassificationNotTheMessage`.
+// half of [conformance.AssertTraceContainment]. The durable half is
+// `engine.TestFailedTaskSpanCarriesTheClassificationNotTheMessage`, and the two
+// run the same fixture through the same assertion.
 func TestLocalFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
-	flowtests.RegisterTraceContainmentTask(t)
+	conformance.RegisterTraceContainmentTask(t)
 
 	recorder := conformance.RecordSpans(t)
-	store, policy := flowtests.TraceContainmentAuthority(t)
+	authority := conformance.TraceContainmentAuthority()
 	ctx := v1.ContextWithTaskRuntime(t.Context(), v1.TaskRuntime{
-		Store: store, Policy: policy,
-		Identity: auth.WorkloadIdentity{Subject: "trace-caller", Issuer: "https://issuer.example", Namespace: "trace-tenant"},
+		Store:    authority.Store(t),
+		Policy:   authority.Policy(t),
+		Identity: authority.Identity,
 	})
 
-	_, err := v1.RunWithInputs(ctx, flowtests.TraceContainmentWorkflow(), flowtests.TraceContainmentInputs())
+	_, err := v1.RunWithInputs(ctx, conformance.TraceContainmentWorkflow(), conformance.TraceContainmentInputs())
 	require.Error(t, err, "the task fails on purpose")
 
 	var described bool
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
-		if stub.Name != v1.TaskSpanName(flowtests.ContainmentTaskName) {
+		if stub.Name != v1.TaskSpanName(conformance.ContainmentTaskName) {
 			continue
 		}
 
 		require.Equal(t, "Error", stub.Status.Code.String(), "a failed task must mark its span")
 		require.NotEmpty(t, stub.Status.Description, "a status with no description says nothing")
-		require.NotContains(t, strings.ToLower(stub.Status.Description), flowtests.RawFailureMessage,
+		// Both sides lowered, not just the haystack: the fixture's material
+		// carries capitals, so lowering one side alone is an assertion that
+		// cannot fail — which is how it read before this test ran the shared
+		// fixture rather than an all-lowercase constant of its own.
+		require.NotContains(t, strings.ToLower(stub.Status.Description),
+			strings.ToLower(conformance.ContainmentFailureMessage),
 			"the task's own error message reached the span status")
 		require.Empty(t, stub.Events, "no exception event, because an exception event carries the message")
 
@@ -58,8 +64,11 @@ func TestLocalFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) 
 	}
 	require.True(t, described, "no span covered the failing task")
 
-	flowtests.AssertTraceContainment(t, recorder, "flowstate.run/"+flowtests.ContainmentWorkflowName,
-		v1.TaskSpanName(flowtests.ContainmentTaskName))
+	// The run span is the local driver's alone: the durable driver opens none,
+	// because Temporal's interceptor already covers that seam.
+	conformance.AssertTraceContainment(t, recorder,
+		v1.RunSpanName(conformance.ContainmentWorkflowName),
+		v1.TaskSpanName(conformance.ContainmentTaskName))
 }
 
 // TestLocalDeniedDispatchStillOpensASpan pins the arm that is easiest to lose.

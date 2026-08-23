@@ -9,8 +9,8 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
-	flowtests "github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -61,48 +61,16 @@ func recordSpans(t *testing.T) *tracetest.SpanRecorder {
 	return recorder
 }
 
-// renderedSpans renders every recorded span through the %v family.
-//
-// One string per verb, over the whole slice and over each span individually,
-// which is the containment shape rather than the containment value: a struct
-// printed with %#v reaches fields no accessor exposes, and a slice printed with
-// %v is how a set of spans would be dumped by anything debugging them.
-func renderedSpans(recorder *tracetest.SpanRecorder) []string {
-	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
-
-	rendered := []string{
-		fmt.Sprintf("%v", stubs),
-		fmt.Sprintf("%+v", stubs),
-		fmt.Sprintf("%#v", stubs),
-	}
-
-	for _, stub := range stubs {
-		rendered = append(rendered,
-			fmt.Sprintf("%v", stub),
-			fmt.Sprintf("%+v", stub),
-			fmt.Sprintf("%#v", stub),
-			stub.Name,
-			stub.Status.Description,
-		)
-
-		for _, attr := range stub.Attributes {
-			rendered = append(rendered, string(attr.Key), attr.Value.String(),
-				fmt.Sprintf("%v", attr), fmt.Sprintf("%#v", attr))
-		}
-
-		for _, event := range stub.Events {
-			rendered = append(rendered, event.Name, fmt.Sprintf("%+v", event))
-		}
-	}
-
-	return rendered
-}
-
 // requireNoSecretInSpans is the assertion itself.
+//
+// The rendering is the shared one, not a copy: this file used to carry its own,
+// which had drifted to three verbs and no unexported holder while
+// [conformance.RenderedSpans] grew both — a containment rule written down twice
+// where the weaker copy is the one a durable-driver test executes.
 func requireNoSecretInSpans(t *testing.T, recorder *tracetest.SpanRecorder, material string) {
 	t.Helper()
 
-	for _, rendered := range renderedSpans(recorder) {
+	for _, rendered := range conformance.RenderedSpans(recorder) {
 		require.NotContains(t, rendered, material,
 			"secret material reached a span, which is exported to a collector")
 	}
@@ -257,30 +225,36 @@ func TestTaskSpanNamesTheSecretReferenceAndNeverTheSecret(t *testing.T) {
 // something useful, and it does not say the secret.
 func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 	recorder := recordSpans(t)
-	flowtests.RegisterTraceContainmentTask(t)
-	store, policy := flowtests.TraceContainmentAuthority(t)
-	runtime, err := engine.NewTaskRuntimeConfig(store, policy, nil)
+
+	conformance.RegisterTraceContainmentTask(t)
+	authority := conformance.TraceContainmentAuthority()
+	runtime, err := engine.NewTaskRuntimeConfig(authority.Store(t), authority.Policy(t), nil)
 	require.NoError(t, err)
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	engine.Register(env, runtime)
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
-		Workflow: flowtests.TraceContainmentWorkflow(),
-		Inputs:   flowtests.TraceContainmentInputs(),
-		Identity: &v1.WorkloadIdentity{Subject: "trace-caller", Issuer: "https://issuer.example", Namespace: "trace-tenant"},
+		Workflow: conformance.TraceContainmentWorkflow(),
+		Inputs:   conformance.TraceContainmentInputs(),
+		Identity: authority.ProtoIdentity(),
 	})
 	require.Error(t, env.GetWorkflowError(), "the task fails on purpose")
 
 	var described bool
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
-		if stub.Name != v1.TaskSpanName(flowtests.ContainmentTaskName) {
+		if stub.Name != v1.TaskSpanName(conformance.ContainmentTaskName) {
 			continue
 		}
 
 		require.Equal(t, "Error", stub.Status.Code.String(), "a failed task must mark its span")
 		require.NotEmpty(t, stub.Status.Description, "a status with no description says nothing")
-		require.NotContains(t, strings.ToLower(stub.Status.Description), "rejected credential",
+		// Named from the fixture, and both sides lowered. Left as a literal
+		// this read `"rejected credential"` — the message of the task this test
+		// used to register, which the shared fixture never produces — so the
+		// assertion could not fail whatever the span said.
+		require.NotContains(t, strings.ToLower(stub.Status.Description),
+			strings.ToLower(conformance.ContainmentFailureMessage),
 			"the task's own error message reached the span status")
 		require.Empty(t, stub.Events, "no exception event, because an exception event carries the message")
 
@@ -288,7 +262,9 @@ func TestFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
 	}
 	require.True(t, described, "no span covered the failing task; recorded: %v", spanNames(recorder))
 
-	flowtests.AssertTraceContainment(t, recorder, v1.TaskSpanName(flowtests.ContainmentTaskName))
+	// No run span among the expected names: this driver opens none, because
+	// Temporal's own interceptor already covers that seam.
+	conformance.AssertTraceContainment(t, recorder, v1.TaskSpanName(conformance.ContainmentTaskName))
 }
 
 // TestNoSpansWithoutATracerProvider is invariant 8 at this layer: a worker in a
