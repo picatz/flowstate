@@ -973,15 +973,34 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
-	bound, err := BindRunInputs(w, inputs)
-	if err != nil {
-		return nil, err
-	}
-	if err := CheckSubmissionSize(w, bound); err != nil {
-		return nil, err
-	}
+	// The run-level span, opened at the submit boundary rather than around
+	// [eval], so that a submission this driver *refuses* — an undeclared input, a
+	// pair past its size — leaves a trace saying so. A refusal that produced no
+	// span would be the outcome an operator most wants to see and the only one
+	// invisible, which is the argument `netpolicy`'s round tripper already makes
+	// about a denied request.
+	//
+	// Through [observeRun] rather than a `defer span.End()` here, because a task
+	// that panics never returns through the assignment that would record the
+	// outcome: the span would end UNSET, and a crashed run would be
+	// indistinguishable from a successful one at the run level. [observeRun]
+	// handles that path the way [ObserveTask] handles it one level down, without
+	// recovering the panic.
+	//
+	// This is the local driver's alone. See [StartRunSpan] for why the durable
+	// driver opens no counterpart and why that is agreement rather than
+	// divergence.
+	return observeRun(ctx, w, func(ctx context.Context) (*Workflow_StepOutputs, error) {
+		bound, err := BindRunInputs(w, inputs)
+		if err != nil {
+			return nil, err
+		}
+		if err := CheckSubmissionSize(w, bound); err != nil {
+			return nil, err
+		}
 
-	return eval(ctx, w, bound)
+		return eval(ctx, w, bound)
+	})
 }
 
 func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
