@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// AuthorizationAttribute is the deliberately small value vocabulary that may
+// cross the authorization boundary. It cannot carry request objects, tokens,
+// headers, or arbitrary workflow/plugin values.
+message AuthorizationAttribute {
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+    string string_value = 1 [(buf.validate.field).string.max_bytes = 1024];
+    int64 int_value = 2;
+    bool bool_value = 3;
+    StringList string_list = 4;
+  }
+
+  message StringList {
+    repeated string values = 1 [(buf.validate.field).repeated = {
+      max_items: 32
+      items: {string: {max_bytes: 1024}}
+    }];
+  }
+}
+
+enum AuthorizationPrincipalKind {
+  AUTHORIZATION_PRINCIPAL_KIND_UNSPECIFIED = 0;
+  AUTHORIZATION_PRINCIPAL_KIND_HUMAN = 1;
+  AUTHORIZATION_PRINCIPAL_KIND_WORKLOAD = 2;
+  AUTHORIZATION_PRINCIPAL_KIND_AGENT = 3;
+  AUTHORIZATION_PRINCIPAL_KIND_SERVICE = 4;
+  AUTHORIZATION_PRINCIPAL_KIND_PLUGIN = 5;
+}
+
+message AuthorizationDelegation {
+  string issuer = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+  string subject = 2 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+  string principal_id = 3 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 1024}];
+  AuthorizationPrincipalKind kind = 4 [(buf.validate.field).enum.defined_only = true];
+}
+
+// AuthorizationPrincipal contains only verified, issuer-normalized policy
+// data. principal_id is issuer-qualified and stable across credential refresh.
+message AuthorizationPrincipal {
+  string issuer = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+  string subject = 2 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 512}];
+  string principal_id = 3 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 1024}];
+  AuthorizationPrincipalKind kind = 4 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  repeated string tenants = 5 [(buf.validate.field).repeated = {unique: true, max_items: 32, items: {string: {min_bytes: 1, max_bytes: 128}}}];
+  repeated string roles = 6 [(buf.validate.field).repeated = {unique: true, max_items: 32, items: {string: {min_bytes: 1, max_bytes: 128}}}];
+  repeated string groups = 7 [(buf.validate.field).repeated = {unique: true, max_items: 64, items: {string: {min_bytes: 1, max_bytes: 256}}}];
+  map<string, AuthorizationAttribute> attributes = 8 [(buf.validate.field).map = {max_pairs: 32, keys: {string: {min_bytes: 1, max_bytes: 128}}, values: {required: true}}];
+  repeated AuthorizationDelegation delegation_chain = 9 [(buf.validate.field).repeated = {max_items: 16, items: {required: true}}];
+}
+
+message AuthorizationAction {
+  string name = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 128}];
+  string group = 2 [(buf.validate.field).string.max_bytes = 128];
+  string parent = 3 [(buf.validate.field).string.max_bytes = 128];
+}
+
+message AuthorizationResource {
+  string type = 1 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 128}];
+  string id = 2 [(buf.validate.field).string = {min_bytes: 1, max_bytes: 1024}];
+  string tenant = 3 [(buf.validate.field).string.max_bytes = 128];
+  string owner = 4 [(buf.validate.field).string.max_bytes = 1024];
+  string parent = 5 [(buf.validate.field).string.max_bytes = 1024];
+  map<string, AuthorizationAttribute> attributes = 6 [(buf.validate.field).map = {max_pairs: 32, keys: {string: {min_bytes: 1, max_bytes: 128}}, values: {required: true}}];
+}
+
+// AuthorizationContext contains bounded, normalized environmental facts, not
+// transport requests or their headers.
+message AuthorizationContext {
+  string deployment = 1 [(buf.validate.field).string.max_bytes = 256];
+  string request_id = 2 [(buf.validate.field).string.max_bytes = 256];
+  map<string, AuthorizationAttribute> attributes = 3 [(buf.validate.field).map = {max_pairs: 32, keys: {string: {min_bytes: 1, max_bytes: 128}}, values: {required: true}}];
+}
+
+message AuthorizationRequest {
+  AuthorizationPrincipal principal = 1 [(buf.validate.field).required = true];
+  AuthorizationAction action = 2 [(buf.validate.field).required = true];
+  AuthorizationResource resource = 3 [(buf.validate.field).required = true];
+  AuthorizationContext context = 4 [(buf.validate.field).required = true];
+}
+
+message AuthorizationDecision {
+  bool allowed = 1;
+  string reason = 2 [(buf.validate.field).string.max_bytes = 1024];
+  string policy = 3 [(buf.validate.field).string.max_bytes = 256];
+  string action = 4 [(buf.validate.field).string.max_bytes = 128];
+  string resource = 5 [(buf.validate.field).string.max_bytes = 1024];
+}
