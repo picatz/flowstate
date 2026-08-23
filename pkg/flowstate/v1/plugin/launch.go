@@ -118,6 +118,17 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	if err := admit(cfg, found.Name, found.Path, image); err != nil {
 		return nil, err
 	}
+	if sel, ok := cfg.PluginProfiles[found.Name]; ok {
+		prov := cfg.Provenance[found.Name]
+		digest, signer := "", ""
+		if prov != nil {
+			digest, signer = prov.GetResolvedDigest(), prov.GetSigner()
+		}
+		cfg.logger().InfoContext(procCtx, "plugin admitted",
+			"plugin", found.Name, "artifact", digest, "signature_verified", signer != "",
+			"signer", signer, "policy_revision", cfg.AdmissionProfiles[sel.Admission].GetPolicyRevision(),
+			"admission_profile", sel.Admission, "isolation_profile", sel.Isolation)
+	}
 
 	socketDir, socketPath, err := makeSocketDir(cfg.SocketDir)
 	if err != nil {
@@ -188,6 +199,12 @@ func launch(procCtx context.Context, cfg Config, found Found, image *execImage) 
 	cmd.ExtraFiles = []*os.File{hostPipeR}
 
 	isolateProcessGroup(cmd)
+	if err := configureIsolation(cmd, cfg.isolationFor(found.Name)); err != nil {
+		hostPipeW.Close()
+		stdoutR.Close()
+		stderrR.Close()
+		return nil, pluginError(found.Name, found.Path, err)
+	}
 
 	// Cancelling procCtx asks the whole process group to stop, and WaitDelay is
 	// how long "asks" lasts before os/exec stops asking.

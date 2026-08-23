@@ -1,7 +1,9 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -53,6 +55,9 @@ import (
 // hazard [execImage] exists to close; re-opening the path to check a pin would
 // reintroduce it in the one place that is supposed to be certain.
 func admit(cfg Config, name, path string, image *execImage) error {
+	if err := admitProfile(context.Background(), cfg, name, path, image); err != nil {
+		return err
+	}
 	want, pinned := cfg.PinnedDigests[name]
 	if !pinned {
 		return nil
@@ -119,6 +124,39 @@ func admit(cfg Config, name, path string, image *execImage) error {
 		))
 	}
 
+	return nil
+}
+
+func admitProfile(ctx context.Context, cfg Config, name, path string, image *execImage) error {
+	sel, selected := cfg.PluginProfiles[name]
+	if !selected {
+		return nil
+	}
+	p := cfg.AdmissionProfiles[sel.Admission]
+	provenance := cfg.Provenance[name]
+	if image == nil || !image.pinned {
+		return pluginError(name, path, fmt.Errorf("%w: profile %q requires an immutable, descriptor-pinned executable", ErrAdmissionProfile, p.GetName()))
+	}
+	digest, err := image.digest()
+	if err != nil {
+		return pluginError(name, path, fmt.Errorf("%w: profile %q could not resolve artifact digest: %v", ErrAdmissionProfile, p.GetName(), err))
+	}
+	if p.GetRequireImmutableDigest() && (provenance == nil || provenance.GetResolvedDigest() != digest) {
+		return pluginError(name, path, fmt.Errorf("%w: profile %q requires resolver identity %s to match the executable", ErrAdmissionProfile, p.GetName(), digest))
+	}
+	if p.GetRequireSbom() {
+		if provenance == nil || provenance.GetSbomDigest() == "" || !slices.Contains(p.GetTrustedSbomFormats(), provenance.GetSbomFormat()) {
+			return pluginError(name, path, fmt.Errorf("%w: profile %q requires an SBOM in a trusted format", ErrAdmissionProfile, p.GetName()))
+		}
+	}
+	if p.GetRequireSignature() {
+		if provenance == nil || provenance.GetSignature() == "" || !slices.Contains(p.GetTrustedSigners(), provenance.GetSigner()) || cfg.SignatureVerifier == nil {
+			return pluginError(name, path, fmt.Errorf("%w: profile %q requires a signature from a trusted signer and a verifier", ErrAdmissionProfile, p.GetName()))
+		}
+		if err := cfg.SignatureVerifier.VerifyPlugin(ctx, name, digest, provenance, p.GetTrustedSigners()); err != nil {
+			return pluginError(name, path, fmt.Errorf("%w: profile %q signature verification failed: %v", ErrAdmissionProfile, p.GetName(), err))
+		}
+	}
 	return nil
 }
 

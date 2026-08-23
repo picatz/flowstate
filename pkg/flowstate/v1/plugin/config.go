@@ -248,6 +248,17 @@ type Config struct {
 	// file. See [admit] for what a pin does and does not claim.
 	PinnedDigests map[string]string
 
+	// AdmissionProfiles and IsolationProfiles are deployment-owned named
+	// policies. PluginProfiles maps a discovered plugin name to the two profile
+	// names it must satisfy. Provenance is resolver output, not plugin input.
+	AdmissionProfiles map[string]*flowstatev1.PluginAdmissionProfile
+	IsolationProfiles map[string]*flowstatev1.PluginIsolationProfile
+	PluginProfiles    map[string]ProfileSelection
+	Provenance        map[string]*flowstatev1.PluginArtifactProvenance
+	// SignatureVerifier validates resolver-provided signatures without putting
+	// trust roots or verification implementation into the serializable schema.
+	SignatureVerifier SignatureVerifier
+
 	// PermittedSchemes, when non-empty, lists the secret schemes plugins may
 	// claim. A plugin claiming anything else is refused rather than partially
 	// accepted, since a plugin whose reason for existing was refused is a live
@@ -413,6 +424,10 @@ func (c Config) withDefaults() Config {
 	c.SearchPath = slices.Clone(c.SearchPath)
 	c.Only = slices.Clone(c.Only)
 	c.PinnedDigests = maps.Clone(c.PinnedDigests)
+	c.AdmissionProfiles = maps.Clone(c.AdmissionProfiles)
+	c.IsolationProfiles = maps.Clone(c.IsolationProfiles)
+	c.PluginProfiles = maps.Clone(c.PluginProfiles)
+	c.Provenance = maps.Clone(c.Provenance)
 	c.PermittedSchemes = slices.Clone(c.PermittedSchemes)
 	c.Env = slices.Clone(c.Env)
 
@@ -464,6 +479,10 @@ func (c Config) validate() error {
 		if err := validateDigestPin(name, c.PinnedDigests[name]); err != nil {
 			return err
 		}
+	}
+
+	if err := c.validateProfiles(); err != nil {
+		return err
 	}
 
 	for _, entry := range c.Env {

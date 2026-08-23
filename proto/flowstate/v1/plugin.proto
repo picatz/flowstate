@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+option go_package = "flowstatev1";
+
+// PluginAdmissionProfile is a named, deployment-owned admission policy. A
+// plugin selects a profile by name; it never supplies or weakens the profile.
+message PluginAdmissionProfile {
+  string name = 1;
+  bool require_immutable_digest = 2;
+  bool require_signature = 3;
+  repeated string trusted_signers = 4;
+  bool require_sbom = 5;
+  repeated string trusted_sbom_formats = 6;
+  string policy_revision = 7;
+}
+
+// PluginIsolationProfile describes controls which must all be applied before a
+// plugin is admitted. Unsupported controls are startup errors, not suggestions.
+message PluginIsolationProfile {
+  string name = 1;
+  bool drop_privileges = 2;
+  optional uint32 uid = 3;
+  optional uint32 gid = 4;
+  bool read_only_root = 5;
+  repeated PluginMount mounts = 6;
+  uint64 temporary_storage_bytes = 7;
+  uint64 max_processes = 8;
+  uint64 cpu_time_seconds = 9;
+  uint64 memory_bytes = 10;
+  uint64 max_open_files = 11;
+  repeated string allowed_syscalls = 12;
+  PluginNetworkIsolation network = 13;
+}
+
+message PluginMount {
+  string source = 1;
+  string target = 2;
+  bool read_only = 3;
+}
+
+enum PluginNetworkIsolation {
+  PLUGIN_NETWORK_ISOLATION_UNSPECIFIED = 0;
+  PLUGIN_NETWORK_ISOLATION_HOST = 1;
+  PLUGIN_NETWORK_ISOLATION_NONE = 2;
+  // Egress is possible only through the host's netpolicy-enforcing proxy.
+  PLUGIN_NETWORK_ISOLATION_NETPOLICY = 3;
+}
+
+// PluginArtifactProvenance is supplied by the deployment's artifact resolver,
+// never by the plugin handshake.
+message PluginArtifactProvenance {
+  string resolved_digest = 1;
+  string signature = 2;
+  string signer = 3;
+  string sbom_digest = 4;
+  string sbom_format = 5;
+}

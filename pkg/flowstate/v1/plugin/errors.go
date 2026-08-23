@@ -59,7 +59,9 @@ var (
 	// changed under it; this says bytes that were never entitled to answer to
 	// this name asked to run at all, and the refusal happens before the process
 	// exists.
-	ErrDigestPin = errors.New("plugin: digest not admitted")
+	ErrDigestPin        = errors.New("plugin: digest not admitted")
+	ErrAdmissionProfile = errors.New("plugin: admission profile refused")
+	ErrIsolationProfile = errors.New("plugin: isolation profile cannot be enforced")
 
 	// ErrDuplicateScheme reports that two plugins claim one secret scheme. Two
 	// answers for one scheme is a configuration error, not something to resolve
