@@ -114,7 +114,17 @@ steps:
       url: ${inputs.repo}
   - id: base_sha
     description: The tip of the agent branch, named once — the first attempt's base, and the fix when the build was already green.
-    value: ${steps.tip.refs[0].sha}
+    # An *exact* ref match, not `refs[0]`. `git.ls_remote`'s `prefix:` is a
+    # string prefix (the plugin filters with HasPrefix), so asking for
+    # `refs/heads/agent/fix` also returns `refs/heads/agent/fix-old` and
+    # `refs/heads/agent/fix-2`. Taking the first of those would compute this
+    # run's patch against a different branch's tip, push it compare-and-swapped
+    # against that sha, and — if the suite happened to pass — report
+    # `fixed: true` naming a commit on a branch nobody asked about. Filtering by
+    # full name is what makes `inputs.branch` mean the branch it names; an absent
+    # branch yields an empty list and fails here, which is the honest outcome
+    # (see that input's own comment: this workflow cannot create a branch).
+    value: ${steps.tip.refs.filter(r, r.name == "refs/heads/" + inputs.branch)[0].sha}
   - id: failing
     description: The failure this run is trying to fix, at the tree it currently fails on.
     call: ./workflows/run-tests.yaml

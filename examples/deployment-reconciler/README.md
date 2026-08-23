@@ -26,7 +26,7 @@ second into a thirty-second interval would sit unread for twenty-nine of them.
 What it is *not* is unbounded. `max_iterations` caps the total passes a single
 run may make — a cumulative bound across every Continue-As-New segment, not a
 fresh budget per segment — so a genuinely perpetual reconciler is one a
-retirement signal ends, or one an operator re-creates. The ceiling is the safety
+retirement ends, or one an operator re-creates. The ceiling is the safety
 net that turns "the retirement never came" into a named failure rather than a
 loop that runs forever.
 
@@ -53,17 +53,20 @@ count is adopted only when it is an int in the same `(0, 100]` range — a wrong
 type or an out-of-range value is ignored rather than POSTed or allowed to crash
 the run.
 
-**The wait comes first, and that ordering is load-bearing.** The scheduler — the
-`wait_for_signal:` — is the *first* step of each pass, not the last, because it
-is the only place a `retired: true` is consumed. A retirement can arrive while
-the run is suspended (buffered across a Continue-As-New, delivered before the
-body reaches the wait); if the mutation ran before the wait consumed it, a
-workload already declared retired would get one last scale on its way out. With
-the wait first and every mutation gated on the pass not being a retirement, a
-delayed or buffered retirement ends the run before anything is observed or
-written. The cost is that the very first pass waits up to one resync interval
-before its first reconcile — a caller wanting an immediate first pass sends a
-`spec-changed` carrying the current desired count.
+**The stop condition is read from the world, not from the event.** Retirement is
+`observed.retired`, taken from the control plane every pass — not a `retired: true`
+payload. A `wait_for_signal:` consumes exactly one queued delivery, oldest first,
+so a run suspended while a spec change *and* a retirement were both sent consumes
+the spec change and finds no retirement in it; a file reading retirement from the
+payload would then scale a workload whose retirement was already declared. Asking
+the world makes the queue's order irrelevant, which is the same discipline as the
+table above applied to the one decision that can do damage.
+
+The wait still comes first in the body, for a smaller reason: a pass is a wake-up
+followed by a fresh reading, so nothing acts on an observation taken before it
+went to sleep. The cost is that the first pass waits up to one resync interval; a
+caller wanting an immediate first pass sends a `spec-changed` with the current
+desired count.
 
 Two smaller decisions are worth copying. The comparison is named once
 (`drift`) and read by both the step that acts and the output that counts, rather
@@ -77,19 +80,19 @@ is one operators learn to ignore.
 $ flow test examples/deployment-reconciler/
 ```
 
-Seven cases on a virtual clock: drift nobody announced and corrected by the
-resync, a spec change mid-interval converged on, a workload already matching its
-spec left untouched, a `retired: true` buffered before the first pass ending the
-run with *no* scale (the ordering fix), an out-of-range and a wrong-type signal
-count both ignored, and a refused input. The intervals are thirty seconds each
+Eight cases on a virtual clock: drift nobody announced and corrected by the
+resync with no signal at all, a spec change mid-interval converged on, a workload
+already matching its spec left untouched, a retired workload never scaled even
+when drifted and with a spec change queued behind it (the ordering case), an
+out-of-range and a wrong-type signal count both ignored, a bounded watch ending on
+its own pass budget, and a refused input. The intervals are thirty seconds each
 and the whole file runs in milliseconds. The scripted control plane answers on
 `goal.passes` — the loop's own carried counter — so it can report one thing on
 the first pass and another after this reconciler wrote to it, which is what lets
 a test assert convergence rather than assert that a loop ran.
 
 ```console
-$ flow run local examples/deployment-reconciler/workflow.yaml \
-    --signal spec-changed='{"retired": true}'
+$ flow run local examples/deployment-reconciler/workflow.yaml --input max_passes=1
 ```
 
 The same file with a real clock and no stubs — it reaches for a control plane at
@@ -102,8 +105,10 @@ real:
 ```console
 $ flow run examples/deployment-reconciler/workflow.yaml
 $ flow signal <run-id> spec-changed --payload '{"desired_replicas": 7}'
-$ flow signal <run-id> spec-changed --payload '{"retired": true}'
 ```
+
+Retirement is not a signal: this reconciler stops when the control plane reports
+the workload retired, which the next pass picks up on its own.
 
 ## What this file is still waiting for
 

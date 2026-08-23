@@ -50,6 +50,12 @@ tests:
       - step: tip
         returns:
           refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
       - task: codex.exec
@@ -111,6 +117,12 @@ tests:
       - step: tip
         returns:
           refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
       - task: codex.exec
@@ -157,6 +169,12 @@ tests:
       - step: tip
         returns:
           refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
       - task: codex.exec
@@ -195,6 +213,12 @@ tests:
       - step: tip
         returns:
           refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
       # The gateway is down. The turn is not retried (`attempts: 1`), so the
@@ -232,6 +256,12 @@ tests:
       - step: tip
         returns:
           refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
       # The initial run at the tip already passes — a stale trigger, or a flaky
@@ -271,6 +301,12 @@ tests:
       - step: tip
         returns:
           refs:
+            # A sibling whose name shares the prefix, listed first on purpose:
+            # `prefix:` is a string prefix, so the real task returns this one
+            # too, and a workflow reading `refs[0]` would compute against
+            # sha-decoy and report a fix on a branch nobody asked about.
+            - name: refs/heads/agent/fix-old
+              sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
       # The turn produced more than its output budget allowed, so what came back

@@ -19,18 +19,24 @@
 #   a signal arrives       something announced a change, so reconcile *now*
 #                          rather than at the end of the interval
 #
-# Why the wait comes first, not last. A `retired: true` signal can arrive while
-# this run is suspended — buffered across a Continue-As-New, delivered before the
-# body ever reaches the wait. If the mutation ran before the wait consumed that
-# signal, a workload already declared retired would get one last scale on its way
-# out — this file's own test file delivers a retirement at 0s and asserts nothing
-# was observed or scaled. So the wait — the only place retirement is consumed — is the
-# first thing each pass does, and every mutation below is gated on the pass not
-# being a retirement. A delayed or buffered retirement therefore ends the run
-# before anything is observed or written. The cost is that the very first pass
-# waits up to one resync interval before its first reconcile; a caller that wants
-# an immediate first pass sends a `spec-changed` carrying the current desired
-# count, which wakes it at once.
+# Where the stop condition comes from, and why it is not the signal. Retirement
+# is read from the control plane every pass (`observed.retired`), not from a
+# `retired: true` payload — and that is the single most load-bearing decision in
+# this file. A `wait_for_signal:` consumes exactly one queued delivery, oldest
+# first, so a run suspended while a spec change *and* a retirement were both sent
+# consumes the spec change and finds no retirement in it. A file that read
+# retirement from the payload would then scale a workload whose retirement had
+# already been declared — an edge-triggered mistake in the one place it does real
+# damage. Asking the world instead makes the queue's order irrelevant: whatever
+# woke a pass, the pass sees the workload as it actually is. The test file's
+# "retired workload is never scaled, even drifted and with a spec change queued"
+# case is exactly that scenario.
+#
+# The wait still comes first rather than last, for a smaller reason: a pass is a
+# wake-up followed by a fresh reading, so nothing here ever acts on an
+# observation taken before it went to sleep. The cost is that the very first pass
+# waits up to one resync interval; a caller wanting an immediate first pass sends
+# a `spec-changed` carrying the current desired count, which wakes it at once.
 #
 # `renewal-reminder` is the closest sibling in this corpus and the contrast is
 # the point: there, the lapse *is* the work and the signal ends the run. Here
@@ -58,13 +64,13 @@
 # reconciler waiting out a thirty-second interval costs a durable timer, not a
 # running process. What it is *not* is unbounded: `max_iterations` caps the total
 # passes one run may make (see its own note), so a genuinely perpetual reconciler
-# is one a retirement signal ends, or one an operator re-creates — the ceiling is
+# is one a retirement ends, or one an operator re-creates — the ceiling is
 # the safety net that turns "retirement never came" into a named failure rather
 # than an infinite loop.
 #
 #   flow test examples/deployment-reconciler/          # every path, virtual clock
 #   flow run local examples/deployment-reconciler/workflow.yaml \
-#     --signal spec-changed='{"retired": true}'        # retire before any pass
+#     --input max_passes=1                             # one finite pass, no signal needed
 #
 # and durably, where the sleeping is real:
 #
@@ -87,9 +93,9 @@ inputs:
   max_passes:
     type: int
     default: 0
-    # A bounded watch. Zero - the default - means "watch until retired", which is
-    # the reconciler's own semantics: a converged workload is still worth
-    # watching, so only a retirement ends it. A positive value ends the run after
+    # A bounded watch. Zero - the default - means "watch until the control plane
+    # reports this workload retired", which is the reconciler's own semantics: a
+    # converged workload is still worth watching, so only retirement ends it. A positive value ends the run after
     # that many reconcile passes instead, which is what a *scheduled* reconcile
     # wants (reconcile, report, exit) and what makes this file runnable to
     # completion with no signal at all - `flow run local` with no `--signal`
@@ -97,7 +103,7 @@ inputs:
     # is what this example's own `inputs.json` sets, so the corpus harnesses run
     # a finite reconcile on both drivers rather than a run whose only path is
     # consuming a retirement.
-    description: end the run after this many reconcile passes; 0 watches until a retirement signal arrives
+    description: end the run after this many reconcile passes; 0 watches until the control plane reports the workload retired
     must: this >= 0 && this <= 1000
 steps:
   - id: opened
@@ -160,79 +166,66 @@ steps:
             name: spec-changed
             timeout: 30s
 
-        # Which of the two woke us, named once for the steps and loop-level
-        # expressions that read it.
+        # Which of the two woke us. It decides whether a *spec change* is on
+        # offer, and nothing else — see `retiring` below for why it no longer
+        # decides whether this workload is finished.
         - id: notified
           value: ${!steps.pace.timed_out}
 
-        # Retirement, decided before anything is observed or written. This is the
-        # gate that makes the wait-first ordering matter: a `retired: true`
-        # consumed here — however early it arrived — ends the run at `until:`
-        # below with no observe and no scale.
-        # Retirement is decided from an untrusted payload, so `retired` is
-        # type-guarded the same way `desired_replicas` is below: a sender that
-        # puts a string `"false"` (or anything non-bool) where a bool belongs
-        # would otherwise make `notified && <string>` fail the `&&` at runtime and
-        # terminate the reconciler. The `&&` short-circuits — `notified` gates the
-        # payload read, and the `type(...) == type(true)` gate runs before the
-        # value is used as a bool — so a wrong type reads as "not retiring" rather
-        # than crashing.
-        - id: retiring
-          value: |-
-            ${steps.notified.value && has(steps.pace.payload.retired) && type(steps.pace.payload.retired) == type(true) &&
-            steps.pace.payload.retired}
-
-        # Its complement, named once: every step below that must not run on a
-        # retiring pass reads this rather than re-deriving `!retiring`.
-        - id: reconciling
-          value: ${!steps.retiring.value}
-
-        # The desired count this pass will converge on. A signal may carry a new
-        # one, and a signal is an untrusted input: unlike `inputs.desired_replicas`,
-        # which `must:` range-checks at submit, a payload value is whatever a
-        # sender put there. So it is adopted only when it is an int in the same
-        # (0, 100] range the input constraint enforces; a wrong type, a zero, or a
-        # value over the ceiling is ignored and the current count carried forward,
-        # rather than POSTed to the control plane on the next pass or crashing the
-        # reconciler on a type error. The `&&` short-circuits, so the range
-        # comparisons never run against a non-int value.
-        - id: next_desired
-          value: "${(steps.notified.value && steps.reconciling.value && has(steps.pace.payload.desired_replicas) &&\ntype(steps.pace.payload.desired_replicas) == type(0) && steps.pace.payload.desired_replicas > 0 &&\nsteps.pace.payload.desired_replicas <= 100) ? steps.pace.payload.desired_replicas : goal.desired}"
-
-        # The level. Read every reconciling pass, unconditionally within that
-        # pass, before anything decides whether to act — including on the pass
-        # that was woken by a signal *saying* what the new state is. Trusting the
-        # notification's contents instead would be the edge-triggered mistake in
-        # its most tempting form: the signal says 7, so scale to 7, without ever
-        # asking what is actually running. Skipped only on a retiring pass, which
-        # has nothing to reconcile.
+        # The level, read every pass before anything is decided — including
+        # whether this reconciler is finished. Unconditional because it is a
+        # read: only writes need gating, and this read is what the gate is made
+        # of.
         - id: observed
-          if: ${steps.reconciling.value}
           timeout: 10s
           http:
             method: GET
             outputs:
               replicas: ${response.json.replicas}
+              retired: ${response.json.retired}
             parse_json: true
             query: '${{"name": inputs.target}}'
             url: https://control-plane.internal.example.com/workloads/status
 
-        # The comparison, named once. Both the converge step below and the
-        # `passes_that_acted` output read this name rather than re-deriving it —
-        # a second copy of a predicate is free to disagree with the first, which
-        # is what `flow lint`'s repeated-expression rule is about.
+        # Retirement is a fact about the workload, not about the event that woke
+        # us — and reading it from the world rather than from a payload is the
+        # whole point of this file, which an earlier version got wrong.
+        #
+        # A `wait_for_signal:` consumes exactly one delivery, oldest first
+        # (engine's takePendingSignal walks the carried queue in arrival order;
+        # the local driver reads one from its channel). So a run that was
+        # suspended while a spec change *and* a retirement were both sent would
+        # consume the spec change, see no retirement in that payload, and scale a
+        # workload whose retirement had already been declared. Asking the control
+        # plane instead makes the queue's order irrelevant: whatever woke this
+        # pass, the pass sees the workload as it actually is.
+        #
+        # This is the level-triggered discipline applied to the stop condition,
+        # and it is why a signal here only ever changes *when* a pass happens.
+        - id: retiring
+          value: ${steps.observed.retired}
+
+        # The desired count this pass converges on. A spec change is the one
+        # thing a signal legitimately carries, and it is still an untrusted
+        # input: adopted only when it is an int in the same (0, 100] range the
+        # input constraint enforces, and never on a retiring pass. Several queued
+        # changes are applied oldest-first, one per pass, which converges — a
+        # stale desired count for one interval is not a wrong mutation, it is a
+        # slower correct one.
+        - id: next_desired
+          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas) &&\ntype(steps.pace.payload.desired_replicas) == type(0) && steps.pace.payload.desired_replicas > 0 &&\nsteps.pace.payload.desired_replicas <= 100) ? steps.pace.payload.desired_replicas : goal.desired}"
+
+        # The comparison, named once, read by the step that acts and by the
+        # output that counts.
         - id: drift
-          if: ${steps.reconciling.value}
           value: ${steps.observed.replicas != steps.next_desired.value}
 
-        # The act, and the only step here that changes anything. It is behind an
-        # `if:` for two reasons at once: a retiring pass must never write, and a
-        # converged workload must not be written to on every resync — a
-        # reconciler whose steady state is a stream of no-op writes is one an
-        # operator learns to ignore. The `&&` short-circuits, so a retiring pass
-        # (where `drift` was skipped and has no value) never evaluates it.
+        # The act, and the only step here that changes anything. Gated on the
+        # workload not being retired and on there being drift to correct: a
+        # retired workload is never written to, and a converged one is not
+        # written to on every resync.
         - id: converge
-          if: ${steps.reconciling.value && steps.drift.value}
+          if: ${!steps.retiring.value && steps.drift.value}
           timeout: 10s
           retry:
             attempts: 3
@@ -246,13 +239,8 @@ steps:
               accepted: ${response.json.accepted}
             parse_json: true
             url: https://control-plane.internal.example.com/workloads/scale
-
-  # The observations this run made, in order — read once here so the outputs
-  # below do not each re-filter. A retiring pass contributes no `observed`, so
-  # this is the history of passes that actually reconciled, which is also what
-  # `passes` counts.
   - id: observations
-    value: ${steps.reconcile.results.filter(p, has(p.observed)).map(p, p.observed.replicas)}
+    value: ${steps.reconcile.results.map(p, p.observed.replicas)}
 
   # How many reconcile passes actually observed, named once for the two outputs
   # that ask.
@@ -261,7 +249,7 @@ steps:
 outputs:
   passes:
     value: ${steps.pass_count.value}
-    description: how many reconcile passes actually ran — a retirement consumed before any pass reconciled is zero, which is the fix for a workload retired before it was ever observed
+    description: how many reconcile passes ran; every pass reads the control plane, including the one that finds the workload retired
   passes_that_acted:
     value: ${steps.reconcile.results.filter(p, has(p.converge)).size()}
     description: how many of those passes found drift and wrote to the control plane — the rest observed a converged workload and did nothing, which is the state a healthy reconciler spends most of its life in
@@ -269,5 +257,5 @@ outputs:
     value: ${steps.reconcile.state.desired}
     description: the replica count this reconciler was responsible for when it stopped, after every valid spec change it was told about
   final_observed_replicas:
-    value: "${(steps.pass_count.value > 0) ? (steps.observations.value[steps.pass_count.value - 1]) : -1}"
-    description: what the control plane last reported, which is the claim about the world rather than about this run's intent, or -1 when this run retired before observing anything
+    value: ${steps.observations.value[steps.pass_count.value - 1]}
+    description: what the control plane last reported, which is the claim about the world rather than about this run's intent

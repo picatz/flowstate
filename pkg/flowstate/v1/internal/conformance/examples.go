@@ -548,7 +548,12 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 	// `workflow.test.yaml`, where a stub keyed on the loop's carried state can
 	// say what a fixed handler cannot.
 	mux.HandleFunc("/workloads/status", func(w http.ResponseWriter, _ *http.Request) {
-		write(w, map[string]any{"replicas": 2})
+		// `retired` as well as `replicas`: that example reads retirement from
+		// the control plane rather than from a signal payload, because a wait
+		// consumes one queued delivery and a retirement sitting behind a spec
+		// change would otherwise be missed for a pass. False here, so the run
+		// reconciles; its own test file drives the retired case.
+		write(w, map[string]any{"replicas": 2, "retired": false})
 	})
 	mux.HandleFunc("/workloads/scale", func(w http.ResponseWriter, _ *http.Request) {
 		write(w, map[string]any{"accepted": true})

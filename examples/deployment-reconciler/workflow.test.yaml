@@ -1,26 +1,31 @@
-# A cluster, scripted. Every case here stubs `observed` with an answer keyed on
-# `goal.passes` — the pass counter the loop carries — so the control plane can
-# report one thing on the first pass and something else after this reconciler
-# wrote to it. That keying is the whole trick, and it is available because a
-# stub's `where:` is evaluated in the scope of the step it replaces, which
-# inside a loop body includes the loop's own bare binding.
+# A control plane, scripted. Every case stubs `observed` with an answer keyed on
+# `goal.passes` — the pass counter the loop carries — so the world can report one
+# thing on the first pass and something else after this reconciler has written to
+# it. That keying is the whole trick, and it is available because a stub's
+# `where:` is evaluated in the scope of the step it replaces, which inside a loop
+# body includes the loop's own bare binding.
 #
-# What each case is actually holding this file to:
+# Note what the stubs answer with: `replicas` *and* `retired`. Retirement is a
+# fact about the workload, read from the control plane every pass, not something
+# a signal payload carries — see the workflow's own `retiring` step for why that
+# ordering is what makes a queued signal harmless.
 #
-#   * that convergence is decided by what was *observed*, not by what a signal
-#     said — the first case never sends a signal until it is time to retire;
-#   * that a spec change mid-interval is picked up on the following pass, from
-#     the observed side, and the written value is the new desired count;
-#   * that a converged workload is not written to, which is the difference
-#     between a reconciler and a cron job that POSTs every thirty seconds;
-#   * that a `retired: true` buffered before the first pass ends the run with no
-#     scale at all — the ordering fix (finding #1); and
-#   * that an out-of-range or wrong-type replica count carried by a signal is
-#     ignored rather than POSTed or allowed to crash the run (finding #4).
+# What these cases hold the file to:
+#
+#   * convergence is decided by what was observed, not by what a signal said —
+#     the first case sends no signal at all and still corrects drift;
+#   * a spec change mid-interval is picked up on the following pass, from the
+#     observed side, and the written value is the new desired count;
+#   * a converged workload is never written to;
+#   * a workload the control plane reports as retired is never written to, even
+#     when it is drifted and even when a spec change is sitting in the queue —
+#     the FIFO case, and the reason retirement is observed rather than delivered;
+#   * an out-of-range or wrong-type replica count carried by a signal is ignored
+#     rather than adopted or allowed to crash the run.
 #
 # The waits are 30s each and the whole file runs in milliseconds: `flow test`
-# runs on a virtual clock, so the resync intervals cost nothing here and the
-# signals below arrive at real offsets within them.
+# runs on a virtual clock, so the resync intervals cost nothing and the signals
+# below arrive at real offsets within them.
 edition: v2026.3
 
 # `log` answers with nothing, for every case: the opening line is for a person
@@ -36,15 +41,9 @@ tests:
     inputs:
       target: checkout-api
       desired_replicas: 5
-    signals:
-      # The only signal in this case, and it arrives after two resync intervals
-      # have already lapsed — so the two passes that did the work were driven by
-      # the clock and by the observation, with nothing having told this run
-      # anything at all. That is the level-triggered claim, stated as a run.
-      - name: spec-changed
-        at: 70s
-        payload:
-          retired: true
+    # No signals whatsoever. Every pass here is driven by the resync interval
+    # lapsing and by what the control plane reported — which is the
+    # level-triggered claim, stated as a run.
     stubs:
       # Pass 0: two replicas where five are wanted. Nobody announced this — a
       # node was lost, or somebody scaled by hand.
@@ -52,23 +51,27 @@ tests:
         where: goal.passes == 0
         returns:
           replicas: 2
-      # Every later pass: the cluster now reports what this reconciler last
-      # asked for. An expression rather than a literal, so it stays true when
-      # the desired count changes in the case below.
+          retired: false
+      # Pass 1: the cluster now reports what this reconciler last asked for.
+      - step: observed
+        where: goal.passes == 1
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      # Pass 2: the workload has been retired, which is what ends the run.
       - step: observed
         returns:
           replicas: ${goal.desired}
+          retired: true
       - step: converge
         returns:
           accepted: true
     expect:
-      ran: [opened, reconcile, observations]
+      ran: [opened, reconcile, observations, pass_count]
       outputs:
-        # Two reconcile passes: correct the drift, then observe the correction.
-        # The third pass consumed the retirement and reconciled nothing.
-        passes: 2
-        # Exactly one of them wrote. The second observed a converged workload
-        # and did nothing, which is the steady state.
+        passes: 3
+        # Exactly one wrote. The second observed a converged workload and the
+        # third found it retired.
         passes_that_acted: 1
         final_desired_replicas: 5
         final_observed_replicas: 5
@@ -79,7 +82,7 @@ tests:
       target: checkout-api
       desired_replicas: 5
     signals:
-      # Inside the first resync interval: this run is asleep on a 30s timer and
+      # Inside the first resync interval: the run is asleep on a 30s timer and
       # the announcement wakes it early. What the payload carries is the new
       # desired state — which the same pass still checks against the world
       # rather than acting on directly.
@@ -87,28 +90,28 @@ tests:
         at: 10s
         payload:
           desired_replicas: 7
-      - name: spec-changed
-        at: 45s
-        payload:
-          retired: true
     stubs:
-      # Pass 0 observes the pre-change count of 5 while carrying the new desired
-      # of 7, so it writes. Every later pass observes the 7 it asked for.
       - step: observed
         where: goal.passes == 0
         returns:
           replicas: 5
+          retired: false
+      - step: observed
+        where: goal.passes == 1
+        returns:
+          replicas: ${goal.desired}
+          retired: false
       - step: observed
         returns:
           replicas: ${goal.desired}
+          retired: true
       - step: converge
         returns:
           accepted: true
     expect:
-      ran: [opened, reconcile, observations]
+      ran: [opened, reconcile, observations, pass_count]
       outputs:
-        passes: 2
-        # Only the pass that received the change and saw drift wrote.
+        passes: 3
         passes_that_acted: 1
         final_desired_replicas: 7
         final_observed_replicas: 7
@@ -118,62 +121,68 @@ tests:
     inputs:
       target: checkout-api
       desired_replicas: 3
-    signals:
-      - name: spec-changed
-        at: 40s
-        payload:
-          retired: true
     stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
       - step: observed
         returns:
           replicas: ${goal.desired}
-      # Declared and deliberately never matched: a stub for a step that is
-      # supposed to stay skipped is how this case says so. If `converge` ever
-      # ran here, `passes_that_acted` below would say 1 — the stub is here so
-      # that a run which did reach it fails on the assertion rather than on a
-      # missing stub, which is a much less legible way to be told the same
-      # thing.
+          retired: true
+      # Declared and deliberately never matched: if `converge` ever ran here,
+      # `passes_that_acted` would say 1. The stub is here so that a run which did
+      # reach it fails on the assertion rather than on a missing stub, which is a
+      # much less legible way to be told the same thing.
       - step: converge
         returns:
           accepted: true
     expect:
-      ran: [opened, reconcile, observations]
+      ran: [opened, reconcile, observations, pass_count]
       skipped: [converge]
       outputs:
-        passes: 1
+        passes: 2
         passes_that_acted: 0
         final_desired_replicas: 3
         final_observed_replicas: 3
 
-  - name: a retirement buffered before the first pass ends the run with no scale
+  - name: a retired workload is never scaled, even drifted and with a spec change queued
     workflow: ./workflow.yaml
     inputs:
       target: checkout-api
       desired_replicas: 5
-    # Delivered at the very start, so it is buffered and the first `pace`
-    # consumes it before anything is observed. Against the old observe-first
-    # ordering this workload (2 replicas, 5 desired) would have been scaled one
-    # last time on its way out — finding #1. It must not be now: `observed`,
-    # `drift`, and `converge` are all skipped, and the run ends having touched
-    # nothing.
+    # The ordering case, and the reason retirement is read from the world rather
+    # than from a payload. A `wait_for_signal:` consumes exactly one delivery,
+    # oldest first, so a run suspended while a spec change *and* a retirement were
+    # both sent would consume the spec change and see no retirement in it. Here
+    # that spec change is queued and consumed by the only pass — and the pass
+    # still does not scale, because the control plane says the workload is
+    # retired. Against a file that read retirement from the payload this workload
+    # (2 replicas against a desired 9) would have been scaled on its way out.
     signals:
       - name: spec-changed
         at: 0s
         payload:
+          desired_replicas: 9
+    stubs:
+      - step: observed
+        returns:
+          replicas: 2
           retired: true
-    # No `observed` or `converge` stub on purpose: reaching either would be the
-    # bug, and with no stub the case fails loudly ("no stub for ...") rather than
-    # quietly — belt to the `skipped:` assertion's braces.
+      # No `converge` stub at all: reaching it is the bug, and with no stub a run
+      # that got there fails loudly rather than quietly scaling a retired
+      # workload.
     expect:
-      ran: [opened, reconcile, observations]
-      skipped: [observed, drift, converge]
+      ran: [opened, reconcile, observations, pass_count]
+      skipped: [converge]
       outputs:
-        passes: 0
+        passes: 1
         passes_that_acted: 0
+        # The queued spec change was consumed but never adopted: a retiring pass
+        # does not take a new desired count.
         final_desired_replicas: 5
-        # -1 is the sentinel for "retired before observing anything", which is
-        # exactly what happened.
-        final_observed_replicas: -1
+        final_observed_replicas: 2
 
   - name: an out-of-range replica count carried by a signal is ignored, not POSTed
     workflow: ./workflow.yaml
@@ -189,25 +198,25 @@ tests:
         at: 10s
         payload:
           desired_replicas: 0
-      - name: spec-changed
-        at: 20s
-        payload:
-          retired: true
     stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
       - step: observed
         returns:
           replicas: ${goal.desired}
+          retired: true
       - step: converge
         returns:
           accepted: true
     expect:
-      ran: [opened, reconcile, observations]
+      ran: [opened, reconcile, observations, pass_count]
       skipped: [converge]
       outputs:
-        passes: 1
+        passes: 2
         passes_that_acted: 0
-        # Unchanged: the 0 was refused, so the reconciler is still responsible
-        # for 5.
         final_desired_replicas: 5
         final_observed_replicas: 5
 
@@ -218,32 +227,58 @@ tests:
       desired_replicas: 5
     signals:
       # A string where a number belongs. Comparing it with `> 0` would fail
-      # expression evaluation and terminate the reconciler (finding #4); the
+      # expression evaluation and terminate the reconciler; the
       # `type(...) == type(0)` guard short-circuits before the comparison, so the
       # value is ignored and the run carries on.
       - name: spec-changed
         at: 10s
         payload:
           desired_replicas: seven
-      - name: spec-changed
-        at: 20s
-        payload:
-          retired: true
     stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
       - step: observed
         returns:
           replicas: ${goal.desired}
+          retired: true
       - step: converge
         returns:
           accepted: true
     expect:
-      ran: [opened, reconcile, observations]
+      ran: [opened, reconcile, observations, pass_count]
       skipped: [converge]
       outputs:
-        passes: 1
+        passes: 2
         passes_that_acted: 0
         final_desired_replicas: 5
         final_observed_replicas: 5
+
+  - name: a bounded watch ends on its own pass budget with no signal at all
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+      max_passes: 1
+    # What `inputs.json` runs, and what both corpus harnesses therefore exercise:
+    # one reconcile pass, ended by the budget rather than by a retirement.
+    stubs:
+      - step: observed
+        returns:
+          replicas: 2
+          retired: false
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 1
+        passes_that_acted: 1
+        final_desired_replicas: 5
+        final_observed_replicas: 2
 
   - name: a replica count outside the allowed range is refused before anything runs
     workflow: ./workflow.yaml
