@@ -2,6 +2,14 @@
 // Flowfiles locally, and serves as the control plane, worker, and operator
 // tooling for durable execution against Temporal. Run `flow --help` for the
 // command tree; docs/reference/ is generated from it.
+//
+// One rule spans every renderer's colors, and a new output surface inherits
+// it on purpose rather than by imitation: yellow (Warning) marks a fact worth
+// reading that is not a verdict — a coverage gap without
+// `--coverage-required`, an unused stub without `--fail-on-warning`, a
+// "nothing was explored" honesty line — and red (Danger) marks exactly what
+// decides an exit code. A fact promoted to the exit code by a flag changes
+// color with the flag, because the color is the claim.
 package main
 
 import (
