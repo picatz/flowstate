@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "flowstatev1";
+
+// AuthorizationPlan is the complete, immutable object a policy or person approves.
+// It contains references to secrets, never secret material.
+message AuthorizationPlan {
+  string version = 1;
+  string tenant = 2;
+  string workload = 3;
+  string agent = 4;
+  repeated PlannedOperation operations = 5;
+  ComputeStorageProfile profile = 6;
+  uint64 maximum_cost_microunits = 7;
+  google.protobuf.Duration maximum_duration = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  bytes nonce = 10;
+  repeated Delegation delegation_chain = 11;
+  string policy_revision = 12;
+  repeated Dependency dependencies = 13;
+  PlanTolerances tolerances = 14;
+}
+
+message PlannedOperation {
+  string id = 1;
+  uint32 sequence = 2;
+  string action = 3;
+  string resource = 4;
+  map<string, string> parameters = 5;
+  repeated Artifact artifacts = 6;
+  repeated NetworkDestination network_destinations = 7;
+  repeated SecretReference secret_references = 8;
+  string compensation_for = 9;
+  bool high_risk = 10;
+}
+
+message Artifact {
+  string identity = 1;
+  string digest = 2;
+}
+message NetworkDestination {
+  string scheme = 1;
+  string host = 2;
+  uint32 port = 3;
+}
+message SecretReference {
+  string provider = 1;
+  string name = 2;
+  string version = 3;
+}
+message Dependency {
+  string identity = 1;
+  string revision = 2;
+}
+message Delegation {
+  string delegator = 1;
+  string delegate = 2;
+  string scope_digest = 3;
+}
+message ComputeStorageProfile {
+  uint32 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  uint64 ephemeral_storage_bytes = 3;
+  string execution_class = 4;
+}
+message PlanTolerances {
+  repeated string mutable_parameter_names = 1;
+  uint64 additional_cost_microunits = 2;
+  google.protobuf.Duration additional_duration = 3;
+}
+
+// PlanApproval binds the approver and the policy revision to one plan digest.
+message PlanApproval {
+  string plan_digest = 1;
+  string approver = 2;
+  string policy_revision = 3;
+  google.protobuf.Timestamp approved_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  bytes signature = 6;
+}
+
+// ExecutionCapability is an issuer-signed, short-lived reference to an approval.
+// proof_key is the Ed25519 public key whose holder must sign each attempt.
+message ExecutionCapability {
+  string plan_digest = 1;
+  string approval_digest = 2;
+  string agent = 3;
+  string workload = 4;
+  string tenant = 5;
+  string audience = 6;
+  bytes proof_key = 7;
+  google.protobuf.Timestamp issued_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  bytes nonce = 10;
+  bytes issuer_signature = 11;
+}
+
+// OperationAttempt is the exact request checked at an execution boundary.
+message OperationAttempt {
+  string plan_digest = 1;
+  string operation_id = 2;
+  uint32 sequence = 3;
+  string action = 4;
+  string resource = 5;
+  map<string, string> parameters = 6;
+  repeated Artifact artifacts = 7;
+  repeated NetworkDestination network_destinations = 8;
+  repeated SecretReference secret_references = 9;
+  repeated Dependency dependencies = 10;
+  string policy_revision = 11;
+  repeated Delegation delegation_chain = 12;
+  string attempt_id = 13;
+  bytes holder_proof = 14;
+}
+
+enum AuthorizationEvent {
+  AUTHORIZATION_EVENT_UNSPECIFIED = 0;
+  AUTHORIZATION_EVENT_PLANNED = 1;
+  AUTHORIZATION_EVENT_APPROVED = 2;
+  AUTHORIZATION_EVENT_ATTEMPTED = 3;
+  AUTHORIZATION_EVENT_ALLOWED = 4;
+  AUTHORIZATION_EVENT_DENIED = 5;
+  AUTHORIZATION_EVENT_COMPLETED = 6;
+  AUTHORIZATION_EVENT_COMPENSATED = 7;
+}
+
+message AuthorizationAuditRecord {
+  string correlation_id = 1;
+  string plan_digest = 2;
+  string operation_id = 3;
+  string attempt_id = 4;
+  AuthorizationEvent event = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+  string reason = 7;
+}
