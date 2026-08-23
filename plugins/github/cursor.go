@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -105,8 +106,9 @@ func encodePageCursor(page, skip int, fp fingerprint) string {
 // decides whether a string is shaped like a value this plugin could ever
 // have emitted - checked structurally (bounded length, valid base64,
 // exactly cursorRawLen decoded bytes, this task's own magic prefix, a page
-// number of at least 1) before a single byte of it is trusted for
-// anything else. It does not check the fingerprint against a caller's
+// number that fits this worker and a skip smaller than the largest page
+// this task requests) before a single byte of it is trusted for anything
+// else. It does not check the fingerprint against a caller's
 // current filters - that comparison needs the caller's own filters in
 // hand, so it is done by whichever list task calls this (see
 // requireCursorFingerprint below), the same "decode structurally here,
@@ -135,6 +137,35 @@ func decodePageCursor(raw string) (pageCursor, error) {
 	skip := binary.BigEndian.Uint32(rest[4:8])
 	if page < 1 {
 		return pageCursor{}, fmt.Errorf("cursor names page %d, which this task never emits", page)
+	}
+	// A page number this worker's own int cannot hold is refused rather
+	// than silently truncated into one it can. Unreachable on a 64-bit
+	// worker - page is a uint32, so every value it can carry fits - and
+	// load-bearing only on a 32-bit one (GOARCH=386, arm), where a page at
+	// or past 1<<31 becomes a negative int. That is not a crash:
+	// paginateBounded's own "if page < 1 { page = 1 }" would clamp it. It is
+	// the worse thing, a wrong answer wearing a working call's clothes -
+	// a walk quietly restarted from page one under a cursor that named a
+	// different page. Refusing it is the fail-closed reading, and the
+	// diagnostic says which value was impossible.
+	if uint64(page) > uint64(math.MaxInt) {
+		return pageCursor{}, fmt.Errorf("cursor names page %d, which does not fit this worker's integer size", page)
+	}
+	// skip is an index into a page this task itself asked for, and no page
+	// this task asks for is larger than maxPerPage (perPage is always
+	// min(maxPerPage, max_results+1); paginateBounded clamps an
+	// over-delivering peer's response to the perPage it requested precisely
+	// so this stays true - see its own doc comment). So a skip at or past
+	// maxPerPage is not a position this plugin ever emitted, whoever
+	// produced it, and it is refused here rather than carried into
+	// paginateBounded as a slice index: the fingerprint is an unkeyed hash
+	// over filters a caller already knows, so a cursor is forgeable and
+	// every field of one is checked structurally before it is trusted, not
+	// only the fields a cooperative caller could get wrong by accident.
+	if skip >= maxPerPage {
+		return pageCursor{}, fmt.Errorf(
+			"cursor names within-page skip %d, want less than the maximum page size %d: not a value this task ever emitted",
+			skip, maxPerPage)
 	}
 	var fp fingerprint
 	copy(fp[:], rest[8:])
