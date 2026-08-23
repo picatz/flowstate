@@ -262,8 +262,7 @@ func addLocalRunFlags(cmd *cobra.Command) {
 		"authenticated string claim NAME=VALUE to rehearse policy as (repeatable)")
 	cmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"),
 		"path to an access policy whose secrets rules authorize local runs served to an agent")
-	cmd.Flags().String("identity-key", os.Getenv("FLOWSTATE_IDENTITY_KEY"),
-		"PKCS#8 PEM key used to mint short-lived workload assertions for federation targets")
+	cmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
 
 	// A bound `flow run local` does not need and this does.
 	//

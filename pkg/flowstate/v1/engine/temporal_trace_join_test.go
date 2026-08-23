@@ -46,6 +46,16 @@ import (
 // Continue-As-New to survive. What is under test is the join between this
 // engine's span and the substrate's, which exists on one side by construction.
 
+// durableRunSpanName is the span that covers a durable run, and it is the
+// substrate's rather than ours.
+//
+// Written down once here because two tests in this file read it and because
+// #547 made it an answer rather than an observation: this *is* the durable
+// driver's run span, so no `flowstate.run/*` span is opened beside it. Naming
+// the SDK's span in a constant also means a Temporal release that renames it
+// fails on a line that says what happened.
+const durableRunSpanName = "RunWorkflow:Run"
+
 // temporalTracing builds the SDK tracing interceptor these tests install.
 //
 // The options match what `cmd/flow`'s worker and client build, which is the
@@ -107,20 +117,22 @@ func TestTaskSpanParentsUnderTemporalActivitySpan(t *testing.T) {
 		byID[stub.SpanContext.SpanID()] = stub
 	}
 
-	// The workflow span is the root of the whole thing, and every span recorded
-	// here belongs to its trace. Found rather than assumed, so a substrate that
-	// renamed it fails loudly instead of silently matching nothing below.
+	// The run's trace is one tree rooted at the span covering the run, asserted
+	// through the function the local driver calls with its own root's name —
+	// #547's gap-4 decision, which is that the *shape* is shared and the root's
+	// name is not: Temporal's interceptor already opens a span at this seam, so
+	// the durable driver opens no `flowstate.run/*` span of its own. See
+	// [v1.StartRunSpan] for the whole argument.
+	conformance.AssertRunIsOneTree(t, recorder, durableRunSpanName)
+
+	// Re-found here, because what follows is about the join *below* the root and
+	// wants the stub rather than only the claim about it.
 	var workflow tracetest.SpanStub
-	var found bool
 	for _, stub := range stubs {
 		if !stub.Parent.IsValid() {
-			require.False(t, found, "more than one root span was recorded, so the run's trace is not one tree: %v", spanNamesOf(stubs))
-			workflow, found = stub, true
+			workflow = stub
 		}
 	}
-	require.True(t, found, "no root span was recorded: %v", spanNamesOf(stubs))
-	require.Equal(t, "RunWorkflow:Run", workflow.Name,
-		"the root of a durable run's trace is not the workflow span")
 
 	// And the join itself, for every task span the run opened rather than for
 	// the first one found — a driver that parented one correctly and the rest at
@@ -216,7 +228,7 @@ func TestOneTraceSurvivesContinueAsNew(t *testing.T) {
 	var workflowSpans int
 	for _, stub := range stubs {
 		traces[stub.SpanContext.TraceID()] = struct{}{}
-		if stub.Name == "RunWorkflow:Run" {
+		if stub.Name == durableRunSpanName {
 			workflowSpans++
 		}
 	}

@@ -81,13 +81,81 @@ const (
 	SpanAttributeSecretRefCount = "flowstate.secret.ref.count"
 )
 
+// MaxTaskNameLen is the longest task name the schema permits, in characters.
+//
+// The Go-side twin of `Task.name`'s protovalidate rule
+// (`proto/flowstate/v1/task.proto:377-385`, `max_len: 128`), the same
+// relationship [MaxEntityKeyLen] has to `entity_key`'s, and it exists for the
+// same reason: a caller embedding this package builds a [Task] in Go and never
+// parses a protovalidate error, so a bound that lives only in the schema is not
+// a bound that path has.
+const MaxTaskNameLen = 128
+
+// boundedSpanName is what telemetry may say a thing is called.
+//
+// # Why a bound is needed at all, when the schema already has one
+//
+// The schema's rule is enforced when a specification is *validated*, and the
+// paths that reach a span do not all validate first. [RunWithInputs] checks that
+// a workflow is non-empty and then opens the run span; [CheckSubmissionSize]
+// runs after it, inside the observed call. So a caller embedding this package —
+// which builds a [Workflow] in Go rather than compiling a Flowfile — can hand a
+// name of any length whatever to telemetry, and the span carrying it is
+// exported to a collector before the submission is refused. That is
+// peer-controlled-input reasoning applied to our own API surface: the bound
+// belongs where the value is *used*, not only where it is checked.
+//
+// The server's own paths do validate — `server.WebhookReceiver.register` calls
+// [Validate] before a workflow is ever served (`server/webhook.go:396`), which
+// is why the webhook delivery span's names need no bounding of their own — but
+// "some callers validate" is not a bound, it is a convention that holds until
+// someone adds a caller.
+//
+// # Truncation with a marker, not a fixed fallback
+//
+// An over-long name keeps its first max characters and gains "…". A fixed
+// fallback — exporting `<invalid>` for every over-long name — would be equally
+// safe and strictly less useful: it collapses every malformed name to one value,
+// so an operator looking at a span cannot tell which run produced it, which is
+// the one question a span exists to answer. The prefix survives, and the marker
+// says plainly that something was cut.
+//
+// The marker cannot be mistaken for part of a legal name: every name this bounds
+// is matched by a protovalidate pattern over `[A-Za-z0-9-_]` (plus `.` for a
+// plugin-qualified task), so a "…" in a span name means exactly one thing.
+//
+// Counted in runes and cut on a rune boundary, because the value being bounded
+// is by definition one that broke the schema's pattern and may therefore contain
+// anything at all — cutting mid-rune would export a mojibake byte sequence. The
+// length pre-check is on bytes, which bound runes from above, so a legal name
+// returns without the string ever being walked.
+func boundedSpanName(name string, max int) string {
+	if len(name) <= max {
+		return name
+	}
+
+	count := 0
+	for offset := range name {
+		if count == max {
+			return name[:offset] + "…"
+		}
+		count++
+	}
+
+	return name
+}
+
 // TaskSpanName is the name of the span covering one execution of a named task.
 //
 // Both drivers ask for it here rather than concatenating it themselves, which is
 // what makes "the same workflow produces the same span names under either
 // driver" a property of one function instead of a coincidence between two.
+//
+// Bounded by [MaxTaskNameLen], here rather than at the two call sites, so that
+// what a test computes as the expected name and what a driver exports are the
+// same string by construction.
 func TaskSpanName(taskName string) string {
-	return "flowstate.task/" + taskName
+	return "flowstate.task/" + boundedSpanName(taskName, MaxTaskNameLen)
 }
 
 // StartTaskSpan opens the span covering one task execution.
@@ -127,7 +195,12 @@ func StartTaskSpan(ctx context.Context, task *Task, stepID string) (context.Cont
 		return ctx, span
 	}
 
-	attrs := []attribute.KeyValue{attribute.String(SpanAttributeTaskName, task.GetName())}
+	// Bounded like the span name above it: an attribute reaches the same
+	// collector, so bounding one alone would relocate the unbounded value rather
+	// than remove it.
+	attrs := []attribute.KeyValue{
+		attribute.String(SpanAttributeTaskName, boundedSpanName(task.GetName(), MaxTaskNameLen)),
+	}
 
 	if stepID != "" {
 		attrs = append(attrs, attribute.String(SpanAttributeStepID, stepID))
