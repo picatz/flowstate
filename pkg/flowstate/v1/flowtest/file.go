@@ -663,6 +663,30 @@ type Stub struct {
 	// absent, and refused when the file loads: a stub that can answer nothing
 	// asserts nothing.
 	Times *int `yaml:"times"`
+
+	// Response answers the invocation with a raw *response* instead of shaped
+	// outputs, and the task then evaluates its own deferred inputs over it —
+	// for `http`, the step's `outputs:` and `expect:` run for real against
+	// `status_code`, `headers`, `body` (and `response.json` under
+	// `parse_json: true`) exactly as they would against a live response
+	// (#925). That is the difference from Returns, which supplies the
+	// post-shaping outputs and leaves the mapping — the exact expression a
+	// path typo lives in — unexercised by every green case.
+	//
+	// The fields and their meanings are the task's own: `http` takes
+	// `status_code` (200 when omitted), `body` (a string verbatim, or a map
+	// or list encoded as its JSON), and `headers` (name to string value), and
+	// refuses a name it does not define. A task that defines no raw-response
+	// semantics — `log`, or a plugin task this harness knows only by name —
+	// refuses the stanza when the case binds, naming `returns:` as the
+	// spelling that exists. Values follow the Flowfile fence rule at any
+	// depth, exactly as Returns documents, so one stub can answer a loop's
+	// iterations differently.
+	//
+	// Mutually exclusive with Returns and with Fails: a stub answers with a
+	// response the task interprets, with outputs already shaped, or with a
+	// failure — one of the three, said once.
+	Response map[string]any `yaml:"response"`
 }
 
 // StubFailure is a canned failure a [Stub] reports instead of outputs.
@@ -1093,6 +1117,19 @@ func parseSource(data []byte, requireWorkflow bool) (*File, error) {
 			if stub.Returns != nil && stub.Fails != nil {
 				return nil, fmt.Errorf(
 					"test %q stub %d for %s declares both returns and fails; a stubbed call either succeeds or fails, not both",
+					test.Name, j+1, stubTarget(&stub))
+			}
+			if stub.Response != nil && stub.Returns != nil {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares both response and returns; a stub answers with a raw "+
+						"response the task interprets, or with outputs already shaped, not both",
+					test.Name, j+1, stubTarget(&stub))
+			}
+			if stub.Response != nil && stub.Fails != nil {
+				return nil, fmt.Errorf(
+					"test %q stub %d for %s declares both response and fails; a failing response is a "+
+						"response — write the status the failure would carry, and let the step's own "+
+						"expect: decide",
 					test.Name, j+1, stubTarget(&stub))
 			}
 			// `times: 0` is refused rather than read as "never answers": a

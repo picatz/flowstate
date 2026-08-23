@@ -78,6 +78,13 @@ type compiledStub struct {
 	returns    map[string]any
 	hasReturns bool
 
+	// response is [Stub.Response] compiled exactly as returns is — the same
+	// fence rule at every depth — and resolved per invocation the same way.
+	// What the resolved fields *mean* is the task's business
+	// ([v1.TaskDef.StubResponseFn]); this package only carries them there.
+	response    map[string]any
+	hasResponse bool
+
 	fails *StubFailure
 }
 
@@ -110,6 +117,13 @@ type stubbedTask struct {
 	// "the task ran and this stub never matched" in [unusedStubWarnings].
 	invoked bool
 
+	// respond is the task's own [v1.TaskDef.StubResponseFn], resolved once at
+	// bind time so a `response:` stub aimed at a task with no raw-response
+	// semantics is refused before the run rather than surfacing mid-case. Nil
+	// where the task defines none — which [bindStubs] has then already
+	// guaranteed no matcher here needs.
+	respond func(ctx context.Context, inputs map[string]*v1.Value, scope *v1.Scope, response map[string]*v1.Value) (*v1.Node_Outputs, error)
+
 	matchers []compiledStub
 }
 
@@ -135,6 +149,11 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 			return nil, fmt.Errorf("stub %d for %s: returns: %w", i+1, stubTarget(&s), err)
 		}
 
+		response, err := compileReturns(s.Response)
+		if err != nil {
+			return nil, fmt.Errorf("stub %d for %s: response: %w", i+1, stubTarget(&s), err)
+		}
+
 		times := 0
 		if s.Times != nil {
 			times = *s.Times
@@ -149,6 +168,8 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 			whereSource:  s.Where,
 			returns:      returns,
 			hasReturns:   s.Returns != nil,
+			response:     response,
+			hasResponse:  s.Response != nil,
 			fails:        s.Fails,
 			times:        times,
 			remaining:    times,
@@ -206,12 +227,38 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 		t, ok := byTask[task]
 		if !ok {
 			t = &stubbedTask{}
+			if def, exists := v1.DefaultRegistry().Lookup(task); exists {
+				t.respond = def.StubResponseFn
+			}
 			byTask[task] = t
 		}
+
+		// A `response:` stub needs the task to say what a raw response means
+		// ([v1.TaskDef.StubResponseFn]), and only a task with deferred
+		// response semantics does — refused here, before the run, with the
+		// spelling that exists. A task this harness knows only by name (a
+		// plugin's) has no semantics to consult, and gets the same answer.
+		if m.hasResponse && t.respond == nil {
+			return nil, fmt.Errorf(
+				"stub %d for %s declares response:, but task %q does not evaluate a raw response — "+
+					"only a task with deferred inputs (such as http's outputs: and expect:) can; "+
+					"use returns: for already-shaped outputs",
+				m.ordinal, describeStubTarget(&m), task)
+		}
+
 		t.matchers = append(t.matchers, m)
 	}
 
 	return byTask, nil
+}
+
+// describeStubTarget names a compiled stub the way the author aimed it, for a
+// diagnostic: by step where a step was named, by task otherwise.
+func describeStubTarget(m *compiledStub) string {
+	if m.step != "" {
+		return fmt.Sprintf("step %q", m.step)
+	}
+	return fmt.Sprintf("task %q", m.task)
 }
 
 // unknownStepError refuses a step-form stub naming a step the workflow does not
@@ -495,6 +542,20 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			if m.times > 0 {
 				m.remaining--
 			}
+
+			// A `response:` answer hands the resolved fields to the task's own
+			// raw-response evaluation ([v1.TaskDef.StubResponseFn], resolved
+			// non-nil at bind time), with the invocation's full input map —
+			// deferred expressions included — so the step's `outputs:` and
+			// `expect:` run exactly as they would over a live response (#925).
+			if m.hasResponse {
+				resolved, err := resolveStubValues(ctx, scope.GetProfile(), activation, m.response)
+				if err != nil {
+					return nil, v1.NewTaskError(name, v1.ErrorKindExpression, fmt.Errorf("response: %w", err))
+				}
+				return s.respond(ctx, inputs, scope, v1.NewNamedValues(resolved))
+			}
+
 			returns, err := m.answer(ctx, scope.GetProfile(), activation)
 			if err != nil {
 				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
@@ -1067,11 +1128,23 @@ func (c compiledStub) answer(ctx context.Context, profile string, activation cel
 		return nil, nil
 	}
 
-	resolved := make(map[string]any, len(c.returns))
-	for name, v := range c.returns {
+	resolved, err := resolveStubValues(ctx, profile, activation, c.returns)
+	if err != nil {
+		return nil, fmt.Errorf("returns %w", err)
+	}
+	return resolved, nil
+}
+
+// resolveStubValues resolves one compiled value map — a stub's `returns:` or
+// its `response:` — for one invocation, evaluating every ${...} it holds
+// against that invocation's activation. One resolver for both, so the two
+// stanzas cannot disagree about what a fenced value means.
+func resolveStubValues(ctx context.Context, profile string, activation cel.Activation, values map[string]any) (map[string]any, error) {
+	resolved := make(map[string]any, len(values))
+	for name, v := range values {
 		value, err := resolveReturnValue(ctx, profile, activation, v)
 		if err != nil {
-			return nil, fmt.Errorf("returns %q: %w", name, err)
+			return nil, fmt.Errorf("%q: %w", name, err)
 		}
 		resolved[name] = value
 	}

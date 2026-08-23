@@ -224,6 +224,23 @@ type TaskDef struct {
 	// before it has a scope to be evaluated against.
 	CheckLiteral func(input string, value *Value) error
 
+	// StubResponseFn, when non-nil, is how a test harness answers this task
+	// with a raw *response* instead of already-shaped outputs: the task
+	// evaluates its own deferred inputs over the supplied response exactly as
+	// it would over a live one, so the expressions a stub would otherwise
+	// bypass — the http task's `outputs:` and `expect:`, the exact place a
+	// path typo lives — run for real under `flow test` (#925).
+	//
+	// What "a raw response" means is the task's own business, which is why
+	// this lives here rather than in the harness: response is the stub's
+	// declared fields as named values, and the task decodes them, refusing a
+	// name it does not define. inputs is the invocation's full input map,
+	// deferred expressions included, exactly as Fn would have received it.
+	// Nil for a task with no deferred response semantics — the harness
+	// refuses a `response:` stub aimed at one, naming `returns:` as the
+	// spelling that exists.
+	StubResponseFn func(ctx context.Context, inputs map[string]*Value, scope *Scope, response map[string]*Value) (*Node_Outputs, error)
+
 	// Fn executes the task.
 	Fn TaskFunc
 }

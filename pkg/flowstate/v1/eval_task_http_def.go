@@ -123,6 +123,10 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		// in for why asking the policy instead would put DNS in an editor and
 		// deployment configuration in a diagnostic.
 		CheckLiteral: checkHTTPLiteral,
-		Fn:           taskFuncHTTP(policy),
+		// A declared response runs the task's own deferred-input evaluation —
+		// `expect:` and `outputs:` over the response a test supplies — so a
+		// stub can exercise the shaping a `returns:` stub bypasses (#925).
+		StubResponseFn: httpStubResponseFn,
+		Fn:             taskFuncHTTP(policy),
 	}
 }
