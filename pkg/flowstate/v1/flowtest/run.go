@@ -221,20 +221,32 @@ func RunFileWithCoverage(path string) (*v1.TestReport, []*Coverage) {
 // reason and now with a second one: a case whose virtual clock can never advance
 // has nothing to end it, and `--seeds N` multiplies whatever that costs by N.
 func RunFileUnderSchedules(ctx context.Context, path string, budget dst.Budget) (*v1.TestReport, []*Coverage, *ScheduleReport) {
-	file, err := Load(path)
-	if err != nil {
-		return &v1.TestReport{File: path, Refused: err.Error()}, nil, nil
+	result := RunPath(ctx, path, RunOptions{Budget: budget})
+	return result.Report, result.Coverage, result.Schedules
+}
+
+// RunPath is [Run] for a suite named by path rather than already loaded: load
+// the `*.test.yaml`, then run it with everything the options say, against the
+// file's own directory — which is what a case's `workflow:` and `payload:`
+// resolve against, the same rule `call:` resolves against ([WorkflowPath]'s
+// doc). An empty [RunOptions.Label] defaults to the path. A file that does not
+// load returns a refused report, the same one every path door has always
+// produced, with nil coverage and schedules — no case was ever reached.
+//
+// This is the door `flow test` walks through (with [RunOptions.Select] behind
+// `--run`, and [RunOptions.Budget] behind `--seeds`); [RunFileUnderSchedules]
+// is this with only a budget to say.
+func RunPath(ctx context.Context, path string, opts RunOptions) RunResult {
+	if opts.Label == "" {
+		opts.Label = path
 	}
 
-	// The directory the *.test.yaml lives in is what a case's `workflow:` and
-	// `payload:` resolve against — the same rule `call:` resolves against
-	// ([WorkflowPath]'s doc). Everything else is [Run]: the loader closure is
-	// the only part of one case's run that differs between a file on disk and
-	// a workflow submitted as bytes, and [Run] keeps the parse positions
-	// [flowfile.ParseFile] hands back (issue #801's part B) so a `switch:`
-	// arm's coverage can name where it is written.
-	result := Run(ctx, file, filepath.Dir(path), RunOptions{Label: path, Budget: budget})
-	return result.Report, result.Coverage, result.Schedules
+	file, err := Load(path)
+	if err != nil {
+		return RunResult{Report: &v1.TestReport{File: opts.Label, Refused: err.Error()}}
+	}
+
+	return Run(ctx, file, filepath.Dir(path), opts)
 }
 
 // caseStoppedBefore reports the case a caller's context ended before it could

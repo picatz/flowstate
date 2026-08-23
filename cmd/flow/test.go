@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -64,6 +65,11 @@ func newTestCommand() *cobra.Command {
 			"case's own scaffolding, not a verdict, unless `--fail-on-warning` promotes it. Stubs " +
 			"inherited from `defaults:` are exempt — a file-level catch-all is expected to sit idle " +
 			"in cases that never invoke its task.\n\n" +
+			"`--run <pattern>` runs only the cases whose name matches the regular expression, the " +
+			"way `go test -run` does, and says how many cases it filtered out — beside the file " +
+			"and on the summary line — so a green over a subset never reads as the file's green. " +
+			"`--coverage-required` is refused alongside it: coverage is a property of the whole " +
+			"suite, and a filtered subset's gaps are not the suite's.\n\n" +
 			"`--output json` or `--output jsonl` reports what ran as a schema message instead of " +
 			"text, and carries the coverage sets under a `coverage` key so CI annotates rather than " +
 			"parses prose.\n\n" +
@@ -86,6 +92,9 @@ flow test examples/
 
 # Run one test file:
 flow test deploy.test.yaml
+
+# Rerun just the failing case, by name:
+flow test --run 'rolls back on a 500' deploy.test.yaml
 
 # As a report CI can parse instead of scraping stderr:
 flow test -o jsonl examples/`,
@@ -112,6 +121,17 @@ flow test -o jsonl examples/`,
 	cmd.Flags().Bool("fail-on-warning", false,
 		"fail when a case reports a warning — a stub the case declared and the run never "+
 			"answered through — instead of only printing it")
+
+	// The `go test -run` precedent (#929 slice 1). The honesty line is the
+	// non-negotiable half of the feature: a skip must be a decision you can
+	// read (the gate's printed-line rule, the schedules "nothing was explored"
+	// line), so every filtered run says how many cases it left out, in the
+	// output and on the summary line, and a green over a subset can never be
+	// mistaken for the file's green.
+	cmd.Flags().String("run", "",
+		"run only the cases whose name matches this regular expression; the output says how "+
+			"many cases were filtered out, and --coverage-required is refused alongside it, "+
+			"because a subset's coverage gaps are not the suite's")
 
 	// Off by default, and the default is the whole of the compatibility promise:
 	// at zero seeds every case runs exactly once, under v1.WrittenOrder, which is
@@ -199,6 +219,24 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		return err
 	}
 
+	// The filter (#929 slice 1). Refusals before anything runs, both fail
+	// closed: a pattern that does not compile selects nothing knowable, and
+	// `--coverage-required` over a subset would enforce the suite's bar
+	// against a run that deliberately is not the suite.
+	runPattern, _ := cmd.Flags().GetString("run")
+	var selectCase func(string) bool
+	if runPattern != "" {
+		if coverageRequired {
+			return errors.New("--coverage-required cannot be combined with --run: coverage is a property " +
+				"of the whole suite, and a filtered subset's gaps are not the suite's; drop one of the two")
+		}
+		re, err := regexp.Compile(runPattern)
+		if err != nil {
+			return fmt.Errorf("--run %q is not a valid regular expression: %w", runPattern, err)
+		}
+		selectCase = re.MatchString
+	}
+
 	files, err := collectTestFiles(paths)
 	if err != nil {
 		return err
@@ -223,14 +261,19 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// Coverage arrives already attached to the report — flowtest's runSuite
 		// owns that now, for every door at once, so the MCP tool and this
 		// command cannot disagree about what the document carries (#931).
-		report, coverage, schedules := flowtest.RunFileUnderSchedules(cmd.Context(), path, budget)
-		result := testFileResult{report: report, coverage: coverage, schedules: schedules}
+		run := flowtest.RunPath(cmd.Context(), path, flowtest.RunOptions{
+			Budget: budget,
+			Select: selectCase,
+		})
+		report, coverage, schedules := run.Report, run.Coverage, run.Schedules
+		result := testFileResult{report: report, coverage: coverage, schedules: schedules, filtered: run.Filtered}
 		results = append(results, result)
 
 		if !machine {
 			printTestReport(surface.Out, surface.Theme, report, failOnWarning)
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 			printSchedules(surface.Out, surface.Theme, report, schedules)
+			printFiltered(surface.Out, surface.Theme, report, runPattern, run.Filtered)
 		} else {
 			// The account of the exploration goes to stderr in machine mode, so
 			// stdout stays exactly the JSON document a consumer parses while the
@@ -242,6 +285,11 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// issue #931), attached by flowtest's runSuite; this prose is the
 			// person-facing half, not the only copy.
 			printSchedules(surface.Err, surface.ErrTheme, report, schedules)
+			// The filter's honesty line goes to stderr for the same reason:
+			// the cases the document carries are only the selected ones, and
+			// somebody reading the log must be able to see that the file held
+			// more (#929 slice 1; slice 1 adds no schema field).
+			printFiltered(surface.Err, surface.ErrTheme, report, runPattern, run.Filtered)
 		}
 
 		if result.failed(coverageRequired, failOnWarning) {
@@ -254,7 +302,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			return err
 		}
 	} else {
-		printSummary(surface.Out, surface.Theme, results, coverageRequired, time.Since(started))
+		printSummary(surface.Out, surface.Theme, results, coverageRequired, runPattern != "", time.Since(started))
 	}
 
 	if anyFailed {
@@ -275,9 +323,9 @@ func runTest(cmd *cobra.Command, paths []string) error {
 // Wall time is wall-clock, the "is the suite still fast" number, never a
 // reading of virtual time — [v1.TestCase]'s own duration field states that
 // distinction.
-func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, coverageRequired bool, elapsed time.Duration) {
+func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, coverageRequired, filterActive bool, elapsed time.Duration) {
 	files, cases, passed, failed, refused := len(results), 0, 0, 0, 0
-	gaps, stale := 0, 0
+	gaps, stale, filtered := 0, 0, 0
 	for _, r := range results {
 		if r.report.GetRefused() != "" {
 			refused++
@@ -290,6 +338,7 @@ func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, cover
 				failed++
 			}
 		}
+		filtered += r.filtered
 		if coverageRequired {
 			for _, cov := range r.coverage {
 				gaps += len(cov.Gaps()) + len(cov.ArmGaps())
@@ -315,10 +364,33 @@ func printSummary(out io.Writer, theme ui.Theme, results []testFileResult, cover
 		count(files, "file", "files"),
 		count(cases, "case", "cases"),
 		fmt.Sprintf("%d passed", passed),
-		fmt.Sprintf("%.1fs", elapsed.Seconds()),
 	)
+	// Whenever the filter was active, even at zero: the count is what keeps a
+	// green over a subset from reading as the file's green, and "0 filtered"
+	// says the pattern happened to exclude nothing, which is itself worth
+	// knowing. Warning tier — a fact worth reading, never a verdict.
+	if filterActive {
+		parts = append(parts, theme.Warning.Render(count(filtered, "case filtered out", "cases filtered out")))
+	}
+	parts = append(parts, fmt.Sprintf("%.1fs", elapsed.Seconds()))
 
 	fmt.Fprintf(out, "\n%s\n", strings.Join(parts, " · "))
+}
+
+// printFiltered says, beside one file, what `--run` left out of it (#929
+// slice 1): the skip-is-a-decision-you-can-read rule, applied per file, so a
+// reader matching the report back to the file knows the file holds more than
+// the report shows. Nothing prints without the flag; a refused file prints
+// nothing either, since no case of it was selected or filtered.
+func printFiltered(out io.Writer, theme ui.Theme, report *v1.TestReport, pattern string, filtered int) {
+	if pattern == "" || report.GetRefused() != "" {
+		return
+	}
+
+	ran := len(report.GetCases())
+	fmt.Fprintf(out, "%s  %s\n", theme.Muted.Render(report.GetFile()), theme.Warning.Render(
+		fmt.Sprintf("--run %q: ran %d of %s, %d filtered out",
+			pattern, ran, count(ran+filtered, "case", "cases"), filtered)))
 }
 
 // testFileResult pairs one file's report with the branch coverage its cases
@@ -330,6 +402,11 @@ type testFileResult struct {
 	report    *v1.TestReport
 	coverage  []*flowtest.Coverage
 	schedules *flowtest.ScheduleReport
+
+	// filtered is how many of this file's cases `--run` excluded — the number
+	// the honesty line and the summary surface, because a green over a subset
+	// must never read as the file's green (#929).
+	filtered int
 }
 
 // failed reports whether this file's result makes the command exit non-zero.
