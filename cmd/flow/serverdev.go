@@ -706,22 +706,40 @@ func devUIURL(port int) string {
 
 // devOTLPEndpoint is the collector telemetry was pointed at, for the banner.
 //
-// The general endpoint first and the signal-specific ones after, in the order
-// [telemetryConfigured] reads them, so what the banner names is the variable
-// that actually turned telemetry on.
+// Gated on [telemetryConfigured] rather than on an endpoint being set, because
+// since per-signal selectors landed those two answers can disagree in both
+// directions, and a banner is read as the truth about what this process is
+// doing:
 //
-// Written as four literal reads rather than a loop over a slice of names, which
-// is what [telemetryConfigured] does and for the same reason: the env-var
-// reference is kept honest by a test that reads every os.Getenv call site in the
-// tree, and a name that arrives as a variable is a read it cannot resolve. A
-// loop here would have to be exempted from that check, which is a hole in the
-// shape of the thing the check defends.
+//   - OTEL_TRACES_EXPORTER=otlp with no endpoint anywhere exports traces to the
+//     exporter's own default. An endpoint-only reading calls that "no
+//     telemetry" while the process holds an open exporter.
+//   - A general endpoint with all three selectors set to none exports nothing.
+//     An endpoint-only reading names a collector no signal is going to.
+//
+// So the predicate decides whether there is anything to say, and the endpoint
+// reads decide what to call it — with the exporters' own default named
+// explicitly for the first case, since a selector can enable a signal without
+// any endpoint being set. It is the otlphttp default rather than the gRPC one
+// because these are the http exporters ([initTelemetry] builds otlp*http).
+//
+// The endpoints are written as four literal reads rather than a loop over a
+// slice of names, which is what [telemetryConfigFromEnv] does and for the same
+// reason: the env-var reference is kept honest by a test that reads every
+// os.Getenv call site in the tree, and a name that arrives as a variable is a
+// read it cannot resolve. A loop here would have to be exempted from that
+// check, which is a hole in the shape of the thing the check defends.
 func devOTLPEndpoint() string {
+	if !telemetryConfigured() {
+		return ""
+	}
+
 	return cmp.Or(
 		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
 		os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"),
 		os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"),
+		"http://localhost:4318",
 	)
 }
 
