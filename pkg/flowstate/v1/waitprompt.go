@@ -273,6 +273,21 @@ func checkPrompt(value *Value, vars map[string]*Value, stepID string, sensitive 
 	}
 
 	reached, opaque := promptInputReach(value)
+
+	// Follow the prompt into the step's own `vars:`, because that is where the
+	// engine evaluates it from. Both drivers install a step's vars and then run
+	// the node against the inner scope - [EvalStepVars] on the local side,
+	// engine/execute.go's scope swap on the durable one - so `prompt:
+	// ${question}` reads a name this walk would otherwise see as naming nothing
+	// at all, and a bare name would be a way to launder a sensitive input past
+	// a check that only read the prompt expression.
+	//
+	// One level is the whole answer rather than a first cut: [EvalStepVars]
+	// evaluates a step's vars against the scope *without* its siblings, so
+	// `vars: {a: ${inputs.token}, b: ${a}}` is not expressible and there is no
+	// transitive case left to miss. An opaque reach found through a var is
+	// carried out the same way one found in the prompt is - the refusal is what
+	// "could not tell" means here, not silence.
 	for name := range promptFreeIdentifiers(value) {
 		declared, ok := vars[name]
 		if !ok {
@@ -314,6 +329,12 @@ func checkPrompt(value *Value, vars map[string]*Value, stepID string, sensitive 
 // `vars:` are installed under bare names before its prompt is evaluated, so the
 // sensitivity walk must follow any such name into its declaration rather than
 // treating the prompt expression in isolation.
+//
+// Free, in the CEL sense: [collectFreeIdentifiers] binds a comprehension's own
+// iteration and accumulator variables, so `list.map(x, x)` does not send this
+// walk looking up `x` in a step's vars and finding an unrelated declaration of
+// the same name. That is the same rule `flow fix` had to learn twice about the
+// names the grammar binds.
 func promptFreeIdentifiers(value *Value) map[string]struct{} {
 	free := make(map[string]struct{})
 	for _, e := range promptExpressions(value, 0) {
