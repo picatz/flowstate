@@ -904,3 +904,65 @@ func TestDeniedNetworkStillCatchesAnEmbeddedAddress(t *testing.T) {
 			"a denied network was reached through %s", addr)
 	}
 }
+
+// TestAProxiedTargetWithTooManyAddressesIsDenied pins the bound on the one
+// resource this check does not otherwise bound: how many addresses the target
+// name resolves to.
+//
+// WithRuleCostLimit bounds one rule against one address. The address count comes
+// from resolving a name the workflow chose, so the far side sets the multiplier
+// on the total work, and bounding the per-address cost bounds nothing in
+// aggregate.
+//
+// Both directions are asserted, because a bound is a claim about where the line
+// is and a test that only shows a refusal is also satisfied by a check that
+// refuses everything: exactly maxProxyTargetAddrs is checked and allowed, one
+// more is refused. The refusal names the count, so an operator who legitimately
+// points at a name with a very wide record set can tell this apart from the
+// policy simply denying them.
+func TestAProxiedTargetWithTooManyAddressesIsDenied(t *testing.T) {
+	resolving := func(t *testing.T, n int) {
+		t.Helper()
+
+		original := lookupTargetAddrs
+		lookupTargetAddrs = func(_ context.Context, _, _ string) ([]netip.Addr, error) {
+			addrs := make([]netip.Addr, 0, n)
+			for i := range n {
+				addrs = append(addrs, netip.AddrFrom4([4]byte{127, 0, 0, byte(i + 1)}))
+			}
+
+			return addrs, nil
+		}
+		t.Cleanup(func() { lookupTargetAddrs = original })
+	}
+
+	// A proxy that answers, standing in for a real forward proxy: with one
+	// configured the dialer never sees the target, which is the whole reason
+	// checkProxiedTarget resolves the name itself.
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "proxied to %s", r.Host)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+
+	policy, err := New(WithAllowLoopback(), WithProxy(func(*http.Request) (*url.URL, error) {
+		return proxyURL, nil
+	}))
+	require.NoError(t, err)
+
+	t.Run("at the bound", func(t *testing.T) {
+		resolving(t, maxProxyTargetAddrs)
+
+		_, err := get(t, policy, "http://wide.example:9/")
+		require.NoError(t, err, "a name resolving to exactly the bound must still be checked, not refused")
+	})
+
+	t.Run("past the bound", func(t *testing.T) {
+		resolving(t, maxProxyTargetAddrs+1)
+
+		_, err := get(t, policy, "http://wider.example:9/")
+		requireDenied(t, err, ReasonAddress, "more than the")
+	})
+}
