@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -801,6 +802,46 @@ tests:
 	require.NotEmpty(t, result.Transcripts[0],
 		"the written-order baseline's account is the kept one, and exploration must not cost it")
 	assert.Contains(t, transcriptText(result.Transcripts[0]), "hello")
+}
+
+// TestTranscriptSurvivesACallerInstalledScheduler pins round sixteen's
+// finding: a caller may install a scheduler on the context — the
+// AdversarialOrder rehearsal pattern — with a zero budget, and that single
+// run's account is the kept one, so it records; suppression is only ever
+// about exploratory invocations whose accounts are discarded.
+func TestTranscriptSurvivesACallerInstalledScheduler(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: greet
+steps:
+  - id: hello
+    log:
+      message: hi
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: adversarially scheduled, still accounted
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [hello]
+`)
+
+	ctx := v1.NewContextWithScheduler(t.Context(), v1.AdversarialOrder)
+	result := flowtest.RunPath(ctx, path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	require.Len(t, result.Transcripts, 1)
+	require.NotEmpty(t, result.Transcripts[0],
+		"the only run is the kept run, whatever scheduler the caller installed")
 }
 
 // TestTranscriptOfAFailingRunEndsOnTheFailure: the account a failing case

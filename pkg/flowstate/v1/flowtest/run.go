@@ -178,15 +178,19 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		result, spec, transcript, account := schedules.run(ctx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
-				// The account is recorded only for the run whose account is
-				// kept: [scheduleAccumulator.run] retains the written-order
-				// baseline's and discards every seeded one, so recording
-				// through ten thousand seeds would clone and render for
-				// nothing (Codex, #1052). The discriminator is the same one
-				// schedules.run itself keeps the baseline by, and a default
-				// unexplored run has no scheduler on its context, which reads
-				// as written order.
-				record := !opts.skipTranscript && v1.SchedulerFromContext(ctx) == v1.WrittenOrder
+				// The account is recorded only for runs whose account is
+				// kept. Under an exploring budget, [scheduleAccumulator.run]
+				// retains the written-order baseline's and discards every
+				// seeded one, so recording through ten thousand seeds would
+				// clone and render for nothing — the discriminator is the
+				// same one schedules.run keeps the baseline by. A budget that
+				// explores nothing keeps its single run's account whatever
+				// scheduler the *caller* put on the context ([v1.AdversarialOrder],
+				// a pinned seed installed by hand), so no scheduler check
+				// applies there: suppression is only ever about exploratory
+				// invocations (Codex, #1052, twice).
+				record := !opts.skipTranscript &&
+					(!schedules.explores || v1.SchedulerFromContext(ctx) == v1.WrittenOrder)
 				return runCase(ctx, &test, l.deliveryPath, l.load, record)
 			})
 		report.Cases = append(report.Cases, result)
