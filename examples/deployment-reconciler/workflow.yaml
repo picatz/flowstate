@@ -282,6 +282,19 @@ steps:
             outputs:
               accepted: ${response.json.accepted}
             parse_json: true
+            # A POST whose outcome is unknown - it reached the control plane and
+            # the answer was lost - is not retried by default, because doing an
+            # operation twice is usually worse than reporting a failure. Here it
+            # is safe, and the reason is a property of *this* request rather than
+            # of POSTs generally: it sets an exact count. Applying "scale to 7"
+            # twice leaves seven replicas, so a repeat is a no-op rather than a
+            # second effect. An endpoint that took a *delta* ("add two") would be
+            # the opposite, and this line would be a bug there.
+            #
+            # Without it a single lost response ends the run: `converge` does not
+            # tolerate failure, so a transient network event would permanently
+            # stop a reconciler whose whole claim is that it survives them.
+            retry_on_unknown_outcome: true
             url: https://control-plane.internal.example.com/workloads/scale
   - id: observations
     value: ${steps.reconcile.results.map(p, p.observed.replicas)}

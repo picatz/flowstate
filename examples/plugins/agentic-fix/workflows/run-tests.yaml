@@ -23,6 +23,16 @@ steps:
     description: Ask CI for a run at this commit and wait for its verdict.
     timeout: 15m
     http:
+      # The same boundary check the reconciler's status read carries, and for the
+      # same reason: an HTTP response is untyped, and everything downstream treats
+      # `passed` as a boolean. A CI answering `{"passed": "false"}` - a string -
+      # would satisfy this step and then type-error in `!steps.failing.passed` or
+      # in the loop's `until:`, several steps from the thing that was wrong. A
+      # failed expectation is permanent, so a malformed answer fails here by name
+      # rather than being coerced into a verdict nobody gave.
+      expect: |-
+        ${response.status_code == 200 && has(response.json.passed) && type(response.json.passed) == type(true) &&
+        has(response.json.output) && type(response.json.output) == type("")}
       json: '${{"ref": inputs.ref}}'
       method: POST
       outputs:

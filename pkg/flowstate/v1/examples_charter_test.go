@@ -385,6 +385,68 @@ func writableRequired(required map[string]string, desc protoreflect.MessageDescr
 	}
 }
 
+// charterRequired builds the whole required set: node kinds, wait kinds, the
+// task registry with one key per declared task input, and the writable fields
+// of every message an author types.
+//
+// One function rather than a copy per test, because the guard below exists to
+// assert what this produces - and a guard reading a second, hand-rebuilt copy
+// would be asserting something the charter does not use. That is the failure
+// this whole file is about, so it would be a poor place to make it.
+func charterRequired(t *testing.T) map[string]string {
+	t.Helper()
+
+	// What has to be covered, asked of the schema and the registry rather than
+	// remembered. A construct added to either appears here the moment it exists.
+	required := map[string]string{} // construct -> what an author writes to reach it
+	for _, field := range oneofFields((&v1.Node{}).ProtoReflect().Descriptor(), "kind") {
+		required["node."+string(field.Name())] = "a step of that kind"
+	}
+	for _, field := range oneofFields((&v1.Wait{}).ProtoReflect().Descriptor(), "kind") {
+		required["wait."+string(field.Name())] = "a wait of that kind"
+	}
+	for _, task := range v1.DefaultRegistry().Names() {
+		// A dotted name in the *default* registry is not a built-in an author
+		// writes. Built-in tasks are undotted (`http`, `log`); the dot is the
+		// mark of a plugin task, and a plugin task is either demonstrated in
+		// examples/plugins/ (which this corpus excludes, since those files name
+		// tasks a stock `flow` cannot resolve) or — as here — a conformance test
+		// fixture some sibling test registered into the shared registry
+		// (`test.plugin_inputs`, from plugintaskinputs_local_test.go). Requiring a
+		// portfolio example for either would be requiring what this corpus is
+		// defined not to contain, so a dotted registry entry is skipped for the
+		// same reason the whole examples/plugins/ tree is.
+		if strings.Contains(task, ".") {
+			continue
+		}
+		required["task."+task] = "a step naming that task"
+
+		// And one key per input the task declares. A task is not one construct
+		// either: `http`'s `expect:`, `form:` and `retry_on_unknown_outcome:` are
+		// separate capabilities, and a key per *task* stays satisfied by the one
+		// example that sends a GET (Codex, #901). Twenty keys across the two
+		// built-ins, which is the same order as the enum-value pass and well
+		// short of the mechanical bloat that would argue against it.
+		def, ok := v1.DefaultRegistry().Lookup(task)
+		if !ok || def.Inputs == nil {
+			continue
+		}
+		fields := def.Inputs.Fields()
+		for i := range fields.Len() {
+			required["task."+task+"."+string(fields.Get(i).Name())] = "an example setting that task input"
+		}
+	}
+	for name := range writableSpecs() {
+		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
+		require.NoError(t, err, "%s is not in the global registry", name)
+		msg, ok := desc.(protoreflect.MessageDescriptor)
+		require.True(t, ok, "%s is not a message", name)
+		writableRequired(required, msg)
+	}
+
+	return required
+}
+
 // TestEveryLanguageConstructHasAnExample is the examples charter, executable.
 func TestEveryLanguageConstructHasAnExample(t *testing.T) {
 	t.Parallel()
@@ -421,38 +483,7 @@ func TestEveryLanguageConstructHasAnExample(t *testing.T) {
 		walkConstructs(wf.ProtoReflect(), report)
 	}
 
-	// What has to be covered, asked of the schema and the registry rather than
-	// remembered. A construct added to either appears here the moment it exists.
-	required := map[string]string{} // construct -> what an author writes to reach it
-	for _, field := range oneofFields((&v1.Node{}).ProtoReflect().Descriptor(), "kind") {
-		required["node."+string(field.Name())] = "a step of that kind"
-	}
-	for _, field := range oneofFields((&v1.Wait{}).ProtoReflect().Descriptor(), "kind") {
-		required["wait."+string(field.Name())] = "a wait of that kind"
-	}
-	for _, task := range v1.DefaultRegistry().Names() {
-		// A dotted name in the *default* registry is not a built-in an author
-		// writes. Built-in tasks are undotted (`http`, `log`); the dot is the
-		// mark of a plugin task, and a plugin task is either demonstrated in
-		// examples/plugins/ (which this corpus excludes, since those files name
-		// tasks a stock `flow` cannot resolve) or — as here — a conformance test
-		// fixture some sibling test registered into the shared registry
-		// (`test.plugin_inputs`, from plugintaskinputs_local_test.go). Requiring a
-		// portfolio example for either would be requiring what this corpus is
-		// defined not to contain, so a dotted registry entry is skipped for the
-		// same reason the whole examples/plugins/ tree is.
-		if strings.Contains(task, ".") {
-			continue
-		}
-		required["task."+task] = "a step naming that task"
-	}
-	for name := range writableSpecs() {
-		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
-		require.NoError(t, err, "%s is not in the global registry", name)
-		msg, ok := desc.(protoreflect.MessageDescriptor)
-		require.True(t, ok, "%s is not a message", name)
-		writableRequired(required, msg)
-	}
+	required := charterRequired(t)
 	require.NotEmpty(t, required)
 
 	missing := make([]string, 0, len(required))
@@ -520,6 +551,11 @@ func walkConstructs(msg protoreflect.Message, report func(string)) {
 	// way something is taken back.
 	if task, ok := msg.Interface().(*v1.Task); ok {
 		report("task." + task.GetName())
+		// The inputs a step actually set are the keys it wrote, which is exactly
+		// what the required set asks about.
+		for input := range task.GetInputs() {
+			report("task." + task.GetName() + "." + input)
+		}
 	}
 
 	// Writable constructs set on this message — `if:`, `retry:`, `undo:`,
@@ -662,22 +698,7 @@ steps:
 func TestCharterRequiresWritableConstructs(t *testing.T) {
 	t.Parallel()
 
-	required := map[string]string{}
-	for name := range writableSpecs() {
-		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
-		require.NoError(t, err, "%s is not in the global registry", name)
-		msg, ok := desc.(protoreflect.MessageDescriptor)
-		require.True(t, ok, "%s is not a message", name)
-		writableRequired(required, msg)
-	}
-
-	for name := range writableSpecs() {
-		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
-		require.NoError(t, err)
-		msg, ok := desc.(protoreflect.MessageDescriptor)
-		require.True(t, ok)
-		writableRequired(required, msg)
-	}
+	required := charterRequired(t)
 
 	// Named one by one rather than counted, because a count passes while
 	// describing the wrong set. The second group is what the generalization past
@@ -700,17 +721,27 @@ func TestCharterRequiresWritableConstructs(t *testing.T) {
 		"for_each.max_parallel", "for_each.items",
 		"retry.max_attempts", "retry.max_interval", "retry.backoff_coefficient",
 		"wait.timeout", "call.arguments",
+
+		// And per *task input*, the third level: a key per task stays satisfied
+		// by whichever example sends a GET, so `expect:` and
+		// `retry_on_unknown_outcome:` would never be asked for.
+		"task.http.expect", "task.http.retry_on_unknown_outcome", "task.http.form",
+		"task.log.message",
 	} {
 		_, ok := required[construct]
 		assert.True(t, ok,
 			"%s is a writable construct the charter must require, but the derivation did not produce it", construct)
 	}
 
-	// The kind-oneof members must NOT appear as writable node fields — they are
-	// covered by the oneof pass, and double-counting them here would be a
-	// different construct name for the same thing.
+	// The kind-oneof members must not be derived a *second* time as writable
+	// fields: they are constructs the oneof pass already requires (and so they
+	// are legitimately in the full set above), and producing them here as well
+	// would be two names for one thing. So this asks the writable-field
+	// derivation on its own.
+	writableOnly := map[string]string{}
+	writableRequired(writableOnly, (&v1.Node{}).ProtoReflect().Descriptor())
 	for _, construct := range []string{"node.task", "node.loop", "node.wait"} {
-		_, ok := required[construct]
+		_, ok := writableOnly[construct]
 		assert.False(t, ok, "%s is a kind-oneof member and must not be derived as a writable field", construct)
 	}
 }

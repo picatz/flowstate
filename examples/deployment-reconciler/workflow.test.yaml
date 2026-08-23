@@ -105,7 +105,11 @@ tests:
         returns:
           replicas: ${goal.desired}
           retired: true
+      # Pinned to the count this case is about: a `converge` that posted the
+      # stale 5 would match no stub at all and fail the case by name, rather
+      # than passing because some write happened.
       - step: converge
+        where: inputs.json.replicas == 7
         returns:
           accepted: true
     expect:
@@ -320,6 +324,9 @@ tests:
           replicas: ${goal.desired}
           retired: true
       - step: converge
+        # Pinned to 7 as well: the point of this case is that a double-shaped
+        # payload is adopted, which is only proved if the 7 reaches the write.
+        where: inputs.json.replicas == 7
         returns:
           accepted: true
     expect:
