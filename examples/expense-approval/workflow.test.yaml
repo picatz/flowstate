@@ -34,10 +34,11 @@ tests:
         where: "inputs.message == 'reimbursing jordan@example.com $482.50, approved by manager@example.com'"
         returns: {}
     expect:
-      ran: [submit, manager_review, outcome, settle, reimburse]
+      ran: [submit, manager_review, direct_outcome, outcome, settle, reimburse]
       # The whole point of the `if:` on both: an answered first gate leaves
-      # nothing to escalate, so neither the warning nor the second wait happens.
-      skipped: [escalate, finance_review, reimburse_escalated, deny]
+      # nothing to escalate, so neither the warning, the second wait, nor
+      # either escalation step happens.
+      skipped: [escalate, finance_review, escalation_decision, escalation_outcome, reimburse_escalated, deny]
       outputs:
         outcome: approved_by_manager
         amount: 482.5
@@ -74,8 +75,8 @@ tests:
         where: "inputs.message == 'reimbursing jordan@example.com $482.50, approved by finance (finance-ops@example.com) after the manager did not respond'"
         returns: {}
     expect:
-      ran: [submit, manager_review, escalate, finance_review, outcome, settle, reimburse_escalated]
-      skipped: [reimburse, deny]
+      ran: [submit, manager_review, escalate, finance_review, escalation_decision, escalation_outcome, outcome, settle, reimburse_escalated]
+      skipped: [direct_outcome, reimburse, deny]
       outputs:
         outcome: approved_after_escalation
         amount: 482.5
@@ -101,8 +102,8 @@ tests:
           inputs.level == 'warn'
         returns: {}
     expect:
-      ran: [submit, manager_review, escalate, finance_review, outcome, settle, deny]
-      skipped: [reimburse, reimburse_escalated]
+      ran: [submit, manager_review, escalate, finance_review, escalation_decision, escalation_outcome, outcome, settle, deny]
+      skipped: [direct_outcome, reimburse, reimburse_escalated]
       outputs:
         # Not "denied". A caller deciding whether to ask again needs to know
         # nobody ever answered, which is what this value being separate is for.
@@ -132,11 +133,11 @@ tests:
           inputs.level == 'warn'
         returns: {}
     expect:
-      ran: [submit, manager_review, outcome, settle, deny]
+      ran: [submit, manager_review, direct_outcome, outcome, settle, deny]
       # Somebody said no, so there is nothing to escalate — the difference
       # between this case and the one above, and the reason `outcome` is not a
       # boolean.
-      skipped: [escalate, finance_review, reimburse, reimburse_escalated]
+      skipped: [escalate, finance_review, escalation_decision, escalation_outcome, reimburse, reimburse_escalated]
       outputs:
         outcome: denied
         amount: 482.5

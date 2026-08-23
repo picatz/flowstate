@@ -136,10 +136,10 @@ being configured, which it deliberately did not while nothing exported logs.
 
 What that bought, and its edge: a `log:` step on the worker emits with the
 activity's context, so its record carries the trace and span ids of the step's own
-span and a log line is one click from its trace in both directions. Lines emitted
-outside a span — the server's and worker's own start-up commentary, and every
-`log:` step under `flow run local`, which opens no span at all — are exported and
-searchable but carry no trace id. The remaining rung is the Temporal SDK's own
+span and a log line is one click from its trace in both directions. The same is
+true under `flow run local` since #523's gap 3 gave that driver the identical
+task span. Lines emitted outside a span — the server's and worker's own start-up
+commentary — are exported and searchable but carry no trace id. The remaining rung is the Temporal SDK's own
 logger, which is not a `slog` logger and so still reaches stderr only.
 
 What is left:

@@ -13,7 +13,7 @@ import (
 
 // `async:` from the position an author actually writes it (issue #418).
 //
-// The engine cases in `pkg/flowstate/v1/tests` prove that both drivers agree
+// The engine cases in `pkg/flowstate/v1/internal/conformance` prove that both drivers agree
 // about what an async step does; none of them proves anybody can write one. That
 // is the whole of the house rule about reachability: a test that builds
 // `&v1.Node{Async: true}` in Go is a test of the engine, and the feature is the

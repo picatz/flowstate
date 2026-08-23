@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // TestRunIdentityShapeLocal checks the local half of #206's second gap: a local
@@ -19,10 +19,10 @@ import (
 // durable half of this shared assertion is [TestRunIdentityShapeDurable] in
 // engine/run_identity_test.go.
 func TestRunIdentityShapeLocal(t *testing.T) {
-	outputs, err := v1.Run(context.Background(), tests.RunIdentityWorkflow())
+	outputs, err := v1.Run(context.Background(), conformance.RunIdentityWorkflow())
 	require.NoError(t, err)
 
-	tests.AssertRunIdentityShape(t, outputs, true, "")
+	conformance.AssertRunIdentityShape(t, outputs, true, "")
 }
 
 // TestRunIdentityShapeLocalRehearsal is the row #295 corrected. A local run
@@ -45,10 +45,10 @@ func TestRunIdentityShapeLocalRehearsal(t *testing.T) {
 		Namespace: "team-a",
 	})
 
-	outputs, err := v1.Run(ctx, tests.RunIdentityWorkflow())
+	outputs, err := v1.Run(ctx, conformance.RunIdentityWorkflow())
 	require.NoError(t, err)
 
-	tests.AssertRunIdentityShape(t, outputs, true, "release-requester@example.com")
+	conformance.AssertRunIdentityShape(t, outputs, true, "release-requester@example.com")
 }
 
 // TestRunIdentityContainmentShapes checks the opposite direction from

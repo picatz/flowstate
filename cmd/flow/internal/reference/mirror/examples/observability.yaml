@@ -21,18 +21,17 @@ description: A run shaped to be worth looking at in Grafana and in the Temporal 
 #
 # Run it against the lab's server per README.md. It needs no network beyond the
 # server itself.
-
 vars:
+  regions:
+    - eu-west-1
+    - us-east-1
+    - ap-southeast-2
   release: v2026.8.0
-  regions: [eu-west-1, us-east-1, ap-southeast-2]
-
 steps:
   - id: announce
     log:
-      message: ${'starting rollout of ' + vars.release}
-      fields:
-        release: ${vars.release}
-        regions: ${string(size(vars.regions))}
+      fields: '${{"release": vars.release, "regions": string(size(vars.regions))}}'
+      message: ${"starting rollout of " + vars.release}
 
   # A durable timer. The worker is not holding a thread here, and the trace shows
   # it: the gap belongs to the workflow, not to a busy process. Kept to a couple
@@ -49,11 +48,8 @@ steps:
       steps:
         - id: deploy
           log:
-            message: ${'rolled out ' + vars.release + ' to ' + region}
-            fields:
-              region: ${region}
-              release: ${vars.release}
-
+            fields: '${{"region": region, "release": vars.release}}'
+            message: ${"rolled out " + vars.release + " to " + region}
   - id: report
     log:
-      message: ${'rollout of %s reached %d regions'.format([vars.release, size(vars.regions)])}
+      message: ${"rollout of %s reached %d regions".format([vars.release, size(vars.regions)])}

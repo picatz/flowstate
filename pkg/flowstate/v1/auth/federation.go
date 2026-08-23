@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto"
 	"fmt"
 	"net/http"
 	"time"
@@ -49,6 +50,29 @@ type FederationPolicy struct {
 	// KeyRetention overrides [DefaultKeyRetention], how long a rotated-out key
 	// stays published.
 	KeyRetention time.Duration `json:"key_retention,omitempty" yaml:"key_retention,omitempty"`
+
+	// DeclaredClaims names the extension claims assertions minted here may
+	// carry, beyond the ones every assertion has. The claim set is closed: a
+	// carried claim absent from this list is refused at mint rather than
+	// signed, with [ErrUndeclaredClaim].
+	//
+	//	federation:
+	//	  issuer: https://flowstate.example.com
+	//	  declared_claims: [repository, environment]
+	//
+	// Empty declares none, which is the fail-closed default: a deployment that
+	// has not said which claims are part of its assertions' contract mints
+	// assertions carrying only the claims the issuer sets itself.
+	//
+	// This is where a *deployment* declares a claim. Core claims are declared
+	// in the schema instead, as the [ClaimNamespace] constants and the
+	// reserved set built from them, so `buf breaking` covers them — a tenant
+	// that needs a claim cannot edit our .proto, and a claim the issuer sets
+	// itself is not a tenant's to redefine.
+	//
+	// See [WithDeclaredClaims] for why this is an allowlist and for its
+	// relationship to the server's `--identity-claim`.
+	DeclaredClaims []string `json:"declared_claims,omitempty" yaml:"declared_claims,omitempty"`
 
 	// Allow are CEL rules gating credential assumption. When any are present, a
 	// request must match one of them.
@@ -101,6 +125,11 @@ type FederationTarget struct {
 	// ClientCredentials configures an OAuth 2.0 client credentials grant
 	// authenticated by the Flowstate assertion.
 	ClientCredentials *ClientCredentialsTarget `json:"client_credentials,omitempty" yaml:"client_credentials,omitempty"`
+
+	// Assertion configures presenting the Flowstate assertion itself as the
+	// bearer credential, for a relying party that verifies OIDC and needs no
+	// exchange. See [AssertionConfig] for what that costs.
+	Assertion *AssertionTarget `json:"assertion,omitempty" yaml:"assertion,omitempty"`
 }
 
 // TokenExchangeTarget is the file form of [TokenExchangeConfig].
@@ -144,6 +173,14 @@ type ClientCredentialsTarget struct {
 	Scopes   []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 }
 
+// AssertionTarget is the file form of [AssertionConfig]. It carries only an
+// audience, because there is nothing to exchange with: the credential is the
+// assertion, and its lifetime is the issuer's `assertion_lifetime` above rather
+// than a second one written per target.
+type AssertionTarget struct {
+	Audience string `json:"audience" yaml:"audience"`
+}
+
 // ParseFederationPolicy decodes an outbound federation policy from YAML or JSON.
 // Unknown and duplicate fields are errors, so a misspelled key fails at startup
 // rather than silently dropping a restriction.
@@ -168,6 +205,13 @@ func (p FederationPolicy) Validate() error {
 		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
+	// Checked here as well as in [NewIssuer], so that a declaration that can
+	// never apply is a parse error rather than something an operator learns
+	// about the first time a workload asks for a credential.
+	if _, err := validateDeclaredClaims(p.DeclaredClaims); err != nil {
+		return err
+	}
+
 	names := make(map[string]struct{}, len(p.Targets))
 	for i, target := range p.Targets {
 		if target.Name == "" {
@@ -184,6 +228,7 @@ func (p FederationPolicy) Validate() error {
 			target.AWS != nil,
 			target.GCP != nil,
 			target.ClientCredentials != nil,
+			target.Assertion != nil,
 		} {
 			if set {
 				configured++
@@ -192,7 +237,7 @@ func (p FederationPolicy) Validate() error {
 		switch configured {
 		case 1:
 		case 0:
-			return fmt.Errorf("%w: targets[%d] %q: needs one of token_exchange, aws, gcp, or client_credentials",
+			return fmt.Errorf("%w: targets[%d] %q: needs one of token_exchange, aws, gcp, client_credentials, or assertion",
 				ErrInvalidPolicy, i, target.Name)
 		default:
 			return fmt.Errorf("%w: targets[%d] %q: configures %d providers, and a target names exactly one system",
@@ -218,6 +263,12 @@ func (p FederationPolicy) Validate() error {
 type federationConfig struct {
 	client *http.Client
 	clock  func() time.Time
+
+	// verifyOnly are extra public keys to publish beside the signing key. They
+	// are issuer options rather than a second list of key material here,
+	// because the issuer is the thing that publishes a key set and this type
+	// only has to carry them to it.
+	verifyOnly []IssuerOption
 }
 
 // A FederationOption configures how a [FederationPolicy] is built into a [Broker].
@@ -240,6 +291,18 @@ func WithFederationClock(clock func() time.Time) FederationOption {
 		if clock != nil {
 			c.clock = clock
 		}
+	}
+}
+
+// WithFederationVerifyOnlyKey publishes one more public key in the issuer's key
+// set, without a private half, so assertions a previous process signed keep
+// verifying across a restart. It is [WithVerifyOnlyKey] reached from a policy,
+// and takes the same (id, public key) pair for the same reasons; repeat it for
+// each key. See that option for what rotation across a restart needs and why
+// this is not revocation.
+func WithFederationVerifyOnlyKey(id string, public crypto.PublicKey) FederationOption {
+	return func(c *federationConfig) {
+		c.verifyOnly = append(c.verifyOnly, WithVerifyOnlyKey(id, public))
 	}
 }
 
@@ -269,9 +332,17 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	if p.KeyRetention > 0 {
 		issuerOpts = append(issuerOpts, WithKeyRetention(p.KeyRetention))
 	}
+	if len(p.DeclaredClaims) > 0 {
+		issuerOpts = append(issuerOpts, WithDeclaredClaims(p.DeclaredClaims...))
+	}
 	if cfg.clock != nil {
 		issuerOpts = append(issuerOpts, WithIssuerClock(cfg.clock))
 	}
+	// Last, so the retention and clock the policy configured are the ones the
+	// published keys are measured against: [NewIssuer] installs them once every
+	// option has been applied, but ordering them here keeps that from being a
+	// property a reader has to go and check.
+	issuerOpts = append(issuerOpts, cfg.verifyOnly...)
 
 	issuer, err := NewIssuer(p.Issuer, key, issuerOpts...)
 	if err != nil {
@@ -355,6 +426,13 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 				Scopes:     target.ClientCredentials.Scopes,
 				HTTPClient: cfg.client,
 				Clock:      cfg.clock,
+			})
+		case target.Assertion != nil:
+			// No HTTP client and no clock: this exchanger reaches nothing and
+			// takes its expiry from the assertion the issuer minted.
+			exchanger, err = NewAssertionExchanger(AssertionConfig{
+				Name:     target.Name,
+				Audience: target.Assertion.Audience,
 			})
 		default:
 			// Validate rejects this, and reaching it would mean a target with no

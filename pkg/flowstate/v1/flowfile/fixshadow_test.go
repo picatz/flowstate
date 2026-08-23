@@ -93,57 +93,12 @@ steps:
             message: "${'len ' + string(size(item))}"
 `,
 		},
-		{
-			// The same binding, written the two other ways the compiler accepts it
-			// (`fields.go`'s `resolve` follows both). The rewriter read only a plain
-			// scalar, so an anchored or aliased `as:` looked like a loop with no
-			// `as:` at all — and a loop with no `as:` binds `item`, so the name the
-			// file actually binds was rooted inside the body of both loops.
-			name: "a loop's binding is written through an anchor and an alias",
-			source: `edition: v2026.3
-name: shadow-anchored
-steps:
-  - id: host
-    log:
-      message: a step whose id is host
-  - id: first
-    for_each:
-      items: "${['a']}"
-      as: &binding host
-      steps:
-        - id: one
-          log:
-            message: "${host}"
-  - id: second
-    for_each:
-      items: "${['b']}"
-      as: *binding
-      steps:
-        - id: two
-          log:
-            message: "${host}"
-`,
-		},
-		{
-			// A step's `vars:` reached the same way. The anchor was unwrapped here
-			// already and the alias was not, so `vars: *defaults` read as no vars at
-			// all and the name it declares was rooted into the step it shadows.
-			name: "a step's vars are written through an alias",
-			source: `edition: v2026.3
-name: shadow-alias-vars
-vars:
-  defaults: &defaults
-    subject: "${'world'}"
-steps:
-  - id: subject
-    log:
-      message: a step called subject
-  - id: greet
-    vars: *defaults
-    log:
-      message: "${'hello ' + subject}"
-`,
-		},
+		// The same bindings written through an anchor and an alias used to live here,
+		// because `fields.go`'s `resolve` followed both and the rewriter read only a
+		// plain scalar. The grammar is now a strict subset of YAML that refuses
+		// anchors and aliases outright (#653), so those two cases are gone with the
+		// spellings they exercised: a name the rewriter can no longer reach through a
+		// construct the compiler no longer accepts.
 		{
 			// A `loop:`'s carried state is bound bare, the same standing as a
 			// `for_each` item, so a state named for a step is the same corruption in
@@ -784,64 +739,6 @@ steps:
 			"downstream checks a deferred input, so the run is the first thing that would say so")
 	assert.Contains(t, string(result.Source), `outputs: "{'said': vars.greet}"`,
 		"the deferred input was not rewritten to the value the step moved to")
-}
-
-// TestFixRootsAStepShadowedByNothingWhenTheBindingIsAnchored is the other
-// direction of the anchored `as:`, and the one an over-broad exemption hides.
-//
-// Reading a binding it cannot spell wrong in *two* ways at once is what made this
-// worth its own test. A loop whose `as:` was an anchor fell back to
-// [v1.DefaultIterator], so the rewriter subtracted `item` — a name the file never
-// binds — while leaving `host`, the name it does, in the candidate set. So the
-// legacy reference to a step genuinely called `item` was left bare in a file
-// stamped with the new edition, which is `flow fix` exiting zero on a file `flow
-// validate` then rejects; and a body reference to `host` would have been rooted
-// into the step of that name, which is the corruption.
-//
-// Byte-for-byte, because the interesting property is which of the two names moved.
-func TestFixRootsAStepShadowedByNothingWhenTheBindingIsAnchored(t *testing.T) {
-	t.Parallel()
-
-	const want = `edition: v2026.3
-name: itemroot
-steps:
-  - id: item
-    log:
-      message: something
-  - id: each
-    for_each:
-      items: "${['a']}"
-      as: &binding host
-      steps:
-        - id: inner
-          log:
-            message: "${host + steps.item.said}"
-`
-
-	result, err := flowfile.Fix([]byte(`edition: 2026.1
-name: itemroot
-steps:
-  - id: item
-    log:
-      message: something
-  - id: each
-    for_each:
-      items: "${['a']}"
-      as: &binding host
-      steps:
-        - id: inner
-          log:
-            message: "${host + item.said}"
-`))
-	require.NoError(t, err)
-	require.Empty(t, result.Refusals)
-
-	assert.Equal(t, want, string(result.Source),
-		"the loop's `as:` was read as absent, so `item` was subtracted as a binding "+
-			"the file never made and the step of that name was left unrooted")
-
-	_, err = flowfile.ValidateSource(result.Source)
-	require.NoError(t, err, "the rewritten file does not compile:\n%s", result.Source)
 }
 
 // TestFixRootsAStepSharingTheWorkflowsVarName is the third scope, and the one

@@ -41,7 +41,7 @@ server, `flow worker`, and `flow server` — see the main README's Quickstart):
 
 ```console
 $ flow run examples/expense-approval/workflow.yaml
-started flowstate-workflow-...; come back to it with `flow watch flowstate-workflow-...`
+started workflow expense-approval; come back to it with `flow watch flowstate-workflow-...`
 ```
 
 Then, from another terminal, addressing the id the first command printed:
@@ -70,13 +70,17 @@ anything to once it has started.
   explicitly rejected report has nothing left to escalate, and without the guard this
   step would run — and wait — on every path, not just the one where the first gate
   lapsed.
-- **The `&&` chain in `reimburse`'s `if:`.** `has(steps.manager_review.payload.approved)`
-  comes first specifically so a lapsed gate's empty payload short-circuits the
-  expression before it is asked for a key that is not there. The same ordering
-  guards the read of `steps.finance_review.payload`: it is only reached on the
-  branch where `manager_review` timed out, which is the only branch where
-  `finance_review` ran at all — a skipped step produces no outputs, so reading one
-  unconditionally would fail the run rather than evaluate to false.
+- **Each gate shapes its own answer, and nothing downstream nests.** A gate's
+  `outputs:` name `decision`, `approved_by` and `timed_out` where `payload` and
+  `sender` are actually in scope, and the four endings are then assembled by four
+  one-question `value:` steps — `direct_outcome`, `escalation_decision`,
+  `escalation_outcome`, `outcome` — rather than by one ternary holding another.
+  That is `docs/STYLE.md` R5, and `flow lint` reports the nested form.
+- **Every read of the second gate is guarded by the first one's lapse.** A skipped
+  step produces no outputs, so reading `steps.finance_review.decision`
+  unconditionally would fail the run rather than evaluate to false. Stating
+  `if: ${steps.manager_review.timed_out}` on the steps that read it says that once,
+  instead of every expression re-testing it.
 - **`outputs.outcome` names which gate decided it.** `"denied"` and
   `"denied_no_response"` are both refusals, and a caller deciding whether it is worth
   asking again needs to know which one happened — a bare `approved: bool` would have

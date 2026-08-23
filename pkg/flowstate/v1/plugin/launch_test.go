@@ -243,10 +243,13 @@ func TestLaunchNoSuchBinary(t *testing.T) {
 
 	cfg := testConfig(t, t.TempDir()).withDefaults()
 
+	// A nil image, which is the launch path for a caller with no digest to
+	// protect: there is nothing to open, since the point of the case is a binary
+	// that is not there.
 	_, err := launch(t.Context(), cfg, Found{
 		Name: "ghost",
 		Path: filepath.Join(t.TempDir(), "flowstate-plugin-ghost"),
-	})
+	}, nil)
 	if !errors.Is(err, ErrLaunch) {
 		t.Fatalf("launch error = %v, want one wrapping %v", err, ErrLaunch)
 	}
@@ -282,6 +285,67 @@ func TestOpenToleratesStdoutNoise(t *testing.T) {
 			t.Fatalf("health = %v, want serving: %v", health.Status, health.Err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestStderrFloodIsRateLimited checks the other half of issue #714's bound: a
+// plugin that floods stderr with short lines — never tripping MaxStderrLine,
+// which bounds one line's size and nothing about how many arrive — costs the
+// host a bounded number of relayed log records rather than one per line.
+//
+// The pipe still has to be drained regardless, the same as the tolerated
+// stdout noise above: a plugin blocked on a full pipe looks exactly like a
+// hung one. This plugin writes 20,000 lines; the assertion is that far fewer
+// than 20,000 made it into the host's log.
+func TestStderrFloodIsRateLimited(t *testing.T) {
+	t.Parallel()
+
+	var logged strings.Builder
+	cfg := testConfig(t, pluginDir(t, "stderr-flood"))
+	cfg.MaxStderrLinesPerMinute = 5
+	cfg.Logger = newCapturingLogger(t, &logged)
+
+	host := openHost(t, cfg)
+
+	p, ok := host.Lookup("stderr-flood")
+	if !ok {
+		t.Fatal("plugin was not launched")
+	}
+
+	if health := p.CheckHealth(t.Context()); health.Status != HealthServing {
+		t.Fatalf("health = %v, want serving: %v", health.Status, health.Err)
+	}
+
+	// Give the flood time to run its course. The fake plugin's flood loop
+	// finishes well under a second, but the plugin process then keeps
+	// serving rather than exiting — see stderr-flood's source — so nothing
+	// here bounds the pump, only the flood.
+	time.Sleep(500 * time.Millisecond)
+
+	// Stop the plugin before reading logged: the pump goroutine writes to it
+	// concurrently for as long as the plugin's stderr pipe stays open, so any
+	// read before this point (relayed count included) races the write. Close
+	// waits for the pumps (i.pumps.Wait()), which is also what lets the
+	// limiter's owed summary appear at all — the window this test runs in is
+	// real-clock minutes long, so it never rolls over on its own, and only
+	// closing the host stops the plugin, reaches EOF, and flushes the
+	// pending count rather than stranding it (#714's flood-then-quiet
+	// follow-up: a crash is a common reason a flooding plugin goes silent,
+	// and it is exactly the count an operator most needs to see). Closed
+	// explicitly here, ahead of openHost's own t.Cleanup, so every assertion
+	// below observes the final log rather than racing it.
+	host.Close(t.Context())
+
+	relayed := strings.Count(logged.String(), `msg="plugin log"`)
+	if relayed == 0 {
+		t.Fatal("no stderr lines were relayed at all, so this proved nothing about the bound")
+	}
+	if relayed > cfg.MaxStderrLinesPerMinute {
+		t.Errorf("relayed %d stderr lines, want at most the configured budget of %d", relayed, cfg.MaxStderrLinesPerMinute)
+	}
+
+	if !strings.Contains(logged.String(), "plugin log suppressed") {
+		t.Error(`log does not contain "plugin log suppressed" after the plugin was stopped with lines still pending`)
 	}
 }
 

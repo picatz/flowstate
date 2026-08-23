@@ -165,30 +165,31 @@ func NewSigningKey(id string, private crypto.PrivateKey) (SigningKey, error) {
 			return SigningKey{}, fmt.Errorf("%w: RSA signing key is %d bits, want at least %d",
 				ErrInvalidPolicy, typed.N.BitLen(), minRSAKeyBits)
 		}
-		key.algorithm, public = jwa.RS256, &typed.PublicKey
+		public = &typed.PublicKey
 	case *ecdsa.PrivateKey:
 		if typed.Curve != elliptic.P256() {
 			return SigningKey{}, fmt.Errorf("%w: ECDSA signing keys must use P-256, got %s",
 				ErrInvalidPolicy, typed.Curve.Params().Name)
 		}
-		key.algorithm, public = jwa.ES256, &typed.PublicKey
+		public = &typed.PublicKey
 	case ed25519.PrivateKey:
-		key.algorithm, public = jwa.EdDSA, typed.Public()
+		public = typed.Public()
 	default:
 		return SigningKey{}, fmt.Errorf("%w: %T cannot sign assertions, want an RSA, P-256 ECDSA, or Ed25519 private key",
 			ErrInvalidPolicy, private)
 	}
 
-	key.signer = signerFor(key.id, key.algorithm, private)
-
-	published, err := jwk.ValueFromPublicKey(public)
+	// The algorithm and the published key come from the public half, through
+	// the same function a verify-only key goes through: a signing key and a
+	// key published for verification only differ in whether this process can
+	// sign with them, and must not differ in how they appear in the key set.
+	algorithm, published, err := publishValue(key.id, public)
 	if err != nil {
-		return SigningKey{}, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, id, err)
+		return SigningKey{}, err
 	}
-	published[jwk.KeyID] = id
-	published[jwk.Algorithm] = key.algorithm
-	published[jwk.PublicKeyUse] = "sig"
-	key.published = published
+	key.algorithm, key.published = algorithm, published
+
+	key.signer = signerFor(key.id, key.algorithm, private)
 
 	return key, nil
 }
@@ -397,6 +398,19 @@ type Issuer struct {
 	keyRetention time.Duration
 	clock        func() time.Time
 
+	// declared is the closed set of extension claim names an assertion minted
+	// here may carry, sorted. Nil means none: a deployment that declares
+	// nothing mints nothing beyond the claims the issuer sets itself. See
+	// [WithDeclaredClaims].
+	declared []string
+
+	// verifyOnly holds the keys [WithVerifyOnlyKey] named, in the order they
+	// were given, until [NewIssuer] can turn them into retired keys. They
+	// cannot be installed by the option itself because an option cannot fail
+	// and cannot see the retention or the clock it needs, both of which other
+	// options may still change.
+	verifyOnly []verifyOnlyKey
+
 	// mu guards the keys. Minting takes a read lock, rotation a write lock, so
 	// signing is not serialized.
 	mu      sync.RWMutex
@@ -404,10 +418,22 @@ type Issuer struct {
 	retired []retiredKey
 }
 
+// verifyOnlyKey is a public key an operator named at start-up so that
+// assertions a previous process signed keep verifying. See [WithVerifyOnlyKey].
+type verifyOnlyKey struct {
+	id     string
+	public crypto.PublicKey
+}
+
 // retiredKey is a rotated-out key, kept published so assertions signed with it
 // can still be verified. Only the public half is kept: a retired key must not be
 // able to sign again.
 type retiredKey struct {
+	// id is the key id assertions signed with this key name in their "kid"
+	// header, and what [Issuer.RevokeKey] addresses. It is also inside
+	// published, and is kept here as well so that finding a key by id is not a
+	// map lookup into a value whose shape belongs to the JOSE library.
+	id        string
 	algorithm jwa.Algorithm
 	published jwk.Value
 	expiresAt time.Time
@@ -432,6 +458,88 @@ func WithJWKSPath(path string) IssuerOption {
 // verification.
 func WithKeyRetention(retention time.Duration) IssuerOption {
 	return func(i *Issuer) { i.keyRetention = retention }
+}
+
+// WithDeclaredClaims declares the extension claims assertions from this issuer
+// may carry, beyond the ones the issuer sets itself.
+//
+// # Why this is an allowlist
+//
+// The claim set an assertion carries is a public contract: it is signed, it is
+// cached by relying parties, and a mistake in it is a breaking change to every
+// verifier in the world rather than a refactor. Keeping it closed is what turns
+// "the claim set is fixed" from a convention into a property.
+//
+// Minting used to be a denylist — every carried claim was copied and only a
+// collision with a reserved name was refused (#560). That protected the
+// assertion from being shadowed and did nothing about growth: whatever an
+// operator carried into a [WorkloadIdentity] was signed, whether anyone had
+// decided it should be part of the contract or not. So the mint now refuses a
+// claim it was not told about, with [ErrUndeclaredClaim].
+//
+// # Where a deployment declares one
+//
+// In the same trust policy the rest of federation is configured in, as
+// `federation.declared_claims` — see [FederationPolicy.DeclaredClaims]. It is
+// the outbound counterpart to the server's own `--identity-claim`, which names
+// the caller-token claims carried *into* a run's identity: that flag decides
+// what is available to carry, and this decides what may be signed. They are two
+// processes' configuration and so cannot be one declaration, which is a drift
+// risk worth knowing about — an operator carrying a claim the issuer does not
+// declare finds out at the first mint, loudly, by name.
+//
+// Names are validated here rather than at the first mint, so a policy that
+// loads is one whose declarations mean something: a reserved name, an empty
+// one, or one longer than [MaxCarriedClaimNameBytes] is a startup error.
+// Declaring a reserved claim is refused rather than ignored, because a
+// declaration that silently never applies is worse than no declaration.
+func WithDeclaredClaims(names ...string) IssuerOption {
+	return func(i *Issuer) {
+		i.declared = append(i.declared, names...)
+	}
+}
+
+// WithVerifyOnlyKey publishes one more public key in the key set, without a
+// private half, so that assertions signed by a *previous process* keep
+// verifying while they live.
+//
+// # Why this exists beside [Issuer.Rotate]
+//
+// Rotate is an in-process rotation: it moves the outgoing key into the
+// published-but-not-signing set and installs a new one, with no restart. It is
+// therefore no help at all with the rotation an operator actually performs,
+// which is to change what a process is started with and restart it. A fresh
+// process builds a fresh issuer whose retired set is empty, so the key set it
+// publishes from its first request onward names the new key and nothing else —
+// and every assertion the old process signed, still valid for its remaining
+// lifetime, stops verifying against any relying party that refetches. This
+// option is how a deployment carries the old key across that boundary
+// (picatz/flowstate#891).
+//
+// The key is installed exactly where a rotated-out key goes, so there is one
+// set of published keys and one retention rule rather than two: it is dropped
+// from the key set [Issuer.KeySet] serves once the issuer's retention has
+// elapsed, measured from when the issuer was built, and it can be withdrawn
+// early by [Issuer.RevokeKey] like any other retired key.
+//
+// It is a public key, and deliberately not a [SigningKey]: a key this process
+// will never sign with has no business holding private material, and a
+// verify-only key that could sign would make the distinction a convention
+// rather than a property.
+//
+// Rotating is still not revoking. Publishing a previous key is what keeps
+// rotation from rejecting assertions that are perfectly valid; an operator
+// responding to a suspected compromise wants [Issuer.RevokeKey], or simply not
+// to name the key here.
+//
+// The id must be the one the old key published under, since it is what the
+// "kid" header of those assertions names, and it must differ from every other
+// key this issuer publishes — [NewIssuer] refuses a collision rather than
+// publishing two keys a verifier cannot tell apart.
+func WithVerifyOnlyKey(id string, public crypto.PublicKey) IssuerOption {
+	return func(i *Issuer) {
+		i.verifyOnly = append(i.verifyOnly, verifyOnlyKey{id: id, public: public})
+	}
 }
 
 // WithIssuerClock sets the clock used for assertion lifetimes and key retention.
@@ -487,8 +595,148 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 		return nil, fmt.Errorf("%w: key retention must not be negative", ErrInvalidPolicy)
 	}
 
+	declared, err := validateDeclaredClaims(issuer.declared)
+	if err != nil {
+		return nil, err
+	}
+	issuer.declared = declared
+
+	if err := issuer.installVerifyOnlyKeys(); err != nil {
+		return nil, err
+	}
+
 	return issuer, nil
 }
+
+// installVerifyOnlyKeys turns what [WithVerifyOnlyKey] collected into retired
+// keys, once every option has been applied and the retention and clock are
+// settled.
+//
+// Every failure here is a start-up error rather than a key quietly left out.
+// A deployment that named a key it cannot publish is a deployment whose
+// rotation is half-performed: the process would come up serving a key set that
+// silently rejects assertions the operator believes are covered, which is the
+// failure this option exists to prevent, arriving without a message.
+func (i *Issuer) installVerifyOnlyKeys() error {
+	now := i.clock()
+
+	for _, key := range i.verifyOnly {
+		switch {
+		case key.id == "":
+			return fmt.Errorf("%w: a verify-only key needs the id it was published under", ErrInvalidPolicy)
+		case strings.ContainsAny(key.id, " \t\n\r"):
+			return fmt.Errorf("%w: verify-only key id %q must not contain whitespace",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		case key.id == i.active.id:
+			return fmt.Errorf("%w: verify-only key id %q is the active signing key's id; a key needs its own id, or verifiers cannot tell them apart",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		}
+
+		if slices.ContainsFunc(i.retired, func(other retiredKey) bool { return other.id == key.id }) {
+			return fmt.Errorf("%w: verify-only key id %q was given twice; a key needs its own id, or verifiers cannot tell them apart",
+				ErrInvalidPolicy, truncate(key.id, 64))
+		}
+
+		algorithm, published, err := publishValue(key.id, key.public)
+		if err != nil {
+			return err
+		}
+
+		i.retired = append(i.retired, retiredKey{
+			id:        key.id,
+			algorithm: algorithm,
+			published: published,
+			// Measured from start-up, because that is when this key stopped
+			// signing as far as this process can tell. An operator whose
+			// retention has to outlast a longer gap configures a longer
+			// key_retention rather than getting an unbounded one by default.
+			expiresAt: now.Add(i.keyRetention),
+		})
+	}
+
+	i.verifyOnly = nil
+
+	return nil
+}
+
+// publishValue renders a public key as the JSON Web Key an issuer publishes,
+// and reports the algorithm it is used with.
+//
+// The accepted key types are exactly [NewSigningKey]'s, seen from the public
+// side: a key that could not have signed for this issuer cannot verify for it
+// either, and admitting one here would publish a key set entry no assertion
+// this deployment ever minted can match.
+func publishValue(id string, public crypto.PublicKey) (jwa.Algorithm, jwk.Value, error) {
+	var algorithm jwa.Algorithm
+
+	switch typed := public.(type) {
+	case *rsa.PublicKey:
+		if typed.N.BitLen() < minRSAKeyBits {
+			return "", nil, fmt.Errorf("%w: RSA key %q is %d bits, want at least %d",
+				ErrInvalidPolicy, truncate(id, 64), typed.N.BitLen(), minRSAKeyBits)
+		}
+		algorithm = jwa.RS256
+	case *ecdsa.PublicKey:
+		if typed.Curve != elliptic.P256() {
+			return "", nil, fmt.Errorf("%w: ECDSA key %q must use P-256, got %s",
+				ErrInvalidPolicy, truncate(id, 64), typed.Curve.Params().Name)
+		}
+		algorithm = jwa.ES256
+	case ed25519.PublicKey:
+		algorithm = jwa.EdDSA
+	default:
+		return "", nil, fmt.Errorf("%w: %T cannot verify assertions, want an RSA, P-256 ECDSA, or Ed25519 public key",
+			ErrInvalidPolicy, public)
+	}
+
+	published, err := jwk.ValueFromPublicKey(public)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: rendering public key %q: %w", ErrInvalidPolicy, truncate(id, 64), err)
+	}
+	published[jwk.KeyID] = id
+	published[jwk.Algorithm] = algorithm
+	published[jwk.PublicKeyUse] = "sig"
+
+	return algorithm, published, nil
+}
+
+// validateDeclaredClaims checks a declaration and returns it sorted and
+// deduplicated, so that the mint's membership test and the discovery document's
+// claims list read the same set in the same order.
+//
+// A declaration is configuration, so every one of these is a startup error
+// rather than something discovered at the first mint.
+func validateDeclaredClaims(names []string) ([]string, error) {
+	declared := slices.Sorted(slices.Values(names))
+	declared = slices.Compact(declared)
+
+	// Deliberately no bound on how many names may be declared. The declaration
+	// is a deployment's own configuration, read once at startup, and it is a
+	// vocabulary rather than a claim set: an assertion still carries at most
+	// [MaxCarriedClaims] of them, which is the bound that faces the caller.
+	for _, name := range declared {
+		switch {
+		case name == "":
+			return nil, fmt.Errorf("%w: a declared claim needs a name", ErrInvalidPolicy)
+		case len(name) > MaxCarriedClaimNameBytes:
+			return nil, fmt.Errorf("%w: declared claim name %q is %d bytes, and at most %d are allowed",
+				ErrInvalidPolicy, truncate(name, 64), len(name), MaxCarriedClaimNameBytes)
+		case slices.Contains(reservedClaims, name):
+			// Refused rather than ignored: a carried claim of this name can
+			// never be minted, whatever the declaration says, and a
+			// declaration that silently never applies is worse than none.
+			return nil, fmt.Errorf("%w: claim %q is reserved and set by the issuer itself, so it cannot be declared as one an identity carries",
+				ErrInvalidPolicy, name)
+		}
+	}
+
+	return declared, nil
+}
+
+// DeclaredClaims returns the extension claims assertions from this issuer may
+// carry, sorted. It is what [WithDeclaredClaims] was given, and what the
+// discovery document advertises beyond the claims every assertion has.
+func (i *Issuer) DeclaredClaims() []string { return slices.Clone(i.declared) }
 
 // URL returns the issuer identifier, which is the "iss" claim of every assertion
 // it mints.
@@ -511,6 +759,18 @@ func (i *Issuer) AssertionLifetime() time.Duration { return i.lifetime }
 // key's public half stays published for the configured retention period, so
 // assertions already in flight, and relying parties holding a cached key set,
 // keep working; its private half is dropped, so it cannot sign again.
+//
+// # Rotation is not revocation
+//
+// Rotating invalidates nothing that has already been signed, and that is
+// deliberate: keeping the retired key published for [DefaultKeyRetention] is
+// what stops rotation from rejecting assertions that are still perfectly
+// valid. An operator who rotates in response to a suspected key compromise has
+// therefore done nothing about the assertions already in flight, and the key
+// they are worried about keeps verifying for another day.
+//
+// [Issuer.RevokeKey] is the verb for that, and it is a different verb because
+// it has a different consequence.
 func (i *Issuer) Rotate(key SigningKey) error {
 	if key.IsZero() {
 		return fmt.Errorf("%w: cannot rotate to an unset key", ErrNoSigningKey)
@@ -527,6 +787,7 @@ func (i *Issuer) Rotate(key SigningKey) error {
 	now := i.clock()
 
 	i.retired = append(i.retired, retiredKey{
+		id:        i.active.id,
 		algorithm: i.active.algorithm,
 		published: i.active.published,
 		expiresAt: now.Add(i.keyRetention),
@@ -534,6 +795,62 @@ func (i *Issuer) Rotate(key SigningKey) error {
 	i.active = key
 
 	i.pruneLocked(now)
+
+	return nil
+}
+
+// RevokeKey withdraws a retired key from the published key set immediately,
+// rather than when its retention lapses.
+//
+// This is the verb [Issuer.Rotate] is not. Rotating drops a key's private half
+// and keeps its public half published for [DefaultKeyRetention], precisely so
+// that assertions already signed with it keep verifying — which means rotating
+// invalidates nothing already issued. Revoking is the operator saying that is
+// no longer acceptable: **every assertion signed with this key stops verifying
+// as soon as each relying party refreshes its cached key set**, and there is no
+// way to make the ones in flight work again.
+//
+// So this is the response to a key believed compromised, and it is not the
+// response to a scheduled rotation. Reach for [Issuer.Rotate] on a schedule and
+// this only when something has gone wrong.
+//
+// Two things it will not do, both because the alternative is an issuer that
+// silently stops working:
+//
+//   - The active key cannot be revoked. Withdrawing the key assertions are
+//     currently signed with would publish a set that verifies nothing this
+//     issuer is about to mint. Rotate to a new key first, then revoke the one
+//     it replaced.
+//   - An unknown key id is an error rather than a no-op, because "revoked" and
+//     "misspelled the key id and revoked nothing" must not look the same to
+//     whoever is handling an incident.
+//
+// The revocation is this process's. An issuer's key set lives in memory, so a
+// deployment running several of them revokes on each, and a relying party stops
+// accepting the key when its own cache of the key set next refreshes — which is
+// its [DefaultKeyCacheTTL], not ours.
+func (i *Issuer) RevokeKey(keyID string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if keyID == "" {
+		return fmt.Errorf("%w: revoking a key needs its id", ErrInvalidPolicy)
+	}
+
+	if keyID == i.active.id {
+		return fmt.Errorf("%w: key %q is the active signing key; rotate to a new key first, then revoke this one",
+			ErrInvalidPolicy, truncate(keyID, 64))
+	}
+
+	before := len(i.retired)
+	i.retired = slices.DeleteFunc(i.retired, func(key retiredKey) bool {
+		return key.id == keyID
+	})
+
+	if len(i.retired) == before {
+		return fmt.Errorf("%w: no retired key with id %q is published by this issuer",
+			ErrUnknownKey, truncate(keyID, 64))
+	}
 
 	return nil
 }
@@ -605,14 +922,6 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		return Assertion{}, err
 	}
 
-	i.mu.RLock()
-	key := i.active
-	i.mu.RUnlock()
-
-	if key.IsZero() {
-		return Assertion{}, ErrNoSigningKey
-	}
-
 	var (
 		now       = i.clock()
 		expiresAt = now.Add(i.lifetime)
@@ -642,17 +951,64 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		claims[ClaimRun] = ref.Run
 	}
 
-	// Validate rejects a carried claim that shadows a reserved one, so this
-	// cannot overwrite anything above. Checked again here because that check is
-	// what keeps the guarantee, and it belongs next to the code it protects.
+	// Validate applies the same bound, and [Broker] reaches this function by a
+	// path that does not go through Mint. Checked again here because this is
+	// where a claim set becomes a signed token: an oversized one is refused,
+	// never trimmed, since a truncated claim set is an assertion that says
+	// something other than what was authorized.
+	if err := validateCarriedClaims(identity.Claims); err != nil {
+		return Assertion{}, err
+	}
+
+	// The claim set is closed: a name the issuer does not declare is refused,
+	// not signed. This is an allowlist rather than the denylist it began as,
+	// which is the difference between an assertion whose claim set is fixed by
+	// convention and one whose claim set is fixed by the code that signs it.
+	//
+	// Validate rejects a carried claim that shadows a reserved one, and the
+	// reserved names can never be declared, so neither loop can overwrite
+	// anything set above. Both checks are stated here because this is the line
+	// where a claim becomes a signed statement.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
-		if slices.Contains(reservedClaims, name) {
+		switch {
+		case slices.Contains(reservedClaims, name):
 			return Assertion{}, fmt.Errorf("%w: carried claim %q collides with a reserved claim", ErrInvalidIdentity, name)
+		case !slices.Contains(i.declared, name):
+			// The name, never the value: this error travels wherever the
+			// refusal does. See [validateCarriedClaims].
+			return Assertion{}, fmt.Errorf("%w: %q; declare it in the issuer's federation.declared_claims to carry it",
+				ErrUndeclaredClaim, truncate(name, 64))
 		}
 		claims[name] = identity.Claims[name]
 	}
 
+	// Choosing the key and signing with it happen under one hold of the read
+	// lock, and that is a correctness requirement rather than tidiness.
+	//
+	// Copying i.active and releasing the lock before signing leaves a window:
+	// [Issuer.Rotate] can retire that key and [Issuer.RevokeKey] can withdraw
+	// it, both completing while this signature is still in flight, and the
+	// assertion is then minted with a key the issuer has already told the world
+	// is revoked. A relying party holding a cached key set accepts it, so
+	// revocation would report success while still emitting new assertions
+	// signed by the compromised key — the one thing RevokeKey exists to stop.
+	//
+	// A read lock is the right one: concurrent mints still sign in parallel,
+	// since they share it. Only Rotate and RevokeKey take the write lock, and
+	// they now wait for in-flight signatures to finish — which is exactly the
+	// guarantee RevokeKey's doc claims, that no assertion signed with the key
+	// survives its return.
+	i.mu.RLock()
+	key := i.active
+	if key.IsZero() {
+		i.mu.RUnlock()
+		return Assertion{}, ErrNoSigningKey
+	}
+
 	token, err := key.sign(claims)
+	keyID := key.id
+	i.mu.RUnlock()
+
 	if err != nil {
 		return Assertion{}, err
 	}
@@ -662,7 +1018,7 @@ func (i *Issuer) mintFor(ctx context.Context, identity WorkloadIdentity, ref Ste
 		Subject:   subject,
 		Audience:  audience,
 		Issuer:    i.url,
-		KeyID:     key.id,
+		KeyID:     keyID,
 		IssuedAt:  now,
 		ExpiresAt: expiresAt,
 		ID:        id,

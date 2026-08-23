@@ -131,10 +131,31 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	argv := buildArgs(model, sandboxArg, workDir, allowNetwork, mutatingSandbox)
 	env := childEnv(apiKey, codexHome)
 
+	mutating := workDir != "" && sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY
+
+	// Hardening is computed before the *first* Git command touches the
+	// repository - including the baseline read immediately below. See
+	// prepareHardenedGit's doc comment for why a version that computed it
+	// only later left the baseline read exposed to whatever the later
+	// hardening was built to stop. computePatch receives this pre-run
+	// result only as its gate: it re-enumerates the filter overrides
+	// against the config as the run left it, because a WORKSPACE_WRITE run
+	// can install new filter keys this list has never heard of - see
+	// computePatch's doc comment.
+	var gitBin string
+	var hardened *gitHardening
+	if mutating {
+		var cleanup func()
+		gitBin, hardened, cleanup, _ = prepareHardenedGit(runCtx, workDir)
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+
 	// Recorded before the subprocess runs: afterwards, an edit that was
 	// already there and an edit this run made are indistinguishable. See
 	// workspaceBaseline.
-	baseline := observeWorkspace(runCtx, workDir, sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY)
+	baseline := observeWorkspace(runCtx, gitBin, hardened, workDir, mutating)
 
 	flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
 
@@ -152,8 +173,6 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		err = waitErr
 	}
 
-	mutating := workDir != "" && sandbox != codexv1.SandboxMode_SANDBOX_MODE_READ_ONLY
-
 	if run.turnFailed != "" {
 		return nil, sdk.Failed("codex run failed: %s", scrubber.Scrub(run.turnFailed))
 	}
@@ -161,7 +180,7 @@ func codexExec(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 		return nil, classifyRunError(err, run.sawSideEffect, mutating, scrubber)
 	}
 
-	patch, filesChanged, patchTruncated := computePatch(runCtx, workDir, mutating, baseline, run.filesChanged)
+	patch, filesChanged, patchTruncated := computePatch(runCtx, gitBin, hardened, workDir, mutating, baseline, run.filesChanged)
 
 	// max_output_bytes bounds everything this task returns, not each field
 	// separately: the per-field caps below it are ceilings a single field may

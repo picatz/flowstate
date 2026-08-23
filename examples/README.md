@@ -60,6 +60,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [onepassword-secret](onepassword-secret) | `op:` — a password manager shared across a team, through the 1Password CLI | yes |
 | [command-secret](command-secret) | `command:` — the escape hatch that reaches any external tool (`sops`, `age`, `aws kms`, `doppler`, …) with no shell involved | yes |
 | [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
+| [federation-flow-to-flow](federation-flow-to-flow) | The `assertion` target — presenting the minted assertion itself to a relying party that verifies OIDC, here another Flowstate deployment, with no exchange and no shared secret | yes |
 | [task-shape-policy](task-shape-policy) | A deployment-side `--task-policy` refusing a step whose own `if:` and `signals:` have already been stripped out — #187, the author-proof complement to `approval-gate`'s in-file gate | no |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
@@ -83,6 +84,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [plugins/git](plugins/git/) | `git.ls_remote` (read) and `git.commit_push` (a mutation, in a separate parameterized file so it cannot run by accident) — one activity, compare-and-swapped against `base_ref`, never forced — needs a built plugin, a worker, and for the write file a credential, so read its README | yes |
 | [plugins/sql](plugins/sql/) | `sql.query` (bounded, typed rows a later step filters with CEL, parameters bound and never spliced into query text, `max_rows:` required with no default) and `sql.exec` (a transfer's four statements as one transaction inside one activity, idempotent on retry, in a separate file) — needs a built plugin, a worker, and a real database, so read its README | yes |
 | [plugins/codex](plugins/codex/) | `codex.exec` — one bounded agentic turn over the OpenAI Codex CLI, sandboxed `SANDBOX_MODE_READ_ONLY` and written out rather than left to the default, so the file names its own sandbox — needs a built plugin, a worker, and the `codex` CLI, so read its README | yes |
+| [agentic-loop](agentic-loop) | A bounded agentic turn, a cost ceiling read off what it spent, a human gate crossed only when the ceiling was, and the write that lands it — with a README walking the loop an agent performs over `flow mcp` (`flowstate_get_catalog` → `flowstate_validate` → `flowstate_test` → `flowstate_run_local` → `flowstate_run`/`flowstate_get`), transcripts included | yes |
 | [enterprise-fund-transfer](enterprise-fund-transfer) | A role-authorized `signals:` approval gate over a threshold, an idempotency key carried into every ledger call, and `undo:` reversing credit then debit if settlement fails after both applied | yes |
 | [enterprise-access-review](enterprise-access-review) | Bounded `for_each` fan-out gathering evidence per access grant, tolerating one bad grant, closed only by a `compliance-reviewer` signal — with the grantee PII output `sensitive:` and the header naming what that does and does not do | yes |
 | [enterprise-incident-response](enterprise-incident-response) | A `wait_for_signal:` page with an escalation on timeout, `parallel:` evidence gathering while it waits, and two distinct `signals:` claims separating who may claim an incident from who may authorize remediation | yes |
@@ -97,8 +99,9 @@ built and a worker told where to find it; `observability` is a whole docker-comp
 lab; the examples charter (#165) asks a few to name the one durability property they
 demonstrate alongside the two-command local-then-durable contrast; `embedding` is a Go
 program rather than a Flowfile `flow` runs on its own, so its README says how to run
-it instead; and `operations/` holds walkthroughs of capabilities no Flowfile can
-express at all.
+it instead; `agentic-loop`'s subject is the sequence of MCP tool calls an agent makes
+while authoring the file beside it, which is not something the file itself can say;
+and `operations/` holds walkthroughs of capabilities no Flowfile can express at all.
 
 Everywhere else the workflow's own comments are the documentation, and a README
 repeating them would be one more thing to leave stale. Which is also why

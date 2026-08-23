@@ -30,7 +30,11 @@ type LibraryFunction struct {
 
 	// Example is a complete expression calling this, set only for a macro.
 	//
-	// A function's name is its call form and a macro's is not — see [macroExamples].
+	// A macro's own API will not say whether its Name is written on a namespace or
+	// a value — see [macroExamples] — so this exists to answer that question by
+	// hand for a macro specifically. An ordinary function does not need it: its
+	// overloads answer the same question, and Signature carries what they say,
+	// including the arity and argument order Example does not give either kind.
 	Example string
 
 	// Macro says the parser expands this rather than the evaluator calling it.
@@ -47,6 +51,21 @@ type LibraryFunction struct {
 	// not say which. So a caller must not print a macro as though it were a call
 	// form; it says how one is written once, rather than guessing per entry.
 	Macro bool
+
+	// Signature is this function's call form, one entry per overload: argument
+	// order, arity and types, and — unlike Name alone — whether it is written on a
+	// namespace or a value. `string.charAt(int) -> string` for a member function,
+	// `math.abs(double) -> double` for a namespaced one. Empty for a macro, where
+	// Example carries the call form instead.
+	//
+	// Derived, not written down, which is the difference from Example. Example is
+	// a written table precisely because cel-go's `Macro` type exposes no way to
+	// tell a namespace receiver from a value one; an ordinary function's own
+	// overload does not have that gap — `OverloadDecl.IsMemberFunction` names the
+	// receiver directly — so [functionSignatures] reads it straight off the
+	// profile's compiled environment instead of a table somebody has to keep
+	// (#702).
+	Signature []string
 }
 
 // ProfileFunctions returns every name the profile's libraries add, sorted by library
@@ -83,6 +102,16 @@ func ProfileFunctions(profile string) []LibraryFunction {
 	// something an author acts on — and printing it twice reads as two functions.
 	claimed := map[string]bool{}
 
+	// Signatures come from the whole profile's environment, not from the one
+	// library a name is listed under. A name is *listed* once (see claimed,
+	// below), but its overloads can come from several libraries — `reverse`
+	// is `list().reverse()` from lists and `string.reverse()` from strings —
+	// and an author reading the row for the claiming library still calls
+	// every overload the profile actually compiles. Per-library signature
+	// maps were how the listing came to advertise only the first library's
+	// half of a shared name.
+	sigs := functionSignatures(libs...)
+
 	var out []LibraryFunction
 	for _, lib := range libs {
 		declared := declaredNames(lib)
@@ -104,10 +133,11 @@ func ProfileFunctions(profile string) []LibraryFunction {
 			}
 			claimed[name] = true
 			out = append(out, LibraryFunction{
-				Library: lib,
-				Name:    name,
-				Macro:   macro,
-				Example: macroExamples[name],
+				Library:   lib,
+				Name:      name,
+				Macro:     macro,
+				Example:   macroExamples[name],
+				Signature: sigs[name],
 			})
 		}
 	}
@@ -140,6 +170,48 @@ func declaredNames(libs ...string) map[string]bool {
 		// it arrives, the macro is what the parser reaches first and so is what an
 		// author is actually writing.
 		out[macro.Function()] = true
+	}
+
+	return out
+}
+
+// functionSignatures returns, for every ordinary function an environment
+// declares, its overloads formatted as call forms: argument order, arity and
+// whether it is written on a namespace or a value.
+//
+// No macro in this profile is also registered as a function under the same
+// name, so a macro's entry here is simply absent — this walks
+// `env.Functions()` alone and does not consult `env.Macros()` at all. That
+// is not a case this function forbids, only one it has never seen: exactly
+// the possibility [declaredNames]' own doc comment already names ("a macro
+// and a function of the same name is not a case cel-go has, but if it
+// arrives..."). [LibraryFunction.Signature] staying empty for every macro is
+// what [TestOnlyAnOrdinaryFunctionCarriesASignature] checks, so a future
+// collision would fail there rather than pass silently.
+//
+// cel-go's own [decls.FunctionDecl.Documentation] does the formatting: it
+// walks each overload and asks [decls.OverloadDecl.IsMemberFunction], which
+// is the fact a macro's API cannot give up (see [macroExamples]'s doc
+// comment) but an ordinary function's overload always carries.
+func functionSignatures(libs ...string) map[string][]string {
+	env, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil
+	}
+
+	out := map[string][]string{}
+	for name, fn := range env.Functions() {
+		doc := fn.Documentation()
+		if doc == nil {
+			continue
+		}
+		for _, overload := range doc.Children {
+			if overload.Signature == "" {
+				continue
+			}
+			out[name] = append(out[name], overload.Signature)
+		}
+		slices.Sort(out[name])
 	}
 
 	return out

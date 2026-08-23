@@ -138,7 +138,7 @@ func TestAGetStillWorksWhenNoWorkerCanAnswer(t *testing.T) {
 	// fixture gets its own Temporal namespace, so "no worker" here really means no
 	// worker for this run rather than none in the package.
 	temporal, _ := newTemporalNamespace(t)
-	teamA := server.New(temporal, server.WithNamespace("team-a"))
+	teamA := mustNew(t, temporal, server.WithNamespace("team-a"))
 
 	started, err := teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
 		Workflow: &v1.Workflow{
@@ -189,7 +189,7 @@ func TestAContinuedSegmentReportsNoPosition(t *testing.T) {
 	startWorker(t, temporal)
 
 	// One step per run, so the workload suspends after the first.
-	flowstate := server.New(temporal, server.WithNamespace("team-a"),
+	flowstate := mustNew(t, temporal, server.WithNamespace("team-a"),
 		server.WithMaxStepsPerRun(1))
 
 	// A wait at the end, so the workload is still going when the closed segment is

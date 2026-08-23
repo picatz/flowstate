@@ -3,6 +3,20 @@ issuers:
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     algorithms: [RS256]
+    # GitHub Actions is a public issuer: anyone with a GitHub account can run a
+    # workflow and ask it for a token. The audience does not narrow that, because
+    # a workflow names its own audience when it requests one — so `audiences:
+    # [flowstate]` is satisfied by any workflow on GitHub that asks for it.
+    #
+    # `require:` is what says whose workflows are admitted. Rules match exactly,
+    # never by prefix, and every rule must hold. Pinning `repository` names one
+    # repository; `repository_owner` would admit every repository of one account.
+    #
+    # Flowstate refuses to load a policy that trusts this issuer with neither a
+    # require rule nor a namespace_claim, so this block is not advice.
+    require:
+      - claim: repository
+        any_of: [picatz/flowstate]
 
 federation:
   issuer: https://flowstate.example.com

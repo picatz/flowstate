@@ -64,14 +64,11 @@ description: Reads bounded, typed rows from a sqlite database using the "sql" pl
 # Requires configuration - a real database and a resolvable dsn secret - so
 # it never runs by accident. See plugins/sql/README.md, "Trying this
 # example."
-
 vars:
   min_balance_cents: 0
-
 steps:
   - id: accounts
     sql.query:
-      engine: ENGINE_SQLITE
       # A secret reference, resolved inside the task, never a literal
       # connection string - see plugins/sql/README.md, "Secrets," for what
       # SQL_SECRET_DSN (or whatever this deployment's provider names it)
@@ -79,18 +76,17 @@ steps:
       # same call at postgres instead: engine: ENGINE_POSTGRES and a dsn
       # secret naming a postgres connection string.
       dsn: ${secret('env:SQL_DSN')}
-      query: "SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id"
-      # The only way a value from vars reaches the database: bound as a
-      # parameter, never spliced into query text above - see
-      # plugins/sql/doc.go, "Parameterized only, structurally."
-      params:
-        - ${vars.min_balance_cents}
+      engine: ENGINE_SQLITE
       # Required: there is no default. A result with more rows than this
       # is refused outright, naming the bound, rather than returned as a
       # silently truncated prefix - see plugins/sql/doc.go, "Bounded
       # results."
       max_rows: 1000
-
+      # The only way a value from vars reaches the database: bound as a
+      # parameter, never spliced into query text above - see
+      # plugins/sql/doc.go, "Parameterized only, structurally."
+      params: ${[vars.min_balance_cents]}
+      query: SELECT id, name, balance_cents FROM accounts WHERE balance_cents >= ? ORDER BY id
   - id: announce
     log:
       # rows is a list of maps CEL can filter and index by column name,
@@ -98,13 +94,11 @@ steps:
       # plugins/sql/doc.go calls out as this plugin's headline property.
       # filter() here is the same expression style QueryOutputs.rows's own
       # doc comment in sql.proto uses as its worked example.
-      message: "${'%d account(s) at or above %d cents; %d of them are exactly at zero'.format([steps.accounts.row_count, vars.min_balance_cents, steps.accounts.rows.filter(r, r.balance_cents == 0).size()])}"
-
+      message: ${"%d account(s) at or above %d cents; %d of them are exactly at zero".format([steps.accounts.row_count, vars.min_balance_cents, steps.accounts.rows.filter(r, r.balance_cents == 0).size()])}
 outputs:
   accounts:
     value: ${steps.accounts.rows}
     description: every account row at or above min_balance_cents, typed for a later step's own CEL expression
-
   row_count:
     value: ${steps.accounts.row_count}
     description: how many rows came back - never more than max_rows, and never a truncated prefix of more that did
@@ -258,7 +252,6 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 # (workflow.yaml) uses, so a query written for one engine's placeholder
 # syntax is not portable to the other unchanged (see plugins/sql/README.md,
 # "Drivers," for the placeholder note this file's own review corrected).
-
 inputs:
   from_account_id:
     type: int
@@ -276,26 +269,15 @@ inputs:
     type: string
     required: true
     description: a value unique to this transfer request, so a retried call converges rather than moving the money twice
-
 steps:
   - id: transfer
     sql.exec:
-      engine: ENGINE_POSTGRES
       dsn: ${secret('env:SQL_DSN')}
-      statements:
-        - sql: "INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING"
-          params: ${[inputs.idempotency_key]}
-        - sql: "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
-          params: ${[inputs.amount_cents, inputs.from_account_id, inputs.idempotency_key]}
-        - sql: "UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)"
-          params: ${[inputs.amount_cents, inputs.to_account_id, inputs.idempotency_key]}
-        - sql: "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1"
-          params: ${[inputs.idempotency_key]}
-
+      engine: ENGINE_POSTGRES
+      statements: '${[{"sql": "INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING", "params": [inputs.idempotency_key]}, {"sql": "UPDATE accounts SET balance_cents = balance_cents - $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)", "params": [inputs.amount_cents, inputs.from_account_id, inputs.idempotency_key]}, {"sql": "UPDATE accounts SET balance_cents = balance_cents + $1 WHERE id = $2 AND EXISTS (SELECT 1 FROM accounts_ledger WHERE idempotency_key = $3 AND applied = 0)", "params": [inputs.amount_cents, inputs.to_account_id, inputs.idempotency_key]}, {"sql": "UPDATE accounts_ledger SET applied = 1 WHERE idempotency_key = $1", "params": [inputs.idempotency_key]}]}'
   - id: announce
     log:
-      message: "${'moved %d cents from account %d to account %d across %d statement(s), one transaction'.format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}"
-
+      message: ${"moved %d cents from account %d to account %d across %d statement(s), one transaction".format([inputs.amount_cents, inputs.from_account_id, inputs.to_account_id, steps.transfer.statement_count])}
 outputs:
   rows_affected:
     value: ${steps.transfer.total_rows_affected}

@@ -1,0 +1,2 @@
+staticcheck: honnef.co/go/tools, built from source by the static analysis step.
+See README.md beside this file for why this file exists.
