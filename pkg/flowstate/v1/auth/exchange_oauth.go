@@ -292,19 +292,29 @@ func (e *tokenExchanger) Exchange(ctx context.Context, assertion Assertion) (Cre
 // by this package, and sharing the permissive decoder made absent fields and
 // transformed grants indistinguishable from valid answers.
 //
-// The last three fields are the RFC 8693 section 2.2.1 members this profile
-// *drops* rather than uses. They are declared so that DisallowUnknownFields
+// Every field RFC 8693 section 2.2.1 defines is declared here, including the
+// ones this profile *drops* rather than uses, so that DisallowUnknownFields
 // keeps its job — refusing extensions nobody here has reasoned about, such as
 // authorization_details or cnf — without also refusing a compliant
 // authorization server that returned a member the RFC defines. A refresh token
 // is dropped because this profile re-exchanges the assertion rather than
-// refreshing; expires_in and scope are read below.
+// refreshing it.
 type tokenExchangeResponse struct {
 	AccessToken     string `json:"access_token"`
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int64  `json:"expires_in"`
-	Scope           string `json:"scope,omitempty"`
+
+	// Scope is held raw rather than as a string because this decoder has to
+	// tell an *omitted* scope from an explicitly empty one, and a string
+	// cannot: `"scope": ""`, `"scope": null` and no scope member at all all
+	// decode to "". Only omission means the request's scope was granted
+	// verbatim (RFC 8693 section 2.2.1, RFC 6749 section 5.1), so collapsing
+	// the three reads an authorization server's refusal to grant anything as a
+	// grant of everything that was asked for — the one direction a scope bug
+	// must never fail in. nil here is omission; anything else is a value the
+	// server chose to send. See decodeTokenExchangeResponse.
+	Scope json.RawMessage `json:"scope,omitempty"`
 
 	// RefreshToken is accepted and discarded. See the type's comment.
 	RefreshToken string `json:"refresh_token,omitempty"`
@@ -335,16 +345,13 @@ func decodeTokenExchangeResponse(provider string, raw []byte, requestedType stri
 	// overflow argument for turning a relying party's integer into a Duration.
 	// A second ceiling written down here would be the same rule twice, and the
 	// copy would be the one that ignored the operator's policy.
-	granted, err := canonicalScopes(response.Scope)
-	if err != nil {
-		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
-	}
 	wanted, err := canonicalScopeList(requestedScopes)
 	if err != nil { // constructor already checked this; keep the boundary closed.
 		return tokenResponse{}, fmt.Errorf("%w: %s has invalid requested scope: %v", ErrExchangeFailed, provider, err)
 	}
-	if response.Scope == "" {
-		granted = wanted // RFC 6749: omission means the requested scope was granted.
+	granted, err := grantedScopes(response.Scope, wanted)
+	if err != nil {
+		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
 	}
 	if strings.Join(granted, " ") != strings.Join(wanted, " ") {
 		return tokenResponse{}, fmt.Errorf("%w: %s returned a partial, transformed, or overbroad scope grant", ErrExchangeFailed, provider)
@@ -378,6 +385,41 @@ func validateExchangeRequest(cfg TokenExchangeConfig) error {
 		}
 	}
 	return nil
+}
+
+// grantedScopes resolves what an authorization server actually granted, given
+// the raw scope member it sent (nil when it sent none) and the canonical list
+// that was requested.
+//
+// The distinction between an absent member and an empty one is the whole point
+// of this function, and it is asymmetric on purpose. RFC 6749 section 5.1, which
+// RFC 8693 section 2.2.1 defers to, says the scope member is OPTIONAL "if
+// identical to the scope requested by the client" and REQUIRED otherwise — so
+// silence is a claim that the request was granted verbatim, and it is the only
+// thing that may be read that way. An explicit empty string is the server saying
+// it granted no scope, which is the opposite claim, and reading it as the first
+// one hands a caller a credential whose recorded scopes it does not have.
+func grantedScopes(raw json.RawMessage, wanted []string) ([]string, error) {
+	if raw == nil {
+		return wanted, nil
+	}
+
+	// null is not a string, so it is not a scope. It is refused rather than
+	// treated as an empty grant because a server that sends it is not speaking
+	// the grammar, and guessing which of the two readings it meant is exactly
+	// the guess this function exists to avoid.
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, fmt.Errorf("scope is null rather than a string")
+	}
+
+	var scope string
+	if err := json.Unmarshal(raw, &scope); err != nil {
+		return nil, fmt.Errorf("scope is not a string")
+	}
+	if scope == "" && len(wanted) > 0 {
+		return nil, fmt.Errorf("scope is present but empty, which grants nothing, while %d scope(s) were requested", len(wanted))
+	}
+	return canonicalScopes(scope)
 }
 
 func canonicalScopes(scope string) ([]string, error) {
