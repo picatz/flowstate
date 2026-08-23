@@ -595,7 +595,7 @@ flow lsp [flags]
 
 Start a language server for Flowfile editing in text editors and IDEs, serving the Language Server Protocol over stdin and stdout. It reports Flowfile problems as diagnostics as you type.
 
-This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, point a generic LSP extension (or an extension you write) at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "./plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
+This is not something you run and watch: an editor launches it and talks to it over the same stdin and stdout this process already has, so there is no address or port to configure. In VS Code, point a generic LSP extension (or an extension you write) at the command; in Neovim's built-in client, `cmd = {"flow", "lsp"}` (add `"--plugin-dir", "/opt/flowstate/plugins"` to the table if a plugin's tasks should stop reading as unknown) with `filetypes` set to Flowfile's, typically YAML.
 
 Examples:
 
@@ -605,14 +605,14 @@ flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
-flow lsp --plugin-dir ./plugins
+flow lsp --plugin-dir /opt/flowstate/plugins
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
-| `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
+| `--plugin-dir <string,...>` | `stringArray` | — | — | absolute directory to discover plugins in, repeatable, in precedence order; a relative path is refused and $FLOWSTATE_PLUGIN_DIR is not read, because an editor starts this process in the workspace |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 
 ## `flow mcp`

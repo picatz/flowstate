@@ -1648,10 +1648,17 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// nowhere else. An editor asks this process a question per keystroke, and
 	// launching a binary is not an answer to a keystroke; nor may the workspace
 	// decide it, because a repository somebody cloned would then choose what
-	// their editor executes. The only thing that turns this on is --plugin-dir on
-	// the command line the person configured their editor with, which is an
-	// operator saying yes about their own machine. That is the whole of the
-	// opt-in, and it is why there is no configuration path to the same effect.
+	// their editor executes. The only thing that turns this on is an *absolute*
+	// --plugin-dir on the command line the person configured their editor with,
+	// which is an operator saying yes about their own machine. That is the whole
+	// of the opt-in, and it is why there is no configuration path to the same effect.
+	//
+	// Both halves of that — a relative path refused, and $FLOWSTATE_PLUGIN_DIR
+	// not read — are properties of how this command's flags were *registered*,
+	// by [addEditorPluginFlags], and not of this call. So the reading below is
+	// the same [startPlugins] a worker does, with the same --plugin pin refusal
+	// and the same host: a narrower trust boundary, not a second reader that
+	// can drift from the first (#958).
 	//
 	// Strict, as a worker is: a plugin that will not come up fails the command
 	// here rather than leaving an editor quietly reporting `unknown task` for
@@ -2904,7 +2911,7 @@ flow mcp serve --listen :8617 \
 			"to it over the same stdin and stdout this process already has, so there is " +
 			"no address or port to configure. In VS Code, point a generic LSP extension " +
 			"(or an extension you write) at the command; in Neovim's built-in client, " +
-			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"./plugins\"` to the table " +
+			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"/opt/flowstate/plugins\"` to the table " +
 			"if a plugin's tasks should stop reading as unknown) with `filetypes` set to " +
 			"Flowfile's, typically YAML.",
 		RunE: runLSP,
@@ -2913,7 +2920,7 @@ flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
-flow lsp --plugin-dir ./plugins`,
+flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 
 	// The same flags `flow worker` takes, doing the same thing — one discovery
@@ -2929,7 +2936,13 @@ flow lsp --plugin-dir ./plugins`,
 	// author's editor runs, and it is not done per request, because a keystroke
 	// is not a moment to launch a process. Somebody types this flag for their own
 	// machine, once, in the editor configuration that starts the server.
-	addPluginFlags(lspCmd)
+	//
+	// [addEditorPluginFlags] rather than [addPluginFlags]: the same four flags,
+	// with the two things a workspace must not decide taken away — the
+	// environment default and a relative path. It carries the narrower help
+	// text with it, so what `flow lsp --help` prints and what the command does
+	// are one decision.
+	addEditorPluginFlags(lspCmd)
 
 	// Add command groups for better organization
 	rootCmd.AddGroup(&cobra.Group{

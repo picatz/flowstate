@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/internal/covbuild"
@@ -111,8 +112,28 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// Resolved here rather than left to fail inside the host, because the message
 	// a person needs names the path they typed and the directory it resolved
 	// against, and by the time the host sees it only the first half survives.
+	//
+	// Except where the working directory is not the command's to trust: see
+	// [commandLinePluginsOnly]. There a relative path is refused rather than
+	// resolved, because the directory it would resolve against is one the
+	// workspace chose.
+	editorOnly := commandLinePluginsOnly(cmd)
 	absolute := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
+		if editorOnly {
+			if !filepath.IsAbs(dir) {
+				return pluginFlags{}, newUsageError(fmt.Errorf(
+					"--plugin-dir %q is relative, and %s resolves it against the directory the "+
+						"editor started this process in — which is the workspace, so a repository "+
+						"somebody cloned would choose what their editor executes: pass an absolute "+
+						"path such as %q",
+					dir, cmd.Name(), filepath.Join(string(filepath.Separator), "opt", "flowstate", "plugins")))
+			}
+			absolute = append(absolute, dir)
+
+			continue
+		}
+
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return pluginFlags{}, fmt.Errorf("resolving plugin directory %q: %w", dir, err)
@@ -140,12 +161,21 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// narrow or widen what a search path may do, so with no search path they
 	// restrict an empty set, which is vacuous rather than unmet. --plugin names
 	// something that must come up.
+	//
+	// The remedy differs by trust: an editor process does not read
+	// $FLOWSTATE_PLUGIN_DIR at all, so offering it would send someone to set a
+	// variable this command ignores — a diagnostic that names a fix which does
+	// not work is worse than a shorter one.
 	if len(absolute) == 0 && len(only) > 0 {
+		remedy := "pass --plugin-dir <directory> as well, or set $" + pluginSearchPathEnv
+		if editorOnly {
+			remedy = "pass --plugin-dir <absolute directory> as well"
+		}
+
 		return pluginFlags{}, newUsageError(fmt.Errorf(
 			"--plugin %s names a plugin that must launch, and there is nowhere to look for it: "+
-				"pass --plugin-dir <directory> as well, or set $%s. A pinned plugin is never "+
-				"quietly skipped",
-			strings.Join(only, ", "), pluginSearchPathEnv))
+				"%s. A pinned plugin is never quietly skipped",
+			strings.Join(only, ", "), remedy))
 	}
 
 	return pluginFlags{
@@ -229,6 +259,75 @@ func addPluginFlags(cmd *cobra.Command) {
 		"secret reference scheme a plugin may claim, repeatable (default: any)")
 	cmd.Flags().Bool("allow-insecure-plugin-dir", false,
 		"permit a plugin directory other users can write to, which lets them choose what this worker runs")
+}
+
+// pluginTrustAnnotation marks a command that does not trust its surroundings to
+// choose the code it launches, and [pluginTrustCommandLineOnly] is its one
+// value. Two questions are settled by it: whether $FLOWSTATE_PLUGIN_DIR is
+// bound as the search path's default, and whether a relative --plugin-dir
+// resolves or is refused.
+//
+// It travels on the command rather than being handed to [pluginFlagsOf] as a
+// second argument, and that is the point. The narrower help text and the
+// narrower behaviour are then one decision written once: the first version of
+// this change had them as two, so `flow lsp --help` printed a
+// "(default [...])" taken from an environment variable the command had stopped
+// reading — a command contradicting its own help, in the one place where the
+// help is all an operator has.
+const (
+	pluginTrustAnnotation      = "flowstate.io/plugin-trust"
+	pluginTrustCommandLineOnly = "command-line-only"
+)
+
+// commandLinePluginsOnly reports whether cmd was registered with
+// [addEditorPluginFlags].
+func commandLinePluginsOnly(cmd *cobra.Command) bool {
+	return cmd.Annotations[pluginTrustAnnotation] == pluginTrustCommandLineOnly
+}
+
+// addEditorPluginFlags declares the same four flags [addPluginFlags] does, then
+// narrows the two things an editor process may not let its surroundings decide.
+//
+// A narrowing on top of the one registration rather than a second reader beside
+// it: `flow lsp` still takes exactly the flags `flow worker` takes, still
+// refuses a --plugin pin with nowhere to look, and still reports a search path
+// the same way — the review of the first version of this change found a
+// parallel `lspPluginFlagsOf` that had quietly dropped that pin refusal, which
+// is the "silently half-configured" state #835 exists to prevent, reachable
+// again on this one path.
+//
+// What is narrowed:
+//
+//   - The environment is not bound as the search path's default. An editor
+//     hands the language server whatever environment the desktop session has,
+//     which is not a command line a person wrote for this process.
+//   - A relative --plugin-dir is refused rather than resolved, in
+//     [pluginFlagsOf], because the working directory an editor starts a
+//     language server in is the opened workspace.
+//
+// Both are the same claim in two places: the operator's command line is the
+// whole of the opt-in, and a cloned repository does not get a vote.
+func addEditorPluginFlags(cmd *cobra.Command) {
+	addPluginFlags(cmd)
+
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[pluginTrustAnnotation] = pluginTrustCommandLineOnly
+
+	dir := cmd.Flags().Lookup("plugin-dir")
+
+	// Cleared through the flag's own value, so `--help`, `GetStringArray` and
+	// the generated CLI reference all read one answer. DefValue is what cobra
+	// prints as "(default …)", and "[]" is the zero value pflag suppresses.
+	if slice, ok := dir.Value.(pflag.SliceValue); ok {
+		_ = slice.Replace(nil)
+	}
+	dir.DefValue = dir.Value.String()
+
+	dir.Usage = "absolute directory to discover plugins in, repeatable, in precedence order; " +
+		"a relative path is refused and $" + pluginSearchPathEnv + " is not read, because an " +
+		"editor starts this process in the workspace"
 }
 
 // runPlugins implements the plugins sub-command.
@@ -420,12 +519,15 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 // it until the process exits, which is the only lifecycle this supports and the
 // only one it needs.
 func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.PluginCatalog, func(), error) {
-	noop := func() {}
-
 	flags, err := pluginFlagsOf(cmd)
 	if err != nil {
-		return nil, noop, err
+		return nil, func() {}, err
 	}
+	return startPluginsWithFlags(cmd, secretProviders, flags)
+}
+
+func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry, flags pluginFlags) (*v1.PluginCatalog, func(), error) {
+	noop := func() {}
 
 	if !flags.configured() {
 		return nil, noop, nil
