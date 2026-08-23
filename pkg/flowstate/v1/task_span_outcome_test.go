@@ -1,9 +1,6 @@
 package flowstatev1_test
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -28,32 +25,38 @@ import (
 // being tested: both drivers reach [v1.RecordTaskOutcome] and neither has its
 // own spelling of it.
 
-// theLoudSecret is what the failing task quotes in its error message. A task's
-// error is rendered into `${steps.<id>.error}` and can name whatever the task
-// was handed, which is exactly why the span records the classification instead.
-const theLoudSecret = "s3cr3t-quoted-by-a-failing-task"
-
 // TestLocalFailedTaskSpanCarriesTheClassificationNotTheMessage is the local
-// counterpart of `engine.TestFailedTaskSpanCarriesTheClassificationNotTheMessage`.
+// half of [conformance.AssertTraceContainment]. The durable half is
+// `engine.TestFailedTaskSpanCarriesTheClassificationNotTheMessage`, and the two
+// run the same fixture through the same assertion.
 func TestLocalFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) {
-	const taskName = "local-traced-failing-task"
-
-	registerFailingTask(t, taskName)
+	conformance.RegisterTraceContainmentTask(t)
 
 	recorder := conformance.RecordSpans(t)
+	authority := conformance.TraceContainmentAuthority()
+	ctx := v1.ContextWithTaskRuntime(t.Context(), v1.TaskRuntime{
+		Store:    authority.Store(t),
+		Policy:   authority.Policy(t),
+		Identity: authority.Identity,
+	})
 
-	_, err := v1.Run(t.Context(), oneStep(taskName))
+	_, err := v1.RunWithInputs(ctx, conformance.TraceContainmentWorkflow(), conformance.TraceContainmentInputs())
 	require.Error(t, err, "the task fails on purpose")
 
 	var described bool
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
-		if stub.Name != v1.TaskSpanName(taskName) {
+		if stub.Name != v1.TaskSpanName(conformance.ContainmentTaskName) {
 			continue
 		}
 
 		require.Equal(t, "Error", stub.Status.Code.String(), "a failed task must mark its span")
 		require.NotEmpty(t, stub.Status.Description, "a status with no description says nothing")
-		require.NotContains(t, strings.ToLower(stub.Status.Description), theLoudSecret,
+		// Both sides lowered, not just the haystack: the fixture's material
+		// carries capitals, so lowering one side alone is an assertion that
+		// cannot fail — which is how it read before this test ran the shared
+		// fixture rather than an all-lowercase constant of its own.
+		require.NotContains(t, strings.ToLower(stub.Status.Description),
+			strings.ToLower(conformance.ContainmentFailureMessage),
 			"the task's own error message reached the span status")
 		require.Empty(t, stub.Events, "no exception event, because an exception event carries the message")
 
@@ -61,10 +64,11 @@ func TestLocalFailedTaskSpanCarriesTheClassificationNotTheMessage(t *testing.T) 
 	}
 	require.True(t, described, "no span covered the failing task")
 
-	for _, rendered := range renderedLocalSpans(recorder) {
-		require.NotContains(t, rendered, theLoudSecret,
-			"a failing task's message reached a span, which is exported to a collector")
-	}
+	// The run span is the local driver's alone: the durable driver opens none,
+	// because Temporal's interceptor already covers that seam.
+	conformance.AssertTraceContainment(t, recorder,
+		v1.RunSpanName(conformance.ContainmentWorkflowName),
+		v1.TaskSpanName(conformance.ContainmentTaskName))
 }
 
 // TestLocalDeniedDispatchStillOpensASpan pins the arm that is easiest to lose.
@@ -98,25 +102,6 @@ func TestLocalDeniedDispatchStillOpensASpan(t *testing.T) {
 	require.True(t, described, "a denied dispatch left no span at all")
 }
 
-// registerFailingTask registers a task that fails quoting [theLoudSecret].
-func registerFailingTask(t *testing.T, name string) {
-	t.Helper()
-
-	registry := v1.DefaultRegistry()
-	require.NoError(t, registry.Register(v1.TaskDef{
-		Name: name,
-		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
-			return nil, errors.New("the dependency rejected " + theLoudSecret)
-		},
-	}))
-
-	// Removed rather than restored: this name was not in the registry before,
-	// and a definition left behind is one `TestEveryTaskDescribesItself` walks
-	// and rightly refuses — a task with no schema is not something the build
-	// ships.
-	t.Cleanup(func() { registry.Unregister(name) })
-}
-
 // oneStep is a workflow of a single task step with no inputs.
 //
 // One attempt, declared: a task that fails with no `retry:` gets
@@ -134,42 +119,4 @@ func oneStep(taskName string) *v1.Workflow {
 			Policy: &v1.StepPolicy{Retry: &v1.RetryPolicy{MaxAttempts: 1}},
 		}},
 	}
-}
-
-// renderedLocalSpans renders every recorded span through the %v family — over
-// the batch, over each span, and over a struct holding one, which is the
-// containment shape CLAUDE.md names rather than the containment value.
-func renderedLocalSpans(recorder *tracetest.SpanRecorder) []string {
-	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
-
-	type wrapper struct {
-		one   tracetest.SpanStub
-		batch []tracetest.SpanStub
-	}
-
-	rendered := []string{
-		fmt.Sprintf("%v", stubs), fmt.Sprintf("%+v", stubs), fmt.Sprintf("%#v", stubs),
-	}
-
-	if len(stubs) > 0 {
-		w := wrapper{one: stubs[0], batch: stubs}
-		rendered = append(rendered, fmt.Sprintf("%v", w), fmt.Sprintf("%+v", w), fmt.Sprintf("%#v", w))
-	}
-
-	for _, stub := range stubs {
-		rendered = append(rendered,
-			fmt.Sprintf("%v", stub), fmt.Sprintf("%+v", stub), fmt.Sprintf("%#v", stub),
-			stub.Name, stub.Status.Description)
-
-		for _, attr := range stub.Attributes {
-			rendered = append(rendered, string(attr.Key), attr.Value.String(),
-				fmt.Sprintf("%v", attr), fmt.Sprintf("%+v", attr), fmt.Sprintf("%#v", attr))
-		}
-
-		for _, event := range stub.Events {
-			rendered = append(rendered, event.Name, fmt.Sprintf("%+v", event), fmt.Sprintf("%#v", event))
-		}
-	}
-
-	return rendered
 }

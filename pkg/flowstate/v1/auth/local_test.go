@@ -70,7 +70,7 @@ func TestLocalComponentCannotBeForgedFromNamespace(t *testing.T) {
 // carried claim of that name is refused by [WorkloadIdentity.Validate], which
 // is the same check that already stops --as-claim from setting "namespace" or
 // "sub". There is no second check to write for "run_mode" — it goes on the
-// existing reservedClaims list [Issuer.mintFor] and [WorkloadIdentity.Validate]
+// existing builtInClaimNames list [Issuer.mintFor] and [WorkloadIdentity.Validate]
 // both already consult.
 func TestRunModeClaimCannotBeCarried(t *testing.T) {
 	identity := auth.NewLocalWorkloadIdentity(

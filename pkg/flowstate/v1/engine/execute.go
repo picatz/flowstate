@@ -971,7 +971,7 @@ func (e *executor) dispatch(
 				e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 		}
 
-		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope, continueOnError).Get(ctx, out)
+		return workflow.ExecuteActivity(ctx, TaskInScope, resolved, scope, continueOnError, stepID).Get(ctx, out)
 	}
 
 	if needsAuthority {
@@ -979,7 +979,7 @@ func (e *executor) dispatch(
 			e.identity, e.spec.GetName(), e.runID, stepID, continueOnError).Get(ctx, out)
 	}
 
-	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity, continueOnError).Get(ctx, out)
+	return workflow.ExecuteActivity(ctx, Task, resolved, e.identity, continueOnError, stepID).Get(ctx, out)
 }
 
 // runUndoTask runs one registered compensation as an activity.

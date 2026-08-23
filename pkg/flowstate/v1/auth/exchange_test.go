@@ -343,6 +343,99 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 	}
 }
 
+// TestTokenExchangeStrictProfileAcceptsConformingServers is the other half of
+// the vectors above, and the half that is easy to leave out: a strict profile
+// that also refuses answers the RFC permits is not strict, it is broken. Each
+// case here is a response a conforming authorization server is entitled to
+// send, and each one was refused by an earlier draft of this decoder.
+func TestTokenExchangeStrictProfileAcceptsConformingServers(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	exchange := func(t *testing.T, cfg auth.TokenExchangeConfig, response map[string]any) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			writeJSON(t, w, http.StatusOK, response)
+		})
+
+		cfg.TokenURL = party.url + "/token"
+		cfg.Audience = "https://as.example.com"
+		cfg.Clock = clock.Now
+
+		exchanger, err := auth.NewTokenExchanger(cfg)
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, exchanger.Requirement().Audience))
+	}
+
+	// RFC 6749 section 3.3: scope is a space-delimited, order-independent set,
+	// so "b a" is the same grant as "a b". A server that reorders the set has
+	// granted exactly what was asked for and must not be refused for it.
+	t.Run("a scope grant returned in a different order", func(t *testing.T) {
+		credential, err := exchange(t, auth.TokenExchangeConfig{Scopes: []string{"read", "write"}}, map[string]any{
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        300,
+			"scope":             "write read",
+		})
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"read", "write"}, credential.Scopes)
+	})
+
+	// RFC 8693 section 2.2.1 lists refresh_token as an OPTIONAL member of a
+	// success response. The profile drops it rather than using it, and dropping
+	// a member is not the same as refusing the response that carried it.
+	t.Run("a response carrying the optional refresh_token", func(t *testing.T) {
+		credential, err := exchange(t, auth.TokenExchangeConfig{Scopes: []string{"read"}}, map[string]any{
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        300,
+			"scope":             "read",
+			"refresh_token":     "not-ours-to-keep",
+		})
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(5*time.Minute), credential.ExpiresAt.UTC())
+
+		// The refresh token is dropped, not carried along under another name.
+		require.NotContains(t, fmt.Sprintf("%+v", credential), "not-ours-to-keep")
+	})
+
+	// The regression this test exists for: the strict decoder path must keep
+	// threading the target's own ceiling into tokenResponse.credential. Passing
+	// a zero ceiling there fails *every* exchange, because a sub-second ceiling
+	// is refused as an unusable policy — and it silently disables the operator's
+	// TokenExchangeConfig.MaxCredentialLifetime at the same time.
+	t.Run("the target's configured credential lifetime ceiling", func(t *testing.T) {
+		response := func(expiresIn int) map[string]any {
+			return map[string]any{
+				"access_token":      "downstream-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        expiresIn,
+			}
+		}
+
+		credential, err := exchange(t, auth.TokenExchangeConfig{MaxCredentialLifetime: 5 * time.Minute}, response(300))
+		require.NoError(t, err, "a token inside the configured ceiling is accepted")
+		require.Equal(t, referenceTime.Add(5*time.Minute), credential.ExpiresAt.UTC())
+
+		credential, err = exchange(t, auth.TokenExchangeConfig{MaxCredentialLifetime: 5 * time.Minute}, response(301))
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "longer than the 5m0s this target allows",
+			"the ceiling that refuses it is the target's, not a package constant")
+		require.True(t, credential.IsZero())
+
+		// And the default ceiling still applies to a target that names none,
+		// which is the direction a zero passed to credential would break.
+		credential, err = exchange(t, auth.TokenExchangeConfig{}, response(int(auth.DefaultMaxCredentialLifetime.Seconds())))
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(auth.DefaultMaxCredentialLifetime), credential.ExpiresAt.UTC())
+	})
+}
+
 // TestClientCredentialsExchanger covers the client credentials grant, both
 // secretless and with a secret.
 func TestClientCredentialsExchanger(t *testing.T) {
@@ -415,7 +508,12 @@ func TestAWSExchanger(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer, _ := newIssuer(t, clock)
 
-	expiry := referenceTime.Add(time.Hour).UTC()
+	// Fifteen minutes because that is the session STS is being asked for: with no
+	// Duration configured the exchanger takes the AWS minimum, and an expiration
+	// outside the session that was requested is now refused. Configuring an hour
+	// here instead would pass just as well and would stop this test being the one
+	// place the default duration is pinned.
+	expiry := referenceTime.Add(15 * time.Minute).UTC()
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		w.Header().Set("Content-Type", "text/xml")
@@ -452,7 +550,8 @@ func TestAWSExchanger(t *testing.T) {
 	require.Equal(t, "AssumeRoleWithWebIdentity", sent.form.Get("Action"))
 	require.Equal(t, "arn:aws:iam::123456789012:role/flowstate", sent.form.Get("RoleArn"))
 	require.Equal(t, assertion.Token(), sent.form.Get("WebIdentityToken"))
-	require.Equal(t, "900", sent.form.Get("DurationSeconds"))
+	require.Equal(t, "900", sent.form.Get("DurationSeconds"),
+		"an unconfigured duration is the AWS minimum, because a step needs a credential for one step")
 
 	// The session name is what appears in CloudTrail, so it has to be derived from
 	// the workload and legal for AWS at the same time.

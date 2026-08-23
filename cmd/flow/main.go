@@ -2,6 +2,14 @@
 // Flowfiles locally, and serves as the control plane, worker, and operator
 // tooling for durable execution against Temporal. Run `flow --help` for the
 // command tree; docs/reference/ is generated from it.
+//
+// One rule spans every renderer's colors, and a new output surface inherits
+// it on purpose rather than by imitation: yellow (Warning) marks a fact worth
+// reading that is not a verdict — a coverage gap without
+// `--coverage-required`, an unused stub without `--fail-on-warning`, a
+// "nothing was explored" honesty line — and red (Danger) marks exactly what
+// decides an exit code. A fact promoted to the exit code by a flag changes
+// color with the flag, because the color is the claim.
 package main
 
 import (
@@ -251,7 +259,8 @@ func temporalConfig(ctx context.Context, flags temporalFlags) (temporalclient.Co
 	// and propagator at construction, so an interceptor built ahead of this
 	// captures the no-op ones and keeps them for the life of the process.
 	//
-	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere. Started
+	// Off unless the operator asked for a signal — an OTEL_EXPORTER_OTLP_*
+	// endpoint or an OTEL_*_EXPORTER selector, per [telemetryConfigured]. Started
 	// rather than initialized, because `flow server` reaches here twice when
 	// the trust policy maps tenants onto namespaces, and the flush this
 	// registers has to reach one set of providers rather than the last of
@@ -934,6 +943,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	rpcResource, err := resolveRPCResource(rpcResourceFlagsOf(cmd), authCfg, policy)
+	if err != nil {
+		return err
+	}
 
 	broker, err := identityBroker(authCfg, policy)
 	if err != nil {
@@ -1206,7 +1219,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr:    publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcMux, receiver, protectedResource),
+		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource),
 
 		// nil when no certificate was configured, which is only reachable here
 		// when publicAddr is loopback — anything else already returned above.
@@ -2436,6 +2449,7 @@ flow server --verbose`,
 		"path to an OIDC/workload-identity trust policy (YAML) describing which issuers to accept")
 	serverCmd.Flags().Bool("insecure-no-auth", false,
 		"allow unauthenticated access; for local development only")
+	addRPCResourceFlags(serverCmd)
 	serverCmd.Flags().StringArray("identity-key",
 		identityKeyDefault(),
 		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+

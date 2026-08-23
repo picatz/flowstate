@@ -73,7 +73,7 @@ func federatingPolicy() *auth.Policy {
 func servedKeyIDs(t *testing.T, broker *auth.Broker) []string {
 	t.Helper()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	), nil, nil)
 

@@ -220,6 +220,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/protectedresource.go",
 		},
 		{
+			name:    "FLOWSTATE_RPC_RESOURCE",
+			value:   "unset",
+			purpose: "Default for `--rpc-resource` on `flow server`: the canonical Connect RPC resource URI required in every bearer token's `aud` claim. Required whenever `--auth-policy` trusts a `kind: oidc` issuer, unless the migration-only `--allow-issuer-wide-audiences` flag explicitly restores the older issuer-wide behavior; a policy of nothing but `kind: mtls` entries mints no token to bind and needs neither flag. Distinct from the remote MCP protected resource and from any future HTTP surface.",
+			read:    "cmd/flow/rpcresource.go",
+		},
+		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
 			value:   "unset",
 			purpose: "Default for `--secret-command`: the argv of the command that resolves `command:` secrets, `$PATH`-list-separated (the executable first). `{{name}}` and, with `--secret-command-namespaced`, `{{namespace}}` are substituted literally into one argument, never through a shell.",
@@ -475,19 +481,37 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
-			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",
+			purpose: "The fallback OTLP endpoint for every enabled signal. A signal-specific endpoint overrides it; its signal's `OTEL_*_EXPORTER=none` disables that signal even when this is set.",
 			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
+		},
+		{
+			name:    "OTEL_TRACES_EXPORTER",
+			value:   "unset",
+			purpose: "Select the trace exporter (`otlp`) or disable trace export (`none`), matched case-insensitively. When unset, a general or trace-specific OTLP endpoint enables it. Propagation remains available for enabled metrics or correlated logs even when trace export is disabled.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_METRICS_EXPORTER",
+			value:   "unset",
+			purpose: "Select the metrics exporter (`otlp`) or disable metrics (`none`), matched case-insensitively. When unset, a general or metrics-specific OTLP endpoint enables it.",
+			read:    "cmd/flow/telemetry.go",
+		},
+		{
+			name:    "OTEL_LOGS_EXPORTER",
+			value:   "unset",
+			purpose: "Select the log exporter (`otlp`) or disable log export (`none`), matched case-insensitively. When unset, a general or logs-specific OTLP endpoint enables it; stderr logging is never disabled.",
+			read:    "cmd/flow/telemetry.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 			value:   "unset",
-			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
+			purpose: "The same, for a deployment sending logs somewhere different. It enables logs on its own, unless `OTEL_LOGS_EXPORTER=none` disables that signal. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
 			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 			value:   "unset",
-			purpose: "The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry.",
+			purpose: "The same, for a deployment sending metrics somewhere different. It enables metrics on its own, unless `OTEL_METRICS_EXPORTER=none` disables that signal.",
 			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{

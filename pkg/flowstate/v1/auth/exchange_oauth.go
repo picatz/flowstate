@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -30,11 +31,6 @@ const (
 	// clientAssertionTypeJWT identifies the assertion as an RFC 7523 client
 	// authentication assertion.
 	clientAssertionTypeJWT = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-
-	// maxTokenExchangeLifetime is the largest lifetime the strict profile will
-	// accept from an untrusted token endpoint. It bounds both integer-to-duration
-	// conversion and the authority retained by a cached response.
-	maxTokenExchangeLifetime = 24 * time.Hour
 )
 
 // DelegatorTokenFunc supplies the token of the party a workload is acting for,
@@ -147,22 +143,28 @@ type TokenExchangeConfig struct {
 	// Timeout bounds a single exchange. Defaults to [DefaultExchangeTimeout].
 	Timeout time.Duration
 
+	// MaxCredentialLifetime is the longest lifetime Flowstate will accept from
+	// this target. Defaults to [DefaultMaxCredentialLifetime]. The provider must
+	// still return expires_in; this is not a fallback expiry.
+	MaxCredentialLifetime time.Duration
+
 	// Clock is used for credential expiry. It exists for tests.
 	Clock func() time.Time
 }
 
 // tokenExchanger implements RFC 8693 token exchange.
 type tokenExchanger struct {
-	name      string
-	tokenURL  string
-	audience  string
-	target    string
-	resource  string
-	scopes    []string
-	tokenType string
-	delegator DelegatorTokenFunc
-	client    *exchangeClient
-	clock     func() time.Time
+	name        string
+	tokenURL    string
+	audience    string
+	target      string
+	resource    string
+	scopes      []string
+	tokenType   string
+	delegator   DelegatorTokenFunc
+	client      *exchangeClient
+	clock       func() time.Time
+	maxLifetime time.Duration
 }
 
 // NewTokenExchanger returns an [Exchanger] that performs RFC 8693 token exchange.
@@ -201,18 +203,23 @@ func NewTokenExchanger(cfg TokenExchangeConfig) (Exchanger, error) {
 	if clock == nil {
 		clock = time.Now
 	}
+	maxLifetime, err := credentialLifetimeCeiling(name, cfg.MaxCredentialLifetime)
+	if err != nil {
+		return nil, err
+	}
 
 	return &tokenExchanger{
-		name:      name,
-		tokenURL:  cfg.TokenURL,
-		audience:  cfg.Audience,
-		target:    cfg.TargetAudience,
-		resource:  cfg.Resource,
-		scopes:    cfg.Scopes,
-		tokenType: tokenType,
-		delegator: cfg.Delegator,
-		client:    newExchangeClient(cfg.HTTPClient, cfg.Timeout),
-		clock:     clock,
+		name:        name,
+		tokenURL:    cfg.TokenURL,
+		audience:    cfg.Audience,
+		target:      cfg.TargetAudience,
+		resource:    cfg.Resource,
+		scopes:      cfg.Scopes,
+		tokenType:   tokenType,
+		delegator:   cfg.Delegator,
+		client:      newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		clock:       clock,
+		maxLifetime: maxLifetime,
 	}, nil
 }
 
@@ -272,19 +279,35 @@ func (e *tokenExchanger) Exchange(ctx context.Context, assertion Assertion) (Cre
 		return Credential{}, err
 	}
 
-	return response.credential(e.name, e.name, assertion, e.clock(), 0)
+	// The per-target ceiling from TokenExchangeConfig.MaxCredentialLifetime,
+	// resolved once at construction by credentialLifetimeCeiling. The strict
+	// decoder above validates the *shape* of the response; how long a credential
+	// from this target may live is the operator's decision, and there is exactly
+	// one place it is written down.
+	return response.credential(e.name, e.name, assertion, e.clock(), e.maxLifetime)
 }
 
 // tokenExchangeResponse is deliberately not tokenResponse. RFC 8693 success
 // responses have stronger requirements than the other OAuth grants supported
 // by this package, and sharing the permissive decoder made absent fields and
 // transformed grants indistinguishable from valid answers.
+//
+// The last three fields are the RFC 8693 section 2.2.1 members this profile
+// *drops* rather than uses. They are declared so that DisallowUnknownFields
+// keeps its job — refusing extensions nobody here has reasoned about, such as
+// authorization_details or cnf — without also refusing a compliant
+// authorization server that returned a member the RFC defines. A refresh token
+// is dropped because this profile re-exchanges the assertion rather than
+// refreshing; expires_in and scope are read below.
 type tokenExchangeResponse struct {
 	AccessToken     string `json:"access_token"`
 	IssuedTokenType string `json:"issued_token_type"`
 	TokenType       string `json:"token_type"`
 	ExpiresIn       int64  `json:"expires_in"`
 	Scope           string `json:"scope,omitempty"`
+
+	// RefreshToken is accepted and discarded. See the type's comment.
+	RefreshToken string `json:"refresh_token,omitempty"`
 }
 
 func decodeTokenExchangeResponse(provider string, raw []byte, requestedType string, requestedScopes []string) (tokenResponse, error) {
@@ -306,9 +329,12 @@ func decodeTokenExchangeResponse(provider string, raw []byte, requestedType stri
 	if !strings.EqualFold(response.TokenType, "Bearer") {
 		return tokenResponse{}, fmt.Errorf("%w: %s issued a %q or sender-constrained token, which cannot be represented as CredentialBearer", ErrExchangeFailed, provider, truncate(response.TokenType, 32))
 	}
-	if response.ExpiresIn <= 0 || response.ExpiresIn > int64(maxTokenExchangeLifetime/time.Second) {
-		return tokenResponse{}, fmt.Errorf("%w: %s returned expires_in outside (0,%d]", ErrExchangeFailed, provider, int64(maxTokenExchangeLifetime/time.Second))
-	}
+	// expires_in is deliberately not bounded here. The bound belongs to the
+	// target's configured ceiling, which credentialLifetimeCeiling resolves at
+	// construction and tokenResponse.credential applies — including the
+	// overflow argument for turning a relying party's integer into a Duration.
+	// A second ceiling written down here would be the same rule twice, and the
+	// copy would be the one that ignored the operator's policy.
 	granted, err := canonicalScopes(response.Scope)
 	if err != nil {
 		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
@@ -364,6 +390,15 @@ func canonicalScopes(scope string) ([]string, error) {
 	return canonicalScopeList(strings.Split(scope, " "))
 }
 
+// canonicalScopeList validates a scope list and returns it in a canonical
+// order.
+//
+// The sort is what makes the name true, and it is load-bearing rather than
+// tidiness. RFC 6749 section 3.3 defines scope as a space-delimited,
+// case-sensitive, *unordered* set, so an authorization server that grants
+// exactly what was asked for may say so as "b a" when the request said "a b".
+// The grant check downstream compares joined strings; without a canonical order
+// it would refuse a conforming server for reordering a set.
 func canonicalScopeList(scopes []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
@@ -380,7 +415,9 @@ func canonicalScopeList(scopes []string) ([]string, error) {
 		}
 		seen[scope] = struct{}{}
 	}
-	return append([]string(nil), scopes...), nil
+	canonical := append([]string(nil), scopes...)
+	slices.Sort(canonical)
+	return canonical, nil
 }
 
 func canonicalOpaqueValue(value string) bool {
@@ -472,6 +509,12 @@ type ClientCredentialsConfig struct {
 	// Scopes are the scopes to request. Optional.
 	Scopes []string
 
+	// MaxCredentialLifetime is the longest lifetime Flowstate will accept from
+	// this target, with the same meaning it has in [TokenExchangeConfig]: a
+	// ceiling on a reported expires_in, and never a stand-in for one that never
+	// arrived.
+	MaxCredentialLifetime time.Duration
+
 	// HTTPClient, Timeout, and Clock behave as in [TokenExchangeConfig].
 	HTTPClient *http.Client
 	Timeout    time.Duration
@@ -497,9 +540,10 @@ type clientCredentialsExchanger struct {
 	// replace.
 	secret Material
 
-	scopes []string
-	client *exchangeClient
-	clock  func() time.Time
+	scopes      []string
+	client      *exchangeClient
+	clock       func() time.Time
+	maxLifetime time.Duration
 }
 
 // NewClientCredentialsExchanger returns an [Exchanger] that performs an OAuth 2.0
@@ -527,16 +571,21 @@ func NewClientCredentialsExchanger(cfg ClientCredentialsConfig) (Exchanger, erro
 	if clock == nil {
 		clock = time.Now
 	}
+	maxLifetime, err := credentialLifetimeCeiling(name, cfg.MaxCredentialLifetime)
+	if err != nil {
+		return nil, err
+	}
 
 	return &clientCredentialsExchanger{
-		name:     name,
-		tokenURL: cfg.TokenURL,
-		clientID: cfg.ClientID,
-		audience: audience,
-		secret:   NewSingleMaterial(cfg.ClientSecret),
-		scopes:   cfg.Scopes,
-		client:   newExchangeClient(cfg.HTTPClient, cfg.Timeout),
-		clock:    clock,
+		name:        name,
+		tokenURL:    cfg.TokenURL,
+		clientID:    cfg.ClientID,
+		audience:    audience,
+		secret:      NewSingleMaterial(cfg.ClientSecret),
+		scopes:      cfg.Scopes,
+		client:      newExchangeClient(cfg.HTTPClient, cfg.Timeout),
+		clock:       clock,
+		maxLifetime: maxLifetime,
 	}, nil
 }
 
@@ -587,5 +636,5 @@ func (e *clientCredentialsExchanger) Exchange(ctx context.Context, assertion Ass
 		return Credential{}, err
 	}
 
-	return response.credential(e.name, e.name, assertion, e.clock(), DefaultCredentialLifetime)
+	return response.credential(e.name, e.name, assertion, e.clock(), e.maxLifetime)
 }
