@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -53,6 +56,14 @@ type ProtectedResourceConfig struct {
 	// trusted issuers at load time: this package never advertises an
 	// authorization server whose tokens its own [Verifier] would reject.
 	AuthorizationServers []string
+
+	// Revision is the operator-controlled, monotonically increasing generation
+	// of the effective authorization contract. Zero means generation one for
+	// compatibility with configurations written before revisions existed.
+	// Operators must increase it whenever trust, scopes, proof requirements, or
+	// a tenant/policy boundary changes. Digest detects fleet disagreement within
+	// a generation; Revision gives caches an ordering across generations.
+	Revision uint64
 }
 
 // ProtectedResource serves RFC 9728 protected resource metadata for one
@@ -69,6 +80,8 @@ type ProtectedResource struct {
 	metadataURL  string
 	path         string
 	handler      http.Handler
+	revision     uint64
+	digest       string
 }
 
 // NewProtectedResource validates cfg against policy and builds the metadata
@@ -136,6 +149,25 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		BearerMethodsSupported: []string{"header"},
 		// ScopesSupported deliberately omitted: see [ProtectedResource]'s doc.
 	}
+	revision := cfg.Revision
+	if revision == 0 {
+		revision = 1
+	}
+	// JSON is a canonical encoding for these Go values (map keys are sorted by
+	// encoding/json). Include the whole policy rather than merely the advertised
+	// issuer names: an audience, claim mapping, tenancy, federation, or secret
+	// boundary change must produce a new descriptor even if the public document
+	// itself did not change.
+	descriptor, err := json.Marshal(struct {
+		Resource             string   `json:"resource"`
+		AuthorizationServers []string `json:"authorization_servers"`
+		Policy               *Policy  `json:"policy"`
+	}{cfg.Resource, cfg.AuthorizationServers, policy})
+	if err != nil {
+		return nil, fmt.Errorf("protected-resource descriptor: %w", err)
+	}
+	sum := sha256.Sum256(descriptor)
+	digest := hex.EncodeToString(sum[:])
 
 	// The resource's own path, kept for the same reason the metadata path is
 	// computed rather than configured: a surface that serves this resource
@@ -154,8 +186,27 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		resourcePath: resourcePath,
 		metadataURL:  metadataURL,
 		path:         metadataPath,
-		handler:      protectedResourceHandler(metadata),
+		handler:      protectedResourceHandler(metadata, digest, revision),
+		revision:     revision,
+		digest:       digest,
 	}, nil
+}
+
+// Revision is the monotonic policy/capability generation of this descriptor.
+func (p *ProtectedResource) Revision() uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.revision
+}
+
+// Digest is the lowercase SHA-256 digest of the complete effective descriptor.
+// Unlike HTTP freshness, it covers non-public authorization policy too.
+func (p *ProtectedResource) Digest() string {
+	if p == nil {
+		return ""
+	}
+	return p.digest
 }
 
 // Resource is the canonical resource identifier this document advertises —
@@ -225,10 +276,19 @@ func (p *ProtectedResource) Handler() http.Handler {
 // running the same GET path through a [http.ResponseWriter] that discards
 // the body but not the headers or status, which is the standard way to add
 // HEAD to a handler that does not natively support it.
-func protectedResourceHandler(metadata *oauthex.ProtectedResourceMetadata) http.Handler {
+func protectedResourceHandler(metadata *oauthex.ProtectedResourceMetadata, digest string, revision uint64) http.Handler {
 	inner := mcpauth.ProtectedResourceMetadataHandler(metadata)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		etag := `"sha256-` + digest + `"`
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
+		w.Header().Set("Flowstate-Policy-Revision", fmt.Sprint(revision))
+		w.Header().Set("Flowstate-Resource-Digest", digest)
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			inner.ServeHTTP(w, r)

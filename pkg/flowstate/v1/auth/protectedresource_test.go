@@ -11,6 +11,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProtectedResourceDescriptorVersionsAuthorizationState(t *testing.T) {
+	policy := protectedResourcePolicy()
+	config := auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://issuer.example.com"},
+		Revision:             7,
+	}
+
+	first, err := auth.NewProtectedResource(config, policy)
+	require.NoError(t, err)
+	second, err := auth.NewProtectedResource(config, policy)
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), first.Revision())
+	require.Len(t, first.Digest(), 64)
+	require.Equal(t, first.Digest(), second.Digest(), "the same effective descriptor must be stable across fleet members")
+
+	changed := *policy
+	changed.Issuers = append([]auth.TrustedIssuer(nil), policy.Issuers...)
+	changed.Issuers[0].Role = "read-only"
+	third, err := auth.NewProtectedResource(config, &changed)
+	require.NoError(t, err)
+	require.NotEqual(t, first.Digest(), third.Digest(), "a policy-only change must invalidate the descriptor even when public metadata is unchanged")
+}
+
+func TestProtectedResourceMetadataSupportsBoundedConditionalCaching(t *testing.T) {
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://issuer.example.com"},
+	}, protectedResourcePolicy())
+	require.NoError(t, err)
+
+	request := httptest.NewRequest(http.MethodGet, pr.MetadataURL(), nil)
+	response := httptest.NewRecorder()
+	pr.Handler().ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, "public, max-age=300, must-revalidate", response.Header().Get("Cache-Control"))
+	require.Equal(t, pr.Digest(), response.Header().Get("Flowstate-Resource-Digest"))
+	require.Equal(t, "1", response.Header().Get("Flowstate-Policy-Revision"))
+	etag := response.Header().Get("ETag")
+	require.NotEmpty(t, etag)
+
+	request = httptest.NewRequest(http.MethodGet, pr.MetadataURL(), nil)
+	request.Header.Set("If-None-Match", etag)
+	response = httptest.NewRecorder()
+	pr.Handler().ServeHTTP(response, request)
+	require.Equal(t, http.StatusNotModified, response.Code)
+	require.Empty(t, response.Body.String())
+}
+
+func protectedResourcePolicy() *auth.Policy {
+	return &auth.Policy{Issuers: []auth.TrustedIssuer{{
+		Name:      "issuer",
+		Issuer:    "https://issuer.example.com",
+		Audiences: []string{"https://flowstate.example.com/mcp"},
+	}}}
+}
+
 // trustingPolicy is a [auth.Policy] that trusts exactly the given issuer
 // URLs as kind: oidc authorization servers — the minimum a test needs to
 // exercise [auth.NewProtectedResource]'s cross-check against policy.
