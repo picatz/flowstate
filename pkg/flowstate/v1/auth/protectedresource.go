@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -53,6 +56,14 @@ type ProtectedResourceConfig struct {
 	// trusted issuers at load time: this package never advertises an
 	// authorization server whose tokens its own [Verifier] would reject.
 	AuthorizationServers []string
+
+	// Revision is the operator-controlled, monotonically increasing generation
+	// of the effective authorization contract. Zero means generation one for
+	// compatibility with configurations written before revisions existed.
+	// Operators must increase it whenever trust, scopes, proof requirements, or
+	// a tenant/policy boundary changes. Digest detects fleet disagreement within
+	// a generation; Revision gives caches an ordering across generations.
+	Revision uint64
 }
 
 // ProtectedResource serves RFC 9728 protected resource metadata for one
@@ -69,6 +80,8 @@ type ProtectedResource struct {
 	metadataURL  string
 	path         string
 	handler      http.Handler
+	revision     uint64
+	digest       string
 }
 
 // NewProtectedResource validates cfg against policy and builds the metadata
@@ -136,6 +149,25 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		BearerMethodsSupported: []string{"header"},
 		// ScopesSupported deliberately omitted: see [ProtectedResource]'s doc.
 	}
+	revision := cfg.Revision
+	if revision == 0 {
+		revision = 1
+	}
+	// JSON is a canonical encoding for these Go values (map keys are sorted by
+	// encoding/json). Include the whole policy rather than merely the advertised
+	// issuer names: an audience, claim mapping, tenancy, federation, or secret
+	// boundary change must produce a new descriptor even if the public document
+	// itself did not change.
+	descriptor, err := json.Marshal(struct {
+		Resource             string   `json:"resource"`
+		AuthorizationServers []string `json:"authorization_servers"`
+		Policy               *Policy  `json:"policy"`
+	}{cfg.Resource, cfg.AuthorizationServers, policy})
+	if err != nil {
+		return nil, fmt.Errorf("protected-resource descriptor: %w", err)
+	}
+	sum := sha256.Sum256(descriptor)
+	digest := hex.EncodeToString(sum[:])
 
 	// The resource's own path, kept for the same reason the metadata path is
 	// computed rather than configured: a surface that serves this resource
@@ -154,8 +186,27 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy) (*Protect
 		resourcePath: resourcePath,
 		metadataURL:  metadataURL,
 		path:         metadataPath,
-		handler:      protectedResourceHandler(metadata),
+		handler:      protectedResourceHandler(metadata, cfg.Revision),
+		revision:     revision,
+		digest:       digest,
 	}, nil
+}
+
+// Revision is the monotonic policy/capability generation of this descriptor.
+func (p *ProtectedResource) Revision() uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.revision
+}
+
+// Digest is the lowercase SHA-256 digest of the complete effective descriptor.
+// Unlike HTTP freshness, it covers non-public authorization policy too.
+func (p *ProtectedResource) Digest() string {
+	if p == nil {
+		return ""
+	}
+	return p.digest
 }
 
 // ValidateResourceAudience validates a serving surface's canonical resource
@@ -268,10 +319,55 @@ func (p *ProtectedResource) Handler() http.Handler {
 // running the same GET path through a [http.ResponseWriter] that discards
 // the body but not the headers or status, which is the standard way to add
 // HEAD to a handler that does not natively support it.
-func protectedResourceHandler(metadata *oauthex.ProtectedResourceMetadata) http.Handler {
+// protectedResourceHandler serves the document, with a validator derived from
+// the document itself.
+//
+// # The ETag is over what is served, and never over the policy
+//
+// The obvious ETag here is [ProtectedResource.Digest], and it is the one thing
+// this handler must not publish. That digest covers the *complete effective*
+// descriptor — the trust policy, its claim mappings, its tenancy map, its
+// federation targets and its secret boundaries — deliberately, so that a
+// deployment can tell two workers apart when the public document is identical.
+// This route has no authentication and is documented as having none: it is the
+// unauthenticated discovery document a client fetches before it holds any
+// token. Publishing a hash of private policy on it hands an anonymous fetcher
+// an offline oracle: guess a claim mapping, hash the candidate, compare. The
+// guessing is free and unobservable, because it happens on the attacker's own
+// machine after one request.
+//
+// So the validator is a hash of the response body, which is exactly what an
+// entity tag is for, and the policy digest stays behind [ProtectedResource.Digest]
+// for an operator who is already inside. The two answer different questions
+// and only one of them is anybody's business who can reach this URL.
+func protectedResourceHandler(metadata *oauthex.ProtectedResourceMetadata, revision uint64) http.Handler {
 	inner := mcpauth.ProtectedResourceMetadataHandler(metadata)
 
+	// Rendered once, at construction: the document is immutable for this
+	// process's lifetime, so a per-request hash would be the same answer
+	// computed again on a path an unauthenticated caller controls the rate of.
+	var etag string
+	if body, err := json.Marshal(metadata); err == nil {
+		sum := sha256.Sum256(body)
+		etag = `"sha256-` + hex.EncodeToString(sum[:]) + `"`
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if etag != "" {
+			w.Header().Set("ETag", etag)
+		}
+		w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
+		// Only when a revision was actually configured. Defaulting to 1 and
+		// publishing it made the header a constant in every deployment that
+		// never sets one, which reads as a fact about the policy and is not.
+		if revision > 0 {
+			w.Header().Set("Flowstate-Policy-Revision", fmt.Sprint(revision))
+		}
+		if etag != "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			ifNoneMatch(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			inner.ServeHTTP(w, r)
@@ -285,6 +381,33 @@ func protectedResourceHandler(metadata *oauthex.ProtectedResourceMetadata) http.
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
+}
+
+// ifNoneMatch reports whether an If-None-Match header matches etag.
+//
+// RFC 9110 section 13.1.2 allows three spellings a string comparison gets
+// wrong, and each one costs a client its cache: "*" matches any existing
+// representation, the value is a comma-separated list rather than a single
+// tag, and a tag may carry a weak "W/" prefix — which this comparison ignores
+// because If-None-Match uses the weak comparison function, so W/"x" and "x"
+// match. Getting any of these wrong is a spurious 200 with the whole document
+// behind it, on a route every client polls.
+func ifNoneMatch(header, etag string) bool {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return false
+	}
+	if header == "*" {
+		return true
+	}
+
+	for candidate := range strings.SplitSeq(header, ",") {
+		if strings.TrimPrefix(strings.TrimSpace(candidate), "W/") == strings.TrimPrefix(etag, "W/") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // headResponseWriter passes headers and the status code through unchanged
