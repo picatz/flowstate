@@ -481,31 +481,31 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "OTEL_TRACES_EXPORTER",
 			value:   "unset",
-			purpose: "Select the trace exporter (`otlp`) or disable trace export (`none`). When unset, a general or trace-specific OTLP endpoint enables it. Propagation remains available for enabled metrics or correlated logs even when trace export is disabled.",
+			purpose: "Select the trace exporter (`otlp`) or disable trace export (`none`), matched case-insensitively. When unset, a general or trace-specific OTLP endpoint enables it. Propagation remains available for enabled metrics or correlated logs even when trace export is disabled.",
 			read:    "cmd/flow/telemetry.go",
 		},
 		{
 			name:    "OTEL_METRICS_EXPORTER",
 			value:   "unset",
-			purpose: "Select the metrics exporter (`otlp`) or disable metrics (`none`). When unset, a general or metrics-specific OTLP endpoint enables it.",
+			purpose: "Select the metrics exporter (`otlp`) or disable metrics (`none`), matched case-insensitively. When unset, a general or metrics-specific OTLP endpoint enables it.",
 			read:    "cmd/flow/telemetry.go",
 		},
 		{
 			name:    "OTEL_LOGS_EXPORTER",
 			value:   "unset",
-			purpose: "Select the log exporter (`otlp`) or disable log export (`none`). When unset, a general or logs-specific OTLP endpoint enables it; stderr logging is never disabled.",
+			purpose: "Select the log exporter (`otlp`) or disable log export (`none`), matched case-insensitively. When unset, a general or logs-specific OTLP endpoint enables it; stderr logging is never disabled.",
 			read:    "cmd/flow/telemetry.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 			value:   "unset",
-			purpose: "The same, for a deployment sending logs somewhere different. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
+			purpose: "The same, for a deployment sending logs somewhere different. It enables logs on its own, unless `OTEL_LOGS_EXPORTER=none` disables that signal. Logs are exported through the OTLP log exporter beside stderr, never instead of it, so a collector is a destination gained, not exchanged.",
 			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 			value:   "unset",
-			purpose: "The same, for a deployment sending metrics somewhere different. Any one of these variables being set enables telemetry.",
+			purpose: "The same, for a deployment sending metrics somewhere different. It enables metrics on its own, unless `OTEL_METRICS_EXPORTER=none` disables that signal.",
 			read:    "cmd/flow/telemetry.go, cmd/flow/serverdev.go",
 		},
 		{

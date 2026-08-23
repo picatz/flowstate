@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,8 +124,17 @@ type telemetryConfig struct {
 func telemetryConfigFromEnv() (telemetryConfig, error) {
 	general := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
 	resolve := func(signal, exporter string, set, endpoint bool) (bool, error) {
-		if set && exporter != "" {
-			switch exporter {
+		// Folded before matching, because the SDK environment-variable
+		// specification defines these enum values as case-insensitive:
+		// OTEL_TRACES_EXPORTER=OTLP is a valid setting an operator can arrive
+		// with from any other OTLP-speaking tool, and an exact match would
+		// refuse to start a server over a capital letter. Surrounding space is
+		// dropped for the same reason — it is invisible in a compose file and
+		// means nothing here. The error still names what they wrote, not the
+		// folded form, so the message points at the line they can fix.
+		selected := strings.ToLower(strings.TrimSpace(exporter))
+		if set && selected != "" {
+			switch selected {
 			case "none":
 				return false, nil
 			case "otlp":
@@ -256,6 +266,29 @@ func telemetryResource(ctx context.Context) (*resource.Resource, error) {
 	return res, nil
 }
 
+// The three exporter constructors, indirected so a test can make one fail.
+//
+// Not a preference for injectability: it is the only way the failure path below
+// is reachable at all. The otlp*http constructors do not return an error for
+// any environment this binary can be handed — a malformed endpoint, an
+// unparseable header list, a certificate path that does not exist are each
+// logged by the SDK and the exporter is built anyway — so no os.Setenv reaches
+// the unwind that a partially built provider set depends on. The contract these
+// constructors declare still says they can fail, and a caller that gets it
+// wrong leaks a live batch processor into a process that has been told it has
+// no telemetry, so the failure is arranged here rather than left untested.
+var (
+	newTraceExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return otlptracehttp.New(ctx)
+	}
+	newMetricExporter = func(ctx context.Context) (sdkmetric.Exporter, error) {
+		return otlpmetrichttp.New(ctx)
+	}
+	newLogExporter = func(ctx context.Context) (sdklog.Exporter, error) {
+		return otlploghttp.New(ctx)
+	}
+)
+
 // initTelemetry configures the global OTel providers and returns the Temporal
 // metrics handler, plus a shutdown that flushes on the way out.
 //
@@ -289,13 +322,56 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		return nil, nil, err
 	}
 
+	// Build every enabled provider before publishing any of them.
+	//
+	// The globals are the publication: once otel.SetTracerProvider has run,
+	// otelconnect is recording into a batch processor whose goroutine and
+	// connection are live. Publishing as each one is built means a later
+	// exporter's failure returns without a shutdown — and the client commands
+	// deliberately continue past that error — leaving the earlier provider
+	// running, unreachable and never flushed, in a process that has just been
+	// told it has no telemetry. So failure here unwinds what it built, and
+	// nothing is visible outside this function until all of it succeeded.
+	var built []func(context.Context) error
+	fail := func(err error) (client.MetricsHandler, func(context.Context), error) {
+		for _, shutdown := range built {
+			_ = shutdown(ctx)
+		}
+
+		return nil, nil, err
+	}
+
 	var tracerProvider *sdktrace.TracerProvider
 	if config.traces {
-		exporter, err := otlptracehttp.New(ctx)
+		exporter, err := newTraceExporter(ctx)
 		if err != nil {
-			return nil, nil, fmt.Errorf("configuring the trace exporter: %w", err)
+			return fail(fmt.Errorf("configuring the trace exporter: %w", err))
 		}
 		tracerProvider = sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
+		built = append(built, tracerProvider.Shutdown)
+	}
+	var meterProvider *sdkmetric.MeterProvider
+	var handler client.MetricsHandler
+	if config.metrics {
+		exporter, err := newMetricExporter(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("configuring the metric exporter: %w", err))
+		}
+		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
+		built = append(built, meterProvider.Shutdown)
+		handler = opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{Meter: meterProvider.Meter("temporal-sdk")})
+	}
+	var loggerProvider *sdklog.LoggerProvider
+	if config.logs {
+		exporter, err := newLogExporter(ctx)
+		if err != nil {
+			return fail(fmt.Errorf("configuring the log exporter: %w", err))
+		}
+		loggerProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
+		built = append(built, loggerProvider.Shutdown)
+	}
+
+	if tracerProvider != nil {
 		// The global, because that is where otelconnect looks: it was installed
 		// against the global providers all along, and this is the half that
 		// makes the installation mean something. Set only when traces are
@@ -303,24 +379,10 @@ func initTelemetry(ctx context.Context) (client.MetricsHandler, func(context.Con
 		// no-op provider in place rather than building spans nothing sends.
 		otel.SetTracerProvider(tracerProvider)
 	}
-	var meterProvider *sdkmetric.MeterProvider
-	var handler client.MetricsHandler
-	if config.metrics {
-		exporter, err := otlpmetrichttp.New(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("configuring the metric exporter: %w", err)
-		}
-		meterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)), sdkmetric.WithResource(res))
+	if meterProvider != nil {
 		otel.SetMeterProvider(meterProvider)
-		handler = opentelemetry.NewMetricsHandler(opentelemetry.MetricsHandlerOptions{Meter: meterProvider.Meter("temporal-sdk")})
 	}
-	var loggerProvider *sdklog.LoggerProvider
-	if config.logs {
-		exporter, err := otlploghttp.New(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("configuring the log exporter: %w", err)
-		}
-		loggerProvider = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)), sdklog.WithResource(res))
+	if loggerProvider != nil {
 		// Logs have a global of their own, in their own package, because the log
 		// API is still pre-stable and lives outside go.opentelemetry.io/otel.
 		// Registered for the same reason as the other two and one more: a bridge
