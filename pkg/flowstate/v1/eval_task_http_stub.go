@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 // httpStubResponseFn is the http task's [TaskDef.StubResponseFn]: answer an
@@ -100,6 +102,24 @@ func decodeHTTPStubResponse(response map[string]*Value) (statusCode int, header 
 				text, ok := headerValue.(string)
 				if !ok {
 					return 0, nil, nil, fmt.Errorf("response header %q must be a string, got %T", headerName, headerValue)
+				}
+				// The transport's own syntax rules, checked with the
+				// validators net/http itself uses, before Header.Set stores
+				// anything verbatim: a name or value carrying CR/LF (or any
+				// other wire-invalid byte) is one no live response could
+				// deliver, so shaping asserting against it would pass under
+				// `flow test` and diverge in production — the equivalence
+				// this stub exists to provide (Codex, #982, second finding;
+				// the status-range refusal above is the same rule for the
+				// same reason).
+				if !httpguts.ValidHeaderFieldName(headerName) {
+					return 0, nil, nil, fmt.Errorf(
+						"response header name %q is not valid HTTP header syntax — a name no HTTP response could carry", headerName)
+				}
+				if !httpguts.ValidHeaderFieldValue(text) {
+					return 0, nil, nil, fmt.Errorf(
+						"response header %q carries a value no HTTP response could deliver "+
+							"(control characters such as CR and LF are refused by the transport)", headerName)
 				}
 				header.Set(headerName, text)
 			}

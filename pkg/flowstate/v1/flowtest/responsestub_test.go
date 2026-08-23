@@ -232,6 +232,47 @@ tests:
 	}
 }
 
+// TestResponseHeaderOutsideWireSyntaxIsRefused pins the second Codex finding
+// on #982, the sibling of the status-range refusal: Header.Set stores a
+// CR/LF-bearing name or value verbatim, so shaping could assert against a
+// header no live response could deliver — passing under `flow test` and
+// diverging in production, the exact equivalence `response:` exists to
+// provide. Checked with the same validators net/http itself uses.
+func TestResponseHeaderOutsideWireSyntaxIsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", shapingWorkflow)
+
+	for name, headers := range map[string]string{
+		"a CRLF-split value": `{X-Trace: "a\nb"}`,
+		"an invalid name":    `{"bad name": ok}`,
+	} {
+		report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: `+name+`
+    workflow: ./workflow.yaml
+    stubs:
+      - step: build
+        response:
+          status_code: 200
+          body: {artifact: x}
+          headers: `+headers+`
+    expect:
+      outputs:
+        artifact: x
+`))
+		c := report.GetCases()[0]
+		require.False(t, c.GetPassed(), "%s must not produce a satisfiable response", name)
+		var account string
+		for _, f := range c.GetFailures() {
+			account += f.GetMessage()
+		}
+		require.Contains(t, account, "no HTTP response could",
+			"%s: got error=%q failures=%v", name, c.GetError(), c.GetFailures())
+	}
+}
+
 // TestResponseHeadersAndStringBodyReachTheShaping: headers land in the
 // response scope the shaping reads, a string body arrives verbatim, and an
 // omitted status_code is the ordinary 200.
