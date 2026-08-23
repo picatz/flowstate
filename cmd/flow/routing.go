@@ -5,22 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
-	"strings"
 
 	"connectrpc.com/authn"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
-	"go.opentelemetry.io/otel/baggage"
 )
-
-const serverBaggageMaxKeys = 16
-const serverBaggageMaxEncodedBytes = 4096
-
-var serverBaggageKeys = map[string]struct{}{
-	"flowstate.workflow": {},
-	"flowstate.run":      {},
-	"flowstate.task":     {},
-}
 
 // serverHandler routes the server's HTTP surface, deciding what authentication
 // applies where.
@@ -146,6 +135,20 @@ func serverHandler(
 		mux.Handle(protectedResource.Path(), protectedResource.Handler())
 	}
 
+	// Outside the mux rather than inside any route, because the containment has
+	// to happen before *anything* reads the header: the authenticator, whatever
+	// otelconnect extracts on the RPC route, and the unauthenticated routes
+	// above alike. A filter mounted inside the authenticated wrap would leave
+	// /healthz, the identity documents and a webhook delivery reading the
+	// caller's header unchanged.
+	//
+	// Gated on the same predicate the leak is gated on, not on a second opinion
+	// about it: [temporalTracingInterceptor] returns nil unless
+	// [telemetryConfigured], and that interceptor is the thing that copies
+	// context baggage into the header Temporal writes to durable workflow
+	// history. One predicate, so the filter cannot be off while the path that
+	// needs it is on. A deployment with no telemetry configured extracts
+	// baggage nowhere and keeps the request surface it had before this existed.
 	if !telemetryConfigured() {
 		return mux
 	}
@@ -155,40 +158,62 @@ func serverHandler(
 	})
 }
 
-// filterServerBaggage reduces caller-controlled correlation data before any
+// filterServerBaggage removes caller-controlled correlation data before any
 // authenticator or RPC interceptor can observe it. Trace headers are deliberately
 // untouched: they identify a trace, whereas baggage is arbitrary caller-chosen data.
+//
+// # Why nothing is allowed through
+//
+// The obvious shape here is an allowlist — keep the handful of keys that carry
+// real correlation, drop the rest — and it is the shape this started as. It does
+// not survive reading the tree. Nothing in this repository emits an inbound
+// `Baggage` header toward this server: the only two producers of baggage anywhere
+// are the host-to-plugin hop ([plugin.propagationInterceptor], which builds
+// `flowstate.plugin.name` and `flowstate.task.name` from values *it* holds and
+// refuses to consult caller baggage even under those reserved keys) and the
+// plugin SDK that rebuilds the same two on receipt. Neither speaks to this mux.
+// So an allowlist here would name keys no Flowstate component sends, retain
+// nothing legitimate, and keep open exactly one thing: a channel an attacker
+// chooses the contents of, under a trusted-looking name.
+//
+// Nor can the names be borrowed from the telemetry vocabulary that *is*
+// declared, [metricschema.Table]. That table classes `flowstate.run.id` and its
+// siblings ClassPeerControlled and states the rule for the whole file as "never
+// a value a request carried in" — precisely the value an allowlist here would
+// admit. Allowing `flowstate.workflow.name` inbound would let a caller assert
+// which workflow it is, which is the forgery the classification exists to
+// prevent, not a correlation the deployment gained.
+//
+// That leaves the answer [netpolicy] already gives for an untrusted peer:
+// trace context crosses, baggage does not (netpolicy/tracing.go's round
+// tripper injects `propagation.TraceContext{}` alone, deliberately not the
+// global composite). The cost, stated plainly: a third-party client that
+// propagates W3C baggage as a matter of course loses it at this boundary, so a
+// deployment that later wants caller-supplied correlation has to add a
+// configured, named way to say so rather than getting it by default. That is a
+// feature this refuses, not one it forgets.
+//
+// # Why it is `Baggage` and only `Baggage`
+//
+// The propagator this process registers is the composite of
+// `propagation.TraceContext` and `propagation.Baggage` and nothing else (see
+// [initTelemetry]), so `Baggage` is the entire caller-controlled surface any
+// extract on this path reads. A deployment that registers a third propagator
+// would be widening that surface, and this is the function that would have to
+// learn about it.
+//
+// # Why removal beats parsing
+//
+// A bound has to cover the resource the attacker controls, and the resource
+// here is the header's own size and member count. Removing the header consumes
+// neither: there is no join, no parse, and no allocation proportional to
+// anything the caller chose — the request is already bounded by the server's
+// `MaxHeaderBytes` before this runs. A filter that parsed first in order to
+// decide would be doing the work the bound exists to avoid.
 func filterServerBaggage(header http.Header) {
-	values := header.Values("Baggage")
-	if len(values) == 0 {
-		return
-	}
-	encoded := strings.Join(values, ",")
-	if len(encoded) > serverBaggageMaxEncodedBytes {
-		header.Del("Baggage")
-		return
-	}
-	bag, err := baggage.Parse(encoded)
-	if err != nil || len(bag.Members()) > serverBaggageMaxKeys {
-		header.Del("Baggage")
-		return
-	}
-	keptMembers := make([]baggage.Member, 0, len(bag.Members()))
-	for _, member := range bag.Members() {
-		if _, ok := serverBaggageKeys[member.Key()]; !ok {
-			continue
-		}
-		keptMembers = append(keptMembers, member)
-	}
-	kept, err := baggage.New(keptMembers...)
-	if err != nil {
-		header.Del("Baggage")
-		return
-	}
+	// Del canonicalizes, so every spelling the caller sent (`baggage`,
+	// `bAgGaGe`) and every repeated line are one key by the time this runs.
 	header.Del("Baggage")
-	if encoded := kept.String(); encoded != "" {
-		header.Set("Baggage", encoded)
-	}
 }
 
 // healthzHandler answers a liveness probe with a status code and nothing

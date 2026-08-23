@@ -24,9 +24,20 @@ import (
 )
 
 // TestServerHandlerContainsInboundBaggage exercises the public handler rather
-// than the filter in isolation. The recorders deliberately sit on both sides
-// of authentication and the RPC instrumentation boundary: this pins not only
-// what survives, but where the reduction happens.
+// than the filter in isolation, and pins two separate claims: *what* survives
+// (nothing of the caller's baggage; all of its trace context) and *where* the
+// removal happens (before the authenticator looks at the request, which is
+// what makes it before everything else too).
+//
+// The ordering half is the one that is easy to write vacuously. Asserting that
+// the context the authenticator runs under carries no baggage proves nothing,
+// because nothing on the authentication path ever extracts baggage into a
+// context — that assertion stays green with this whole feature deleted. What
+// the filter actually controls is the header, and [http.Header] is a map: the
+// wrapper mutates the very map the authenticator, the RPC route and every
+// unauthenticated route below then read. So the verifier snapshots that live
+// map at the moment it is called, and the snapshot is empty only if the
+// removal already happened.
 func TestServerHandlerContainsInboundBaggage(t *testing.T) {
 	isolateTelemetry(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://telemetry.invalid")
@@ -38,9 +49,17 @@ func TestServerHandlerContainsInboundBaggage(t *testing.T) {
 		bag    baggage.Baggage
 		span   trace.SpanContext
 	}
+	// inFlight is the live header map of the request currently being served,
+	// handed over by request() below. Cloning it inside the verifier is what
+	// dates the observation: whatever the authenticator sees, this sees.
+	var inFlight http.Header
 	var authenticated, instrumented, handled []seen
 	verifier := recordingVerifier{record: func(ctx context.Context) {
-		authenticated = append(authenticated, seen{bag: baggage.FromContext(ctx), span: trace.SpanContextFromContext(ctx)})
+		authenticated = append(authenticated, seen{
+			header: inFlight.Clone(),
+			bag:    baggage.FromContext(ctx),
+			span:   trace.SpanContextFromContext(ctx),
+		})
 	}}
 	rpc := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
@@ -64,35 +83,52 @@ func TestServerHandlerContainsInboundBaggage(t *testing.T) {
 			}
 			req.Header.Add(name, line)
 		}
+		inFlight = req.Header
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		return rec
 	}
 
+	// Every member here is a shape the earlier allowlist would have kept or
+	// half-kept: a bare value under a name that looks like this repository's,
+	// the same name carrying a member *property* (`;token=...`, which a
+	// whole-Member allowlist forwards verbatim), a credential-looking key, and
+	// a tenant a caller must never get to assert.
 	request("/flowstate.v1.WorkflowService/Run",
-		"flowstate.workflow=orders,unknown=drop,authorization=secret",
-		"flowstate.run=run-7,flowstate.tenant=forged")
-	require.Len(t, authenticated, 1)
-	require.Empty(t, authenticated[0].bag.Members(), "baggage was extracted before authentication")
-	require.Len(t, handled, 1)
-	require.Equal(t, "orders", handled[0].bag.Member("flowstate.workflow").Value())
-	require.Equal(t, "run-7", handled[0].bag.Member("flowstate.run").Value())
-	for _, key := range []string{"unknown", "authorization", "flowstate.tenant"} {
-		require.Empty(t, handled[0].bag.Member(key).Value(), "%s crossed the RPC boundary", key)
-	}
-	require.ElementsMatch(t, []string{"flowstate.workflow=orders", "flowstate.run=run-7"},
-		strings.Split(instrumented[0].header.Get("Baggage"), ","))
-	require.Equal(t, traceparent, instrumented[0].header.Get("Traceparent"))
-	require.True(t, handled[0].span.IsValid(), "filtering baggage damaged trace context")
+		"flowstate.workflow.name=orders;token=sk-live-abcdef,unknown=drop,authorization=secret",
+		"flowstate.run.id=run-7,flowstate.tenant=forged")
 
+	require.Len(t, authenticated, 1)
+	require.Empty(t, authenticated[0].header.Values("Baggage"),
+		"the authenticator observed the caller's baggage, so the removal is not before authentication")
+	require.Equal(t, traceparent, authenticated[0].header.Get("Traceparent"),
+		"trace context was removed along with baggage")
+
+	require.Len(t, handled, 1)
+	require.Empty(t, handled[0].header.Values("Baggage"), "a Baggage header crossed the RPC boundary")
+	require.Empty(t, handled[0].bag.Members(), "caller baggage reached the RPC context")
+	require.Empty(t, instrumented[0].header.Values("Baggage"))
+	require.NotContains(t, strings.Join(instrumented[0].header.Values("Baggage"), ","), "sk-live-abcdef")
+	require.Equal(t, traceparent, instrumented[0].header.Get("Traceparent"))
+	require.True(t, handled[0].span.IsValid(), "removing baggage damaged trace context")
+
+	// Shapes a parsing filter had to reason about and this one does not: a
+	// header that is not baggage at all, a member count past any plausible
+	// bound, and a value large enough that joining it before deciding would be
+	// the allocation the bound exists to avoid. All three are one answer here,
+	// which is the point — they are listed so a future filter that starts
+	// parsing again cannot quietly lose them.
 	for name, lines := range map[string][]string{
-		"malformed": {"flowstate.workflow=orders", "%not-baggage"},
-		"key count is measured across header lines": {
-			"flowstate.workflow=orders,k0=v,k1=v,k2=v,k3=v,k4=v,k5=v,k6=v,k7=v",
+		"malformed": {"flowstate.workflow.name=orders", "%not-baggage"},
+		"member count spread across header lines": {
+			"flowstate.workflow.name=orders,k0=v,k1=v,k2=v,k3=v,k4=v,k5=v,k6=v,k7=v",
 			"k8=v,k9=v,k10=v,k11=v,k12=v,k13=v,k14=v,k15=v",
 		},
-		"encoded size is measured across header lines": {
-			"flowstate.workflow=orders", "unknown=" + strings.Repeat("x", serverBaggageMaxEncodedBytes),
+		"oversized value spread across header lines": {
+			"flowstate.workflow.name=orders", "unknown=" + strings.Repeat("x", 8192),
+		},
+		"properties on an otherwise plausible key": {
+			"flowstate.task.name=charge;secret=sk-live-abcdef;scope=admin",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -105,10 +141,40 @@ func TestServerHandlerContainsInboundBaggage(t *testing.T) {
 		})
 	}
 
+	// The unauthenticated routes are the other half of "before authentication":
+	// they are not wrapped by the authenticator at all, so a filter mounted
+	// inside that wrap would leave them reading the caller's header. They must
+	// still answer — removing a header is not allowed to break a liveness probe
+	// or a relying party's fetch of the key set.
 	for _, path := range []string{"/healthz", auth.DiscoveryPath, testBroker(t).Issuer().JWKSPath()} {
-		resp := request(path, "flowstate.workflow=orders")
-		require.Empty(t, resp.Header().Values("Baggage"), "%s reflected caller baggage", path)
+		resp := request(path, "flowstate.workflow.name=orders")
+		require.Equal(t, http.StatusOK, resp.Code, "%s stopped answering", path)
 	}
+}
+
+// TestFilterServerBaggageRemovesEverySpelling is the unit-level complement:
+// repeated lines, mixed case, and a member carrying properties are one header
+// by the time [filterServerBaggage] runs, and none of it survives — while a
+// request carrying no baggage at all is left exactly as it arrived.
+func TestFilterServerBaggageRemovesEverySpelling(t *testing.T) {
+	t.Parallel()
+
+	header := http.Header{}
+	header.Set("Traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	header.Add("Baggage", "flowstate.workflow.name=orders;token=sk-live-abcdef")
+	header.Add("bAgGaGe", "unknown=drop")
+	header.Add("BAGGAGE", "authorization=secret")
+
+	filterServerBaggage(header)
+
+	require.Empty(t, header.Values("Baggage"))
+	require.Empty(t, header.Values("bAgGaGe"))
+	require.NotContains(t, header.Get("Traceparent"), "sk-live")
+	require.Len(t, header, 1, "filtering touched a header that is not baggage: %v", header)
+
+	untouched := http.Header{"Traceparent": []string{"tp"}, "Authorization": []string{"Bearer x"}}
+	filterServerBaggage(untouched)
+	require.Equal(t, http.Header{"Traceparent": []string{"tp"}, "Authorization": []string{"Bearer x"}}, untouched)
 }
 
 type recordingVerifier struct{ record func(context.Context) }
