@@ -43,6 +43,7 @@ $ flow validate examples/hello-world/workflow.yaml
 | [usage-billing](usage-billing) | `math.greatest`, and `double()` before dividing so CEL's int-truncating division does not silently undercharge a partial block | no |
 | [interpolation](interpolation) | Text and expressions in one value: several `${...}` in a message, the `$${` escape, and the whole-value fence that keeps its type | no |
 | [approval-gate](approval-gate) | `wait_for_signal:` as a human approval gate, shaping its own `outputs:` so the gate is stated once and every branch and report reads one name | no |
+| [approval-escalation](approval-escalation) | The chase a real approval is — a `loop:` asking on a cadence, escalating to a backup approver the `signals:` policy already named, and auto-rejecting when the ask budget runs out, with a README on why that budget is `until:`'s and not `max_iterations:`'s | no |
 | [wait-timeout](wait-timeout) | The same gate going unanswered: `timeout:` lapses, `timed_out` is true, and the run carries on rather than failing | no |
 | [wait-until-a-moment](wait-until-a-moment) | `wait_until:` a computed moment, with `now` and the duration builders | no |
 | [computed-durations](computed-durations) | A `sleep:` and a `wait_for_signal:` `timeout:` computed rather than written down — a grace period sized by the plan, a deadline sized by the contract, and `now` in both | no |
@@ -96,7 +97,11 @@ ships the policy that authorizes what its step does; `task-shape-policy` ships t
 deployment-side policy that refuses one; anything under `plugins/` needs a plugin
 built and a worker told where to find it; `observability` is a whole docker-compose
 lab; the examples charter (#165) asks a few to name the one durability property they
-demonstrate alongside the two-command local-then-durable contrast; `embedding` is a Go
+demonstrate alongside the two-command local-then-durable contrast;
+`approval-escalation` has a hazard its own grammar cannot name — `max_iterations:` is
+the engine's per-segment ceiling and reads exactly like the reminder budget beside it,
+which is a policy — so its README teaches the difference the file can only imply;
+`embedding` is a Go
 program rather than a Flowfile `flow` runs on its own, so its README says how to run
 it instead; `agentic-loop`'s subject is the sequence of MCP tool calls an agent makes
 while authoring the file beside it, which is not something the file itself can say;
