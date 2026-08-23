@@ -198,6 +198,23 @@ func TestSuiteTranscriptBudgetDropsWithASentence(t *testing.T) {
 	require.Nil(t, b.take(nil), "a case with no account stays a case with no account")
 }
 
+// TestNonStringSensitiveScalarsJoinTheSubstringBackstop pins round fifteen's
+// P1: a `sensitive: true` integer converted to text — `${string(inputs.pin)}`
+// — matches neither the typed equality nor a string-only substring set, so
+// its canonical rendering joins the backstop under the same floor and root
+// exemption a string descendant gets.
+func TestNonStringSensitiveScalarsJoinTheSubstringBackstop(t *testing.T) {
+	t.Parallel()
+
+	set := sensitiveNativeValues(&v1.Scope{Inputs: map[string]*v1.Value{
+		"pin": v1.NewLiteral(int64(8231)),
+	}}, map[string]bool{"pin": true})
+
+	require.Contains(t, set.substrings, "8231",
+		"the number's canonical text must be replaceable wherever a conversion strands it in a string")
+	require.Equal(t, "code [redacted] here", redactSensitiveSubstrings("code 8231 here", set.substrings))
+}
+
 // TestNestedSensitiveKeysRedact pins round ten's P1: redactSensitiveTree
 // redacted values at every depth but preserved map keys, so a sensitive key
 // nested inside an output's structured value printed — including one below

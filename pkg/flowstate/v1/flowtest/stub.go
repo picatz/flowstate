@@ -868,6 +868,21 @@ func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) sens
 				if value != "" && (n.root || utf8.RuneCountInString(value) >= minSensitiveSubstringRunes) {
 					out.substrings = append(out.substrings, value)
 				}
+			case int64, uint64, float64, bool:
+				// A non-string scalar's canonical text joins the backstop:
+				// `${string(inputs.pin)}` turns the number into a string the
+				// typed equality can never see (Codex, #1052). fmt.Sprint is
+				// the spelling both CEL's string() of an int and this
+				// package's own rendering produce; a reformatted spelling
+				// (padding, precision) is past what a substring set can
+				// enumerate, which is the boundary the withholdAll rule
+				// already draws for sets that cannot be built at all. The
+				// floor and root exemption apply exactly as for a string
+				// descendant.
+				text := fmt.Sprint(value)
+				if n.root || utf8.RuneCountInString(text) >= minSensitiveSubstringRunes {
+					out.substrings = append(out.substrings, text)
+				}
 			case map[string]any:
 				// Keys are descendants too: sensitivity belongs to the whole
 				// declared value, and a map whose *keys* carry the material —
