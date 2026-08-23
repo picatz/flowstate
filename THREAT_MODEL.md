@@ -486,6 +486,7 @@ flow keys generate --out /etc/flowstate/keys/2026-09.pem
 # 2. Restart with both, newest first. The process signs with 2026-09 and keeps
 #    publishing 2026-08, so assertions the previous process signed keep verifying.
 flow server --auth-policy /etc/flowstate/auth.yaml \
+  --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/keys/2026-09.pem \
   --identity-key /etc/flowstate/keys/2026-08.pem
 
@@ -493,7 +494,26 @@ flow server --auth-policy /etc/flowstate/auth.yaml \
 #    to outlast both the old assertions and every relying party's cached key set),
 #    restart with the new key alone and delete the old one.
 flow server --auth-policy /etc/flowstate/auth.yaml \
+  --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/keys/2026-09.pem
+```
+
+`--rpc-resource` appears in both restarts because the `auth.yaml` this procedure
+assumes names a `kind: oidc` issuer, and a server that verifies bearer tokens
+must say which audience its Connect RPC surface answers as. It is not part of
+rotation, and it is *refused* on a deployment whose every `issuers[]` entry is
+`kind: mtls`: a client certificate carries no audience claim, so there is
+nothing to bind and `flow server` says so rather than ignoring the flag. Such a
+deployment still rotates — the identity key signs assertions and backs the
+published JWKS regardless of how callers authenticate — with the same commands
+minus the audience:
+
+```sh
+# certificate-only deployment: every issuers[] entry is kind: mtls, so there is
+# no audience to bind and flow server refuses --rpc-resource here.
+flow server --auth-policy /etc/flowstate/auth.yaml \
+  --identity-key /etc/flowstate/keys/2026-09.pem \
+  --identity-key /etc/flowstate/keys/2026-08.pem
 ```
 
 The start-up line names what was actually published (`signing_key` and

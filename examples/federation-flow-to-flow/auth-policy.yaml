@@ -5,7 +5,11 @@
 issuers:
   - name: github-actions
     issuer: https://token.actions.githubusercontent.com
-    audiences: [flowstate]
+    # Also the audience `flow server --rpc-resource` is started with: the
+    # server requires the exact string it binds Connect RPC to to be listed by
+    # a trusted kind: oidc issuer, so a resource nobody can mint for is refused
+    # at start-up rather than 401ing every caller.
+    audiences: [https://flowstate.example.com/rpc]
     algorithms: [RS256]
     # A GitHub Actions issuer admits every workload on the platform unless it is
     # pinned: the audience is chosen by whoever requests the token, so it does

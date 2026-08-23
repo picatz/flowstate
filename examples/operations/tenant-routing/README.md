@@ -24,12 +24,19 @@ Three processes. Start the server with a prefix, which is what turns routing on:
 
 ```console
 $ flow server --auth-policy examples/operations/tenant-routing/trust.yaml \
+    --rpc-resource https://flowstate.example.com/rpc \
     --task-queue-prefix flowstate-run
 ```
 
 Unset, the prefix routes nothing and every tenant's runs go to the single shared
 queue exactly as they always have — a single-team deployment has nothing to route
 between and should not have to say so.
+
+`--rpc-resource` is unrelated to routing and is required of any server whose
+trust policy names a `kind: oidc` issuer: it is the `aud` every bearer token
+spent on Connect RPC must carry, and it is listed in `trust.yaml` beside each
+issuer's other audiences. See
+[docs/DEPLOYMENT.md](../../../docs/DEPLOYMENT.md#bearer-token-audiences-are-per-surface).
 
 Then one fleet per tenant. Each gets its own everything:
 

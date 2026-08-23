@@ -34,16 +34,18 @@ func TestDelegatedTokenExchange(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "delegated-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "delegated-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:        party.url + "/token",
+		Audience:        "https://as.example.com",
+		Clock:           clock.Now,
+		AllowDelegation: true,
 		Delegator: func(context.Context) (auth.Material, string, error) {
 			return auth.NewSingleMaterial(delegatorToken), "", nil
 		},
@@ -130,9 +132,10 @@ func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
 		require.NoError(t, err)
 
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "credential-for-" + verified.Subject,
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "credential-for-" + verified.Subject,
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
@@ -140,9 +143,10 @@ func TestDelegatedCredentialsAreNotSharedBetweenDelegators(t *testing.T) {
 	// for — the shape an agent serving several people has.
 	var acting string
 	exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-		TokenURL: party.url + "/token",
-		Audience: "https://as.example.com",
-		Clock:    clock.Now,
+		TokenURL:        party.url + "/token",
+		Audience:        "https://as.example.com",
+		Clock:           clock.Now,
+		AllowDelegation: true,
 		Delegator: func(context.Context) (auth.Material, string, error) {
 			return auth.NewSingleMaterial(tokenFor(acting)), "", nil
 		},
@@ -186,9 +190,10 @@ func TestUndelegatedCredentialsAreStillCached(t *testing.T) {
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		exchanges++
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "downstream-token",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "downstream-token",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
@@ -230,9 +235,10 @@ func TestDelegatedTokenExchangeFailsClosed(t *testing.T) {
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		reached = true
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token": "should-never-be-issued",
-			"token_type":   "Bearer",
-			"expires_in":   3600,
+			"access_token":      "should-never-be-issued",
+			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			"token_type":        "Bearer",
+			"expires_in":        3600,
 		})
 	})
 
@@ -265,10 +271,11 @@ func TestDelegatedTokenExchangeFailsClosed(t *testing.T) {
 			reached = false
 
 			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
-				TokenURL:  party.url + "/token",
-				Audience:  "https://as.example.com",
-				Clock:     clock.Now,
-				Delegator: test.delegator,
+				TokenURL:        party.url + "/token",
+				Audience:        "https://as.example.com",
+				Clock:           clock.Now,
+				AllowDelegation: true,
+				Delegator:       test.delegator,
 			})
 			require.NoError(t, err)
 
