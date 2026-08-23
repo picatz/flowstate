@@ -433,7 +433,28 @@ func charterRequired(t *testing.T) map[string]string {
 		}
 		fields := def.Inputs.Fields()
 		for i := range fields.Len() {
-			required["task."+task+"."+string(fields.Get(i).Name())] = "an example setting that task input"
+			field := fields.Get(i)
+
+			// An enum-typed input is one key per value, for the reason an enum
+			// *field* is: `log`'s level is not one capability, and a key per
+			// input stays satisfied by whichever level some example happened to
+			// write. `log.level` is the only enum-typed input the built-ins have
+			// today, with three selectable values, so this costs three keys.
+			if field.Kind() == protoreflect.EnumKind {
+				values := field.Enum().Values()
+				for v := range values.Len() {
+					value := values.Get(v)
+					if value.Number() == 0 {
+						continue
+					}
+					required["task."+task+"."+string(field.Name())+"."+authorSpelling(field.Enum(), value)] =
+						"an example writing that value"
+				}
+
+				continue
+			}
+
+			required["task."+task+"."+string(field.Name())] = "an example setting that task input"
 		}
 	}
 	for name := range writableSpecs() {
@@ -553,8 +574,25 @@ func walkConstructs(msg protoreflect.Message, report func(string)) {
 		report("task." + task.GetName())
 		// The inputs a step actually set are the keys it wrote, which is exactly
 		// what the required set asks about.
-		for input := range task.GetInputs() {
+		def, known := v1.DefaultRegistry().Lookup(task.GetName())
+		for input, value := range task.GetInputs() {
 			report("task." + task.GetName() + "." + input)
+
+			// For an enum-typed input the *value* is the construct, and a
+			// Flowfile writes it as a plain string (`level: warn`) that the task
+			// converts when it runs — so this compares the author's spelling
+			// rather than the schema's, which is what [authorSpelling] normalises
+			// the enum value name to.
+			if !known || def.Inputs == nil {
+				continue
+			}
+			field := def.Inputs.Fields().ByName(protoreflect.Name(input))
+			if field == nil || field.Kind() != protoreflect.EnumKind {
+				continue
+			}
+			if written := strings.ToLower(value.GetLiteral().GetStringValue()); written != "" {
+				report("task." + task.GetName() + "." + input + "." + written)
+			}
 		}
 	}
 
@@ -624,6 +662,20 @@ func reportWritableFields(msg protoreflect.Message, report func(string)) {
 
 		return true
 	})
+}
+
+// authorSpelling is the enum value as a Flowfile writes it: `LEVEL_WARN` on a
+// `Level` enum is `warn`.
+//
+// The charter is a claim about what an *author* can reach, and an author writes
+// `level: warn`, so both halves of the check speak that vocabulary rather than
+// the schema's. A value whose name does not carry its enum's prefix falls back
+// to the lowercased name, which is either right or fails loudly as a construct
+// nothing demonstrates — never a silent pass.
+func authorSpelling(enum protoreflect.EnumDescriptor, value protoreflect.EnumValueDescriptor) string {
+	prefix := strings.ToUpper(string(enum.Name())) + "_"
+
+	return strings.ToLower(strings.TrimPrefix(string(value.Name()), prefix))
 }
 
 // oneofFields lists the fields of one named oneof, in declaration order.
@@ -727,6 +779,11 @@ func TestCharterRequiresWritableConstructs(t *testing.T) {
 		// `retry_on_unknown_outcome:` would never be asked for.
 		"task.http.expect", "task.http.retry_on_unknown_outcome", "task.http.form",
 		"task.log.message",
+
+		// And per enum *value* of a task input, the fourth level: `log.level` is
+		// the only enum-typed input the built-ins have, and a key per input would
+		// stay satisfied by whichever level some example happened to write.
+		"task.log.level.info", "task.log.level.warn", "task.log.level.error",
 	} {
 		_, ok := required[construct]
 		assert.True(t, ok,
