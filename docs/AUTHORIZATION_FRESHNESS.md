@@ -49,12 +49,27 @@ reverse.
 
 ## Public metadata caching
 
-Protected-resource metadata uses a strong digest ETag and
+Protected-resource metadata uses a strong ETag over the served document and
 `Cache-Control: public, max-age=300, must-revalidate`; clients should send
-`If-None-Match`. A `304` saves transfer only. Before authorization, the server still
-compares the session, decision, and credential descriptor identities with current
-authorization state. Metadata responses expose the revision and digest for rolling
-upgrade diagnostics without treating those headers as caller assertions.
+`If-None-Match`, which is matched per RFC 9110 section 13.1.2 — `*`, a
+comma-separated list, and a weak `W/` prefix all compare as that section
+requires. A `304` saves transfer only. Before authorization, the server still
+compares the session, decision, and credential descriptor identities with
+current authorization state.
+
+The **descriptor digest is deliberately not served**. It covers the complete
+effective descriptor, including the trust policy, its claim mappings, its
+tenancy map and its secret boundaries — which is what makes it useful for
+telling fleet members apart, and exactly why it may not be published on a
+route that has no authentication. A hash of private policy on an anonymous
+endpoint is an offline oracle: guess a mapping, hash the candidate, compare,
+at no cost and unobservably. It is available to an operator who is already
+inside, through `ProtectedResource.Digest`, and to telemetry
+(`flowstate.auth.resource_digest`).
+
+`Flowstate-Policy-Revision` is sent only when a deployment actually configures
+a revision. Defaulting it and announcing it made a constant look like a
+measurement.
 
 Operational tests must exercise rolling upgrades and split-brain fleet members,
 metadata rollback, a policy revision changing during an MCP session, issuer
