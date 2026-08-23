@@ -60,6 +60,55 @@ import (
 // refusal lives at the command rather than here because this package is also the
 // registration path for test workers and embedded hosts, and a library that
 // refuses to be constructed is a library that gets worked around.
+//
+// # An activity gains a parameter by appending one, never by gaining a name
+//
+// The other way this interpreter changes is that an activity needs to carry one
+// more fact than it used to. That looks like a versioned change and mostly is
+// not, because of what the determinism check actually reads. For a scheduled
+// activity the SDK compares the activity id and the activity *type name* and
+// nothing else — go.temporal.io/sdk@v1.47.0 internal/internal_task_handlers.go
+// :1660-1663. Input payloads are never compared. So a signature that grows is
+// invisible to replay, and a name that changes is the one edit that is not.
+//
+// Both halves of a rollout have to survive, and they are protected by different
+// things, which is the part worth being exact about:
+//
+//   - **A workflow replaying.** History says the interpreter scheduled `Task`
+//     here; the interpreter running now must produce `Task` here. Nothing in
+//     [Register] affects this — an activity is never executed during a replay,
+//     only named — so continued registration of an old name buys replay exactly
+//     nothing. What protects it is that the name did not change. Where a name
+//     must change, the tools are `workflow.GetVersion` or the deliberate
+//     retirement of a corpus entry; see the package comment in replay_test.go.
+//   - **An activity task already scheduled.** It was written with the payload
+//     count the older interpreter sent, and a worker running current code
+//     decodes it into the current function's parameters. `FromPayloads` walks
+//     the payloads that are present and leaves every parameter past them at its
+//     zero value (converter/composite_data_converter.go:59-80), so an appended
+//     parameter arrives empty rather than failing to decode. *This* is what
+//     continued registration is for, and it is the whole of [TaskWithPrev]'s
+//     job.
+//
+// Two consequences. The appended parameter goes **last**, always: inserted in
+// the middle it would decode the payload meant for its neighbour, which is a
+// silent wrong value rather than a loud absence. And its zero value has to be a
+// legible "not supplied" — `stepID == ""` is, because [v1.StartTaskSpan] omits
+// the attribute rather than exporting a blank one.
+//
+// The precedent is #756, which appended `continueOnError` to both [Task] and
+// [TaskInScope] under their existing names. Every history in the replay corpus
+// was recorded before it, still carries the shorter payload list, and still
+// replays.
+//
+// Worth naming what this avoids, because the alternative looks tidier. A `V2`
+// suffix on the activity name is a determinism break on every run already in
+// flight. On a versioned deployment the pinning above would hide it — the run
+// finishes on the interpreter it started on. On one running with
+// `--allow-unversioned-interpreter` nothing hides it: whatever is deployed
+// executes whatever is in flight, so the next workflow task replays old history
+// through new code, disagrees at the first scheduled task, and wedges the run.
+// Appending is safe on both, so the exposure never has to be priced.
 
 // Register installs the interpreter on a worker.
 //

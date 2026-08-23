@@ -271,6 +271,26 @@ docs leg too. More generally the docs leg fires whenever `cmd/flow` is in the
 affected set, because that command *is* the generator and its real source set
 is its own dependency closure.
 
+The gate finds its own merge-base, which is not a detail — it is the difference
+between a gate that runs and one that does not. A clone made with
+`--single-branch` has no `origin/main` ref; one made with `--depth` has the ref
+and none of the history it shares with the branch under review. The old code
+exited with an error naming the fix, `git fetch origin main`, which is correct
+advice that a CI job or an agent handed a checkout cannot act on: seven pull
+requests in one wave reported exactly that refusal, and all seven were opened
+with nothing verified. `resolveBase` now uses the ref, else fetches the branch,
+else deepens the clone — each step reached only because the one before produced
+no merge-base, so an ordinary checkout pays for one `git merge-base`.
+
+With no network and no remote it runs anyway, treating every tracked file as
+changed. That answer goes through `buildPlan` like any other, which sets
+`moduleWide` and `ciWide` and selects every conditional leg, so the widest plan
+comes out of the one computation rather than a second code path meaning
+"everything". The direction is the point: overrunning the true scope costs time,
+underrunning it passes commits the checks reject, and a gate that refuses to
+start protects nothing at all. Every tier prints which of those happened, so a
+wide run is never mistaken for a diff that touched everything.
+
 This inverts the old default of this section, which told everyone to run the
 full list locally before every push because a CI round trip bought nothing.
 That reasoning predates a six-minute parallel CI and a standing red-to-green

@@ -259,7 +259,8 @@ func newWorkflowServiceClientWithSource(
 	// traceparent, so the server's own interceptor extracts it and its spans are
 	// children of the command somebody typed.
 	//
-	// Off unless the operator pointed OTEL_EXPORTER_OTLP_* somewhere: no
+	// Off unless the operator asked for a signal — an OTEL_EXPORTER_OTLP_*
+	// endpoint or an OTEL_*_EXPORTER selector, per [telemetryConfigured]: no
 	// exporter, no propagator, no headers, and this interceptor goes on
 	// recording into the no-op provider exactly as before.
 	//

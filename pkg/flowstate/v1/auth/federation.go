@@ -134,12 +134,13 @@ type FederationTarget struct {
 
 // TokenExchangeTarget is the file form of [TokenExchangeConfig].
 type TokenExchangeTarget struct {
-	TokenURL           string   `json:"token_url" yaml:"token_url"`
-	Audience           string   `json:"audience" yaml:"audience"`
-	TargetAudience     string   `json:"target_audience,omitempty" yaml:"target_audience,omitempty"`
-	Resource           string   `json:"resource,omitempty" yaml:"resource,omitempty"`
-	Scopes             []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
-	RequestedTokenType string   `json:"requested_token_type,omitempty" yaml:"requested_token_type,omitempty"`
+	TokenURL              string        `json:"token_url" yaml:"token_url"`
+	Audience              string        `json:"audience" yaml:"audience"`
+	TargetAudience        string        `json:"target_audience,omitempty" yaml:"target_audience,omitempty"`
+	Resource              string        `json:"resource,omitempty" yaml:"resource,omitempty"`
+	Scopes                []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	RequestedTokenType    string        `json:"requested_token_type,omitempty" yaml:"requested_token_type,omitempty"`
+	MaxCredentialLifetime time.Duration `json:"max_credential_lifetime,omitempty" yaml:"max_credential_lifetime,omitempty"`
 }
 
 // AWSTarget is the file form of [AWSConfig].
@@ -167,10 +168,11 @@ type GCPTarget struct {
 // ClientCredentialsTarget is the file form of [ClientCredentialsConfig]. It has no
 // client secret field by design; see [FederationPolicy].
 type ClientCredentialsTarget struct {
-	TokenURL string   `json:"token_url" yaml:"token_url"`
-	ClientID string   `json:"client_id" yaml:"client_id"`
-	Audience string   `json:"audience,omitempty" yaml:"audience,omitempty"`
-	Scopes   []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	TokenURL              string        `json:"token_url" yaml:"token_url"`
+	ClientID              string        `json:"client_id" yaml:"client_id"`
+	Audience              string        `json:"audience,omitempty" yaml:"audience,omitempty"`
+	Scopes                []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	MaxCredentialLifetime time.Duration `json:"max_credential_lifetime,omitempty" yaml:"max_credential_lifetime,omitempty"`
 }
 
 // AssertionTarget is the file form of [AssertionConfig]. It carries only an
@@ -381,15 +383,16 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 		switch {
 		case target.TokenExchange != nil:
 			exchanger, err = NewTokenExchanger(TokenExchangeConfig{
-				Name:               target.Name,
-				TokenURL:           target.TokenExchange.TokenURL,
-				Audience:           target.TokenExchange.Audience,
-				TargetAudience:     target.TokenExchange.TargetAudience,
-				Resource:           target.TokenExchange.Resource,
-				Scopes:             target.TokenExchange.Scopes,
-				RequestedTokenType: target.TokenExchange.RequestedTokenType,
-				HTTPClient:         cfg.client,
-				Clock:              cfg.clock,
+				Name:                  target.Name,
+				TokenURL:              target.TokenExchange.TokenURL,
+				Audience:              target.TokenExchange.Audience,
+				TargetAudience:        target.TokenExchange.TargetAudience,
+				Resource:              target.TokenExchange.Resource,
+				Scopes:                target.TokenExchange.Scopes,
+				RequestedTokenType:    target.TokenExchange.RequestedTokenType,
+				MaxCredentialLifetime: target.TokenExchange.MaxCredentialLifetime,
+				HTTPClient:            cfg.client,
+				Clock:                 cfg.clock,
 			})
 		case target.AWS != nil:
 			exchanger, err = NewAWSExchanger(AWSConfig{
@@ -419,13 +422,14 @@ func (p FederationPolicy) exchangers(cfg federationConfig) (map[string]Exchanger
 			})
 		case target.ClientCredentials != nil:
 			exchanger, err = NewClientCredentialsExchanger(ClientCredentialsConfig{
-				Name:       target.Name,
-				TokenURL:   target.ClientCredentials.TokenURL,
-				ClientID:   target.ClientCredentials.ClientID,
-				Audience:   target.ClientCredentials.Audience,
-				Scopes:     target.ClientCredentials.Scopes,
-				HTTPClient: cfg.client,
-				Clock:      cfg.clock,
+				Name:                  target.Name,
+				TokenURL:              target.ClientCredentials.TokenURL,
+				ClientID:              target.ClientCredentials.ClientID,
+				Audience:              target.ClientCredentials.Audience,
+				Scopes:                target.ClientCredentials.Scopes,
+				MaxCredentialLifetime: target.ClientCredentials.MaxCredentialLifetime,
+				HTTPClient:            cfg.client,
+				Clock:                 cfg.clock,
 			})
 		case target.Assertion != nil:
 			// No HTTP client and no clock: this exchanger reaches nothing and

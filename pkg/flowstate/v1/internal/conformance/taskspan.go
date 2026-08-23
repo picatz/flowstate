@@ -32,25 +32,47 @@ import (
 // same workflow.
 //
 // The durable driver has spans this one cannot: Temporal's own workflow and
-// activity spans, when its tracing interceptor is installed, and
-// [v1.SpanAttributeAttempt], which the substrate owns. Those are *extra*, and
-// the assertion is written to permit them — everything outside the `flowstate.`
-// namespace is ignored entirely, and a driver-only attribute key is permitted
-// as long as it is one of the shared vocabulary's.
+// activity spans, when its tracing interceptor is installed. Those are *extra*,
+// and the assertion is written to permit them — everything outside the
+// `flowstate.` namespace is ignored entirely, and a driver-only attribute key is
+// permitted as long as it is one of the shared vocabulary's.
 //
-// # The one asymmetry this case records rather than asserts away
+// # The asymmetry this case used to record, and what closed it
 //
-// [v1.SpanAttributeStepID] is written by the local driver for every task step,
-// and by the durable driver only for the two activity entry points that receive
-// a step id — `TaskAuthorized` and `TaskInScopeAuthorized`, the arms
-// `executor.dispatch` selects for a task needing authority. The other two
-// activities (`Task`, `TaskInScope`) have no parameter to carry it, and giving
-// them one changes a registered activity's signature, which is a versioned
-// change rather than a tracing one. It is a plumbing gap in the durable
-// driver, not a difference of meaning, and it is left as a named follow-up on
-// #523 rather than silently mirrored by making the local driver omit an id it
-// knows. Absence beats fabrication; so does not throwing away a fact to make a
-// test symmetrical.
+// Two of the five attributes were one-sided, and the comment that stood here
+// described why rather than fixing it. [v1.SpanAttributeStepID] was written by
+// the local driver for every step and by the durable driver only for the two
+// activity entry points that already received a step id — `TaskAuthorized` and
+// `TaskInScopeAuthorized`, the arms `executor.dispatch` selects for a task
+// needing authority. `Task` and `TaskInScope` had no parameter to carry one.
+// [v1.SpanAttributeAttempt] was one-sided the other way: durable only, from
+// `activity.GetInfo`.
+//
+// Neither was a difference of meaning, and both are now closed, by different
+// moves that are worth keeping apart.
+//
+// The step id was plumbing, and the plumbing was avoided because giving a
+// registered activity another parameter looked like a versioned change. It is
+// not one, as long as the parameter is appended and the activity keeps its
+// name: replay compares the activity *type name*, never the inputs, and a
+// payload list shorter than the parameter list decodes the remainder to zero
+// values. `Task` and `TaskInScope` therefore take a trailing `stepID` under
+// their existing names, exactly as #756 gave them a trailing `continueOnError`,
+// and the replay corpus — every entry of which predates both — still replays.
+// engine/versioning.go carries the rule and the reasoning.
+//
+// The attempt was a judgement, and the judgement was reversed. It was withheld
+// from the local driver on the grounds that the substrate owns the number and
+// an in-process counter is not the same fact. But a local run is the process:
+// there is no crash for its counter to misreport across, so the number is a
+// true answer to what the key asks. Withholding it made the rehearsal quieter
+// than the thing it rehearses. [v1.StartTaskSpan]'s doc has the full argument
+// and the one thing the old reasoning was right about.
+//
+// So the assertion below requires both, on every task-attempt span, from both
+// drivers — which is the only form in which either fix stays fixed. An
+// assertion that merely permits an attribute cannot tell a driver that stopped
+// writing it from one that never did.
 
 // TaskSpanSecret is the value this case hides in a task input, distinctive
 // enough that a substring search cannot match it by accident.
@@ -191,7 +213,7 @@ func AssertTaskSpans(tb testing.TB, recorder *tracetest.SpanRecorder, outputs *v
 	// %v family over the whole batch, each span, and a struct holding one —
 	// which is the shape CLAUDE.md names, because `fmt` reaching a value through
 	// an unexported field prints the fields instead of calling any accessor.
-	for _, rendered := range renderedSpans(recorder) {
+	for _, rendered := range RenderedSpans(recorder) {
 		if strings.Contains(rendered, TaskSpanSecret) {
 			tb.Fatalf("an input value reached a span, which is exported to a collector")
 		}
@@ -227,6 +249,8 @@ func assertTaskSpanAttributes(tb testing.TB, recorder *tracetest.SpanRecorder) {
 		}
 
 		named := false
+		stepped := false
+		attempted := false
 		for _, attr := range stub.Attributes {
 			if _, ok := allowed[string(attr.Key)]; !ok {
 				tb.Fatalf("%s carries %q, which is not in the vocabulary both drivers share; add it to pkg/flowstate/v1/taskspan.go so the other driver spells it the same way",
@@ -238,10 +262,20 @@ func assertTaskSpanAttributes(tb testing.TB, recorder *tracetest.SpanRecorder) {
 					tb.Fatalf("%s names task %q in its attributes", stub.Name, attr.Value.AsString())
 				}
 			}
+			if string(attr.Key) == v1.SpanAttributeStepID && attr.Value.AsString() != "" {
+				stepped = true
+			}
+			if string(attr.Key) == v1.SpanAttributeAttempt && attr.Value.AsInt64() > 0 {
+				attempted = true
+			}
 		}
 		if !named {
 			tb.Fatalf("%s carries no %s, so nothing but the span's own name says what ran",
 				stub.Name, v1.SpanAttributeTaskName)
+		}
+		if !stepped || !attempted {
+			tb.Fatalf("%s must carry a non-empty %s and positive %s on every attempt", stub.Name,
+				v1.SpanAttributeStepID, v1.SpanAttributeAttempt)
 		}
 	}
 }
