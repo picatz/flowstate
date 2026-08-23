@@ -9,7 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -100,17 +102,64 @@ type messageWritableSpec struct {
 	exclude map[string]string
 }
 
-func writableSpecFor(name protoreflect.FullName) (messageWritableSpec, bool) {
-	switch name {
-	case (&v1.Node{}).ProtoReflect().Descriptor().FullName():
-		return messageWritableSpec{prefix: "node", exclude: nodeFieldExclusions}, true
-	case (&v1.StepPolicy{}).ProtoReflect().Descriptor().FullName():
-		return messageWritableSpec{prefix: "policy", exclude: policyFieldExclusions}, true
-	case (&v1.Workflow{}).ProtoReflect().Descriptor().FullName():
-		return messageWritableSpec{prefix: "workflow", exclude: workflowFieldExclusions}, true
+// blockFieldExclusions are the fields of the block-node messages that are
+// structural rather than capabilities an example demonstrates. A block's own
+// `steps:` is the block, not a construct inside it, and the node-kind construct
+// covering it is already required by the oneof pass.
+var blockFieldExclusions = map[string]string{
+	"steps":    "the body of a block node; the block itself is the construct, required through the kind oneof",
+	"branches": "the same, for `parallel:`",
+	"cases":    "the same, for `switch:`; an arm's own coverage is measured per-arm by `flow test`",
+}
+
+// writableSpecs are the messages whose author-written fields the charter
+// requires an example for, keyed by message name.
+//
+// Everything an author fills in that is *not* selected by a oneof lives here.
+// Codex's review of #901 (r3837028388) asked for exactly this generalization and
+// the follow-up asked it to reach past the first three: a construct like a
+// loop's `until:`, a `for_each`'s `max_parallel:`, or a retry's `max_interval:`
+// is as author-facing as `if:` is, and deriving from `Node`, `StepPolicy` and
+// `Workflow` alone left every one of them outside the check.
+//
+// The rule for adding one: a message belongs here when a Flowfile author types
+// its fields. A message the *engine* fills in (a run's outputs, a resolved
+// plugin) does not, and neither does a pure container whose leaves are already
+// covered — `Compensation` holds one `task`, and the task is what an example
+// shows.
+func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
+	spec := func(m proto.Message, prefix string, exclude map[string]string) (protoreflect.FullName, messageWritableSpec) {
+		return m.ProtoReflect().Descriptor().FullName(), messageWritableSpec{prefix: prefix, exclude: exclude}
 	}
 
-	return messageWritableSpec{}, false
+	specs := map[protoreflect.FullName]messageWritableSpec{}
+	for _, entry := range []struct {
+		msg     proto.Message
+		prefix  string
+		exclude map[string]string
+	}{
+		{&v1.Node{}, "node", nodeFieldExclusions},
+		{&v1.StepPolicy{}, "policy", policyFieldExclusions},
+		{&v1.Workflow{}, "workflow", workflowFieldExclusions},
+		{&v1.Wait{}, "wait", nil},
+		{&v1.ForEach{}, "for_each", blockFieldExclusions},
+		{&v1.Loop{}, "loop", blockFieldExclusions},
+		{&v1.Parallel{}, "parallel", blockFieldExclusions},
+		{&v1.Switch{}, "switch", blockFieldExclusions},
+		{&v1.Call{}, "call", nil},
+		{&v1.RetryPolicy{}, "retry", nil},
+	} {
+		name, s := spec(entry.msg, entry.prefix, entry.exclude)
+		specs[name] = s
+	}
+
+	return specs
+}
+
+func writableSpecFor(name protoreflect.FullName) (messageWritableSpec, bool) {
+	spec, ok := writableSpecs()[name]
+
+	return spec, ok
 }
 
 // writableRequired adds every non-excluded, non-oneof field of one message to
@@ -196,9 +245,13 @@ func TestEveryLanguageConstructHasAnExample(t *testing.T) {
 		}
 		required["task."+task] = "a step naming that task"
 	}
-	writableRequired(required, (&v1.Node{}).ProtoReflect().Descriptor())
-	writableRequired(required, (&v1.StepPolicy{}).ProtoReflect().Descriptor())
-	writableRequired(required, (&v1.Workflow{}).ProtoReflect().Descriptor())
+	for name := range writableSpecs() {
+		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
+		require.NoError(t, err, "%s is not in the global registry", name)
+		msg, ok := desc.(protoreflect.MessageDescriptor)
+		require.True(t, ok, "%s is not a message", name)
+		writableRequired(required, msg)
+	}
 	require.NotEmpty(t, required)
 
 	missing := make([]string, 0, len(required))
@@ -399,15 +452,43 @@ func TestCharterRequiresWritableConstructs(t *testing.T) {
 	t.Parallel()
 
 	required := map[string]string{}
-	writableRequired(required, (&v1.Node{}).ProtoReflect().Descriptor())
-	writableRequired(required, (&v1.StepPolicy{}).ProtoReflect().Descriptor())
-	writableRequired(required, (&v1.Workflow{}).ProtoReflect().Descriptor())
+	for name := range writableSpecs() {
+		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
+		require.NoError(t, err, "%s is not in the global registry", name)
+		msg, ok := desc.(protoreflect.MessageDescriptor)
+		require.True(t, ok, "%s is not a message", name)
+		writableRequired(required, msg)
+	}
 
+	for name := range writableSpecs() {
+		desc, err := protoregistry.GlobalFiles.FindDescriptorByName(name)
+		require.NoError(t, err)
+		msg, ok := desc.(protoreflect.MessageDescriptor)
+		require.True(t, ok)
+		writableRequired(required, msg)
+	}
+
+	// Named one by one rather than counted, because a count passes while
+	// describing the wrong set. The second group is what the generalization past
+	// Node/StepPolicy/Workflow buys: a loop's stop condition and its carried
+	// state, a fan-out's bound, a retry's shape, a wait's deadline. Deriving from
+	// three messages left every one of them unchecked.
 	for _, construct := range []string{
 		"node.condition", "node.async", "node.undo", "node.vars",
 		"policy.timeout", "policy.retry",
 		"workflow.declared_inputs", "workflow.declared_outputs",
 		"workflow.triggers", "workflow.signals", "workflow.vars",
+
+		// Named by their *schema* field, which is not always the YAML key an
+		// author types: `attempts:` is `max_attempts`, `backoff:` is
+		// `backoff_coefficient`, and a `call:`'s `with:` is `arguments`. The
+		// charter keys off the descriptor, so this list has to as well — and
+		// getting three of them wrong the first time is exactly why they are
+		// pinned here rather than assumed.
+		"loop.until", "loop.max_iterations", "loop.state", "loop.update",
+		"for_each.max_parallel", "for_each.items",
+		"retry.max_attempts", "retry.max_interval", "retry.backoff_coefficient",
+		"wait.timeout", "call.arguments",
 	} {
 		_, ok := required[construct]
 		assert.True(t, ok,
