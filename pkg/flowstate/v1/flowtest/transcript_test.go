@@ -413,6 +413,142 @@ tests:
 	assert.Contains(t, text, "[redacted]")
 }
 
+// TestTranscriptDoesNotMistakeAnOutputNamedCaseForASwitch pins round five's
+// first half on #1052: "took case ..." is said only where the compiled
+// workflow declares a `switch:`, never inferred from an output's name — an
+// ordinary task may call an output `case`, and the old inference rendered it
+// as a decision and suppressed its other outputs.
+func TestTranscriptDoesNotMistakeAnOutputNamedCaseForASwitch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: task-named-case
+steps:
+  - id: lookup
+    log:
+      message: looking
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: an ordinary output happens to be called case
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns:
+          case: high
+          other: kept
+    expect:
+      ran: [lookup]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.NotContains(t, text, "took case")
+	assert.Contains(t, text, `case: "high", other: "kept"`,
+		"an ordinary step's outputs render whole, whatever their names")
+}
+
+// TestTranscriptDoesNotInventADefaultArm: a no-default switch that matched
+// nothing ran nothing, and the account must not claim a default body that
+// does not exist took it.
+func TestTranscriptDoesNotInventADefaultArm(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: no-default
+inputs:
+  kind:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.kind}
+      cases:
+        - case: a
+          steps: []
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: nothing matches and there is no default
+    workflow: ./workflow.yaml
+    inputs:
+      kind: z
+    expect:
+      ran: [route]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.NotContains(t, text, "took default")
+	assert.Contains(t, text, "matched no case (and there is no default:)")
+}
+
+// TestTranscriptKeepsTheArmOnAFailedSwitchBody pins round five's second
+// half: a failed switch body's record deliberately preserves the matched
+// case, and the account shows it beside the failure — the decision is most
+// worth reading exactly when the branch it chose is what failed.
+func TestTranscriptKeepsTheArmOnAFailedSwitchBody(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: fragile-route
+inputs:
+  kind:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.kind}
+      cases:
+        - case: high
+          steps:
+            - id: ship
+              log:
+                message: shipping
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the taken body fails
+    workflow: ./workflow.yaml
+    inputs:
+      kind: high
+    stubs:
+      - task: log
+        fails:
+          message: refused upstream
+    expect:
+      failed: true
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.Contains(t, text, `(took case "high")`,
+		"the failed switch line must carry the arm its record preserves")
+}
+
 // TestTranscriptRedactsASensitiveStructsKeys pins round four's P1 on #1052,
 // fixed in the one shared walk ([sensitiveNativeValues]) so the stub
 // diagnostics gain it too: a `sensitive: true` struct may carry its material

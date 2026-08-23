@@ -118,10 +118,55 @@ type runRecorder struct {
 	// from the same declarations, so what `flow test` refuses to print in one
 	// place it refuses to print everywhere.
 	sensitive sensitiveInputs
+
+	// switches records, per step id, that the compiled workflow declares a
+	// `switch:` there and whether it has a `default:` — carried from the spec
+	// rather than inferred from a `case` output's presence (Codex, #1052):
+	// an ordinary task may name an output `case`, and a null record means
+	// "the default ran" only where a default exists. Two isolated bodies may
+	// legally declare switches under one id; when their shapes disagree the
+	// entry is ambiguous and the renderer falls back to plain outputs rather
+	// than guessing.
+	switches map[string]switchFact
+}
+
+// switchFact is what the renderer may honestly say about one switch step id.
+type switchFact struct {
+	hasDefault bool
+	ambiguous  bool
 }
 
 func newRunRecorder(clock *v1.VirtualClock) *runRecorder {
-	return &runRecorder{clock: clock}
+	return &runRecorder{clock: clock, switches: map[string]switchFact{}}
+}
+
+// noteSwitches records every `switch:` step the compiled workflow declares,
+// at any depth this driver's transcript can name — parallel branches, switch
+// bodies, loop bodies — and never inside a `call:`, whose steps belong to the
+// callee's own file. Called once per case, with the same spec every other
+// account is measured against.
+func (r *runRecorder) noteSwitches(nodes []*v1.Node) {
+	for _, node := range nodes {
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Switch:
+			fact := switchFact{hasDefault: kind.Switch.GetDefault() != nil}
+			if existing, seen := r.switches[node.GetId()]; seen && existing != fact {
+				fact.ambiguous = true
+			}
+			r.switches[node.GetId()] = fact
+			for _, body := range v1.SwitchBodies(kind.Switch) {
+				r.noteSwitches(body)
+			}
+		case *v1.Node_Parallel:
+			for _, branch := range kind.Parallel.GetBranches() {
+				r.noteSwitches(branch.GetSteps())
+			}
+		case *v1.Node_ForEach:
+			r.noteSwitches(kind.ForEach.GetBody())
+		case *v1.Node_Loop:
+			r.noteSwitches(kind.Loop.GetBody())
+		}
+	}
 }
 
 // record appends one event under the bound; the timestamp is read here, once,
@@ -208,6 +253,7 @@ func (r *runRecorder) render() []TranscriptLine {
 	r.mu.Lock()
 	events, truncated := r.events, r.truncated
 	sensitive := r.sensitive
+	switches := r.switches
 	r.mu.Unlock()
 
 	if len(events) == 0 {
@@ -245,7 +291,7 @@ func (r *runRecorder) render() []TranscriptLine {
 			delete(pendingStub, e.step)
 
 		case eventStepFinished:
-			text, tone := stepOutcomeText(e, sensitive)
+			text, tone := stepOutcomeText(e, sensitive, switches)
 			if stub, ok := pendingStub[e.step]; ok {
 				delete(pendingStub, e.step)
 				text += "  " + stubIdentity(stub)
@@ -318,9 +364,19 @@ func stubIdentity(e transcriptEvent) string {
 }
 
 // stepOutcomeText renders what a finished step's line says after its name.
-func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs) (string, TranscriptTone) {
+func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs, switches map[string]switchFact) (string, TranscriptTone) {
+	fact, isSwitch := switches[e.step]
+	isSwitch = isSwitch && !fact.ambiguous
+
 	if e.failure != "" {
 		text := redactSensitiveSubstrings(e.failure, sensitive.substrings)
+		// A failed switch body's record deliberately preserves the arm that
+		// was taken ([v1.StepFailureRecord]), and the decision is most worth
+		// showing exactly when the branch it chose is what failed (Codex,
+		// #1052).
+		if arm, took := takenSwitchArm(e, sensitive, isSwitch, fact); took {
+			text += "  (" + arm + ")"
+		}
 		if e.tolerated {
 			return "failed (tolerated by continue_on_error): " + text, ToneWarning
 		}
@@ -334,14 +390,13 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs) (string, Tran
 
 	// A switch's record reads as the decision it is, not as two opaque
 	// outputs: the arm that took the observed value, in the words an author
-	// asserts on (`steps.<id>.case`).
-	if caseValue, isSwitch := named[v1.SwitchCaseOutput]; isSwitch {
-		took, err := literalToGo(caseValue.GetLiteral())
-		switch {
-		case err == nil && took == nil:
-			return "took default (no case matched)", ToneInfo
-		case err == nil:
-			return "took " + fmt.Sprintf("case %s", redactedScalarText(took, sensitive)), ToneInfo
+	// asserts on (`steps.<id>.case`). Only for a step the compiled workflow
+	// really declares a `switch:` at — an ordinary task may name an output
+	// `case`, and inferring from the name alone rendered it as a decision it
+	// never made (Codex, #1052).
+	if isSwitch {
+		if arm, took := takenSwitchArm(e, sensitive, isSwitch, fact); took {
+			return arm, ToneInfo
 		}
 	}
 
@@ -365,6 +420,32 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs) (string, Tran
 		parts = append(parts, name+": "+redactedValueText(named[name], sensitive))
 	}
 	return "-> " + capRunes(redactSensitiveSubstrings(strings.Join(parts, ", "), sensitive.substrings), 120), ToneInfo
+}
+
+// takenSwitchArm renders the decision a known switch step's record carries,
+// or reports that the record carries none. A null `case` means "no case
+// matched", which took the `default:` only where the workflow declares one —
+// a no-default switch that matched nothing ran nothing, and saying "took
+// default" about it would be a body that never existed (Codex, #1052).
+func takenSwitchArm(e transcriptEvent, sensitive sensitiveInputs, isSwitch bool, fact switchFact) (string, bool) {
+	if !isSwitch {
+		return "", false
+	}
+	caseValue, recorded := e.outputs.GetNamedValues()[v1.SwitchCaseOutput]
+	if !recorded {
+		return "", false
+	}
+	took, err := literalToGo(caseValue.GetLiteral())
+	switch {
+	case err != nil:
+		return "", false
+	case took == nil && fact.hasDefault:
+		return "took default (no case matched)", true
+	case took == nil:
+		return "matched no case (and there is no default:)", true
+	default:
+		return "took " + fmt.Sprintf("case %s", redactedScalarText(took, sensitive)), true
+	}
 }
 
 // redactedValueText renders one recorded output value through the same

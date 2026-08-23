@@ -539,6 +539,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	recorder = newRunRecorder(clock)
 	ctx = v1.NewContextWithRunObserver(ctx, recorder)
 	ctx = contextWithRunRecorder(ctx, recorder)
+	// What the transcript may honestly call a switch decision — from the
+	// spec, never inferred from an output's name. See [runRecorder.noteSwitches].
+	recorder.noteSwitches(workflow.GetSteps())
 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
