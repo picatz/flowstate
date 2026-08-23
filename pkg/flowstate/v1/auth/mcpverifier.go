@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -128,8 +129,21 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 		return &mcpauth.TokenInfo{
 			Expiration: principal.ExpiresAt,
 			UserID:     MCPSessionUserID(principal),
+			Extra:      map[string]any{mcpPrincipalKey: principal},
 		}, nil
 	}
+}
+
+const mcpPrincipalKey = "flowstate.auth.principal"
+
+// MCPPrincipal returns the verified Principal carried by MCPTokenVerifier.
+// It never reads or exposes the bearer token.
+func MCPPrincipal(info *mcpauth.TokenInfo) (Principal, bool) {
+	if info == nil || info.Extra == nil {
+		return Principal{}, false
+	}
+	p, ok := info.Extra[mcpPrincipalKey].(Principal)
+	return p, ok && !p.IsZero()
 }
 
 // MCPSessionUserID is the value [MCPTokenVerifier] puts in
@@ -165,7 +179,20 @@ func MCPTokenVerifier(v Verifier, resource string) mcpauth.TokenVerifier {
 // never parsed, so nothing is lost by it being unreadable.
 func MCPSessionUserID(p Principal) string {
 	sum := sha256.New()
-	fmt.Fprintf(sum, "%d:%s%d:%s", len(p.Issuer), p.Issuer, len(p.Subject), p.Subject)
+	binding := struct {
+		Issuer, Subject, Namespace, Role, CertificateThumbprint string
+		Audience                                                []string
+		Claims                                                  map[string]any
+	}{p.Issuer, p.Subject, p.Namespace, p.Role, p.CertificateThumbprint, p.Audience, p.Claims}
+	encoded, err := json.Marshal(binding)
+	if err != nil {
+		// Verified token claims are JSON values. A custom verifier returning
+		// something else gets a distinct fail-closed binding, never a weaker
+		// issuer-and-subject-only one.
+		fmt.Fprintf(sum, "invalid:%T:%v", p.Claims, err)
+	} else {
+		sum.Write(encoded)
+	}
 
 	return hex.EncodeToString(sum.Sum(nil))
 }

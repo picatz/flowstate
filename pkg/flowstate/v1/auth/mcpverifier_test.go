@@ -82,14 +82,16 @@ func TestMCPTokenVerifierAdmitsAToken(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, info)
-	require.Equal(t, auth.MCPSessionUserID(auth.Principal{Issuer: issuer.URL(), Subject: "agent"}), info.UserID,
+	principal, ok := auth.MCPPrincipal(info)
+	require.True(t, ok)
+	require.Equal(t, auth.MCPSessionUserID(principal), info.UserID,
 		"UserID is what the SDK pins a session to, and it must be derived from the verified principal")
 	require.False(t, info.Expiration.IsZero(),
 		"the middleware refuses a TokenInfo with no expiration unless AllowMissingExpiration is set")
 	require.Empty(t, info.Scopes,
 		"#567's D1 is deferred by omission: this surface names no scope anywhere")
-	require.Empty(t, info.Extra,
-		"a verified claims map has no reader on this surface, and carrying it is a way for token contents to reach a log")
+	require.Equal(t, "agent", principal.Subject)
+	require.Equal(t, mcpResource, principal.Audience[0])
 }
 
 // TestMCPTokenVerifierRefusesAWrongAudienceToken is the audience check every
