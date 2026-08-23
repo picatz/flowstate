@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// TelemetryPolicy is the serializable, operator-owned policy applied before
+// Flowstate writes attributes to any telemetry or audit destination.
+message TelemetryPolicy {
+  repeated TelemetrySignalPolicy signals = 1 [(buf.validate.field).repeated = {
+    max_items: 4
+  }];
+
+  // Keys that can contain credentials or personal data. This deny set wins
+  // over every signal allowlist and every CEL allow expression.
+  repeated string redacted_keys = 2 [(buf.validate.field).repeated = {
+    max_items: 128
+    items: {string: {min_len: 1, max_len: 128}}
+  }];
+}
+
+enum TelemetrySignalKind {
+  TELEMETRY_SIGNAL_KIND_UNSPECIFIED = 0;
+  TELEMETRY_SIGNAL_KIND_LOG = 1;
+  TELEMETRY_SIGNAL_KIND_SPAN = 2;
+  TELEMETRY_SIGNAL_KIND_EXECUTION_EVENT = 3;
+  TELEMETRY_SIGNAL_KIND_AUDIT_RECORD = 4;
+}
+
+// TelemetrySignalPolicy controls one destination independently. CEL rules run
+// once per candidate field with `signal`, `key`, `value`, and the read-only
+// string map `attributes` in scope. Rules must return bool. A field must pass
+// the static allowlist and every allow expression; any redaction expression
+// drops it. Evaluation errors and cost exhaustion drop the field.
+message TelemetrySignalPolicy {
+  TelemetrySignalKind kind = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  repeated string allowed_keys = 2 [(buf.validate.field).repeated = {
+    max_items: 256
+    items: {string: {min_len: 1, max_len: 128}}
+  }];
+  uint32 max_value_bytes = 3 [(buf.validate.field).uint32 = {gte: 32, lte: 65536}];
+  repeated string allow_if = 4 [(buf.validate.field).repeated = {
+    max_items: 32
+    items: {string: {min_len: 1, max_len: 2048}}
+  }];
+  repeated string redact_if = 5 [(buf.validate.field).repeated = {
+    max_items: 32
+    items: {string: {min_len: 1, max_len: 2048}}
+  }];
+  uint64 rule_cost_limit = 6 [(buf.validate.field).uint64 = {lte: 1000000}];
+}
