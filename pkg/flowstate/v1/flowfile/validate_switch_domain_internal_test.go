@@ -3,6 +3,7 @@ package flowfile
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -849,4 +850,155 @@ func domainScope(wf *v1.Workflow) refScope {
 		recordStepInScope(scope, node)
 	}
 	return scope
+}
+
+// The rest of this file covers #674: a discriminant decomposed into its own
+// `value:` step used to open the domain unconditionally, because the walk had
+// no case for a leaf that is itself a `steps.<id>.<name>` select rather than a
+// literal. [resolveStepOutputExpr] and the recursive case it adds to
+// [totalStringLeaves] are what follow that leaf, bounded by
+// [maxSwitchDomainDepth].
+
+// TestExpenseApprovalDomainIsInferable is the real-world case the issue was
+// filed over: `examples/expense-approval`'s `outcome` step names its domain
+// through `steps.escalation_outcome.value`, a nested `value:` step, rather
+// than inline. The positive direction, over the shipped file rather than a
+// synthetic fixture — the same discipline TestApprovalGateDomainIsInferable
+// and TestOptionalDispatchDomainIsInferable already hold their tiers to.
+func TestExpenseApprovalDomainIsInferable(t *testing.T) {
+	t.Parallel()
+
+	wf, sw := loadExampleSwitch(t, "expense-approval", "settle")
+
+	domain, known := switchDomain(sw.GetValue(), domainScope(wf))
+	require.True(t, known,
+		"examples/expense-approval's discriminant no longer has an inferable domain\n"+
+			"  `outcome` must stay conditionals over string literals, or over a leaf naming\n"+
+			"  another value: step's output, all the way down")
+	assert.Equal(t, []string{"denied_no_response", "approved_after_escalation", "denied", "approved_by_manager"}, domain,
+		"the domain in the order outcome's own ternary reads, following the escalation_outcome and direct_outcome hops")
+}
+
+// TestExpenseApprovalRefusesACaseItCannotProduce is the cost of the domain
+// above being known, reproduced against the shipped fixture exactly the way
+// #674 reported the regression: before the fix this typo drew nothing.
+func TestExpenseApprovalRefusesACaseItCannotProduce(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join(repoRoot(), "examples", "expense-approval", "workflow.yaml"))
+	require.NoError(t, err)
+
+	require.Contains(t, string(data), "case: approved_by_manager",
+		"the fixture substitution below found nothing, so this test would assert against the file unmodified")
+	typo := strings.Replace(string(data), "case: approved_by_manager", "case: approved_by_managr", 1)
+
+	ds, err := ValidateSource([]byte(typo))
+	require.NoError(t, err)
+
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.Contains(t, text, `case "approved_by_managr" is not a value`)
+	assert.Contains(t, text, `did you mean "approved_by_manager"?`)
+}
+
+// chainedValueSteps builds a workflow with n `value:` steps in a chain — v0
+// holds the closed-domain literal ternary, and v1..v(n-1) each read the
+// previous one bare (`value: ${steps.v<k-1>.value}`) — plus a `decision`
+// switch dispatching on the last step in the chain. It is the generalized
+// shape of the issue's own example: not one decomposition hop but an
+// arbitrary number, which is what the depth-bound tests below need.
+func chainedValueSteps(n int) (src string, lastID string) {
+	var b strings.Builder
+	b.WriteString("edition: v2026.3\nname: t\nsteps:\n")
+	b.WriteString("  - id: v0\n    value: >-\n      ${true ? \"a\" : \"b\"}\n")
+	for i := 1; i < n; i++ {
+		b.WriteString("  - id: v" + strconv.Itoa(i) + "\n    value: ${steps.v" + strconv.Itoa(i-1) + ".value}\n")
+	}
+	lastID = "v" + strconv.Itoa(n-1)
+	b.WriteString("  - id: decision\n    switch:\n      value: ${steps." + lastID + ".value}\n      cases:\n        - case: a\n          steps: []\n")
+	return b.String(), lastID
+}
+
+// TestDecomposedDiscriminantDomainIsInferable is the generic form of the
+// issue's own before/after: a discriminant read through a chain of `value:`
+// steps, none of which is itself a conditional over string literals at the
+// point the switch names — only the step at the bottom of the chain is. Each
+// hop count from one (the issue's own example, one step of indirection) up to
+// [maxSwitchDomainDepth] (the bound's edge) must still resolve.
+func TestDecomposedDiscriminantDomainIsInferable(t *testing.T) {
+	t.Parallel()
+
+	for hops := 1; hops <= maxSwitchDomainDepth; hops++ {
+		hops := hops
+		t.Run(strconv.Itoa(hops)+"_hops", func(t *testing.T) {
+			t.Parallel()
+
+			src, _ := chainedValueSteps(hops + 1) // hops+1 steps: v0 literal, v1..v(hops) each one hop
+			wf, err := Unmarshal([]byte(src))
+			require.NoError(t, err)
+
+			decision := nodeWithID("decision", wf)
+			require.NotNil(t, decision)
+
+			domain, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
+			assert.True(t, known, "%d hops is within maxSwitchDomainDepth (%d); the chain should still resolve", hops, maxSwitchDomainDepth)
+			assert.Equal(t, []string{"a", "b"}, domain)
+		})
+	}
+}
+
+// TestDecomposedDiscriminantBeyondTheDepthBoundOpensTheDomain is the other
+// edge: a chain one hop past [maxSwitchDomainDepth] opens the domain rather
+// than resolving it or recursing without limit. Silent, per the rule this
+// whole feature exists to keep — see [maxSwitchDomainDepth]'s doc comment for
+// why a bound exists here at all even though the document's own step
+// ordering already makes the walk terminate.
+func TestDecomposedDiscriminantBeyondTheDepthBoundOpensTheDomain(t *testing.T) {
+	t.Parallel()
+
+	src, _ := chainedValueSteps(maxSwitchDomainDepth + 2)
+	wf, err := Unmarshal([]byte(src))
+	require.NoError(t, err)
+
+	decision := nodeWithID("decision", wf)
+	require.NotNil(t, decision)
+
+	_, known := switchDomain(decision.GetSwitch().GetValue(), domainScope(wf))
+	assert.False(t, known, "a chain one hop past maxSwitchDomainDepth must open the domain rather than resolve or hang")
+
+	// And the cost, stated the way every other negative fixture in this file
+	// states it: the same file validates clean even with a case the closed
+	// end of the chain could never produce.
+	typo := strings.Replace(src, "case: a", "case: c", 1)
+	ds, err := ValidateSource([]byte(typo))
+	require.NoError(t, err)
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.NotContains(t, text, "is not a value",
+		"an open domain past the bound is deliberately silent, same as any other open domain: %v", ds)
+}
+
+// TestChainedDiscriminantRefusesACaseItCannotProduce is
+// TestDecomposedDiscriminantDomainIsInferable's cost-of-being-known pairing:
+// a chain within the bound still catches a misspelled case, not merely
+// reports a domain in a unit test nothing else reads.
+func TestChainedDiscriminantRefusesACaseItCannotProduce(t *testing.T) {
+	t.Parallel()
+
+	src, _ := chainedValueSteps(maxSwitchDomainDepth + 1) // exactly at the bound
+	require.Contains(t, src, "case: a")
+	typo := strings.Replace(src, "case: a", "case: c", 1)
+
+	ds, err := ValidateSource([]byte(typo))
+	require.NoError(t, err)
+
+	var text string
+	for _, d := range ds {
+		text += d.Message + "\n"
+	}
+	assert.Contains(t, text, `case "c" is not a value`)
 }

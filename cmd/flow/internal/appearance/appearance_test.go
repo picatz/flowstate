@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/internal/covbuild"
 )
 
 // update re-records every golden from the tapes rather than comparing against
@@ -156,6 +158,11 @@ func recordingEnv(home, flowBin string) []string {
 		"PATH=" + filepath.Dir(flowBin) + string(os.PathListSeparator) + os.Getenv("PATH"),
 	}
 
+	// This environment is built from scratch rather than inherited, so
+	// GOCOVERDIR does not reach the recorded flow binary on its own; add it
+	// back when instrumentation was requested (see internal/covbuild).
+	env = append(env, covbuild.Env()...)
+
 	return env
 }
 
@@ -181,7 +188,10 @@ func buildFlow(t *testing.T) string {
 
 	bin := filepath.Join(t.TempDir(), "flow")
 
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/flow")
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", bin, "./cmd/flow")
+
+	cmd := exec.Command("go", args...)
 	cmd.Dir = filepath.Join("..", "..", "..", "..")
 
 	out, err := cmd.CombinedOutput()

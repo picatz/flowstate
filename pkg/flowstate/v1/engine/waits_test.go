@@ -12,7 +12,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // A run parked on an approval was RUNNING and nothing else. Which gate, which
@@ -28,7 +28,7 @@ import (
 func TestAParkedRunSaysWhatItIsWaitingFor(t *testing.T) {
 	t.Parallel()
 
-	for _, test := range tests.PendingWaitCases() {
+	for _, test := range conformance.PendingWaitCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			t.Parallel()
 
@@ -67,7 +67,7 @@ func TestAParkedRunSaysWhatItIsWaitingFor(t *testing.T) {
 			require.NoError(t, env.GetWorkflowError())
 
 			require.NoError(t, *queryErr, "the run did not answer what it was parked on")
-			tests.AssertPendingWaits(t, parked.GetPendingWaits(), test.Want)
+			conformance.AssertPendingWaits(t, parked.GetPendingWaits(), test.Want)
 			assert.False(t, parked.GetPendingWaitsTruncated(),
 				"an answer with a handful of waits in it called itself truncated")
 
@@ -88,7 +88,7 @@ func TestAParkedRunSaysWhatItIsWaitingFor(t *testing.T) {
 //
 // Durable-driver only, and that is not an omission: the local driver runs
 // branches sequentially (eval.go's runParallel), so it can never hold two gates
-// at the same time to report them. See [tests.PendingWaitCases].
+// at the same time to report them. See [conformance.PendingWaitCases].
 func TestTwoGatesHeldAtOnceAreBothReported(t *testing.T) {
 	t.Parallel()
 
@@ -119,7 +119,7 @@ func TestTwoGatesHeldAtOnceAreBothReported(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 	require.NoError(t, *queryErr)
 
-	tests.AssertPendingWaits(t, parked.GetPendingWaits(), []tests.WantWait{
+	conformance.AssertPendingWaits(t, parked.GetPendingWaits(), []conformance.WantWait{
 		{
 			StepID:     "left_gate",
 			SignalName: "left",

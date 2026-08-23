@@ -18,7 +18,7 @@ import (
 // The latency claim, which is the whole point of `async:` and the one thing the
 // shared corpus deliberately does not carry.
 //
-// Every case in `tests.AsyncCases` is about what an author can *see* — where an
+// Every case in `conformance.AsyncCases` is about what an author can *see* — where an
 // output appears, where a failure is heard — and both drivers must agree about
 // all of it. Whether the work actually overlaps is a claim about this driver's
 // scheduler and nothing else: the local driver runs an async step where it is
@@ -111,8 +111,8 @@ func TestRunWorkflowAsyncOverlapsLaterWork(t *testing.T) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := atABound(testSuite.NewTestWorkflowEnvironment())
 	env.RegisterWorkflow(engine.Run)
-	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+	env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+	env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 	env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: workflowSpec})

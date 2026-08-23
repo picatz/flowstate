@@ -18,6 +18,15 @@ import (
 // that will not parse is never touched, and every comment in a file it rewrites
 // comes out the other side (#381).
 
+// unformatted returns source in a shape `flow fmt` is certain to rewrite,
+// without changing the workflow it compiles to: its trailing newline removed.
+//
+// [flowfile.Format] appends one to everything it writes, so a document without
+// it differs from the formatter's output whatever else is true of the file —
+// which is what makes this a perturbation that works on a corpus already in
+// canonical form, and one that cannot be mistaken for a difference of meaning.
+func unformatted(source string) string { return strings.TrimRight(source, "\n") }
+
 // runFmtCommand runs `flow fmt` through the command, the way a shell does, and
 // returns its two streams separately along with the error that becomes the exit
 // status — the same shape runFixCommand in fix_test.go uses, for the same reason:
@@ -25,23 +34,32 @@ import (
 func runFmtCommand(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	var out, errOut bytes.Buffer
-	cmd := newFmtCommand()
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs(args)
+	res := runCommand(t, newFmtCommand(), args...)
 
-	err = cmd.Execute()
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // TestFmtIsIdempotentAcrossExamples is the property a formatter has to have to
 // be safe to run in a pre-commit hook: formatting an already-formatted file must
 // not change it again.
 //
-// Every shipped example is real, and the round trip through Marshal changes at
-// least one of them — sorted map keys, normalized quoting, an added trailing
-// newline — so this is not passing because nothing was rewritten either time.
+// Every shipped example is real, and each copy is written here with its final
+// newline stripped, so the first pass has work to do on every one of them.
+//
+// That perturbation used to be unnecessary: the corpus disagreed with the
+// formatter about sorted keys, quoting and indentation, so simply copying an
+// example gave the first pass plenty to change. #850 settled those defaults and
+// reformatted `examples/` to match, which turned "the round trip changes at
+// least one of them" from a fact into a guard that fires on the corpus being
+// *correct*. A missing trailing newline is the one difference that survives
+// that: [flowfile.Format] appends one unconditionally, so a copy without it is
+// non-canonical whatever else the file says, and it parses to exactly the same
+// workflow — a perturbation that cannot make this test about anything other
+// than formatting.
+//
+// The byte-identity of `examples/` itself is not this test's claim and is not
+// weakened by the strip; `TestEveryExampleIsAlreadyWhatTheFormatterWrites` in
+// the flowfile package holds it, over the files on disk.
 func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 	dir := t.TempDir()
 	paths, err := filepath.Glob(filepath.Join("..", "..", "examples", "*", "workflow.yaml"))
@@ -65,7 +83,7 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 		exampleDir := filepath.Dir(src)
 		name := filepath.Base(exampleDir)
 
-		copies = append(copies, writeFixture(t, dir, filepath.Join(name, "workflow.yaml"), readFixtureString(t, src)))
+		copies = append(copies, writeFixture(t, dir, filepath.Join(name, "workflow.yaml"), unformatted(readFixtureString(t, src))))
 
 		callees := map[string]bool{}
 		collectCallFiles(t, src, callees)
@@ -74,6 +92,13 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 			if err != nil || strings.HasPrefix(rel, "..") {
 				t.Fatalf("%s calls %s, outside its own example directory", src, abs)
 			}
+			// A callee is copied verbatim, never perturbed. A `digest:` pin is
+			// over the callee's *bytes*, so stripping a newline from one is
+			// exactly the thing a pin exists to notice: `pinned-call` would be
+			// refused on the first pass, left alone, and still have work to do
+			// on the second — a failure about pinning wearing an idempotence
+			// failure's clothes. The caller above carries the perturbation for
+			// both.
 			copies = append(copies, writeFixture(t, dir, filepath.Join(name, rel), readFixtureString(t, abs)))
 		}
 	}
@@ -94,7 +119,8 @@ func TestFmtIsIdempotentAcrossExamples(t *testing.T) {
 		firstPass[path] = readFixture(t, path)
 	}
 	if !strings.Contains(out, "reformatted") {
-		t.Fatal("nothing was reformatted on the first run, so this says nothing about idempotence")
+		t.Fatal("nothing was reformatted on the first run, so this says nothing about idempotence — " +
+			"every copy was written without its trailing newline, so every one of them had work to do")
 	}
 
 	refused := 0
@@ -333,12 +359,14 @@ steps:
 // makes it usable there: a --check that mutates is a --check nobody can put in
 // a pipeline.
 func TestFmtCheckReportsWithoutWriting(t *testing.T) {
+	// Flush against `steps:`, which is not the shape Marshal writes (#850), so
+	// there is work for --check to find and report.
 	const src = `edition: v2026.3
 name: greeter
 steps:
-  - id: greet
-    log:
-      message: hello world
+- id: greet
+  log:
+    message: hello world
 `
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", src)
@@ -496,12 +524,13 @@ func TestFmtStdoutAndCheckAreRefused(t *testing.T) {
 // TestFmtDoesNotPrintUsageWhenAFileNeedsWork keeps the report readable: a file
 // needing formatting is not a command someone typed wrong.
 func TestFmtDoesNotPrintUsageWhenAFileNeedsWork(t *testing.T) {
+	// Flush against `steps:`, so the file genuinely needs formatting (#850).
 	const src = `edition: v2026.3
 name: greeter
 steps:
-  - id: greet
-    log:
-      message: hello world
+- id: greet
+  log:
+    message: hello world
 `
 	dir := t.TempDir()
 	path := writeFixture(t, dir, "workflow.yaml", src)
@@ -517,16 +546,17 @@ steps:
 	}
 }
 
-// currentStyleSingle is a small current-edition Flowfile with a comment and an
-// indented list, so a directory walk over it has something to reformat and
-// something to carry through.
+// currentStyleSingle is a small current-edition Flowfile with a comment and a
+// list written flush against the key that holds it, so a directory walk over it
+// has something to reformat — Marshal indents a block sequence under its key
+// (#850) — and something to carry through.
 const currentStyleSingle = `edition: v2026.3
 name: single
 steps:
-  # a comment flow fmt carries through
-  - id: greet
-    log:
-      message: hello
+# a comment flow fmt carries through
+- id: greet
+  log:
+    message: hello
 `
 
 // TestFmtWalksADirectoryForFlowfiles checks which files a directory hands over,
@@ -547,9 +577,10 @@ func TestFmtWalksADirectoryForFlowfiles(t *testing.T) {
 
 	for _, path := range []string{yamlPath, ymlPath, deepPath} {
 		got := string(readFixture(t, path))
-		// The list comes back unindented, which is the reformatting; the comment
-		// comes back with it, which is what the reformatting may not cost.
-		if !strings.Contains(got, "\n- id: greet") {
+		// The list comes back indented under its key, which is the reformatting;
+		// the comment comes back with it, which is what the reformatting may not
+		// cost.
+		if !strings.Contains(got, "\n  - id: greet") {
 			t.Errorf("%s was not reformatted, so it was not picked up by the walk:\n%s", path, got)
 		}
 		if !strings.Contains(got, "# a comment flow fmt carries through") {

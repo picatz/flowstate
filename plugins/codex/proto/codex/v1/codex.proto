@@ -4,7 +4,7 @@ package codex.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/codex/gen/codex/v1;codexv1";
 
-import "flowstate/v1/flowstate.proto";
+import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: one bounded, agentic execution of OpenAI
 // Codex, over github.com/picatz/openai/codex - itself a wrapper around the

@@ -414,40 +414,12 @@ steps:
 `,
 		},
 		{
-			// An anchor is written *on* a value, so a step carrying one arrives as a
-			// shape the walkers did not recognise and was skipped entirely. The
-			// failure was silent and exactly the wrong way round: `flow fix` reported
-			// "already current" and exited zero on a file `flow validate` refuses,
-			// which is the one property the command's own comment says it holds.
-			name: "a step carrying an anchor is not skipped",
-			src: `edition: v2026.3
-name: t
-steps:
-  - &first
-    id: a
-    task:
-      name: log
-      inputs:
-        message: hi
-  - id: b
-    <<: *first
-    log:
-      message: bye
-`,
-			want: `edition: v2026.3
-name: t
-steps:
-  - &first
-    id: a
-    log:
-      message: hi
-  - id: b
-    <<: *first
-    log:
-      message: bye
-`,
-		},
-		{
+			// An anchor on a step is no longer rewritten: the grammar is a strict
+			// subset of YAML that refuses anchors, aliases, and merge keys, so `flow
+			// fix` refuses such a file rather than rewriting it. That refusal is
+			// covered by TestFixRefusesStrictYAML; this table stays on the shapes the
+			// rewriter still acts on. See #653.
+
 			// A block scalar's own indentation is relative to its key, and the key
 			// moved. Copying source lines and shifting them all by the same amount is
 			// what keeps this true without understanding block scalars at all.
@@ -566,13 +538,11 @@ func TestFixRefusesRatherThanGuesses(t *testing.T) {
 			src:  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task:\n      name: log\n      inputs: {message: hi}\n",
 			says: "flow style",
 		},
-		{
-			// There is no way to know what the alias will contain, and guessing
-			// produces a file that looks right and names the wrong task.
-			name: "a task standing behind an alias",
-			src:  "edition: v2026.3\nname: t\nbase: &b\n  name: log\n  inputs:\n    message: hi\nsteps:\n  - id: a\n    task: *b\n",
-			says: "alias",
-		},
+		// A task standing behind an alias was once refused here as an unrewritable
+		// guess. It is now refused earlier and for a broader reason — the grammar is
+		// a strict subset of YAML and does not include aliases at all — so that case
+		// moved to TestFixRefusesStrictYAML, where the file carries an anchor and an
+		// alias and both are named. See #653.
 		{
 			name: "a task with no name to rewrite to",
 			src:  "edition: v2026.3\nname: t\nsteps:\n  - id: a\n    task:\n      inputs:\n        message: hi\n",
@@ -1058,15 +1028,19 @@ steps:
 		wf.GetSteps()[0].GetTask().GetInputs()["message"].GetLiteral().GetStringValue())
 }
 
-// TestFixLeavesNothingThatDoesNotCompile is the property the command promises and
-// the one an anchored step quietly broke: after a run that reports no refusals,
-// nothing retired is left behind.
+// TestFixRefusesAnAnchorInEveryPositionTheGrammarAllows covers the walk's reach:
+// an anchor is refused wherever it can be written — on a step, on the whole
+// `steps:` sequence, on a loop body, on a parallel branch — rather than only in
+// the one position a bug once let it slip through. The grammar is a strict subset
+// of YAML (#653), so each of these is refused rather than rewritten, and the
+// refused file is left byte for byte alone. This is the positional companion to
+// TestFixRefusesStrictYAML.
 //
-// Asserted by compiling the result rather than by looking for `task:`, because
-// the question is not whether one spelling is gone but whether what remains is a
-// file this build accepts. Every shape here is one a walker could fail to
-// recognise and skip — which is how the anchor case escaped.
-func TestFixLeavesNothingThatDoesNotCompile(t *testing.T) {
+// It doubles as the invariant `flow fix` promises: what it leaves behind compiles
+// or is refused, never a silent pass-through the compiler then rejects. Each
+// fixture compiles neither before (the anchor is refused) nor after (fix left it
+// unchanged), and the refusal is what keeps those two facts from being a gap.
+func TestFixRefusesAnAnchorInEveryPositionTheGrammarAllows(t *testing.T) {
 	t.Parallel()
 
 	srcs := map[string]string{
@@ -1075,19 +1049,15 @@ name: t
 steps:
   - &first
     id: a
-    task:
-      name: log
-      inputs:
-        message: hi
+    log:
+      message: hi
 `,
 		"an anchored steps sequence": `edition: v2026.3
 name: t
 steps: &all
   - id: a
-    task:
-      name: log
-      inputs:
-        message: hi
+    log:
+      message: hi
 `,
 		"an anchored loop body": `edition: v2026.3
 name: t
@@ -1097,10 +1067,8 @@ steps:
       items: ${[1]}
       steps: &body
         - id: inner
-          task:
-            name: log
-            inputs:
-              message: hi
+          log:
+            message: hi
 `,
 		"an anchored parallel branch": `edition: v2026.3
 name: t
@@ -1110,26 +1078,22 @@ steps:
       - &branch
         steps:
           - id: one
-            task:
-              name: log
-              inputs:
-                message: a
+            log:
+              message: a
 `,
 	}
 
 	for name, src := range srcs {
 		t.Run(name, func(t *testing.T) {
-			// The premise: this is a file the compiler refuses today.
+			// The premise: the compiler refuses this file for its anchor.
 			_, _, err := flowfile.Parse([]byte(src))
-			require.Error(t, err, "premise: the retired spelling must not compile")
+			require.Error(t, err, "premise: an anchor must not compile")
 
 			result, err := flowfile.Fix([]byte(src))
 			require.NoError(t, err)
-			require.Empty(t, result.Refusals, "nothing here needs guessing")
-			require.True(t, result.Changed(), "a file that does not compile cannot be already current")
-
-			_, _, err = flowfile.Parse(result.Source)
-			assert.NoError(t, err, "what the rewriter leaves behind must compile:\n%s", result.Source)
+			require.NotEmpty(t, result.Refusals, "an anchor is refused, not silently passed through")
+			assert.Contains(t, result.Refusals[0].Message, "not part of the Flowfile grammar")
+			assert.Equal(t, src, string(result.Source), "a refused file is left byte for byte alone")
 		})
 	}
 }

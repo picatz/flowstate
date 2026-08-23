@@ -10,7 +10,7 @@
 // workflow's own control flow — conditions, retries, loops, `undo:` — runs for
 // real through the ordinary local driver. That is the registry-swap pattern
 // the repo's own tests already use (`allowLoopback`, `NewUndoServer` in
-// pkg/flowstate/v1/tests) productized for an author's own workflow.
+// pkg/flowstate/v1/internal/conformance) productized for an author's own workflow.
 //
 // # Secrets are stubbed at the reference boundary, the same way tasks are
 // stubbed at the task boundary
@@ -45,6 +45,106 @@
 // `run.identity` stays empty and `run.local` true for every case, as it does
 // for every local run, because a local run must never look like an attested
 // production one.
+//
+// # What a green case proves about identity, and what it does not
+//
+// The sentence to read first, because it is the one an author is most likely
+// to assume the other way round: **a green case says nothing about whether the
+// identity it names would be allowed to do any of this in production.**
+// Nothing attested a `starter:` or a `sender:` - they are what the file says
+// they are - and every policy a *deployment* installs is either absent from
+// this process or evaluated against somebody else entirely.
+//
+// What reads a [Test.Starter], exhaustively: the workflow's own `signals:`
+// policy, through [v1.SignalPolicyCheck] - the function `FlowstateServer.Signal`
+// itself calls - reached from [v1.NewPolicedLocalSignals] in runCase. That is
+// a rule's `subject:`, `issuer:`, `namespace:` and `claims:` matching a
+// scripted [SignalScript.Sender], and `distinct_from_starter:` comparing that
+// sender's [v1.QualifiedSubject] against the starter's. Nothing else in this
+// package passes the value anywhere.
+//
+// What does not read it, each for a reason worth stating separately:
+//
+//   - **`run.identity`.** Empty for every case, whatever `starter:` says, with
+//     `run.local` true - see [Test.Starter]. An `if:` keyed on
+//     `run.identity.namespace` therefore takes the empty branch here and may
+//     take another one in production.
+//
+//   - **Task-shape policy** ([v1.TaskPolicy]). Every dispatch does reach
+//     [v1.CheckTaskPolicy] - eval.go calls it at the seam both drivers share -
+//     and it is handed `scope.GetIdentity()`, which is that same empty
+//     identity. It is never handed a `starter:`.
+//
+//     Which policy it consults is a property of the *process*, not of the
+//     case, and the distinction is worth stating precisely because the
+//     convenient version of it is false. The `flow test` **command** installs
+//     none: `--task-policy` is declared on `flow worker`, `flow run local`,
+//     `flow mcp`, `flow serverdev` and `flow task run`, and deliberately not
+//     on `flow test`, so under that command [v1.TaskPolicyIn] finds nothing
+//     and every dispatch is allowed. But a policy is installed process-wide
+//     by [v1.SetDefaultTaskPolicy], runCase does not clear it with
+//     [v1.NewContextWithTaskPolicy], and `flow test`'s machinery is reachable
+//     from other hosts: the `flowstate_test` MCP tool runs
+//     [RunSourceContext] in whatever process serves it, so under
+//     `flow mcp --task-policy` a case's dispatches *are* governed by that
+//     deployment's policy. A rehearsal inherits whatever the hosting process
+//     installed.
+//
+//     Which is its own trap, and the reason the identity clause above is not
+//     a footnote: a rule that reads `identity.namespace` or
+//     `identity.subject` is matched against the empty identity there, not
+//     against `starter:`, however the case names one. So a policy admitting
+//     only a named namespace refuses every stubbed dispatch in that host, and
+//     an author reading the denial has no `starter:` to change that would
+//     make any difference. [v1.TaskPolicyDeniedError] says exactly that in
+//     its own message (#652 item 3): a denial from this venue names the
+//     identity the rule was evaluated against, and where that identity is
+//     empty it says so and says why — that a rehearsal has one only where
+//     `flow run local --as-*` named one, and never under `flow test`. Which
+//     is the difference between "the rule matched me" and "the rule had
+//     nothing to match", and it is not one an author can otherwise derive
+//     from a denial. The remedy it names is the policy *this process*
+//     installed rather than a `--task-policy` flag, precisely because this
+//     command does not have one.
+//
+//   - **Egress policy** (`netpolicy`). Never consulted, because no request is
+//     made: a step that would reach the network is answered by its stub, so
+//     there is no URL for a policy to refuse. `--egress-policy` is likewise
+//     not offered on `flow test`.
+//
+//   - **Secret access policy** (`auth.SecretAccessPolicy`). Consulted, and this
+//     is the surface where the gap is easiest to miss, because the mechanism is
+//     real and the answer is fixed: [secretRuntime] compiles `allow: ["true"]`
+//     and runs it under the constant identity `flow-test#flow-test`, not under
+//     `starter:`. So every `${secret(...)}` a case binds resolves, and a
+//     deployment rule keyed on `identity.namespace` is neither loaded nor
+//     matched.
+//
+// The line all four sit on is CLAUDE.md's: report what is a property of the
+// file, and stay silent about what a deployment decides. `signals:` is written
+// in the Flowfile, so `flow test` owns it; task-shape, egress and secret
+// access rules are installed by whoever runs the worker, and a case whose
+// verdict turned on which policy file happened to be passed on the command
+// line would be a test of that machine rather than of the workflow — which is
+// exactly what a case gets when the hosting process installed one, so a suite
+// meant to be portable should be run by a command that takes no such flag.
+// A case
+// that wants to exercise one of those *denials* writes it against the policy's
+// own package - [v1.TaskPolicy.Check] and `auth.SecretPolicy` are pure
+// functions of (thing, identity), tested that way today, and need no workflow
+// at all - which is the same answer [secretRuntime]'s own doc has been giving
+// for secrets since it was written. See #652 item 2, where this was decided
+// and deliberately not built.
+//
+// That decision is now enforced rather than only recorded. `cmd/flow`'s
+// TestFlowTestTakesNoDeploymentPolicyFlags asserts `flow test` declares
+// neither `--task-policy` nor `--egress-policy` — while every verb that runs a
+// real dispatch still declares the first, so the assertion means "deliberately
+// absent here" rather than "absent everywhere" — and
+// [TestACaseCannotDeclareADeploymentPolicy] asserts a case file cannot smuggle
+// one in through a key of its own. A paragraph of prose beside a one-line flag
+// registration is the same value written down twice, and only one of the two
+// is what the program does.
 //
 // # Why this runs the local driver only
 //
@@ -169,10 +269,22 @@ type File struct {
 // the second is a fact about the workflow that belongs written down beside it,
 // not silently tolerated.
 type CoverageStanza struct {
-	// AllowUnreached maps a step id to the reason no case reaches it. A step
-	// named here is reported as an accepted residual rather than a gap, and
-	// does not fail `--coverage-required`. The reason is required, because an
-	// entry with none is the silent gap this record exists to refuse.
+	// AllowUnreached maps a step id — or, since issue #801, a switch arm's key —
+	// to the reason no case reaches it. An entry named here is reported as an
+	// accepted residual rather than a gap, and does not fail
+	// `--coverage-required`. The reason is required, because an entry with none
+	// is the silent gap this record exists to refuse.
+	//
+	// A switch arm's key is [SwitchArm.Key]: `<step>:case[<i>]` for a case
+	// holding one literal, `<step>:case[<i>][<j>]` for member j of a case listing
+	// several, and `<step>:default`. `flow test` prints the key to record beside
+	// the diagnostic for every arm it reports, so nobody has to derive one.
+	//
+	// One map for both, rather than a second stanza: an entry here answers one
+	// question — "no case reaches this, and here is why" — and the answer does
+	// not change with what kind of thing is unreached. An entry naming neither a
+	// step nor an arm of any workflow the file targets is stale, and fails the
+	// same way an unrecorded gap does.
 	AllowUnreached map[string]string `yaml:"allow_unreached"`
 }
 
@@ -257,6 +369,14 @@ type Test struct {
 	// production one (eval.go's own eval, invariant 3). A case asserting on
 	// `run.identity.subject` therefore sees "" here whatever this field says,
 	// the same value `flow run local` shows it.
+	//
+	// One policy surface reads it, and the others a deployment installs read
+	// nothing of it at all — see the package doc's "What a green case proves
+	// about identity". The short version: `signals:` is a control the
+	// *workflow file* declares, so `flow test` exercises it; task-shape
+	// policy, egress policy and secret access policy are controls a
+	// *deployment* installs, and `flow test` neither takes them nor evaluates
+	// them under this identity.
 	Starter *ScriptedIdentity `yaml:"starter"`
 
 	// Expect is what the run must have done to pass.
@@ -684,8 +804,10 @@ type Expectation struct {
 	// Outputs, when set, must equal the workflow's declared `outputs:`
 	// exactly — every named output present with the expected value, and no
 	// unexpected one. Ignored when Failed is true, on the same reasoning
-	// [tests.Case.ExpectedOutputs] already documents: a run that fails
+	// [conformance.Case.ExpectedOutputs] already documents: a run that fails
 	// outright has no outputs to compare.
+	//
+	// [conformance.Case.ExpectedOutputs]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance#Case
 	Outputs map[string]any `yaml:"outputs"`
 
 	// Inputs, when set, must equal the inputs a replayed delivery produced,
@@ -731,7 +853,7 @@ type Expectation struct {
 	// Compensated names the steps that must have been undone, in any order —
 	// this checks the *set* the undo log reports, not the reverse-registration
 	// order [v1.RunUndoLog] itself already guarantees and which
-	// pkg/flowstate/v1/tests/undo.go already pins for both drivers.
+	// pkg/flowstate/v1/internal/conformance/undo.go already pins for both drivers.
 	Compensated []string `yaml:"compensated"`
 
 	// Ran names steps that must have executed — present in the run's step

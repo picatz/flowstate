@@ -12,14 +12,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/log"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
@@ -151,7 +154,7 @@ func deliveryBody(event string) string {
 func newReceiver(t *testing.T, opts ...server.WebhookOption) *server.WebhookReceiver {
 	t.Helper()
 
-	receiver, err := server.New(nil).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, nil).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret), opts...)
 	require.NoError(t, err)
 
@@ -200,7 +203,7 @@ func TestADeliveryStartsARun(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -250,7 +253,7 @@ func TestARedeliveryDoesNotStartASecondRun(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -290,7 +293,7 @@ func TestConcurrentRedeliveriesStartOneRun(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -350,7 +353,7 @@ func TestAnUnverifiableDeliveryIsRefused(t *testing.T) {
 	temporal, _ := newTemporalNamespace(t)
 	startWorker(t, temporal)
 
-	receiver, err := server.New(temporal).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -383,7 +386,7 @@ func TestADeliveryIsOneJSONDocumentAndNothingAfterIt(t *testing.T) {
 	// a run is attempted, and the whitespace cases below have to get *past* that
 	// point to prove they were not refused, which means having somewhere to fail
 	// afterwards instead.
-	receiver, err := server.New(unreachableTemporal(t)).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, unreachableTemporal(t)).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -517,7 +520,7 @@ func TestAnOversizedBodyIsRefusedBeforeItIsReadIntoMemory(t *testing.T) {
 func TestAReceiverRefusesAKeyItCannotResolve(t *testing.T) {
 	t.Parallel()
 
-	_, err := server.New(nil).NewWebhookReceiver(t.Context(),
+	_, err := mustNew(t, nil).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()},
 		storeOf(t, &keyProvider{err: fmt.Errorf("no such secret")}))
 	require.Error(t, err, "a receiver started holding a webhook whose signing key it cannot resolve")
@@ -544,7 +547,7 @@ func TestAReceiverRefusesAWorkflowItCannotServe(t *testing.T) {
 		"two workflows under one name":      {orderWebhookWorkflow(), orderWebhookWorkflow()},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := server.New(nil).NewWebhookReceiver(t.Context(), "", workflows,
+			_, err := mustNew(t, nil).NewWebhookReceiver(t.Context(), "", workflows,
 				keyStore(t, webhookSecret))
 			require.Error(t, err, "the receiver accepted a configuration it cannot serve")
 		})
@@ -611,7 +614,7 @@ func TestADeliveryTheDeploymentCannotStartIsRetryable(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	receiver, err := server.New(unreachable).NewWebhookReceiver(t.Context(),
+	receiver, err := mustNew(t, unreachable).NewWebhookReceiver(t.Context(),
 		"", []*v1.Workflow{orderWebhookWorkflow()}, keyStore(t, webhookSecret))
 	require.NoError(t, err)
 
@@ -647,4 +650,219 @@ func TestAVerifiedDeliveryThatDoesNotMapIsReportedHonestly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(said), "storefront",
 		"a delivery that did not map was refused without saying which webhook or why")
+}
+
+// webhookOnlyWorkflowWithManualDenied is a deployment-owned workflow that is
+// meant to start only from its webhook: `manual: denied` says so, and it also
+// declares a webhook trigger so [FlowstateServer.NewWebhookReceiver] admits it.
+func webhookOnlyWorkflowWithManualDenied() *v1.Workflow {
+	return &v1.Workflow{
+		Name:    "break-glass-webhook",
+		Profile: v1.CurrentProfile,
+		Triggers: &v1.Triggers{
+			Manual: &v1.ManualTrigger{Denied: true},
+			Webhooks: []*v1.WebhookTrigger{{
+				Name: "rotate",
+				Verify: map[string]*v1.Value{
+					v1.WebhookSchemeHMACSHA256: {Kind: &v1.Value_SecretRef{
+						SecretRef: &v1.SecretRef{Scheme: "env", Name: "ROTATE_WEBHOOK_SECRET"},
+					}},
+				},
+				IdempotencyKey: v1.NewExpr(`event.body.id`),
+			}},
+		},
+		Steps: []*v1.Node{{
+			Id:   "rotate",
+			Kind: &v1.Node_Value{Value: v1.NewLiteral("rotated")},
+		}},
+	}
+}
+
+// TestAWebhookServedWorkflowIsTrustedForRun is the P1 this file's receiver setup
+// exists to close: a workflow this deployment serves for webhook deliveries is
+// deployment-owned in exactly the sense [server.WithTrustedWorkflows] means, so a
+// caller naming it through `Run` must be held to *this* copy's `manual: denied`
+// rather than to whatever policy their own submitted copy carries — including
+// none at all.
+func TestAWebhookServedWorkflowIsTrustedForRun(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal)
+
+	_, err := flowstate.NewWebhookReceiver(t.Context(),
+		"", []*v1.Workflow{webhookOnlyWorkflowWithManualDenied()}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	// The same name, submitted with no `manual:` block at all — the shape an
+	// attacker who merely knows the workflow's name, and nothing about its
+	// deployment-side policy, would submit.
+	submitted := webhookOnlyWorkflowWithManualDenied()
+	submitted.Triggers = &v1.Triggers{Webhooks: submitted.Triggers.GetWebhooks()}
+
+	_, err = flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: submitted,
+		Reason:   "trying to start a webhook-only workload directly",
+	}))
+	require.Error(t, err, "a webhook-served workflow's manual: denied was bypassed by a caller's own copy")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// breakGlassWebhookWorkflowFor is [webhookOnlyWorkflowWithManualDenied], but
+// the reason `manual: denied` refuses a caller carries the tenant's own name
+// — which is the fact [TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother]
+// reads back off each tenant's own refusal to tell the two copies apart, the
+// same way an ordinary workflow's steps would.
+func breakGlassWebhookWorkflowFor(tenant string) *v1.Workflow {
+	workflow := webhookOnlyWorkflowWithManualDenied()
+	workflow.Triggers.Manual.AllowedPrincipals = []string{tenant + "-oncall@example.com"}
+	workflow.Triggers.Manual.Denied = false
+	return workflow
+}
+
+// TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother is the negative
+// direction of the trust boundary [FlowstateServer.trustedWorkflow] implements:
+// not merely that a tenant reaches its own registered entry (that is
+// [TestAWebhookServedWorkflowIsTrustedForRun]), but that it cannot be
+// substituted by a different tenant's entry registered under the identical
+// workflow name.
+//
+// A lookup keyed on name alone could not tell these apart: registering
+// "deploy" for team-a and then for team-b would let the second overwrite the
+// first, or — worse, if a namespace slipped into the key by concatenation
+// rather than as its own field — let a crafted namespace collide with a
+// different tenant's name. See CLAUDE.md's own account of the identical
+// mistake made twice already, by the env and file secret providers.
+func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	store := storeOf(t, &keyProvider{keys: map[string]string{
+		"team-a": webhookSecret,
+		"team-b": webhookSecret,
+	}})
+
+	flowstate := mustNew(t, temporal)
+
+	_, err := flowstate.NewWebhookReceiver(t.Context(), "team-a",
+		[]*v1.Workflow{breakGlassWebhookWorkflowFor("team-a")}, store)
+	require.NoError(t, err)
+
+	_, err = flowstate.NewWebhookReceiver(t.Context(), "team-b",
+		[]*v1.Workflow{breakGlassWebhookWorkflowFor("team-b")}, store)
+	require.NoError(t, err)
+
+	// team-b's principal, naming the identical workflow name — with no
+	// `manual:` block on the submitted copy at all, so if the lookup ever
+	// answered with team-a's registered entry instead of team-b's, this would
+	// either be authorized outright (team-b's oncall is not on team-a's
+	// allow-list, so team-a's copy would refuse it) or, in the direction that
+	// actually matters here, succeed against a copy this tenant never
+	// registered and never reviewed.
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:    "https://issuer.example.com",
+		Subject:   "team-b-oncall@example.com",
+		Namespace: "team-b",
+	})
+
+	started, err := flowstate.Run(ctx, connect.NewRequest(&v1.RunRequest{
+		Workflow: breakGlassWebhookWorkflowFor("team-b"),
+		Reason:   "rotating team-b's key",
+	}))
+	require.NoError(t, err, "team-b's own oncall, naming team-b's own registered workflow, was refused")
+
+	got, err := flowstate.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: started.Msg.GetWorkflowId()}))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		got, err = flowstate.Get(ctx, connect.NewRequest(&v1.GetRequest{WorkflowId: started.Msg.GetWorkflowId()}))
+		return err == nil && got.Msg.GetStatus() == v1.RunResponse_STATUS_COMPLETED
+	}, 30*time.Second, 100*time.Millisecond)
+
+	// The direction that is the whole point of this test: team-a's own oncall,
+	// calling from team-a's own namespace, naming the identical workflow name.
+	// If the trusted lookup ever fell through to *any* entry under this name —
+	// a name-only key, or team-b's registration simply overwriting team-a's in
+	// the map — this request would be authorized against team-b's
+	// `allowed_principals`, which does not name `team-a-oncall@example.com`,
+	// and would be refused. Succeeding here is what proves team-a reached its
+	// own entry rather than team-b's.
+	ctxA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:    "https://issuer.example.com",
+		Subject:   "team-a-oncall@example.com",
+		Namespace: "team-a",
+	})
+	_, err = flowstate.Run(ctxA, connect.NewRequest(&v1.RunRequest{
+		Workflow: breakGlassWebhookWorkflowFor("team-a"),
+		Reason:   "trying team-a's own workflow",
+	}))
+	require.NoError(t, err,
+		"team-a's own oncall, naming team-a's own registered workflow, was refused — "+
+			"which is what team-a reaching team-b's registered copy instead would look like")
+
+	// The direction that actually distinguishes a namespace-scoped key from a
+	// name-only one: team-b's oncall, calling from *team-a's* namespace. If
+	// the lookup were keyed on name alone, this would reach the one entry
+	// registered under "break-glass-webhook" regardless of which tenant
+	// registered it last, and — since that entry's allow-list names
+	// team-b-oncall — would be authorized. A namespace-scoped key must refuse
+	// it: team-a never registered this workflow for this subject.
+	ctxBFromNamespaceA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+		Issuer:    "https://issuer.example.com",
+		Subject:   "team-b-oncall@example.com",
+		Namespace: "team-a",
+	})
+	_, err = flowstate.Run(ctxBFromNamespaceA, connect.NewRequest(&v1.RunRequest{
+		Workflow: breakGlassWebhookWorkflowFor("team-a"),
+		Reason:   "team-b's subject, addressed through team-a's namespace",
+	}))
+	require.Error(t, err,
+		"team-b's allow-listed subject was authorized against team-a's namespace, so the lookup "+
+			"is not actually scoped by namespace")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestAFailedWebhookReceiverGrantsNoTrust is the other half of trust
+// registration's correctness: a call to [FlowstateServer.NewWebhookReceiver]
+// admits every workflow it was given or none of them, atomically as far as
+// the trusted set is concerned. Registering trust as each workflow is
+// checked and returning the error from a later one would leave the
+// server-wide trusted set holding entries for a receiver that was never
+// created — this deployment's own `Run` would then substitute a
+// specification for a workflow no webhook route exists for.
+func TestAFailedWebhookReceiverGrantsNoTrust(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal)
+
+	valid := webhookOnlyWorkflowWithManualDenied()
+
+	// Same name as valid, so the receiver refuses the whole call on "declared
+	// twice" — see [TestAReceiverRefusesAWorkflowItCannotServe] — after valid
+	// has already passed its own checks. If trust were granted as the loop
+	// went rather than after it succeeded, valid would already be trusted by
+	// the time this constructor returns its error.
+	duplicate := webhookOnlyWorkflowWithManualDenied()
+
+	_, err := flowstate.NewWebhookReceiver(t.Context(), "",
+		[]*v1.Workflow{valid, duplicate}, keyStore(t, webhookSecret))
+	require.Error(t, err, "a receiver configured with a workflow declared twice was accepted")
+
+	// The workflow the failed call's first entry would have registered,
+	// submitted with no `manual:` at all. If the failed constructor left it
+	// trusted, this would be silently replaced by the deployment's `manual:
+	// denied` copy and refused; since nothing was ever actually served for
+	// it, it must be treated as an ordinary, ungoverned submission instead —
+	// which this workflow's own (missing) policy permits.
+	submitted := webhookOnlyWorkflowWithManualDenied()
+	submitted.Triggers = &v1.Triggers{Webhooks: submitted.Triggers.GetWebhooks()}
+
+	_, err = flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: submitted,
+		Reason:   "a workflow a failed receiver call must not have trusted",
+	}))
+	require.NoError(t, err,
+		"a workflow from a NewWebhookReceiver call that ultimately failed was trusted anyway")
 }

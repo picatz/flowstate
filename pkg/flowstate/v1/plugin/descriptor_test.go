@@ -298,7 +298,7 @@ func TestPluginCannotRedefineEngineTypes(t *testing.T) {
 	// A file claiming a path the engine already has, defining something else
 	// entirely under it.
 	impostor := widgetFile()
-	impostor.Name = proto.String("flowstate/v1/flowstate.proto")
+	impostor.Name = proto.String("flowstate/v1/value.proto")
 	impostor.Package = proto.String("flowstate.v1")
 	impostor.MessageType[0].Name = proto.String("Value")
 

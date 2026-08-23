@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"log/slog"
 	"maps"
 	"os"
@@ -57,9 +58,22 @@ import (
 // nothing else, so the invocation echo, the status line and anything a task logs
 // all go to stderr.
 func runTaskRun(cmd *cobra.Command, args []string) error {
-	format, err := resolveOutputFormat(cmd)
+	rendering, err := resolveRunRendering(cmd)
 	if err != nil {
 		return err
+	}
+
+	format := rendering.format
+
+	// And telemetry, for the same reason and in the same position `flow run local`
+	// starts it — see [runLocalWorkflow], which carries the argument. This verb
+	// had the identical hole, and the comment further down claiming a task's log
+	// lines "reach a configured collector the same way" was describing something
+	// that could not happen: nothing on this path ever started the providers, so
+	// the same way was no way at all.
+	if _, err := startTelemetry(cmd.Context()); err != nil {
+		log.Printf("WARNING: telemetry is configured but could not be started, "+
+			"so this task invocation emits no trace: %v", err)
 	}
 
 	// The same three policy surfaces `flow run local` applies, in the same order
@@ -161,8 +175,8 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 		// recover the reason by parsing prose off stderr. The text shape writes
 		// nothing, because there an empty stdout is the meaningful value: the
 		// answer is the outputs, and a task that failed produced none.
-		if format.Machine() {
-			if err := writeJSON(surface, format, response); err != nil {
+		if rendering.WantsDocument() {
+			if err := writeRunJSON(surface, rendering, response); err != nil {
 				return err
 			}
 		}
@@ -176,7 +190,7 @@ func runTaskRun(cmd *cobra.Command, args []string) error {
 			def.Name)
 	}
 
-	return writeTaskOutputs(surface, format, def, response)
+	return writeTaskOutputs(surface, rendering, def, response)
 }
 
 // addLocalRehearsalFlags declares the identity a rehearsal runs as, and the
@@ -239,6 +253,7 @@ func newTaskCommand() *cobra.Command {
 	}
 
 	addOutputFlag(taskRunCmd)
+	addRawOutputFlag(taskRunCmd)
 	addInputFlags(taskRunCmd)
 	addRevealSensitiveFlag(taskRunCmd)
 	addEgressPolicyFlag(taskRunCmd)
@@ -294,7 +309,7 @@ const taskRunLong = "Run one task on its own, with no workflow and no server.\n\
 	"expression, and ${secret('env:NAME')} is a reference, exactly as in a file.\n\n" +
 	"stdout is the answer and stderr is the account of it, so a task invocation pipes. " +
 	"--output json writes the same document `flow run local -o json` writes for a " +
-	"finished run.\n\n" +
+	"finished run." + runDocumentHelp + "\n\n" +
 	"There is no state between invocations and no session, on purpose. Composition is a " +
 	"pipe and then a file: the moment two invocations need to share memory, the answer is " +
 	"`flow run local`."
@@ -306,7 +321,7 @@ const taskRunExample = `# Run the log task, which needs nothing but a message:
 flow task run log --input message='hello from a task'
 
 # Fetch something, and read one output:
-flow task run http --input url=https://example.com --output json | jq -r .outputs.stepValues.http.namedValues.status_code.literal.int64Value
+flow task run http --input url=https://example.com --output json | jq .outputs.steps.http.status_code
 
 # Say what a good response looks like, the way a step's expect: does:
 flow task run http --input url=https://example.com --input expect='${response.status_code == 200}'
@@ -768,9 +783,9 @@ func writeTaskInvocation(surface *ui.UI, def v1.TaskDef, written map[string]stri
 // document shaped only for this verb would be a third shape for one answer, which
 // is the thing the machine formats exist to avoid; when #328's projection lands,
 // this changes with the two drivers rather than beside them.
-func writeTaskOutputs(surface *ui.UI, format OutputFormat, def v1.TaskDef, response *v1.GetResponse) error {
-	if format.Machine() {
-		return writeJSON(surface, format, response)
+func writeTaskOutputs(surface *ui.UI, rendering runRendering, def v1.TaskDef, response *v1.GetResponse) error {
+	if rendering.WantsDocument() {
+		return writeRunJSON(surface, rendering, response)
 	}
 
 	// One line per output, name and value separated by a tab, and the value in JSON

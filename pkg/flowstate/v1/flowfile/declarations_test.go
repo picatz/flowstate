@@ -25,6 +25,9 @@ inputs:
   retries:
     type: int
     default: 3
+  environment:
+    type: enum
+    values: [prod, staging]
 vars:
   service: api
 steps:
@@ -46,7 +49,7 @@ func TestParsingTheDeclaredBlocks(t *testing.T) {
 	workflow, positions, err := flowfile.Parse([]byte(declaringSource))
 	require.NoError(t, err)
 
-	require.Len(t, workflow.GetDeclaredInputs(), 2)
+	require.Len(t, workflow.GetDeclaredInputs(), 3)
 
 	region := workflow.GetDeclaredInputs()[0]
 	require.Equal(t, "region", region.GetName(), "declarations are not in the order they were written")
@@ -60,6 +63,10 @@ func TestParsingTheDeclaredBlocks(t *testing.T) {
 	require.Equal(t, v1.InputDeclaration_TYPE_INT, retries.GetType())
 	require.False(t, retries.GetRequired())
 	require.Equal(t, int64(3), retries.GetDefault().GetLiteral().GetInt64Value())
+
+	environment := workflow.GetDeclaredInputs()[2]
+	require.Equal(t, v1.InputDeclaration_TYPE_ENUM, environment.GetType())
+	require.Equal(t, []string{"prod", "staging"}, environment.GetValues())
 
 	require.Len(t, workflow.GetDeclaredOutputs(), 2)
 	require.Equal(t, "where", workflow.GetDeclaredOutputs()[0].GetName())
@@ -108,11 +115,12 @@ func TestTheDeclaredBlocksRoundTrip(t *testing.T) {
 	require.Equal(t, string(written), string(round), "a second round trip changed the document")
 
 	// The declarations survive whole, in order, rather than merely surviving.
-	require.Len(t, again.GetDeclaredInputs(), 2)
+	require.Len(t, again.GetDeclaredInputs(), 3)
 	require.Equal(t, "region", again.GetDeclaredInputs()[0].GetName())
 	require.Equal(t, "retries", again.GetDeclaredInputs()[1].GetName())
 	require.True(t, again.GetDeclaredInputs()[0].GetRequired())
 	require.Equal(t, int64(3), again.GetDeclaredInputs()[1].GetDefault().GetLiteral().GetInt64Value())
+	require.Equal(t, []string{"prod", "staging"}, again.GetDeclaredInputs()[2].GetValues())
 	require.Len(t, again.GetDeclaredOutputs(), 2)
 	require.Equal(t, "where", again.GetDeclaredOutputs()[0].GetName())
 	require.Equal(t, "attempts", again.GetDeclaredOutputs()[1].GetName())

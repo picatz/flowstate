@@ -16,11 +16,10 @@ import (
 // What #551 decided, and the two directions that can break it.
 //
 // The text format's stdout is machine-shaped on purpose, and that is a contract
-// rather than an accident: `flow run local … | jq .stepValues.hello.namedValues`
-// appears in this command's own help with no -o json in it. So the piped
-// direction is asserted by comparing bytes, not by checking it still parses —
-// a document that parses and has moved a key breaks that pipe just as
-// thoroughly.
+// rather than an accident: `flow run local … | jq .steps.hello` appears in this
+// command's own help with no -o json in it. So the piped direction is asserted by
+// the paths a reader indexes, not by checking it still parses — a document that
+// parses and has moved a key breaks that pipe just as thoroughly.
 //
 // The terminal direction is the new behaviour, and the assertion worth making
 // there is an absence: nothing on stdout. Checking that the narration is present
@@ -52,7 +51,7 @@ func TestAPipedRunStillWritesTheTranscript(t *testing.T) {
 	surface := ui.ForCapabilities(&out, &errOut, piped, piped)
 
 	response := runForOutput(t)
-	require.NoError(t, writeRun(surface, FormatText, response))
+	require.NoError(t, writeRun(surface, renderingOf(FormatText), response))
 
 	// Decoded and inspected by field name, which is the only form of this
 	// assertion that holds the contract.
@@ -62,26 +61,27 @@ func TestAPipedRunStillWritesTheTranscript(t *testing.T) {
 	// whitespace, which is not the contract — though the claim that protojson's
 	// per-binary randomization could flake it was simply wrong: detrand injects
 	// after a comma in compact output, never after the opening brace, so that
-	// prefix was in fact stable. And comparing against marshalJSON's own output
+	// prefix was in fact stable. And comparing against the renderer's own output
 	// is worse still, because the expectation then comes from the same helper
-	// that produced the actual: setting UseProtoNames would rename every field
-	// to step_values and the test would stay green while `| jq
-	// .stepValues.hello.namedValues`, which this command's help documents, broke
-	// completely. That path is the whole reason this test exists.
+	// that produced the actual: a rename applied on both sides would move every
+	// key and the test would stay green while `| jq .steps.hello`, which this
+	// command's help documents, broke completely. That path is the whole reason
+	// this test exists.
 	var document map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &document),
 		"stdout must be one JSON document a program can read: %q", out.String())
 
 	require.Contains(t, document, "runOutputs")
 
-	steps, ok := document["stepValues"].(map[string]any)
-	require.True(t, ok, "`jq .stepValues` is in this command's help; got %v", slices.Sorted(maps.Keys(document)))
+	steps, ok := document["steps"].(map[string]any)
+	require.True(t, ok, "`jq .steps` is in this command's help; got %v", slices.Sorted(maps.Keys(document)))
 
 	hello, ok := steps["hello"].(map[string]any)
-	require.True(t, ok, "the step's own entry, addressed by id")
+	require.True(t, ok, "`jq .steps.hello` is the exact path the help documents: the "+
+		"step's own entry, addressed by the id a Flowfile gave it")
 
-	require.Contains(t, hello, "namedValues",
-		"`jq .stepValues.hello.namedValues` is the exact path the help documents")
+	require.Empty(t, hello,
+		"a step that produced nothing must still be named, with nothing under it")
 }
 
 func TestATerminalRunWritesNothingToStdout(t *testing.T) {
@@ -91,10 +91,33 @@ func TestATerminalRunWritesNothingToStdout(t *testing.T) {
 	terminal := ui.Capabilities{Width: 80, TTY: true}
 	surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
 
-	require.NoError(t, writeRun(surface, FormatText, runForOutput(t)))
+	require.NoError(t, writeRun(surface, renderingOf(FormatText), runForOutput(t)))
 
 	require.Empty(t, out.String(),
 		"a person got a machine document: %q", out.String())
+}
+
+// TestARawTerminalRunStillWritesTheDocument is the regression for the gap
+// Codex's review found: --raw's own help says "instead of the run document",
+// which is a request for a document. Before runRendering.WantsDocument
+// existed, writeRun asked only rendering.Machine() (--output json/jsonl), so
+// --raw with the default text format on a terminal fell through to the same
+// silence TestATerminalRunWritesNothingToStdout asserts is correct for a
+// person who asked for nothing — leaving --raw indistinguishable from a flag
+// that does nothing unless -o json was also given.
+func TestARawTerminalRunStillWritesTheDocument(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut bytes.Buffer
+	terminal := ui.Capabilities{Width: 80, TTY: true}
+	surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
+
+	rendering := runRendering{format: FormatText, raw: true}
+	require.NoError(t, writeRun(surface, rendering, runForOutput(t)))
+
+	var document map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &document),
+		"--raw on a terminal must still write the schema's protojson, not silence: %q", out.String())
 }
 
 // TestATerminalRunStillReportsDeclaredOutputs is the other half, and the one
@@ -117,7 +140,7 @@ func TestATerminalRunStillReportsDeclaredOutputs(t *testing.T) {
 	terminal := ui.Capabilities{Width: 80, TTY: true}
 	surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
 
-	require.NoError(t, writeRun(surface, FormatText, response))
+	require.NoError(t, writeRun(surface, renderingOf(FormatText), response))
 
 	require.Empty(t, out.String())
 	require.Contains(t, errOut.String(), "url")
@@ -168,7 +191,7 @@ func TestATerminalKeepsTheDocumentWhenTheSummaryIsLossy(t *testing.T) {
 			terminal := ui.Capabilities{Width: 80, TTY: true}
 			surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
 
-			require.NoError(t, writeRun(surface, FormatText, response))
+			require.NoError(t, writeRun(surface, renderingOf(FormatText), response))
 
 			require.NotEmpty(t, out.String(),
 				"the summary cannot carry this value, so the document must still be there")
@@ -186,7 +209,7 @@ func TestAMachineFormatIgnoresTheTerminal(t *testing.T) {
 	terminal := ui.Capabilities{Width: 80, TTY: true}
 	surface := ui.ForCapabilities(&out, &errOut, terminal, terminal)
 
-	require.NoError(t, writeRun(surface, FormatJSON, runForOutput(t)))
+	require.NoError(t, writeRun(surface, renderingOf(FormatJSON), runForOutput(t)))
 
 	require.NotEmpty(t, out.String(), "-o json on a terminal wrote nothing")
 }

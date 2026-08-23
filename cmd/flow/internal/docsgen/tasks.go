@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/taskexample"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -33,6 +34,14 @@ func (g *Generator) renderTaskReference() string {
 	b.WriteString("rather than of this binary, and `flow plugins` is what asks a deployment.\n\n")
 
 	b.WriteString("## Tasks\n\n")
+	b.WriteString("**Required** marks an input a step cannot omit. **Deferred** marks one the\n")
+	b.WriteString("task evaluates itself, against a scope the engine does not have when it\n")
+	b.WriteString("schedules the step — which is why a deferred input may name something an\n")
+	b.WriteString("ordinary one cannot: `http`'s `outputs` may read `status_code` because the\n")
+	b.WriteString("task evaluates it after the response arrives, and the engine resolves every\n")
+	b.WriteString("other input before the step is even scheduled. **Bounds** is the rest of what\n")
+	b.WriteString("the schema and the task already know about what may be written here.\n\n")
+
 	for _, task := range catalog.GetTasks() {
 		fmt.Fprintf(&b, "### `%s`\n\n", task.GetName())
 		if summary := task.GetSummary(); summary != "" {
@@ -41,6 +50,7 @@ func (g *Generator) renderTaskReference() string {
 
 		writeTaskFields(&b, "Inputs", task.GetInputs(), true)
 		writeTaskFields(&b, "Outputs", task.GetOutputs(), false)
+		writeTaskExample(&b, task)
 	}
 
 	b.WriteString("## Expressions\n\n")
@@ -53,8 +63,10 @@ func (g *Generator) renderTaskReference() string {
 
 	b.WriteString("### Functions\n\n")
 	b.WriteString("What those libraries add. A macro is expanded by the parser rather than called by\n")
-	b.WriteString("the evaluator, so its name is not its whole call form; the example is.\n\n")
-	b.WriteString("| Function | Library | Kind | Example |\n|---|---|---|---|\n")
+	b.WriteString("the evaluator, so its name is not its whole call form; the example is. An\n")
+	b.WriteString("ordinary function's own overloads carry the same information — argument order,\n")
+	b.WriteString("arity, and whether it is written on a namespace or a value — as Signature.\n\n")
+	b.WriteString("| Function | Library | Kind | Example | Signature |\n|---|---|---|---|---|\n")
 	for _, fn := range catalog.GetCelFunctions() {
 		kind := "function"
 		if fn.GetMacro() {
@@ -64,11 +76,52 @@ func (g *Generator) renderTaskReference() string {
 		if fn.GetExample() != "" {
 			example = "`" + cell(fn.GetExample()) + "`"
 		}
-		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s |\n",
-			cell(fn.GetName()), cell(fn.GetLibrary()), kind, example)
+		signature := orDash(signatureCell(fn.GetSignature()))
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | %s |\n",
+			cell(fn.GetName()), cell(fn.GetLibrary()), kind, example, signature)
 	}
 
 	return b.String()
+}
+
+// writeTaskExample renders the smallest Flowfile step that runs task.
+//
+// Built by [taskexample.Build], the same function `flow tasks <name>` calls,
+// so the two cannot show a reader two different "smallest step that works"
+// for one task (#702) — a worked example is the one thing #702 found neither
+// surface had at all.
+//
+// task's TaskDef comes from [v1.DefaultRegistry] by name rather than from a
+// second walk of it: [v1.Catalog] is built by mapping this exact registry
+// through [v1.DescribeTask] one task at a time, so every name this loop sees
+// is a name that registry already answered for — this is a lookup into that
+// same pass, not a second, possibly-divergent traversal of it.
+func writeTaskExample(b *strings.Builder, task *v1.TaskDescription) {
+	def, ok := v1.DefaultRegistry().Lookup(task.GetName())
+	if !ok {
+		// Unreachable: see the doc comment above — task's name came from
+		// ranging over this exact registry already.
+		panic(fmt.Sprintf("docsgen: task %q is in the catalog but not the registry", task.GetName()))
+	}
+
+	example, err := taskexample.Build(def)
+	if err != nil {
+		// Unreachable in a build that passes cmd/flow/internal/taskexample's own
+		// TestBuildValidates, which runs this over every registered task and
+		// fails there, by name, before this generator ever runs.
+		panic(fmt.Sprintf("docsgen: no worked example for task %q: %v", task.GetName(), err))
+	}
+
+	b.WriteString("**A step that uses it:**\n\n```yaml\n")
+	for _, line := range strings.Split(example, "\n") {
+		// Two spaces of indent for the terminal `flow tasks <name>` prints this
+		// beside, which is not what a fenced code block wants: what a reader
+		// copies out of a document is the block itself, and it should compile
+		// starting at column zero.
+		b.WriteString(strings.TrimPrefix(line, "  "))
+		b.WriteString("\n")
+	}
+	b.WriteString("```\n\n")
 }
 
 // writeTaskFields renders one task's inputs or outputs.
