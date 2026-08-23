@@ -3,7 +3,6 @@ package flowstatev1
 import (
 	"context"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -48,7 +47,7 @@ import (
 // So what the two drivers agree on is *the shape*, which is what an author is
 // actually being told: a run's trace is one tree, rooted in a single span that
 // covers the run, with every task span beneath it. They disagree about the
-// root's *name*, deliberately and visibly — `flowstate.run/<workflow>` locally,
+// root's *name*, deliberately and visibly — `flowstate.run` locally,
 // `RunWorkflow:Run` durably — because a local run genuinely is not a workflow
 // execution, and a rehearsal that named itself as one would be the trace lying
 // about which driver it came from. `conformance.AssertRunIsOneTree` takes the
@@ -138,14 +137,12 @@ const (
 // reaches a collector before the submission that carried it is refused.
 const MaxWorkflowNameLen = 128
 
-// RunSpanName is the name of the span covering one local run.
+// RunSpanName is the stable name of the span covering one local run.
 //
-// Asked for here rather than concatenated at the call site, so that the one
-// place a test compares against is the one place the driver reads — and, since
-// [boundedSpanName] is applied here, so that the expectation and the exported
-// name are bounded identically rather than only the exported one.
+// Deprecated: the workflow name is metadata, not part of an operation name.
+// The argument remains for source compatibility and has no effect.
 func RunSpanName(workflowName string) string {
-	return "flowstate.run/" + boundedSpanName(workflowName, MaxWorkflowNameLen)
+	return runSpanName
 }
 
 // StartRunSpan opens the span covering one local run.
@@ -158,20 +155,9 @@ func RunSpanName(workflowName string) string {
 // — see this file's doc for why the substrate's own workflow span is the run
 // span there.
 func StartRunSpan(ctx context.Context, w *Workflow) (context.Context, trace.Span) {
-	ctx, span := otel.GetTracerProvider().Tracer(taskTracerName).Start(ctx,
-		RunSpanName(w.GetName()), trace.WithSpanKind(trace.SpanKindInternal))
-
-	if !span.IsRecording() {
-		return ctx, span
-	}
-
-	// Bounded like the span name above it, and for the same reason: an attribute
-	// is exported to the same collector the name is, so bounding one and not the
-	// other would move the unbounded value rather than remove it.
-	span.SetAttributes(attribute.String(SpanAttributeWorkflowName,
-		boundedSpanName(w.GetName(), MaxWorkflowNameLen)))
-
-	return ctx, span
+	return startExecutionSpan(ctx, executionOperationRun,
+		attribute.String(SpanAttributeWorkflowName,
+			boundedSpanName(w.GetName(), MaxWorkflowNameLen)))
 }
 
 // RecordRunOutcome marks a failed run's span with what kind of failure it was.

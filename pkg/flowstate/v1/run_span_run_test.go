@@ -189,8 +189,16 @@ func TestSpanNamesAreBoundedBeforeExport(t *testing.T) {
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {
 		var limit int
 		switch {
-		case strings.HasPrefix(stub.Name, "flowstate.run/"):
+		case stub.Name == v1.RunSpanName(oversizedName):
 			limit = v1.MaxWorkflowNameLen
+			for _, attr := range stub.Attributes {
+				if string(attr.Key) == v1.SpanAttributeWorkflowName {
+					require.LessOrEqual(t, utf8.RuneCountInString(attr.Value.AsString()), limit+1,
+						"%s carries an unbounded workflow-name attribute", stub.Name)
+				}
+			}
+			checked++
+			continue
 		case strings.HasPrefix(stub.Name, "flowstate.task/"):
 			limit = v1.MaxTaskNameLen
 		default:
@@ -249,14 +257,14 @@ func TestALegalNameIsExportedExactly(t *testing.T) {
 	// mangled by an off-by-one in the bound.
 	exact := strings.Repeat("w", v1.MaxWorkflowNameLen)
 
-	require.Equal(t, "flowstate.run/"+exact, v1.RunSpanName(exact),
-		"a name exactly at the bound was altered")
+	require.Equal(t, "flowstate.run", v1.RunSpanName(exact),
+		"caller metadata altered the stable run operation name")
 	require.Equal(t, "flowstate.task/"+exact, v1.TaskSpanName(exact),
 		"a name exactly at the bound was altered")
 
 	// One character further is the first that may be cut.
-	require.NotEqual(t, "flowstate.run/"+exact+"w", v1.RunSpanName(exact+"w"),
-		"a name past the bound was exported unchanged")
+	require.Equal(t, v1.RunSpanName(exact), v1.RunSpanName(exact+"w"),
+		"caller metadata altered the stable run operation name")
 }
 
 // TestLocalRunSpanRecordsAPanicAsAFailure is the run-level half of #888's

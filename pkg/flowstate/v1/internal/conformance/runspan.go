@@ -14,7 +14,7 @@ import (
 // # Why the root's name is a parameter and the shape is not
 //
 // The two drivers name the root differently, on purpose. Locally it is
-// `flowstate.run/<workflow>`, opened by [v1.StartRunSpan] at the submit
+// `flowstate.run`, opened by [v1.StartRunSpan] at the submit
 // boundary, because nothing else in a one-process run opens anything above the
 // tasks. Durably it is Temporal's own `RunWorkflow:Run`, because the substrate
 // already opens a span at exactly that seam and workflow code may not open a
