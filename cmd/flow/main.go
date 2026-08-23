@@ -1162,15 +1162,19 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// nowhere else. An editor asks this process a question per keystroke, and
 	// launching a binary is not an answer to a keystroke; nor may the workspace
 	// decide it, because a repository somebody cloned would then choose what
-	// their editor executes. The only thing that turns this on is --plugin-dir on
-	// the command line the person configured their editor with, which is an
-	// operator saying yes about their own machine. That is the whole of the
-	// opt-in, and it is why there is no configuration path to the same effect.
+	// their editor executes. The only thing that turns this on is an absolute
+	// --plugin-dir on the command line the person configured their editor with,
+	// which is an operator saying yes about their own machine. That is the whole
+	// of the opt-in, and it is why there is no configuration path to the same effect.
 	//
 	// Strict, as a worker is: a plugin that will not come up fails the command
 	// here rather than leaving an editor quietly reporting `unknown task` for
 	// tasks the author asked for and had every reason to expect.
-	_, closePlugins, err := startPlugins(cmd, nil)
+	pluginFlags, err := lspPluginFlagsOf(cmd)
+	if err != nil {
+		return err
+	}
+	_, closePlugins, err := startPluginsWithFlags(cmd, nil, pluginFlags)
 	if err != nil {
 		return err
 	}
@@ -2116,7 +2120,7 @@ flow mcp --plugin-dir ./plugins`,
 			"to it over the same stdin and stdout this process already has, so there is " +
 			"no address or port to configure. In VS Code, point a generic LSP extension " +
 			"(or an extension you write) at the command; in Neovim's built-in client, " +
-			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"./plugins\"` to the table " +
+			"`cmd = {\"flow\", \"lsp\"}` (add `\"--plugin-dir\", \"/opt/flowstate/plugins\"` to the table " +
 			"if a plugin's tasks should stop reading as unknown) with `filetypes` set to " +
 			"Flowfile's, typically YAML.",
 		RunE: runLSP,
@@ -2125,7 +2129,7 @@ flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
-flow lsp --plugin-dir ./plugins`,
+flow lsp --plugin-dir /opt/flowstate/plugins`,
 	}
 
 	// The same flags `flow worker` takes, doing the same thing — one discovery
@@ -2142,6 +2146,9 @@ flow lsp --plugin-dir ./plugins`,
 	// is not a moment to launch a process. Somebody types this flag for their own
 	// machine, once, in the editor configuration that starts the server.
 	addPluginFlags(lspCmd)
+	lspCmd.Flags().Lookup("plugin-dir").Usage =
+		"absolute directory to discover plugins in, repeatable, in precedence order; " +
+			"relative paths and $" + pluginSearchPathEnv + " are not accepted by the editor process"
 
 	// Add command groups for better organization
 	rootCmd.AddGroup(&cobra.Group{

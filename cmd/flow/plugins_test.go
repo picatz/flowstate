@@ -206,6 +206,27 @@ func TestTheLanguageServerTakesThePluginFlags(t *testing.T) {
 	}
 }
 
+func TestTheLanguageServerRefusesWorkspaceRelativePluginDirectories(t *testing.T) {
+	cmd := &cobra.Command{}
+	addPluginFlags(cmd)
+	require.NoError(t, cmd.Flags().Set("plugin-dir", "plugins"))
+
+	_, err := lspPluginFlagsOf(cmd)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute path")
+}
+
+func TestTheLanguageServerDoesNotReadThePluginDirectoryEnvironment(t *testing.T) {
+	t.Setenv(pluginSearchPathEnv, filepath.Join(t.TempDir(), "plugins"))
+	cmd := &cobra.Command{}
+	addPluginFlags(cmd)
+
+	flags, err := lspPluginFlagsOf(cmd)
+	require.NoError(t, err)
+	assert.Empty(t, flags.dirs,
+		"an editor process inherited a plugin search path that can select workspace code")
+}
+
 // TestTheLanguageServerFailsLoudlyWhenAPluginWillNotStart.
 //
 // Degrading quietly to no plugins is the state this whole path exists to end: an

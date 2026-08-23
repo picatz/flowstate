@@ -94,6 +94,34 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	}, nil
 }
 
+// lspPluginFlagsOf applies the narrower trust boundary of an editor process.
+// Editors commonly start language servers with the opened workspace as their
+// working directory, so neither an environment default nor a relative path may
+// select executable code for this command.
+func lspPluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
+	dirs, _ := cmd.Flags().GetStringArray("plugin-dir")
+	if !cmd.Flags().Changed("plugin-dir") {
+		dirs = nil
+	}
+
+	for _, dir := range dirs {
+		if !filepath.IsAbs(dir) {
+			return pluginFlags{}, fmt.Errorf("LSP plugin directory %q must be an absolute path", dir)
+		}
+	}
+
+	only, _ := cmd.Flags().GetStringArray("plugin")
+	schemes, _ := cmd.Flags().GetStringArray("plugin-scheme")
+	allowInsecure, _ := cmd.Flags().GetBool("allow-insecure-plugin-dir")
+
+	return pluginFlags{
+		dirs:              dirs,
+		only:              only,
+		schemes:           schemes,
+		allowInsecureDirs: allowInsecure,
+	}, nil
+}
+
 // splitSearchPath splits a path-list environment variable, dropping empties.
 //
 // An empty entry is dropped rather than resolved, because it resolves to the
@@ -312,12 +340,15 @@ func inputFields(fields []*v1.TaskField) []v1.InputField {
 // it until the process exits, which is the only lifecycle this supports and the
 // only one it needs.
 func startPlugins(cmd *cobra.Command, secretProviders *secrets.Registry) (*v1.PluginCatalog, func(), error) {
-	noop := func() {}
-
 	flags, err := pluginFlagsOf(cmd)
 	if err != nil {
-		return nil, noop, err
+		return nil, func() {}, err
 	}
+	return startPluginsWithFlags(cmd, secretProviders, flags)
+}
+
+func startPluginsWithFlags(cmd *cobra.Command, secretProviders *secrets.Registry, flags pluginFlags) (*v1.PluginCatalog, func(), error) {
+	noop := func() {}
 
 	if !flags.configured() {
 		return nil, noop, nil
