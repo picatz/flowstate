@@ -421,8 +421,15 @@ outputs:
     value: ${steps.reconcile.results.filter(p, has(p.converge)).size()}
     description: how many of those passes found drift and wrote to the control plane — the rest observed a converged workload and did nothing, which is the state a healthy reconciler spends most of its life in
   final_desired_replicas:
-    value: ${steps.reconcile.state.desired}
-    description: the replica count this reconciler was responsible for when it stopped, after every valid spec change it was told about
+    # From the stopping iteration's own `next_desired`, not from the carried
+    # state, for the same skipped-`update:` fact `wakeups` records above: a
+    # valid spec change adopted on the pass that ends the run is written to the
+    # control plane, but `until:` holding skips `update:`, so `state.desired`
+    # still holds the previous count — stale intent for a run that just
+    # converged toward the new one. The last iteration is the one that ended
+    # the run, and what it converged on is `next_desired` by construction.
+    value: ${steps.reconcile.results[steps.reconcile.results.size() - 1].next_desired.value}
+    description: the replica count this reconciler was responsible for when it stopped, after every valid spec change it was told about - including one adopted on the final pass
   final_observed_replicas:
     value: ${steps.observations.value[steps.pass_count.value - 1]}
     description: what the control plane last reported, which is the claim about the world rather than about this run's intent
