@@ -486,6 +486,7 @@ flow keys generate --out /etc/flowstate/keys/2026-09.pem
 # 2. Restart with both, newest first. The process signs with 2026-09 and keeps
 #    publishing 2026-08, so assertions the previous process signed keep verifying.
 flow server --auth-policy /etc/flowstate/auth.yaml \
+  --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/keys/2026-09.pem \
   --identity-key /etc/flowstate/keys/2026-08.pem
 
@@ -493,6 +494,7 @@ flow server --auth-policy /etc/flowstate/auth.yaml \
 #    to outlast both the old assertions and every relying party's cached key set),
 #    restart with the new key alone and delete the old one.
 flow server --auth-policy /etc/flowstate/auth.yaml \
+  --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/keys/2026-09.pem
 ```
 

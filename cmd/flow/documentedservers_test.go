@@ -28,17 +28,32 @@ import (
 // The check is derived rather than declared: nothing lists which documents
 // contain a server command, so a walkthrough added tomorrow is covered the day
 // it is written, and one whose policy file drifts out of agreement with the
-// audience it documents fails here rather than in somebody's terminal. What it
-// cannot check is a command naming a policy path outside the repository
-// (/etc/flowstate/trust.yaml in a production recipe) — there is no file to
-// load, so those are counted and skipped, and the count is asserted to keep
-// the walk itself honest about how much it is actually reading.
+// audience it documents fails here rather than in somebody's terminal.
+//
+// # Two strengths of check, and why the weaker one is not a skip
+//
+// A production recipe names a policy path outside this repository
+// (/etc/flowstate/trust.yaml), and there is no file to load, so the exact
+// audience cannot be compared against any issuer's audiences. What can still be
+// read is the *flag surface*: whether the command says anything at all about
+// the Connect RPC audience. An operator following such a recipe supplies their
+// own policy, and a policy with a kind: oidc issuer — the case every
+// authenticated production deployment is in — makes a command carrying neither
+// --rpc-resource nor --allow-issuer-wide-audiences one that cannot start.
+//
+// Skipping those outright is what the first version of this test did, and it
+// left THREAT_MODEL.md's two key-rotation commands broken while reporting
+// green, and would not have noticed the Tier 2 flag in docs/DEPLOYMENT.md being
+// deleted again — the very line this test was written alongside. Reported by
+// Codex on picatz/flowstate#1053. So an unloadable policy is a weaker assertion
+// rather than no assertion, and both counts are asserted non-zero: a walk that
+// stopped reading either kind would otherwise pass by finding nothing.
 func TestDocumentedServerInvocationsStart(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join("..", "..")
 
-	var checked, skipped int
+	var resolved, flagsOnly int
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -64,11 +79,21 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 			if policyPath == "" {
 				// --insecure-no-auth, or a server started with no trust
 				// policy at all: resolveRPCResource has nothing to load and
-				// nothing to require.
+				// nothing to require. Not a skipped check — there is no
+				// requirement here to check.
 				continue
 			}
+
 			if _, statErr := os.Stat(filepath.Join(root, policyPath)); statErr != nil {
-				skipped++
+				// The weaker check: the policy lives on the deployment's own
+				// disk, so all this can read is whether the command says
+				// anything about the RPC audience at all.
+				require.Truef(t, flags.resource != "" || flags.allowIssuerWideAudiences,
+					"%s documents a `flow server` whose policy this test cannot load (%s), and which names "+
+						"neither --rpc-resource nor --allow-issuer-wide-audiences — an operator whose policy "+
+						"has a kind: oidc issuer, which is every authenticated deployment, cannot start it:"+
+						"\n\t%s\n", path, policyPath, command)
+				flagsOnly++
 				continue
 			}
 
@@ -79,15 +104,17 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 
 			_, err = resolveRPCResource(flags, authFlags{policyPath: policyPath}, &policy)
 			require.NoErrorf(t, err, "%s documents a `flow server` that cannot start:\n\t%s\n", path, command)
-			checked++
+			resolved++
 		}
 		return nil
 	})
 	require.NoError(t, err)
 
-	require.NotZero(t, checked, "no documented server invocation was checked; the walk or the fence syntax changed")
-	require.NotZero(t, skipped, "no invocation named a policy outside the repository; if that is now true of every "+
-		"recipe, drop this assertion rather than the walk")
+	require.NotZero(t, resolved, "no documented server invocation was resolved against a policy in this "+
+		"repository; the walk or the fence syntax changed")
+	require.NotZero(t, flagsOnly, "no documented server invocation named a policy outside this repository; if that "+
+		"is now true of every production recipe, delete this assertion deliberately rather than letting the walk "+
+		"quietly stop reading them")
 }
 
 // serverCommandsIn returns every `flow server ...` command line in a Markdown
