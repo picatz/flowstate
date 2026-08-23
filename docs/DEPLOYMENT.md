@@ -833,11 +833,18 @@ TEMPORAL_TLS_CLIENT_KEY_PATH=/etc/flowstate/client.key
 
 ```console
 $ flow worker --deployment-name flowstate --build-id "$(git rev-parse --short HEAD)"
-$ flow server
+$ flow server --auth-policy /etc/flowstate/policy.yaml \
+    --rpc-resource https://flowstate.example.com/rpc
 ```
 
-Both pick these up from the environment with no Flowstate-specific
-configuration — that's the whole point of following Temporal's own
+The server's two flags are its own authentication, unrelated to Temporal Cloud
+and unchanged by it: every `flow server` either loads a trust policy or says
+`--insecure-no-auth`, and one whose policy trusts a bearer issuer names the
+audience its Connect RPC surface answers as (see
+[bearer-token audiences](#bearer-token-audiences-are-per-surface)).
+
+Both pick the Temporal settings up from the environment with no
+Flowstate-specific configuration — that's the whole point of following Temporal's own
 `envconfig` convention instead of inventing one.
 
 **Honesty check, because this is the one recipe in this document that isn't
