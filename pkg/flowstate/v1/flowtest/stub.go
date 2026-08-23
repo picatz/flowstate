@@ -578,6 +578,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
 		}
 
+		// An invocation nothing answered clears any attribution an earlier
+		// attempt of the same step recorded — see [runRecorder.stubUnmatched].
+		if recorder := runRecorderFromContext(ctx); recorder != nil {
+			serving, _ := v1.TaskStepFromContext(ctx)
+			recorder.stubUnmatched(serving)
+		}
+
 		// A where: that failed to evaluate is a broken expression, the same
 		// kind [m.matches] itself would have reported had this returned
 		// immediately; a where: that merely evaluated false is an ordinary

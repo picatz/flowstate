@@ -362,6 +362,111 @@ tests:
 	assert.Contains(t, text, "sender: [redacted]")
 }
 
+// TestTranscriptRedactsAPayloadKey pins round three's P1 on #1052: a payload
+// or `returns:` key is authored text a sensitive value can be spelled into,
+// and per-value redaction alone printed it. The joined fragment now passes
+// the substring backstop, keys included.
+func TestTranscriptRedactsAPayloadKey(t *testing.T) {
+	t.Parallel()
+
+	const material = "hunter2-super-secret"
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: keyed
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: gate
+    wait_for_signal:
+      name: go
+      timeout: 1h
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the sensitive value is a payload key
+    workflow: ./workflow.yaml
+    inputs:
+      token: `+material+`
+    signals:
+      - name: go
+        at: 5m
+        payload:
+          `+material+`: true
+    expect:
+      ran: [gate]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	require.NotContains(t, text, material,
+		"a sensitive value spelled as a key must redact exactly as one spelled as a value")
+	assert.Contains(t, text, "[redacted]")
+}
+
+// TestTranscriptClearsAStaleStubAttribution pins round three's other finding:
+// a retried step whose first attempt a times: stub answered, and whose final
+// attempt nothing did, must not render that stub's identity beside a failure
+// the unanswered attempt produced — the failure's own text names what did not
+// match.
+func TestTranscriptClearsAStaleStubAttribution(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: retried
+steps:
+  - id: flaky
+    retry:
+      attempts: 2
+      interval: 1s
+    log:
+      message: trying
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the retry outlives the stub
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        times: 1
+        fails:
+          message: transient
+    expect:
+      failed: true
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	var failing string
+	for _, line := range result.Transcripts[0] {
+		if strings.Contains(line.Text, "FAILED:") {
+			failing = line.Text
+		}
+	}
+	require.NotEmpty(t, failing, "the step's failure must be in the account")
+	// The failure text itself rightly lists the verdicts ("stub 1 requires:
+	// ... drained"); what must not appear is the renderer's *attribution*
+	// suffix claiming that stub answered the outcome.
+	assert.NotContains(t, failing, `stub 1 (task "log")`,
+		"the failing attempt was answered by nothing; attributing it to the drained stub would be a false claim")
+	assert.Contains(t, failing, "drained", "the diagnostic's own account of the drained stub stands")
+}
+
 // TestTranscriptOfAFailingRunEndsOnTheFailure: the account a failing case
 // arrives with shows the steps that ran and then the step it died on, in the
 // danger tone — the whole reason the transcript exists.

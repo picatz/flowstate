@@ -83,6 +83,7 @@ const (
 	eventSignalDelivered
 	eventSignalRefused
 	eventStubAnswered
+	eventStubUnmatched
 )
 
 // runRecorderKey carries the recorder to the two harness-side recording
@@ -164,6 +165,17 @@ func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingSt
 	r.record(transcriptEvent{kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep})
 }
 
+// stubUnmatched records that an invocation ended with no matcher answering —
+// the drained/unmatched fall-through. Its whole job is to clear a stale
+// attribution (Codex, #1052): a retried step whose earlier attempt a stub
+// answered, and whose final attempt nothing did, must not render that stub's
+// identity beside the failure the *unanswered* attempt produced. The failure
+// text itself already names what did not match; this event draws no line of
+// its own.
+func (r *runRecorder) stubUnmatched(servingStep string) {
+	r.record(transcriptEvent{kind: eventStubUnmatched, step: servingStep})
+}
+
 // deliverRecorded runs one scripted delivery and records its outcome — the
 // delivery, or the refusal a declared signal policy or the queue's bound
 // answers with — *under the recorder's own lock, around the send itself*.
@@ -228,6 +240,9 @@ func (r *runRecorder) render() []TranscriptLine {
 				continue
 			}
 			pendingStub[e.step] = e
+
+		case eventStubUnmatched:
+			delete(pendingStub, e.step)
 
 		case eventStepFinished:
 			text, tone := stepOutcomeText(e, sensitive)
@@ -330,6 +345,15 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs) (string, Tran
 		}
 	}
 
+	// The whole fragment is withheld when the redaction set could not be
+	// built, and the *joined* fragment passes the substring backstop before
+	// the cap — keys included, because a stub's `returns:` keys and a
+	// payload's keys are authored text a sensitive value can be spelled into,
+	// and per-value redaction alone would print them (Codex, #1052).
+	if sensitive.withholdAll {
+		return "-> [withheld]", ToneInfo
+	}
+
 	names := make([]string, 0, len(named))
 	for name := range named {
 		names = append(names, name)
@@ -340,7 +364,7 @@ func stepOutcomeText(e transcriptEvent, sensitive sensitiveInputs) (string, Tran
 	for _, name := range names {
 		parts = append(parts, name+": "+redactedValueText(named[name], sensitive))
 	}
-	return "-> " + capRunes(strings.Join(parts, ", "), 120), ToneInfo
+	return "-> " + capRunes(redactSensitiveSubstrings(strings.Join(parts, ", "), sensitive.substrings), 120), ToneInfo
 }
 
 // redactedValueText renders one recorded output value through the same
@@ -357,8 +381,13 @@ func redactedValueText(value *v1.Value, sensitive sensitiveInputs) string {
 	return redactedScalarText(native, sensitive)
 }
 
-// redactedGoValue renders a native map (a signal payload) compactly, redacted.
+// redactedGoValue renders a native map (a signal payload) compactly,
+// redacted — the joined fragment passing the substring backstop keys
+// included, for [stepOutcomeText]'s reason.
 func redactedGoValue(payload map[string]any, sensitive sensitiveInputs) string {
+	if sensitive.withholdAll {
+		return "[withheld]"
+	}
 	if len(payload) == 0 {
 		return "{}"
 	}
@@ -371,7 +400,7 @@ func redactedGoValue(payload map[string]any, sensitive sensitiveInputs) string {
 	for _, name := range names {
 		parts = append(parts, name+": "+redactedScalarText(payload[name], sensitive))
 	}
-	return capRunes("{"+strings.Join(parts, ", ")+"}", 120)
+	return capRunes(redactSensitiveSubstrings("{"+strings.Join(parts, ", ")+"}", sensitive.substrings), 120)
 }
 
 // redactedScalarText is the one spelling of "a value, safe to print": the

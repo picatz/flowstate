@@ -139,6 +139,47 @@ func TestRunObserverSeesASignalWaitPark(t *testing.T) {
 	assert.Equal(t, observedEvent{kind: "finished", id: "approval"}, log.events[1])
 }
 
+// mutatingObserver edits every outputs it is handed — the misuse the
+// read-only contract forbids, which cloning makes harmless.
+type mutatingObserver struct{ eventLog }
+
+func (m *mutatingObserver) StepFinished(id string, outputs *v1.Node_Outputs, err error, tolerated bool) {
+	if outputs != nil && outputs.NamedValues != nil {
+		for k := range outputs.NamedValues {
+			outputs.NamedValues[k] = v1.NewLiteral("tampered")
+		}
+	}
+	m.eventLog.StepFinished(id, outputs, err, tolerated)
+}
+
+// TestAnObserverCannotWriteIntoTheRun pins the isolation (Codex, #1052): the
+// pointer recordStepOutcome stores is what later expressions and the run's
+// final outputs read, so an observer that edits what it was handed must be
+// editing its own copy — an observed run may never differ from an unobserved
+// one.
+func TestAnObserverCannotWriteIntoTheRun(t *testing.T) {
+	t.Parallel()
+
+	workflow := &v1.Workflow{
+		Name: "tamperproof",
+		Steps: []*v1.Node{
+			{Id: "value", Kind: &v1.Node_Value{Value: v1.NewExpr("41 + 1")}},
+		},
+		DeclaredOutputs: []*v1.OutputDeclaration{
+			{Name: "answer", Value: v1.NewExpr("steps.value.value")},
+		},
+	}
+
+	ctx := v1.NewContextWithRunObserver(t.Context(), &mutatingObserver{})
+	outputs, err := v1.Run(ctx, workflow)
+	require.NoError(t, err)
+
+	answer, convErr := v1.LiteralToGo(outputs.GetRunOutputs().GetValues()["answer"].GetLiteral())
+	require.NoError(t, convErr)
+	assert.EqualValues(t, 42, answer,
+		"the observer edited its own copy; the run's record must be untouched")
+}
+
 // TestNoObserverMeansNoAccount is the default every run outside a harness
 // takes: nothing installed, nothing consulted, the run identical to what it
 // always was. The assertion is simply that the run works with no observer on

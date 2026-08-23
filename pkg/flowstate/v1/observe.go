@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // RunObserver receives the local driver's own account of a run as it happens:
@@ -39,6 +41,11 @@ type RunObserver interface {
 	// failure. It fires at the same single point the transcript itself is
 	// written — recordStepOutcome and its loop-body equivalents — so the
 	// account and the record cannot disagree about what a step produced.
+	//
+	// outputs is the observer's own copy, cloned before the callback: the
+	// run's transcript holds the original, and an account that could write
+	// back into it would not be read-only, it would be a second author of
+	// what later expressions see.
 	StepFinished(id string, outputs *Node_Outputs, err error, tolerated bool)
 
 	// StepSkipped reports a step whose `if:` evaluated false. It is the one
@@ -74,9 +81,21 @@ func RunObserverFromContext(ctx context.Context) RunObserver {
 // engine's call sites' spelling: nil-safe, so the hot path pays one context
 // lookup and nothing else when no harness is listening.
 func observeStepFinished(ctx context.Context, id string, outputs *Node_Outputs, err error, tolerated bool) {
-	if observer := RunObserverFromContext(ctx); observer != nil {
-		observer.StepFinished(id, outputs, err, tolerated)
+	observer := RunObserverFromContext(ctx)
+	if observer == nil {
+		return
 	}
+
+	// Cloned so the read-only contract is structural rather than polite: the
+	// pointer recordStepOutcome just stored IS what later expressions and the
+	// run's final outputs read, and an observer that edited it would make an
+	// observed run differ from an unobserved one — the one thing an account
+	// must never do. Paid only when someone is listening.
+	var copied *Node_Outputs
+	if outputs != nil {
+		copied = proto.Clone(outputs).(*Node_Outputs)
+	}
+	observer.StepFinished(id, copied, err, tolerated)
 }
 
 func observeStepSkipped(ctx context.Context, id string) {
