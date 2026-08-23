@@ -264,6 +264,28 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		}},
 	},
 
+	// approval-escalation belongs here rather than in [exampleLapsingGates] for
+	// renewal-reminder's reason with one extra wrinkle. Its gate does lapse, and
+	// lapsing is half of what it demonstrates — but the chase's cadence is an
+	// hour and its budget is four asks, so an unanswered run takes four hours to
+	// reach its auto-reject and [conformance.LapsesWithin] rightly refuses to
+	// promise that inside [unattendedGateBudget]. Answering closes the chase on
+	// its first ask, which is the shape this shared table can express: it hands
+	// each name one delivery, and one is all an approval needs.
+	//
+	// The reminder cadence, the escalation to the backup approver and the
+	// budget-exhausted auto-reject are what the file's own workflow.test.yaml
+	// walks on the local driver's virtual clock, where a signal can be scripted
+	// for a named moment and the deadlines can be allowed to pass.
+	//
+	// The payload is the one this example's own `flow signal` line documents, and
+	// `approved` is the key its gate's `outputs:` shaping reads.
+	"approval-escalation": {
+		"approval-decision": {NamedValues: map[string]*v1.Value{
+			"approved": v1.NewLiteral(true),
+		}},
+	},
+
 	// optional-dispatch's own workflow.test.yaml covers all three outcomes —
 	// approved, rejected, and the lapse — through the local driver, where the
 	// deadline can be moved and a signal with no `approved` key can be sent at

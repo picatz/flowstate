@@ -64,6 +64,13 @@ var switchCorpusTable = map[string]switchCorpusEntry{
 	"expense-approval/settle": closedDomain("denied_no_response", "approved_after_escalation",
 		"denied", "approved_by_manager"),
 
+	// `settle` dispatches on `outcome`, a `value:` step whose false branch is
+	// one hop into `steps.unapproved.value`, itself a ternary over string
+	// literals — the same decomposed shape as `expense-approval/settle`, two
+	// steps deep instead of inline, so the domain closes through the
+	// recursive leaf walk.
+	"approval-escalation/settle": closedDomain("approved", "rejected", "auto_rejected"),
+
 	// `report` dispatches on `outcome`, a `value:` step over `steps.decision`'s
 	// own `.payload.?accepted` — the identical `optMap`/`orValue` chain
 	// approval-gate's own gate uses, reached through a `value:` step rather
