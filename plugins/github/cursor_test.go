@@ -78,14 +78,19 @@ func TestDecodePageCursorRefusesGarbage(t *testing.T) {
 	}
 }
 
-// encodePageCursorRawForTest builds a cursor with a page number
-// encodePageCursor itself would never be asked to encode (0) - reaching
-// past the normal constructor deliberately, the way plugins/git's own
-// cursor tests reach directly into decodeCursor to prove the structural
-// check fires regardless of how the bad value was produced. Duplicates
-// encodePageCursor's own packing by hand rather than calling it, since
-// encodePageCursor is production code that never needs to write an
-// out-of-range page number.
+// encodePageCursorRawForTest builds a cursor carrying a page or skip
+// encodePageCursor itself would never be asked to encode - page 0, or a
+// skip at or past maxPerPage - reaching past the normal constructor
+// deliberately, the way plugins/git's own cursor tests reach directly into
+// decodeCursor to prove the structural check fires regardless of how the
+// bad value was produced. Duplicates encodePageCursor's own packing by hand
+// rather than calling it, since encodePageCursor is production code that
+// never needs to write an out-of-range value.
+//
+// Both fields are uint32 rather than int on purpose: the wire format's own
+// types, so a case can name a value (1<<31, say) that no int-typed helper
+// could hand a 32-bit worker without wrapping on the way in - which would
+// test the conversion rather than the decoder.
 func encodePageCursorRawForTest(page, skip uint32, fp fingerprint) string {
 	buf := make([]byte, 0, cursorRawLen)
 	buf = append(buf, cursorMagic...)

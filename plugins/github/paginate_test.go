@@ -105,8 +105,11 @@ func TestPaginateBoundedReturnsEverythingWhenUnderTheCap(t *testing.T) {
 }
 
 // TestPaginateBoundedClampsANegativeSkip is defense in depth for callers
-// other than the cursor decoder: an invalid resume position must never become
-// a negative index into a fetched page.
+// other than the cursor decoder: an invalid resume position must never
+// become a negative index into a fetched page. decodePageCursor refuses one
+// before it reaches here in production, so this is the belt to that pair of
+// braces - a startSkip below zero has to come back as a complete, ordinary
+// walk from index 0, not as an out-of-range index into got.
 func TestPaginateBoundedClampsANegativeSkip(t *testing.T) {
 	fetch, _ := pagedInts(3)
 
@@ -194,6 +197,106 @@ func TestPaginateBoundedStopsAgainstAPeerThatPagesForever(t *testing.T) {
 	}
 	if requests != maxRequests {
 		t.Fatalf("requests = %d, want exactly %d - the request bound must be reached, not merely respected", requests, maxRequests)
+	}
+}
+
+// overDeliveringInts builds a fetch function serving n consecutive integers
+// (0..n-1) addressed the way a page-number API addresses them - the page
+// asked for starts at (page-1)*perPage, and a further page is reported
+// while entries past this page's own perPage window remain - but answering
+// every request with overshoot times as many items as perPage asked for.
+//
+// That is the peer github.com is not and a GitHub Enterprise (or any other
+// configured base_url) may be: it honours the offset half of the paging
+// contract this walk depends on and ignores the size half. pagedInts, by
+// contrast, is the cooperative peer - it never returns more than perPage.
+func overDeliveringInts(n, overshoot int) func(ctx context.Context, page, perPage int) ([]int, *github.Response, error) {
+	return func(_ context.Context, page, perPage int) ([]int, *github.Response, error) {
+		start := (page - 1) * perPage
+		if start >= n {
+			return nil, &github.Response{}, nil
+		}
+		end := min(start+perPage*overshoot, n)
+		items := make([]int, 0, end-start)
+		for i := start; i < end; i++ {
+			items = append(items, i)
+		}
+		next := 0
+		if start+perPage < n {
+			next = page + 1
+		}
+		return items, &github.Response{NextPage: next}, nil
+	}
+}
+
+// TestPaginateBoundedWalksToExhaustionAgainstAPeerThatOverDelivers is
+// CLAUDE.md's "test the traversal, not just the step" pointed at the
+// resource this walk does not otherwise bound: how many entries the peer
+// puts in one response. Every other test in this file makes one call and
+// asserts something about one page, which is precisely the shape that
+// cannot see a cursor the walk emits and then refuses to accept back.
+//
+// The peer here answers a 100-record request with 300 records, walked with
+// the sizes production actually uses (perPage == maxPerPage, maxItems under
+// maxMaxResults and deliberately not a multiple of perPage, so a stop lands
+// mid-page rather than only at a page boundary). Each emitted position is
+// round-tripped through encodePageCursor/decodePageCursor before it is used
+// to resume - not as decoration, but because that is exactly what every list
+// task does with it (issue_list.go's next_cursor and its siblings), so a
+// nextSkip the decoder refuses is a truncated walk with no way to continue
+// at all. Then the union is checked against the complete, known set: every
+// item reached, exactly once, none lost behind a cursor that moved past it
+// and none returned twice by a page whose offset the walk misjudged.
+func TestPaginateBoundedWalksToExhaustionAgainstAPeerThatOverDelivers(t *testing.T) {
+	const (
+		total     = 650        // not a multiple of perPage, so the last page is partial
+		perPage   = maxPerPage // what every list task asks GitHub for
+		maxItems  = 150        // under maxMaxResults (200), and not a multiple of perPage
+		overshoot = 3          // 300 records answering a 100-record request
+	)
+
+	fetch := overDeliveringInts(total, overshoot)
+	fp := filterFingerprint("over-delivering-peer")
+
+	seen := make(map[int32]int, total)
+	page, skip := 1, 0
+	for walks := 0; ; walks++ {
+		if walks > total {
+			t.Fatalf("made %d calls without exhausting %d items - looks like an infinite loop", walks, total)
+		}
+
+		items, truncated, nextPage, nextSkip, err := paginateBounded(
+			context.Background(), page, skip, perPage, maxItems, maxListRequests, unboundedResultBytes, fetch, identity)
+		if err != nil {
+			t.Fatalf("paginateBounded (call %d): unexpected error: %v", walks, err)
+		}
+		if len(items) > maxItems {
+			t.Fatalf("len(items) = %d, over the %d item bound this call was given - the peer's page size is not this walk's bound to spend",
+				len(items), maxItems)
+		}
+		for _, item := range items {
+			seen[item.GetValue()]++
+		}
+		if !truncated {
+			break
+		}
+
+		cur, err := decodePageCursor(encodePageCursor(nextPage, nextSkip, fp))
+		if err != nil {
+			t.Fatalf("call %d emitted page %d, skip %d, which this plugin's own cursor decoder refuses: %v - "+
+				"a walk that cannot re-read its own resume position is a truncated result with no way to continue",
+				walks, nextPage, nextSkip, err)
+		}
+		page, skip = cur.page, cur.skip
+	}
+
+	if len(seen) != total {
+		t.Fatalf("saw %d distinct items, want %d", len(seen), total)
+	}
+	for i := int32(0); i < total; i++ {
+		if seen[i] != 1 {
+			t.Errorf("item %d was seen %d times, want exactly 1", i, seen[i])
+		}
 	}
 }
 
