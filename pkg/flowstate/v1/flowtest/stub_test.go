@@ -350,6 +350,59 @@ tests:
 	require.True(t, found, "expected an expect.failed diagnostic redacting the nested sensitive value; got %v", c.GetFailures())
 }
 
+// A sensitive declaration can itself be structured. Selecting a leaf from it
+// must preserve the declaration's sensitivity even though that scalar is not
+// DeepEqual to the whole value stored in the run scope.
+func TestUnmatchedStubRedactsALeafOfASensitiveStructuredInput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.3
+name: structured-credentials
+inputs:
+  creds:
+    type: struct
+    sensitive: true
+    required: true
+steps:
+  - id: call
+    http:
+      url: https://example.invalid/probe
+      headers:
+        Authorization: ${inputs.creds.token}
+outputs: {}
+`)
+	writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: a selected credential field never reaches the failure text
+    workflow: ./workflow.yaml
+    inputs:
+      creds:
+        token: shh-structured-secret
+    stubs:
+      - task: http
+        where: inputs.url == 'https://nope.invalid/'
+    expect:
+      outputs: {}
+`)
+
+	report := flowtest.RunFile(dir + "/workflow.test.yaml")
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+
+	c := report.GetCases()[0]
+	require.False(t, c.GetPassed())
+	for _, f := range c.GetFailures() {
+		if f.GetField() == "expect.failed" {
+			require.NotContains(t, f.GetMessage(), "shh-structured-secret")
+			require.Contains(t, f.GetMessage(), "[redacted]")
+			return
+		}
+	}
+	require.Fail(t, "expected an expect.failed diagnostic", "%v", c.GetFailures())
+}
+
 // TestUnmatchedStubRedactsASensitiveValueInsideAList is the same nested-leaf
 // case for the other structured shape a native input can hold: an element of
 // a list, not only a value of a map.

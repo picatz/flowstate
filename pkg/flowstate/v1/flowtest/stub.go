@@ -541,8 +541,8 @@ type stubVerdict struct {
 const maxUnmatchedStubValueLen = 200
 
 // sensitiveNativeValues returns, as native Go values comparable with
-// [reflect.DeepEqual], the run's own values for every workflow input
-// sensitiveNames marks: the values [unmatchedStubError] must not print even
+// [reflect.DeepEqual], the run's own values and every value nested within each
+// workflow input sensitiveNames marks: the values [unmatchedStubError] must not print even
 // when they reach a task's inputs under a different name, since `sensitive:`
 // is a property of the value's origin, not of whatever a step chose to call
 // it. Returns nil when there is nothing to redact, which is the common case
@@ -565,7 +565,23 @@ func sensitiveNativeValues(scope *v1.Scope, sensitiveNames map[string]bool) []an
 		if err != nil {
 			continue
 		}
-		values = append(values, native)
+		// Sensitivity belongs to the declared input's origin, so it follows every
+		// descendant when a task selects one field or list element from a
+		// structured value. Keep the container too: a task may carry it whole.
+		pending := []any{native}
+		for len(pending) > 0 {
+			value := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			values = append(values, value)
+			switch value := value.(type) {
+			case map[string]any:
+				for _, child := range value {
+					pending = append(pending, child)
+				}
+			case []any:
+				pending = append(pending, value...)
+			}
+		}
 	}
 	return values
 }
