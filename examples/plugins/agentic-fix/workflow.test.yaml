@@ -339,7 +339,7 @@ tests:
         handed_off: true
         taken_over: true
 
-  - name: a CI answering unintelligibly reads as no pass, not as the end of the run
+  - name: a CI nobody can read hands over without touching the branch
     workflow: ./workflow.yaml
     secrets:
       env:OPENAI_API_KEY: not-a-real-key
@@ -357,32 +357,26 @@ tests:
               sha: sha-decoy
             - name: refs/heads/agent/fix
               sha: sha-0
-      - task: codex.exec
-        returns:
-          patch: "--- a/x\n+++ b/x\n"
-          final_message: a guess
-          output_tokens: 640
-          truncated: false
-      - task: git.commit_push
-        returns:
-          sha: '${"sha-%d".format([prior.n + 1])}'
-      # A `response:` stub rather than `returns:`, so the callee's real
-      # `parse_json:` and `outputs:` shaping run against this body (#925). A 200
-      # carrying a proxy's error page is rejected by `parse_json` before any
-      # guarded expression is evaluated, and permanently - so without the
-      # tolerated read in run-tests.yaml this would end the run on the very first
-      # call, before the loop or the gate.
+      # A `response:` stub, so the callee's real parse_json and outputs shaping
+      # run against this body (#925). A 200 carrying a proxy's error page is
+      # rejected by parse_json before any guarded expression is evaluated, and
+      # permanently - so the read is tolerated and reports no verdict at all.
       - task: http
         response:
           status_code: 200
           body: "<html>502 Bad Gateway</html>"
+      # No `codex.exec` and no `git.commit_push` stub, and that is the assertion
+      # this case exists to make: an unreadable verdict must not put an agent to
+      # work on a branch whose tests may be perfectly green. If the repair loop
+      # ran, it would reach a task with no stub and fail loudly, naming it.
     expect:
-      ran: [tip, base_sha, failing, attempt, attempted, unresolved, spent, fixed_sha, handoff, report]
+      ran: [tip, base_sha, failing, attempted, unresolved, spent, fixed_sha, handoff, report]
+      # The loop never starts: "nobody could tell me" is not "the suite failed".
+      skipped: [attempt]
       outputs:
-        # The unintelligible answer read as "not passing", so the agent got its
-        # attempt and the budget ran out into the human handoff - the ordinary
-        # unfixed path, reached without the run ever failing outright.
-        attempts: 1
+        # Nothing was attempted and nothing was written; a person was asked
+        # instead, and the run does not claim the build is fixed.
+        attempts: 0
         fixed: false
         fix_ref: ""
         handed_off: true

@@ -132,12 +132,34 @@ steps:
       ref: ${steps.base_sha.value}
   - id: attempt
     description: One try - a prompt built from the failure, a commit, and a test run at that commit - and its budget being spent is what asks a person.
-    # Only when the build is actually broken. A stale trigger, or a flaky failure
+    # Only when the build is *known* to be broken, which is a stronger condition
+    # than "not passing" and the difference is the whole of this gate.
+    #
+    # The verification can end three ways, not two: passing, failing, or nobody
+    # could tell us - a CI timeout, a 401, an exhausted 5xx, a proxy's error page
+    # with a 200 on it. `run-tests.yaml` reports that third state as `unknown:`
+    # rather than folding it into `passed: false`, because folding it here would
+    # send an agent to rewrite a branch whose tests may be perfectly green, on
+    # the strength of an outage. A run that cannot find out what the suite does
+    # writes nothing and asks a person instead.
+    #
+    # That is the same rule the reconciler states from the other side: a
+    # defaulted value is safe until something *writes* on the strength of it, and
+    # then it is a refusal rather than a default. This step is where that rule
+    # binds in this file, because this `if:` is what stands between an unknown
+    # answer and a commit.
+    #
+    # Inside the loop the fail-closed default is still the right one: an
+    # unintelligible `verify` reading spends the attempt rather than claiming a
+    # pass, and with a budget of one there is no second attempt for it to
+    # authorise. Were the budget larger, this same rule would apply to `until:`.
+    #
+    # A stale trigger, or a flaky failure
     # that cleared on its own, leaves `failing.passed` true — and asking an agent
     # to patch a green branch would mutate a repository that needed nothing. So
     # the whole loop is skipped there, and the outputs below read "fixed, zero
     # attempts": the build is good and this run wrote nothing.
-    if: ${!steps.failing.passed}
+    if: ${!steps.failing.unknown && !steps.failing.passed}
     # The budget being spent is a branch of this workflow, not the end of it.
     # Without this, an agent that failed five times would produce a FAILED run
     # and the `handoff` gate below would never be reached — the person who has to
@@ -289,7 +311,11 @@ steps:
   - id: attempted
     value: ${has(steps.attempt)}
   - id: unresolved
-    value: ${steps.attempted.value && has(steps.attempt.error)}
+    # Unresolved when the attempts ran out *or* when nobody could say what the
+    # suite does: both end with a person being asked, and neither may report the
+    # build as fixed. Without the `unknown` term a CI outage would skip the loop
+    # and then read as success, which is the worst of the three answers.
+    value: ${steps.failing.unknown || steps.attempted.value && has(steps.attempt.error)}
 
   # How many attempts actually ran, named once for the three places that ask.
   # A loop reports one `results` entry per iteration, so its size is the attempt

@@ -67,12 +67,42 @@ steps:
         passed: |-
           ${type(response.json) == type({}) && has(response.json.passed) && type(response.json.passed) == type(true) &&
           response.json.passed}
+        # Whether a verdict was actually *read*, as opposed to defaulted: the
+        # same checks without the final value, so true means the response carried
+        # a usable boolean whatever it said. This is what lets a caller tell "the
+        # suite failed" from "nobody could tell me" - a distinction that matters
+        # exactly when the answer gates a mutation.
+        verdict_read: ${type(response.json) == type({}) && has(response.json.passed) && type(response.json.passed) == type(true)}
       parse_json: true
       url: https://ci.internal.example.com/test-runs
 outputs:
   passed:
     value: ${has(steps.suite.passed) && steps.suite.passed}
     description: whether the suite passed at that commit
+  unknown:
+    # The third state, and the reason this workflow now has one. A tolerated read
+    # (a timeout, a 401, an exhausted 5xx, an unparseable body) leaves no outputs
+    # at all, and an intelligible response can still carry no usable verdict.
+    # Both are "nobody could tell me", which is not the claim "the suite failed".
+    #
+    # A caller that writes only when the suite is *known* to be failing needs
+    # that distinction: collapsing an outage into `passed: false` would send an
+    # agent to modify a branch whose tests may be perfectly green. agentic-fix's
+    # `attempt` step gates on this.
+    #
+    # Read in two parts, because the two ways of not knowing are different. No
+    # `passed` at all means the read itself was tolerated - a timeout, a 401, an
+    # exhausted 5xx, an unparseable body - and there is nothing to interpret. A
+    # `verdict_read` that is present and false means the response arrived and
+    # intelligibly carried no verdict. Either is "nobody could tell me".
+    #
+    # The middle clause is deliberately absence-tolerant rather than demanding
+    # `verdict_read`: a caller's test may stub this step with shaped outputs
+    # (`returns:`), which is a test author saying "the suite answered *this*" -
+    # a definite verdict by construction, and not something that should read as
+    # an outage because a field the stub never heard of is missing.
+    value: ${!has(steps.suite.passed) || has(steps.suite.verdict_read) && !steps.suite.verdict_read}
+    description: true when no verdict could be read at all, which is distinct from a suite that failed
   output:
     # Guarded for the same reason the step's own shaping is: a step's outputs are
     # whatever it actually produced, and a run reporting no output has no key
