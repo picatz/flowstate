@@ -678,8 +678,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// (see acme.go's doc on this), so it is wired here, after tlsCfg's
 	// ClientAuth is whatever --tls-client-auth actually resolved to, and
 	// only for a listener this file's own ACME settings built.
+	var acmeGate *acmeStartupGate
 	if acmeCfg != nil {
 		exemptACMETLSALPN01ChallengeFromClientAuth(tlsCfg)
+		acmeGate = gateACMEStartup(tlsCfg)
 	}
 
 	// Acquisition is startup, but it cannot happen *here*: see the ordering
@@ -978,6 +980,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("obtaining ACME certificates: %w", err)
 		}
+		acmeGate.allowPublicHandshakes()
 		logger.Info("obtained ACME certificates", "hosts", acmeCfg.hosts)
 	}
 

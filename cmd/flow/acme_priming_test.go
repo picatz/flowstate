@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -57,6 +59,39 @@ func TestACMEPrimingRunsAfterTheListenerIsServing(t *testing.T) {
 	assert.Less(t, serve, prime,
 		"runServer primes ACME certificates before the listener is serving; binding alone "+
 			"is not enough, the challenge has to be answered by a server that is accepting")
+}
+
+// TestACMEStartupGateOnlyAdmitsChallengesUntilPrimingCompletes guards the
+// narrow startup surface: the listener has to answer the CA, but an ordinary
+// unauthenticated client must not be allowed to pile up behind autocert's
+// potentially slow certificate acquisition path.
+func TestACMEStartupGateOnlyAdmitsChallengesUntilPrimingCompletes(t *testing.T) {
+	t.Parallel()
+
+	var delegated int
+	tlsCfg := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			delegated++
+			return nil, nil
+		},
+	}
+	gate := gateACMEStartup(tlsCfg)
+
+	ordinary := &tls.ClientHelloInfo{ServerName: "public.example.com", SupportedProtos: []string{"h2"}}
+	_, err := tlsCfg.GetConfigForClient(ordinary)
+	require.ErrorContains(t, err, "acquisition is still in progress")
+	assert.Zero(t, delegated, "an ordinary startup handshake must not reach autocert")
+
+	challenge := &tls.ClientHelloInfo{ServerName: "public.example.com", SupportedProtos: []string{acme.ALPNProto}}
+	_, err = tlsCfg.GetConfigForClient(challenge)
+	require.NoError(t, err)
+	assert.Equal(t, 1, delegated, "the CA's TLS-ALPN-01 handshake must still be answered")
+
+	gate.allowPublicHandshakes()
+	_, err = tlsCfg.GetConfigForClient(ordinary)
+	require.NoError(t, err)
+	assert.Equal(t, 2, delegated, "ordinary handshakes should resume after priming")
 }
 
 // TestACMEPrimingFailureStillFailsStartup guards the property moving the call

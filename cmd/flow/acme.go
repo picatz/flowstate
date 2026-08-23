@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -382,6 +383,44 @@ func exemptACMETLSALPN01ChallengeFromClientAuth(tlsCfg *tls.Config) {
 		// intact — for every hello that is not the exempted shape.
 		return nil, nil
 	}
+}
+
+// acmeStartupGate keeps the public TLS surface closed while initial ACME
+// acquisition is in progress. The listener must be accepting connections so
+// the CA can complete TLS-ALPN-01, but ordinary clients have no reason to enter
+// autocert's lazy GetCertificate path until startup has obtained every
+// configured certificate.
+type acmeStartupGate struct {
+	open atomic.Bool
+}
+
+// gateACMEStartup rejects ordinary handshakes until open is called, while
+// preserving the existing GetConfigForClient behavior for TLS-ALPN-01. In
+// particular, that behavior may contain the client-certificate exemption
+// installed by [exemptACMETLSALPN01ChallengeFromClientAuth].
+func gateACMEStartup(tlsCfg *tls.Config) *acmeStartupGate {
+	gate := &acmeStartupGate{}
+	next := tlsCfg.GetConfigForClient
+	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		if isACMETLSALPN01ChallengeHello(hello) {
+			if next != nil {
+				return next(hello)
+			}
+			return nil, nil
+		}
+		if !gate.open.Load() {
+			return nil, errors.New("ACME certificate acquisition is still in progress")
+		}
+		if next != nil {
+			return next(hello)
+		}
+		return nil, nil
+	}
+	return gate
+}
+
+func (g *acmeStartupGate) allowPublicHandshakes() {
+	g.open.Store(true)
 }
 
 // acmeHostNamePattern is deliberately conservative: RFC 1035 labels
