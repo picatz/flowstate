@@ -217,13 +217,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// to), and `--seeds N` multiplies whatever that costs by N. The signal
 		// context main installs is what makes ^C end it. See
 		// [flowtest.RunSourceContext] for the same bound on the serving side.
+		// Coverage arrives already attached to the report — flowtest's runSuite
+		// owns that now, for every door at once, so the MCP tool and this
+		// command cannot disagree about what the document carries (#931).
 		report, coverage, schedules := flowtest.RunFileUnderSchedules(cmd.Context(), path, budget)
-		// Attach each workflow's coverage to the report so the whole document
-		// renders through protojson: there is one rendering of the report and no
-		// second, hand-shaped encoder beside it to disagree with the first.
-		for _, c := range coverage {
-			report.Coverage = append(report.Coverage, c.Report())
-		}
 		result := testFileResult{report: report, coverage: coverage, schedules: schedules}
 		results = append(results, result)
 
