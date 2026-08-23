@@ -56,6 +56,14 @@ type RunResult struct {
 	Coverage  []*Coverage
 	Schedules *ScheduleReport
 
+	// Transcripts holds each case's rendered account (#929 slice 2),
+	// parallel to Report.Cases: Transcripts[i] is what case i's run did,
+	// step by step, redacted through the same machinery the stub
+	// diagnostics use. Nil for a case that never reached a run. Rendered
+	// lines rather than a schema message on purpose — where a machine
+	// transcript lives, if anywhere, is #923's decision.
+	Transcripts [][]TranscriptLine
+
 	// Filtered is how many cases [RunOptions.Select] excluded from this run.
 	Filtered int
 }
@@ -141,6 +149,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	schedules := newScheduleAccumulator(opts.Budget)
 
 	filtered := 0
+	var transcripts [][]TranscriptLine
 	for _, test := range file.Tests {
 		if opts.Select != nil && !opts.Select(test.Name) {
 			filtered++
@@ -149,25 +158,28 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		if stopped := caseStoppedBefore(ctx, &test); stopped != nil {
 			report.Cases = append(report.Cases, stopped)
+			transcripts = append(transcripts, nil)
 
 			continue
 		}
 
 		l, identity := loaderFor(&test)
 
-		result, spec, transcript := schedules.run(ctx,
-			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, error) {
+		result, spec, transcript, account := schedules.run(ctx,
+			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
 				return runCase(ctx, &test, l.deliveryPath, l.load)
 			})
 		report.Cases = append(report.Cases, result)
+		transcripts = append(transcripts, account)
 		coverage.observe(identity, spec, transcript, l.positions())
 	}
 
 	out := RunResult{
-		Report:    report,
-		Coverage:  coverage.result(),
-		Schedules: schedules.result(),
-		Filtered:  filtered,
+		Report:      report,
+		Coverage:    coverage.result(),
+		Schedules:   schedules.result(),
+		Transcripts: transcripts,
+		Filtered:    filtered,
 	}
 	// Attached here, for every door, so the whole document renders through
 	// protojson wherever it ends up — the CLI's machine modes and the MCP
@@ -437,11 +449,21 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
 		result.Duration = durationpb.New(time.Since(started))
+	}()
+
+	// The case's own account (#929 slice 2), rendered on every exit path
+	// once the run's clock exists — a case that never got that far has
+	// nothing to account for.
+	var recorder *runRecorder
+	defer func() {
+		if recorder != nil {
+			account = recorder.render()
+		}
 	}()
 
 	compiled, err := compileStubs(test.Stubs)
@@ -510,6 +532,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// advance past. See [RunSourceContext].
 	ctx := v1.NewContextWithClock(base, clock)
 	ctx = v1.ContextWithTaskRuntime(ctx, runtime)
+
+	// The transcript's recorder: the engine reports through [v1.RunObserver],
+	// the stub functions find the same recorder on the context, and the
+	// scripted-signal goroutines are handed it directly.
+	recorder = newRunRecorder(clock)
+	ctx = v1.NewContextWithRunObserver(ctx, recorder)
+	ctx = contextWithRunRecorder(ctx, recorder)
 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
@@ -585,6 +614,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 			return
 		}
 		policies = resolved
+
+		// The transcript's redaction set, built from the same bound inputs
+		// and the same `sensitive:` declarations the stub diagnostics read
+		// ([sensitiveNativeValues]) — one set, so what one surface refuses to
+		// print no other surface prints. A case whose bind fails records no
+		// step events carrying input-derived values: the run fails at the
+		// same bind before any step runs.
+		recorder.sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
 	}
 
 	// Who this case runs as, for the one question a starter answers locally:
@@ -628,7 +665,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// an empty room after the fact — see [scriptSignals].
 	runFinished := make(chan struct{})
 
-	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals)
+	stopScripts, scriptErr := scriptSignals(runFinished, clock, signals, test.Signals, recorder)
 	defer stopScripts()
 	if scriptErr != nil {
 		result.Error = scriptErr.Error()
@@ -806,7 +843,7 @@ func unstubbedTaskFn(name string) v1.TaskFunc {
 // stops waiting and delivers nothing — a signal scripted for after the
 // workflow already finished is simply never sent, matching what a sender
 // pointed at a workload that is no longer running would actually manage.
-func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript) (stop func(), err error) {
+func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals *v1.LocalSignals, scripts []SignalScript, recorder *runRecorder) (stop func(), err error) {
 	if len(scripts) == 0 {
 		return func() {}, nil
 	}
@@ -816,6 +853,11 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		at      time.Duration
 		payload map[string]any
 		sender  *v1.SignalSender
+
+		// senderSubject is what the transcript names a delivery as sent by —
+		// the script's own `sender.subject`, "" for a script that named
+		// nobody.
+		senderSubject string
 	}
 
 	jobs := make([]job, 0, len(scripts))
@@ -828,7 +870,11 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			}
 			at = d
 		}
-		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender)})
+		subject := ""
+		if s.Sender != nil {
+			subject = s.Sender.Subject
+		}
+		jobs = append(jobs, job{name: s.Name, at: at, payload: s.Payload, sender: scriptedSender(s.Sender), senderSubject: subject})
 	}
 
 	done := make(chan struct{}, len(jobs))
@@ -860,6 +906,10 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
+			// Recorded at the moment of the send, on the clock the run waits
+			// against, so the transcript shows the delivery between the wait
+			// it ends and the step that reads it.
+			recorder.signalDelivered(j.name, j.payload, j.senderSubject)
 			_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 		}(j)
 	}

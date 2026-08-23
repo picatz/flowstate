@@ -469,6 +469,18 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 
 		activation := stubActivation(ctx, scope, native)
 
+		// The transcript's share of an answer (#929 slice 2): which matcher
+		// answered, serving which step — the same numbering every stub
+		// diagnostic uses, recorded so a failing case's account can say
+		// `stub 2 (step: build)` beside what the step produced. Nil outside
+		// `flow test`'s own runs, where nothing records.
+		recordAnswer := func(m *compiledStub) {
+			if recorder := runRecorderFromContext(ctx); recorder != nil {
+				serving, _ := v1.TaskStepFromContext(ctx)
+				recorder.stubAnswered(name, m.ordinal, m.step, serving)
+			}
+		}
+
 		// The scan and its bookkeeping are one atomic decision: two parallel
 		// branches invoking this task concurrently must not both read a
 		// matcher's state between one another's updates. See [stubbedTask.mu].
@@ -531,6 +543,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 				if m.times > 0 {
 					m.remaining--
 				}
+				recordAnswer(m)
 				kind := v1.ErrorKind(m.fails.Kind)
 				if kind == "" {
 					kind = v1.ErrorKindUpstream
@@ -542,6 +555,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			if m.times > 0 {
 				m.remaining--
 			}
+			recordAnswer(m)
 
 			// A `response:` answer hands the resolved fields to the task's own
 			// raw-response evaluation ([v1.TaskDef.StubResponseFn], resolved
