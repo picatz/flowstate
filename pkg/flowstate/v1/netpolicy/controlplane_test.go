@@ -3,10 +3,12 @@ package netpolicy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -230,6 +232,52 @@ func Test_controlPlane_withRunIdentity(t *testing.T) {
 		_, err := policy.Client().Do(newRequest(t, ctx))
 		requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
 	})
+}
+
+func Test_controlPlane_checksEveryRequest(t *testing.T) {
+	server, addr := controlPlaneServer(t)
+
+	policy, err := New(WithControlPlane(addr), WithSelfAdministration())
+	require.NoError(t, err)
+
+	request := func(ctx context.Context) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+		require.NoError(t, err)
+		return policy.Client().Do(req)
+	}
+
+	ctx := WithRunIdentity(t.Context(), &runIdentity{namespace: "team-a"})
+	resp, err := request(ctx)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	_, err = request(t.Context())
+	requireDenied(t, err, ReasonControlPlane, "must carry the run's identity")
+}
+
+func Test_controlPlane_proxyCannotBypassReservation(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a denied control-plane request reached the proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(proxy.Close)
+
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	proxyFor := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+
+	const controlPlane = "127.0.0.1:9"
+	policy, err := New(
+		WithAllowLoopback(),
+		WithControlPlane(controlPlane),
+		WithProxy(proxyFor),
+	)
+	require.NoError(t, err)
+
+	_, err = get(t, policy, "http://"+controlPlane+"/")
+	requireDenied(t, err, ReasonControlPlane, "reserved")
 }
 
 // Test_controlPlane_grantsOnlyTheDeclaredAddress covers the other half of "not a

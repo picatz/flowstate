@@ -232,6 +232,10 @@ func (p *Policy) newClient() *http.Client {
 	transport.MaxIdleConnsPerHost = 8
 	transport.MaxConnsPerHost = 32
 	transport.MaxResponseHeaderBytes = DefaultMaxResponseHeaderBytes
+	// Control-plane authorization depends on request context. Do not let a later
+	// request with no run identity reuse a connection authorized for an earlier
+	// request and thereby skip the dial-time check.
+	transport.DisableKeepAlives = len(p.cfg.controlPlane) > 0
 	transport.TLSClientConfig = &tls.Config{
 		MinVersion: p.cfg.minTLSVersion,
 		RootCAs:    p.cfg.rootCAs,
@@ -427,7 +431,7 @@ func (p *Policy) checkProxiedTarget(req *http.Request, target string) error {
 	}
 
 	for _, addr := range addrs {
-		if err := p.CheckAddr(netip.AddrPortFrom(addr, port)); err != nil {
+		if err := p.checkResolvedAddr(req.Context(), netip.AddrPortFrom(addr, port)); err != nil {
 			return err
 		}
 	}
@@ -450,20 +454,7 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		}
 	}
 
-	// The control plane is decided before the ordinary address policy: it is
-	// reserved when undeclared, and when permitted it is permitted on the
-	// operator's word rather than on its address category.
-	handled, err := p.checkControlPlane(ctx, addrPort)
-	if err != nil {
-		return err
-	}
-	if !handled {
-		if err := p.CheckAddr(addrPort); err != nil {
-			return err
-		}
-	} else if err := p.checkDeniedNetworks(addrPort); err != nil {
-		// A denied network still wins, so an operator can carve a control-plane
-		// address back out without withdrawing the capability.
+	if err := p.checkResolvedAddr(ctx, addrPort); err != nil {
 		return err
 	}
 
@@ -490,6 +481,27 @@ func (p *Policy) controlDial(ctx context.Context, network, address string, _ sys
 		"ip":       normalize(addrPort.Addr()).String(),
 		"identity": identityFromContext(ctx),
 	})
+}
+
+// checkResolvedAddr applies the control-plane reservation before the ordinary
+// address policy. Proxied targets and direct dials use the same decision so
+// neither path can accidentally grant control-plane reachability.
+func (p *Policy) checkResolvedAddr(ctx context.Context, addrPort netip.AddrPort) error {
+	handled, err := p.checkControlPlane(ctx, addrPort)
+	if err != nil {
+		return err
+	}
+	if !handled {
+		if err := p.CheckAddr(addrPort); err != nil {
+			return err
+		}
+	} else if err := p.checkDeniedNetworks(addrPort); err != nil {
+		// A denied network still wins, so an operator can carve a control-plane
+		// address back out without withdrawing the capability.
+		return err
+	}
+
+	return nil
 }
 
 // checkRedirect is the client's redirect hook. It bounds the number of hops and
