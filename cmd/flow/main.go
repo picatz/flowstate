@@ -1066,7 +1066,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// default would decode none of them, answer "this run is not yours" for
 	// every run, and hide the whole deployment from the tenants that own it.
 	// See [server.WithDataConverter].
-	serverOpts := []server.Option{server.WithDataConverter(cfg.Codec.DataConverter())}
+	auditEmitter, err := startAudit(cmd.Context())
+	if err != nil {
+		return err
+	}
+	serverOpts := []server.Option{server.WithDataConverter(cfg.Codec.DataConverter()), server.WithAuditEmitter(auditEmitter)}
 	if taskQueues.Enabled() {
 		serverOpts = append(serverOpts, server.WithTaskQueues(taskQueues))
 	}
@@ -3085,6 +3089,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Audit policy is security configuration, not an observability side effect.
+	// Resolve it before Cobra dispatches any command, independently of whether
+	// OTLP traces, metrics, or ordinary logs are enabled.
+	if _, err := startAudit(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "flow: invalid audit policy: %v\n", err)
+		os.Exit(1)
+	}
+
 	// signal.NotifyContext keeps intercepting SIGINT/SIGTERM until cancel is
 	// called — that is the whole point while ctx is still live, so the first
 	// signal is the one that actually cancels it rather than being swallowed.
@@ -3121,6 +3133,10 @@ func main() {
 	//
 	// Costs nothing when telemetry was never started, which is the default.
 	flushTelemetry()
+	if err := flushAudit(); err != nil {
+		fmt.Fprintf(os.Stderr, "flow: flushing required audit sink: %v\n", err)
+		os.Exit(1)
+	}
 
 	if err != nil {
 		os.Exit(exitCodeFor(err))

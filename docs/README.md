@@ -31,6 +31,7 @@ it.
 | [reference/cli.md](reference/cli.md) | *Generated.* Every command and flag, derived from the cobra tree the binary builds. |
 | [reference/envvars.md](reference/envvars.md) | *Generated.* Every environment variable this build reads, held to the tree by a test. |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Putting Flowstate somewhere real: the four-tier isolation model, and each topology as commands and unit files. Read it before sharing a Temporal namespace. |
+| [AUDIT.md](AUDIT.md) | Security audit destinations, bounded record schema, and the fail-closed behavior of required sinks. |
 | [MCP_AUTHORIZATION.md](MCP_AUTHORIZATION.md) | Authorizing an agent when `flow mcp` is reachable over HTTP rather than over stdio. |
 | [reference/mcp.md](reference/mcp.md) | *Generated.* Every MCP tool `flow mcp` serves, derived from the service descriptor. |
 

@@ -473,6 +473,18 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "pkg/flowstate/v1/credentialsource/gitlab.go",
 		},
 		{
+			name:    "FLOWSTATE_AUDIT_DESTINATION",
+			value:   "none",
+			purpose: "Security-audit destination: stderr, otlp, both, or none. It is loaded at command startup independently of ordinary telemetry; invalid values refuse startup.",
+			read:    "cmd/flow/audit_emitter.go",
+		},
+		{
+			name:    "FLOWSTATE_AUDIT_REQUIRED",
+			value:   "false",
+			purpose: "When true, refuses the none destination and fails actions closed when their configured audit sink cannot accept a record.",
+			read:    "cmd/flow/audit_emitter.go",
+		},
+		{
 			name:    "OTEL_EXPORTER_OTLP_ENDPOINT",
 			value:   "unset",
 			purpose: "Turns telemetry on and says where it goes. Unset means no exporter, no goroutines, no network.",

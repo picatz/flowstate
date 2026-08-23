@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	flowaudit "github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
@@ -48,6 +49,7 @@ func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error)
 		// that option for why a second GetDefaultDataConverter call anywhere
 		// else in this package is a bug rather than a shortcut.
 		dataConverter: converter.GetDefaultDataConverter(),
+		audit:         flowaudit.NopEmitter{},
 	}
 	for _, opt := range opts {
 		if err := opt(s); err != nil {
@@ -61,6 +63,18 @@ func New(temporalClient client.Client, opts ...Option) (*FlowstateServer, error)
 // reports an error, so a misconfigured deployment fails at startup rather than
 // on the first request that depends on the value.
 type Option func(*FlowstateServer) error
+
+// WithAuditEmitter installs the independent security-audit destination. The
+// emitter is invoked directly by actions and refusals, never by tracing hooks.
+func WithAuditEmitter(emitter flowaudit.Emitter) Option {
+	return func(s *FlowstateServer) error {
+		if emitter == nil {
+			return errors.New("WithAuditEmitter: nil emitter")
+		}
+		s.audit = emitter
+		return nil
+	}
+}
 
 // WithNamespace sets the Flowstate tenant a caller is treated as belonging to
 // when their own identity names none.
@@ -370,6 +384,7 @@ type trustedWorkflowKey struct {
 // and provides methods to run and get the status of workflows using Temporal.
 type FlowstateServer struct {
 	temporalClient client.Client
+	audit          flowaudit.Emitter
 
 	// pool routes a tenant's runs to the Temporal namespace its Flowstate
 	// namespace maps to. Nil means every run uses temporalClient, which is the

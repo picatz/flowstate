@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
@@ -438,7 +439,18 @@ func (s *FlowstateServer) Signal(ctx context.Context, req *connect.Request[v1.Si
 	// wait that quietly never resolves. See [authorizeSignal] for the
 	// zero-case and fail-closed rules this enforces.
 	if err := s.authorizeSignal(resp, req.Msg.GetName(), sender); err != nil {
+		r := audit.NewRecord(nil, "signal", "denied", sender.GetIdentity().GetSubject(), sender.GetIdentity().GetNamespace(), workflowID, err.Error())
+		if auditErr := s.audit.Emit(ctx, r); auditErr != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("recording required audit refusal: %w", auditErr))
+		}
 		return nil, err
+	}
+
+	// Required emitters synchronously prove their sink is available here, before
+	// Temporal is allowed to perform the mutation. This is the fail-closed seam.
+	r := audit.NewRecord(nil, "signal", "accepted", sender.GetIdentity().GetSubject(), sender.GetIdentity().GetNamespace(), workflowID, "")
+	if err := s.audit.Emit(ctx, r); err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("recording required audit action: %w", err))
 	}
 
 	delivery := &v1.SignalDelivery{Payload: payload, Sender: sender}
