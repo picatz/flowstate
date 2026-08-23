@@ -360,6 +360,41 @@ tests:
 	require.Contains(t, r.errors[0], "never ran: never_step")
 }
 
+// TestCoveragePassFailsWhenACaseCannotBeMeasured pins the second Codex
+// finding on #1015's coverage pass: a case whose workflow never compiles
+// contributes no coverage entry, so reading the entries alone reports green
+// while one of the suite's targeted workflows was never measured — and under
+// `go test -run`, the case's own subtest that would have said so may be
+// filtered out. The pass now fails on the unmeasured case by name.
+func TestCoveragePassFailsWhenACaseCannotBeMeasured(t *testing.T) {
+	t.Parallel()
+
+	path := writeSuite(t, internalGreetWorkflow, `
+tests:
+  - name: measures the real workflow
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [hello]
+  - name: names a workflow that does not exist
+    workflow: ./missing.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [hello]
+`)
+	file, err := flowtest.Load(path)
+	require.NoError(t, err)
+
+	r := &recorder{}
+	coveragePass(r, file, path, filepath.Dir(path))
+	require.NotEmpty(t, r.errors, "an unmeasurable case must fail the coverage bar")
+	require.Contains(t, r.errors[0], `case "names a workflow that does not exist" never reached a run`)
+}
+
 // TestReportSchedulesRendersTheFinding: nothing for a run that explored
 // nothing, logs for one that explored and agreed (including the
 // nothing-was-explored honesty when no junction was reached), and an Errorf

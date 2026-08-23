@@ -205,10 +205,25 @@ func runCase(t testing.TB, file *flowtest.File, path string, cfg config, want st
 // coveragePass is the whole-suite run behind [WithCoverageRequired]: every
 // case once more, no selection, and the coverage account turned into the
 // parent test's verdict.
+//
+// A case this pass could not run to a verdict fails the bar before the
+// account is read, because its workflow may be missing from the account
+// entirely: a case whose workflow never compiled contributes no coverage
+// entry, so reading the entries alone can report green while one of the
+// suite's targeted workflows was never measured — invisibly, under `go test
+// -run`, where the case's own subtest (which would have said so) was
+// filtered out. A case that ran and merely failed is different: its coverage
+// is measured from the partial transcript, and its verdict belongs to its
+// subtest. Reported by Codex on picatz/flowstate#1015.
 func coveragePass(t testing.TB, file *flowtest.File, path, dir string) {
 	t.Helper()
 
 	result := flowtest.Run(t.Context(), file, dir, flowtest.RunOptions{Label: path})
+	for _, c := range result.Report.GetCases() {
+		if err := c.GetError(); err != "" {
+			t.Errorf("coverage: case %q never reached a run, so its workflow may be missing from this account: %s", c.GetName(), err)
+		}
+	}
 	reportCoverage(t, result.Coverage)
 }
 
