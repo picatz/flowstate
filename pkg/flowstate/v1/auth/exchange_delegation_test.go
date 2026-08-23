@@ -264,6 +264,22 @@ func TestDelegatedTokenExchangeFailsClosed(t *testing.T) {
 				return auth.NewSingleMaterial(""), "", nil
 			},
 		},
+		{
+			// The declared type is a claim about the value; an opaque blob sent
+			// as a JWT subject token would make the authorization server's
+			// answer about something other than what this profile said it was
+			// asking with.
+			name: "the delegator's token is declared a JWT but is not one",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.NewSingleMaterial("an-opaque-session-blob"), "", nil
+			},
+		},
+		{
+			name: "a delegator token with an empty middle segment is not a JWT",
+			delegator: func(context.Context) (auth.Material, string, error) {
+				return auth.NewSingleMaterial("aGVhZGVy..c2ln"), "", nil
+			},
+		},
 	}
 
 	for _, test := range tests {
