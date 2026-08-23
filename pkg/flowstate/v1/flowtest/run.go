@@ -906,11 +906,18 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			default:
 			}
 
-			// Recorded at the moment of the send, on the clock the run waits
-			// against, so the transcript shows the delivery between the wait
-			// it ends and the step that reads it.
+			// Recorded on the outcome, not the attempt: [v1.LocalSignals.DeliverFrom]
+			// refuses a sender a declared signal policy denies, and refuses past
+			// the queue's bound — and a policy denial is precisely the outcome a
+			// case scripting a sender needs to see, so an account that reported
+			// it as delivered would be a false transcript in exactly the runs
+			// that need debugging (Codex, #1052). Either way the moment recorded
+			// is the send's, on the clock the run waits against.
+			if err := signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender); err != nil {
+				recorder.signalRefused(j.name, err.Error())
+				return
+			}
 			recorder.signalDelivered(j.name, j.payload, j.senderSubject)
-			_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 		}(j)
 	}
 

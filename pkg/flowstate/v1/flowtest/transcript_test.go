@@ -151,6 +151,157 @@ tests:
 	assert.Contains(t, text, "[redacted]")
 }
 
+// TestTranscriptSuppressesAWaitTheRunNeverParkedOn pins the observer
+// contract's "the moment it parks" (Codex, #1052): a delivery buffered before
+// the gate is reached is consumed without parking, and the account must not
+// say `waiting:` about a gate the run walked straight through — the same rule
+// the local wait announcement itself follows. The sleep is what makes the
+// ordering deterministic: the scripted goroutine holds a clock registration
+// until its delivery is done, so the sleep cannot lapse before the signal is
+// buffered.
+func TestTranscriptSuppressesAWaitTheRunNeverParkedOn(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: early
+steps:
+  - id: nap
+    sleep: 1m
+  - id: gate
+    wait_for_signal:
+      name: ship
+      timeout: 1h
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the approval arrives before the gate
+    workflow: ./workflow.yaml
+    signals:
+      - name: ship
+        payload:
+          approved: true
+    expect:
+      ran: [nap, gate]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.Contains(t, text, "sleeping 1m")
+	assert.Contains(t, text, "signal ship")
+	assert.NotContains(t, text, "waiting: ship",
+		"a gate answered from the buffer never parked, so the account must not say it did")
+}
+
+// TestTranscriptRecordsARefusedDeliveryAsRefused (Codex, #1052): a scripted
+// sender a declared signal policy denies is never queued, and the account
+// must say refused — an account showing it as delivered would be a false
+// transcript in exactly the runs that need debugging.
+func TestTranscriptRecordsARefusedDeliveryAsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: policed
+signals:
+  approve:
+    allow:
+      - subject: https://issuer.example.com#approver@example.com
+steps:
+  - id: approval
+    wait_for_signal:
+      name: approve
+      timeout: 1h
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the wrong sender is refused and the gate lapses
+    workflow: ./workflow.yaml
+    signals:
+      - name: approve
+        at: 5m
+        payload:
+          approved: true
+        sender:
+          subject: nobody@example.com
+          issuer: https://issuer.example.com
+    expect:
+      ran: [approval]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.Contains(t, text, "signal approve refused:")
+	assert.NotContains(t, text, "signal approve {",
+		"a refused delivery must not render as a delivered one")
+	assert.Contains(t, text, "waiting: approve (timeout 1h)",
+		"the gate really parked and lapsed; that part of the account stands")
+}
+
+// TestTranscriptRedactsAScriptedSendersSubject pins the P1 on #1052: a case
+// may spell its `sender.subject` from the same value a sensitive input
+// carries, and the sender annotation was the one rendered string that
+// bypassed the redaction set every other value passes through.
+func TestTranscriptRedactsAScriptedSendersSubject(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: approver-secret
+inputs:
+  approver:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: gate
+    wait_for_signal:
+      name: approve
+      timeout: 1h
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the sender is the sensitive value
+    workflow: ./workflow.yaml
+    inputs:
+      approver: approver@corp.example
+    signals:
+      - name: approve
+        at: 5m
+        payload:
+          approved: true
+        sender:
+          subject: approver@corp.example
+          issuer: https://idp.corp
+    expect:
+      ran: [gate]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.NotContains(t, text, "approver@corp.example",
+		"the sender annotation must pass the same redaction every other value does")
+	assert.Contains(t, text, "sender: [redacted]")
+}
+
 // TestTranscriptOfAFailingRunEndsOnTheFailure: the account a failing case
 // arrives with shows the steps that ran and then the step it died on, in the
 // danger tone — the whole reason the transcript exists.

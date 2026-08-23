@@ -551,7 +551,6 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 			return nil, err
 		}
 
-		observeWaitStarted(ctx, node.GetId(), kind.Signal.GetName(), timeout, bounded)
 		outputs, err := waitForSignalLocally(ctx, clock, node, kind.Signal, scope, timeout, bounded)
 		if err != nil {
 			return nil, err
@@ -689,6 +688,11 @@ func waitForSignalLocally(
 
 		// Announced with no deadline, which is the honest answer for a gate
 		// that blocks until somebody acts rather than a deadline nobody set.
+		// The observer hears it at the same instant and under the same rule
+		// ([RunObserver.WaitStarted]): a delivery already in hand was taken
+		// above, so a gate this run walks straight through is reported as
+		// parked by neither surface.
+		observeWaitStarted(ctx, node.GetId(), name, 0, false)
 		defer announceLocalWait(ctx, node, signal, nil, prompt, promptCut)()
 
 		rejoin := LeaveClockWhile(ctx)
@@ -757,7 +761,11 @@ func waitForSignalLocally(
 	//
 	// The deadline is read from the run's clock rather than from the wall
 	// clock, so a `flow test` case under a [VirtualClock] reports the moment
-	// the workload will actually see, not one in a different year.
+	// the workload will actually see, not one in a different year. The
+	// observer hears the park at this same instant, under the same rule as
+	// the announcement above it ([RunObserver.WaitStarted]): a buffered
+	// delivery was taken at the arming and reported nothing.
+	observeWaitStarted(ctx, node.GetId(), name, timeout, true)
 	defer announceLocalWait(ctx, node, signal, timestamppb.New(clock.Now().Add(timeout)), prompt, promptCut)()
 
 	waitCtx, cancel := context.WithCancel(ctx)

@@ -81,6 +81,7 @@ const (
 	eventStepSkipped
 	eventWaitStarted
 	eventSignalDelivered
+	eventSignalRefused
 	eventStubAnswered
 )
 
@@ -160,11 +161,21 @@ func (r *runRecorder) stubAnswered(task string, ordinal int, stubStep, servingSt
 	r.record(transcriptEvent{kind: eventStubAnswered, task: task, stubOrdinal: ordinal, step: servingStep, stubStep: stubStep})
 }
 
-// signalDelivered records one scripted delivery at the moment it is sent —
-// the name, the payload as the file spelled it, and the scripted sender's
-// subject ("" for a script that named nobody).
+// signalDelivered records one scripted delivery the moment the waiter
+// accepted it — the name, the payload as the file spelled it, and the
+// scripted sender's subject ("" for a script that named nobody).
 func (r *runRecorder) signalDelivered(name string, payload map[string]any, sender string) {
 	r.record(transcriptEvent{kind: eventSignalDelivered, signal: name, payload: payload, sender: sender})
+}
+
+// signalRefused records a scripted delivery the waiter would not take — a
+// declared signal policy denying the sender, or the queue's bound. Recorded
+// as its own fact rather than dropped, because a policy denial is precisely
+// the outcome a case scripting a sender needs to see; an account that showed
+// it as delivered would be a false transcript in exactly the runs that need
+// debugging.
+func (r *runRecorder) signalRefused(name, reason string) {
+	r.record(transcriptEvent{kind: eventSignalRefused, signal: name, failure: reason})
 }
 
 // render turns the account into lines. Called once, after the run, on the
@@ -231,9 +242,17 @@ func (r *runRecorder) render() []TranscriptLine {
 		case eventSignalDelivered:
 			text := fmt.Sprintf("signal %s %s", e.signal, redactedGoValue(e.payload, sensitive))
 			if e.sender != "" {
-				text += "  sender: " + e.sender
+				// Through the same redaction as every other value: a case may
+				// spell its sender from the same sensitive input the policy
+				// resolves its subject from, and the account must not be the
+				// one surface that prints it.
+				text += "  sender: " + redactedBareText(e.sender, sensitive)
 			}
 			lines = append(lines, transcriptLine(e.at, width, "", text, ToneInfo))
+
+		case eventSignalRefused:
+			lines = append(lines, transcriptLine(e.at, width, "",
+				fmt.Sprintf("signal %s refused: %s", e.signal, redactedBareText(e.failure, sensitive)), ToneWarning))
 		}
 	}
 
@@ -361,6 +380,21 @@ func redactedScalarText(native any, sensitive sensitiveInputs) string {
 		text = fmt.Sprintf("%v", redacted)
 	}
 	return capRunes(redactSensitiveSubstrings(text, sensitive.substrings), 48)
+}
+
+// redactedBareText is [redactedScalarText] for a string rendered into the
+// line without quoting — a sender's subject, a refusal's reason — through the
+// same two passes, so no string reaches the account un-redacted by virtue of
+// its position in the sentence.
+func redactedBareText(s string, sensitive sensitiveInputs) string {
+	if sensitive.withholdAll {
+		return "[withheld]"
+	}
+	text, ok := redactSensitiveTree(s, sensitive.values).(string)
+	if !ok {
+		return sensitiveMarker
+	}
+	return capRunes(redactSensitiveSubstrings(text, sensitive.substrings), 120)
 }
 
 // capRunes bounds one rendered fragment, marking the cut.
