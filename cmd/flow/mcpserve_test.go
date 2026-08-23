@@ -97,9 +97,13 @@ func newMCPServeFixtureWith(
 	verifier, err := auth.NewOIDCVerifier(*policy)
 	require.NoError(t, err)
 
-	protectedResource, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
-		Resource:             mcpServeTestResource,
-		AuthorizationServers: []string{issuer.URL()},
+	// Through the command's own resolution rather than around it: the scope
+	// vocabulary this surface publishes is supplied there and nowhere else,
+	// so a fixture calling auth.NewProtectedResource directly would be testing
+	// a document no deployment serves.
+	protectedResource, err := resolveProtectedResource(protectedResourceFlags{
+		resource:             mcpServeTestResource,
+		authorizationServers: []string{issuer.URL()},
 	}, policy)
 	require.NoError(t, err)
 
@@ -247,8 +251,11 @@ func TestMCPServeServesTheMetadataDocumentUnauthenticated(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&document))
 	require.Equal(t, mcpServeTestResource, document["resource"])
 	require.NotEmpty(t, document["authorization_servers"])
-	require.NotContains(t, document, "scopes_supported",
-		"#567 D1 again: the document names no scope vocabulary either")
+
+	// #567's D1, answered: this surface's document publishes the schema's
+	// action vocabulary. It is the same list `flow server` publishes, because
+	// both go through resolveProtectedResource — the one place it is supplied.
+	require.Equal(t, v1.AuthorizationActionScopes(), publishedScopes(t, document))
 }
 
 // TestMCPServeRefusesEveryBadToken walks the negative cases end to end, so

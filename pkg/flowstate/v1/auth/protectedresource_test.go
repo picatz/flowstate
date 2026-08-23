@@ -314,11 +314,56 @@ func TestNewProtectedResourceRefusesAuthorizationServerNotAcceptingResourceAudie
 	require.ErrorContains(t, err, "https://flowstate.example.com/mcp")
 }
 
-// TestProtectedResourceDocumentOmitsScopesSupported pins D1's deferral
-// (picatz/flowstate#567): this slice defines no action/scope vocabulary, so
-// the document must not carry the key at all — not an empty list, which
-// would itself be a claim ("this resource supports zero scopes").
-func TestProtectedResourceDocumentOmitsScopesSupported(t *testing.T) {
+// TestProtectedResourceDocumentPublishesTheScopesItIsGiven is the mechanism
+// half of picatz/flowstate#567's D1: a vocabulary handed to
+// [auth.WithScopesSupported] is what the document publishes, in the order it
+// was given.
+//
+// The vocabulary itself is flowstatev1.AuthorizationActionScopes, and that it
+// is *that* list which reaches a real deployment's document is pinned in
+// cmd/flow, where both packages are in scope — this package sits below
+// pkg/flowstate/v1 in the import graph and cannot read the schema's list.
+func TestProtectedResourceDocumentPublishesTheScopesItIsGiven(t *testing.T) {
+	t.Parallel()
+
+	scopes := []string{"workload.run", "workload.read", "mcp.run_local"}
+
+	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"), auth.WithScopesSupported(scopes))
+	require.NoError(t, err)
+
+	raw := protectedResourceDocument(t, pr)
+
+	require.Equal(t, []any{"workload.run", "workload.read", "mcp.run_local"}, raw["scopes_supported"])
+	require.Equal(t, "https://flowstate.example.com/mcp", raw["resource"])
+	require.Equal(t, []any{"https://trusted.example.com"}, raw["authorization_servers"])
+
+	// The vocabulary is part of the effective descriptor, so two fleet members
+	// built from schemas whose action lists differ do not hash identically
+	// while serving different documents.
+	narrower, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+		Resource:             "https://flowstate.example.com/mcp",
+		AuthorizationServers: []string{"https://trusted.example.com"},
+	}, trustingPolicy("https://trusted.example.com"),
+		auth.WithScopesSupported([]string{"workload.run", "workload.read"}))
+	require.NoError(t, err)
+	require.NotEqual(t, pr.Digest(), narrower.Digest())
+
+	// The caller's slice is copied on the way in, so a caller reusing it
+	// cannot rewrite a document already being served.
+	scopes[0] = "tampered"
+	require.Equal(t, []any{"workload.run", "workload.read", "mcp.run_local"},
+		protectedResourceDocument(t, pr)["scopes_supported"])
+}
+
+// TestProtectedResourceDocumentOmitsScopesSupportedWhenGivenNone keeps the
+// distinction D1's deferral drew, now that the deferral itself is resolved: a
+// document with no vocabulary omits the key entirely rather than carrying an
+// empty list, because an empty list is itself a claim ("this resource
+// supports zero scopes").
+func TestProtectedResourceDocumentOmitsScopesSupportedWhenGivenNone(t *testing.T) {
 	t.Parallel()
 
 	pr, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
@@ -326,6 +371,43 @@ func TestProtectedResourceDocumentOmitsScopesSupported(t *testing.T) {
 		AuthorizationServers: []string{"https://trusted.example.com"},
 	}, trustingPolicy("https://trusted.example.com"))
 	require.NoError(t, err)
+
+	require.NotContains(t, protectedResourceDocument(t, pr), "scopes_supported",
+		"the document must omit scopes_supported entirely, not carry an empty list")
+}
+
+// TestProtectedResourceRefusesUnspellableScopes pins the fail-closed half:
+// RFC 6749 delimits scope values with spaces, so a value holding one would be
+// published as two, and this endpoint answers unauthenticated clients.
+func TestProtectedResourceRefusesUnspellableScopes(t *testing.T) {
+	t.Parallel()
+
+	for name, scopes := range map[string][]string{
+		"a space":     {"workload.run now"},
+		"a quote":     {`workload."run`},
+		"a backslash": {`workload\run`},
+		"a newline":   {"workload.run\r\nX-Injected: 1"},
+		"empty":       {""},
+		"a duplicate": {"workload.run", "workload.run"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := auth.NewProtectedResource(auth.ProtectedResourceConfig{
+				Resource:             "https://flowstate.example.com/mcp",
+				AuthorizationServers: []string{"https://trusted.example.com"},
+			}, trustingPolicy("https://trusted.example.com"), auth.WithScopesSupported(scopes))
+			require.Error(t, err)
+			require.ErrorContains(t, err, "scopes_supported")
+		})
+	}
+}
+
+// protectedResourceDocument fetches and decodes the served metadata document,
+// which is the only place a test may read it from: what the handler answers
+// with is the artifact, not the struct behind it.
+func protectedResourceDocument(t *testing.T, pr *auth.ProtectedResource) map[string]any {
+	t.Helper()
 
 	server := httptest.NewServer(pr.Handler())
 	t.Cleanup(server.Close)
@@ -340,10 +422,7 @@ func TestProtectedResourceDocumentOmitsScopesSupported(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(body, &raw))
 
-	require.NotContains(t, raw, "scopes_supported",
-		"the document must omit scopes_supported entirely, not carry an empty list")
-	require.Equal(t, "https://flowstate.example.com/mcp", raw["resource"])
-	require.Equal(t, []any{"https://trusted.example.com"}, raw["authorization_servers"])
+	return raw
 }
 
 // TestProtectedResourceHandlerAllowsOnlyGETAndHEAD pins the method

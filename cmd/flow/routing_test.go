@@ -417,7 +417,15 @@ func TestProtectedResourceRouteMountedOnlyWhenConfigured(t *testing.T) {
 	var doc map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	require.Equal(t, "https://flowstate.example.com/mcp", doc["resource"])
-	require.NotContains(t, doc, "scopes_supported")
+
+	// picatz/flowstate#567's D1, reaching the wire: the document publishes the
+	// schema's own action vocabulary, not a list written down here. Compared
+	// against flowstatev1.AuthorizationActionScopes rather than against
+	// literals, so an action added to proto/flowstate/v1/authorization.proto
+	// is published without this test being edited — and a wiring that stopped
+	// supplying it fails here rather than silently serving a document that
+	// names no vocabulary.
+	require.Equal(t, v1.AuthorizationActionScopes(), publishedScopes(t, doc))
 
 	unconfigured := httptest.NewServer(serverHandler(discardLogger(), refusingVerifier{}, nil, nil, "",
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
@@ -648,4 +656,31 @@ func staticStore(t *testing.T) *secrets.Store {
 	require.NoError(t, err)
 
 	return store
+}
+
+// publishedScopes reads "scopes_supported" out of a served RFC 9728 document.
+//
+// A missing key is a named failure rather than a panic on a type assertion,
+// because the way this breaks in practice is a wiring that stopped supplying
+// the vocabulary (resolveProtectedResource is the one place that does), and
+// the test that catches it should say so.
+func publishedScopes(t *testing.T, document map[string]any) []string {
+	t.Helper()
+
+	raw, ok := document["scopes_supported"]
+	require.True(t, ok,
+		"the document publishes no scopes_supported: resolveProtectedResource is the one place "+
+			"the schema's action vocabulary is supplied, and this document did not go through it")
+
+	values, ok := raw.([]any)
+	require.True(t, ok, "scopes_supported is %T, not a list", raw)
+
+	scopes := make([]string, 0, len(values))
+	for _, value := range values {
+		scope, ok := value.(string)
+		require.True(t, ok, "a scope value is %T, not a string", value)
+		scopes = append(scopes, scope)
+	}
+
+	return scopes
 }

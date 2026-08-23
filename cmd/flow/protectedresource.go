@@ -6,13 +6,16 @@ import (
 
 	"github.com/spf13/cobra"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
 
 // RFC 9728 protected resource metadata, an operator's flags for it, and how
 // they turn into an [auth.ProtectedResource]. picatz/flowstate#558's slice
-// one: publish the document and challenge for it; no scope vocabulary, no
-// authorization endpoints — see [addProtectedResourceFlags] for the deferral.
+// one: publish the document and challenge for it, and — since
+// picatz/flowstate#567's D1 answered the vocabulary question — publish the
+// schema's action list as "scopes_supported". Still no authorization
+// endpoints; see [addProtectedResourceFlags] for what remains deferred.
 
 // addProtectedResourceFlags declares the protected-resource surface on the
 // server command.
@@ -93,10 +96,17 @@ func resolveProtectedResource(flags protectedResourceFlags, policy *auth.Policy)
 	// which is --protected-resource for one and --authorization-server for
 	// the other — a blanket "--protected-resource: " prefix would misname the
 	// second.
+	// The scope vocabulary is not a flag and is deliberately not one: which
+	// actions exist is the schema's answer (#567's D1, answered in
+	// proto/flowstate/v1/authorization.proto), and an operator who could
+	// narrow or extend it here would be publishing a spelling policy does not
+	// read. This is the one place it is supplied, which is why
+	// TestProtectedResourceDocumentPublishesTheActionVocabulary pins the
+	// document this function produces rather than a hand-written list.
 	return auth.NewProtectedResource(auth.ProtectedResourceConfig{
 		Resource:             flags.resource,
 		AuthorizationServers: flags.authorizationServers,
-	}, policy)
+	}, policy, auth.WithScopesSupported(v1.AuthorizationActionScopes()))
 }
 
 // checkProtectedResourceRouteCollision refuses a configuration where the
