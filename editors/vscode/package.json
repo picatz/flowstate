@@ -51,7 +51,7 @@
             "type": "string"
           },
           "default": [],
-          "description": "Extra arguments for `flow lsp`, e.g. [\"--plugin-dir\", \"./plugins\"]. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
+          "description": "Extra arguments for `flow lsp`, e.g. [\"--plugin-dir\", \"/path/to/plugins\"]. A plugin directory must be an absolute path: the language server starts in the opened workspace, so a relative one would name a directory inside whatever repository you have open. Ignored when set in workspace (.vscode) settings, for the same reason as flowstate.path.",
           "scope": "machine"
         }
       }
