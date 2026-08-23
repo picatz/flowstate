@@ -475,21 +475,46 @@ func canonicalOpaqueValue(value string) bool {
 	return value == strings.TrimSpace(value) && value != "" && !strings.ContainsAny(value, "\x00\r\n\t")
 }
 
-// jwtShaped reports whether a token has a compact JWS's shape: three non-empty
-// dot-separated base64url segments. Deliberately a shape check and not a parse
-// — validating the delegator's token is the authorization server's job, and a
-// stricter check here would refuse tokens the server accepts. What it refuses
-// is the opposite mistake: an opaque blob declared as a JWT, which would make
-// the exchange a question this profile never meant to ask.
+// jwtShaped reports whether a token has a JWT's compact shape. RFC 7519
+// permits both serializations: three dot-separated base64url segments for a
+// JWS, five for a JWE — an identity provider that encrypts its tokens issues
+// the five-segment form, and refusing it here would reject a token the
+// authorization server validates fine. Deliberately a shape check and not a
+// parse — validating the delegator's token is the server's job, and a stricter
+// check would refuse tokens the server accepts. What it refuses is the
+// opposite mistake: an opaque blob declared as a JWT, which would make the
+// exchange a question this profile never meant to ask.
+//
+// The per-position emptiness rules are the serializations' own: a JWS-borne
+// JWT needs its header and claims, while its signature may be empty (an
+// unsecured JWT); a JWE needs its header and ciphertext, while the encrypted
+// key may be empty (direct encryption) and so, for some algorithms, may the IV
+// and tag.
+//
+// Bounded before it reads: the token came from a Delegator callback — an
+// external session or identity provider's answer — and [maxTokenBytes] is the
+// same bound the verifier applies before parsing anything (verifier.go), so a
+// token this refuses is one no other door here would read either. The bound is
+// what makes the split's allocation the operator's constant rather than the
+// peer's choice.
 func jwtShaped(token string) bool {
+	if len(token) > maxTokenBytes {
+		return false
+	}
 	segments := strings.Split(token, ".")
-	if len(segments) != 3 {
+	switch len(segments) {
+	case 3: // JWS compact: header.claims.signature
+		if segments[0] == "" || segments[1] == "" {
+			return false
+		}
+	case 5: // JWE compact: header.encrypted-key.iv.ciphertext.tag
+		if segments[0] == "" || segments[3] == "" {
+			return false
+		}
+	default:
 		return false
 	}
 	for _, segment := range segments {
-		if segment == "" {
-			return false
-		}
 		for _, c := range segment {
 			if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
 				return false
