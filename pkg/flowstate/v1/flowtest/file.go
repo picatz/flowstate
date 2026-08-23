@@ -554,6 +554,14 @@ type Defaults struct {
 // run for real through the actual local driver, and only the effect —
 // whatever the task would have done outside the process — is replaced.
 type Stub struct {
+	// fromDefaults records that this stub reached the case through the file's
+	// `defaults:` rather than being written on the case itself — set by
+	// [mergeDefaults], invisible to the YAML form, and read by the
+	// unused-stub report (#926): a file-level catch-all is *expected* to go
+	// unanswered by cases that never invoke its task, so it is exempt from
+	// the warning a case's own idle stub earns.
+	fromDefaults bool
+
 	// Task is the task name this replaces, exactly as a step's own task key
 	// names it: `http`, `log`, a plugin task's name. Mutually exclusive with
 	// Step; a stub names one or the other, never both and never neither.
@@ -1393,7 +1401,12 @@ func mergeDefaults(d *Defaults, test Test) Test {
 			if replaced[stubTargetKey(&d.Stubs[i])] {
 				continue
 			}
-			merged = append(merged, d.Stubs[i])
+			inherited := d.Stubs[i]
+			// Marked on the appended copy, never on the file's own entry: a
+			// second case merging the same defaults must see them untouched,
+			// per this function's contract above.
+			inherited.fromDefaults = true
+			merged = append(merged, inherited)
 		}
 		test.Stubs = merged
 	}

@@ -145,6 +145,18 @@ message TestCase {
   // is still fast wants to know, and virtual time inside the run answers a
   // different question.
   google.protobuf.Duration duration = 5;
+
+  // Warnings are facts worth reading that are not verdicts (#926): the case
+  // passed or failed on Failures and Error alone, and these neither block nor
+  // excuse it. Today's one producer is a stub the case declared and the run
+  // never answered through — a task-form stub whose task was never invoked,
+  // or a matcher tried and never matched — which is a hole in the case's own
+  // account rather than in the run. `flow test --fail-on-warning` promotes
+  // them to the exit code the way `--coverage-required` promotes a coverage
+  // gap; the report itself is identical either way, because whether a run
+  // opted in is a property of the invocation, not of the suite (the same
+  // reasoning [CoverageReport] records for `--coverage-required`).
+  repeated Diagnostic warnings = 6;
 }
 
 // TestReport is what `flow test` produced for one `*.test.yaml` file.

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
@@ -32,6 +33,26 @@ type compiledStub struct {
 	task      string
 	step      string
 	stepScope string
+
+	// ordinal is this stub's 1-based position in the case's declared order —
+	// the number every diagnostic about it uses ("stub 2"), kept here because
+	// [bindStubs] regroups matchers by task and the position in a task's own
+	// matcher list stops being the position the author can count to.
+	ordinal int
+
+	// fromDefaults mirrors [Stub]'s provenance mark: this stub reached the
+	// case through the file's `defaults:`. Read by [unusedStubWarnings],
+	// which exempts an inherited catch-all from the idle-stub warning a
+	// case's own stub earns (#926).
+	fromDefaults bool
+
+	// answered records that this matcher answered at least one invocation in
+	// the current case — with `returns:` or with `fails:`, either is an
+	// answer. Written under [stubbedTask.mu], because two parallel branches
+	// can invoke one task concurrently. Per-case state: [bindStubs] builds a
+	// fresh matcher list for every case, and schedule exploration re-runs the
+	// whole case, so nothing here survives into another run.
+	answered bool
 
 	where *expr.ParsedExpr // nil matches unconditionally
 
@@ -66,6 +87,20 @@ type stubExpr struct {
 // they were written — the shape a `switch` already has, and named that way in
 // [Stub.Where]'s doc.
 type stubbedTask struct {
+	// mu serializes the matcher scan and the per-matcher bookkeeping against
+	// concurrent invocations of one task: two `parallel:` branches invoking
+	// the same task race otherwise, and the bookkeeping ([compiledStub.answered],
+	// and a `times:` budget once one exists) must decide atomically with the
+	// match itself. Held for the length of one invocation's scan — a test
+	// harness's matcher list is short, and a lock that is obviously correct
+	// beats a clever one in the package whose own claims are ordering claims.
+	mu sync.Mutex
+
+	// invoked records that any invocation of this task reached the stub set at
+	// all, which is what tells "this case never invokes the task" apart from
+	// "the task ran and this stub never matched" in [unusedStubWarnings].
+	invoked bool
+
 	matchers []compiledStub
 }
 
@@ -92,13 +127,15 @@ func compileStubs(stubs []Stub) ([]compiledStub, error) {
 		}
 
 		compiled = append(compiled, compiledStub{
-			task:        s.Task,
-			step:        s.Step,
-			where:       parsed,
-			whereSource: s.Where,
-			returns:     returns,
-			hasReturns:  s.Returns != nil,
-			fails:       s.Fails,
+			task:         s.Task,
+			step:         s.Step,
+			ordinal:      i + 1,
+			fromDefaults: s.fromDefaults,
+			where:        parsed,
+			whereSource:  s.Where,
+			returns:      returns,
+			hasReturns:   s.Returns != nil,
+			fails:        s.Fails,
 		})
 	}
 
@@ -175,8 +212,16 @@ func unknownStepError(step string, kindOfStep map[string]string, taskOfStep map[
 			"stub a task step, or the task itself with `task:` and `where:`", step, kind)
 	}
 
-	names := make([]string, 0, len(taskOfStep))
+	// Suggestions draw on every step the workflow has, not only the task
+	// steps: a typo one letter off a `call:` or a `wait` step used to get the
+	// bare "no task step" sentence below, because the candidate list stopped
+	// at taskOfStep — and the author retyping the suggested id then gets the
+	// kind-specific refusal above, which names the actual fix (#926).
+	names := make([]string, 0, len(taskOfStep)+len(kindOfStep))
 	for id := range taskOfStep {
+		names = append(names, id)
+	}
+	for id := range kindOfStep {
 		names = append(names, id)
 	}
 	sort.Strings(names)
@@ -361,6 +406,13 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 
 		activation := stubActivation(ctx, scope, native)
 
+		// The scan and its bookkeeping are one atomic decision: two parallel
+		// branches invoking this task concurrently must not both read a
+		// matcher's state between one another's updates. See [stubbedTask.mu].
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.invoked = true
+
 		var verdicts []stubVerdict
 		// sawEvalErr tracks whether any tried matcher's where: failed to
 		// evaluate, so the final failure keeps ErrorKindExpression rather than
@@ -369,7 +421,9 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 		// errors.
 		var sawEvalErr bool
 
-		for _, m := range s.matchers {
+		for i := range s.matchers {
+			m := &s.matchers[i]
+
 			// A step-form stub answers only its own step's invocations, told
 			// apart by the step id the engine records on each node's context.
 			// An undo call carries none (it runs off the run level context), so
@@ -398,6 +452,9 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 			}
 
 			if m.fails != nil {
+				// A `fails:` answer is an answer: the stub did its job, so the
+				// unused-stub report must not name it (#926).
+				m.answered = true
 				kind := v1.ErrorKind(m.fails.Kind)
 				if kind == "" {
 					kind = v1.ErrorKindUpstream
@@ -405,6 +462,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool) v1.Ta
 				return nil, v1.NewTaskError(name, kind, errors.New(m.fails.Message))
 			}
 
+			m.answered = true
 			returns, err := m.answer(ctx, scope.GetProfile(), activation)
 			if err != nil {
 				return nil, v1.NewTaskError(name, v1.ErrorKindExpression, err)
@@ -880,6 +938,87 @@ func unmatchedStubError(name string, declared int, native map[string]any, secret
 	}
 
 	return errors.New(b.String())
+}
+
+// unusedStubWarnings reports, after one case's run, every stub the case
+// declared and the run never answered through — the account a green case owes
+// about its own scaffolding (#926). A shipped example asserted in prose that
+// "a stub whose task is never invoked is itself reported"; before this
+// existed, that sentence was false, and an unused stub sat quietly forever.
+//
+// Warnings, not failures: an idle stub is a hole in the case's hygiene, not
+// in the run, so the case's verdict is untouched and `flow test
+// --fail-on-warning` is where a suite opts in to treating one as fatal — the
+// `--coverage-required` shape. Two exemptions, each a legitimate pattern
+// rather than a hole:
+//
+//   - A stub inherited from `defaults:` ([compiledStub.fromDefaults]): a
+//     file-level catch-all exists precisely to be shared by cases that may
+//     not all invoke its task.
+//   - Nothing at all when the run failed or never reached a verdict — the
+//     caller skips this whenever the run errored, since a run that stopped
+//     early leaves later stubs legitimately unanswered, and this report
+//     cannot tell that apart from a genuinely idle one (the same
+//     unverifiable-claim honesty `expect.skipped` applies to parallel
+//     branches on a failed run).
+//
+// The two messages tell the two situations apart, because the fix differs: a
+// task never invoked is a stub aimed at nothing, while a matcher tried and
+// never matched is a `where:` (or an earlier stub) that took the traffic.
+func unusedStubWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
+	type idle struct {
+		ordinal int
+		message string
+	}
+	var found []idle
+
+	for task, stubs := range byTask {
+		for i := range stubs.matchers {
+			m := &stubs.matchers[i]
+			if m.answered || m.fromDefaults {
+				continue
+			}
+
+			target := fmt.Sprintf("task %q", task)
+			if m.step != "" {
+				target = fmt.Sprintf("step %q", m.step)
+			}
+
+			var message string
+			switch {
+			case !stubs.invoked:
+				message = fmt.Sprintf(
+					"stub %d (%s) was never consulted: this case invoked no %q task at all; "+
+						"delete the stub, or move it under `defaults:` if it is shared boilerplate",
+					m.ordinal, target, task)
+			case m.whereSource != "":
+				message = fmt.Sprintf(
+					"stub %d (%s) never answered an invocation: its where: (%s) matched nothing this case ran; "+
+						"tighten or delete it — a matcher that answers nothing asserts nothing",
+					m.ordinal, target, m.whereSource)
+			default:
+				message = fmt.Sprintf(
+					"stub %d (%s) never answered an invocation: every call it could have answered "+
+						"was taken by an earlier stub; delete it, or reorder the list it falls through",
+					m.ordinal, target)
+			}
+
+			found = append(found, idle{ordinal: m.ordinal, message: message})
+		}
+	}
+
+	// Ordered by the author's own numbering, not by Go's map walk: the report
+	// must read identically on every run.
+	sort.Slice(found, func(i, j int) bool { return found[i].ordinal < found[j].ordinal })
+
+	warnings := make([]*v1.Diagnostic, 0, len(found))
+	for _, f := range found {
+		warnings = append(warnings, &v1.Diagnostic{
+			Field:   "stubs",
+			Message: f.message,
+		})
+	}
+	return warnings
 }
 
 // answer resolves the stub's `returns:` for one invocation, evaluating every
