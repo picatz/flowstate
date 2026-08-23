@@ -25,14 +25,25 @@ import (
 // test, and it would rot the first time someone rewrote the prose around it.
 const certificateOnlyMarker = "certificate-only"
 
-// documentedCommand is one `flow server` command line as written, with what
-// the comment lines immediately above it said about the deployment.
+// documentedCommand is one documented way of starting `flow server` — a
+// command line as written, or a service unit plus the environment file it
+// reads — reduced to what [resolveRPCResource] looks at.
 type documentedCommand struct {
+	// text is the invocation as a reader sees it, for the failure message.
 	text string
 
+	// flags and policyPath are what the invocation resolves to, whether it
+	// spelled them as flags or as environment variables.
+	flags      rpcResourceFlags
+	policyPath string
+
 	// certificateOnly reports that [certificateOnlyMarker] appeared in the
-	// comment block introducing this command.
+	// comment block introducing this invocation.
 	certificateOnly bool
+
+	// envConfigured distinguishes a systemd-style recipe from a command line,
+	// so the walk can assert it kept reading both kinds.
+	envConfigured bool
 }
 
 // TestDocumentedServerInvocationsStart walks every `flow server` command line
@@ -82,14 +93,28 @@ type documentedCommand struct {
 // used to quiet the check — where the policy file is loadable, the claim is
 // checked against the policy itself.
 //
-// The three counts are each asserted non-zero: a walk that stopped reading any
+// # A recipe that spells the flags as environment variables
+//
+// Not every documented server is a command line. The systemd recipe in
+// docs/DEPLOYMENT.md starts one with `ExecStart=/usr/local/bin/flow server`
+// carrying no flags at all, because `EnvironmentFile=` supplies
+// FLOWSTATE_AUTH_POLICY and FLOWSTATE_RPC_RESOURCE — and being a command line
+// is what this walk originally looked for, so that invocation was invisible to
+// it. Deleting the resource variable left every counter unchanged and the suite
+// green over a recipe that would then refuse to start. Also reported by Codex
+// on picatz/flowstate#1053. [envConfiguredServersIn] reads those through the
+// association the unit itself declares, and they are checked by exactly the
+// rules above, since an environment variable is a flag's default rather than a
+// different requirement.
+//
+// The four counts are each asserted non-zero: a walk that stopped reading any
 // one kind would otherwise pass by finding nothing.
 func TestDocumentedServerInvocationsStart(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join("..", "..")
 
-	var resolved, flagsOnly, certificateOnly int
+	var resolved, flagsOnly, certificateOnly, envConfigured int
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -110,8 +135,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 			return err
 		}
 
-		for _, documented := range serverCommandsIn(string(data)) {
-			flags, policyPath := parseServerCommand(documented.text)
+		invocations := append(serverCommandsIn(string(data)), envConfiguredServersIn(string(data))...)
+		for _, documented := range invocations {
+			flags, policyPath := documented.flags, documented.policyPath
 			if policyPath == "" {
 				// --insecure-no-auth, or a server started with no trust
 				// policy at all: resolveRPCResource has nothing to load and
@@ -133,6 +159,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 							"certificate and carries no audience claim, so there is nothing to bind:"+
 							"\n\t%s\n", path, documented.text)
 					certificateOnly++
+					if documented.envConfigured {
+						envConfigured++
+					}
 					continue
 				}
 
@@ -143,6 +172,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 						"If the recipe is for a certificate-only deployment, say so in the comment above it "+
 						"(%q):\n\t%s\n", path, policyPath, certificateOnlyMarker, documented.text)
 				flagsOnly++
+				if documented.envConfigured {
+					envConfigured++
+				}
 				continue
 			}
 
@@ -165,6 +197,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 			_, err = resolveRPCResource(flags, authFlags{policyPath: policyPath}, &policy)
 			require.NoErrorf(t, err, "%s documents a `flow server` that cannot start:\n\t%s\n", path, documented.text)
 			resolved++
+			if documented.envConfigured {
+				envConfigured++
+			}
 		}
 		return nil
 	})
@@ -178,6 +213,9 @@ func TestDocumentedServerInvocationsStart(t *testing.T) {
 	require.NotZerof(t, certificateOnly, "no documented server invocation was marked %q; the marker or the "+
 		"certificate-only recipe it reads went away, and with it the half of this check that keeps an audience "+
 		"flag off a deployment that has no audience", certificateOnlyMarker)
+	require.NotZero(t, envConfigured, "no documented server invocation was configured through an environment "+
+		"file; a systemd-style recipe spells the same requirement as variables rather than flags, and one that "+
+		"stopped being recognized here would be unstartable with every counter unchanged")
 }
 
 // serverCommandsIn returns every `flow server ...` command line in a Markdown
@@ -203,10 +241,7 @@ func serverCommandsIn(document string) []documentedCommand {
 			continued := strings.HasSuffix(line, `\`)
 			current += " " + strings.TrimSuffix(line, `\`)
 			if !continued {
-				commands = append(commands, documentedCommand{
-					text:            strings.Join(strings.Fields(current), " "),
-					certificateOnly: strings.Contains(strings.ToLower(preceding), certificateOnlyMarker),
-				})
+				commands = append(commands, shellCommand(current, preceding))
 				current = ""
 			}
 			continue
@@ -231,13 +266,185 @@ func serverCommandsIn(document string) []documentedCommand {
 			current = strings.TrimSuffix(line, `\`)
 			continue
 		}
-		commands = append(commands, documentedCommand{
-			text:            strings.Join(strings.Fields(line), " "),
-			certificateOnly: strings.Contains(strings.ToLower(preceding), certificateOnlyMarker),
-		})
+		commands = append(commands, shellCommand(line, preceding))
 	}
 
 	return commands
+}
+
+// shellCommand reduces one written-out command line, plus the comment block
+// above it, to what the check needs.
+func shellCommand(command, preceding string) documentedCommand {
+	text := strings.Join(strings.Fields(command), " ")
+	flags, policyPath := parseServerCommand(text)
+
+	return documentedCommand{
+		text:            text,
+		flags:           flags,
+		policyPath:      policyPath,
+		certificateOnly: strings.Contains(strings.ToLower(preceding), certificateOnlyMarker),
+	}
+}
+
+// envConfiguredServersIn returns every `flow server` a document starts through
+// a service unit rather than a written-out command line — the systemd recipe in
+// docs/DEPLOYMENT.md, whose `ExecStart=/usr/local/bin/flow server` carries no
+// flags at all because `EnvironmentFile=` supplies them.
+//
+// That invocation is invisible to [serverCommandsIn], which reads command lines,
+// and it was invisible to this test: deleting FLOWSTATE_RPC_RESOURCE from the
+// environment file left every counter unchanged and the suite green, on a recipe
+// that would then refuse to start. Reported by Codex on picatz/flowstate#1053.
+//
+// The association is the one the unit itself declares, rather than proximity in
+// the page: an env fence is keyed by the file path named just above it
+// (`/etc/flowstate/server.env`:), a unit fence names the files it reads with
+// `EnvironmentFile=`, and the variables of exactly those files are what the
+// ExecStart line runs with. A recipe that renamed one and not the other would
+// stop matching here, which is the same mistake it would be on the host.
+//
+// Flags written on the ExecStart line itself win over the environment, matching
+// cobra: the environment value is the flag's default.
+func envConfiguredServersIn(document string) []documentedCommand {
+	type unit struct {
+		execStart string
+		envFiles  []string
+		comment   string
+	}
+
+	var (
+		commands  []documentedCommand
+		units     []unit
+		envFiles  = map[string]map[string]string{}
+		fence     string
+		fenceBody []string
+		label     string
+	)
+
+	scanner := bufio.NewScanner(strings.NewReader(document))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		if strings.HasPrefix(line, "```") {
+			if fence == "" {
+				fence, fenceBody = strings.TrimPrefix(line, "```"), nil
+				continue
+			}
+
+			switch fence {
+			case "env":
+				if label != "" {
+					envFiles[label] = parseEnvFile(fenceBody)
+				}
+			case "ini":
+				if current, ok := parseServiceUnit(fenceBody); ok {
+					units = append(units, unit(current))
+				}
+			}
+			fence = ""
+			continue
+		}
+
+		if fence != "" {
+			fenceBody = append(fenceBody, line)
+			continue
+		}
+
+		// The path a fence belongs to is written immediately above it, as
+		// `/etc/flowstate/server.env`: — the same line a reader uses to know
+		// which file they are being shown.
+		if path, ok := backtickedPath(line); ok {
+			label = path
+		}
+	}
+
+	for _, current := range units {
+		fields := strings.Fields(current.execStart)
+		if len(fields) < 2 || filepath.Base(fields[0]) != "flow" || fields[1] != "server" {
+			continue
+		}
+
+		environment := map[string]string{}
+		for _, file := range current.envFiles {
+			for name, value := range envFiles[file] {
+				environment[name] = value
+			}
+		}
+
+		documented := shellCommand(strings.Join(fields, " "), current.comment)
+		documented.envConfigured = true
+		documented.text = current.execStart + " (with " + strings.Join(current.envFiles, ", ") + ")"
+		if documented.policyPath == "" {
+			documented.policyPath = environment["FLOWSTATE_AUTH_POLICY"]
+		}
+		if documented.flags.resource == "" {
+			documented.flags.resource = environment["FLOWSTATE_RPC_RESOURCE"]
+		}
+
+		commands = append(commands, documented)
+	}
+
+	return commands
+}
+
+// parseEnvFile reads NAME=value lines out of an ```env fence.
+func parseEnvFile(body []string) map[string]string {
+	variables := map[string]string{}
+	for _, line := range body {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		variables[strings.TrimSpace(name)] = strings.TrimSpace(value)
+	}
+	return variables
+}
+
+// parseServiceUnit reads the one ExecStart and every EnvironmentFile out of a
+// systemd unit fence, along with its comments, reporting false for a fence that
+// starts nothing.
+func parseServiceUnit(body []string) (struct {
+	execStart string
+	envFiles  []string
+	comment   string
+}, bool) {
+	var parsed struct {
+		execStart string
+		envFiles  []string
+		comment   string
+	}
+
+	for _, line := range body {
+		switch {
+		case strings.HasPrefix(line, "#"):
+			parsed.comment += " " + line
+		case strings.HasPrefix(line, "ExecStart="):
+			parsed.execStart = strings.TrimPrefix(line, "ExecStart=")
+		case strings.HasPrefix(line, "EnvironmentFile="):
+			parsed.envFiles = append(parsed.envFiles, strings.TrimPrefix(line, "EnvironmentFile="))
+		}
+	}
+
+	return parsed, parsed.execStart != ""
+}
+
+// backtickedPath reads a line that is nothing but one backticked path, with or
+// without a trailing colon — how these documents label the file a fence holds.
+func backtickedPath(line string) (string, bool) {
+	line = strings.TrimSuffix(line, ":")
+	if !strings.HasPrefix(line, "`") || !strings.HasSuffix(line, "`") || len(line) < 3 {
+		return "", false
+	}
+	path := strings.Trim(line, "`")
+	if strings.ContainsAny(path, "` ") {
+		return "", false
+	}
+	return path, true
 }
 
 // parseServerCommand reads the flags resolveRPCResource looks at off one
