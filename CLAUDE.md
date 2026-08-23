@@ -78,8 +78,9 @@ behaves oddly, check:
 
 Three tiers over one list of checks, and — this is the part worth holding on to
 — **one computation of what a diff can reach**, in `tools/gate`. The local tier
-runs it before a push. PR CI runs the same computation in its `plan` job and
-skips the jobs the diff cannot reach. The merge queue runs everything, because
+runs it before a push. PR CI runs the same computation from a base-owned
+`pull_request_target` workflow in its `plan` job and skips the jobs the diff
+cannot reach. The merge queue runs everything, because
 it is the last gate before main and the one place where being wrong about the
 plan is unrecoverable. `make check` remains the full local rehearsal.
 

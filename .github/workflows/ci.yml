@@ -3,7 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+  # The planning workflow must come from the protected base branch. A plain
+  # pull_request event loads this file from the proposed merge, which would let
+  # a PR replace the code that decides which checks the PR has to pass.
+  pull_request_target:
   # The merge queue. #489's lesson — four pull requests merged inside ninety
   # seconds broke main, because each one's CI proved only "this branch merged
   # with the main that existed when the run started" — was, until now,
@@ -116,6 +119,7 @@ jobs:
       # guessing.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -123,7 +127,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # `+main:` forces the local ref, so a rerun on a branch whose base has
       # moved does not fail on a non-fast-forward. Unauthenticated because
@@ -138,12 +142,30 @@ jobs:
       # runs no checks and fails on no finding: a wrong answer here is a job
       # that did not run, and the verdict job is what turns that into red.
       #
-      # The event name arrives through GITHUB_EVENT_NAME, which Actions sets.
-      # Anything other than pull_request forces the full set — see
-      # ciForceReason.
+      # pull_request_target keeps this script base-owned. For an ordinary diff
+      # it presents the checked-out merge to the gate as a pull request; for a
+      # change to the harness it publishes the full set without executing the
+      # PR's changed planner. Other event kinds remain full runs.
       - name: Which jobs can this diff reach
         id: plan
-        run: go run ./tools/gate -ci
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request_target && -z "$MERGE_SHA" ]]; then
+            echo "the pull request has no testable merge commit" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" != pull_request_target ]]; then
+            go run ./tools/gate -ci
+          elif ! git diff --quiet "${{ github.event.pull_request.base.sha }}"...HEAD -- .github/workflows/ Makefile tools/gate/; then
+            # This branch is deliberately implemented by the workflow loaded
+            # from the protected base, not by code from the PR checkout.
+            decisions='{"appearance":true,"federation":true,"fuzz-smoke":true,"proto":true,"staticcheck":true,"test":true,"vulncheck":true}'
+            printf '%s\n' test=true proto=true vulncheck=true staticcheck=true federation=true fuzz_smoke=true appearance=true "decisions=$decisions" >>"$GITHUB_OUTPUT"
+            echo "CI harness changed: the trusted workflow selected the full set" >>"$GITHUB_STEP_SUMMARY"
+          else
+            GITHUB_EVENT_NAME=pull_request go run ./tools/gate -ci
+          fi
 
   test:
     needs: plan
@@ -163,6 +185,7 @@ jobs:
       # somewhere a compromised dependency could read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
 
       # go.mod pins a patched toolchain via its `toolchain` directive. Reading the
@@ -198,7 +221,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             plugins/*/go.sum
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       - name: Report toolchain
         run: go version
@@ -335,6 +358,7 @@ jobs:
       # persist-credentials: false — see the test job above; same reason here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           # buf breaking compares against the base branch, which has to be present.
           fetch-depth: 0
           persist-credentials: false
@@ -353,7 +377,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             .github/cache-scope/proto
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Forty-three rules, all of them enforced everywhere.
       #
@@ -405,11 +429,12 @@ jobs:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Separate from the test job so a newly disclosed vulnerability is reported
       # as its own failure rather than looking like a broken test. This checks
@@ -435,6 +460,7 @@ jobs:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
       # cache-dependency-path: a key of this job's own, so staticcheck's own
       # build is cached against itself rather than against whichever job won
@@ -447,7 +473,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             .github/cache-scope/staticcheck
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # Same toolchain pin as govulncheck, and for the same reason: staticcheck's
       # own go.mod selects a toolchain older than go.mod's, so without the pin it
@@ -496,11 +522,12 @@ jobs:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # -run so this job is the real-issuer check and nothing else; the offline
       # auth tests already run in the test job, and running them twice would
@@ -539,11 +566,12 @@ jobs:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # No corpus is committed, so `-fuzz` always runs against the seed corpus in
       # source plus whatever it generates this run; a runner-local checkout means
@@ -599,11 +627,12 @@ jobs:
       # persist-credentials / cache: — see the test job above. #577.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          cache: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository }}
 
       # vhs refuses to start without ffmpeg, even for a text recording, so this
       # is a hard dependency rather than one only the GIF path needs.

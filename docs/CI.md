@@ -40,7 +40,7 @@ and skips the jobs the answer excludes.
 | tier | scope | what decides it |
 |---|---|---|
 | `go run ./tools/gate` | local, before a push | the diff |
-| CI on `pull_request` | the `plan` job | the diff |
+| CI on `pull_request_target` | the base-owned `plan` job | the diff |
 | CI on `merge_group` and `push` to main | everything | nothing; the full set always runs |
 | `make check` | everything, locally | nothing; the full rehearsal |
 
@@ -50,6 +50,15 @@ graph, and cannot see that a package with no import of `examples/` nonetheless
 breaks when an example changes. `tools/gate/ci_test.go` pins the workflow's job
 list, each job's `if:` expression, and the `verdict` job's `needs:` against the
 plan, so the two halves cannot drift apart without a test failing.
+
+The PR trigger is deliberately `pull_request_target`, not `pull_request`: the
+workflow definition therefore comes from the protected base branch, while each
+checkout explicitly selects GitHub's proposed merge commit. The base-owned plan
+script also selects the full job set itself when the PR changes the workflow,
+the Makefile, or `tools/gate`; it never asks the changed gate code whether the
+changed gate code should be trusted. Fork caches remain disabled and checkout
+credentials are never persisted, so executing the proposed merge does not add
+write credentials to the untrusted workspace.
 
 ### Why the conditional jobs are not the required checks
 

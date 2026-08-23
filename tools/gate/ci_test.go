@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	yaml "github.com/goccy/go-yaml"
@@ -18,6 +19,37 @@ func decide(t *testing.T, changed []string, affected []string, event string) map
 		out[d.Job] = d
 	}
 	return out
+}
+
+// TestThePullRequestCannotReplaceItsOwnPlan pins the trust boundary around the
+// diff-scoped optimisation. pull_request loads workflow code from the proposed
+// merge; pull_request_target loads it from the protected base. The latter is
+// safe only when every checkout explicitly selects the proposed merge and the
+// base-owned script refuses to delegate changes to the planning harness back
+// to that checkout.
+func TestThePullRequestCannotReplaceItsOwnPlan(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("reading the workflow: %v", err)
+	}
+	wf := string(data)
+	if !strings.Contains(wf, "\n  pull_request_target:\n") || strings.Contains(wf, "\n  pull_request:\n") {
+		t.Fatal("PR CI must load the workflow from the protected base with pull_request_target")
+	}
+	checkouts := strings.Count(wf, "uses: actions/checkout@")
+	mergeRefs := strings.Count(wf, "ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || github.sha }}")
+	if mergeRefs != checkouts {
+		t.Fatalf("%d checkout steps but %d select the proposed merge; a default pull_request_target checkout tests the base branch", checkouts, mergeRefs)
+	}
+	for _, guard := range []string{
+		`git diff --quiet "${{ github.event.pull_request.base.sha }}"...HEAD -- .github/workflows/ Makefile tools/gate/`,
+		`"decisions=$decisions"`,
+		`GITHUB_EVENT_NAME=pull_request go run ./tools/gate -ci`,
+	} {
+		if !strings.Contains(wf, guard) {
+			t.Errorf("trusted plan script is missing %q", guard)
+		}
+	}
 }
 
 func mustRun(t *testing.T, ds map[string]decision, jobs ...string) {
