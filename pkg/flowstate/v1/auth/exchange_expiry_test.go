@@ -315,9 +315,10 @@ targets:
 
 		party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 			writeJSON(t, w, http.StatusOK, map[string]any{
-				"access_token": "partner-token",
-				"token_type":   "Bearer",
-				"expires_in":   expiresIn,
+				"access_token":      "partner-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        expiresIn,
 			})
 		})
 
@@ -352,9 +353,10 @@ targets:
 
 		party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 			writeJSON(t, w, http.StatusOK, map[string]any{
-				"access_token": "partner-token",
-				"token_type":   "Bearer",
-				"expires_in":   int(auth.DefaultMaxCredentialLifetime.Seconds()) + 1,
+				"access_token":      "partner-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        int(auth.DefaultMaxCredentialLifetime.Seconds()) + 1,
 			})
 		})
 

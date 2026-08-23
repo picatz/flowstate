@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -30,11 +32,6 @@ const (
 	// clientAssertionTypeJWT identifies the assertion as an RFC 7523 client
 	// authentication assertion.
 	clientAssertionTypeJWT = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-
-	// maxTokenExchangeLifetime is the largest lifetime the strict profile will
-	// accept from an untrusted token endpoint. It bounds both integer-to-duration
-	// conversion and the authority retained by a cached response.
-	maxTokenExchangeLifetime = 24 * time.Hour
 )
 
 // DelegatorTokenFunc supplies the token of the party a workload is acting for,
@@ -64,9 +61,9 @@ type DelegatorTokenFunc func(ctx context.Context) (token Material, tokenType str
 // actor tokens; an access-token request and result; Bearer presentation; one
 // optional canonical resource or audience; and an exact scope grant. The profile
 // rejects ID tokens, JWT assertions as results, sender-constrained tokens,
-// response extensions (including authorization_details and cnf), repeated target
-// parameters, transformed grants, may_act, and impersonation. Delegation requires
-// AllowDelegation and remains uncached. This deliberately small subset is one
+// response extensions (including authorization_details and cnf), a request that
+// names two target services at once, transformed grants, may_act, and
+// impersonation. Delegation requires AllowDelegation and remains uncached. This deliberately small subset is one
 // Flowstate can represent and validate without discarding authority semantics.
 //
 // # Delegation
@@ -115,18 +112,29 @@ type TokenExchangeConfig struct {
 	Audience string
 
 	// TargetAudience is the RFC 8693 "audience" parameter: the logical name of
-	// the service the returned credential will be used against. Optional.
+	// the service the returned credential will be used against. Optional, and
+	// mutually exclusive with Resource — see that field.
 	TargetAudience string
 
 	// Resource is the RFC 8693 "resource" parameter, a URI naming the target
-	// service. Optional, and an alternative to TargetAudience.
+	// service. Optional, and an alternative to TargetAudience rather than an
+	// addition to it: RFC 8693 section 2.1 reads the two together as naming
+	// several target services, which is a credential good in more places than the
+	// one system a Flowstate target names. Setting both is refused by
+	// [NewTokenExchanger] at startup.
 	Resource string
 
-	// Scopes are the scopes to request. Optional.
+	// Scopes are the scopes to request. Optional. A relying party must grant
+	// exactly these, in any order; a partial or broader grant is refused.
 	Scopes []string
 
-	// RequestedTokenType is the RFC 8693 "requested_token_type". Defaults to an
-	// access token.
+	// RequestedTokenType is the RFC 8693 "requested_token_type". Optional, and
+	// the only value this profile accepts is
+	// "urn:ietf:params:oauth:token-type:access_token", which is also the default
+	// when it is empty. Any other value — an id_token, a JWT assertion, a vendor
+	// URN — is refused by [NewTokenExchanger] at startup rather than at the first
+	// exchange, because a result Flowstate cannot present as a bearer credential
+	// is a policy that can never succeed.
 	RequestedTokenType string
 
 	// AllowDelegation is the explicit policy decision required before Delegator
@@ -298,6 +306,20 @@ type tokenExchangeResponse struct {
 	Scope           string `json:"scope,omitempty"`
 }
 
+// decodeTokenExchangeResponse reads one RFC 8693 success response and refuses
+// everything the profile above cannot faithfully turn into a bearer credential:
+// a body that is not exactly one JSON document, a field this package does not
+// know, an absent access_token, token_type or issued_token_type, a result that
+// is not the access token that was requested, a token that is not a Bearer one,
+// and a scope grant that is not the set that was asked for.
+//
+// What it deliberately does not check is expires_in. The lifetime a relying
+// party reports is judged against the ceiling this target configured, by
+// tokenResponse.credential, which is where every OAuth grant in this package
+// meets that rule. A second bound here would be the same rule spelled twice —
+// and the copy would have been the wrong one, since it could only ever know the
+// hard bound every target shares rather than the one an operator wrote for this
+// target.
 func decodeTokenExchangeResponse(provider string, raw []byte, requestedType string, requestedScopes []string) (tokenResponse, error) {
 	var response tokenExchangeResponse
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -317,9 +339,6 @@ func decodeTokenExchangeResponse(provider string, raw []byte, requestedType stri
 	if !strings.EqualFold(response.TokenType, "Bearer") {
 		return tokenResponse{}, fmt.Errorf("%w: %s issued a %q or sender-constrained token, which cannot be represented as CredentialBearer", ErrExchangeFailed, provider, truncate(response.TokenType, 32))
 	}
-	if response.ExpiresIn <= 0 || response.ExpiresIn > int64(maxTokenExchangeLifetime/time.Second) {
-		return tokenResponse{}, fmt.Errorf("%w: %s returned expires_in outside (0,%d]", ErrExchangeFailed, provider, int64(maxTokenExchangeLifetime/time.Second))
-	}
 	granted, err := canonicalScopes(response.Scope)
 	if err != nil {
 		return tokenResponse{}, fmt.Errorf("%w: %s returned invalid scope: %v", ErrExchangeFailed, provider, err)
@@ -338,20 +357,34 @@ func decodeTokenExchangeResponse(provider string, raw []byte, requestedType stri
 		TokenType: "Bearer", ExpiresIn: response.ExpiresIn, Scope: strings.Join(granted, " ")}, nil
 }
 
+// ensureJSONEOF reports whether the decoder has consumed the whole body. A token
+// endpoint response is one JSON document; anything after it is either a second
+// document whose fields nothing here read, or trailing bytes a proxy or a
+// smuggling attempt appended.
 func ensureJSONEOF(decoder *json.Decoder) error {
 	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("multiple JSON values")
-		}
+	err := decoder.Decode(&extra)
+	switch {
+	case errors.Is(err, io.EOF):
+		return nil
+	case err == nil:
+		return fmt.Errorf("multiple JSON values")
+	default:
 		return err
 	}
-	return nil
 }
 
 func validateExchangeRequest(cfg TokenExchangeConfig) error {
 	if _, err := canonicalScopeList(cfg.Scopes); err != nil {
 		return fmt.Errorf("invalid scopes: %v", err)
+	}
+	// RFC 8693 section 2.1 allows audience and resource together, and says that
+	// combination names several target services rather than one. That is broader
+	// authority than a Flowstate target models — one name, one downstream system —
+	// so a config carrying both is refused here rather than turned into a request
+	// for a credential good in two places at once.
+	if cfg.TargetAudience != "" && cfg.Resource != "" {
+		return fmt.Errorf("target_audience and resource name two target services; this profile takes one")
 	}
 	if cfg.TargetAudience != "" && !canonicalOpaqueValue(cfg.TargetAudience) {
 		return fmt.Errorf("invalid target audience")
@@ -375,6 +408,16 @@ func canonicalScopes(scope string) ([]string, error) {
 	return canonicalScopeList(strings.Split(scope, " "))
 }
 
+// canonicalScopeList checks every scope against RFC 6749 section 3.3's
+// scope-token grammar, refuses duplicates, and returns the set in a canonical
+// order.
+//
+// Sorting is what makes the returned value canonical rather than merely copied,
+// and it is the whole reason the granted and requested lists can be compared as
+// strings. RFC 6749 gives scope no order: an authorization server that answers
+// "write read" to a request for "read write" has granted exactly what was asked
+// for, and comparing the two in arrival order refuses that identical grant as a
+// transformed one. A relying party's serialisation is not a fact about authority.
 func canonicalScopeList(scopes []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
@@ -391,7 +434,10 @@ func canonicalScopeList(scopes []string) ([]string, error) {
 		}
 		seen[scope] = struct{}{}
 	}
-	return append([]string(nil), scopes...), nil
+
+	canonical := append([]string(nil), scopes...)
+	slices.Sort(canonical)
+	return canonical, nil
 }
 
 func canonicalOpaqueValue(value string) bool {

@@ -301,7 +301,11 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 		{"id token result", func(v map[string]any) { v["issued_token_type"] = "urn:ietf:params:oauth:token-type:id_token" }},
 		{"jwt assertion result", func(v map[string]any) { v["issued_token_type"] = "urn:ietf:params:oauth:token-type:jwt" }},
 		{"zero lifetime", func(v map[string]any) { v["expires_in"] = 0 }},
-		{"unbounded lifetime", func(v map[string]any) { v["expires_in"] = 86401 }},
+		// expires_in is judged against the ceiling this target configured — here
+		// the default, since the exchanger below names none. The strict decoder
+		// deliberately keeps no second bound of its own: see
+		// TestTokenExchangeAppliesThePerTargetLifetimeCeiling.
+		{"a lifetime past the target's ceiling", func(v map[string]any) { v["expires_in"] = 86401 }},
 		{"malformed scope", func(v map[string]any) { v["scope"] = "read  write" }},
 		{"overbroad scope", func(v map[string]any) { v["scope"] = "read write" }},
 		{"proof downgrade", func(v map[string]any) { v["token_type"] = "DPoP" }},
@@ -343,6 +347,210 @@ func TestTokenExchangeStrictProfileVectors(t *testing.T) {
 	}
 }
 
+// TestTokenExchangeAppliesThePerTargetLifetimeCeiling pins which of the two
+// numbers in play decides when a credential expires.
+//
+// The fifth argument to tokenResponse.credential is a ceiling on what Flowstate
+// will believe, never a lifetime to fall back on when a provider says nothing:
+// #1000 made that so, and a caller that hands it a zero — or the hard bound
+// every target shares rather than the one this target configured — turns a
+// per-target policy into either a refusal of everything or a policy that is not
+// applied at all. Both readings pass a test that only checks a credential came
+// back, so all three cases below name an expiry or an error message.
+//
+// TestFederationPolicyCredentialLifetimeCeiling covers the same rule reached
+// through a policy file. This one is the direct-configuration half, and it runs
+// through the strict RFC 8693 decoder rather than beside it.
+func TestTokenExchangeAppliesThePerTargetLifetimeCeiling(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	exchange := func(t *testing.T, ceiling time.Duration, expiresIn int) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"access_token":      "downstream-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        expiresIn,
+			})
+		})
+
+		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+			TokenURL:              party.url + "/token",
+			Audience:              "https://as.example.com",
+			MaxCredentialLifetime: ceiling,
+			Clock:                 clock.Now,
+		})
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, "https://as.example.com"))
+	}
+
+	t.Run("the provider's expiry decides, and the ceiling only bounds it", func(t *testing.T) {
+		credential, err := exchange(t, 30*time.Minute, 300)
+		require.NoError(t, err)
+		require.Equal(t, referenceTime.Add(5*time.Minute), credential.ExpiresAt.UTC(),
+			"a five-minute token under a thirty-minute ceiling expires in five minutes")
+	})
+
+	t.Run("a token past the ceiling this target configured", func(t *testing.T) {
+		credential, err := exchange(t, 5*time.Minute, 600)
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, "longer than the 5m0s this target allows",
+			"the error names the target's own ceiling, not the hard bound every target shares")
+		require.True(t, credential.IsZero())
+	})
+
+	t.Run("a target naming no ceiling takes the default, not the hard bound", func(t *testing.T) {
+		credential, err := exchange(t, 0, int(auth.DefaultMaxCredentialLifetime.Seconds())+1)
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.ErrorContains(t, err, auth.DefaultMaxCredentialLifetime.String())
+		require.True(t, credential.IsZero())
+	})
+}
+
+// TestTokenExchangeReadsGrantedScopesAsASet checks the scope comparison against
+// the thing an authorization server actually controls: the order it serialises
+// a grant in.
+//
+// RFC 6749 section 3.3 makes scope a space-delimited list with no ordering rule,
+// so "write read" and "read write" are one grant. Comparing arrival order
+// refuses a compliant server for a reason no operator could act on. The
+// negative cases are here because sorting could just as easily have turned the
+// check into nothing at all: a set comparison still has to refuse a set that
+// differs.
+func TestTokenExchangeReadsGrantedScopesAsASet(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	exchange := func(t *testing.T, requested []string, granted string) (auth.Credential, error) {
+		t.Helper()
+
+		party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"access_token":      "downstream-token",
+				"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+				"token_type":        "Bearer",
+				"expires_in":        300,
+				"scope":             granted,
+			})
+		})
+
+		exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+			TokenURL: party.url + "/token",
+			Audience: "https://as.example.com",
+			Scopes:   requested,
+			Clock:    clock.Now,
+		})
+		require.NoError(t, err)
+
+		return exchanger.Exchange(t.Context(), mintAssertion(t, issuer, "https://as.example.com"))
+	}
+
+	t.Run("the same scopes in another order are the same grant", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"}, "write read")
+		require.NoError(t, err, "a server may serialise a granted scope set in any order")
+		require.False(t, credential.IsZero())
+	})
+
+	t.Run("the requested order is accepted too", func(t *testing.T) {
+		_, err := exchange(t, []string{"read", "write"}, "read write")
+		require.NoError(t, err)
+	})
+
+	t.Run("a partial grant is still refused", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"}, "read")
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.True(t, credential.IsZero())
+	})
+
+	t.Run("an overbroad grant is still refused", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"}, "write read admin")
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.True(t, credential.IsZero())
+	})
+
+	t.Run("a substituted scope is still refused", func(t *testing.T) {
+		credential, err := exchange(t, []string{"read", "write"}, "write delete")
+		require.ErrorIs(t, err, auth.ErrExchangeFailed)
+		require.True(t, credential.IsZero())
+	})
+}
+
+// TestTokenExchangeRejectsAnythingAfterTheJSONDocument covers the trailing-value
+// half of the strict decoder, which no marshalled fixture can reach: a body that
+// is a valid response followed by a second document decodes cleanly if nothing
+// asks whether the reader is at EOF.
+func TestTokenExchangeRejectsAnythingAfterTheJSONDocument(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	valid := `{"access_token":"downstream-token",` +
+		`"issued_token_type":"urn:ietf:params:oauth:token-type:access_token",` +
+		`"token_type":"Bearer","expires_in":300}`
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{"a second document", valid + valid},
+		{"a trailing scalar", valid + " 0"},
+		{"trailing garbage", valid + " not-json"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			party := newRelyingParty(t, func(w http.ResponseWriter, _ *http.Request, _ recordedRequest) {
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write([]byte(test.body))
+				require.NoError(t, err)
+			})
+
+			exchanger, err := auth.NewTokenExchanger(auth.TokenExchangeConfig{
+				TokenURL: party.url + "/token",
+				Audience: "https://as.example.com",
+				Clock:    clock.Now,
+			})
+			require.NoError(t, err)
+
+			credential, err := exchanger.Exchange(t.Context(), mintAssertion(t, issuer, "https://as.example.com"))
+			require.ErrorIs(t, err, auth.ErrExchangeFailed)
+			require.True(t, credential.IsZero())
+		})
+	}
+}
+
+// TestTokenExchangeRefusesTwoTargetSelectors pins the startup refusal behind the
+// profile's "one optional resource or audience".
+//
+// RFC 8693 section 2.1 permits both parameters together and reads them as naming
+// several target services. A Flowstate target names one system, so a config
+// carrying both would ask for a credential good somewhere the operator never
+// wrote down. Either alone stays legal.
+func TestTokenExchangeRefusesTwoTargetSelectors(t *testing.T) {
+	base := auth.TokenExchangeConfig{
+		TokenURL: "https://as.example.com/token",
+		Audience: "https://as.example.com",
+	}
+
+	both := base
+	both.TargetAudience = "https://api.example.com"
+	both.Resource = "https://api.example.com/v1"
+	_, err := auth.NewTokenExchanger(both)
+	require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+	require.ErrorContains(t, err, "two target services")
+
+	audienceOnly := base
+	audienceOnly.TargetAudience = "https://api.example.com"
+	_, err = auth.NewTokenExchanger(audienceOnly)
+	require.NoError(t, err)
+
+	resourceOnly := base
+	resourceOnly.Resource = "https://api.example.com/v1"
+	_, err = auth.NewTokenExchanger(resourceOnly)
+	require.NoError(t, err)
+}
+
 // TestClientCredentialsExchanger covers the client credentials grant, both
 // secretless and with a secret.
 func TestClientCredentialsExchanger(t *testing.T) {
@@ -351,10 +559,9 @@ func TestClientCredentialsExchanger(t *testing.T) {
 
 	party := newRelyingParty(t, func(w http.ResponseWriter, r *http.Request, body recordedRequest) {
 		writeJSON(t, w, http.StatusOK, map[string]any{
-			"access_token":      "service-token",
-			"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-			"token_type":        "Bearer",
-			"expires_in":        1800,
+			"access_token": "service-token",
+			"token_type":   "Bearer",
+			"expires_in":   1800,
 		})
 	})
 
@@ -627,10 +834,9 @@ func TestGCPExchanger(t *testing.T) {
 			switch {
 			case r.URL.Path == "/v1/token":
 				writeJSON(t, w, http.StatusOK, map[string]any{
-					"access_token":      "federated-token",
-					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-					"token_type":        "Bearer",
-					"expires_in":        3600,
+					"access_token": "federated-token",
+					"token_type":   "Bearer",
+					"expires_in":   3600,
 				})
 			default:
 				// The IAM Credentials API authenticates with the federated token,

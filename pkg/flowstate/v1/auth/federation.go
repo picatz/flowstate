@@ -133,13 +133,27 @@ type FederationTarget struct {
 }
 
 // TokenExchangeTarget is the file form of [TokenExchangeConfig].
+//
+// Several of these fields are narrower than RFC 8693 allows, and each narrowing
+// is refused when the policy loads rather than when a workload's first exchange
+// fails. See [TokenExchangeConfig] for the whole profile.
 type TokenExchangeTarget struct {
-	TokenURL              string        `json:"token_url" yaml:"token_url"`
-	Audience              string        `json:"audience" yaml:"audience"`
-	TargetAudience        string        `json:"target_audience,omitempty" yaml:"target_audience,omitempty"`
-	Resource              string        `json:"resource,omitempty" yaml:"resource,omitempty"`
-	Scopes                []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
-	RequestedTokenType    string        `json:"requested_token_type,omitempty" yaml:"requested_token_type,omitempty"`
+	TokenURL string `json:"token_url" yaml:"token_url"`
+	Audience string `json:"audience" yaml:"audience"`
+
+	// TargetAudience and Resource are alternatives, not a pair: naming both asks
+	// the authorization server for a credential good at several target services,
+	// and a target here is one system.
+	TargetAudience string `json:"target_audience,omitempty" yaml:"target_audience,omitempty"`
+	Resource       string `json:"resource,omitempty" yaml:"resource,omitempty"`
+
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// RequestedTokenType accepts only "urn:ietf:params:oauth:token-type:access_token",
+	// which is also what an omitted value means. Nothing else in RFC 8693's
+	// registry can be presented as the bearer credential a Flowstate task uses.
+	RequestedTokenType string `json:"requested_token_type,omitempty" yaml:"requested_token_type,omitempty"`
+
 	MaxCredentialLifetime time.Duration `json:"max_credential_lifetime,omitempty" yaml:"max_credential_lifetime,omitempty"`
 }
 
