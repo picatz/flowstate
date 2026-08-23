@@ -181,48 +181,25 @@ steps:
           # A read, so it is safe to retry: nothing on the far side changes
           # because this ran twice, and a control plane having a bad second
           # should not end a reconciler. Note what this retry is *not* for -
-          # see `expect:` below.
+          # see the note on the http block below.
           retry:
             attempts: 3
             interval: 1s
             backoff: 2.0
             max_interval: 10s
           http:
-            # An HTTP response is untyped until something says otherwise, and
-            # every step below treats these two values as a number and a
-            # boolean. A control plane answering `{"retired": "false"}` - a
-            # string, from a flaky serializer or a proxy's error page - would
-            # otherwise satisfy this step and then fail in `retiring`'s boolean
-            # context or in the loop's `until:`, ending the reconciler with a
-            # CEL type error several steps away from the thing that was wrong.
-            # So the shape is checked at the boundary, in the same spirit as the
-            # guards on the signal payload: this is the other untrusted input,
-            # and it was left unchecked when retirement moved from the payload
-            # to the world.
-            #
-            # JSON has one number type, so a replica count arrives as a double
-            # even when it was written `2`; accepting either CEL numeric type is
-            # what makes this a shape check rather than an accident of the
-            # decoder. Accepting *every* double would be too generous the other
-            # way: a replica count is a count, and `2.5` is not a smaller number
-            # of replicas, it is a wrong answer. So a double has to be integral
-            # (`x == double(int(x))`) and the count non-negative - refusing the
-            # reading rather than converging toward a fraction. A stubbed run never evaluates `expect:` at all - a stub
-            # replaces the task - so the first thing to catch an int-only check
-            # here was the cross-driver harness running against the stand-in.
-            #
-            # `expect:` rather than a defaulting expression in `outputs:`,
-            # deliberately. A wrong-typed reading is not a missing one: coercing
-            # it would invent a `replicas` this reconciler then converges
-            # toward, which is a wrong write rather than a refused read. A failed
-            # expectation is permanent by design - the author has said what a
-            # correct answer looks like, and repeating the request will not
-            # change the endpoint's mind - so this fails the step by name and
-            # does not spend the retries above on it.
-            expect: |-
-              ${response.status_code == 200 && has(response.json.replicas) && (type(response.json.replicas) == type(0) ||
-              type(response.json.replicas) == type(0.0) && response.json.replicas == double(int(response.json.replicas))) &&
-              response.json.replicas >= 0 && has(response.json.retired) && type(response.json.retired) == type(true)}
+            # No `expect:` on this read, deliberately, and the reason is a real
+            # constraint rather than an oversight. An `expect:` expression
+            # *replaces* the task's own status judgement entirely (see
+            # eval_task_http.go, httpExpectationMet), and an unmet one is
+            # classified InvalidInput, which is permanent. So a shape guard
+            # written here as `status_code == 200 && <types>` would turn a
+            # transient 503 - exactly what the retry above exists for - into a
+            # permanent failure and end the reconciler on a blip. There is no
+            # spelling of `expect:` that says "retryable", so the default
+            # judgement is left in place (2xx succeeds, 5xx is transient, 4xx is
+            # not) and the shape is checked in the body, where a bad reading can
+            # do something better than fail: see `readable` below.
             method: GET
             outputs:
               replicas: ${response.json.replicas}
@@ -230,6 +207,28 @@ steps:
             parse_json: true
             query: '${{"name": inputs.target}}'
             url: https://control-plane.internal.example.com/workloads/status
+
+        # Whether this pass got an answer it can actually use. An HTTP response is
+        # untyped, and every step below treats `replicas` as a count and
+        # `retired` as a boolean; a control plane answering `{"retired": "false"}`
+        # or `{"replicas": 2.5}` would otherwise reach a boolean operator or a
+        # scale request as a string or a fraction.
+        #
+        # The order inside matters: the type gate runs before any comparison, so
+        # a string is never compared with `>`; the range check runs before
+        # `int()`, so an absurd double like 1e100 is refused rather than
+        # overflowing the conversion.
+        #
+        # A bad reading is not a failure here, and that is the reconciler's
+        # advantage over failing at the boundary: this pass simply decides
+        # nothing - it does not retire and it does not write - and the next
+        # resync reads again. A garbled answer is a reason to look again, not a
+        # reason to end a run whose whole claim is that it keeps watching.
+        - id: readable
+          value: |-
+            ${(type(steps.observed.replicas) == type(0) || type(steps.observed.replicas) == type(0.0) &&
+            steps.observed.replicas >= 0.0 && steps.observed.replicas <= 100000.0 && steps.observed.replicas == double(int(steps.observed.replicas))) &&
+            steps.observed.replicas >= 0 && type(steps.observed.retired) == type(true)}
 
         # Retirement is a fact about the workload, not about the event that woke
         # us — and reading it from the world rather than from a payload is the
@@ -247,7 +246,7 @@ steps:
         # This is the level-triggered discipline applied to the stop condition,
         # and it is why a signal here only ever changes *when* a pass happens.
         - id: retiring
-          value: ${steps.observed.retired}
+          value: ${steps.readable.value && steps.observed.retired}
 
         # The desired count this pass converges on. A spec change is the one
         # thing a signal legitimately carries, and it is still an untrusted
@@ -256,13 +255,39 @@ steps:
         # changes are applied oldest-first, one per pass, which converges — a
         # stale desired count for one interval is not a wrong mutation, it is a
         # slower correct one.
+        # The count a signal is offering this pass, if any: -1 stands for
+        # "nothing on offer", which the checks below reject like any other
+        # out-of-range value.
+        - id: proposed
+          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas)) ? steps.pace.payload.desired_replicas : -1}"
+
+        # The two shape questions, each asked once. Naming them keeps the guard
+        # below readable and stops `type(...)` being spelled four times in one
+        # expression, which is what `flow lint`'s repeated-expression rule is
+        # about.
+        - id: proposed_is_int
+          value: ${type(steps.proposed.value) == type(0)}
+        - id: proposed_is_double
+          value: ${type(steps.proposed.value) == type(0.0)}
+
+        # Ordered, not merely guarded: numeric first, so a string is never
+        # compared with `>`; then the range, so an absurd double like 1e100 is
+        # refused by a comparison rather than overflowing `int()`; then
+        # integrality, on a value already known to be small and in range.
+        - id: proposed_ok
+          value: |-
+            ${(steps.proposed_is_int.value || steps.proposed_is_double.value) && steps.proposed.value > 0 &&
+            steps.proposed.value <= 100 && (steps.proposed_is_int.value || steps.proposed.value == double(int(steps.proposed.value)))}
+
+        # Adopted only when every check held, and converted so the carried state
+        # stays an int rather than becoming 7.0.
         - id: next_desired
-          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas) &&\n(type(steps.pace.payload.desired_replicas) == type(0) || type(steps.pace.payload.desired_replicas) == type(0.0) &&\nsteps.pace.payload.desired_replicas == double(int(steps.pace.payload.desired_replicas))) &&\nsteps.pace.payload.desired_replicas > 0 && steps.pace.payload.desired_replicas <= 100) ? int(steps.pace.payload.desired_replicas) : goal.desired}"
+          value: "${steps.proposed_ok.value ? int(steps.proposed.value) : goal.desired}"
 
         # The comparison, named once, read by the step that acts and by the
         # output that counts.
         - id: drift
-          value: ${steps.observed.replicas != steps.next_desired.value}
+          value: ${steps.readable.value && steps.observed.replicas != steps.next_desired.value}
 
         # The act, and the only step here that changes anything. Gated on the
         # workload not being retired and on there being drift to correct: a

@@ -374,3 +374,70 @@ tests:
         # responsible for 5.
         final_desired_replicas: 5
         final_observed_replicas: 5
+
+  - name: an absurd replica count is refused by the range check, not by an overflow
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # 1e100 is a number, and in range terms it is very much not one. The guard
+      # checks the range *before* converting with int(), so this is refused by a
+      # comparison rather than terminating the run on an integer overflow inside
+      # the conversion.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 1e100
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      skipped: [converge]
+      outputs:
+        passes: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5
+
+  - name: a malformed status reading makes the pass wait rather than end the run
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    stubs:
+      # The control plane answers with a string where a boolean belongs. The run
+      # must not end here: a garbled answer is a reason to look again, not a
+      # reason to stop watching. So this pass decides nothing - it does not
+      # retire and it does not write - and the next resync reads again.
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: 2
+          retired: "false"
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      # No converge stub: a pass that could not read the world must never write
+      # to it, so reaching the scale request fails the case loudly.
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      skipped: [converge]
+      outputs:
+        # Two passes: the unreadable one, then the one that read a retirement.
+        passes: 2
+        passes_that_acted: 0
+        final_desired_replicas: 5
+        final_observed_replicas: 5

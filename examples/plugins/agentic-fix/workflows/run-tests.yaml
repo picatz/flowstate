@@ -23,21 +23,26 @@ steps:
     description: Ask CI for a run at this commit and wait for its verdict.
     timeout: 15m
     http:
-      # The same boundary check the reconciler's status read carries, and for the
-      # same reason: an HTTP response is untyped, and everything downstream treats
-      # `passed` as a boolean. A CI answering `{"passed": "false"}` - a string -
-      # would satisfy this step and then type-error in `!steps.failing.passed` or
-      # in the loop's `until:`, several steps from the thing that was wrong. A
-      # failed expectation is permanent, so a malformed answer fails here by name
-      # rather than being coerced into a verdict nobody gave.
-      expect: |-
-        ${response.status_code == 200 && has(response.json.passed) && type(response.json.passed) == type(true) &&
-        has(response.json.output) && type(response.json.output) == type("")}
       json: '${{"ref": inputs.ref}}'
       method: POST
+      # Shaped with a type guard rather than an `expect:`, and fail-closed. An
+      # `expect:` would replace the task's status judgement entirely and classify
+      # its own failure as permanent (eval_task_http.go), so a transient 503 from
+      # CI would stop being retried - the opposite of what a flaky CI needs.
+      # Leaving the default judgement in place keeps a 5xx retryable, and the
+      # shape is handled here.
+      #
+      # A malformed answer becomes `passed: false`, which is the safe direction
+      # and not a coercion this file has to apologise for: "we did not get a
+      # pass" is exactly true of a CI that answered `{"passed": "false"}` as a
+      # string. It routes to another attempt or to the human handoff, and it can
+      # never be mistaken for a green suite. (The reconciler refuses its bad
+      # reading instead of defaulting it, because there the defaulted value would
+      # be *written back* to the world; here it only decides whether to keep
+      # trying.)
       outputs:
-        output: ${response.json.output}
-        passed: ${response.json.passed}
+        output: '${(type(response.json.output) == type("")) ? response.json.output : ""}'
+        passed: ${type(response.json.passed) == type(true) && response.json.passed}
       parse_json: true
       url: https://ci.internal.example.com/test-runs
 outputs:
