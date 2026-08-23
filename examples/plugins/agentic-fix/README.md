@@ -118,11 +118,34 @@ workflow itself cannot do:
   the operator's `FLOWSTATE_CODEX_WORKDIR_ROOT`, since that is where the agent
   edits and from which its `patch` is diffed.
 
+Two of the worker's environment variables are not optional here, and leaving
+either unset makes the turn fail rather than degrade — both are operator
+decisions the workflow cannot make for itself:
+
+- **`FLOWSTATE_CODEX_BASE_CONFIG`** must name a codex config that permits
+  workspace writes. The plugin's ceiling is fail-closed: with this unset the
+  operator policy is `SANDBOX_MODE_READ_ONLY`, and a task may only narrow
+  *within* that ceiling — so `propose`, which asks for
+  `SANDBOX_MODE_WORKSPACE_WRITE`, is refused outright as invalid input naming
+  the field, never quietly downgraded. A minimal file:
+
+  ```toml
+  # /path/to/codex-base.toml
+  sandbox_mode = "workspace-write"
+  ```
+
+- **`FLOWSTATE_CODEX_GIT_BIN`** must be an absolute path to a git binary. It is
+  what the plugin uses to diff the workspace, and it never falls back to `$PATH`;
+  unset, `patch` comes back empty and the commit step is refused for having
+  nothing to commit.
+
 ```console
 $ mkdir -p ./plugins
 $ go -C plugins/codex build -o ../../plugins/flowstate-plugin-codex .
 $ go -C plugins/git build -o ../../plugins/flowstate-plugin-git .
 $ export FLOWSTATE_CODEX_BIN=/path/to/codex
+$ export FLOWSTATE_CODEX_GIT_BIN=/usr/bin/git          # no $PATH fallback; without it, no patch
+$ export FLOWSTATE_CODEX_BASE_CONFIG=/path/to/codex-base.toml  # else the ceiling stays read-only
 $ export FLOWSTATE_CODEX_WORKDIR_ROOT=/path/to/checkouts
 $ export FLOWSTATE_SECRET_OPENAI_API_KEY=sk-...
 $ export GIT_SECRET_0__TOKEN=...

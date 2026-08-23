@@ -148,8 +148,18 @@ steps:
         # gate that makes the wait-first ordering matter: a `retired: true`
         # consumed here — however early it arrived — ends the run at `until:`
         # below with no observe and no scale.
+        # Retirement is decided from an untrusted payload, so `retired` is
+        # type-guarded the same way `desired_replicas` is below: a sender that
+        # puts a string `"false"` (or anything non-bool) where a bool belongs
+        # would otherwise make `notified && <string>` fail the `&&` at runtime and
+        # terminate the reconciler. The `&&` short-circuits — `notified` gates the
+        # payload read, and the `type(...) == type(true)` gate runs before the
+        # value is used as a bool — so a wrong type reads as "not retiring" rather
+        # than crashing.
         - id: retiring
-          value: ${steps.notified.value && steps.pace.payload.?retired.orValue(false)}
+          value: |-
+            ${steps.notified.value && has(steps.pace.payload.retired) && type(steps.pace.payload.retired) == type(true) &&
+            steps.pace.payload.retired}
 
         # Its complement, named once: every step below that must not run on a
         # retiring pass reads this rather than re-deriving `!retiring`.

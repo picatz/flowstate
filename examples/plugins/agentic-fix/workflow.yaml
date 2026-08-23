@@ -121,7 +121,7 @@ steps:
     with:
       ref: ${steps.base_sha.value}
   - id: attempt
-    description: Five tries, each one a prompt built from the last failure, a commit, and a test run at that commit.
+    description: One try - a prompt built from the failure, a commit, and a test run at that commit - and its budget being spent is what asks a person.
     # Only when the build is actually broken. A stale trigger, or a flaky failure
     # that cleared on its own, leaves `failing.passed` true — and asking an agent
     # to patch a green branch would mutate a repository that needed nothing. So
@@ -199,6 +199,13 @@ steps:
             # outside it; network access for the agent's own shell stays off
             # (allow_network's default), so the only thing that reaches the network
             # is the model call itself.
+            #
+            # This is a request within an operator's ceiling, not a grant: the
+            # plugin's default policy is READ_ONLY and a task may only narrow
+            # within what the worker's own FLOWSTATE_CODEX_BASE_CONFIG permits,
+            # so a worker that has not been configured to allow workspace writes
+            # refuses this step by name rather than silently downgrading it. The
+            # README's worker environment section says what to export.
             sandbox_mode: SANDBOX_MODE_WORKSPACE_WRITE
             working_context: ${inputs.workspace}
         - id: apply
@@ -283,7 +290,18 @@ steps:
       name: human-review
       timeout: 24h
       outputs:
-        taken_over: ${!timed_out && payload.?taken_over.orValue(false)}
+        # Type-guarded for the reason `retiring` is in `deployment-reconciler`:
+        # a signal payload is an untrusted input, and `payload.?taken_over.orValue(false)`
+        # answers with whatever was sent — so a sender that puts the *string*
+        # `"false"` where a bool belongs would make the `&&` fail on a non-bool
+        # operand, failing the run while it was reporting a handoff. `has(...)`
+        # and the `type(...) == type(true)` gate run before the value is used as
+        # a bool, and `&&` short-circuits, so a wrong type reads as "did not take
+        # it over" — which is the fail-closed answer this gate already gives to
+        # silence.
+        taken_over: |-
+          ${!timed_out && has(payload.taken_over) && type(payload.taken_over) == type(true) &&
+          payload.taken_over}
   - id: report
     log:
       level: '${steps.unresolved.value ? "warn" : "info"}'

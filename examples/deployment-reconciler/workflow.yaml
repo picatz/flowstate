@@ -157,11 +157,9 @@ steps:
         # value is used as a bool — so a wrong type reads as "not retiring" rather
         # than crashing.
         - id: retiring
-          value: >-
-            ${steps.notified.value &&
-              has(steps.pace.payload.retired) &&
-              type(steps.pace.payload.retired) == type(true) &&
-              steps.pace.payload.retired}
+          value: |-
+            ${steps.notified.value && has(steps.pace.payload.retired) && type(steps.pace.payload.retired) == type(true) &&
+            steps.pace.payload.retired}
 
         # Its complement, named once: every step below that must not run on a
         # retiring pass reads this rather than re-deriving `!retiring`.
