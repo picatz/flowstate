@@ -51,7 +51,7 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 // staticcheck and test. None of those can be affected by that file.
 func TestAMarkdownOnlyDiffReachesNothing(t *testing.T) {
 	ds := decide(t, []string{"CLAUDE.md"}, nil, "pull_request")
-	mustSkip(t, ds, "test", "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "test", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 // TestEveryDecisionSaysWhy holds both answers to the same standard the local
@@ -79,7 +79,7 @@ func TestEveryDecisionSaysWhy(t *testing.T) {
 func TestDocsOnlySourcesStillReachTheTestJob(t *testing.T) {
 	ds := decide(t, []string{"docs/DSL.md"}, nil, "pull_request")
 	mustRun(t, ds, "test")
-	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 // TestAnExampleOnlyChangeReachesTheTestJob: examples/ holds the corpus the
@@ -103,7 +103,7 @@ func TestAnExampleOnlyChangeReachesTheTestJob(t *testing.T) {
 func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 	ds := decide(t, []string{"plugins/openai/main.go"}, nil, "pull_request")
 	mustRun(t, ds, "test")
-	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 // TestReadmeOrArchitectureOnlyStillReachesTheTestJob is the regression for a
@@ -118,36 +118,93 @@ func TestAPluginOnlyChangeStillReachesTheTestJob(t *testing.T) {
 // PR). A PR could introduce stale command documentation, an invalid embedded
 // Flowfile, an AGENTS.md that drifted from CLAUDE.md, or a stale generated
 // doc while verdict accepted the skip.
+//
+// Widened again by #708, which gave the documentation set a test about the
+// *set*: cmd/flow/docsindex_test.go fails when a page under docs/ is added,
+// renamed or removed without docs/README.md moving with it, and when a page
+// under docs/plans/ loses its internal-only banner. Every Markdown file in that
+// tree is test data now, so the rule covers docs/ rather than enumerating the
+// pages that happen to be read today — the enumeration is what would go stale
+// the next time a page is added.
 func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
-	for _, f := range []string{"README.md", "docs/ARCHITECTURE.md", "AGENTS.md", "docs/reference/tasks.md"} {
+	for _, f := range []string{
+		"README.md",
+		"docs/ARCHITECTURE.md",
+		"AGENTS.md",
+		"docs/reference/tasks.md",
+		"docs/README.md",
+		"docs/DEPLOYMENT.md",
+		"docs/plans/factory.md",
+	} {
 		t.Run(f, func(t *testing.T) {
 			ds := decide(t, []string{f}, nil, "pull_request")
 			mustRun(t, ds, "test")
-			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance")
+			mustSkip(t, ds, "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 		})
 	}
 }
 
-// TestTheNarrowJobsFollowTheAffectedSet pins the three jobs whose trigger is a
-// package rather than a path: federation runs one test in one package,
-// fuzz-smoke's targets live in three, and the appearance goldens record what
+// TestTheNarrowJobsFollowTheAffectedSet pins the two jobs whose trigger is a
+// package rather than a path: fuzz-smoke's targets live in the packages
+// tools/fuzztargets/targets.txt names, and the appearance goldens record what
 // the cmd/flow binary prints.
+//
+// The diff is netpolicy's rather than the engine's, and the swap is the whole
+// point of the case: this asserts what happens where *no* target lives, so it
+// has to name a package that holds none. It used to name the engine, which held
+// none until #403's item 4 put FuzzSignalDeliveryDecode there — at which point
+// the assertion was still true of the gate and false of the tree, which is the
+// stale-expectation shape rather than a defect. A package's arrival in
+// targets.txt is supposed to move this decision.
 func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
-	changed := []string{"pkg/flowstate/v1/engine/policy.go"}
+	changed := []string{"pkg/flowstate/v1/netpolicy/body.go"}
 
-	// A diff that reaches the engine and nothing else.
-	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/engine"}, "pull_request")
+	// A diff that reaches netpolicy and nothing else. It holds no fuzz target
+	// and prints nothing the appearance goldens record, so both narrow jobs
+	// skip.
+	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/netpolicy"}, "pull_request")
 	mustRun(t, ds, "test", "vulncheck", "staticcheck")
-	mustSkip(t, ds, "federation", "fuzz-smoke", "appearance", "proto")
+	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto")
 
-	// The same diff, in a tree where the engine is on cmd/flow's and auth's
-	// import path — which is what affectedPackages actually computes.
+	// The same diff, in a tree where netpolicy is on cmd/flow's import path —
+	// which is what affectedPackages actually computes.
 	ds = decide(t, changed, []string{
-		modulePath + "/pkg/flowstate/v1/engine",
-		modulePath + "/pkg/flowstate/v1/auth",
+		modulePath + "/pkg/flowstate/v1/netpolicy",
 		cmdFlowPkg,
 	}, "pull_request")
-	mustRun(t, ds, "federation", "fuzz-smoke", "appearance")
+	mustRun(t, ds, "fuzz-smoke", "appearance")
+}
+
+// TestADeepOnlyTargetsPackageStillReachesFuzzSmoke pins the choice
+// [fuzztargets.Dirs] makes and states in its own doc comment: the package set
+// the gate reads is every tier's, not the smoke tier's.
+//
+// pkg/flowstate/v1/engine holds FuzzSignalDeliveryDecode, which is deep-only —
+// so a diff touching only the engine runs a smoke tier that has no target in
+// that package. That reads like over-triggering and is not: a change to the
+// package a target lives in moves what that target explores, and the tier a
+// target is listed in is a budget decision that can be edited in one word. The
+// alternative — reading only the smoke tier's directories here — makes
+// promoting a target to smoke a change that silently alters which diffs reach
+// the job, without touching any Go package.
+func TestADeepOnlyTargetsPackageStillReachesFuzzSmoke(t *testing.T) {
+	ds := decide(t,
+		[]string{"pkg/flowstate/v1/engine/signal_compat.go"},
+		[]string{modulePath + "/pkg/flowstate/v1/engine"},
+		"pull_request")
+	mustRun(t, ds, "fuzz-smoke")
+}
+
+// TestAWebhookOnlyChangeReachesFuzzSmoke is the regression for #799:
+// FuzzWebhookEventBinding lives in the root pkg/flowstate/v1 package
+// (webhook.go's own directory), not in one of the three packages fuzz-smoke's
+// affectedness check already knew about — so a diff touching only webhook.go
+// used to compute an affected set with none of flowfilePkg, cmdFlowPkg or
+// pluginPkg in it, and the plan would have skipped fuzz-smoke on the one kind
+// of change most likely to move what that target exercises.
+func TestAWebhookOnlyChangeReachesFuzzSmoke(t *testing.T) {
+	ds := decide(t, []string{"pkg/flowstate/v1/webhook.go"}, []string{v1Pkg}, "pull_request")
+	mustRun(t, ds, "fuzz-smoke")
 }
 
 // TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Three forcing conditions,
@@ -156,7 +213,7 @@ func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
 // harness is a change to the thing computing the plan, which the plan cannot
 // reason about.
 func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
-	all := []string{"test", "proto", "vulncheck", "staticcheck", "federation", "fuzz-smoke", "appearance"}
+	all := []string{"test", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
 
 	for _, tc := range []struct {
 		name    string
@@ -169,6 +226,14 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 		{"a Makefile change", []string{"Makefile"}, "pull_request"},
 		{"a change to the gate itself", []string{"tools/gate/ci.go"}, "pull_request"},
 		{"a module graph change", []string{"go.sum"}, "pull_request"},
+		// The fuzz target list is CI configuration: it decides which
+		// targets each tier runs and which packages reach the fuzz job.
+		// Promoting a deep-only target to smoke moves no Go package at
+		// all, so a diff of this file alone would otherwise skip the very
+		// job it reconfigures — including fuzz-smoke, whose new target
+		// would then first run somewhere nobody is watching.
+		{"a fuzz target list change", []string{"tools/fuzztargets/targets.txt"}, "pull_request"},
+		{"a change to how the list is read", []string{"tools/fuzztargets/list.sh"}, "pull_request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mustRun(t, decide(t, tc.changed, nil, tc.event), all...)

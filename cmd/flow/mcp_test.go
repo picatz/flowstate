@@ -20,7 +20,6 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
@@ -282,7 +281,7 @@ func mcpDepsFor(posture *cobra.Command) flowmcp.Deps {
 func mcpExtraToolsFor(posture *cobra.Command) []flowmcp.ToolRegistration {
 	return []flowmcp.ToolRegistration{
 		{Tool: flowmcp.RunLocalTool(), Handler: runLocalToolHandler(posture)},
-		{Tool: flowmcp.TestTool(), Handler: testToolHandler()},
+		{Tool: flowmcp.TestTool(), Handler: testToolHandler(0)},
 	}
 }
 
@@ -297,7 +296,7 @@ func connectMCP(t *testing.T, posture *cobra.Command) *mcp.ClientSession {
 
 	srv := flowmcp.NewServer("test")
 
-	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		t.Error("a local tool dialed the server")
 
 		return nil
@@ -961,7 +960,17 @@ func TestADeclaredOutputThatFitsSurvivesTheTranscript(t *testing.T) {
 
 	require.Contains(t, answer.Run.RunOutputs.Values, "release",
 		"the transcript was what did not fit, and the run's own answer went with it")
-	assert.Empty(t, answer.Run.Outputs.StepValues, "the transcript is still here, so nothing was actually dropped")
+
+	// Reduced, not emptied. `GetResponse.kind` is a required oneof, so a
+	// transcript arm with no steps is a document v1.Validate rejects — the
+	// transcript rung therefore keeps as many whole, real steps as its budget
+	// allows instead of clearing the arm (#853). The ordering this test exists
+	// to pin is unchanged and asserted either way: the transcript is what gave
+	// way, and the declared outputs are what survived.
+	assert.NotEmpty(t, answer.Run.Outputs.StepValues,
+		"the transcript arm was emptied, which is a GetResponse the schema rejects")
+	assert.Less(t, len(answer.Run.Outputs.StepValues), 64,
+		"the transcript is still whole, so nothing was actually reduced")
 }
 
 // TestARunThatFitsIsNotTrimmed is the other side of that bound: an ordinary run
@@ -1091,7 +1100,7 @@ func connectRemoteMCP(t *testing.T, posture *cobra.Command, fake *fakeWorkflowSe
 	address := serveFake(t, fake)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	flowmcp.AddCapabilities(srv, server.New(nil), func() flowstatev1connect.WorkflowServiceClient {
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), func() flowstatev1connect.WorkflowServiceClient {
 		return newWorkflowServiceClient(serverFlags{address: address})
 	}, mcpDepsFor(posture), mcpExtraToolsFor(posture)...)
 
@@ -1189,7 +1198,7 @@ func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flow
 	t.Helper()
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "flowstate", Version: "test"}, nil)
-	flowmcp.AddCapabilities(srv, server.New(nil), remote, deps, mcpExtraToolsFor(posture)...)
+	flowmcp.AddCapabilities(srv, mustNewFlowstateServer(t, nil), remote, deps, mcpExtraToolsFor(posture)...)
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(t.Context(), serverTransport) }()
@@ -1211,7 +1220,7 @@ func connectMCPWithDeps(t *testing.T, posture *cobra.Command, remote func() flow
 // remoteOnlyTaskName first, so the assertion that the tool's answer does
 // contain it is not vacuously true of any non-empty catalog.
 func TestTheGetCatalogToolDispatchesToAnAddressedDeployment(t *testing.T) {
-	local := server.New(nil)
+	local := mustNewFlowstateServer(t, nil)
 	localResp, err := local.GetCatalog(t.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
 	require.NoError(t, err)
 	for _, task := range localResp.Msg.GetCatalog().GetTasks() {

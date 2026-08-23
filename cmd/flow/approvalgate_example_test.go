@@ -61,15 +61,11 @@ func TestApprovalGateHelpExamplesActuallyRun(t *testing.T) {
 			}
 			args = args[1:]
 
-			root := newRootCommand()
-			var out, errOut strings.Builder
-			root.SetOut(&out)
-			root.SetErr(&errOut)
-			root.SetArgs(args)
+			res := runFlow(t, args...)
 
-			if err := execute(t.Context(), root); err != nil {
+			if res.Err != nil {
 				t.Fatalf("the help example\n\t%s\ndid not run cleanly: %v\nstdout:\n%s\nstderr:\n%s",
-					line, err, out.String(), errOut.String())
+					line, res.Err, res.Stdout, res.Stderr)
 			}
 		})
 	}
@@ -172,32 +168,28 @@ func TestPolicedGateExampleRehearsesLocally(t *testing.T) {
 		t.Fatalf("expected the example line to start with %q, got %q", "flow", line)
 	}
 
-	root := newRootCommand()
-	var out, errOut strings.Builder
-	root.SetOut(&out)
-	root.SetErr(&errOut)
-	root.SetArgs(args[1:])
+	res := runFlow(t, args[1:]...)
 
-	if err := execute(t.Context(), root); err != nil {
+	if res.Err != nil {
 		t.Fatalf("rehearsing the policed gate did not run cleanly: %v\nstdout:\n%s\nstderr:\n%s",
-			err, out.String(), errOut.String())
+			res.Err, res.Stdout, res.Stderr)
 	}
 
 	// The gate opened for the rehearsed approver, which is the whole claim.
 	// `decision` is approval-gate's own name for the branch it took, and
 	// "deployed" is reachable only through a delivery the policy admitted.
-	if !strings.Contains(out.String(), "deployed") {
+	if !strings.Contains(res.Stdout, "deployed") {
 		t.Fatalf("the rehearsal did not reach the deploy branch, so a policed gate is still "+
-			"unreachable locally:\nstdout:\n%s\nstderr:\n%s", out.String(), errOut.String())
+			"unreachable locally:\nstdout:\n%s\nstderr:\n%s", res.Stdout, res.Stderr)
 	}
 
 	// And it said it was a rehearsal, on the way past. On stderr, where the
 	// command narrates, because stdout is the run's single result document
 	// and a `-o json | jq` pipeline must never find prose ahead of it.
-	if !strings.Contains(errOut.String(), "rehearsing --signal deliveries as") {
-		t.Fatalf("nothing in the output marks this as a rehearsal identity:\nstderr:\n%s", errOut.String())
+	if !strings.Contains(res.Stderr, "rehearsing --signal deliveries as") {
+		t.Fatalf("nothing in the output marks this as a rehearsal identity:\nstderr:\n%s", res.Stderr)
 	}
-	if strings.Contains(out.String(), "rehearsing --signal deliveries as") {
-		t.Fatalf("the rehearsal notice reached stdout, ahead of the result document:\nstdout:\n%s", out.String())
+	if strings.Contains(res.Stdout, "rehearsing --signal deliveries as") {
+		t.Fatalf("the rehearsal notice reached stdout, ahead of the result document:\nstdout:\n%s", res.Stdout)
 	}
 }

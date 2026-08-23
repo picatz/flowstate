@@ -323,10 +323,26 @@ func TestTheSchemaClassifiesEveryKeyItPermits(t *testing.T) {
 			metricschema.ClassConfiguration,
 		}, class, "key %q has no classification", key)
 
-		// One attribute schema (#522, invariant 1): a metric key is spelled
-		// the way the span attribute for the same concept is spelled — dotted
-		// and prefixed — not the way the wire and CEL surfaces spell theirs
-		// (run_id, workflow_id, delivery_id).
+		// One attribute schema (#522, invariant 1): a metric key this
+		// repository owns is spelled the way the span attribute for the same
+		// concept is spelled — dotted and prefixed — not the way the wire and
+		// CEL surfaces spell theirs (run_id, workflow_id, delivery_id).
+		//
+		// A key taken from an external semantic convention is exempt, and that
+		// is the point of the exemption rather than a hole in the rule: where
+		// OpenTelemetry has already named a concept, its spelling wins over an
+		// invented `flowstate.` one, because a collector and every dashboard
+		// built on it already know the convention's name. `error.type` is the
+		// only one today, and the schema records where it came from
+		// ([metricschema.ConventionFor]) rather than leaving a reader infer it
+		// from the absence of a prefix.
+		if convention := metricschema.ConventionFor(key); convention != "" {
+			require.NotContains(t, key, "_",
+				"metric attribute %q must not use the wire-format spelling", key)
+
+			continue
+		}
+
 		require.True(t, strings.HasPrefix(key, "flowstate."),
 			"metric attribute %q must use the telemetry-side spelling", key)
 		require.NotContains(t, key, "_", "metric attribute %q must not use the wire-format spelling", key)
@@ -344,8 +360,9 @@ func TestTheSchemaClassifiesEveryKeyItPermits(t *testing.T) {
 		require.NotEmpty(t, attr.Key)
 		require.NotEmpty(t, attr.Chooser, "%q must say who chooses its values", attr.Key)
 		require.NotEqual(t, "unknown", attr.Class.String(), "%q has no classification", attr.Key)
-		require.True(t, strings.HasPrefix(attr.Key, "flowstate."),
-			"%q must be namespaced, dotted, and prefixed the way OpenTelemetry spells an attribute", attr.Key)
+		require.True(t, strings.HasPrefix(attr.Key, "flowstate.") || attr.Convention != "",
+			"%q must be namespaced, dotted, and prefixed the way OpenTelemetry spells an attribute — "+
+				"unless it is taken from a semantic convention, in which case say which one in Convention", attr.Key)
 		require.Equal(t, strings.ToLower(attr.Key), attr.Key,
 			"%q must be lowercase, per OpenTelemetry naming", attr.Key)
 

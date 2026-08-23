@@ -41,7 +41,7 @@ func pullRequestGet(ctx context.Context, inputs map[string]*flowstatev1.Value, _
 		return nil, err
 	}
 
-	client, err := newClient(token, in.GetBaseUrl())
+	client, _, err := newClient(token, in.GetBaseUrl())
 	if err != nil {
 		return nil, err
 	}

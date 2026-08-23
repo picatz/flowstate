@@ -133,11 +133,52 @@ message Workflow {
   reserved 4;
   reserved "inputs";
 
-  // Labels are key-value pairs that can be used to organize and categorize workflows.
+  // Labels are the author's own key-value facts about this workflow — the team
+  // that owns it, the cost centre it bills to, the pipeline it belongs to — and
+  // they exist to be *selected on* rather than read: every run records them at
+  // submit, [RunSummary.labels] carries them back, and `flow list --filter`
+  // exposes them as `labels`, so "which runs are payments' runs" is a question
+  // the listing can answer.
+  //
+  // Written by an author, in the Flowfile, as `labels:` directly under `name:`.
+  // Deliberately not a per-run argument: an input is what one run was asked to
+  // do, and a label is what every run of this workflow *is*. A caller who wants
+  // to distinguish two runs of the same workflow has `inputs:` and the run id
+  // already; a caller who wants to select the whole class has this.
+  //
+  // Recorded into the run's memo at submit, never read back out of a search
+  // attribute — see [RunSummary.labels] for the whole of that reasoning, which
+  // is [RunSummary.name]'s unchanged: a field a filter can read only on a
+  // deployment where attribute registration happened to succeed is worse than
+  // one it cannot read at all, because "sometimes" is indistinguishable from
+  // "nothing matched".
+  //
+  // Bounded because a label travels: into the run's memo, into Temporal's
+  // history, and into a CEL activation the server builds per execution during a
+  // listing's scan. The bounds are the ones every other author-written map in
+  // this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason
+  // stated there — a spec is a thing an outside party writes.
+  //
+  // `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the
+  // difference is not an oversight. That field is written in bytes because a
+  // second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts
+  // bytes — refuses the same sizes at mint, and one limit written down twice in
+  // two units is two limits that disagree about a value of 700 two-byte runes.
+  // Nothing enforces this map a second time: protovalidate is the only reader of
+  // the bound, so the unit that matters is the one its neighbours already use,
+  // and matching them is what keeps every author-written map in this file
+  // answering the same way.
   map<string, string> labels = 5 [
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).map = {
-      keys: {string: {min_len: 1}}
+      keys: {
+        string: {
+          min_len: 1
+          max_len: 128
+        }
+      }
+      values: {string: {max_len: 256}}
+      max_pairs: 64
     }
   ];
 
@@ -416,6 +457,40 @@ message ResolvedPlugin {
   uint32 protocol_version = 3;
   string task_schema_digest = 4;
   string distribution_digest = 5;
+
+  // ClaimsDigest is the pinned answer to [flowstatev1.PluginDescription]'s
+  // field of the same name — the security-weight claims, hashed apart from
+  // task_schema_digest so the two can move independently (#712, #763
+  // review). Empty on a run resolved before this field existed: a worker
+  // checking this pin skips comparing it rather than refusing the run, since
+  // there is nothing recorded to compare against and the alternative is a
+  // routine host upgrade permanently failing every already-durable run
+  // touching a plugin with a non-default claim.
+  string claims_digest = 6;
+
+  // ClaimsSchemaVersion is [flowstatev1.PluginCatalog]'s claims-schema
+  // version at the moment this pin was resolved, pinned alongside
+  // claims_digest rather than folded into it.
+  //
+  // A schema-version bump is allowed to redefine what an existing claim
+  // field *means*, not only add a new one — see
+  // [flowstatev1.CurrentClaimsSchemaVersion]'s doc comment. claims_digest
+  // hashes only the claim fields' values, so a run pinned under one schema
+  // version and a worker computing the identical field values under a later
+  // version, whose meaning has since changed, would hash to the same
+  // claims_digest and pass [flowstatev1.sameResolvedPlugin] silently — the
+  // run would execute under new security semantics its own pin never
+  // agreed to. Comparing this field exactly, the same way task_schema_digest
+  // and distribution_digest already are, is what refuses that worker
+  // instead of accepting it.
+  //
+  // Zero on a run resolved before this field existed, the same "not
+  // asserted" leniency claims_digest itself carries and for the identical
+  // reason: there is nothing recorded to compare a worker's version
+  // against, and treating that as a mismatch would turn a routine worker
+  // upgrade into a non-retryable failure for a property that pin never
+  // promised to track.
+  uint32 claims_schema_version = 7;
 }
 
 // InputDeclaration is one parameter a run may be started with: what it is

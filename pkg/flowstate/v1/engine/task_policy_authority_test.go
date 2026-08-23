@@ -9,7 +9,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 // Review of PR #228 found #187 slice 1's first cut checked three of what
@@ -76,7 +76,7 @@ func TestTaskPolicyDeniesAuthorityCarryingTaskDurably(t *testing.T) {
 	v1.SetDefaultTaskPolicy(policy)
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	workflow := func() *v1.Workflow {
 		return &v1.Workflow{
@@ -145,7 +145,7 @@ func TestTaskPolicyDeniesAuthorityCarryingCompensationDurably(t *testing.T) {
 	v1.SetDefaultTaskPolicy(policy)
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
 	workflow := func() *v1.Workflow {
 		return &v1.Workflow{
@@ -209,15 +209,15 @@ func TestTaskPolicyDeniesAuthorityCarryingCompensationDurably(t *testing.T) {
 // resolved when it is registered, but TaskInScope still needs the run identity
 // in that scope to enforce identity-based deployment policy without failing open.
 //
-// The case itself lives in [tests.UndoIdentityWorkflow] and is run by the local
+// The case itself lives in [conformance.UndoIdentityWorkflow] and is run by the local
 // driver too, from one definition: the claim here is that both drivers decide a
 // compensation the same way, and two hand-built copies of a scenario stop
 // proving that as soon as either drifts.
 func TestTaskPolicyDeniesScopedCompensationByIdentityDurably(t *testing.T) {
-	v1.SetDefaultTaskPolicy(tests.UndoIdentityPolicy(t))
+	v1.SetDefaultTaskPolicy(conformance.UndoIdentityPolicy(t))
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	workflow := tests.UndoIdentityWorkflow(tests.NewHTTPServer(t))
+	workflow := conformance.UndoIdentityWorkflow(conformance.NewHTTPServer(t))
 
 	run := func(t *testing.T, namespace string) error {
 		t.Helper()
@@ -232,11 +232,11 @@ func TestTaskPolicyDeniesScopedCompensationByIdentityDurably(t *testing.T) {
 	}
 
 	t.Run("blocked tenant compensation is denied", func(t *testing.T) {
-		tests.AssertUndoIdentityDenied(t, run(t, tests.UndoIdentityBlockedNamespace))
+		conformance.AssertUndoIdentityDenied(t, run(t, conformance.UndoIdentityBlockedNamespace))
 	})
 
 	t.Run("another tenant compensation reaches the task", func(t *testing.T) {
-		tests.AssertUndoIdentityReached(t, run(t, tests.UndoIdentityAllowedNamespace))
+		conformance.AssertUndoIdentityReached(t, run(t, conformance.UndoIdentityAllowedNamespace))
 	})
 }
 
@@ -277,9 +277,9 @@ func TestTaskPolicyIdentityMatchesOnPlainTaskActivity(t *testing.T) {
 		suite := &testsuite.WorkflowTestSuite{}
 		env := suite.NewTestWorkflowEnvironment()
 		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
 		env.OnActivity(engine.TaskWithPrev, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskWithPrev)
-		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow,

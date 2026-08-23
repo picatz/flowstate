@@ -83,9 +83,40 @@ type TaskCatalog struct {
 	// groups these and what docs/DSL.md and the profile definition talk in, so a
 	// consumer that only wants to know the shape of the dialect should not have to
 	// derive it from ninety names.
-	CelFunctions  []*CELFunction `protobuf:"bytes,6,rep,name=cel_functions,json=celFunctions,proto3" json:"cel_functions,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CelFunctions []*CELFunction `protobuf:"bytes,6,rep,name=cel_functions,json=celFunctions,proto3" json:"cel_functions,omitempty"`
+	// ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
+	// describing a task's security-relevant claims — started at 1 for
+	// needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
+	// expression_inputs (#712).
+	//
+	// Exists because proto3 cannot mark a bool or a repeated string field
+	// `optional`, so none of those five fields can distinguish "populated as
+	// false/empty" from "never populated, because the server that built this
+	// catalog predates them" on its own — an old GetCatalog server's response
+	// decodes needs_scope as false whether the task genuinely claims nothing
+	// or the field simply does not exist in that server's schema. This is the
+	// presence signal for the whole set instead of one per field, read once
+	// rather than reconstructed from five independent zero-checks.
+	//
+	// Zero means "this catalog predates every claim field" — the value on
+	// every GetCatalog response before this field existed, and the value an
+	// old server still on that build keeps returning during a rolling
+	// upgrade. A reader comparing this against zero, not the individual claim
+	// fields, is what tells "unknown" from "false": see
+	// [flowstatev1.TaskDescriptionClaimsKnown].
+	//
+	// Checked for exact equality against the reading client's own
+	// [flowstatev1.CurrentClaimsSchemaVersion], not merely boundedness in
+	// either direction — a version bump can redefine a field as well as add
+	// one, so neither "newer than mine" nor "older than mine" is safe to
+	// treat as known: a newer version may mean something this client was not
+	// compiled to read, and an older version's silence on a field this
+	// client's version introduced is not the same fact as that field
+	// genuinely being false. Only the version this client understands
+	// exactly is known; see [flowstatev1.TaskDescriptionClaimsKnown].
+	ClaimsSchemaVersion uint32 `protobuf:"varint,7,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TaskCatalog) Reset() {
@@ -160,6 +191,13 @@ func (x *TaskCatalog) GetCelFunctions() []*CELFunction {
 	return nil
 }
 
+func (x *TaskCatalog) GetClaimsSchemaVersion() uint32 {
+	if x != nil {
+		return x.ClaimsSchemaVersion
+	}
+	return 0
+}
+
 // CELFunction is one name an expression may call.
 type CELFunction struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -190,13 +228,16 @@ type CELFunction struct {
 	// Example is a complete expression calling this, set only where `name` is not
 	// enough to construct one, which is exactly the macros.
 	//
-	// A function's name *is* its call form: `upperAscii` is written `x.upperAscii()`
-	// or `regex.replace(a, b, c)` as the name says. A macro's is not, and cel-go's
-	// parser API is why: `Macro` exposes `Function`, `ArgCount`, `IsReceiverStyle`
-	// and `MacroKey`, and none of them names the *receiver*. So `greatest` is
-	// reported for something written `math.greatest(1, 2)` and `sortBy` for
-	// something written `[3,1,2].sortBy(v, v)`: a namespace in one case and a value
-	// in the other, indistinguishable from the outside.
+	// A macro's own parser API will not say whether its `name` is written on a
+	// namespace or on a value, and that is the gap this fills: `Macro` exposes
+	// `Function`, `ArgCount`, `IsReceiverStyle` and `MacroKey`, and none of them
+	// names the *receiver*. So `greatest` is reported for something written
+	// `math.greatest(1, 2)` and `sortBy` for something written
+	// `[3,1,2].sortBy(v, v)`: a namespace in one case and a value in the other,
+	// indistinguishable from the outside. An ordinary function does not have
+	// this problem — its overloads answer the same question, which is what
+	// `signature` below carries, along with the arity and argument order this
+	// field does not give either kind.
 	//
 	// Which means this cannot be derived, and a consumer told "do not render `name`
 	// as a call" and given nothing else has been handed a catalogue of things it
@@ -212,7 +253,22 @@ type CELFunction struct {
 	// `transformList` is written on a value. A derivation that is wrong for one
 	// library in five is worse than a table somebody has to keep, because nothing
 	// about it says which one.
-	Example       string `protobuf:"bytes,4,opt,name=example,proto3" json:"example,omitempty"`
+	Example string `protobuf:"bytes,4,opt,name=example,proto3" json:"example,omitempty"`
+	// Signature is this function's call form, one entry per overload: argument
+	// order, arity and types, and — unlike `name` alone — whether it is written
+	// on a namespace or on a value. `string.charAt(int) -> string` for a member
+	// function, `math.abs(double) -> double` for a namespaced one. Empty for a
+	// macro, where `example` carries the call form instead.
+	//
+	// Where `example` above had to become a written table because cel-go's macro
+	// API cannot say which style a name is written in, an ordinary function's own
+	// overload does answer that exact question — `OverloadDecl.IsMemberFunction`
+	// names the receiver where `Macro.IsReceiverStyle` alone does not. So this is
+	// derived from the profile's compiled environment
+	// (`FunctionDecl.Documentation`) rather than hand-maintained, and a function
+	// added to a library brings its signature with it the same day rather than
+	// waiting for somebody to write one down (#702).
+	Signature     []string `protobuf:"bytes,5,rep,name=signature,proto3" json:"signature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -275,16 +331,113 @@ func (x *CELFunction) GetExample() string {
 	return ""
 }
 
+func (x *CELFunction) GetSignature() []string {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 // TaskDescription is one task's name and shape.
 type TaskDescription struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Summary is a single line, the same one `flow tasks` prints.
-	Summary       string       `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
-	Inputs        []*TaskField `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
-	Outputs       []*TaskField `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Summary string       `protobuf:"bytes,2,opt,name=summary,proto3" json:"summary,omitempty"`
+	Inputs  []*TaskField `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty"`
+	Outputs []*TaskField `protobuf:"bytes,4,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	// NeedsScope reports whether the task must receive every prior step's
+	// outputs and the variables bound by enclosing control flow, on every call.
+	//
+	// The largest trust jump a task definition can make: from seeing its own
+	// declared inputs to seeing the whole workflow's computed state so far. A
+	// plugin task that flips this from false to true between versions has
+	// asked for materially more than it asked for last time, and this is the
+	// field an operator or a pinned digest reads to notice that.
+	NeedsScope bool `protobuf:"varint,5,opt,name=needs_scope,json=needsScope,proto3" json:"needs_scope,omitempty"`
+	// SecretInputs names the inputs the host will resolve a `${secret(...)}`
+	// reference into a plaintext value for, before the request crosses into a
+	// plugin process. Empty for a built-in task, which resolves its own secret
+	// inputs a different way (see TaskField.constraints' "may hold a secret
+	// reference" note); populated for a plugin task from TaskManifest's field of
+	// the same name.
+	//
+	// This is the whole-value case, not TaskField.deferred or the per-field
+	// "may hold a secret reference" note — this is the list of inputs where a
+	// secret *reference itself* is a legal thing to write, which is a claim
+	// about trust: naming an input here is the plugin asking to receive a value
+	// the workflow author never wrote in the clear.
+	//
+	// A membership set, not a sequence — sorted and deduplicated by whichever
+	// server produces this message, regardless of what order a plugin manifest
+	// declared it in. What matters to every reader is which names are present;
+	// an order that varied between two launches of one unchanged plugin binary
+	// would otherwise change TaskSchemaDigest for no behavioral reason.
+	SecretInputs []string `protobuf:"bytes,6,rep,name=secret_inputs,json=secretInputs,proto3" json:"secret_inputs,omitempty"`
+	// ShapesOutputs reports whether the task evaluates an `outputs:` input as a
+	// replacement for the outputs it declares above, rather than the outputs
+	// above being what the task actually returns.
+	ShapesOutputs bool `protobuf:"varint,7,opt,name=shapes_outputs,json=shapesOutputs,proto3" json:"shapes_outputs,omitempty"`
+	// DeferredInputs names inputs whose expressions the task evaluates itself,
+	// against a scope the workflow does not have. Mirrors TaskField.deferred at
+	// the task level, so a consumer that wants the list rather than a per-field
+	// scan does not have to walk every field.
+	//
+	// Sorted and deduplicated, for the same reason secret_inputs above is.
+	DeferredInputs []string `protobuf:"bytes,8,rep,name=deferred_inputs,json=deferredInputs,proto3" json:"deferred_inputs,omitempty"`
+	// ExpressionInputs names inputs that must be written as `${...}` rather
+	// than as a literal.
+	//
+	// Sorted and deduplicated, for the same reason secret_inputs above is.
+	ExpressionInputs []string `protobuf:"bytes,9,rep,name=expression_inputs,json=expressionInputs,proto3" json:"expression_inputs,omitempty"`
+	// InputDescriptor and InputMessage — and OutputDescriptor and
+	// OutputMessage below them — carry the task's input and output messages
+	// the way a descriptor crosses a process: serialized FileDescriptorProtos,
+	// or a FileDescriptorSet holding a file and its dependencies, plus the
+	// full name of the message within them.
+	//
+	// Spelled exactly as flowstate.plugin.v1.TaskManifest spells the same four
+	// facts, because they are the same four facts. That message is how a
+	// plugin's descriptors reach a host; these are how a host's reach a reader
+	// that cannot launch one — a checked-in catalog document, a browser
+	// authoring surface, a server-side validator (#710).
+	//
+	// The `inputs` and `outputs` fields above are a *rendering* of these: field
+	// names, a type spelled as an author would write it, and constraint
+	// phrases, which is what a reader displaying a task wants and is not what a
+	// reader *validating* against one can use. Validation is descriptor-driven
+	// throughout — flowfile's validateTaskInputs asks the message descriptor
+	// for a field before it will report an unknown input, and stands down
+	// entirely when there is none — so a catalog carrying only the rendering
+	// reconstructs a task definition that accepts a misspelled input the
+	// launching validator refuses. A validator that is quietly weaker than the
+	// one it stands in for is the failure this exists to prevent.
+	//
+	// Empty bytes beside a set message name is the ordinary case rather than an
+	// omission: a message the reader's own build already has needs no bytes,
+	// only its name, and every built-in task's messages are in this schema.
+	// Bytes are carried for exactly the files the engine does not already
+	// provide, which for a plugin task is its own schema. Both empty means the
+	// task declares no message for that side, which TaskDef permits.
+	//
+	// Deliberately outside PluginDescription.task_schema_digest, which hashes
+	// the projection TaskDescriptionSansClaims builds and so cannot see these:
+	// that digest is embedded in every in-flight run's ResolvedPlugin and
+	// compared exactly at each segment boundary, and re-serialized descriptor
+	// bytes are not guaranteed identical across two builds of one unchanged
+	// plugin. The shape they describe is already covered there through
+	// `inputs` and `outputs`, which are derived from these and are stable.
+	//
+	// Deliberately not a claim field either, so ClaimsSchemaVersion does not
+	// bump for them: a bump is compared exactly by the same replay guard, and
+	// these say what a task's messages *are* rather than what a task asks to
+	// be trusted with.
+	InputDescriptor  []byte `protobuf:"bytes,10,opt,name=input_descriptor,json=inputDescriptor,proto3" json:"input_descriptor,omitempty"`
+	InputMessage     string `protobuf:"bytes,11,opt,name=input_message,json=inputMessage,proto3" json:"input_message,omitempty"`
+	OutputDescriptor []byte `protobuf:"bytes,12,opt,name=output_descriptor,json=outputDescriptor,proto3" json:"output_descriptor,omitempty"`
+	OutputMessage    string `protobuf:"bytes,13,opt,name=output_message,json=outputMessage,proto3" json:"output_message,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TaskDescription) Reset() {
@@ -345,6 +498,69 @@ func (x *TaskDescription) GetOutputs() []*TaskField {
 	return nil
 }
 
+func (x *TaskDescription) GetNeedsScope() bool {
+	if x != nil {
+		return x.NeedsScope
+	}
+	return false
+}
+
+func (x *TaskDescription) GetSecretInputs() []string {
+	if x != nil {
+		return x.SecretInputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetShapesOutputs() bool {
+	if x != nil {
+		return x.ShapesOutputs
+	}
+	return false
+}
+
+func (x *TaskDescription) GetDeferredInputs() []string {
+	if x != nil {
+		return x.DeferredInputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetExpressionInputs() []string {
+	if x != nil {
+		return x.ExpressionInputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetInputDescriptor() []byte {
+	if x != nil {
+		return x.InputDescriptor
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetInputMessage() string {
+	if x != nil {
+		return x.InputMessage
+	}
+	return ""
+}
+
+func (x *TaskDescription) GetOutputDescriptor() []byte {
+	if x != nil {
+		return x.OutputDescriptor
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetOutputMessage() string {
+	if x != nil {
+		return x.OutputMessage
+	}
+	return ""
+}
+
 // PluginCatalog is what a deployment's plugins add to this build, described so
 // that something other than a person can read it.
 //
@@ -375,9 +591,22 @@ type PluginCatalog struct {
 	// Carried because an empty plugin list has two meanings that matter to tell
 	// apart (nothing installed, or nowhere to look), and only one of them is a
 	// configuration mistake.
-	SearchPath    []string `protobuf:"bytes,2,rep,name=search_path,json=searchPath,proto3" json:"search_path,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SearchPath []string `protobuf:"bytes,2,rep,name=search_path,json=searchPath,proto3" json:"search_path,omitempty"`
+	// ClaimsSchemaVersion is the same presence signal as
+	// [TaskCatalog.claims_schema_version], for the same reason, on the other
+	// message a build's task claims travel in.
+	//
+	// `flow plugins -o json` serializes this message directly rather than a
+	// TaskCatalog, and that output is written to disk or piped to another
+	// process, so it outlives the process that produced it — the same
+	// rolling-upgrade skew ClaimsSchemaVersion exists to resolve for a remote
+	// GetCatalog reader applies just as well to a saved PluginCatalog read
+	// later by a binary built before this field, or read by a newer binary
+	// against a file a pre-#712 build wrote. Zero means "this catalog predates
+	// every claim field"; see [flowstatev1.TaskDescriptionClaimsKnown].
+	ClaimsSchemaVersion uint32 `protobuf:"varint,3,opt,name=claims_schema_version,json=claimsSchemaVersion,proto3" json:"claims_schema_version,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PluginCatalog) Reset() {
@@ -424,6 +653,13 @@ func (x *PluginCatalog) GetSearchPath() []string {
 	return nil
 }
 
+func (x *PluginCatalog) GetClaimsSchemaVersion() uint32 {
+	if x != nil {
+		return x.ClaimsSchemaVersion
+	}
+	return 0
+}
+
 // PluginDescription is one plugin's identity and what it advertises.
 type PluginDescription struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -442,12 +678,35 @@ type PluginDescription struct {
 	SecretSchemes []string `protobuf:"bytes,5,rep,name=secret_schemes,json=secretSchemes,proto3" json:"secret_schemes,omitempty"`
 	// Tasks are the tasks this plugin provides, described exactly as a built-in
 	// task is.
-	Tasks              []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
-	ProtocolVersion    uint32             `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	TaskSchemaDigest   string             `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
-	DistributionDigest string             `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	Tasks           []*TaskDescription `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
+	ProtocolVersion uint32             `protobuf:"varint,7,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	// TaskSchemaDigest is computed over Tasks' descriptor shape — name,
+	// summary, inputs, outputs — deterministically marshaled: the case it
+	// exists to catch is a plugin whose descriptors changed shape while its
+	// version stood still.
+	//
+	// Deliberately not computed over NeedsScope, SecretInputs, ShapesOutputs,
+	// DeferredInputs or ExpressionInputs, even though those travel on the same
+	// TaskDescription — see ClaimsDigest below for why they get their own
+	// digest instead of folding into this one. This field is embedded in every
+	// in-flight run's ResolvedPlugin the moment a run is submitted, replayed
+	// against a worker's freshly computed catalog at every segment boundary,
+	// and a mismatch is a non-retryable failure: a run already durable when
+	// this field's *meaning* changed must still see the same digest for a
+	// plugin whose descriptors did not change.
+	TaskSchemaDigest   string `protobuf:"bytes,8,opt,name=task_schema_digest,json=taskSchemaDigest,proto3" json:"task_schema_digest,omitempty"`
+	DistributionDigest string `protobuf:"bytes,9,opt,name=distribution_digest,json=distributionDigest,proto3" json:"distribution_digest,omitempty"`
+	// ClaimsDigest is computed over Tasks' NeedsScope, SecretInputs,
+	// ShapesOutputs, DeferredInputs and ExpressionInputs only — the fields
+	// with security weight (#712) — kept apart from task_schema_digest so it
+	// can change on its own without disturbing the replay contract every
+	// already-durable run is pinned to. See
+	// [flowstatev1.ResolvedPlugin.claims_digest] for how a worker treats an
+	// old pin that predates this field (#763 review): it is not compared, not
+	// assumed safe, simply not asked.
+	ClaimsDigest  string `protobuf:"bytes,10,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PluginDescription) Reset() {
@@ -539,6 +798,13 @@ func (x *PluginDescription) GetTaskSchemaDigest() string {
 func (x *PluginDescription) GetDistributionDigest() string {
 	if x != nil {
 		return x.DistributionDigest
+	}
+	return ""
+}
+
+func (x *PluginDescription) GetClaimsDigest() string {
+	if x != nil {
+		return x.ClaimsDigest
 	}
 	return ""
 }
@@ -653,7 +919,7 @@ var File_flowstate_v1_catalog_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\n" +
-	"\x1aflowstate/v1/catalog.proto\x12\fflowstate.v1\"\x96\x02\n" +
+	"\x1aflowstate/v1/catalog.proto\x12\fflowstate.v1\"\xca\x02\n" +
 	"\vTaskCatalog\x123\n" +
 	"\x05tasks\x18\x01 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12#\n" +
 	"\rcel_libraries\x18\x02 \x03(\tR\fcelLibraries\x12%\n" +
@@ -661,21 +927,35 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x0enow_identifier\x18\x04 \x01(\tR\rnowIdentifier\x12\x1f\n" +
 	"\vvalue_roots\x18\x05 \x03(\tR\n" +
 	"valueRoots\x12>\n" +
-	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\"k\n" +
+	"\rcel_functions\x18\x06 \x03(\v2\x19.flowstate.v1.CELFunctionR\fcelFunctions\x122\n" +
+	"\x15claims_schema_version\x18\a \x01(\rR\x13claimsSchemaVersion\"\x89\x01\n" +
 	"\vCELFunction\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\alibrary\x18\x02 \x01(\tR\alibrary\x12\x14\n" +
 	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
-	"\aexample\x18\x04 \x01(\tR\aexample\"\xa3\x01\n" +
+	"\aexample\x18\x04 \x01(\tR\aexample\x12\x1c\n" +
+	"\tsignature\x18\x05 \x03(\tR\tsignature\"\x8a\x04\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +
 	"\x06inputs\x18\x03 \x03(\v2\x17.flowstate.v1.TaskFieldR\x06inputs\x121\n" +
-	"\aoutputs\x18\x04 \x03(\v2\x17.flowstate.v1.TaskFieldR\aoutputs\"k\n" +
+	"\aoutputs\x18\x04 \x03(\v2\x17.flowstate.v1.TaskFieldR\aoutputs\x12\x1f\n" +
+	"\vneeds_scope\x18\x05 \x01(\bR\n" +
+	"needsScope\x12#\n" +
+	"\rsecret_inputs\x18\x06 \x03(\tR\fsecretInputs\x12%\n" +
+	"\x0eshapes_outputs\x18\a \x01(\bR\rshapesOutputs\x12'\n" +
+	"\x0fdeferred_inputs\x18\b \x03(\tR\x0edeferredInputs\x12+\n" +
+	"\x11expression_inputs\x18\t \x03(\tR\x10expressionInputs\x12)\n" +
+	"\x10input_descriptor\x18\n" +
+	" \x01(\fR\x0finputDescriptor\x12#\n" +
+	"\rinput_message\x18\v \x01(\tR\finputMessage\x12+\n" +
+	"\x11output_descriptor\x18\f \x01(\fR\x10outputDescriptor\x12%\n" +
+	"\x0eoutput_message\x18\r \x01(\tR\routputMessage\"\x9f\x01\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
-	"searchPath\"\xdd\x02\n" +
+	"searchPath\x122\n" +
+	"\x15claims_schema_version\x18\x03 \x01(\rR\x13claimsSchemaVersion\"\x82\x03\n" +
 	"\x11PluginDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -685,7 +965,9 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x05tasks\x18\x06 \x03(\v2\x1d.flowstate.v1.TaskDescriptionR\x05tasks\x12)\n" +
 	"\x10protocol_version\x18\a \x01(\rR\x0fprotocolVersion\x12,\n" +
 	"\x12task_schema_digest\x18\b \x01(\tR\x10taskSchemaDigest\x12/\n" +
-	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\"\x8d\x01\n" +
+	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\x12#\n" +
+	"\rclaims_digest\x18\n" +
+	" \x01(\tR\fclaimsDigest\"\x8d\x01\n" +
 	"\tTaskField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +

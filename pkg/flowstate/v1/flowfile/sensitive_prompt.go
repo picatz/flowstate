@@ -103,7 +103,7 @@ func sensitivePromptInStep(node *v1.Node, sensitive map[string]bool) (Diagnostic
 	// keeps paying for, and the rule here is the interesting part.
 	err := v1.CheckWaitPromptsAreAskable(&v1.Workflow{
 		DeclaredInputs: declarationsFor(sensitive),
-		Steps:          []*v1.Node{{Id: node.GetId(), Kind: node.GetKind()}},
+		Steps:          []*v1.Node{{Id: node.GetId(), Kind: node.GetKind(), Vars: node.GetVars()}},
 	})
 	if err == nil {
 		return Diagnostic{}, false

@@ -156,10 +156,94 @@ func TestSignalPolicyAllowsNamespaceRule(t *testing.T) {
 func TestCheckSignalPolicyShapeAllowsUnresolvedSubjectWhenDeclared(t *testing.T) {
 	policies := map[string]*v1.SignalPolicy{
 		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Namespace: "release-managers-ns"},
+			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
 		}},
 	}
 	require.NoError(t, v1.CheckSignalPolicyShape(policies, false))
+}
+
+func TestCheckSignalPoliciesRefusesUnnarrowedSubjectFrom(t *testing.T) {
+	wf := gateWorkflow()
+	wf.Signals = map[string]*v1.SignalPolicy{
+		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
+			{SubjectFrom: v1.NewExpr("inputs.expected_approver")},
+		}},
+	}
+	err := v1.CheckSignalPolicies(wf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "add claims: to the rule, or distinct_from_starter: true",
+		"the diagnostic must say what to do, not only that something is wrong")
+}
+
+// TestCheckSignalPoliciesRefusesSubjectFromNarrowedOnlyByNamespace is the case
+// a namespace-counts-as-narrowing rule would let through, and it is the whole
+// of the hazard rather than an edge of it.
+//
+// A namespace on a rule is compared against the sender's own namespace, and
+// every sender that reaches that comparison is already in the run's namespace
+// — `FlowstateServer.Signal` reaches `authorizeSignal` only through
+// `authorizeRun`, which refuses anyone else. The run's namespace is the
+// starter's. So `subject_from` plus `namespace:` authorizes exactly the same
+// senders as `subject_from` alone: the starter, having named themselves
+// through the run's inputs, matches both halves. Accepting it would leave the
+// file reading as though the gate had been narrowed while it had not been,
+// which is worse than refusing it.
+func TestCheckSignalPoliciesRefusesSubjectFromNarrowedOnlyByNamespace(t *testing.T) {
+	wf := gateWorkflow()
+	wf.Signals = map[string]*v1.SignalPolicy{
+		"deploy-approved": {Allow: []*v1.SignalPolicyRule{{
+			SubjectFrom: v1.NewExpr("inputs.expected_approver"),
+			Namespace:   "release-managers-ns",
+		}}},
+	}
+	err := v1.CheckSignalPolicies(wf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "A namespace: does not narrow this",
+		"the diagnostic must say why the constraint the author reached for is not one")
+}
+
+// TestCheckSignalPoliciesAllowsNarrowedSubjectFrom is the positive direction the
+// refusals above need to mean anything. Without it, a rule that refused
+// every subject_from — rather than only the unnarrowed ones — would satisfy
+// all of them and still break the feature outright.
+func TestCheckSignalPoliciesAllowsNarrowedSubjectFrom(t *testing.T) {
+	t.Run("narrowed by distinct_from_starter", func(t *testing.T) {
+		wf := gateWorkflow()
+		wf.Signals = map[string]*v1.SignalPolicy{
+			"deploy-approved": {
+				Allow: []*v1.SignalPolicyRule{{
+					SubjectFrom: v1.NewExpr("inputs.expected_approver"),
+				}},
+				DistinctFromStarter: true,
+			},
+		}
+		require.NoError(t, v1.CheckSignalPolicies(wf))
+	})
+
+	t.Run("narrowed by claims", func(t *testing.T) {
+		wf := gateWorkflow()
+		wf.Signals = map[string]*v1.SignalPolicy{
+			"deploy-approved": {Allow: []*v1.SignalPolicyRule{{
+				SubjectFrom: v1.NewExpr("inputs.expected_approver"),
+				Claims:      map[string]string{"role": "release-manager"},
+			}}},
+		}
+		require.NoError(t, v1.CheckSignalPolicies(wf))
+	})
+}
+
+func TestCheckSignalPoliciesRefusesSubjectAndSubjectFrom(t *testing.T) {
+	wf := gateWorkflow()
+	wf.Signals = map[string]*v1.SignalPolicy{
+		"deploy-approved": {Allow: []*v1.SignalPolicyRule{{
+			Subject:     v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com"),
+			SubjectFrom: v1.NewExpr("inputs.expected_approver"),
+			Claims:      map[string]string{"role": "release-manager"},
+		}}},
+	}
+	err := v1.CheckSignalPolicies(wf)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "both subject and subject_from")
 }
 
 // TestCheckSignalPolicyShapeRefusesUnresolvedSubjectWhenResolved is the
@@ -171,7 +255,7 @@ func TestCheckSignalPolicyShapeAllowsUnresolvedSubjectWhenDeclared(t *testing.T)
 func TestCheckSignalPolicyShapeRefusesUnresolvedSubjectWhenResolved(t *testing.T) {
 	policies := map[string]*v1.SignalPolicy{
 		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Namespace: "release-managers-ns"},
+			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
 		}},
 	}
 	err := v1.CheckSignalPolicyShape(policies, true)
@@ -188,7 +272,7 @@ func TestResolveSignalPolicySubjectsResolvesAgainstBoundInputs(t *testing.T) {
 	wf := gateWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
 		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Namespace: "release-managers-ns"},
+			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
 		}},
 	}
 	inputs := map[string]*v1.Value{
@@ -201,7 +285,8 @@ func TestResolveSignalPolicySubjectsResolvesAgainstBoundInputs(t *testing.T) {
 	rule := resolved["deploy-approved"].GetAllow()[0]
 	require.Equal(t, approver, rule.GetSubject())
 	require.Nil(t, rule.GetSubjectFrom())
-	require.Equal(t, "release-managers-ns", rule.GetNamespace())
+	require.Equal(t, map[string]string{"role": "release-manager"}, rule.GetClaims(),
+		"resolution replaces the expression and carries every other field of the rule through untouched")
 
 	// The original, still-declared policy is untouched.
 	require.NotNil(t, wf.GetSignals()["deploy-approved"].GetAllow()[0].GetSubjectFrom())
@@ -216,7 +301,7 @@ func TestResolveSignalPolicySubjectsRefusesAMalformedResult(t *testing.T) {
 	wf := gateWorkflow()
 	wf.Signals = map[string]*v1.SignalPolicy{
 		"deploy-approved": {Allow: []*v1.SignalPolicyRule{
-			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Namespace: "release-managers-ns"},
+			{SubjectFrom: v1.NewExpr("inputs.expected_approver"), Claims: map[string]string{"role": "release-manager"}},
 		}},
 	}
 	inputs := map[string]*v1.Value{

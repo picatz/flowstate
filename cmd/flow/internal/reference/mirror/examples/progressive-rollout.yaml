@@ -42,13 +42,12 @@
 edition: v2026.3
 name: progressive-rollout
 description: Shift traffic to a new version in stages, and unwind every stage in reverse if the canary fails.
-
 inputs:
   service:
     type: string
     required: true
-    example: checkout
     description: which service is being rolled out
+    example: checkout
 
   # A feature flag, and 0 — every stage healthy — is exactly the sensible absent
   # value a default should carry.
@@ -56,7 +55,6 @@ inputs:
     type: int
     default: 0
     description: simulate the canary failing at this percentage, to see the whole rollout unwind
-
 steps:
   - id: rollout
     description: raise traffic to the new version one stage at a time
@@ -67,7 +65,7 @@ steps:
       # never runs is a percentage that was never chosen.
       as: percent
       init: ${5}
-      update: "${percent == 5 ? 25 : 50}"
+      update: "${(percent == 5) ? 25 : 50}"
       until: ${percent >= 50}
       max_iterations: 5
       steps:
@@ -78,24 +76,20 @@ steps:
         - id: stage
           call: ./workflows/shift-traffic.yaml
           with:
-            service: ${inputs.service}
             percent: ${percent}
+            service: ${inputs.service}
             unhealthy_at: ${inputs.unhealthy_at}
-
   - id: promote
     description: the rollout finished — everything is on the new version's path
     log:
       message: ${"%s is at %d%% and healthy".format([inputs.service, steps.rollout.state])}
-
 outputs:
   service:
     value: ${inputs.service}
     description: the service this run rolled out
-
   final_percent:
     value: ${steps.rollout.state}
     description: the share of traffic the new version ended on
-
   stages:
     value: ${steps.rollout.results.size()}
     description: how many stages ran

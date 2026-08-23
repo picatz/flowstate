@@ -30,6 +30,23 @@ var keyLine = regexp.MustCompile(`^(\s*)(-\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*:(.*
 // dashLine matches a block sequence entry.
 var dashLine = regexp.MustCompile(`^(\s*)-(\s|$)`)
 
+// nonTaskKindKeys are the step keys that decide a non-task step's kind —
+// flowfile/parse.go's nodeKindKeys, minus "call", which the scanner already
+// tracks separately for callTarget. Kept in sync with that list by hand: both
+// name the same exclusive set of keys a step's `kind` oneof compiles from, so
+// a kind added there needs an entry here before completion stops offering
+// `timeout:`/`retry:` on it too.
+var nonTaskKindKeys = map[string]bool{
+	"for_each":        true,
+	"loop":            true,
+	"parallel":        true,
+	"sleep":           true,
+	"wait_until":      true,
+	"wait_for_signal": true,
+	"value":           true,
+	"switch":          true,
+}
+
 // An outlineStep is one step of a Flowfile as the line scan sees it.
 type outlineStep struct {
 	index int
@@ -52,6 +69,19 @@ type outlineStep struct {
 	// in source order. Completion leaves them out of the menu the way inputKeys
 	// are left out of a task's.
 	withKeys []string
+
+	// kindKey is the step's own kind-deciding key — one of nodeKindKeys
+	// (flowfile/parse.go), e.g. "for_each" or "sleep" — once the scanner has
+	// seen it, empty otherwise. A step's kind is exclusive (the grammar's own
+	// invariant, not this scanner's), so the first one seen at the step's own
+	// content indent is the whole answer.
+	//
+	// Recorded for the same reason taskName and callTarget are: once a step
+	// has committed to a kind, `timeout:`/`retry:` stop applying to it (see
+	// checkPolicyPlacement), and completion offering them anyway is
+	// completeAt recommending syntax the diagnostic it just wrote will
+	// immediately refuse.
+	kindKey string
 
 	// startLine is the line of the dash that opens the step and endLine the last
 	// line belonging to it, both 0-based.
@@ -190,6 +220,13 @@ func fillStep(ix *lineIndex, s *outlineStep, entryIndent int, tasks *v1.Registry
 		case indent == contentIndent && key == "call":
 			if s.callTarget == "" {
 				s.callTarget = scalarText(rest)
+			}
+			if s.kindKey == "" {
+				s.kindKey = key
+			}
+		case indent == contentIndent && nonTaskKindKeys[key]:
+			if s.kindKey == "" {
+				s.kindKey = key
 			}
 		case indent == contentIndent && key == "with":
 			inWith, withIndent = true, indent
@@ -346,6 +383,39 @@ func indentOf(line string) int {
 		}
 	}
 	return i
+}
+
+// stepOwningKeyAt returns the step whose own key list a line at the "steps"
+// level of nesting belongs to — the step whose dash opens at exactly the
+// same column the cursor's own key would sit at — or nil if none does.
+//
+// This is deliberately not [stepScope]: that function's `current` is the
+// *innermost* step whose line range contains the cursor, which is right for
+// a task's own input keys but wrong here. scanOutline ends a step's range
+// where the next step begins at any depth (see its own doc), so on a sibling
+// line after a for_each/loop/parallel/switch body, stepScope's current is
+// the last nested step inside that body, not the composite the cursor is
+// actually a sibling of. keyPath's indentation walk gets the *level* right
+// (it says "steps", correctly, regardless of nesting) but discards which
+// step owns that level, since it skips dash lines entirely.
+//
+// This function is the missing piece: it matches contentIndent, computed the
+// same way [indentOf] treats a dash line, against every step's own opening
+// line, and returns the nearest one at or before the cursor. That is exactly
+// the step a new key at this column would be written onto.
+func stepOwningKeyAt(ix *lineIndex, steps []*outlineStep, line0 int) *outlineStep {
+	depth := indentOf(ix.line(line0))
+
+	var owner *outlineStep
+	for _, s := range steps {
+		if s.startLine > line0 {
+			break
+		}
+		if indentOf(ix.line(s.startLine)) == depth {
+			owner = s
+		}
+	}
+	return owner
 }
 
 // endsWith reports whether path ends with the given keys, which is how each

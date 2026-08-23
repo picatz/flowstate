@@ -74,6 +74,15 @@ func runFakePlugin() int {
 		return runErrorsPlugin()
 	}
 
+	// The progress-relay conformance fixture is likewise a real SDK plugin
+	// rather than a hand-rolled handler, for the identical reason: it exists
+	// to prove ReportProgress crosses the wire the SDK's own ExecuteStream
+	// handler serves, not a hand-built one — see
+	// [TestPluginProgressCrossesTheSubprocessBoundary].
+	if mode == "progress" {
+		return runProgressPlugin()
+	}
+
 	// Every fake exits when the host goes away, which is what a real plugin's
 	// SDK does and what the orphan tests rely on.
 	go exitWhenHostExits()
@@ -130,6 +139,19 @@ func runFakePlugin() int {
 		}
 		fakeAnnounce()
 		return 0
+
+	case "record-run":
+		// Touches the file its env names the instant it runs, then exits
+		// without handshaking. It is the ELF — and so, on Linux, the
+		// descriptor-pinnable — analogue of markerPlugin's shell script: a
+		// launch that reaches exec leaves the marker, and admission that
+		// refuses before exec does not. It never serves, so a launch that does
+		// get here still fails, at the handshake, which is a different failure
+		// from a pin refusal. See TestPinnedDigestMismatchIsRefusedBeforeAnythingRuns.
+		if p := os.Getenv("FLOWSTATE_TEST_MARKER"); p != "" {
+			_ = os.WriteFile(p, nil, 0o600)
+		}
+		return 0
 	}
 
 	// Everything else serves.
@@ -179,6 +201,19 @@ func runFakePlugin() int {
 			for range 100 {
 				fmt.Println("i was told not to do this")
 				time.Sleep(5 * time.Millisecond)
+			}
+		}()
+	}
+
+	if mode == "stderr-flood" {
+		// Writes far more lines than any reasonable per-minute budget, as fast
+		// as it can, on the channel a plugin is *supposed* to use — a buggy
+		// dependency logging in a hot loop needs no attacker. The host must
+		// keep draining the pipe (so this never blocks) while relaying only a
+		// bounded prefix of it into its own log.
+		go func() {
+			for range 20_000 {
+				fmt.Fprintln(os.Stderr, "i will not stop logging")
 			}
 		}()
 	}
@@ -320,6 +355,21 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		base.Schemes = []string{"future"}
 		return base, nil
 
+	case "self-digest":
+		// Reports the digest of the image this process is *running*, read from
+		// the running inode rather than from the path it was launched by, so a
+		// test can compare what the host recorded against what actually ran.
+		// See [runningImageDigest] and
+		// TestTheDigestIsOfTheImageThatRanWhenTheBinaryIsSwappedAtExec.
+		digest, err := runningImageDigest()
+		if err != nil {
+			return nil, err
+		}
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
+		base.Schemes = []string{mode}
+		base.Description = digest
+		return base, nil
+
 	case "secrets-no-schemes":
 		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_SECRETS}
 		return base, nil
@@ -352,6 +402,20 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		}}
 		return base, nil
 
+	case "hang-stream":
+		// Advertises tasks but no progress-streaming capability, since this
+		// fixture is reached only through [Plugin.TaskService]'s
+		// ExecuteStream directly (service.go), never through the manifest-
+		// driven dispatch in task.go that CAPABILITY_TASK_PROGRESS gates.
+		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
+		base.Tasks = []*pluginv1.TaskManifest{{
+			Name:          "hang_task",
+			Summary:       "a fake task whose stream never ends on its own",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
+		}}
+		return base, nil
+
 	case "scoped":
 		// Otherwise identical to the default fake below, except that it
 		// declares NeedsScope — which is what routes the durable driver to
@@ -369,6 +433,25 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 			InputMessage:  "flowstate.v1.Task.Log.Inputs",
 			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 			NeedsScope:    true,
+		}}
+		return base, nil
+
+	case "identity-stream":
+		// Tasks *and* progress streaming, which is what routes
+		// [Plugin.executeTask] (task.go) down its ExecuteStream branch rather
+		// than unary Execute. Its task echoes back the namespace and subject
+		// the *stream* request carried, so
+		// TestExecuteStreamCarriesTheCallersOwnIdentity can compare the two
+		// paths' tenancy against each other.
+		base.Capabilities = []pluginv1.Capability{
+			pluginv1.Capability_CAPABILITY_TASKS,
+			pluginv1.Capability_CAPABILITY_TASK_PROGRESS,
+		}
+		base.Tasks = []*pluginv1.TaskManifest{{
+			Name:          "identity_task",
+			Summary:       "echoes the identity its ExecuteStream request carried",
+			InputMessage:  "flowstate.v1.Task.Log.Inputs",
+			OutputMessage: "flowstate.v1.Task.Log.Outputs",
 		}}
 		return base, nil
 
@@ -585,6 +668,54 @@ func (s *fakeTaskService) Execute(ctx context.Context, req *connect.Request[plug
 			},
 		},
 	}), nil
+}
+
+// ExecuteStream never sends anything and never returns on its own for the
+// "hang-stream" mode: it blocks until its context ends, the way a plugin
+// stuck mid-task — or one deliberately holding the call open — would. It
+// exists for [TestTaskServiceExecuteStreamIsBoundedByCallTimeout], which
+// proves [taskService.ExecuteStream] (service.go) cannot be held open past
+// Config.CallTimeout the way unary Execute's "slow" case above proves for
+// Execute.
+func (s *fakeTaskService) ExecuteStream(ctx context.Context, req *connect.Request[pluginv1.ExecuteStreamRequest], stream *connect.ServerStream[pluginv1.ExecuteStreamResponse]) error {
+	switch s.mode {
+	case "hang-stream":
+		<-ctx.Done()
+		return ctx.Err()
+
+	case "identity-stream":
+		// One progress frame first, so this is a real stream and not a unary
+		// call wearing a stream's clothes, and then the terminal response
+		// echoing what the *streaming* request said about the workload. A host
+		// that dropped or mixed up either field on the way from ExecuteRequest
+		// to ExecuteStreamRequest shows up here as a pair that does not match
+		// the caller's own.
+		if err := stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Progress{
+				Progress: &pluginv1.TaskProgress{Phase: pluginv1.TaskPhase_TASK_PHASE_REQUESTING},
+			},
+		}); err != nil {
+			return err
+		}
+
+		return stream.Send(&pluginv1.ExecuteStreamResponse{
+			Message: &pluginv1.ExecuteStreamResponse_Response{
+				Response: &pluginv1.ExecuteResponse{
+					Outputs: &flowstatev1.Node_Outputs{
+						NamedValues: map[string]*flowstatev1.Value{
+							"result":    flowstatev1.NewLiteral(req.Msg.GetTask().GetInputs()["message"].GetLiteral().GetStringValue()),
+							"namespace": flowstatev1.NewLiteral(req.Msg.GetNamespace()),
+							"subject":   flowstatev1.NewLiteral(req.Msg.GetIdentity().GetSubject()),
+							"identity_namespace": flowstatev1.NewLiteral(
+								req.Msg.GetIdentity().GetNamespace()),
+						},
+					},
+				},
+			},
+		})
+	}
+
+	return connect.NewError(connect.CodeUnimplemented, errors.New("this fake does not stream"))
 }
 
 // --- test-side helpers ---

@@ -365,6 +365,52 @@ func TestLoopResultsSize(t *testing.T) {
 	)
 }
 
+// TestAccumulateResultsChargesRepeatedFieldFraming is the regression for the
+// fresh finding that landed against the ProtoJSON fix above: summing each
+// iteration's own encodedPayloadSize independently is the identical class of
+// bug the outer fix corrected, one level down. `results` is a repeated field,
+// so its real encoding is `"results":[` + every element's own encoding joined
+// by `,` + `]` — framing that belongs to the field, not to any one element,
+// and that summing independent per-element sizes never counts. Verified
+// directly, the way #716's own fix was: many small iterations that the old
+// per-element-only sum would have accepted are shown here to actually exceed
+// MaxLoopResultsBytes once real array framing is included, and the fix must
+// refuse them.
+func TestAccumulateResultsChargesRepeatedFieldFraming(t *testing.T) {
+	t.Parallel()
+
+	// One byte of payload each — the shape that makes framing dominate:
+	// thousands of tiny elements, where a per-element comma the old sum never
+	// charged adds up to real bytes across that many of them.
+	tiny := &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+		"body": {NamedValues: map[string]*v1.Value{"v": v1.NewLiteral("x")}},
+	}}
+
+	var results []*v1.Workflow_StepOutputs
+	bytes := 0
+	var err error
+	for range 6000 {
+		results, bytes, err = v1.AccumulateLoopResult(results, bytes, tiny)
+		if err != nil {
+			break
+		}
+	}
+	require.Error(t, err,
+		"6000 one-byte-payload iterations must be refused: summing each iteration's own encoded size alone "+
+			"(the bug this test is the regression for) accepts them at roughly 462000 bytes, well under "+
+			"MaxLoopResultsBytes — only charging the repeated-field framing (a comma and a share of the "+
+			"array brackets per element) correctly pushes the real total over it")
+	require.Contains(t, err.Error(), "byte limit")
+
+	// LoopResultsSize, used to reseed a resumed segment's running total, has
+	// to agree with what accumulateResults already charged for the identical
+	// results — the same "both paths measure alike" discipline #716's own fix
+	// applies to the two drivers.
+	require.Equal(t, bytes, v1.LoopResultsSize(results),
+		"the incremental accumulator and the resume-time reseed must charge the identical framing "+
+			"for the identical results, or a loop could cross the bound on one path and not the other")
+}
+
 // TestLoopStateOutputsHonest covers #229's follow-up honest contract: a loop
 // that dropped history at a Continue-As-New resume must not report the
 // finishing segment's own iterations as though they were the whole run —

@@ -223,14 +223,9 @@ const mixedRefusedLine = 10
 func runFixCommand(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 
-	var out, errOut bytes.Buffer
-	cmd := newFixCommand()
-	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
-	cmd.SetArgs(args)
+	res := runCommand(t, newFixCommand(), args...)
 
-	err = cmd.Execute()
-	return out.String(), errOut.String(), err
+	return res.Stdout, res.Stderr, res.Err
 }
 
 // writeFixture writes contents into dir and returns the path.

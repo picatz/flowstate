@@ -535,23 +535,12 @@ steps:
 `,
 			want: "7:26: steps[0].vars.headers: " + help,
 		},
-		{
-			// Behind an anchor, and read through the alias: two vars, two
-			// refusals. An alias is resolved before the check, so the rule cannot
-			// be stepped around by naming the value somewhere else.
-			name: "a reference behind a YAML anchor and its alias",
-			src: `edition: v2026.3
-name: wfvar-secret-anchor
-vars:
-  a: &tok ${secret('env:TOKEN')}
-  b: *tok
-steps:
-  - id: noop
-    log:
-      message: hi
-`,
-			want: "4:13: vars.a: " + help + "\n4:13: vars.b: " + help,
-		},
+		// A secret reference behind an anchor and read through its alias used to be
+		// a case here: an alias was resolved before the check, so the rule could not
+		// be stepped around by naming the value elsewhere. The grammar now refuses
+		// anchors and aliases outright (#653), so the value can no longer be named
+		// elsewhere at all — the document is refused for the construct before the
+		// secret-reference check runs. Case removed with the spelling it used.
 		{
 			name: "a reference in a block scalar",
 			src: `edition: v2026.3

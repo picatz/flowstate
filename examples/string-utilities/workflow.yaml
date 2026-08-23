@@ -1,10 +1,6 @@
 edition: v2026.3
 name: string-utilities
-description: >-
-  Strips a reply prefix off a ticket subject and derives a routing key from
-  what is left, using the profile's strings functions instead of a task built
-  to do one string operation.
-
+description: Strips a reply prefix off a ticket subject and derives a routing key from what is left, using the profile's strings functions instead of a task built to do one string operation.
 # Three string operations, each named on the step that computes it rather than
 # inlined into the next expression that needs it — `clean`, `strip_prefix` and
 # `route` read as a sequence of facts, not as an assembly of nested calls.
@@ -14,14 +10,12 @@ description: >-
 #
 #   flow run local examples/string-utilities/workflow.yaml \
 #     --input 'subject=Login trouble on the mobile app'
-
 inputs:
   subject:
     type: string
     required: true
-    example: "  Re: Billing dispute #4521  "
     description: an inbound ticket's subject line, exactly as the mail client sent it
-
+    example: "  Re: Billing dispute #4521  "
 steps:
   # `trim()` first and named once: every check and slice below reads the
   # trimmed text, so the raw, whitespace-padded input is never compared or
@@ -37,11 +31,7 @@ steps:
   # about cutting a string that needs an activity: it is pure, and an
   # expression is where a pure computation belongs.
   - id: strip_prefix
-    value: >-
-      ${steps.clean.value.lowerAscii().startsWith("re:") ||
-        steps.clean.value.lowerAscii().startsWith("fw:")
-          ? steps.clean.value.substring(3).trim()
-          : steps.clean.value}
+    value: '${(steps.clean.value.lowerAscii().startsWith("re:") || steps.clean.value.lowerAscii().startsWith("fw:")) ? steps.clean.value.substring(3).trim() : steps.clean.value}'
 
   # A routing key from the first word, lower-cased so "Billing" and "billing"
   # file under the same queue. `split(" ")` and `lowerAscii()` compose the
@@ -49,12 +39,9 @@ steps:
   # string helpers with their own rules.
   - id: route
     value: ${steps.strip_prefix.value.lowerAscii().split(" ")[0]}
-
   - id: announce
     log:
-      message: >-
-        ${"routing '%s' to the %s queue".format([steps.strip_prefix.value, steps.route.value])}
-
+      message: ${"routing '%s' to the %s queue".format([steps.strip_prefix.value, steps.route.value])}
 outputs:
   subject:
     value: ${steps.strip_prefix.value}

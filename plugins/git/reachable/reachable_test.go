@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/picatz/flowstate/internal/covbuild"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
@@ -231,8 +232,20 @@ func TestAFlowfileCanNameTheGitPluginsTasks(t *testing.T) {
 		// prefix is a string in git.v1.LsRemoteInputs; the only way the
 		// validator can know that is the descriptor this plugin shipped
 		// over its socket at launch, reconstructed by the host.
-		wrongType, err := flowfile.ValidateSource([]byte(strings.Replace(
-			string(readSource), `prefix: "refs/heads/"`, "prefix: 5", 1)))
+		//
+		// The substitution is checked to have happened. It is a textual edit of
+		// an example this test does not own, so the day that example's spelling
+		// moves — `prefix: "refs/heads/"` became `prefix: refs/heads/` when
+		// #850 settled the formatter's quoting — a replace that matches nothing
+		// hands the validator the unmodified, *valid* example and the assertion
+		// below reads as the plugin's schema not being checked at all.
+		broken := strings.Replace(string(readSource), "prefix: refs/heads/", "prefix: 5", 1)
+		if broken == string(readSource) {
+			t.Fatal("the example no longer spells `prefix:` the way this substitution expects, so nothing " +
+				"was made wrong and this case would pass without checking anything")
+		}
+
+		wrongType, err := flowfile.ValidateSource([]byte(broken))
 		if err != nil {
 			t.Fatalf("ValidateSource: unexpected error: %v", err)
 		}
@@ -288,7 +301,14 @@ func buildPlugin(t *testing.T, output string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", output, gitModule)
+	// -cover only when internal/covbuild says coverage was asked for, which
+	// is `make coverage` and nothing else. This binary is a real subprocess:
+	// without instrumentation every line it runs is invisible to the harness
+	// that launched it, and this plugin's end-to-end path runs nowhere else.
+	args := append([]string{"build"}, covbuild.BuildArgs()...)
+	args = append(args, "-o", output, gitModule)
+
+	cmd := exec.CommandContext(ctx, "go", args...)
 	if wd, err := os.Getwd(); err == nil {
 		cmd.Dir = wd
 	}
@@ -322,6 +342,12 @@ func copyFile(src, dst string) error {
 
 func openHost(t *testing.T, cfg plugin.Config) *plugin.Host {
 	t.Helper()
+
+	// A plugin's environment is built from scratch rather than inherited
+	// (see plugin.pluginEnv), so the coverage destination reaches the
+	// process only if it is named here. Empty unless FLOWSTATE_COVERDIR is
+	// set, which makes this a no-op outside `make coverage`.
+	cfg.Env = append(cfg.Env, covbuild.Env()...)
 
 	host, err := plugin.NewHost(cfg)
 	if err != nil {

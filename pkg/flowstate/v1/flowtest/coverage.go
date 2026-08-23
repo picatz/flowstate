@@ -3,17 +3,22 @@ package flowtest
 import (
 	"fmt"
 	"sort"
+	"strconv"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Coverage is which of a workflow's steps at least one case in a `*.test.yaml`
 // ran, and which no case ever reached (issue #420).
 //
-// It is a property of the harness, not of the workflow language: no schema
-// field carries it, and it never travels a durable boundary. It is derived
+// It is a property of the harness, not of the workflow language: no field of
+// the *workflow* schema carries it, and it never travels a durable boundary.
+// It does ride the machine report — [Coverage.Report] renders it into the
+// [v1.CoverageReport] a [v1.TestReport] carries (#420) — which is a fact about
+// `flow test`'s own output, not about the language. It is derived
 // from the same transcript `expect.ran` is checked against (the
 // [v1.Workflow_StepOutputs] a run hands back), so a step counts as reached on
 // exactly the evidence `expect.ran` counts on, and nothing weaker.
@@ -36,7 +41,9 @@ import (
 //   - A step inside a `for_each` or `loop` body counts as reached if any
 //     iteration ran it. The body's per-iteration outputs travel in the loop
 //     node's `results` output ([v1.LoopResultsField]), so the walk descends
-//     into that list and unions the step ids it finds across iterations.
+//     into that list and unions the steps it finds across iterations — across
+//     the *iterations* of one body, and never across two bodies that happen to
+//     name a step the same (issue #821); see [workflowCoverage.steps].
 type Coverage struct {
 	// Workflow is the workflow this coverage accounts for, the path a case's
 	// `workflow:` resolved to ([WorkflowPath]). It is the identity coverage is
@@ -45,38 +52,169 @@ type Coverage struct {
 	// (issue #420, Finding 3).
 	Workflow string
 
-	// Reached is every step id that ran in at least one case, sorted.
+	// Reached is every step id whose every declaration ran in at least one case,
+	// sorted.
+	//
+	// A name, not an identity, which is why this says *every* declaration (issue
+	// #821). A step id is unique within one scope and not within a workflow:
+	// sibling `for_each`/`loop` bodies and sibling `parallel` branches may each
+	// hold a step called `notify`, which the validator allows deliberately — the
+	// rule it enforces is that a nested id may not collide with a step it is
+	// nested *inside* (flowfile/validate.go). Measurement is therefore keyed by
+	// declaration ([workflowCoverage.steps]), and a name answering to several
+	// declarations reports the fail-closed answer: Reached only when all of them
+	// ran, Unreached when any of them did not. The other reading — reached when
+	// *any* declaration ran — is the defect #821 reports, a gate passing on a
+	// step no case ever ran.
 	Reached []string
 
-	// Unreached is the complement: every step id in the workflow that no case
-	// ran, sorted. This is the line #420 exists to report.
+	// Unreached is the complement: every step id in the workflow that some
+	// declaration of leaves unrun, sorted. This is the line #420 exists to
+	// report.
+	//
+	// Reached and Unreached stay disjoint and together name every step id in the
+	// workflow exactly once, so [Coverage.Total] still counts the steps an author
+	// can name.
 	Unreached []string
 
 	// Accepted maps an unreached step id to the reason the file recorded for it
 	// (`coverage.allow_unreached`). Every key here is also in Unreached: it is
 	// genuinely not reached, and Accepted is why that is a decision rather than
 	// a gap. A step in Accepted does not fail `--coverage-required`.
+	//
+	// An entry names a step *id*, so where an id answers to several declarations
+	// the entry speaks for all of them — the same reading [SwitchArm.Key] takes
+	// for an ambiguous arm key, and the only one available when the name cannot
+	// tell them apart (issue #821). Since such an id is Unreached as soon as any
+	// one of its declarations is, accepting it accepts every declaration that
+	// answers to it.
 	Accepted map[string]string
 
 	// Stale is every `coverage.allow_unreached` entry that does not describe a
-	// real residual: it names a step some case did reach, or a step id the
-	// workflow does not have. Such a record is a false statement about the
+	// real residual: it names a step or switch arm some case did reach, or one
+	// no targeted workflow has. Such a record is a false statement about the
 	// suite, so it fails `--coverage-required` the same way an unrecorded gap
-	// does. Each entry is a sentence naming the step and what is wrong.
+	// does. Each entry is a sentence naming the entry and what is wrong.
 	Stale []string
+
+	// Arms is every arm of every `switch:` step the workflow has, in written
+	// order, and whether any case took it (issue #801).
+	//
+	// A second unit beside the step one rather than more entries in Reached and
+	// Unreached, because an arm is not a step: [Coverage.Total] would otherwise
+	// count two different things, and the reason this exists at all is that an
+	// arm's body may hold no steps. `steps: []` is how a switch writes down
+	// deliberately ignoring a value — a documented, reviewable pattern
+	// (proto/flowstate/v1/workflow.proto, and examples/webhook-routing) — and it
+	// contributes nothing to the step universe, so before this no suite could
+	// fail to cover it. Deleting the one case that exercised it left
+	// `--coverage-required` reporting full coverage.
+	Arms []*SwitchArm
+}
+
+// SwitchArm is one arm of one `switch:` step — one `case:` literal, or the
+// `default:` — and whether any case took it.
+//
+// Read from the transcript, never inferred from what ran. A switch records the
+// literal that matched under [v1.SwitchCaseOutput], so this reads the arm that
+// was taken; deducing it from the body steps that appeared is what the step
+// universe does, and that cannot see an empty body and cannot tell which member
+// of `case: [closed, merged]` matched. #420 said so when it proposed switch
+// coverage — "the matched case is in the transcript, so the harness reads it
+// rather than inferring it" — and #452 shipped the inference.
+type SwitchArm struct {
+	// Key is the coverage identity: `<step>:case[<i>]` for a case holding one
+	// literal, `<step>:case[<i>][<j>]` for member j of a case listing several,
+	// and `<step>:default`. It is what a file names under
+	// `coverage.allow_unreached` to record an arm it cannot reach.
+	//
+	// A name, not an identity: two switches in isolated bodies may legally share
+	// a step id, and then they share these keys too — see decl for why
+	// measurement is keyed by something else, and [workflowCoverage.declaresArm]
+	// for what a record naming an ambiguous key means.
+	Key string
+
+	// Step is the id of the `switch:` step this arm belongs to.
+	Step string
+
+	// Label is the arm as an author reads it: `case "synchronize"`, `case 3`, or
+	// `default`. Rendered by [flowfile.SwitchLiteralText], the same function the
+	// validator's own case diagnostics use, so one arm reads as one sentence
+	// wherever it is named.
+	Label string
+
+	// Reached reports whether any case took this arm.
+	Reached bool
+
+	// Reason is what the file recorded for this arm under
+	// `coverage.allow_unreached`, and is empty when it recorded none.
+	Reason string
+
+	// Where is where the arm was written. Invalid when the workflow was not
+	// parsed from a file that recorded positions — a workflow submitted as bytes
+	// ([RunSource]) has no source to point at.
+	//
+	// The reason issue #801 asks for positions at all: a step has an id every
+	// other surface resolves, and `on_event:case[2]` has nothing but this.
+	Where flowfile.Span
+
+	// decl is this arm's *declaration* identity: the structural path of the
+	// switch that declares it, joined to Key by [armDecl]. Unexported because it
+	// is an implementation detail of measurement and never something a file
+	// names — `coverage.allow_unreached` names Key.
+	//
+	// Key alone is not an identity, and that is the whole reason this field
+	// exists. A step id is unique within one scope, not within a workflow: two
+	// isolated bodies — sibling `for_each` or `loop` bodies, sibling `parallel`
+	// branches — may each hold a step called `route`, which the validator allows
+	// deliberately (the rule it enforces is that a nested id may not collide with
+	// a step it is nested *inside*, flowfile/validate.go). Keyed by Key alone,
+	// the second switch's arms were dropped as already-declared and the two
+	// switches shared one reached set, so exercising `route:case[0]` in one body
+	// reported it covered in the other — `--coverage-required` passing on an
+	// untested arm, which is the fail-open direction this unit exists to close.
+	decl string
 }
 
 // Total is how many steps the workflow has that coverage accounts for.
 func (c *Coverage) Total() int { return len(c.Reached) + len(c.Unreached) }
 
+// ArmsReached is how many of the workflow's switch arms at least one case took.
+func (c *Coverage) ArmsReached() int {
+	n := 0
+	for _, arm := range c.Arms {
+		if arm.Reached {
+			n++
+		}
+	}
+	return n
+}
+
 // Gaps is every unreached step the file did not record a reason for: the holes
 // in the suite, as opposed to the residuals it accepted. This is what
-// `--coverage-required` fails on, together with [Coverage.Stale].
+// `--coverage-required` fails on, together with [Coverage.ArmGaps] and
+// [Coverage.Stale].
 func (c *Coverage) Gaps() []string {
 	var gaps []string
 	for _, id := range c.Unreached {
 		if _, accepted := c.Accepted[id]; !accepted {
 			gaps = append(gaps, id)
+		}
+	}
+	return gaps
+}
+
+// ArmGaps is [Coverage.Gaps] for switch arms: every arm no case took and no
+// `coverage.allow_unreached` entry explains.
+//
+// Kept apart from Gaps rather than merged into it, because the two are reported
+// differently and have to be. A gap names a step, and an author finds a step by
+// its id; an arm can only be found by the position [SwitchArm.Where] carries.
+func (c *Coverage) ArmGaps() []*SwitchArm {
+	var gaps []*SwitchArm
+	for _, arm := range c.Arms {
+		if !arm.Reached && arm.Reason == "" {
+			gaps = append(gaps, arm)
 		}
 	}
 	return gaps
@@ -92,7 +230,7 @@ func (c *Coverage) Gaps() []string {
 // arrays finds a list to range over rather than a null to guard, matching the
 // posture of the schema fields beside them.
 func (c *Coverage) Report() *v1.CoverageReport {
-	return &v1.CoverageReport{
+	report := &v1.CoverageReport{
 		Workflow:     c.Workflow,
 		StepsTotal:   int32(c.Total()),
 		StepsReached: int32(len(c.Reached)),
@@ -102,6 +240,20 @@ func (c *Coverage) Report() *v1.CoverageReport {
 		Accepted:     c.Accepted,
 		Stale:        c.Stale,
 	}
+
+	for _, arm := range c.Arms {
+		report.Arms = append(report.Arms, &v1.SwitchArmCoverage{
+			Arm:     arm.Key,
+			Step:    arm.Step,
+			Label:   arm.Label,
+			Reached: arm.Reached,
+			Reason:  arm.Reason,
+			Line:    int32(arm.Where.Start.Line),
+			Column:  int32(arm.Where.Start.Column),
+		})
+	}
+
+	return report
 }
 
 // coverageAccumulator gathers, per workflow a file's cases target, the universe
@@ -130,8 +282,96 @@ type coverageAccumulator struct {
 
 // workflowCoverage is one workflow's accumulated universe and reached set.
 type workflowCoverage struct {
-	universe map[string]bool
-	reached  map[string]bool
+	// steps is every step *declaration* the workflow has: the structural path of
+	// the node ([childPath]) to the id written there. reached is the union across
+	// every case of the declarations that ran, keyed the same way.
+	//
+	// Keyed by path rather than by id for the reason [SwitchArm.decl] spells out
+	// one level down, and against the same fail-open failure (issue #821): an id
+	// is unique per scope, not per workflow, so two isolated bodies may each hold
+	// a step called `notify`. Keyed by id, the two shared one entry and running
+	// either credited both — `--coverage-required` passing on a step no case ran.
+	// The path is derived from the walk that is already descending, so it costs an
+	// argument and nothing else, and it is stable across cases because every case
+	// compiles the same specification.
+	steps   map[string]string
+	reached map[string]bool
+
+	// arms is every switch arm the workflow declares, in written order, and
+	// armIndex is where each *declaration* ([SwitchArm.decl]) sits in it. A slice
+	// rather than a map because written order is the order an author reads their
+	// own file in, and a coverage line listing arms in map order would be a
+	// different list every run.
+	arms     []*SwitchArm
+	armIndex map[string]int
+
+	// armsReached is the union across every case of the arms taken, keyed by
+	// declaration for the reason [SwitchArm.decl] exists. Kept beside the arms
+	// rather than on them because arms are collected once, from the first case
+	// that compiled the workflow, and reached is accumulated over all of them.
+	armsReached map[string]bool
+}
+
+// declaresStep reports whether the workflow declares a step a file could name by
+// this id.
+//
+// By id rather than by declaration, for the same reason [workflowCoverage.declaresArm]
+// works by key: an id is what a `coverage.allow_unreached` entry is written as,
+// and two isolated bodies may legally declare steps sharing one.
+func (w *workflowCoverage) declaresStep(id string) bool {
+	for _, step := range w.steps {
+		if step == id {
+			return true
+		}
+	}
+
+	return false
+}
+
+// leavesStepUnreached reports whether some step this id names was run by no case
+// — what makes a `coverage.allow_unreached` entry a real residual rather than a
+// stale one, and what puts the id in [Coverage.Unreached] rather than
+// [Coverage.Reached].
+func (w *workflowCoverage) leavesStepUnreached(id string) bool {
+	for path, step := range w.steps {
+		if step == id && !w.reached[path] {
+			return true
+		}
+	}
+
+	return false
+}
+
+// declaresArm reports whether the workflow declares an arm a file could name by
+// this key.
+//
+// By key rather than by declaration, because a key is what a
+// `coverage.allow_unreached` entry is written as, and two isolated bodies may
+// legally declare arms sharing one — see [SwitchArm.decl]. Several arms
+// answering to one key is what a file naming it means: the entry speaks for all
+// of them, which is the only reading available when the name cannot tell them
+// apart.
+func (w *workflowCoverage) declaresArm(key string) bool {
+	for _, arm := range w.arms {
+		if arm.Key == key {
+			return true
+		}
+	}
+
+	return false
+}
+
+// leavesArmUnreached reports whether some arm this key names was taken by no
+// case — what makes a `coverage.allow_unreached` entry a real residual rather
+// than a stale one.
+func (w *workflowCoverage) leavesArmUnreached(key string) bool {
+	for _, arm := range w.arms {
+		if arm.Key == key && !w.armsReached[arm.decl] {
+			return true
+		}
+	}
+
+	return false
 }
 
 func newCoverageAccumulator(allowUnreached map[string]string) *coverageAccumulator {
@@ -148,19 +388,31 @@ func newCoverageAccumulator(allowUnreached map[string]string) *coverageAccumulat
 // one whose stubs did not resolve, in which case the case widens that workflow's
 // universe but reaches nothing. A case whose *run* failed is no longer one of
 // those: it arrives with the partial transcript ([v1.PartialTranscript]).
-func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs) {
+// positions is where that workflow's source was written, as
+// [flowfile.ParseFile] handed it back, and may be nil — a workflow submitted as
+// bytes has no source, and a nil *Positions answers every question with "not
+// known" rather than needing a guard here. It is what gives a switch arm the
+// only identity it has (issue #801).
+func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, positions *flowfile.Positions) {
 	wc := a.workflows[identity]
 	if wc == nil {
-		wc = &workflowCoverage{universe: map[string]bool{}, reached: map[string]bool{}}
+		wc = &workflowCoverage{
+			steps:       map[string]string{},
+			reached:     map[string]bool{},
+			armIndex:    map[string]int{},
+			armsReached: map[string]bool{},
+		}
 		a.workflows[identity] = wc
 	}
 	if spec != nil {
-		collectStepUniverse(spec.GetSteps(), wc.universe)
+		collectStepUniverse(spec.GetSteps(), "", wc.steps)
+		collectSwitchArms(spec.GetSteps(), "", positions, wc)
 	}
 	if spec == nil || outputs == nil {
 		return
 	}
-	markReached(spec.GetSteps(), outputs.GetStepValues(), wc.reached)
+	markReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.reached)
+	markArmsReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.armsReached)
 }
 
 // result renders the accumulated coverage, one [Coverage] per workflow the file
@@ -174,7 +426,7 @@ func (a *coverageAccumulator) result() []*Coverage {
 	// whose every case failed to compile has an empty universe and is dropped.
 	identities := make([]string, 0, len(a.workflows))
 	for id, wc := range a.workflows {
-		if len(wc.universe) == 0 {
+		if len(wc.steps) == 0 {
 			continue
 		}
 		identities = append(identities, id)
@@ -185,15 +437,20 @@ func (a *coverageAccumulator) result() []*Coverage {
 	sort.Strings(identities)
 
 	// A `coverage.allow_unreached` entry describes a real residual as long as
-	// some targeted workflow leaves that step unreached. Judged across every
-	// workflow at once so an entry explaining workflow A's residual is not
-	// reported stale against workflow B, which never had that step.
+	// some targeted workflow leaves that step — or, since #801, that switch arm —
+	// unreached. Judged across every workflow at once so an entry explaining
+	// workflow A's residual is not reported stale against workflow B, which never
+	// had that step.
 	residual := map[string]bool{}
-	for step := range a.allowUnreached {
+	for entry := range a.allowUnreached {
 		for _, id := range identities {
 			wc := a.workflows[id]
-			if wc.universe[step] && !wc.reached[step] {
-				residual[step] = true
+			if wc.leavesStepUnreached(entry) {
+				residual[entry] = true
+				break
+			}
+			if wc.leavesArmUnreached(entry) {
+				residual[entry] = true
 				break
 			}
 		}
@@ -203,12 +460,28 @@ func (a *coverageAccumulator) result() []*Coverage {
 	for _, id := range identities {
 		wc := a.workflows[id]
 		cov := &Coverage{Workflow: id}
-		for step := range wc.universe {
-			if wc.reached[step] {
-				cov.Reached = append(cov.Reached, step)
+
+		// Partitioned by name over declarations, fail-closed: an id lands in
+		// Unreached as soon as one declaration answering to it went unrun, even
+		// when another did run (issue #821). The two sets stay disjoint, so an
+		// author reads one line per step id and [Coverage.Total] counts the ids
+		// the workflow has.
+		unreached := map[string]bool{}
+		reached := map[string]bool{}
+		for path, step := range wc.steps {
+			if wc.reached[path] {
+				reached[step] = true
 			} else {
-				cov.Unreached = append(cov.Unreached, step)
+				unreached[step] = true
 			}
+		}
+		for step := range reached {
+			if !unreached[step] {
+				cov.Reached = append(cov.Reached, step)
+			}
+		}
+		for step := range unreached {
+			cov.Unreached = append(cov.Unreached, step)
 		}
 		sort.Strings(cov.Reached)
 		sort.Strings(cov.Unreached)
@@ -218,13 +491,27 @@ func (a *coverageAccumulator) result() []*Coverage {
 		// each workflow it is a residual of; that is not double-counting, it is
 		// the record doing its job for every branch it names.
 		for step, reason := range a.allowUnreached {
-			if wc.universe[step] && !wc.reached[step] {
+			if unreached[step] {
 				if cov.Accepted == nil {
 					cov.Accepted = map[string]string{}
 				}
 				cov.Accepted[step] = reason
 			}
 		}
+
+		// Arms carry their own reason rather than joining Accepted, because
+		// Accepted is documented as a map of *step* ids and a reader indexing it
+		// by one must not find something else there.
+		cov.Arms = make([]*SwitchArm, 0, len(wc.arms))
+		for _, declared := range wc.arms {
+			arm := *declared
+			arm.Reached = wc.armsReached[arm.decl]
+			if !arm.Reached {
+				arm.Reason = a.allowUnreached[arm.Key]
+			}
+			cov.Arms = append(cov.Arms, &arm)
+		}
+
 		covs[id] = cov
 	}
 
@@ -238,13 +525,13 @@ func (a *coverageAccumulator) result() []*Coverage {
 	// first workflow overall with the "not a step" wording when no workflow has
 	// it at all. For a file targeting one workflow this is exactly the old
 	// per-workflow partition, wording unchanged.
-	for step := range a.allowUnreached {
-		if residual[step] {
+	for entry := range a.allowUnreached {
+		if residual[entry] {
 			continue
 		}
 		home := ""
 		for _, id := range identities {
-			if a.workflows[id].universe[step] {
+			if a.workflows[id].declaresStep(entry) || a.workflows[id].declaresArm(entry) {
 				home = id
 				break
 			}
@@ -252,11 +539,12 @@ func (a *coverageAccumulator) result() []*Coverage {
 		var msg string
 		if home != "" {
 			msg = fmt.Sprintf(
-				"coverage.allow_unreached names %q, but a case reached it; remove the entry", step)
+				"coverage.allow_unreached names %q, but a case reached it; remove the entry", entry)
 		} else {
 			home = identities[0]
 			msg = fmt.Sprintf(
-				"coverage.allow_unreached names %q, which is not a step in this workflow; fix the id or remove the entry", step)
+				"coverage.allow_unreached names %q, which is not a step or switch arm in this workflow; "+
+					"fix the id or remove the entry", entry)
 		}
 		covs[home].Stale = append(covs[home].Stale, msg)
 	}
@@ -269,8 +557,17 @@ func (a *coverageAccumulator) result() []*Coverage {
 	return out
 }
 
-// collectStepUniverse walks a workflow's node tree, adding every step id
-// coverage accounts for to universe.
+// collectStepUniverse walks a workflow's node tree, adding every step
+// declaration coverage accounts for to universe: the structural path of the node
+// ([childPath], threaded exactly as [collectSwitchArms] threads it) to the id
+// written there.
+//
+// By declaration rather than by id because an id is unique per scope and not per
+// workflow — see [workflowCoverage.steps] for the fail-open measurement that
+// keying by id alone produced (issue #821). [markReached] threads the identical
+// path, and the two must stay in step: a step is credited under the path this
+// walk filed it under, so a divergence in how one of them spells a path is a step
+// that can never be reached.
 //
 // It descends into the bodies of `for_each` and `loop` and into the branches
 // of `parallel`, because those hold steps an author wrote and a test can leave
@@ -282,82 +579,93 @@ func (a *coverageAccumulator) result() []*Coverage {
 // container's id), so counting it would report a step that no transcript can
 // ever show as reached. Its branch steps are counted, and they are what
 // `parallel:` coverage is about.
-func collectStepUniverse(nodes []*v1.Node, universe map[string]bool) {
-	for _, node := range nodes {
+func collectStepUniverse(nodes []*v1.Node, path string, universe map[string]string) {
+	for i, node := range nodes {
+		here := childPath(path, i)
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				collectStepUniverse(branch.GetSteps(), universe)
+			for b, branch := range kind.Parallel.GetBranches() {
+				collectStepUniverse(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), universe)
 			}
 		case *v1.Node_ForEach:
-			universe[node.GetId()] = true
-			collectStepUniverse(kind.ForEach.GetBody(), universe)
+			universe[here] = node.GetId()
+			collectStepUniverse(kind.ForEach.GetBody(), here+"/"+pathBody, universe)
 		case *v1.Node_Loop:
-			universe[node.GetId()] = true
-			collectStepUniverse(kind.Loop.GetBody(), universe)
+			universe[here] = node.GetId()
+			collectStepUniverse(kind.Loop.GetBody(), here+"/"+pathBody, universe)
 		case *v1.Node_Switch:
 			// The switch itself records outputs (the observed value and the case
 			// that took it), so it is a countable step; its body steps merge into
 			// the enclosing scope the way parallel branch steps do, so they count
 			// in the same universe — which is what makes `flow test`'s coverage
 			// report the case body no test reaches.
-			universe[node.GetId()] = true
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				collectStepUniverse(body, universe)
+			universe[here] = node.GetId()
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				collectStepUniverse(body, here+"/"+pathSwitchBody+strconv.Itoa(s), universe)
 			}
 		default:
 			// Task, Wait, Call: a leaf for coverage. A call's own steps are the
 			// callee file's to account for, so the call node is counted but not
 			// descended into.
-			universe[node.GetId()] = true
+			universe[here] = node.GetId()
 		}
 	}
 }
 
 // markReached walks a workflow's node tree against a transcript, marking every
-// step the transcript shows as having run.
+// step declaration the transcript shows as having run.
 //
 // present is a map from step id to the outputs recorded for it. A top-level
 // step and a `parallel` branch step both appear here directly (the engine
 // merges a parallel's branch outputs into the enclosing scope). A `for_each` or
 // `loop` body step does not: its outputs travel inside the loop node's own
 // `results` output, so reaching it means descending into that list.
-func markReached(nodes []*v1.Node, present map[string]*v1.Node_Outputs, reached map[string]bool) {
-	for _, node := range nodes {
+//
+// reached is keyed by the *declaration* — the structural path threaded exactly
+// as [collectStepUniverse] threads it — and not by the id the transcript is keyed
+// by. That is the whole of issue #821: two isolated bodies may each hold a step
+// called `notify`, and the transcript of the body that ran cannot credit the one
+// that did not, because a body's record is read under the path of the body it
+// belongs to.
+func markReached(nodes []*v1.Node, path string, present map[string]*v1.Node_Outputs, reached map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Parallel:
 			// The container records nothing; its branch steps are merged into
 			// present directly, so recurse with the same map.
-			for _, branch := range kind.Parallel.GetBranches() {
-				markReached(branch.GetSteps(), present, reached)
+			for b, branch := range kind.Parallel.GetBranches() {
+				markReached(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), present, reached)
 			}
 		case *v1.Node_ForEach:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.ForEach.GetBody(), resultsList(out.GetNamedValues()), reached)
+			reached[here] = true
+			markReachedInResults(kind.ForEach.GetBody(), here+"/"+pathBody,
+				resultsList(out.GetNamedValues()), reached)
 		case *v1.Node_Loop:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.Loop.GetBody(), resultsList(out.GetNamedValues()), reached)
+			reached[here] = true
+			markReachedInResults(kind.Loop.GetBody(), here+"/"+pathBody,
+				resultsList(out.GetNamedValues()), reached)
 		case *v1.Node_Switch:
 			// The switch records its own outputs, and the taken body's steps
 			// merge into the enclosing scope, so both are read from present
 			// directly, exactly as a parallel branch's are.
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				markReached(body, present, reached)
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				markReached(body, here+"/"+pathSwitchBody+strconv.Itoa(s), present, reached)
 			}
 		default:
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
 		}
 	}
@@ -371,13 +679,13 @@ func markReached(nodes []*v1.Node, present map[string]*v1.Node_Outputs, reached 
 // carries its own `results` field inside its entry, which is why this recurses
 // through [markReachedInLiteral] rather than only unioning the top-level keys:
 // a loop two levels down is still a step some case either reached or did not.
-func markReachedInResults(body []*v1.Node, iterations []*expr.Value, reached map[string]bool) {
+func markReachedInResults(body []*v1.Node, path string, iterations []*expr.Value, reached map[string]bool) {
 	for _, iteration := range iterations {
 		lit := mapEntries(iteration)
 		if lit == nil {
 			continue
 		}
-		markReachedInLiteral(body, lit, reached)
+		markReachedInLiteral(body, path, lit, reached)
 	}
 }
 
@@ -385,37 +693,38 @@ func markReachedInResults(body []*v1.Node, iterations []*expr.Value, reached map
 // [v1.Node_Outputs] one: inside a loop's `results`, a step's outputs are a CEL
 // map literal, not a [v1.Node_Outputs]. The two walks are the same shape over
 // two encodings of the same fact.
-func markReachedInLiteral(nodes []*v1.Node, present map[string]*expr.Value, reached map[string]bool) {
-	for _, node := range nodes {
+func markReachedInLiteral(nodes []*v1.Node, path string, present map[string]*expr.Value, reached map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				markReachedInLiteral(branch.GetSteps(), present, reached)
+			for b, branch := range kind.Parallel.GetBranches() {
+				markReachedInLiteral(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), present, reached)
 			}
 		case *v1.Node_ForEach:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.ForEach.GetBody(), resultsListLiteral(out), reached)
+			reached[here] = true
+			markReachedInResults(kind.ForEach.GetBody(), here+"/"+pathBody, resultsListLiteral(out), reached)
 		case *v1.Node_Loop:
 			out, ok := present[node.GetId()]
 			if !ok {
 				continue
 			}
-			reached[node.GetId()] = true
-			markReachedInResults(kind.Loop.GetBody(), resultsListLiteral(out), reached)
+			reached[here] = true
+			markReachedInResults(kind.Loop.GetBody(), here+"/"+pathBody, resultsListLiteral(out), reached)
 		case *v1.Node_Switch:
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
-			for _, body := range v1.SwitchBodies(kind.Switch) {
-				markReachedInLiteral(body, present, reached)
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				markReachedInLiteral(body, here+"/"+pathSwitchBody+strconv.Itoa(s), present, reached)
 			}
 		default:
 			if _, ok := present[node.GetId()]; ok {
-				reached[node.GetId()] = true
+				reached[here] = true
 			}
 		}
 	}
@@ -450,4 +759,300 @@ func mapEntries(v *expr.Value) map[string]*expr.Value {
 		out[entry.GetKey().GetStringValue()] = entry.GetValue()
 	}
 	return out
+}
+
+// The switch-arm coverage unit (issue #801).
+//
+// Two walks, mirroring [collectStepUniverse] and [markReached]: one that
+// enumerates every arm the workflow declares, and one that reads the transcript
+// to see which of them a case actually took. They descend the same way those do
+// — into parallel branches, into loop bodies, into switch bodies, and never into
+// a `call:`, whose arms belong to the callee's own file.
+//
+// The measurement is the whole point of the pair. `--coverage-required` used to
+// infer that an arm ran from the body steps that appeared, which is wrong in
+// three ways an author can hit and one they cannot: an arm whose body is `steps:
+// []` contributes no step to infer from, so it was uncoverable; `case: [closed,
+// merged]` is one body, so which literal matched was unknowable; and the enclosing
+// scope can run a step of the same id. A switch records the literal it matched
+// under [v1.SwitchCaseOutput], so this reads the record instead.
+
+// The structural path of a node: where it sits in the workflow's node tree,
+// rather than what it is called.
+//
+// It is what gives a switch — and, since issue #821, a step — an identity a step
+// id cannot supply. Ids are unique per scope and not per workflow — two sibling
+// loop bodies may each hold a step called `route` — so keying a declaration by id
+// alone folds two switches, or two steps, into one, and the fold is fail-open:
+// exercising either credits both. The path is derived from the walk that is
+// already descending, so it costs an argument and nothing else, and it is stable
+// across cases because every case compiles the same specification.
+//
+// The segments name the *slot* a child list occupies as well as the index within
+// it, because a node's position among its siblings is not enough on its own: two
+// bodies of one switch are two lists, and `0/0` under each would be one path.
+const (
+	// pathBody is the body of a `for_each` or a `loop`.
+	pathBody = "body"
+
+	// pathBranch prefixes a `parallel` branch's index.
+	pathBranch = "b"
+
+	// pathSwitchBody prefixes a `switch` body's index, in [v1.SwitchBodies]
+	// order — each case in written order, then the default.
+	pathSwitchBody = "s"
+)
+
+// childPath is the path of the node at index i under prefix.
+func childPath(prefix string, i int) string {
+	return prefix + "/" + strconv.Itoa(i)
+}
+
+// armDecl is an arm's declaration identity: the path of the switch that declares
+// it, and the key a file would name it by. See [SwitchArm.decl].
+func armDecl(path, key string) string {
+	return path + "|" + key
+}
+
+// collectSwitchArms enumerates every arm of every switch in nodes, in written
+// order, into wc.
+//
+// path is the structural address of the list being walked; the arms of a switch
+// are declared under the switch's own path, which is what keeps two switches
+// that share a step id apart.
+//
+// Idempotent: [coverageAccumulator.observe] runs once per case and every case
+// compiles the same workflow, so an arm already enumerated is left as it is
+// rather than appended twice. Idempotent *by declaration*, so a second switch
+// sharing the first's id still contributes its own arms.
+func collectSwitchArms(nodes []*v1.Node, path string, positions *flowfile.Positions, wc *workflowCoverage) {
+	for i, node := range nodes {
+		here := childPath(path, i)
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			for b, branch := range kind.Parallel.GetBranches() {
+				collectSwitchArms(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), positions, wc)
+			}
+		case *v1.Node_ForEach:
+			collectSwitchArms(kind.ForEach.GetBody(), here+"/"+pathBody, positions, wc)
+		case *v1.Node_Loop:
+			collectSwitchArms(kind.Loop.GetBody(), here+"/"+pathBody, positions, wc)
+		case *v1.Node_Switch:
+			for _, arm := range switchArms(node.GetId(), here, kind.Switch, positions) {
+				if _, already := wc.armIndex[arm.decl]; already {
+					continue
+				}
+				wc.armIndex[arm.decl] = len(wc.arms)
+				wc.arms = append(wc.arms, arm)
+			}
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				collectSwitchArms(body, here+"/"+pathSwitchBody+strconv.Itoa(s), positions, wc)
+			}
+		default:
+			// Task, Wait, Call: no arms of their own, and a call's are the
+			// callee file's to account for.
+		}
+	}
+}
+
+// switchArms is one switch's arms: one per `case:` literal, then the `default:`
+// when it has one.
+//
+// One arm per *literal* rather than per case entry, which is the finer of the
+// two readings #801 offers and the one the record supports. `case: [closed,
+// merged]` shares a body, so a per-case unit cannot tell a suite that exercises
+// only `merged` from one that exercises both — and the transcript names the
+// member that matched, so the finer unit costs nothing to measure. That matters
+// most exactly where [v1.SwitchLiteralsEqual]'s cross-type numeric matching
+// lives: `case: [1, 1.0]` is refused as a duplicate, but `case: [1, 2]` with a
+// double discriminant is a pair a per-case unit would report covered on either.
+//
+// A case value that is not a literal contributes no arm. The parser compiles a
+// computed `case:` so that [validateSwitch] can refuse it with a position, and
+// `flow test` runs files that validated, so this is a backstop rather than a
+// path: an arm nothing could ever match is not a gap worth reporting on top of
+// the diagnostic that already refuses the file.
+func switchArms(step, path string, sw *v1.Switch, positions *flowfile.Positions) []*SwitchArm {
+	arms := make([]*SwitchArm, 0, len(sw.GetCases())+1)
+
+	for i, c := range sw.GetCases() {
+		values := c.GetValues()
+		for j, candidate := range values {
+			literal, ok := candidate.GetKind().(*v1.Value_Literal)
+			if !ok {
+				continue
+			}
+
+			key := fmt.Sprintf("%s:case[%d]", step, i)
+			if len(values) > 1 {
+				key += fmt.Sprintf("[%d]", j)
+			}
+
+			// The same address the validator's own case diagnostics use, so the
+			// position under an arm and the position under a `case:` diagnostic
+			// are one path rather than two spellings of it.
+			where, _ := positions.Locate(step, flowfile.SwitchCaseField(i, len(values), j))
+
+			arms = append(arms, &SwitchArm{
+				Key:   key,
+				Step:  step,
+				Label: "case " + flowfile.SwitchLiteralText(literal.Literal),
+				Where: where,
+				decl:  armDecl(path, key),
+			})
+		}
+	}
+
+	if sw.GetDefault() != nil {
+		where, _ := positions.Locate(step, "default")
+		arms = append(arms, &SwitchArm{
+			Key:   step + ":default",
+			Step:  step,
+			Label: "default",
+			Where: where,
+			decl:  armDecl(path, step+":default"),
+		})
+	}
+
+	return arms
+}
+
+// markArmsReached walks nodes against a transcript, marking every switch arm the
+// run took.
+//
+// A switch's own outputs sit under its id, exactly as [markReached] reads them,
+// and [v1.SwitchCaseOutput] holds the literal that matched — or null, which means
+// no case did. Null therefore marks the `default:` arm when the switch has one,
+// and marks nothing when it does not, which is the switch that matched nothing
+// and ran nothing. The two are not ambiguous: `validateSwitch` refuses a null
+// `case:` outright, in those words, precisely so this record stays readable.
+// path is threaded exactly as [collectSwitchArms] threads it, and the two must
+// stay in step: an arm is credited under the declaration the collecting walk
+// filed it under, so a divergence in how one of the walks spells a path is an arm
+// that can never be reached.
+func markArmsReached(nodes []*v1.Node, path string, present map[string]*v1.Node_Outputs, reached map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			for b, branch := range kind.Parallel.GetBranches() {
+				markArmsReached(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), present, reached)
+			}
+		case *v1.Node_ForEach:
+			out, ok := present[node.GetId()]
+			if !ok {
+				continue
+			}
+			markArmsReachedInResults(kind.ForEach.GetBody(), here+"/"+pathBody,
+				resultsList(out.GetNamedValues()), reached)
+		case *v1.Node_Loop:
+			out, ok := present[node.GetId()]
+			if !ok {
+				continue
+			}
+			markArmsReachedInResults(kind.Loop.GetBody(), here+"/"+pathBody,
+				resultsList(out.GetNamedValues()), reached)
+		case *v1.Node_Switch:
+			if out, ok := present[node.GetId()]; ok {
+				markArmTaken(node.GetId(), here, kind.Switch,
+					out.GetNamedValues()[v1.SwitchCaseOutput].GetLiteral(), reached)
+			}
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				markArmsReached(body, here+"/"+pathSwitchBody+strconv.Itoa(s), present, reached)
+			}
+		default:
+		}
+	}
+}
+
+// markArmsReachedInResults descends into a loop's per-iteration `results` list,
+// marking the arms any iteration took.
+func markArmsReachedInResults(body []*v1.Node, path string, iterations []*expr.Value, reached map[string]bool) {
+	for _, iteration := range iterations {
+		lit := mapEntries(iteration)
+		if lit == nil {
+			continue
+		}
+		markArmsReachedInLiteral(body, path, lit, reached)
+	}
+}
+
+// markArmsReachedInLiteral is [markArmsReached] over a literal transcript rather
+// than a [v1.Node_Outputs] one: inside a loop's `results`, a step's outputs are a
+// CEL map literal. The same walk over the second encoding of the same fact, the
+// way [markReachedInLiteral] mirrors [markReached].
+func markArmsReachedInLiteral(nodes []*v1.Node, path string, present map[string]*expr.Value, reached map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			for b, branch := range kind.Parallel.GetBranches() {
+				markArmsReachedInLiteral(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), present, reached)
+			}
+		case *v1.Node_ForEach:
+			out, ok := present[node.GetId()]
+			if !ok {
+				continue
+			}
+			markArmsReachedInResults(kind.ForEach.GetBody(), here+"/"+pathBody, resultsListLiteral(out), reached)
+		case *v1.Node_Loop:
+			out, ok := present[node.GetId()]
+			if !ok {
+				continue
+			}
+			markArmsReachedInResults(kind.Loop.GetBody(), here+"/"+pathBody, resultsListLiteral(out), reached)
+		case *v1.Node_Switch:
+			if out, ok := present[node.GetId()]; ok {
+				markArmTaken(node.GetId(), here, kind.Switch, mapEntries(out)[v1.SwitchCaseOutput], reached)
+			}
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				markArmsReachedInLiteral(body, here+"/"+pathSwitchBody+strconv.Itoa(s), present, reached)
+			}
+		default:
+		}
+	}
+}
+
+// markArmTaken records the one arm a switch's recorded `case` output says ran.
+//
+// Matched through [v1.SwitchLiteralsEqual], the same function
+// [v1.SelectSwitchCase] used to decide which arm to run, so "this value took
+// that case" means one thing in the engine and in the account of it. Spelling
+// the comparison a second time here is how the two would come to disagree about
+// `case: 1` against a discriminant of `1.0`.
+func markArmTaken(step, path string, sw *v1.Switch, took *expr.Value, reached map[string]bool) {
+	if took == nil {
+		return
+	}
+
+	if _, isNull := took.GetKind().(*expr.Value_NullValue); isNull || took.GetKind() == nil {
+		// No case matched. The default ran if there is one; otherwise the step
+		// ran nothing, and there is no arm to credit.
+		if sw.GetDefault() != nil {
+			reached[armDecl(path, step+":default")] = true
+		}
+
+		return
+	}
+
+	for i, c := range sw.GetCases() {
+		values := c.GetValues()
+		for j, candidate := range values {
+			literal, ok := candidate.GetKind().(*v1.Value_Literal)
+			if !ok {
+				continue
+			}
+			if !v1.SwitchLiteralsEqual(took, literal.Literal) {
+				continue
+			}
+
+			key := fmt.Sprintf("%s:case[%d]", step, i)
+			if len(values) > 1 {
+				key += fmt.Sprintf("[%d]", j)
+			}
+			reached[armDecl(path, key)] = true
+
+			return
+		}
+	}
 }

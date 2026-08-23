@@ -43,6 +43,7 @@ type tokenOptions struct {
 	keyIDNamed      bool
 	algorithm       jwa.Algorithm
 	omit            []string
+	extraClaims     map[string]any
 }
 
 // WithSubject names the workload or person the token is about, which becomes
@@ -80,6 +81,14 @@ func WithAudience(audience ...string) TokenOption {
 	return func(o *tokenOptions) {
 		o.audience = slices.Clone(audience)
 		o.audienceNamed = true
+		// Last option wins, which for these two options means mutually
+		// clearing: naming an audience un-refuses one. Without this, an
+		// earlier WithoutAudience would survive a later WithAudience, and
+		// [Issuer.WrongAudienceToken] — which appends WithAudience precisely
+		// so the audience it names always wins — would mint a token with no
+		// audience at all: a missing-audience test wearing a wrong-audience
+		// test's name.
+		o.audienceRefused = false
 	}
 }
 
@@ -90,7 +99,13 @@ func WithAudience(audience ...string) TokenOption {
 // policy that forgot to check, and the test reports a working configuration
 // that admits every caller the provider will ever mint a token for.
 func WithoutAudience() TokenOption {
-	return func(o *tokenOptions) { o.audienceRefused = true }
+	return func(o *tokenOptions) {
+		o.audienceRefused = true
+		// The mirror of WithAudience clearing audienceRefused: last option
+		// wins in both directions.
+		o.audience = nil
+		o.audienceNamed = false
+	}
 }
 
 // WithLifetime mints a token that expires the given duration after it was
@@ -249,6 +264,9 @@ func (i *Issuer) claims(claims map[string]any, settings tokenOptions) map[string
 	setDefault(minted, claimSubject, settings.subject)
 	setDefault(minted, claimIssuedAt, issuedAt.Unix())
 	setDefault(minted, claimExpiration, expiresAt.Unix())
+	for name, value := range settings.extraClaims {
+		setDefault(minted, name, value)
+	}
 
 	switch {
 	case settings.audienceNamed && len(settings.audience) == 1:

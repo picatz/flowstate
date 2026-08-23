@@ -36,18 +36,14 @@
 # Quickstart)
 edition: v2026.3
 name: fan-out-calls
-description: >-
-  Fans a worklist out over a reusable called workflow, two at a time, and names
-  the items whose call failed rather than failing the run.
-
+description: Fans a worklist out over a reusable called workflow, two at a time, and names the items whose call failed rather than failing the run.
 vars:
   # Named here rather than inline in `items:` so that `outputs:` below can ask
   # what was *asked for* and subtract what came back. A failed iteration's
   # result carries no region name to read — the callee never got far enough to
   # produce one — so the only way to name what did not publish is to start from
   # the list this run was given.
-  regions: ${['eu-west', 'us-east', 'ap-south', 'quarantined']}
-
+  regions: ${["eu-west", "us-east", "ap-south", "quarantined"]}
 steps:
   - id: publish
     description: One call per region, two in flight at a time.
@@ -84,8 +80,7 @@ steps:
           # actually published.
           if: ${has(steps.deploy.url)}
           log:
-            message: ${region + ' is serving from ' + steps.deploy.url}
-
+            message: ${region + " is serving from " + steps.deploy.url}
 outputs:
   # Read out of the fan-out's per-iteration results — one entry per region,
   # each a map of body step id to that step's outputs, so `r.deploy.url` is the
@@ -100,11 +95,8 @@ outputs:
   # reached its own `outputs:` — so this is the worklist with whatever the
   # successful calls named taken back out.
   unpublished:
-    value: >-
-      ${vars.regions.filter(name,
-        !(name in steps.publish.results.filter(r, has(r.deploy.region)).map(r, r.deploy.region)))}
+    value: ${vars.regions.filter(name, !(name in steps.publish.results.filter(r, has(r.deploy.region)).map(r, r.deploy.region)))}
     description: regions whose call failed, named rather than counted
-
   attempted:
     value: ${size(vars.regions)}
     description: how many regions this run was asked to publish to

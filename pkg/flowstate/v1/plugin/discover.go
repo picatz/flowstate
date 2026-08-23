@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -72,8 +73,12 @@ func Discover(cfg Config) ([]Found, error) {
 			continue
 		}
 
-		if err := checkWritableByOthers(info, dir, cfg.AllowInsecureSearchPath); err != nil {
+		decidable, err := checkPathIsTrusted(info, dir, cfg.AllowInsecureSearchPath)
+		if err != nil {
 			return nil, err
+		}
+		if !decidable {
+			warnOwnershipUnchecked(log, dir)
 		}
 
 		entries, err := os.ReadDir(dir)
@@ -108,7 +113,7 @@ func Discover(cfg Config) ([]Found, error) {
 				continue
 			}
 
-			if err := checkWritableByOthers(info, path, cfg.AllowInsecureSearchPath); err != nil {
+			if _, err := checkPathIsTrusted(info, path, cfg.AllowInsecureSearchPath); err != nil {
 				return nil, err
 			}
 
@@ -139,8 +144,31 @@ func Discover(cfg Config) ([]Found, error) {
 // would read as a flag, or anything else that would have to be quoted later.
 func pluginName(fileName string) (string, bool) {
 	name, ok := strings.CutPrefix(fileName, BinaryPrefix)
-	if !ok || name == "" || len(name) > MaxNameLen {
+	if !ok {
 		return "", false
+	}
+	if !validPluginName(name) {
+		return "", false
+	}
+
+	return name, true
+}
+
+// validPluginName reports whether name is a name a discovered plugin could
+// actually have: lower-case alphanumerics and interior hyphens, non-empty, and
+// no longer than [MaxNameLen] — the same constraint the schema puts on a
+// manifest name.
+//
+// It is its own function because two callers need the identical rule.
+// [pluginName] applies it to a discovered file's suffix; [validateDigestPin]
+// applies it to a pin's key, so that a pin naming something no plugin could be
+// called — `PinnedDigests["GitHub"]` for a binary discovered as `github` — is a
+// startup error rather than a pin that silently never matches and leaves the
+// real plugin running unpinned. A security control keyed by a name has to reject
+// a key that cannot name the thing it guards, or the guard fails open on a typo.
+func validPluginName(name string) bool {
+	if name == "" || len(name) > MaxNameLen {
+		return false
 	}
 
 	for i := range len(name) {
@@ -149,33 +177,87 @@ func pluginName(fileName string) (string, bool) {
 		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
 		case c == '-' && i > 0:
 		default:
-			return "", false
+			return false
 		}
 	}
 
-	return name, true
+	return true
 }
 
-// checkWritableByOthers refuses a path that users other than its owner can
-// write to.
+// writableByOthers is every permission bit that lets a user who is not the
+// owner write: world (0o002) and group (0o020).
+//
+// The group bit belongs here for the same reason the world bit does. "Any member
+// of group staff chooses what this worker executes" is the same sentence with
+// one word changed, and a group is not a curated thing from this process's point
+// of view — it is a list somebody else maintains, which is exactly what a plugin
+// search path may not be. Refusing only the world bit made the guarantee read
+// stronger than it was.
+const writableByOthers = 0o022
+
+// checkPathIsTrusted refuses a path that somebody other than this worker can
+// choose the contents of — by writing to it, or by owning it.
 //
 // A directory of plugin binaries is a list of programs this process will run
 // with the worker's credentials and network reach, so write access to it is
 // equivalent to code execution here. The sticky bit does not redeem a
 // world-writable directory: it stops one user deleting another's files, and does
 // nothing to stop anyone adding a flowstate-plugin-anything of their own.
-func checkWritableByOthers(info fs.FileInfo, path string, allow bool) error {
-	if allow {
-		return nil
-	}
-
+//
+// Ownership is the second half, and permission bits alone do not cover it:
+// whoever owns a path can chmod it, or rename and replace an entry inside it,
+// through their own owner bits whatever its group and world bits say. A 0755
+// directory owned by another unprivileged uid is therefore still that uid's
+// choice of what this worker executes. The two refusals are worded separately
+// because they are separate things for an operator to fix — one is a chmod, the
+// other a chown or an install to a different directory.
+//
+// This is deliberately stricter than the common 0o775 an installer leaves
+// behind, and the escape hatch for a deployment that cannot change it is the one
+// that already exists: [Config.AllowInsecureSearchPath], which says out loud
+// what is being accepted.
+//
+// Returns a second value saying whether ownership could be decided at all, so
+// [Discover] can tell an operator on a platform without POSIX ownership which
+// half of the guarantee they are holding themselves — rather than the check
+// looking like it passed.
+func checkPathIsTrusted(info fs.FileInfo, path string, allow bool) (decidable bool, err error) {
 	mode := info.Mode()
-	if mode.Perm()&0o022 == 0 && ownedByTrustedUser(info) {
-		return nil
+
+	if !allow && mode.Perm()&writableByOthers != 0 {
+		who := "any user"
+		if mode.Perm()&0o002 == 0 {
+			who = "any member of its group"
+		}
+
+		return true, fmt.Errorf(
+			"%w: %q is writable by %s (mode %#o), which means they choose what this worker executes; fix its permissions, or set AllowInsecureSearchPath if this is a single-user image",
+			ErrSearchPath, path, who, mode.Perm(),
+		)
 	}
 
-	return fmt.Errorf(
-		"%w: %q is not owned by the worker or root, or is writable by another user (mode %#o), which means another user may choose what this worker executes; fix its ownership and permissions, or set AllowInsecureSearchPath if this is a single-user image",
-		ErrSearchPath, path, mode.Perm(),
+	trusted, decidable := ownedByTrustedUser(info)
+	if allow || !decidable || trusted {
+		return decidable, nil
+	}
+
+	return true, fmt.Errorf(
+		"%w: %q is owned by another user, who can replace it whatever its permission bits say, and so chooses what this worker executes; install it as root or as this service's own identity, or set AllowInsecureSearchPath if this is a single-user image",
+		ErrSearchPath, path,
 	)
+}
+
+// warnOwnershipUnchecked says once, per search path entry, that half the
+// guarantee did not run.
+//
+// A platform without POSIX ownership still gets the permission-bit checks, and
+// an operator reading documentation that describes both is entitled to know
+// which one their deployment actually got. Said once per directory rather than
+// once per binary, because the answer is a property of the platform and a line
+// per plugin would be noise nobody reads.
+func warnOwnershipUnchecked(log *slog.Logger, dir string) {
+	log.Warn("plugin search path entry was not checked for ownership, because this platform "+
+		"does not expose POSIX ownership; its permission bits were checked, and keeping the "+
+		"directory owned by this service's identity is the operator's responsibility here",
+		"dir", dir)
 }

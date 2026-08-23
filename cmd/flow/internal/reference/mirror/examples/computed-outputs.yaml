@@ -22,7 +22,6 @@
 #   flow run local examples/computed-outputs/workflow.yaml --input release=2026.9.0
 edition: v2026.3
 name: computed-outputs
-
 inputs:
   release:
     type: string
@@ -34,8 +33,28 @@ inputs:
   # same way, which is what `--input-file` is for once the arguments stop being flat.
   targets:
     type: list
-    default: [alpha, beta, gamma]
+    default:
+      - alpha
+      - beta
+      - gamma
+steps:
+  - id: roll_out
+    for_each:
+      items: ${inputs.targets}
+      as: host
+      steps:
+        - id: place
+          log:
+            # `host` is bound by the loop and stays bare; `inputs.release` is a fact
+            # about the run and is rooted. Both are in scope here.
+            message: ${host + " <- " + inputs.release}
 
+  # The run still narrates itself for a person watching. That is a different thing
+  # from the result: this line goes to stderr and vanishes, and the outputs above are
+  # data a caller can address by name.
+  - id: report
+    log:
+      message: ${"rollout finished for %s".format([inputs.release])}
 outputs:
   # An argument, echoed back. Worth doing: an output is what a caller reads, and a
   # caller who ran this from a script does not necessarily still hold what it sent.
@@ -54,22 +73,3 @@ outputs:
   # was asked for, and what came of it.
   summary:
     value: ${"placed %s on %d host(s)".format([inputs.release, size(steps.roll_out.results)])}
-
-steps:
-  - id: roll_out
-    for_each:
-      items: ${inputs.targets}
-      as: host
-      steps:
-        - id: place
-          log:
-            # `host` is bound by the loop and stays bare; `inputs.release` is a fact
-            # about the run and is rooted. Both are in scope here.
-            message: ${host + ' <- ' + inputs.release}
-
-  # The run still narrates itself for a person watching. That is a different thing
-  # from the result: this line goes to stderr and vanishes, and the outputs above are
-  # data a caller can address by name.
-  - id: report
-    log:
-      message: ${"rollout finished for %s".format([inputs.release])}

@@ -16,6 +16,19 @@ import (
 // worker's own internal endpoints in production.
 const AllowLoopbackEgressEnv = "FLOWSTATE_ALLOW_LOOPBACK_EGRESS"
 
+// AllowLoopbackEgressValue is the one value of [AllowLoopbackEgressEnv] that
+// permits loopback. Anything else — including `1`, which reads as an opt-in to
+// every person who has ever set a boolean environment variable — leaves the
+// default policy denying loopback exactly as if the variable were unset.
+//
+// Exported so that a diagnostic offering the opt-in reads the value rather than
+// spelling it: `flow run local`'s loopback denial suggested
+// `FLOWSTATE_ALLOW_LOOPBACK_EGRESS=1` for as long as this check has said
+// `"true"`, which is a remedy that does not work handed to the one author who
+// most needs one that does. The check below is the only reader of the variable,
+// so a suggestion built from this constant cannot disagree with it.
+const AllowLoopbackEgressValue = "true"
+
 // defaultEgressPolicy is the egress policy the http task enforces.
 //
 // A workflow names the URL it fetches, which makes the http task a way to ask
@@ -29,7 +42,7 @@ const AllowLoopbackEgressEnv = "FLOWSTATE_ALLOW_LOOPBACK_EGRESS"
 // ungoverned client — failing open here would undo the entire point.
 var defaultEgressPolicy = sync.OnceValue(func() *netpolicy.Policy {
 	var opts []netpolicy.Option
-	if os.Getenv(AllowLoopbackEgressEnv) == "true" {
+	if os.Getenv(AllowLoopbackEgressEnv) == AllowLoopbackEgressValue {
 		opts = append(opts, netpolicy.WithAllowLoopback())
 	}
 	p, err := netpolicy.New(opts...)

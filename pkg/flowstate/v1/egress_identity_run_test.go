@@ -4,10 +4,10 @@ import (
 	"testing"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/tests"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
-// TestRunWorkflowEgressIdentity runs [tests.EgressIdentityCases] against the
+// TestRunWorkflowEgressIdentity runs [conformance.EgressIdentityCases] against the
 // local driver. The same cases run against the durable driver in the engine
 // package (TestRunWorkflowEgressIdentity there) — two verified callers, which
 // is what invariant 3 asks a shared case set to have.
@@ -18,21 +18,21 @@ import (
 // request and admitted the production one — the same file, the same policy,
 // opposite answers.
 //
-// No t.Parallel: [tests.InstallEgressIdentityPolicy] swaps the process-wide
+// No t.Parallel: [conformance.InstallEgressIdentityPolicy] swaps the process-wide
 // http task registration, the same posture every other registry-swapping test
 // in this package takes.
 func TestRunWorkflowEgressIdentity(t *testing.T) {
-	baseURL := tests.NewHTTPServer(t)
+	baseURL := conformance.NewHTTPServer(t)
 
-	for _, tc := range tests.EgressIdentityCases() {
+	for _, tc := range conformance.EgressIdentityCases() {
 		t.Run(tc.Name, func(t *testing.T) {
-			tests.InstallEgressIdentityPolicy(t)
+			conformance.InstallEgressIdentityPolicy(t)
 
 			ctx := v1.NewContextWithRehearsalIdentity(t.Context(), tc.Identity)
 
-			out, err := v1.Run(ctx, tests.EgressIdentityWorkflow(baseURL))
+			out, err := v1.Run(ctx, conformance.EgressIdentityWorkflow(baseURL))
 
-			tests.AssertEgressIdentityOutcome(t, tc, out, err)
+			conformance.AssertEgressIdentityOutcome(t, tc, out, err)
 		})
 	}
 }

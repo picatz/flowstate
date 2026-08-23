@@ -71,6 +71,13 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// returns.
 		ShapesOutputs: manifest.GetShapesOutputs(),
 
+		// The whole-value list the manifest declared, carried onto the def so a
+		// description of this task (DescribeTask, the catalog, `flow plugins`)
+		// can say so. Enforcement itself still reads the manifest directly,
+		// closed over below in taskFunc — this copy is for visibility, not for
+		// the resolve-or-refuse decision.
+		SecretInputs: manifest.GetSecretInputs(),
+
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
 		// cross-reference on AuthorityInputs itself — and that is deliberate
@@ -144,7 +151,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 		// decided by code this repository did not write.
 		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
 
-		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+		resp, err := p.executeTask(ctx, callCtx, inst, request)
 		if err != nil {
 			// Classified before it is scrubbed — see [taskError] for why the
 			// order is load-bearing — and scrubbed before it is wrapped, so
@@ -160,13 +167,154 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest) flowstatev1.TaskFunc 
 			return nil, scrubbed
 		}
 
-		outputs := resp.Msg.GetOutputs()
+		outputs := resp.GetOutputs()
 		if err := scrubPluginOutputs(scrubber, outputs); err != nil {
 			callErr = err
 			return nil, flowstatev1.NewTaskError(qualified, flowstatev1.ErrorKindInvalidInput, err)
 		}
 
 		return outputs, nil
+	}
+}
+
+// executeTask asks the plugin to run one task, relaying any progress it
+// reports along the way to ctx's own reporter (see [flowstatev1.ReportProgress]),
+// and returns the terminal ExecuteResponse.
+//
+// Whether to attempt ExecuteStream at all is decided once, from the manifest
+// this plugin already described itself with — CAPABILITY_TASK_PROGRESS — never
+// by dialing the RPC and reading whatever error comes back.
+//
+// That is deliberate rather than an optimization avoiding a wasted round
+// trip. An unregistered route and a task's own application-level failure
+// that happens to classify as CodeUnimplemented are indistinguishable on the
+// wire: [sdk.asConnectError] passes an author's own *connect.Error straight
+// through, so a task can legitimately fail with that exact code after doing
+// real work — the same way [sdk.NotFound] fails with CodeNotFound. A host
+// that treated any CodeUnimplemented from ExecuteStream as "this plugin
+// predates the method" and retried on Execute, unary, would rerun such a
+// task's Fn a second time on the strength of an error the task deliberately
+// chose to return — corruption for a plugin whose task has side effects, and
+// exactly the shape of bug CLAUDE.md's rewriter section warns rewriting the
+// wrong scope always turns into. Reading the manifest is unambiguous: it is
+// what the plugin said before this or any other call happened, not something
+// inferred from how one call's failure happens to be coded.
+func (p *Plugin) executeTask(
+	ctx, callCtx context.Context,
+	inst *instance,
+	request *pluginv1.ExecuteRequest,
+) (*pluginv1.ExecuteResponse, error) {
+	if !p.HasCapability(pluginv1.Capability_CAPABILITY_TASK_PROGRESS) {
+		resp, err := inst.clients.task.Execute(callCtx, connect.NewRequest(request))
+		if err != nil {
+			return nil, err
+		}
+		return resp.Msg, nil
+	}
+
+	streamReq := &pluginv1.ExecuteStreamRequest{
+		Task:      request.GetTask(),
+		Scope:     request.GetScope(),
+		Identity:  request.GetIdentity(),
+		Namespace: request.GetNamespace(),
+	}
+
+	stream, err := inst.clients.taskStream.ExecuteStream(callCtx, connect.NewRequest(streamReq))
+	if err != nil {
+		return nil, err
+	}
+
+	// progressFrames counts every progress message this call has received,
+	// relayed or not. Once it passes p.cfg.MaxProgressFrames, further
+	// progress frames in this same call are received (so the stream keeps
+	// moving toward its terminal response) but not forwarded — see
+	// DefaultMaxProgressFrames for why dropping, not failing the call, is the
+	// answer to a task that is behaving exactly as documented, and
+	// [newClients]'s streaming transport for the separate byte headroom that
+	// makes this bound something other than cosmetic: without it, a task
+	// under the cap could still exhaust the shared response budget one
+	// legitimate tiny frame at a time before its own terminal response
+	// arrived (#804).
+	maxProgressFrames := p.cfg.MaxProgressFrames
+	var progressFrames int
+
+	for stream.Receive() {
+		msg := stream.Msg()
+
+		if progress := msg.GetProgress(); progress != nil {
+			// The reserve's arithmetic (progressReserve, transport.go) is
+			// per-frame: it holds only while no single frame exceeds
+			// maxProgressFrameWireBytes. That has to be enforced here, not
+			// assumed — a frame carrying protobuf unknown fields (a schema
+			// this build has never seen, or a hostile peer padding one) can
+			// be arbitrarily large up to the transport ceiling, and enough of
+			// them would spend the terminal response's own share, recreating
+			// the starvation the reserve exists to prevent. An oversized
+			// frame is a protocol violation, refused rather than dropped:
+			// dropping would leave its bytes already spent against the
+			// ceiling while this loop reported nothing wrong.
+			if err := checkProgressFrameSize(msg); err != nil {
+				return nil, fmt.Errorf("plugin %q: task %q: %w",
+					p.name, request.GetTask().GetName(), err)
+			}
+			progressFrames++
+			if progressFrames > maxProgressFrames {
+				continue
+			}
+			reportWirePhase(ctx, progress.GetPhase())
+			continue
+		}
+
+		if resp := msg.GetResponse(); resp != nil {
+			// The terminal message has arrived; nothing about the call's
+			// outcome depends on how the stream itself ends from here, so a
+			// close error is a diagnostic and never this call's error.
+			if closeErr := stream.Close(); closeErr != nil {
+				p.log.Debug("closing plugin progress stream after its terminal response",
+					"task", request.GetTask().GetName(), "error", closeErr)
+			}
+			return resp, nil
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+
+	// The stream ended without a terminal response and without an error,
+	// which ExecuteStream's contract does not allow a well-behaved plugin to
+	// produce — see the message's own doc comment in plugin.proto.
+	return nil, fmt.Errorf("plugin %q: task %q: ExecuteStream ended without a response",
+		p.name, request.GetTask().GetName())
+}
+
+// reportWirePhase forwards a plugin's TaskPhase to ctx's own reporter, if it
+// names one of the closed vocabulary [flowstatev1.ReportProgress] accepts.
+// TASK_PHASE_UNSPECIFIED and any value newer than this build knows about are
+// dropped rather than forwarded — the fail-closed direction for a value on
+// its way into an activity heartbeat and, from there, workflow history. See
+// progress.go's own doc comment for why that vocabulary is closed, and
+// plugin.proto's TaskPhase for why the two must keep naming the same set.
+//
+// Each branch below calls ReportProgress with a declared phase named
+// directly, rather than through a variable computed from the switch: that is
+// not a style choice, it is what
+// [flowstatev1.TestEveryPhaseReportedIsOneOfTheDeclaredOnes] in progress_test.go
+// requires of every call site in the tree, on purpose — a variable holding a
+// phase reads identically at that AST walk whether it can only ever hold one
+// of the three constants below, as this one can, or whether it holds
+// something built from a task's own inputs, which is exactly the mistake the
+// walk exists to catch. Spelling each branch as a literal call is what keeps
+// this call site indistinguishable, to that check, from every other one that
+// was always written by hand.
+func reportWirePhase(ctx context.Context, phase pluginv1.TaskPhase) {
+	switch phase {
+	case pluginv1.TaskPhase_TASK_PHASE_REQUESTING:
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseRequesting)
+	case pluginv1.TaskPhase_TASK_PHASE_READING_RESPONSE:
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseReadingResponse)
+	case pluginv1.TaskPhase_TASK_PHASE_CALLING_PLUGIN:
+		flowstatev1.ReportProgress(ctx, flowstatev1.PhaseCallingPlugin)
 	}
 }
 

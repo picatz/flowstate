@@ -11,6 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/metricschema"
+
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -969,15 +973,34 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
 	}
 
-	bound, err := BindRunInputs(w, inputs)
-	if err != nil {
-		return nil, err
-	}
-	if err := CheckSubmissionSize(w, bound); err != nil {
-		return nil, err
-	}
+	// The run-level span, opened at the submit boundary rather than around
+	// [eval], so that a submission this driver *refuses* — an undeclared input, a
+	// pair past its size — leaves a trace saying so. A refusal that produced no
+	// span would be the outcome an operator most wants to see and the only one
+	// invisible, which is the argument `netpolicy`'s round tripper already makes
+	// about a denied request.
+	//
+	// Through [observeRun] rather than a `defer span.End()` here, because a task
+	// that panics never returns through the assignment that would record the
+	// outcome: the span would end UNSET, and a crashed run would be
+	// indistinguishable from a successful one at the run level. [observeRun]
+	// handles that path the way [ObserveTask] handles it one level down, without
+	// recovering the panic.
+	//
+	// This is the local driver's alone. See [StartRunSpan] for why the durable
+	// driver opens no counterpart and why that is agreement rather than
+	// divergence.
+	return observeRun(ctx, w, func(ctx context.Context) (*Workflow_StepOutputs, error) {
+		bound, err := BindRunInputs(w, inputs)
+		if err != nil {
+			return nil, err
+		}
+		if err := CheckSubmissionSize(w, bound); err != nil {
+			return nil, err
+		}
 
-	return eval(ctx, w, bound)
+		return eval(ctx, w, bound)
+	})
 }
 
 func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
@@ -1072,21 +1095,24 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 	// then nothing below this line does anything.
 	undo := NewUndoLog(nil)
 
-	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
-		// The run cannot continue, so whatever already happened is taken back —
-		// reverse order, every entry attempted, one summary appended to the failure.
-		// [RunUndoLog] owns all three of those rules and the durable driver reaches
-		// them through the same call.
-		//
-		// A cancellation compensates too, and it is the one case that cannot use the
-		// context it arrived on. Every call made with a cancelled context fails
-		// immediately, so compensating on `ctx` would attempt each entry, have each
-		// refused by its own transport before it left the process, and report a run
-		// that "could not undo" everything it had in fact never tried to. The scope
-		// therefore has to survive the cancellation — [context.WithoutCancel] here,
-		// `workflow.NewDisconnectedContext` in the durable driver — and be given a
-		// deadline of its own, because an operator who asked a run to stop is
-		// waiting for it. That deadline is [UndoBudget], read by both drivers.
+	// How this run fails, wherever it fails: the compensations run, their
+	// summary is appended, and a cancellation takes the one path that can still
+	// perform them. One function because a run has two places it can fail —
+	// during a step, and after the last one while computing its declared
+	// outputs — and the difference between those is *when*, which is not
+	// something the saga contract turns on. Written twice, the second copy is
+	// where the cancellation arm goes missing.
+	failRun := func(err error) (*Workflow_StepOutputs, error) {
+		// A cancellation compensates too, and it is the one case that cannot use
+		// the context it arrived on. Every call made with a cancelled context
+		// fails immediately, so compensating on `ctx` would attempt each entry,
+		// have each refused by its own transport before it left the process, and
+		// report a run that "could not undo" everything it had in fact never
+		// tried to. The scope therefore has to survive the cancellation —
+		// [context.WithoutCancel] here, `workflow.NewDisconnectedContext` in the
+		// durable driver — and be given a deadline of its own, because an
+		// operator who asked a run to stop is waiting for it. That deadline is
+		// [UndoBudget], read by both drivers.
 		//
 		// The cancellation itself is returned, wrapped: `errors.Is(err,
 		// context.Canceled)` still answers yes, so a caller that distinguishes a
@@ -1096,15 +1122,35 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		// [RunWithInputs] for what a caller may read from it. Built from the same
 		// `scope.Outputs` the successful path returns, so there is one accumulated
 		// record per run rather than a second one assembled for failures.
-		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			// withCancellationCause reads context.Cause(ctx) here, at the run's own
-			// context — the one a caller like `flow run local` attaches a signal's
-			// or a `flow cancel`'s reason to (see cmd/flow/main.go). Whatever ran
-			// underneath already had its own chance to name a narrower cause (a
-			// step's schedule-to-close budget, the compensation budget below); this
-			// is the fallback for the cases nothing more specific was running, most
-			// visibly a run parked at a `wait:` when the stop arrives.
-			return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), runUndoOnCancel(ctx, w, undo))
+		// Two decisions, and they are not the same question, which is the trap
+		// in writing this as one condition. *Which context compensates* turns
+		// only on whether this one is already cancelled — a dead context
+		// refuses every entry whatever the run failed of. *What the run
+		// reports* turns on whether the cancellation is the failure. Conflating
+		// them compensates on the dead context whenever the failure is anything
+		// but the cancellation itself: a run whose last step raced a `flow
+		// cancel` and then produced an oversized transcript fails with a size
+		// error that cannot wrap ctx.Err(), and every undo is refused by its
+		// transport before it is attempted.
+		if ctx.Err() != nil {
+			results := runUndoOnCancel(ctx, w, undo)
+			if errors.Is(err, ctx.Err()) {
+				// withCancellationCause reads context.Cause(ctx) here, at the run's
+				// own context — the one a caller like `flow run local` attaches a
+				// signal's or a `flow cancel`'s reason to (see cmd/flow/main.go).
+				// Whatever ran underneath already had its own chance to name a
+				// narrower cause (a step's schedule-to-close budget, the
+				// compensation budget); this is the fallback for the cases nothing
+				// more specific was running, most visibly a run parked at a `wait:`
+				// when the stop arrives.
+				return PartialTranscript(stepOutputs), UndoRunError(withCancellationCause(ctx, err), results)
+			}
+
+			// Compensated on the surviving scope, but reported as what actually
+			// went wrong: a run that failed on its own terms while a stop was
+			// arriving did not fail *because* of the stop, and saying so would
+			// lose the only account of why.
+			return PartialTranscript(stepOutputs), UndoRunError(err, results)
 		}
 
 		return PartialTranscript(stepOutputs), UndoRunError(err, RunUndoLog(undo, func(entry *PendingUndo) error {
@@ -1112,18 +1158,48 @@ func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow
 		}))
 	}
 
+	if err := runNodes(ctx, w.Steps, scope, undo, UndoScopeTopLevel, 0, nil); err != nil {
+		// The run cannot continue, so whatever already happened is taken back —
+		// reverse order, every entry attempted, one summary appended to the
+		// failure, and a cancellation compensated on a context that survives it.
+		// All four belong to [failRun] above, which the completion path below
+		// reaches for the same reasons.
+		return failRun(err)
+	}
+
 	// Evaluated once, after the last step, against the scope the run finished in —
 	// the same moment and the same scope the durable driver uses. See
 	// [EvalRunOutputs] and engine.Run, where the reason that moment is safe in
 	// workflow code is written down.
 	outputs, err := EvalRunOutputs(ctx, w, scope)
-	if err != nil {
-		// A run that cannot produce its declared outputs has not succeeded, and it
-		// gets the same accompanying transcript every other failure gets: every step
-		// did run, which is precisely why the outputs were reachable to evaluate.
-		return PartialTranscript(stepOutputs), err
+	if err == nil {
+		stepOutputs.RunOutputs = outputs
+		err = CheckRunResultSize(stepOutputs)
 	}
-	stepOutputs.RunOutputs = outputs
+	if err != nil {
+		// A run that cannot produce its declared outputs — because an expression
+		// failed, or because the transcript it computed is too large to record —
+		// has not succeeded, and it gets the same accompanying transcript every
+		// other failure gets: every step did run, which is precisely why the
+		// outputs were reachable to evaluate.
+		//
+		// And it takes back what it did, through the very same call the step
+		// failure above makes. A saga that reports FAILED with entries still
+		// pending has left the world holding resources nobody will come back
+		// for; that the failure arrived after the last step rather than during
+		// one changes nothing about it. The durable driver reaches its own
+		// [compensate] on this path for the same reason, which is what keeps
+		// the two answering alike (invariant 3).
+		//
+		// Through the shared function rather than by spelling the undo call out
+		// again, because the cancellation arm is precisely the half a second
+		// spelling drops: evaluating the declared outputs takes `ctx`, so a run
+		// cancelled while computing them arrives here with a cancelled context,
+		// and compensating on that context would have every entry refused by its
+		// own transport before it was ever attempted — a run reporting it could
+		// not undo work it never tried to undo.
+		return failRun(err)
+	}
 
 	return stepOutputs, nil
 }
@@ -1404,23 +1480,24 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 
 // failureRecord shapes a step failure into the outputs recorded under that
 // step's id: [FailedStepOutputs] for an ordinary failure, and the richer
-// [LoopExhaustedError.Record] — `error` plus the `results` that ran — when the
-// step is a loop that spent its whole budget.
+// [StepFailureRecord.Record] when the failing step owns an account of its own —
+// an exhausted loop's `results` ([LoopExhaustedError]), a failed switch's
+// selection ([SwitchBodyError]).
 //
-// The exhaustion is recognised by direct type assertion, never through an
-// unwrap chain, and that is the point rather than a shortcut: only the loop's
-// own step raises the error bare, so only the loop's own entry carries the
-// account. The same exhaustion propagating out of a call or an enclosing
-// for_each arrives here wrapped in a position (`workflow %q: …`,
-// `iteration %d: …`) and records as the plain failure it is at that level —
-// which is also exactly what the durable driver's failedAt does, reading the
-// raw error at the one site it is raised and never copying the record into the
-// wrappers it builds above it.
+// The account is recognised by direct type assertion, never through an unwrap
+// chain, and that is the point rather than a shortcut: only the step that owns
+// it raises the error bare, so only that step's own entry carries it. The same
+// failure propagating out of a call or an enclosing for_each arrives here
+// wrapped in a position (`workflow %q: …`, `iteration %d: …`) and records as the
+// plain failure it is at that level — which is also exactly what the durable
+// driver's failedAt does, reading the raw error at the one site it is raised and
+// never copying the record into the wrappers it builds above it.
 func failureRecord(err error) *Node_Outputs {
-	if exhausted, ok := err.(*LoopExhaustedError); ok {
-		return exhausted.Record()
+	text := StepErrorText(err)
+	if account, ok := err.(StepFailureRecord); ok {
+		return account.Record(text)
 	}
-	return FailedStepOutputs(StepErrorText(err))
+	return FailedStepOutputs(text)
 }
 
 // runNodeWithVars executes a node with its own `vars:` block bound.
@@ -1503,7 +1580,11 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Identity = RehearsalIdentityFromContext(ctx)
-	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope)
+	// The step the compensation undoes, which is the id the durable
+	// driver dispatches a compensation with (`executor.runUndoTask` passes
+	// `entry.GetStepId()`) — so the span naming it says the same thing on
+	// both drivers.
+	_, err := runStepWithPolicy(ctx, entry.GetTask(), nil, scope, entry.GetStepId())
 
 	return err
 }
@@ -1543,7 +1624,7 @@ func runUndoOnCancel(ctx context.Context, w *Workflow, undo *UndoLog) []UndoResu
 func runNode(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, tolerated map[string]struct{}) (*Node_Outputs, error) {
 	switch n := node.Kind.(type) {
 	case *Node_Task:
-		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope)
+		return runStepWithPolicy(ctx, n.Task, node.GetPolicy(), scope, node.GetId())
 
 	case *Node_ForEach:
 		// A wait inside the body reports this step as its nearest enclosing one,
@@ -1710,11 +1791,45 @@ func runSwitch(ctx context.Context, sw *Switch, scope *Scope, undo *UndoLog, pla
 		return nil, err
 	}
 
-	if err := runNodes(ctx, body, scope, undo, placement, depth, tolerated); err != nil {
-		return nil, err
+	// enterAtomicBlock because the durable driver runs the taken body at
+	// `susp + 1` — a switch is never a suspension position — so a for_each
+	// written in a switch arm runs atomically there and is weighed here too
+	// ([CheckAtomicBlockActivities]).
+	if err := runNodes(enterAtomicBlock(ctx), body, scope, undo, placement, depth, tolerated); err != nil {
+		// Wrapped so the selection survives the failure: recordStepOutcome
+		// records this step through failureRecord, which reads the account off
+		// [SwitchBodyError] the same way it reads an exhausted loop's. Without
+		// it the switch's own entry holds the failure text alone, and the arm
+		// that ran is absent from the record every reader of it consults. The
+		// durable driver's runSwitch wraps at the identical point.
+		return nil, &SwitchBodyError{Err: err, Selection: outputs}
 	}
 
 	return outputs, nil
+}
+
+// atomicBlockKey marks a context as being inside work the durable driver runs
+// with no Continue-As-New seam: a `parallel:` branch, a loop body, or a
+// `switch:` arm. It is this driver's mirror of the engine's suspend depth
+// (`susp` in engine/execute.go): the engine increments that counter at exactly
+// the descents that mark this context, so "is this for_each atomic in
+// production" gets the same answer from both drivers. A context value rather
+// than a parameter for the reason the wait-reporting markers are
+// ([enterConcurrentWait]): the fact is monotone — nothing inside an atomic
+// stretch un-enters it, calls included — and every descent already threads a
+// context.
+type atomicBlockKey struct{}
+
+// enterAtomicBlock marks the context as suspension-opaque; see [atomicBlockKey].
+func enterAtomicBlock(ctx context.Context) context.Context {
+	return context.WithValue(ctx, atomicBlockKey{}, true)
+}
+
+// inAtomicBlock reports whether the durable driver would be unable to suspend
+// at this position — the local half of the engine's `susp > 0`.
+func inAtomicBlock(ctx context.Context) bool {
+	v, _ := ctx.Value(atomicBlockKey{}).(bool)
+	return v
 }
 
 // runForEach runs a loop body once per item.
@@ -1739,6 +1854,20 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		return nil, err
 	}
 
+	// A loop the durable driver would run as one atomic stretch of history —
+	// one declaring concurrency, or one reached where suspension is already
+	// illegal ([inAtomicBlock], the engine's `susp > 0`) — is weighed before
+	// anything runs, through the same [CheckAtomicBlockActivities] at the same
+	// point. This driver runs iterations sequentially and has no history to
+	// protect; it refuses anyway, because a fan-out the rehearsal admits and
+	// production refuses is the drivers disagreeing about what the file means,
+	// [CheckForEachItems]'s exact reasoning one bound over.
+	if loop.GetMaxParallel() > 1 || inAtomicBlock(ctx) {
+		if err := CheckAtomicBlockActivities(len(items), loop.GetBody()); err != nil {
+			return nil, err
+		}
+	}
+
 	name := IteratorName(loop)
 	iterations := make([]*Workflow_StepOutputs, 0, len(items))
 	resultsBytes := 0
@@ -1748,6 +1877,11 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 	// MaxParallel of one means later iterations were genuinely never started,
 	// on either driver, so stopping at the failure is the honest account.
 	var firstErr error
+
+	// The body runs where the durable driver cannot suspend — its runForEach
+	// passes `susp + 1` into every iteration — so a for_each nested in this
+	// body is atomic there and must be weighed here too.
+	bodyCtx := enterAtomicBlock(ctx)
 
 	for i, item := range items {
 		// Each iteration gets its own output scope, seeded with what was visible
@@ -1773,7 +1907,7 @@ func runForEach(ctx context.Context, loop *ForEach, scope *Scope, undo *UndoLog,
 		// named `error` is never mistaken for a failure.
 		iterationUndo := NewUndoLog(nil)
 		toleratedSteps := map[string]struct{}{}
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
+		if err := runNodes(bodyCtx, loop.GetBody(), iterationScope, iterationUndo, UndoScopeConcurrent, depth, toleratedSteps); err != nil {
 			undo.Append(iterationUndo)
 			if loop.GetMaxParallel() > 1 {
 				// A concurrent fan-out launches every iteration before it can
@@ -1905,7 +2039,11 @@ func runLoop(ctx context.Context, loop *Loop, scope *Scope, undo *UndoLog, place
 		// step that merely declares an output named `error` is never mistaken
 		// for a failure.
 		toleratedSteps := map[string]struct{}{}
-		if err := runNodes(ctx, loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
+		// enterAtomicBlock because the durable driver's runLoop passes
+		// `susp + 1` into every iteration: a for_each written in a loop body
+		// runs atomically inside that iteration there, so it is weighed here
+		// too ([CheckAtomicBlockActivities]).
+		if err := runNodes(enterAtomicBlock(ctx), loop.GetBody(), iterationScope, undo, placement, depth, toleratedSteps); err != nil {
 			return nil, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
@@ -1996,7 +2134,11 @@ func runParallel(ctx context.Context, parallel *Parallel, scope *Scope, undo *Un
 		branchScope := scope.WithOutputs(branchOutputs)
 		branchUndo := NewUndoLog(nil)
 		branchUndos[i] = branchUndo
-		if err := runNodes(ctx, branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
+		// enterAtomicBlock because the durable driver runs a branch at
+		// `susp + 1`: a for_each written inside a `parallel:` branch runs
+		// atomically there whatever its `max_parallel:` says, so it is
+		// weighed here too ([CheckAtomicBlockActivities]).
+		if err := runNodes(enterAtomicBlock(ctx), branch.GetSteps(), branchScope, branchUndo, UndoScopeConcurrent, depth, nil); err != nil {
 			// Branches are concurrent by declaration: the durable driver has
 			// launched every one of them before it can learn that any failed,
 			// then joins, merges every private log, and reports the first
@@ -2090,7 +2232,13 @@ func EvalConditionInScope(ctx context.Context, condition *Value, scope *Scope) (
 // local run reproduces the same observable outcome — a flaky dependency that
 // succeeds on the second attempt succeeds in both places — rather than to make
 // local execution reliable.
-func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope) (*Node_Outputs, error) {
+//
+// stepID is the id of the step being run, carried for the span alone and empty
+// only where the caller genuinely has none. It is what turns "some task failed"
+// into "this step failed" in a local run's trace — the same attribute the
+// durable driver's two authority-carrying activity entry points write, from the
+// same constant. See [StartTaskSpan].
+func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scope *Scope, stepID string) (*Node_Outputs, error) {
 	// Resolved here, above the loop, because this is the position the durable
 	// driver resolves at: in workflow code, before an activity is scheduled
 	// (`engine/execute.go`'s runTask). Inputs are part of the *specification*, so
@@ -2129,7 +2277,29 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 	// checks at the identical position, once per activity entry
 	// (`engine/activities.go`), which is what keeps the two drivers agreeing
 	// about which dispatches are denied.
-	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity()); err != nil {
+	// scope.GetLocal() is true for a rehearsal run through any local-driver
+	// entry point; it changes nothing about the decision above, only
+	// whether a resulting denial's message says so — see [CheckTaskPolicy]'s
+	// own doc.
+	if err := CheckTaskPolicy(ctx, resolved.GetName(), scope.GetIdentity(), scope.GetLocal()); err != nil {
+		// A denied dispatch still gets its span, because durably it has one: the
+		// check runs *inside* the activity there (`engine.checkTaskDispatchPolicy`
+		// takes the span it writes the failure onto), so a policy that refuses a
+		// task produces one `flowstate.task/<name>` span with an error status
+		// under the durable driver. A local run that recorded nothing here would
+		// disagree about the trace precisely where an operator most wants to look
+		// — the netpolicy round tripper makes the same argument one package over
+		// for a refused request. The span covers no work, and there is none: the
+		// dispatch was refused before an attempt ran.
+		// Observed rather than merely spanned, for the same reason: durably
+		// this dispatch produces a task span *and* — since the denial is
+		// counted by the shared [CheckTaskPolicy] above — a denial. The
+		// execution instruments have to see the refused dispatch on both
+		// drivers too, or a local run's error rate would omit exactly the
+		// failures an operator most wants counted.
+		_, _ = ObserveTask(ctx, resolved, stepID, metricschema.DriverLocal,
+			func(context.Context, trace.Span) (*Node_Outputs, error) { return nil, err })
+
 		return nil, err
 	}
 
@@ -2163,7 +2333,7 @@ func runStepWithPolicy(ctx context.Context, task *Task, policy *StepPolicy, scop
 
 	for attempt := 1; ; attempt++ {
 		var out *Node_Outputs
-		out, err = runStepAttempt(ctx, resolved, timeouts.StartToClose, scope)
+		out, err = runStepAttemptSpanned(ctx, resolved, timeouts.StartToClose, scope, stepID)
 		if err == nil {
 			return out, nil
 		}
@@ -2304,6 +2474,30 @@ func (e *causeEnrichedError) Unwrap() error {
 	return e.err
 }
 
+// runStepAttemptSpanned performs one attempt inside the span covering it.
+//
+// Per attempt, not per step, because that is what the durable driver does and
+// the difference is observable: an activity is scheduled again for each retry,
+// so each attempt is its own span there. A local run that reported one span for
+// a step that took three tries would tell an author a different story about the
+// same workflow, which is the whole failure invariant 5 exists to prevent.
+//
+// The span's context is what the attempt runs on, so everything the task reaches
+// nests under it — most visibly the CLIENT span the http task's request opens
+// through a [netpolicy.Policy]'s round tripper (#848), which under the durable
+// driver already hangs off the activity's task span and now hangs off this one.
+//
+// The outcome is recorded from the raw error rather than the one
+// [withCancellationCause] enriches, because the enrichment adds *text* and the
+// span records only a classification — and the classification of the enriched
+// error is the same one, since it wraps rather than replaces.
+func runStepAttemptSpanned(ctx context.Context, task *Task, timeout time.Duration, scope *Scope, stepID string) (*Node_Outputs, error) {
+	return ObserveTask(ctx, task, stepID, metricschema.DriverLocal,
+		func(ctx context.Context, _ trace.Span) (*Node_Outputs, error) {
+			return runStepAttempt(ctx, task, timeout, scope)
+		})
+}
+
 // runStepAttempt performs one attempt, bounded by the per-attempt timeout.
 //
 // The bound is passed in rather than read from the step's policy, because a step
@@ -2423,6 +2617,19 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	// task's result does not change between attempts, so retrying spends a
 	// worker's time to learn the same thing twice.
 	if err := checkTaskOutputElementBound(t.Name, out); err != nil {
+		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
+	}
+
+	// And what it weighs (#787). The element bound above caps what a later
+	// expression pays to walk the result; this caps what the substrate is
+	// asked to store it as — on the durable driver the outputs returned here
+	// are an activity's result, refused past Temporal's blob limit, and a
+	// refusal at completion retries into a misdiagnosed ScheduleToClose
+	// timeout. The admission bounds upstream both admit more than that limit:
+	// a plugin response cap of 4 MiB, and the http task's default outputs
+	// carrying a parsed body twice. Same classification, same non-retryability
+	// reasoning: the size of a result does not change between attempts.
+	if err := CheckTaskOutputSize(out); err != nil {
 		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
 	}
 

@@ -57,7 +57,7 @@ GitHub's semantics for a conditional required check fail in *both* directions,
 and the more dangerous one is the default:
 
 - A required job skipped by an `if:` reports the conclusion `skipped`, and a
-  required status check counts `skipped` as satisfied. Make the seven
+  required status check counts `skipped` as satisfied. Make the six
   conditional jobs required, and a plan that wrongly skips `test` produces a
   green tick on a pull request nothing tested. **A gate that passed on
   something it never looked at.**
@@ -130,6 +130,23 @@ reported against the pull request that renamed a heading — which is the shape
 that made GO-2026-6061 look like an unrelated author's problem.
 
 Nothing caches the advisory database, and nothing should.
+
+### Federation lives outside the plan entirely
+
+The real-issuer OIDC check (`TestRealCIToken`, verified against
+`token.actions.githubusercontent.com`) used to be a `federation` job here,
+conditional on the auth package being affected like any other narrow job. It
+moved to `federation.yml`, triggered by `push: [main]` only, because the gate
+that mattered was never "does this diff touch auth" — it was "does this job's
+runner check out code nobody has reviewed yet while holding `id-token: write`."
+An `if:` cannot close that gap: the job still has to check out the pull
+request's head to *evaluate* the condition, so the privileged permission and
+the untrusted checkout were in the same job regardless of which files changed.
+Running the live check only after code has reached the protected branch removes
+the precondition instead of gating around it, and it is why `federation` is no
+longer one of the plan's outputs or one of `verdict`'s `needs:` — a workflow
+with no `pull_request` trigger never produces a check run for this repository's
+required-status-checks list to see, so it participates in neither.
 
 ### Caching
 
@@ -286,7 +303,7 @@ JSON
 Five parameters there are load-bearing and easy to get wrong:
 
 - **`required_status_checks` names `plan` and `verdict` and nothing else.**
-  Adding any of the seven conditional jobs reintroduces exactly the fail-open
+  Adding any of the six conditional jobs reintroduces exactly the fail-open
   case the design removes, because a skipped required check counts as
   satisfied. If you want more assurance, add it to `verdict`, not to this list.
 - **Do not add the `Editors` workflow's jobs** (`neovim`, `vscode`). That
@@ -326,7 +343,7 @@ Open one throwaway pull request touching only a markdown file and check three
 things: `plan` reports and its summary table says every job is skipped;
 `verdict` reports green; and the pull request is mergeable via **Merge when
 ready** rather than a direct merge. Then open one touching a `.go` file and
-check that the same two checks are the only required ones while five to seven
+check that the same two checks are the only required ones while five to six
 jobs run beneath them.
 
 ## What could not be verified locally
@@ -387,7 +404,7 @@ the same category of mistake as a gate that passes without looking.
   per commit. Codex is not configured through a repository ruleset and is not
   reachable from this repository's files.
 - **`appearance` running only when printed output can change.** Adopted, not
-  excluded: it is one of the seven conditional jobs, and its trigger is the
+  excluded: it is one of the six conditional jobs, and its trigger is the
   package question rather than the path one, for the reason `needsDocs` gives —
   the goldens record what the `cmd/flow` *binary* prints, so its dependency
   closure is the real source set.
