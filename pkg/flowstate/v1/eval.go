@@ -1334,6 +1334,11 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		if !run {
+			// The one fact the transcript cannot carry — a skipped step
+			// records nothing — reported here for whoever is listening
+			// ([RunObserver]).
+			observeStepSkipped(ctx, node.GetId())
+
 			continue
 		}
 
@@ -1475,7 +1480,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 			// no later step evaluates against this scope, and the successful path
 			// never reaches this line. The durable driver records at the identical
 			// point, for the identical reason.
-			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+			record := failureRecord(err)
+			scope.Outputs.StepValues[node.GetId()] = record
+			observeStepFinished(ctx, node.GetId(), record, err, false)
 
 			return fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
@@ -1486,7 +1493,9 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		if tolerated != nil {
 			tolerated[node.GetId()] = struct{}{}
 		}
-		scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
+		record := failureRecord(err)
+		scope.Outputs.StepValues[node.GetId()] = record
+		observeStepFinished(ctx, node.GetId(), record, err, true)
 
 		return nil
 	}
@@ -1494,6 +1503,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 	if outputs != nil {
 		scope.Outputs.StepValues[node.GetId()] = outputs
 	}
+	observeStepFinished(ctx, node.GetId(), outputs, nil, false)
 
 	return nil
 }

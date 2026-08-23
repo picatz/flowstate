@@ -526,6 +526,12 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 		if err != nil {
 			return nil, err
 		}
+		// Reported only when the wait will really park ([RunObserver]): a
+		// non-positive duration resolves without waiting, and an account of a
+		// wait that never happened would be a line about nothing.
+		if d > 0 {
+			observeWaitStarted(ctx, node.GetId(), "", d, true)
+		}
 		return waitLocally(ctx, clock, d)
 
 	case *Wait_Until:
@@ -533,6 +539,9 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 		deadline, err := EvalWaitDeadline(ctx, kind.Until, scope, now)
 		if err != nil {
 			return nil, err
+		}
+		if deadline.After(now) {
+			observeWaitStarted(ctx, node.GetId(), "", deadline.Sub(now), true)
 		}
 		return waitLocally(ctx, clock, deadline.Sub(now))
 
@@ -542,6 +551,7 @@ func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_O
 			return nil, err
 		}
 
+		observeWaitStarted(ctx, node.GetId(), kind.Signal.GetName(), timeout, bounded)
 		outputs, err := waitForSignalLocally(ctx, clock, node, kind.Signal, scope, timeout, bounded)
 		if err != nil {
 			return nil, err
