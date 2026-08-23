@@ -200,6 +200,13 @@ steps:
             # and it was left unchecked when retirement moved from the payload
             # to the world.
             #
+            # JSON has one number type, so a replica count arrives as a double
+            # even when it was written `2`; accepting either CEL numeric type is
+            # what makes this a shape check rather than an accident of the
+            # decoder. A stubbed run never evaluates `expect:` at all - a stub
+            # replaces the task - so the first thing to catch an int-only check
+            # here was the cross-driver harness running against the stand-in.
+            #
             # `expect:` rather than a defaulting expression in `outputs:`,
             # deliberately. A wrong-typed reading is not a missing one: coercing
             # it would invent a `replicas` this reconciler then converges
@@ -209,8 +216,9 @@ steps:
             # change the endpoint's mind - so this fails the step by name and
             # does not spend the retries above on it.
             expect: |-
-              ${response.status_code == 200 && has(response.json.replicas) && type(response.json.replicas) == type(0) &&
-              has(response.json.retired) && type(response.json.retired) == type(true)}
+              ${response.status_code == 200 && has(response.json.replicas) && (type(response.json.replicas) == type(0) ||
+              type(response.json.replicas) == type(0.0)) && has(response.json.retired) &&
+              type(response.json.retired) == type(true)}
             method: GET
             outputs:
               replicas: ${response.json.replicas}
