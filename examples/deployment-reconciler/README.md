@@ -104,7 +104,7 @@ real:
 
 ```console
 $ flow run examples/deployment-reconciler/workflow.yaml
-$ flow signal <run-id> spec-changed --payload '{"desired_replicas": 7}'
+$ flow signal <workflow-id> spec-changed --data '{"desired_replicas": 7}'
 ```
 
 Retirement is not a signal: this reconciler stops when the control plane reports

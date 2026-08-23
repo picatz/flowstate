@@ -74,7 +74,7 @@
 #
 # and durably, where the sleeping is real:
 #
-#   flow signal <run-id> spec-changed --payload '{"desired_replicas": 7}'
+#   flow signal <workflow-id> spec-changed --data '{"desired_replicas": 7}'
 #
 # (needs `flow server` and `flow worker`; see the main README's Quickstart)
 edition: v2026.3
@@ -257,7 +257,7 @@ steps:
         # stale desired count for one interval is not a wrong mutation, it is a
         # slower correct one.
         - id: next_desired
-          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas) &&\ntype(steps.pace.payload.desired_replicas) == type(0) && steps.pace.payload.desired_replicas > 0 &&\nsteps.pace.payload.desired_replicas <= 100) ? steps.pace.payload.desired_replicas : goal.desired}"
+          value: "${(steps.notified.value && !steps.retiring.value && has(steps.pace.payload.desired_replicas) &&\n(type(steps.pace.payload.desired_replicas) == type(0) || type(steps.pace.payload.desired_replicas) == type(0.0) &&\nsteps.pace.payload.desired_replicas == double(int(steps.pace.payload.desired_replicas))) &&\nsteps.pace.payload.desired_replicas > 0 && steps.pace.payload.desired_replicas <= 100) ? int(steps.pace.payload.desired_replicas) : goal.desired}"
 
         # The comparison, named once, read by the step that acts and by the
         # output that counts.

@@ -159,7 +159,7 @@ $ flow run examples/plugins/agentic-fix/workflow.yaml \
 and answering the gate, when it is reached, is:
 
 ```console
-$ flow signal <run-id> human-review --payload '{"taken_over": true}'
+$ flow signal <workflow-id> human-review --data '{"taken_over": true}'
 ```
 
 ## What is still missing

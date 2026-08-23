@@ -288,3 +288,82 @@ tests:
     expect:
       failed: true
       error_contains: "must satisfy"
+
+  - name: a spec change sent from the CLI arrives as a double and is still adopted
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # What the documented command line actually delivers: the CLI decodes the
+      # payload with encoding/json, so a JSON number becomes a float64 and
+      # reaches the workflow as a CEL double. An exact-int guard would silently
+      # ignore every ordinary spec change sent that way and leave the reconciler
+      # on its stale count.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 7.0
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: 5
+          retired: false
+      - step: observed
+        where: goal.passes == 1
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      outputs:
+        passes: 3
+        passes_that_acted: 1
+        # Adopted, and carried as an int rather than as 7.0.
+        final_desired_replicas: 7
+        final_observed_replicas: 7
+
+  - name: a fractional replica count carried by a signal is ignored
+    workflow: ./workflow.yaml
+    inputs:
+      target: checkout-api
+      desired_replicas: 5
+    signals:
+      # A count is a count: 7.5 is not a smaller number of replicas, it is a
+      # wrong answer, and adopting it would carry a fraction into the next scale
+      # request.
+      - name: spec-changed
+        at: 10s
+        payload:
+          desired_replicas: 7.5
+    stubs:
+      - step: observed
+        where: goal.passes == 0
+        returns:
+          replicas: ${goal.desired}
+          retired: false
+      - step: observed
+        returns:
+          replicas: ${goal.desired}
+          retired: true
+      - step: converge
+        returns:
+          accepted: true
+    expect:
+      ran: [opened, reconcile, observations, pass_count]
+      skipped: [converge]
+      outputs:
+        passes: 2
+        passes_that_acted: 0
+        # Unchanged: the fraction was refused, so the reconciler is still
+        # responsible for 5.
+        final_desired_replicas: 5
+        final_observed_replicas: 5
