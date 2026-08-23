@@ -48,13 +48,13 @@ steps:
       name: approve
       timeout: 3s
       outputs:
-        approved: ${payload.?approved.orValue(false)}
+        approved: ${(payload.?approved.orValue(false) && true)}
   - id: review
     wait_for_signal:
       name: review
       timeout: 3s
   - id: halt
-    if: ${!steps.review.payload.?ok.orValue(false)}
+    if: ${!(steps.review.payload.?ok.orValue(false) && true)}
     log:
       message: stop
 outputs:

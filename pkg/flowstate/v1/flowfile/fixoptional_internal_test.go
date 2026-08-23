@@ -22,17 +22,17 @@ func TestRewriteOptionalReads(t *testing.T) {
 		{
 			name: "guarded read",
 			in:   `has(a.b) && a.b`,
-			want: `a.?b.orValue(false)`,
+			want: `(a.?b.orValue(false) && true)`,
 		},
 		{
 			name: "guarded read at depth",
 			in:   `has(steps.approval.payload.approved) && steps.approval.payload.approved`,
-			want: `steps.approval.payload.?approved.orValue(false)`,
+			want: `(steps.approval.payload.?approved.orValue(false) && true)`,
 		},
 		{
 			name: "hand-negated twin keeps its negation",
 			in:   `!(has(a.b) && a.b)`,
-			want: `!a.?b.orValue(false)`,
+			want: `!(a.?b.orValue(false) && true)`,
 		},
 		{
 			name: "ternary default",
@@ -52,27 +52,27 @@ func TestRewriteOptionalReads(t *testing.T) {
 		{
 			name: "guarded read as a ternary condition",
 			in:   `has(payload.approved) && payload.approved ? "signed_off" : "unsigned"`,
-			want: `payload.?approved.orValue(false) ? "signed_off" : "unsigned"`,
+			want: `(payload.?approved.orValue(false) && true) ? "signed_off" : "unsigned"`,
 		},
 		{
 			name: "guarded read inside a disjunction",
 			in:   `x || has(a.b) && a.b`,
-			want: `x || a.?b.orValue(false)`,
+			want: `x || (a.?b.orValue(false) && true)`,
 		},
 		{
 			name: "guarded read inside a macro body",
 			in:   `xs.filter(r, has(r.probe.ok) && r.probe.ok)`,
-			want: `xs.filter(r, r.probe.?ok.orValue(false))`,
+			want: `xs.filter(r, (r.probe.?ok.orValue(false) && true))`,
 		},
 		{
 			name: "two sites in one expression",
 			in:   `has(a.b) && a.b && has(c.d) && c.d`,
-			want: `a.?b.orValue(false) && c.?d.orValue(false)`,
+			want: `(a.?b.orValue(false) && true) && (c.?d.orValue(false) && true)`,
 		},
 		{
 			name: "negated twin beside a plain site",
 			in:   `!(has(a.b) && a.b) || has(c.d) && c.d`,
-			want: `!a.?b.orValue(false) || c.?d.orValue(false)`,
+			want: `!(a.?b.orValue(false) && true) || (c.?d.orValue(false) && true)`,
 		},
 
 		// Operand-boundary positives: each match sits beside an operator, and
@@ -83,37 +83,37 @@ func TestRewriteOptionalReads(t *testing.T) {
 		{
 			name: "guarded read before a disjunction",
 			in:   `has(a.b) && a.b || z`,
-			want: `a.?b.orValue(false) || z`,
+			want: `(a.?b.orValue(false) && true) || z`,
 		},
 		{
 			name: "guarded read before a conjunction tail",
 			in:   `has(a.b) && a.b && z`,
-			want: `a.?b.orValue(false) && z`,
+			want: `(a.?b.orValue(false) && true) && z`,
 		},
 		{
 			name: "guarded read after a conjunction head",
 			in:   `z && has(a.b) && a.b`,
-			want: `z && a.?b.orValue(false)`,
+			want: `z && (a.?b.orValue(false) && true)`,
 		},
 		{
 			name: "parenthesised guarded read keeps its parentheses",
 			in:   `(has(a.b) && a.b) && z`,
-			want: `(a.?b.orValue(false)) && z`,
+			want: `((a.?b.orValue(false) && true)) && z`,
 		},
 		{
 			name: "negated twin before a disjunction",
 			in:   `!(has(a.b) && a.b) || z`,
-			want: `!a.?b.orValue(false) || z`,
+			want: `!(a.?b.orValue(false) && true) || z`,
 		},
 		{
 			name: "negated twin compared: the negation binds tighter than ==",
 			in:   `!(has(a.b) && a.b) == z`,
-			want: `!a.?b.orValue(false) == z`,
+			want: `!(a.?b.orValue(false) && true) == z`,
 		},
 		{
 			name: "twin reached through a select: the inner conjunction is whole",
 			in:   `!(has(a.b) && a.b).size()`,
-			want: `!(a.?b.orValue(false)).size()`,
+			want: `!((a.?b.orValue(false) && true)).size()`,
 		},
 	}
 	for _, tt := range tests {
@@ -194,7 +194,7 @@ func TestRewriteOptionalReadsLeavesNearMissesAlone(t *testing.T) {
 // TestRewriteOptionalReadsPreservesMeaning is the semantic half of the byte
 // comparisons above: whatever this rewriter does to an expression — rewrite it
 // or leave it — the result must evaluate to what the original evaluates to,
-// with the guarded field absent, present-and-true, and present-and-false.
+// with the guarded field absent, boolean, and present-but-non-boolean.
 //
 // It exists because of the operand-boundary reversal (PR #483's P1): the
 // corrupted rewrite of `has(a.b) && a.b == false` still parses, still
@@ -237,9 +237,10 @@ func TestRewriteOptionalReadsPreservesMeaning(t *testing.T) {
 	}
 
 	activations := map[string]map[string]any{
-		"absent":        {"a": map[string]any{}},
-		"present true":  {"a": map[string]any{"b": true}},
-		"present false": {"a": map[string]any{"b": false}},
+		"absent":         {"a": map[string]any{}},
+		"present true":   {"a": map[string]any{"b": true}},
+		"present false":  {"a": map[string]any{"b": false}},
+		"present string": {"a": map[string]any{"b": "attacker-controlled"}},
 	}
 	for _, activation := range activations {
 		activation["x"] = false

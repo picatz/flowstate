@@ -22,8 +22,8 @@ import (
 //
 // Three shapes, decided on the issue, and nothing else:
 //
-//	has(x.y) && x.y        →  x.?y.orValue(false)
-//	!(has(x.y) && x.y)     →  !x.?y.orValue(false)
+//	has(x.y) && x.y        →  (x.?y.orValue(false) && true)
+//	!(has(x.y) && x.y)     →  !(x.?y.orValue(false) && true)
 //	has(x.y) ? x.y : d     →  x.?y.orValue(d)      (whole expression only)
 //
 // # Exact match, or nothing
@@ -64,7 +64,11 @@ import (
 // no name. Whatever `x` resolves to — a step, a loop binding, the wait's
 // `payload`, the http task's response — `x.?y.orValue(false)` reads the same
 // binding `has(x.y) && x.y` read, so the scope question that makes rooting hard
-// does not arise. What it needs instead is *syntax* honesty: a match inside a
+// does not arise. The trailing `&& true` is intentional: it preserves the old
+// expression's runtime boolean check when a dynamically typed field is present,
+// rather than allowing a malformed string, list, or object to escape from a
+// value-context expression. What the rewrite needs in addition is *syntax*
+// honesty: a match inside a
 // string literal is prose, so literals are masked before matching; and the
 // rewritten expression must parse back to the tree described above, so a splice
 // this reasoning missed cannot leave a file that means something else.
@@ -191,7 +195,7 @@ func rewriteConjunctions(src, masked string) string {
 		if path != other || !cleanNeighbours(masked, m[0], m[1], false) {
 			continue
 		}
-		splices = append(splices, splice{m[0], m[1], "!" + optionalSpelling(path) + ".orValue(false)"})
+		splices = append(splices, splice{m[0], m[1], "!" + guardedOptionalSpelling(path)})
 		claim(m[0], m[1])
 	}
 	for _, m := range guardedRead.FindAllStringSubmatchIndex(masked, -1) {
@@ -199,7 +203,7 @@ func rewriteConjunctions(src, masked string) string {
 		if path != other || !free(m[0], m[1]) || !cleanNeighbours(masked, m[0], m[1], true) {
 			continue
 		}
-		splices = append(splices, splice{m[0], m[1], optionalSpelling(path) + ".orValue(false)"})
+		splices = append(splices, splice{m[0], m[1], guardedOptionalSpelling(path)})
 		claim(m[0], m[1])
 	}
 	if len(splices) == 0 {
@@ -257,6 +261,14 @@ func isIdentByte(b byte) bool {
 func optionalSpelling(path string) string {
 	i := strings.LastIndex(path, ".")
 	return path[:i] + ".?" + path[i+1:]
+}
+
+// guardedOptionalSpelling preserves both halves of the old guarded read: the
+// optional traversal supplies false for absence, while && still rejects a
+// present dynamically typed value that is not boolean. Parentheses keep this a
+// single operand wherever the original conjunction appeared.
+func guardedOptionalSpelling(path string) string {
+	return "(" + optionalSpelling(path) + ".orValue(false) && true)"
 }
 
 // profileEnv returns the profile's environment — the same environment the
@@ -440,7 +452,7 @@ func transformConjunctionChain(env *cel.Env, e *exprpb.Expr) (*exprpb.Expr, bool
 		if i+1 < len(ops) {
 			if guard, ok := testOnlySelectPath(ops[i]); ok {
 				if read, ok := plainSelectPath(ops[i+1]); ok && read == guard {
-					if repl, ok := parseInProfile(env, optionalSpelling(guard)+".orValue(false)"); ok {
+					if repl, ok := parseInProfile(env, guardedOptionalSpelling(guard)); ok {
 						out = append(out, repl)
 						changed = true
 						i++
