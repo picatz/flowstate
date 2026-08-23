@@ -214,6 +214,7 @@ func assertTaskSpanAttributes(tb testing.TB, recorder *tracetest.SpanRecorder) {
 		v1.SpanAttributeAttempt:        {},
 		v1.SpanAttributeSecretRefs:     {},
 		v1.SpanAttributeSecretRefCount: {},
+		v1.SpanAttributeOperation:      {},
 	}
 
 	for _, stub := range tracetest.SpanStubsFromReadOnlySpans(recorder.Ended()) {

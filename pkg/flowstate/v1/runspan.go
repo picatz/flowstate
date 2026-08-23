@@ -170,6 +170,7 @@ func StartRunSpan(ctx context.Context, w *Workflow) (context.Context, trace.Span
 	// other would move the unbounded value rather than remove it.
 	span.SetAttributes(attribute.String(SpanAttributeWorkflowName,
 		boundedSpanName(w.GetName(), MaxWorkflowNameLen)))
+	span.SetAttributes(attribute.String(SpanAttributeOperation, TraceOperationRun))
 
 	return ctx, span
 }

@@ -104,9 +104,15 @@ func TestLocalRunSpanRecordsNoValues(t *testing.T) {
 		found = true
 
 		for _, attr := range stub.Attributes {
-			if string(attr.Key) != v1.SpanAttributeWorkflowName {
+			if string(attr.Key) != v1.SpanAttributeWorkflowName && string(attr.Key) != v1.SpanAttributeOperation {
 				t.Fatalf("the run span carries %q, which is not in the vocabulary pkg/flowstate/v1/runspan.go names",
 					attr.Key)
+			}
+			if string(attr.Key) == v1.SpanAttributeOperation {
+				if got := attr.Value.AsString(); got != v1.TraceOperationRun {
+					t.Fatalf("the run span operation is %q, want %q", got, v1.TraceOperationRun)
+				}
+				continue
 			}
 			if got := attr.Value.AsString(); got != workflow.GetName() {
 				t.Fatalf("the run span names workflow %q, want %q", got, workflow.GetName())

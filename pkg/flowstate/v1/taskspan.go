@@ -200,6 +200,7 @@ func StartTaskSpan(ctx context.Context, task *Task, stepID string) (context.Cont
 	// than remove it.
 	attrs := []attribute.KeyValue{
 		attribute.String(SpanAttributeTaskName, boundedSpanName(task.GetName(), MaxTaskNameLen)),
+		attribute.String(SpanAttributeOperation, TraceOperationAttempt),
 	}
 
 	if stepID != "" {

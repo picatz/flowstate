@@ -510,6 +510,8 @@ func (s *LocalSignals) WaitForSignal(ctx context.Context, name string) (*Node_Ou
 // puts anything else there (a [VirtualClock]), which is what lets a `sleep:
 // 24h` step resolve without the test spending 24 hours finding that out.
 func runWait(ctx context.Context, node *Node, wait *Wait, scope *Scope) (*Node_Outputs, error) {
+	ctx, span := StartWaitSpan(ctx, node.GetId())
+	defer func() { span.End() }()
 	if err := ValidateWait(wait); err != nil {
 		return nil, err
 	}

@@ -364,6 +364,8 @@ func activityError(taskName string, err error, continueOnError bool) error {
 // bounded by a retry policy nobody promises to keep small, and a label whose
 // bound is somebody's configuration is the shape [metricschema] refuses.
 func observeTask(ctx context.Context, task *v1.Task, stepID string, run func(context.Context, trace.Span) (*v1.Node_Outputs, error)) (*v1.Node_Outputs, error) {
+	ctx, stepSpan := v1.StartStepSpan(ctx, stepID)
+	defer func() { stepSpan.End() }()
 	return v1.ObserveTask(ctx, task, stepID, metricschema.DriverDurable,
 		func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
 			if span.IsRecording() && activity.IsActivity(ctx) {

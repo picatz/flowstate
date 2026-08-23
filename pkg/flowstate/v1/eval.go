@@ -1542,6 +1542,8 @@ func failureRecord(err error) *Node_Outputs {
 // live; what the slot decides is only *where in the log* it lands, which is what
 // keeps the unwind in reverse written order when joins are out of order.
 func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLog, placement UndoScope, depth int, slot int, tolerated map[string]struct{}) (*Node_Outputs, error) {
+	ctx, stepSpan := StartStepSpan(ctx, node.GetId())
+	defer func() { stepSpan.End() }()
 	inner, err := EvalStepVars(ctx, node, scope)
 	if err != nil {
 		return nil, err
@@ -1610,6 +1612,8 @@ func runNodeWithVars(ctx context.Context, node *Node, scope *Scope, undo *UndoLo
 // make a local rehearsal permit what production denies, which is the divergence
 // local runs exist to prevent.
 func runUndoTask(ctx context.Context, profile string, entry *PendingUndo) error {
+	ctx, compensationSpan := StartCompensationSpan(ctx, entry.GetStepId())
+	defer func() { compensationSpan.End() }()
 	scope := NewScope(profile, &Workflow_StepOutputs{StepValues: map[string]*Node_Outputs{}})
 	scope.Identity = RehearsalIdentityFromContext(ctx)
 	// The step the compensation undoes, which is the id the durable

@@ -18,6 +18,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
+	flowtests "github.com/picatz/flowstate/pkg/flowstate/v1/tests"
 )
 
 // The two claims about the durable driver's trace that were argued from the
@@ -112,6 +113,7 @@ func TestTaskSpanParentsUnderTemporalActivitySpan(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 
 	stubs := tracetest.SpanStubsFromReadOnlySpans(recorder.Ended())
+	flowtests.AssertCanonicalTraceStructure(t, stubs, durableRunSpanName)
 	byID := make(map[trace.SpanID]tracetest.SpanStub, len(stubs))
 	for _, stub := range stubs {
 		byID[stub.SpanContext.SpanID()] = stub
@@ -151,14 +153,27 @@ func TestTaskSpanParentsUnderTemporalActivitySpan(t *testing.T) {
 		require.True(t, ok,
 			"the task span %s has no recorded parent, so it is a root span beside the run rather than inside it",
 			stub.SpanContext.SpanID())
-		require.Equal(t, "RunActivity:Task", parent.Name,
-			"the task span's parent is not the substrate's activity span")
+		require.Equal(t, v1.TraceOperationStep, spanOperation(parent),
+			"the attempt's parent is not its logical Flowstate step")
+		transport, ok := byID[parent.Parent.SpanID()]
+		require.True(t, ok, "the logical step has no recorded transport parent")
+		require.Equal(t, "RunActivity:Task", transport.Name,
+			"the logical step's parent is not the substrate's activity span")
 	}
 
 	// The bound reached, not merely not exceeded: a workflow whose tasks stopped
 	// running would satisfy every assertion above by vacuum.
 	require.Len(t, conformance.ExpectedTaskSpans(), taskSpans,
 		"the run did not open the task spans the shared expectation names")
+}
+
+func spanOperation(span tracetest.SpanStub) string {
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == v1.SpanAttributeOperation {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
 }
 
 // TestOneTraceSurvivesContinueAsNew is #523's gap 5.
