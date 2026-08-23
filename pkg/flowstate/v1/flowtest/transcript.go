@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -50,6 +52,15 @@ const (
 // run continues unrecorded and the rendering ends with a line saying exactly
 // that, so a truncated account never reads as a complete one.
 const maxTranscriptEvents = 10_000
+
+// maxTranscriptOutputBytes bounds the serialized step-output bytes one case's
+// account may retain, beside the event count — because bounding one resource
+// does not bound another the submitter controls the ratio to (CLAUDE.md): ten
+// thousand events each retaining a megabyte of cloned outputs is gigabytes
+// held by a count that reads as bounded. Sized far above any account a person
+// debugs by reading and far below what a hostile submission could hold; past
+// it the run continues unrecorded, exactly as past the event count.
+const maxTranscriptOutputBytes = 8 << 20
 
 // transcriptEvent is one recorded fact; kind decides which fields mean
 // anything.
@@ -109,9 +120,10 @@ func runRecorderFromContext(ctx context.Context) *runRecorder {
 type runRecorder struct {
 	clock *v1.VirtualClock
 
-	mu        sync.Mutex
-	events    []transcriptEvent
-	truncated bool
+	mu          sync.Mutex
+	events      []transcriptEvent
+	truncated   bool
+	outputBytes int
 
 	// sensitive is the redaction set every rendered value passes through —
 	// the same [sensitiveInputs] the unmatched-stub diagnostic uses, built
@@ -140,12 +152,34 @@ func newRunRecorder(clock *v1.VirtualClock) *runRecorder {
 	return &runRecorder{clock: clock, switches: map[string]switchFact{}}
 }
 
-// noteSwitches records every `switch:` step the compiled workflow declares,
-// at any depth this driver's transcript can name — parallel branches, switch
-// bodies, loop bodies — and never inside a `call:`, whose steps belong to the
-// callee's own file. Called once per case, with the same spec every other
-// account is measured against.
+// noteSwitches records every `switch:` step whose events this run's observer
+// can report — the compiled workflow's own tree at every depth, and the
+// callee a `call:` embeds, whose steps run through the same observer under
+// their own ids. An id also declared by any non-switch node in an isolated
+// sibling body is marked ambiguous, so the renderer falls back to plain
+// outputs rather than describing one declaration in the other's words.
+// Called once per case, with the same spec every other account is measured
+// against.
 func (r *runRecorder) noteSwitches(nodes []*v1.Node) {
+	nonSwitch := map[string]bool{}
+	r.noteSwitchNodes(nodes, nonSwitch, 0)
+	for id := range nonSwitch {
+		if fact, isSwitch := r.switches[id]; isSwitch {
+			fact.ambiguous = true
+			r.switches[id] = fact
+		}
+	}
+}
+
+// maxNoteSwitchesDepth mirrors the engine's own call-depth bound: the walk
+// descends embedded callees exactly as the run will, and a bound on one side
+// without the other would be a walk an adversarial spec can wedge.
+const maxNoteSwitchesDepth = 16
+
+func (r *runRecorder) noteSwitchNodes(nodes []*v1.Node, nonSwitch map[string]bool, depth int) {
+	if depth > maxNoteSwitchesDepth {
+		return
+	}
 	for _, node := range nodes {
 		switch kind := node.GetKind().(type) {
 		case *v1.Node_Switch:
@@ -155,16 +189,26 @@ func (r *runRecorder) noteSwitches(nodes []*v1.Node) {
 			}
 			r.switches[node.GetId()] = fact
 			for _, body := range v1.SwitchBodies(kind.Switch) {
-				r.noteSwitches(body)
+				r.noteSwitchNodes(body, nonSwitch, depth)
 			}
 		case *v1.Node_Parallel:
 			for _, branch := range kind.Parallel.GetBranches() {
-				r.noteSwitches(branch.GetSteps())
+				r.noteSwitchNodes(branch.GetSteps(), nonSwitch, depth)
 			}
 		case *v1.Node_ForEach:
-			r.noteSwitches(kind.ForEach.GetBody())
+			nonSwitch[node.GetId()] = true
+			r.noteSwitchNodes(kind.ForEach.GetBody(), nonSwitch, depth)
 		case *v1.Node_Loop:
-			r.noteSwitches(kind.Loop.GetBody())
+			nonSwitch[node.GetId()] = true
+			r.noteSwitchNodes(kind.Loop.GetBody(), nonSwitch, depth)
+		case *v1.Node_Call:
+			// The compiled call embeds its callee, and the callee's steps —
+			// its switches included — report through this same run's observer
+			// under their own ids (Codex, #1052).
+			nonSwitch[node.GetId()] = true
+			r.noteSwitchNodes(kind.Call.GetWorkflow().GetSteps(), nonSwitch, depth+1)
+		default:
+			nonSwitch[node.GetId()] = true
 		}
 	}
 }
@@ -181,6 +225,14 @@ func (r *runRecorder) recordLocked(event transcriptEvent) {
 	if len(r.events) >= maxTranscriptEvents {
 		r.truncated = true
 		return
+	}
+	if event.outputs != nil {
+		size := proto.Size(event.outputs)
+		if r.outputBytes+size > maxTranscriptOutputBytes {
+			r.truncated = true
+			return
+		}
+		r.outputBytes += size
 	}
 	event.at = r.clock.Now().Sub(epoch)
 	r.events = append(r.events, event)
@@ -534,7 +586,14 @@ func shortDuration(d time.Duration) string {
 	if d == 0 {
 		return "0s"
 	}
-	s := d.Truncate(time.Millisecond).String()
+	// Truncation is cosmetic and must stay that way: a positive duration
+	// below a millisecond — `sleep: 500us` is legal — renders exactly rather
+	// than collapsing to "0s", which would report that no virtual time passed
+	// in the one account whose job is the timing (Codex, #1052).
+	if d >= time.Millisecond {
+		d = d.Truncate(time.Millisecond)
+	}
+	s := d.String()
 	if strings.HasSuffix(s, "m0s") {
 		s = strings.TrimSuffix(s, "0s")
 	}

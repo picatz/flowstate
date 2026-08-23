@@ -48,6 +48,16 @@ type RunOptions struct {
 	// because a green over a subset must never read as the file's green
 	// (issue #929).
 	Select func(name string) bool
+
+	// skipTranscript disables the case account entirely. Set by
+	// [RunSourceContext] and nothing else: that door discards
+	// [RunResult.Transcripts], and its callers are whoever holds a token on
+	// a serving surface — so recording there would be memory an untrusted
+	// submission shapes, retained for an account nobody will ever read. The
+	// byte and event bounds still exist for the doors that do record; this
+	// removes the resource from the one door where the submitter is not the
+	// reader.
+	skipTranscript bool
 }
 
 // RunResult is everything one suite run produced.
@@ -167,7 +177,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 
 		result, spec, transcript, account := schedules.run(ctx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, error) {
-				return runCase(ctx, &test, l.deliveryPath, l.load)
+				return runCase(ctx, &test, l.deliveryPath, l.load, !opts.skipTranscript)
 			})
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, account)
@@ -402,7 +412,7 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 	// submitted workflow. Coverage riding the report through [runSuite] is
 	// what makes this door answer with the same account the CLI's does
 	// (issue #931).
-	result := runSuite(ctx, file, RunOptions{Label: label}, func(*Test) (loader, string) {
+	result := runSuite(ctx, file, RunOptions{Label: label, skipTranscript: true}, func(*Test) (loader, string) {
 		return loader{
 			load: func() (*v1.Workflow, error) {
 				workflow, err := flowfile.Unmarshal(workflowSource)
@@ -449,7 +459,7 @@ func RunSourceContext(ctx context.Context, label string, workflowSource, testSou
 // here would take the choice away from the only caller with a reason to make it
 // ([RunFileUnderSchedules]). With no scheduler on base the driver takes
 // [v1.WrittenOrder], which is what every `flow test` case has always run under.
-func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error)) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
+func runCase(base context.Context, test *Test, deliveryPath string, load func() (*v1.Workflow, error), record bool) (result *v1.TestCase, spec *v1.Workflow, transcript *v1.Workflow_StepOutputs, account []TranscriptLine, runErr error) {
 	started := time.Now()
 	result = &v1.TestCase{Name: test.Name}
 	defer func() {
@@ -535,13 +545,17 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 
 	// The transcript's recorder: the engine reports through [v1.RunObserver],
 	// the stub functions find the same recorder on the context, and the
-	// scripted-signal goroutines are handed it directly.
-	recorder = newRunRecorder(clock)
-	ctx = v1.NewContextWithRunObserver(ctx, recorder)
-	ctx = contextWithRunRecorder(ctx, recorder)
-	// What the transcript may honestly call a switch decision — from the
-	// spec, never inferred from an output's name. See [runRecorder.noteSwitches].
-	recorder.noteSwitches(workflow.GetSteps())
+	// scripted-signal goroutines are handed it directly. Not built at all
+	// where the account would be discarded ([RunOptions].skipTranscript) —
+	// no observer on the context means the engine clones nothing either.
+	if record {
+		recorder = newRunRecorder(clock)
+		ctx = v1.NewContextWithRunObserver(ctx, recorder)
+		ctx = contextWithRunRecorder(ctx, recorder)
+		// What the transcript may honestly call a switch decision — from the
+		// spec, never inferred from an output's name. See [runRecorder.noteSwitches].
+		recorder.noteSwitches(workflow.GetSteps())
+	}
 
 	// The run executes against its own registry, not the process-wide one:
 	// stubs answer, everything else fails closed, and no other goroutine's
@@ -624,7 +638,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		// print no other surface prints. A case whose bind fails records no
 		// step events carrying input-derived values: the run fails at the
 		// same bind before any step runs.
-		recorder.sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
+		if recorder != nil {
+			recorder.sensitive = sensitiveNativeValues(&v1.Scope{Inputs: bound}, v1.SensitiveInputNames(workflow))
+		}
 	}
 
 	// The case's own `secrets:` plaintext joins the set (Codex, #1052):
@@ -636,12 +652,14 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// the substring backstop catches "Bearer " + secret. An empty value is
 	// skipped — replacing the empty string would mark every position in
 	// every line while protecting nothing.
-	for _, value := range test.Secrets {
-		if value == "" {
-			continue
+	if recorder != nil {
+		for _, value := range test.Secrets {
+			if value == "" {
+				continue
+			}
+			recorder.sensitive.values = append(recorder.sensitive.values, value)
+			recorder.sensitive.substrings = append(recorder.sensitive.substrings, value)
 		}
-		recorder.sensitive.values = append(recorder.sensitive.values, value)
-		recorder.sensitive.substrings = append(recorder.sensitive.substrings, value)
 	}
 
 	// Who this case runs as, for the one question a starter answers locally:
@@ -929,7 +947,12 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			// The send and its record are one atomic decision, and the record
 			// is honest about the outcome — delivered, or refused by a
 			// declared signal policy or the queue's bound. See
-			// [runRecorder.deliverRecorded] for why both halves matter.
+			// [runRecorder.deliverRecorded] for why both halves matter. A run
+			// recording no account delivers plainly.
+			if recorder == nil {
+				_ = signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
+				return
+			}
 			recorder.deliverRecorded(j.name, j.payload, j.senderSubject, func() error {
 				return signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 			})

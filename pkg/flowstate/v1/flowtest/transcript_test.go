@@ -549,6 +549,115 @@ tests:
 		"the failed switch line must carry the arm its record preserves")
 }
 
+// TestTranscriptNamesACalleeSwitchsArm pins round six's call finding: a
+// `call:` embeds its compiled callee, whose steps — switches included —
+// report through the same run's observer under their own ids, so the switch
+// index descends into the callee exactly as the run will.
+func TestTranscriptNamesACalleeSwitchsArm(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "callee.yaml"), `
+edition: v2026.3
+name: callee
+inputs:
+  kind:
+    type: string
+    required: true
+steps:
+  - id: route
+    switch:
+      value: ${inputs.kind}
+      cases:
+        - case: high
+          steps: []
+outputs: {}
+`)
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: caller
+steps:
+  - id: delegate
+    call: ./callee.yaml
+    with:
+      kind: high
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: the callee's switch decides
+    workflow: ./workflow.yaml
+    expect:
+      ran: [delegate]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.Contains(t, text, `took case "high"`,
+		"a callee switch's decision renders exactly as a caller's does")
+}
+
+// TestTranscriptTreatsAMixedKindIdCollisionAsAmbiguous pins round six's
+// other switch finding: two isolated bodies may legally reuse one id, one
+// for a switch and one for an ordinary task — and a walk that indexed only
+// the switch rendered the task's `case`-named output as that switch's arm.
+// Ambiguous means plain outputs, for both of them.
+func TestTranscriptTreatsAMixedKindIdCollisionAsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), `
+edition: v2026.3
+name: colliding
+steps:
+  - id: loop_a
+    for_each:
+      items: ${["x"]}
+      as: item
+      steps:
+        - id: route
+          switch:
+            value: ${item}
+            cases:
+              - case: x
+                steps: []
+  - id: loop_b
+    for_each:
+      items: ${["y"]}
+      as: item
+      steps:
+        - id: route
+          log:
+            message: plain
+outputs: {}
+`)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
+tests:
+  - name: one id, two kinds
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns:
+          case: not-an-arm
+    expect:
+      ran: [loop_a, loop_b]
+`)
+
+	result := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{})
+	c := result.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
+
+	text := transcriptText(result.Transcripts[0])
+	assert.NotContains(t, text, "took case",
+		"an id declared as both a switch and a task renders plainly for both — the account never guesses")
+	assert.Contains(t, text, `case: "not-an-arm"`)
+}
+
 // TestTranscriptRedactsASensitiveStructsKeys pins round four's P1 on #1052,
 // fixed in the one shared walk ([sensitiveNativeValues]) so the stub
 // diagnostics gain it too: a `sensitive: true` struct may carry its material
