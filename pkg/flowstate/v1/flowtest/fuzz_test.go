@@ -1,9 +1,15 @@
 package flowtest_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -19,26 +25,29 @@ import (
 // This target is the check that comment asks for.
 //
 // Invariants: no panic and no unbounded growth under the harness's GOMEMLIMIT
-// (the run recipe in CLAUDE.md), and a document that loaded loads again — the
-// idempotence shape the flowfile targets already use, since a parser that
-// answers differently on the same bytes is a parser with hidden state.
+// (the run recipe in CLAUDE.md), and a document that loaded loads again *to
+// the same document* — the idempotence shape the flowfile targets already
+// use, since a parser that answers differently on the same bytes is a parser
+// with hidden state. The comparison is the invariant's teeth: two successful
+// loads that disagree are exactly that hidden state, and checking only the
+// second call's error would stay green through it.
 func FuzzLoadSource(f *testing.F) {
-	// Seeds: the shipped corpus (every example suite) plus this package's own
-	// fixture suites, so the fuzzer starts from documents exercising every
-	// stanza the format has rather than discovering YAML from nothing.
-	for _, pattern := range []string{
-		"../../../../examples/*/workflow.test.yaml",
-		"testdata/*/*.test.yaml",
-	} {
-		seeds, err := filepath.Glob(pattern)
-		if err != nil {
-			continue
-		}
-		for _, seed := range seeds {
-			if data, err := os.ReadFile(seed); err == nil {
+	// Seeds: the shipped corpus (every example suite, walked recursively —
+	// two live under examples/plugins/, one of them not named
+	// workflow.test.yaml, so a fixed-depth glob misses real suites) plus this
+	// package's own fixture suites, so the fuzzer starts from documents
+	// exercising every stanza the format has rather than discovering YAML
+	// from nothing.
+	for _, root := range []string{"../../../../examples", "testdata"} {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".test.yaml") {
+				return nil
+			}
+			if data, err := os.ReadFile(path); err == nil {
 				f.Add(data)
 			}
-		}
+			return nil
+		})
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -53,6 +62,18 @@ func FuzzLoadSource(f *testing.F) {
 		again, err := flowtest.LoadSource(data)
 		if err != nil || again == nil {
 			t.Fatalf("a document that loaded must load again: %v", err)
+		}
+
+		// EquateNaNs: YAML admits `.nan`, and NaN != NaN would otherwise
+		// report a perfectly deterministic parse as a divergence. The
+		// exporter compares unexported fields (today: Stub.fromDefaults,
+		// stamped by mergeDefaults at load) instead of ignoring them —
+		// hidden state that diverges in a field callers cannot see is
+		// still hidden state, and skipping it would blind the invariant
+		// exactly where it is hardest to notice.
+		exporter := cmp.Exporter(func(reflect.Type) bool { return true })
+		if diff := cmp.Diff(file, again, cmpopts.EquateNaNs(), exporter); diff != "" {
+			t.Fatalf("the same bytes loaded to two different documents (-first +again):\n%s", diff)
 		}
 	})
 }
